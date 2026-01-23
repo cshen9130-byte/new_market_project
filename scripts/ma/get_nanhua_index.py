@@ -2,12 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime
-
-try:
-    from EmQuantAPI import *  # noqa
-except Exception as e:
-    print(json.dumps({"error": f"EmQuantAPI import failed: {e}"}))
-    sys.exit(1)
+from pathlib import Path
 
 
 def log_callback(msg):
@@ -24,7 +19,60 @@ def log_callback(msg):
     return 0
 
 
+def _load_env_from_files():
+    candidates = []
+    try:
+        # 1) Current working directory
+        cwd = Path.cwd()
+        candidates.append(cwd)
+    except Exception:
+        pass
+    try:
+        # 2) Script directory and its parents
+        script_dir = Path(__file__).resolve().parent
+        candidates.append(script_dir)
+        candidates.append(script_dir.parent)
+        candidates.append(script_dir.parent.parent)
+    except Exception:
+        pass
+
+    loaded = False
+    # load order: .env then .env.local so local overrides
+    for base in candidates:
+        for fname in (".env", ".env.local"):
+            f = base / fname
+            if f.exists() and f.is_file():
+                try:
+                    for line in f.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line or line.startswith("#"):
+                            continue
+                        if "=" not in line:
+                            continue
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        val = val.strip().strip('"').strip("'")
+                        # don't overwrite if already set in environment
+                        if key and os.environ.get(key) is None:
+                            os.environ[key] = val
+                    loaded = True
+                except Exception:
+                    # ignore parse errors and continue
+                    pass
+    return loaded
+
+
 def main():
+    # Load environment variables from .env files if present
+    _load_env_from_files()
+
+    # Import EmQuantAPI after env load so failures are reported as JSON
+    try:
+        import EmQuantAPI as Emq  # type: ignore
+        c = Emq.c
+    except Exception as e:
+        print(json.dumps({"error": f"EmQuantAPI import failed: {e}"}))
+        sys.exit(1)
     # Compute last full calendar year
     today = datetime.today()
     last_year = today.year - 1

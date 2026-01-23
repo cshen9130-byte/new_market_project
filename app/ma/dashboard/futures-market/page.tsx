@@ -42,7 +42,7 @@ export default function FuturesMarketPage() {
   useEffect(() => {
     const run = async () => {
       try {
-        const res = await fetch("/api/nanhua")
+        const res = await fetch("/ma/api/nanhua")
         const json = await res.json()
         if (json?.error) {
           setErrorNhci("数据不可用")

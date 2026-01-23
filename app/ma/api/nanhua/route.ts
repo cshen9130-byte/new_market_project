@@ -14,7 +14,7 @@ export async function GET() {
   }
 
   // Run the Python script to fetch NHCI data
-  const scriptPath = process.cwd() + "/scripts/get_nanhua_index.py"
+  const scriptPath = process.cwd() + "/scripts/ma/get_nanhua_index.py"
   const isWin = process.platform === "win32"
   let pythonExe = process.env.PYTHON_EXE
   let args: string[] = []
