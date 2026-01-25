@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "next build",
+    "build:lowmem": "NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS=--max-old-space-size=1024 next build",
     "dev": "next dev",
     "lint": "eslint .",
     "start": "next start"
