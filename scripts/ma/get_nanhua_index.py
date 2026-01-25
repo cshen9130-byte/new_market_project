@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime
+import calendar
 from pathlib import Path
 
 
@@ -73,11 +74,11 @@ def main():
     except Exception as e:
         print(json.dumps({"error": f"EmQuantAPI import failed: {e}"}))
         sys.exit(1)
-    # Compute last full calendar year
+    # Compute last year start through today's date
     today = datetime.today()
     last_year = today.year - 1
     start_date = f"{last_year}-01-01"
-    end_date = f"{last_year}-12-31"
+    end_date = today.strftime("%Y-%m-%d")
 
     username = os.environ.get("EMQ_USERNAME")
     password = os.environ.get("EMQ_PASSWORD")

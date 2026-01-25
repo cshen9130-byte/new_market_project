@@ -1,0 +1,42 @@
+{
+  "entries": {
+    "20260123": {
+      "trade_date": "20260123",
+      "data": {
+        "IH": {
+          "trade_date": "20260123",
+          "near_ts_code": "IHL.CFX",
+          "near_settle": 3036.4,
+          "spot_close": 3032.193,
+          "days_to_maturity": 28,
+          "annualized_basis_pct": 1.8086332235447558
+        },
+        "IF": {
+          "trade_date": "20260123",
+          "near_ts_code": "IFL.CFX",
+          "near_settle": 4709.2,
+          "spot_close": 4702.4966,
+          "days_to_maturity": 28,
+          "annualized_basis_pct": 1.8582386033591087
+        },
+        "IC": {
+          "trade_date": "20260123",
+          "near_ts_code": "ICL.CFX",
+          "near_settle": 8617,
+          "spot_close": 8590.1659,
+          "days_to_maturity": 28,
+          "annualized_basis_pct": 4.072117637614964
+        },
+        "IM": {
+          "trade_date": "20260123",
+          "near_ts_code": "IML.CFX",
+          "near_settle": 8489.2,
+          "spot_close": 8470.7438,
+          "days_to_maturity": 28,
+          "annualized_basis_pct": 2.84024349786151
+        }
+      },
+      "calc": "settle"
+    }
+  }
+}

@@ -1,10 +1,43 @@
 import { NextResponse } from "next/server"
 import { spawn } from "child_process"
+import fs from "fs/promises"
+import path from "path"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET() {
+  // Cache target: last full calendar year
+  const now = new Date()
+  const targetYear = now.getFullYear() - 1
+  // Desired end date: today (so range is last year through today)
+  function desiredEndDateToday(): string {
+    const y = now.getFullYear()
+    const m = String(now.getMonth() + 1).padStart(2, "0")
+    const d = String(now.getDate()).padStart(2, "0")
+    return `${y}-${m}-${d}`
+  }
+  const desiredEnd = desiredEndDateToday()
+
+  // Try returning cached NHCI data from local filesystem
+  const cacheDir = process.env.NHCI_CACHE_DIR || path.join(process.cwd(), "data")
+  const cacheFile = path.join(cacheDir, "nhci_cache.json")
+  try {
+    const txt = await fs.readFile(cacheFile, "utf-8")
+    const json = JSON.parse(txt)
+    const cached = json?.[String(targetYear)]
+    if (
+      cached &&
+      Array.isArray(cached?.data) &&
+      cached.data.length > 0 &&
+      typeof cached?.end === "string" &&
+      cached.end === desiredEnd
+    ) {
+      // Align with original response shape
+      return NextResponse.json(cached, { status: 200 })
+    }
+  } catch {}
+
   // Prepare env for Python script
   const env = {
     ...process.env,
@@ -30,7 +63,7 @@ export async function GET() {
     }
   }
 
-  return new Promise((resolve) => {
+  const result: any = await new Promise((resolve) => {
     try {
       const proc = spawn(pythonExe, args, { env })
       let stdout = ""
@@ -69,14 +102,33 @@ export async function GET() {
           }
           // inject a source flag for visibility
           ;(parsed as any).source = (parsed as any).error ? "error" : "emquant"
-          resolve(NextResponse.json(parsed, { status: 200 }))
+          // Return parsed result; caller will handle caching and response
+          resolve(parsed)
         } catch (e: any) {
           console.error("[nanhua] json parse failed", e, { stdout, stderr })
-          resolve(NextResponse.json({ error: `json parse failed: ${e?.message}`, stdout, stderr }, { status: 500 }))
+          resolve({ error: `json parse failed: ${e?.message}`, stdout, stderr })
         }
       })
     } catch (e: any) {
-      resolve(NextResponse.json({ error: e?.message || "unknown" }, { status: 500 }))
+      resolve({ error: e?.message || "unknown" })
     }
   })
+
+  if (result?.error) {
+    return NextResponse.json(result, { status: 500 })
+  }
+
+  // Write result to local cache keyed by target year
+  try {
+    await fs.mkdir(cacheDir, { recursive: true })
+    let existing: any = {}
+    try {
+      const txt = await fs.readFile(cacheFile, "utf-8")
+      existing = JSON.parse(txt)
+    } catch {}
+    existing[String(targetYear)] = result
+    await fs.writeFile(cacheFile, JSON.stringify(existing), "utf-8")
+  } catch {}
+
+  return NextResponse.json(result, { status: 200 })
 }
