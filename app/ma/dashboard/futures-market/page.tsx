@@ -59,6 +59,7 @@ export default function FuturesMarketPage() {
   const [errorChoiceHeatmap, setErrorChoiceHeatmap] = useState<string | null>(null)
 
   const q = (force: boolean) => (force ? "?force=1" : "")
+  const qc = () => "?prefer_cache=1"
 
   const reloadNhci = async (force = false) => {
     setLoadingNhci(true)
@@ -92,11 +93,43 @@ export default function FuturesMarketPage() {
     }
   }
 
+  const reloadBasisFarCache = async () => {
+    setLoadingBasis(true)
+    setErrorBasis(null)
+    try {
+      const res = await fetch(`/ma/api/basis/far${qc()}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasis("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisFar(json.data)
+      else setErrorBasis("数据不可用")
+    } catch {
+      setErrorBasis("数据不可用")
+    } finally {
+      setLoadingBasis(false)
+    }
+  }
+
   const reloadBasisNear = async (force = false) => {
     setLoadingBasisNear(true)
     setErrorBasisNear(null)
     try {
       const res = await fetch(`/ma/api/basis/near${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisNear("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisNear(json.data)
+      else setErrorBasisNear("数据不可用")
+    } catch {
+      setErrorBasisNear("数据不可用")
+    } finally {
+      setLoadingBasisNear(false)
+    }
+  }
+
+  const reloadBasisNearCache = async () => {
+    setLoadingBasisNear(true)
+    setErrorBasisNear(null)
+    try {
+      const res = await fetch(`/ma/api/basis/near${qc()}`)
       const json = await res.json()
       if (json?.error) setErrorBasisNear("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisNear(json.data)
@@ -124,11 +157,43 @@ export default function FuturesMarketPage() {
     }
   }
 
+  const reloadBasisTsCache = async () => {
+    setLoadingBasisTs(true)
+    setErrorBasisTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/timeseries${qc()}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisTs("数据不可用")
+    } catch {
+      setErrorBasisTs("数据不可用")
+    } finally {
+      setLoadingBasisTs(false)
+    }
+  }
+
   const reloadBasisDiffTs = async (force = false) => {
     setLoadingBasisDiffTs(true)
     setErrorBasisDiffTs(null)
     try {
       const res = await fetch(`/ma/api/basis/diff-timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisDiffTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisDiffTs("数据不可用")
+    } catch {
+      setErrorBasisDiffTs("数据不可用")
+    } finally {
+      setLoadingBasisDiffTs(false)
+    }
+  }
+
+  const reloadBasisDiffTsCache = async () => {
+    setLoadingBasisDiffTs(true)
+    setErrorBasisDiffTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/diff-timeseries${qc()}`)
       const json = await res.json()
       if (json?.error) setErrorBasisDiffTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -156,11 +221,43 @@ export default function FuturesMarketPage() {
     }
   }
 
+  const reloadBasisNearTsCache = async () => {
+    setLoadingBasisNearTs(true)
+    setErrorBasisNearTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/near-timeseries${qc()}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisNearTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisNearTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisNearTs("数据不可用")
+    } catch {
+      setErrorBasisNearTs("数据不可用")
+    } finally {
+      setLoadingBasisNearTs(false)
+    }
+  }
+
   const reloadBasisNearDiffTs = async (force = false) => {
     setLoadingBasisNearDiffTs(true)
     setErrorBasisNearDiffTs(null)
     try {
       const res = await fetch(`/ma/api/basis/near-diff-timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisNearDiffTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisNearDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisNearDiffTs("数据不可用")
+    } catch {
+      setErrorBasisNearDiffTs("数据不可用")
+    } finally {
+      setLoadingBasisNearDiffTs(false)
+    }
+  }
+
+  const reloadBasisNearDiffTsCache = async () => {
+    setLoadingBasisNearDiffTs(true)
+    setErrorBasisNearDiffTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/near-diff-timeseries${qc()}`)
       const json = await res.json()
       if (json?.error) setErrorBasisNearDiffTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisNearDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -188,11 +285,43 @@ export default function FuturesMarketPage() {
     }
   }
 
+  const reloadFutLatestCache = async () => {
+    setLoadingFut(true)
+    setErrorFut(null)
+    try {
+      const res = await fetch(`/ma/api/futures/latest${qc()}`)
+      const json = await res.json()
+      if (json?.error) setErrorFut("数据不可用")
+      else if (json?.data && typeof json.data === "object") setFutLatest(json.data)
+      else setErrorFut("数据不可用")
+    } catch {
+      setErrorFut("数据不可用")
+    } finally {
+      setLoadingFut(false)
+    }
+  }
+
   const reloadBasisContDiffTs = async (force = false) => {
     setLoadingBasisContDiffTs(true)
     setErrorBasisContDiffTs(null)
     try {
       const res = await fetch(`/ma/api/basis/cont-diff-timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisContDiffTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisContDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisContDiffTs("数据不可用")
+    } catch {
+      setErrorBasisContDiffTs("数据不可用")
+    } finally {
+      setLoadingBasisContDiffTs(false)
+    }
+  }
+
+  const reloadBasisContDiffTsCache = async () => {
+    setLoadingBasisContDiffTs(true)
+    setErrorBasisContDiffTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/cont-diff-timeseries${qc()}`)
       const json = await res.json()
       if (json?.error) setErrorBasisContDiffTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisContDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -222,23 +351,23 @@ export default function FuturesMarketPage() {
 
   useEffect(() => { reloadNhci(false) }, [])
 
-  useEffect(() => { reloadBasisFar(false) }, [])
+  useEffect(() => { reloadBasisFarCache() }, [])
 
-  useEffect(() => { reloadBasisNear(false) }, [])
+  useEffect(() => { reloadBasisNearCache() }, [])
 
-  useEffect(() => { reloadBasisTs(false) }, [])
+  useEffect(() => { reloadBasisTsCache() }, [])
 
-  useEffect(() => { reloadBasisDiffTs(false) }, [])
+  useEffect(() => { reloadBasisDiffTsCache() }, [])
 
-  useEffect(() => { reloadBasisNearTs(false) }, [])
+  useEffect(() => { reloadBasisNearTsCache() }, [])
 
-  useEffect(() => { reloadBasisNearDiffTs(false) }, [])
+  useEffect(() => { reloadBasisNearDiffTsCache() }, [])
 
-  useEffect(() => { reloadBasisContDiffTs(false) }, [])
+  useEffect(() => { reloadBasisContDiffTsCache() }, [])
 
   useEffect(() => { reloadChoiceHeatmap(false) }, [])
 
-  useEffect(() => { reloadFutLatest(false) }, [])
+  useEffect(() => { reloadFutLatestCache() }, [])
   return (
     <div className="space-y-6">
       <div>
@@ -309,7 +438,7 @@ export default function FuturesMarketPage() {
                 <CardDescription>最新交易日主力合约收盘与结算涨跌幅</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadFutLatest(false)}>用缓存</Button>
+                <Button variant="outline" size="sm" onClick={reloadFutLatestCache}>用缓存</Button>
                 <Button variant="default" size="sm" onClick={() => reloadFutLatest(true)}>刷新</Button>
               </div>
             </div>
@@ -374,7 +503,7 @@ export default function FuturesMarketPage() {
                 <CardDescription>基于最新交易日远月合约与现货</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadBasisFar(false)}>用缓存</Button>
+                <Button variant="outline" size="sm" onClick={reloadBasisFarCache}>用缓存</Button>
                 <Button variant="default" size="sm" onClick={() => reloadBasisFar(true)}>刷新</Button>
               </div>
             </div>
@@ -441,7 +570,7 @@ export default function FuturesMarketPage() {
                 <CardDescription>自2023-01-01至今，主连结算与现货</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadBasisTs(false)}>用缓存</Button>
+                <Button variant="outline" size="sm" onClick={reloadBasisTsCache}>用缓存</Button>
                 <Button variant="default" size="sm" onClick={() => reloadBasisTs(true)}>刷新</Button>
               </div>
             </div>
@@ -508,7 +637,7 @@ export default function FuturesMarketPage() {
                 <CardDescription>自2023-01-01至今，主连结算 - 现货收盘</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadBasisDiffTs(false)}>用缓存</Button>
+                <Button variant="outline" size="sm" onClick={reloadBasisDiffTsCache}>用缓存</Button>
                 <Button variant="default" size="sm" onClick={() => reloadBasisDiffTs(true)}>刷新</Button>
               </div>
             </div>
@@ -576,7 +705,7 @@ export default function FuturesMarketPage() {
                     <CardDescription>最新交易日当月连续收盘与结算涨跌幅</CardDescription>
                   </div>
                   <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => reloadFutLatest(false)}>用缓存</Button>
+                    <Button variant="outline" size="sm" onClick={reloadFutLatestCache}>用缓存</Button>
                     <Button variant="default" size="sm" onClick={() => reloadFutLatest(true)}>刷新</Button>
                   </div>
                 </div>
@@ -641,7 +770,7 @@ export default function FuturesMarketPage() {
                     <CardDescription>基于最新交易日当月连续与现货</CardDescription>
                   </div>
                   <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => reloadBasisNear(false)}>用缓存</Button>
+                    <Button variant="outline" size="sm" onClick={reloadBasisNearCache}>用缓存</Button>
                     <Button variant="default" size="sm" onClick={() => reloadBasisNear(true)}>刷新</Button>
                   </div>
                 </div>
@@ -709,7 +838,7 @@ export default function FuturesMarketPage() {
                 <CardDescription>自2023-01-01至今，当月连续结算与现货</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadBasisNearTs(false)}>用缓存</Button>
+                <Button variant="outline" size="sm" onClick={reloadBasisNearTsCache}>用缓存</Button>
                 <Button variant="default" size="sm" onClick={() => reloadBasisNearTs(true)}>刷新</Button>
               </div>
             </div>
@@ -775,7 +904,7 @@ export default function FuturesMarketPage() {
                 <CardDescription>自2023-01-01至今，当月连续结算 - 现货收盘</CardDescription>
               </div>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadBasisNearDiffTs(false)}>用缓存</Button>
+                <Button variant="outline" size="sm" onClick={reloadBasisNearDiffTsCache}>用缓存</Button>
                 <Button variant="default" size="sm" onClick={() => reloadBasisNearDiffTs(true)}>刷新</Button>
               </div>
             </div>
@@ -855,7 +984,7 @@ export default function FuturesMarketPage() {
                   </select>
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={() => reloadBasisContDiffTs(false)}>用缓存</Button>
+                  <Button variant="outline" size="sm" onClick={reloadBasisContDiffTsCache}>用缓存</Button>
                   <Button variant="default" size="sm" onClick={() => reloadBasisContDiffTs(true)}>刷新</Button>
                 </div>
               </div>
