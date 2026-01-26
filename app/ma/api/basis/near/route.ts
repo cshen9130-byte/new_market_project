@@ -142,6 +142,15 @@ function hasCompleteData(entry: any): boolean {
   return true
 }
 
+function latestCompleteEntry(entries: Record<string, any>): { key: string; entry: any } | null {
+  const keys = Object.keys(entries).sort().reverse()
+  for (const k of keys) {
+    const e = entries[k]
+    if (hasCompleteData(e)) return { key: k, entry: e }
+  }
+  return null
+}
+
 export async function GET(req: Request) {
   const env = { ...process.env }
   const isWin = process.platform === "win32"
@@ -188,6 +197,7 @@ export async function GET(req: Request) {
     ...env,
     EMQ_USERNAME: process.env.EMQ_USERNAME || "",
     EMQ_PASSWORD: process.env.EMQ_PASSWORD || "",
+    EMQ_OPTIONS_EXTRA: process.env.EMQ_OPTIONS_EXTRA || "",
     SPOT_TRADE_DATE: tradeDateIso,
   })
   if (spotRes?.error || !spotRes?.data || Object.keys(spotRes.data).length === 0) {
@@ -255,6 +265,14 @@ export async function GET(req: Request) {
     await writeFile(cachePath, JSON.stringify(cache, null, 2), "utf-8")
   } catch (e) {
     console.warn("[basis-near] failed to write cache:", (e as any)?.message)
+  }
+  // If today's computed entry is incomplete, fall back to latest complete cached entry
+  if (!hasCompleteData(entry)) {
+    const latestComplete = latestCompleteEntry(cache.entries)
+    if (latestComplete) {
+      const stale = { ...latestComplete.entry, stale_from: latestComplete.key }
+      return NextResponse.json(stale, { status: 200 })
+    }
   }
   return NextResponse.json(entry, { status: 200 })
 }

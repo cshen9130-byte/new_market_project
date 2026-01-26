@@ -1,6 +1,6 @@
 {
   "start_date": "20230101",
-  "end_date": "20260123",
+  "end_date": "20260126",
   "data": {
     "IH": [
       {
@@ -4454,6 +4454,12 @@
         "basis_diff": 4.20699999999988,
         "spot_close": 3032.193,
         "futures_settle": 3036.4
+      },
+      {
+        "date": "2026-01-26",
+        "basis_diff": 9.8128999999999,
+        "spot_close": 3049.5871,
+        "futures_settle": 3059.4
       }
     ],
     "IF": [
@@ -8908,6 +8914,12 @@
         "basis_diff": 6.703399999999419,
         "spot_close": 4702.4966,
         "futures_settle": 4709.2
+      },
+      {
+        "date": "2026-01-26",
+        "basis_diff": 15.435999999999694,
+        "spot_close": 4706.964,
+        "futures_settle": 4722.4
       }
     ],
     "IC": [
@@ -13362,6 +13374,12 @@
         "basis_diff": 26.834100000000035,
         "spot_close": 8590.1659,
         "futures_settle": 8617
+      },
+      {
+        "date": "2026-01-26",
+        "basis_diff": -1.2932000000000698,
+        "spot_close": 8506.6932,
+        "futures_settle": 8505.4
       }
     ],
     "IM": [
@@ -17816,6 +17834,12 @@
         "basis_diff": 18.456200000000536,
         "spot_close": 8470.7438,
         "futures_settle": 8489.2
+      },
+      {
+        "date": "2026-01-26",
+        "basis_diff": -17.23449999999866,
+        "spot_close": 8365.4345,
+        "futures_settle": 8348.2
       }
     ]
   }

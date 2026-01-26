@@ -75,11 +75,13 @@ export async function GET(req: Request) {
   const expectedYmd = expectedTradeDate()
   let debugFlag = false
   let filterCode: string | null = null
+  let forceRecompute = false
   try {
     const url = new URL(req.url)
     debugFlag = url.searchParams.get("debug") === "1"
     const c = url.searchParams.get("code")
     filterCode = c && ["IH", "IF", "IC", "IM"].includes(c.toUpperCase()) ? c.toUpperCase() : null
+    forceRecompute = url.searchParams.get("force") === "1"
   } catch {}
 
   const runArgs = (script: string, arg1?: string, arg2?: string) => {
@@ -93,7 +95,7 @@ export async function GET(req: Request) {
   try {
     await fs.promises.mkdir(cacheDir, { recursive: true })
     const buf = await fs.promises.readFile(cachePath, "utf-8").catch(() => "")
-    if (buf) {
+    if (buf && !forceRecompute) {
       const obj = JSON.parse(buf)
       const end: string | undefined = obj?.end_date || obj?.end
       if (end && end >= expectedYmd && obj?.data) {
@@ -118,6 +120,7 @@ export async function GET(req: Request) {
     ...env,
     EMQ_USERNAME: process.env.EMQ_USERNAME || "",
     EMQ_PASSWORD: process.env.EMQ_PASSWORD || "",
+    EMQ_OPTIONS_EXTRA: process.env.EMQ_OPTIONS_EXTRA || "",
   })
   if (spotRes?.error) return NextResponse.json(spotRes, { status: 500 })
 

@@ -25,12 +25,17 @@ export default function DashboardPage() {
     router.push("/login")
   }
 
+  const routeForType = (type: string) => {
+    if (type === "futures") return "/dashboard/futures-market"
+    return `/analysis/${type}`
+  }
+
   const handleInputClick = (type: string) => {
-    router.push(`/analysis/${type}`)
+    router.push(routeForType(type))
   }
 
   const handleOutputClick = (type: string) => {
-    router.push(`/analysis/${type}`)
+    router.push(routeForType(type))
   }
 
   if (!user) {

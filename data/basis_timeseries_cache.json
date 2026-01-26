@@ -1,6 +1,6 @@
 {
   "start_date": "20230101",
-  "end_date": "20260123",
+  "end_date": "20260126",
   "data": {
     "IH": [
       {
@@ -5196,6 +5196,13 @@
         "spot_close": 3032.193,
         "futures_settle": 3042.4,
         "days_to_maturity": 28
+      },
+      {
+        "date": "2026-01-26",
+        "annualized_basis_pct": 6.900223968024956,
+        "spot_close": 3049.5871,
+        "futures_settle": 3064,
+        "days_to_maturity": 25
       }
     ],
     "IF": [
@@ -10392,6 +10399,13 @@
         "spot_close": 4702.4966,
         "futures_settle": 4714.4,
         "days_to_maturity": 28
+      },
+      {
+        "date": "2026-01-26",
+        "annualized_basis_pct": 6.462883506226167,
+        "spot_close": 4706.964,
+        "futures_settle": 4727.8,
+        "days_to_maturity": 25
       }
     ],
     "IC": [
@@ -15588,6 +15602,13 @@
         "spot_close": 8590.1659,
         "futures_settle": 8618,
         "days_to_maturity": 28
+      },
+      {
+        "date": "2026-01-26",
+        "annualized_basis_pct": -2.3501578733319746,
+        "spot_close": 8506.6932,
+        "futures_settle": 8493,
+        "days_to_maturity": 25
       }
     ],
     "IM": [
@@ -20784,6 +20805,13 @@
         "spot_close": 8470.7438,
         "futures_settle": 8479.4,
         "days_to_maturity": 28
+      },
+      {
+        "date": "2026-01-26",
+        "annualized_basis_pct": -9.395611190309191,
+        "spot_close": 8365.4345,
+        "futures_settle": 8311.6,
+        "days_to_maturity": 25
       }
     ]
   },

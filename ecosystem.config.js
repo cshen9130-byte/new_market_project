@@ -17,10 +17,16 @@ module.exports = {
 
         // EmQuant native libs path
         LD_LIBRARY_PATH:
-          process.env.LD_LIBRARY_PATH || "/root/new_market_project/EMQuantAPI_Python/EMQuantAPI_Python/python3/libs",
+          process.env.LD_LIBRARY_PATH || "/root/new_market_project/EMQuantAPI_Python/EMQuantAPI_Python/python3/libs/linux/x64",
 
         // Next.js runtime settings can be added here as needed
         NODE_ENV: process.env.NODE_ENV || "production",
+
+        // Tushare token for Python data fetchers
+        TUSHARE_TOKEN: process.env.TUSHARE_TOKEN || "",
+
+        // Ensure client uses same-origin Nginx alias for MOM report in production
+        NEXT_PUBLIC_MOM_REPORT_URL: process.env.NEXT_PUBLIC_MOM_REPORT_URL || "/mom_report/report.html",
       },
     },
   ],

@@ -46,6 +46,10 @@ yarn-error.log*
 
 # env files
 .env*
+/.choice_env.sh
+
+# Server-only vendor assets
+EMQuantAPI_Python/
 
 # vercel
 .vercel

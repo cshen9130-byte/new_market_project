@@ -20,7 +20,7 @@ export default function LoginPage() {
   const router = useRouter()
   const { toast } = useToast()
   const [isLoading, setIsLoading] = useState(false)
-  const [styleChoice, setStyleChoice] = useState<"cyber" | "classic">("cyber")
+  const [styleChoice, setStyleChoice] = useState<"cyber" | "classic">("classic")
   const [showPassword, setShowPassword] = useState(false)
 
   useEffect(() => {

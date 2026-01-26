@@ -9,7 +9,7 @@ const navigation = [
   { name: "总览", href: "/dashboard", icon: LayoutDashboard },
   { name: "宏观市场", href: "/analysis/market", icon: TrendingUp },
   { name: "股票市场", href: "/analysis/stock", icon: LineChart },
-  { name: "期货市场", href: "/analysis/futures", icon: Rocket },
+  { name: "期货市场", href: "/dashboard/futures-market", icon: Rocket },
   { name: "期权市场", href: "/analysis/options", icon: Target },
   { name: "私募基金", href: "/analysis/fund", icon: Briefcase },
 ]

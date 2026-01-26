@@ -1,11 +1,44 @@
 "use client"
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { useEffect, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { MoreVertical } from "lucide-react"
+import { useRouter } from "next/navigation"
 
 export default function FuturesMarketPage() {
+  const router = useRouter()
+  const neon = {
+    bg: "#000000",
+    text: "#c8fbff",
+    axisText: "#94f0ff",
+    axisLine: "#00e5ff",
+    gridLine: "#113a45",
+    tooltipBg: "#0a1f2b",
+  }
+  const neonifyOption = (opt: any) => {
+    const xAxis = Array.isArray(opt.xAxis) ? opt.xAxis : (opt.xAxis ? [opt.xAxis] : [])
+    const yAxis = Array.isArray(opt.yAxis) ? opt.yAxis : (opt.yAxis ? [opt.yAxis] : [])
+    const patchAxis = (ax: any) => ({
+      ...ax,
+      axisLabel: { ...(ax?.axisLabel || {}), color: neon.axisText },
+      axisLine: { ...(ax?.axisLine || {}), lineStyle: { color: neon.axisLine } },
+      splitLine: { show: true, ...(ax?.splitLine || {}), lineStyle: { color: neon.gridLine } },
+    })
+    const patchedX = xAxis.map(patchAxis)
+    const patchedY = yAxis.map(patchAxis)
+    return {
+      backgroundColor: "transparent",
+      textStyle: { color: neon.text },
+      tooltip: { backgroundColor: neon.tooltipBg, borderColor: neon.axisLine, textStyle: { color: neon.text }, ...(opt.tooltip || {}) },
+      legend: { ...(opt.legend || {}), textStyle: { color: neon.axisText } },
+      grid: { ...(opt.grid || {}), containLabel: true },
+      ...opt,
+      xAxis: patchedX.length ? (Array.isArray(opt.xAxis) ? patchedX : patchedX[0]) : opt.xAxis,
+      yAxis: patchedY.length ? (Array.isArray(opt.yAxis) ? patchedY : patchedY[0]) : opt.yAxis,
+    }
+  }
   const [nhci, setNhci] = useState<Array<{ date: string; close: number }>>([])
   const [loadingNhci, setLoadingNhci] = useState(true)
   const [errorNhci, setErrorNhci] = useState<string | null>(null)
@@ -265,17 +298,26 @@ export default function FuturesMarketPage() {
   }, [])
 
   return (
-    <div className="space-y-6">
+    <div className="relative min-h-screen bg-black text-cyan-300 space-y-6">
+      <div className="sticky top-0 z-20 flex justify-end p-4 bg-black/60 backdrop-blur border-b border-cyan-500/20">
+        <Button
+          variant="outline"
+          className="border-cyan-500/40 bg-black/80 text-cyan-400 hover:bg-cyan-500/10"
+          onClick={() => router.push("/dashboard")}
+        >
+          返回神经网络
+        </Button>
+      </div>
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">期货市场分析</h1>
-        <p className="text-muted-foreground mt-2">大宗商品期货与合约分析</p>
+        <h1 className="text-3xl font-semibold tracking-tight text-cyan-400">期货市场分析</h1>
+        <p className="mt-2 text-cyan-300/70">大宗商品期货与合约分析</p>
       </div>
 
       <div className="max-w-[760px] w-full">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>南华商品指数</CardTitle>
-            <CardDescription>去年至今每日收盘价</CardDescription>
+            <CardTitle className="text-cyan-300">南华商品指数</CardTitle>
+            <CardDescription className="text-cyan-300/70">去年至今每日收盘价</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingNhci ? (
@@ -309,7 +351,7 @@ export default function FuturesMarketPage() {
                     },
                   ],
                 }
-                return <ReactECharts option={option} style={{ height: 300 }} notMerge lazyUpdate />
+                return <ReactECharts option={neonifyOption(option)} style={{ height: 300 }} notMerge lazyUpdate />
               })()
             )}
           </CardContent>
@@ -317,10 +359,10 @@ export default function FuturesMarketPage() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>远月期指</CardTitle>
-            <CardDescription>最新交易日主力合约收盘与结算涨跌幅</CardDescription>
+            <CardTitle className="text-cyan-300">远月期指</CardTitle>
+            <CardDescription className="text-cyan-300/70">最新交易日主力合约收盘与结算涨跌幅</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingFut ? (
@@ -349,19 +391,19 @@ export default function FuturesMarketPage() {
                       const priceVal = typeof d?.settle === "number" ? d!.settle : (typeof d?.close === "number" ? d!.close : null)
                       const pctStr = fmtPct(d?.settle_return)
                       return (
-                        <Card key={code} className="border">
+                        <Card key={code} className="border border-cyan-500/30 bg-black/50">
                           <CardHeader className="pb-2">
                             <div className="flex items-center justify-between">
-                              <CardTitle className="text-sm font-semibold tracking-wide">{code}</CardTitle>
-                              <MoreVertical className="h-4 w-4 text-muted-foreground" />
+                              <CardTitle className="text-sm font-semibold tracking-wide text-cyan-300">{code}</CardTitle>
+                              <MoreVertical className="h-4 w-4 text-cyan-400" />
                             </div>
-                            <CardDescription className="text-xs">{dateStr}</CardDescription>
+                            <CardDescription className="text-xs text-cyan-300/70">{dateStr}</CardDescription>
                           </CardHeader>
                           <CardContent>
-                            <div className="text-4xl font-semibold">
+                            <div className="text-4xl font-semibold text-cyan-200">
                               {priceVal !== null ? priceVal.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "-"}
                             </div>
-                            <div className={`mt-2 text-sm ${typeof d?.far_settle_return === "number" && d!.far_settle_return < 0 ? "text-green-600" : "text-red-600"}`}>
+                            <div className={`mt-2 text-sm ${typeof d?.far_settle_return === "number" && d!.far_settle_return < 0 ? "text-green-400" : "text-red-400"}`}>
                               {pctStr || ""}
                             </div>
                           </CardContent>
@@ -374,10 +416,10 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>远月年化基差率</CardTitle>
-            <CardDescription>基于最新交易日远月合约与现货</CardDescription>
+            <CardTitle className="text-cyan-300">远月年化基差率</CardTitle>
+            <CardDescription className="text-cyan-300/70">基于最新交易日远月合约与现货</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingBasis ? (
@@ -425,7 +467,7 @@ export default function FuturesMarketPage() {
                     },
                   ],
                 }
-                return <ReactECharts option={option} style={{ height: 300 }} notMerge lazyUpdate />
+                return <ReactECharts option={neonifyOption(option)} style={{ height: 300 }} notMerge lazyUpdate />
               })()
             )}
           </CardContent>
@@ -433,10 +475,10 @@ export default function FuturesMarketPage() {
       </div>
 
       <div className="w-full">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>远月年化基差率时序</CardTitle>
-            <CardDescription>自2023-01-01至今，主连结算与现货</CardDescription>
+            <CardTitle className="text-cyan-300">远月年化基差率时序</CardTitle>
+            <CardDescription className="text-cyan-300/70">自2023-01-01至今，主连结算与现货</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingBasisTs ? (
@@ -479,7 +521,7 @@ export default function FuturesMarketPage() {
                 }
                 return (
                   <div className="pb-6">
-                    <ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate />
+                    <ReactECharts option={neonifyOption(option)} style={{ height: 520 }} notMerge lazyUpdate />
                   </div>
                 )
               })()
@@ -491,10 +533,10 @@ export default function FuturesMarketPage() {
       </div>
 
       <div className="w-full">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>远月基差时序</CardTitle>
-            <CardDescription>自2023-01-01至今，主连结算 - 现货收盘</CardDescription>
+            <CardTitle className="text-cyan-300">远月基差时序</CardTitle>
+            <CardDescription className="text-cyan-300/70">自2023-01-01至今，主连结算 - 现货收盘</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingBasisDiffTs ? (
@@ -537,7 +579,7 @@ export default function FuturesMarketPage() {
                 }
                 return (
                   <div className="pb-6">
-                    <ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate />
+                    <ReactECharts option={neonifyOption(option)} style={{ height: 520 }} notMerge lazyUpdate />
                   </div>
                 )
               })()
@@ -550,10 +592,10 @@ export default function FuturesMarketPage() {
 
       <div className="w-full">
         <div className="grid gap-6 md:grid-cols-2">
-          <Card>
+          <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
             <CardHeader>
-              <CardTitle>近月期指</CardTitle>
-              <CardDescription>最新交易日当月连续收盘与结算涨跌幅</CardDescription>
+              <CardTitle className="text-cyan-300">近月期指</CardTitle>
+              <CardDescription className="text-cyan-300/70">最新交易日当月连续收盘与结算涨跌幅</CardDescription>
             </CardHeader>
             <CardContent>
               {loadingFut ? (
@@ -582,19 +624,19 @@ export default function FuturesMarketPage() {
                         const priceVal = typeof d?.near_settle === "number" ? d!.near_settle : (typeof d?.near_close === "number" ? d!.near_close : null)
                         const pctStr = fmtPct(d?.near_settle_return)
                         return (
-                          <Card key={code} className="border">
+                          <Card key={code} className="border border-cyan-500/30 bg-black/50">
                             <CardHeader className="pb-2">
                               <div className="flex items-center justify-between">
-                                <CardTitle className="text-sm font-semibold tracking-wide">{code}</CardTitle>
-                                <MoreVertical className="h-4 w-4 text-muted-foreground" />
+                                <CardTitle className="text-sm font-semibold tracking-wide text-cyan-300">{code}</CardTitle>
+                                <MoreVertical className="h-4 w-4 text-cyan-400" />
                               </div>
-                              <CardDescription className="text-xs">{dateStr}</CardDescription>
+                              <CardDescription className="text-xs text-cyan-300/70">{dateStr}</CardDescription>
                             </CardHeader>
                             <CardContent>
-                              <div className="text-4xl font-semibold">
+                              <div className="text-4xl font-semibold text-cyan-200">
                                 {priceVal !== null ? priceVal.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "-"}
                               </div>
-                              <div className={`mt-2 text-sm ${typeof d?.near_settle_return === "number" && d!.near_settle_return < 0 ? "text-green-600" : "text-red-600"}`}>
+                              <div className={`mt-2 text-sm ${typeof d?.near_settle_return === "number" && d!.near_settle_return < 0 ? "text-green-400" : "text-red-400"}`}>
                                 {pctStr || ""}
                               </div>
                             </CardContent>
@@ -607,10 +649,10 @@ export default function FuturesMarketPage() {
               )}
             </CardContent>
           </Card>
-            <Card>
+            <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
               <CardHeader>
-                <CardTitle>近月年化基差率</CardTitle>
-                <CardDescription>基于最新交易日当月连续与现货</CardDescription>
+                <CardTitle className="text-cyan-300">近月年化基差率</CardTitle>
+                <CardDescription className="text-cyan-300/70">基于最新交易日当月连续与现货</CardDescription>
               </CardHeader>
               <CardContent>
                 {loadingBasisNear ? (
@@ -658,7 +700,7 @@ export default function FuturesMarketPage() {
                         },
                       ],
                     }
-                    return <ReactECharts option={option} style={{ height: 300 }} notMerge lazyUpdate />
+                    return <ReactECharts option={neonifyOption(option)} style={{ height: 300 }} notMerge lazyUpdate />
                   })()
                 )}
               </CardContent>
@@ -667,17 +709,17 @@ export default function FuturesMarketPage() {
       </div>
 
       <div className="w-full">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>四大连续合约基差时序</CardTitle>
-                <CardDescription>当月/次月/当季/下季 结算 - 现货收盘</CardDescription>
+                <CardTitle className="text-cyan-300">四大连续合约基差时序</CardTitle>
+                <CardDescription className="text-cyan-300/70">当月/次月/当季/下季 结算 - 现货收盘</CardDescription>
               </div>
               <div className="text-sm">
-                <label className="mr-2 text-muted-foreground">品种</label>
+                <label className="mr-2 text-cyan-300/70">品种</label>
                 <select
-                  className="border rounded px-2 py-1 text-sm"
+                  className="border border-cyan-500/30 rounded px-2 py-1 text-sm bg-black/50 text-cyan-300"
                   value={selectedCode}
                   onChange={(e) => setSelectedCode(e.target.value as any)}
                 >
@@ -735,7 +777,7 @@ export default function FuturesMarketPage() {
                 }
                 return (
                   <div className="pb-6">
-                    <ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate />
+                    <ReactECharts option={neonifyOption(option)} style={{ height: 520 }} notMerge lazyUpdate />
                   </div>
                 )
               })()
@@ -747,10 +789,10 @@ export default function FuturesMarketPage() {
       </div>
 
       <div className="w-full">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>近月年化基差率时序</CardTitle>
-            <CardDescription>自2023-01-01至今，当月连续结算与现货</CardDescription>
+            <CardTitle className="text-cyan-300">近月年化基差率时序</CardTitle>
+            <CardDescription className="text-cyan-300/70">自2023-01-01至今，当月连续结算与现货</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingBasisNearTs ? (
@@ -793,7 +835,7 @@ export default function FuturesMarketPage() {
                 }
                 return (
                   <div className="pb-6">
-                    <ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate />
+                    <ReactECharts option={neonifyOption(option)} style={{ height: 520 }} notMerge lazyUpdate />
                   </div>
                 )
               })()
@@ -805,10 +847,10 @@ export default function FuturesMarketPage() {
       </div>
 
       <div className="w-full">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>近月基差时序</CardTitle>
-            <CardDescription>自2023-01-01至今，当月连续结算 - 现货收盘</CardDescription>
+            <CardTitle className="text-cyan-300">近月基差时序</CardTitle>
+            <CardDescription className="text-cyan-300/70">自2023-01-01至今，当月连续结算 - 现货收盘</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingBasisNearDiffTs ? (
@@ -851,7 +893,7 @@ export default function FuturesMarketPage() {
                 }
                 return (
                   <div className="pb-6">
-                    <ReactECharts option={option} style={{ height: 520 }} notMerge lazyUpdate />
+                    <ReactECharts option={neonifyOption(option)} style={{ height: 520 }} notMerge lazyUpdate />
                   </div>
                 )
               })()
@@ -863,10 +905,10 @@ export default function FuturesMarketPage() {
       </div>
 
       <div className="w-full">
-        <Card>
+        <Card className="bg-black/60 border-cyan-500/30 backdrop-blur">
           <CardHeader>
-            <CardTitle>商品期货 日成交额排行</CardTitle>
-            <CardDescription>按板块分组，颜色按板块</CardDescription>
+            <CardTitle className="text-cyan-300">商品期货 日成交额排行</CardTitle>
+            <CardDescription className="text-cyan-300/70">按板块分组，颜色按板块</CardDescription>
           </CardHeader>
           <CardContent>
             {loadingChoiceHeatmap ? (
@@ -949,19 +991,21 @@ export default function FuturesMarketPage() {
                       data: colored,
                       nodeClick: "zoomToNode",
                       leafDepth: 1,
-                      label: { show: true },
-                      upperLabel: { show: true },
+                      label: { show: true, color: "#c8fbff" },
+                      upperLabel: { show: true, color: "#c8fbff" },
                       roam: false,
                       breadcrumb: {
                         show: true,
                         left: "5%",
                         top: 10,
                         height: 28,
+                        itemStyle: { color: "#0a1f2b", borderColor: "#00e5ff" },
+                        textStyle: { color: "#94f0ff" },
                       },
                     },
                   ],
                 }
-                return <ReactECharts option={option} style={{ height: 540 }} notMerge lazyUpdate />
+                return <ReactECharts option={neonifyOption(option)} style={{ height: 540 }} notMerge lazyUpdate />
               })()
             ) : (
               <div className="text-sm text-muted-foreground">暂无数据</div>

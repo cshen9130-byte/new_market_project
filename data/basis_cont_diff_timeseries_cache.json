@@ -1,6 +1,6 @@
 {
   "start_date": "20230101",
-  "end_date": "20260123",
+  "end_date": "20260126",
   "data": {
     "IH": {
       "L": [
@@ -4455,6 +4455,12 @@
           "basis_diff": 4.20699999999988,
           "spot_close": 3032.193,
           "futures_settle": 3036.4
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": 9.8128999999999,
+          "spot_close": 3049.5871,
+          "futures_settle": 3059.4
         }
       ],
       "L1": [
@@ -8909,6 +8915,12 @@
           "basis_diff": 10.20699999999988,
           "spot_close": 3032.193,
           "futures_settle": 3042.4
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": 14.412899999999809,
+          "spot_close": 3049.5871,
+          "futures_settle": 3064
         }
       ],
       "L2": [
@@ -13363,6 +13375,12 @@
           "basis_diff": 9.606999999999971,
           "spot_close": 3032.193,
           "futures_settle": 3041.8
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": 15.412899999999809,
+          "spot_close": 3049.5871,
+          "futures_settle": 3065
         }
       ],
       "L3": [
@@ -17817,6 +17835,12 @@
           "basis_diff": -21.593000000000302,
           "spot_close": 3032.193,
           "futures_settle": 3010.6
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -14.78710000000001,
+          "spot_close": 3049.5871,
+          "futures_settle": 3034.8
         }
       ]
     },
@@ -22273,6 +22297,12 @@
           "basis_diff": 6.703399999999419,
           "spot_close": 4702.4966,
           "futures_settle": 4709.2
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": 15.435999999999694,
+          "spot_close": 4706.964,
+          "futures_settle": 4722.4
         }
       ],
       "L1": [
@@ -26727,6 +26757,12 @@
           "basis_diff": 11.903399999999237,
           "spot_close": 4702.4966,
           "futures_settle": 4714.4
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": 20.83600000000024,
+          "spot_close": 4706.964,
+          "futures_settle": 4727.8
         }
       ],
       "L2": [
@@ -31181,6 +31217,12 @@
           "basis_diff": -12.096600000000763,
           "spot_close": 4702.4966,
           "futures_settle": 4690.4
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": 2.036000000000058,
+          "spot_close": 4706.964,
+          "futures_settle": 4709
         }
       ],
       "L3": [
@@ -35635,6 +35677,12 @@
           "basis_diff": -64.89660000000003,
           "spot_close": 4702.4966,
           "futures_settle": 4637.6
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -43.764000000000124,
+          "spot_close": 4706.964,
+          "futures_settle": 4663.2
         }
       ]
     },
@@ -40091,6 +40139,12 @@
           "basis_diff": 26.834100000000035,
           "spot_close": 8590.1659,
           "futures_settle": 8617
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -1.2932000000000698,
+          "spot_close": 8506.6932,
+          "futures_settle": 8505.4
         }
       ],
       "L1": [
@@ -44545,6 +44599,12 @@
           "basis_diff": 27.834100000000035,
           "spot_close": 8590.1659,
           "futures_settle": 8618
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -13.693199999999706,
+          "spot_close": 8506.6932,
+          "futures_settle": 8493
         }
       ],
       "L2": [
@@ -48999,6 +49059,12 @@
           "basis_diff": -52.76590000000033,
           "spot_close": 8590.1659,
           "futures_settle": 8537.4
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -94.29320000000007,
+          "spot_close": 8506.6932,
+          "futures_settle": 8412.4
         }
       ],
       "L3": [
@@ -53453,6 +53519,12 @@
           "basis_diff": -148.76590000000033,
           "spot_close": 8590.1659,
           "futures_settle": 8441.4
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -200.6931999999997,
+          "spot_close": 8506.6932,
+          "futures_settle": 8306
         }
       ]
     },
@@ -57909,6 +57981,12 @@
           "basis_diff": 18.456200000000536,
           "spot_close": 8470.7438,
           "futures_settle": 8489.2
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -17.23449999999866,
+          "spot_close": 8365.4345,
+          "futures_settle": 8348.2
         }
       ],
       "L1": [
@@ -62363,6 +62441,12 @@
           "basis_diff": 8.656199999999444,
           "spot_close": 8470.7438,
           "futures_settle": 8479.4
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -53.834499999999025,
+          "spot_close": 8365.4345,
+          "futures_settle": 8311.6
         }
       ],
       "L2": [
@@ -66817,6 +66901,12 @@
           "basis_diff": -143.14379999999983,
           "spot_close": 8470.7438,
           "futures_settle": 8327.6
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -203.23449999999957,
+          "spot_close": 8365.4345,
+          "futures_settle": 8162.2
         }
       ],
       "L3": [
@@ -71271,6 +71361,12 @@
           "basis_diff": -300.1437999999998,
           "spot_close": 8470.7438,
           "futures_settle": 8170.6
+        },
+        {
+          "date": "2026-01-26",
+          "basis_diff": -367.4344999999994,
+          "spot_close": 8365.4345,
+          "futures_settle": 7998
         }
       ]
     }

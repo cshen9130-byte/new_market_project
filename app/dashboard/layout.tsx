@@ -2,16 +2,19 @@
 
 import type React from "react"
 import { useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { authService } from "@/lib/auth"
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
+  const pathname = usePathname()
   useEffect(() => {
     const current = authService.getCurrentUser()
-    if (!current) {
+    // Allow admin route to render its own unauthorized view without auto-redirect
+    const isAdminRoute = pathname === "/dashboard/admin"
+    if (!current && !isAdminRoute) {
       router.replace("/login")
     }
-  }, [router])
+  }, [router, pathname])
   return <>{children}</>
 }

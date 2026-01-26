@@ -2,6 +2,7 @@
 
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { useEffect, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { MoreVertical } from "lucide-react"
@@ -57,215 +58,187 @@ export default function FuturesMarketPage() {
   const [loadingChoiceHeatmap, setLoadingChoiceHeatmap] = useState(true)
   const [errorChoiceHeatmap, setErrorChoiceHeatmap] = useState<string | null>(null)
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/nanhua")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorNhci("数据不可用")
-        } else if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
-          setNhci(json.data)
-        } else {
-          setErrorNhci("数据不可用")
-        }
-      } catch (e) {
-        setErrorNhci("数据不可用")
-      } finally {
-        setLoadingNhci(false)
-      }
-    }
-    run()
-  }, [])
+  const q = (force: boolean) => (force ? "?force=1" : "")
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/basis/far")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorBasis("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setBasisFar(json.data)
-        } else {
-          setErrorBasis("数据不可用")
-        }
-      } catch (e) {
-        setErrorBasis("数据不可用")
-      } finally {
-        setLoadingBasis(false)
-      }
+  const reloadNhci = async (force = false) => {
+    setLoadingNhci(true)
+    setErrorNhci(null)
+    try {
+      const res = await fetch(`/ma/api/nanhua${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorNhci("数据不可用")
+      else if (json?.data && Array.isArray(json.data) && json.data.length > 0) setNhci(json.data)
+      else setErrorNhci("数据不可用")
+    } catch {
+      setErrorNhci("数据不可用")
+    } finally {
+      setLoadingNhci(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/basis/near")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorBasisNear("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setBasisNear(json.data)
-        } else {
-          setErrorBasisNear("数据不可用")
-        }
-      } catch (e) {
-        setErrorBasisNear("数据不可用")
-      } finally {
-        setLoadingBasisNear(false)
-      }
+  const reloadBasisFar = async (force = false) => {
+    setLoadingBasis(true)
+    setErrorBasis(null)
+    try {
+      const res = await fetch(`/ma/api/basis/far${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasis("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisFar(json.data)
+      else setErrorBasis("数据不可用")
+    } catch {
+      setErrorBasis("数据不可用")
+    } finally {
+      setLoadingBasis(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/basis/timeseries")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorBasisTs("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setBasisTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
-        } else {
-          setErrorBasisTs("数据不可用")
-        }
-      } catch (e) {
-        setErrorBasisTs("数据不可用")
-      } finally {
-        setLoadingBasisTs(false)
-      }
+  const reloadBasisNear = async (force = false) => {
+    setLoadingBasisNear(true)
+    setErrorBasisNear(null)
+    try {
+      const res = await fetch(`/ma/api/basis/near${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisNear("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisNear(json.data)
+      else setErrorBasisNear("数据不可用")
+    } catch {
+      setErrorBasisNear("数据不可用")
+    } finally {
+      setLoadingBasisNear(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/basis/diff-timeseries")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorBasisDiffTs("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setBasisDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
-        } else {
-          setErrorBasisDiffTs("数据不可用")
-        }
-      } catch (e) {
-        setErrorBasisDiffTs("数据不可用")
-      } finally {
-        setLoadingBasisDiffTs(false)
-      }
+  const reloadBasisTs = async (force = false) => {
+    setLoadingBasisTs(true)
+    setErrorBasisTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisTs("数据不可用")
+    } catch {
+      setErrorBasisTs("数据不可用")
+    } finally {
+      setLoadingBasisTs(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/basis/near-timeseries")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorBasisNearTs("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setBasisNearTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
-        } else {
-          setErrorBasisNearTs("数据不可用")
-        }
-      } catch (e) {
-        setErrorBasisNearTs("数据不可用")
-      } finally {
-        setLoadingBasisNearTs(false)
-      }
+  const reloadBasisDiffTs = async (force = false) => {
+    setLoadingBasisDiffTs(true)
+    setErrorBasisDiffTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/diff-timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisDiffTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisDiffTs("数据不可用")
+    } catch {
+      setErrorBasisDiffTs("数据不可用")
+    } finally {
+      setLoadingBasisDiffTs(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/basis/near-diff-timeseries")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorBasisNearDiffTs("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setBasisNearDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
-        } else {
-          setErrorBasisNearDiffTs("数据不可用")
-        }
-      } catch (e) {
-        setErrorBasisNearDiffTs("数据不可用")
-      } finally {
-        setLoadingBasisNearDiffTs(false)
-      }
+  const reloadBasisNearTs = async (force = false) => {
+    setLoadingBasisNearTs(true)
+    setErrorBasisNearTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/near-timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisNearTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisNearTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisNearTs("数据不可用")
+    } catch {
+      setErrorBasisNearTs("数据不可用")
+    } finally {
+      setLoadingBasisNearTs(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/basis/cont-diff-timeseries")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorBasisContDiffTs("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setBasisContDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
-        } else {
-          setErrorBasisContDiffTs("数据不可用")
-        }
-      } catch (e) {
-        setErrorBasisContDiffTs("数据不可用")
-      } finally {
-        setLoadingBasisContDiffTs(false)
-      }
+  const reloadBasisNearDiffTs = async (force = false) => {
+    setLoadingBasisNearDiffTs(true)
+    setErrorBasisNearDiffTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/near-diff-timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisNearDiffTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisNearDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisNearDiffTs("数据不可用")
+    } catch {
+      setErrorBasisNearDiffTs("数据不可用")
+    } finally {
+      setLoadingBasisNearDiffTs(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/choice/amount-heatmap")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorChoiceHeatmap("数据不可用")
-        } else if (json?.data && Array.isArray(json.data)) {
-          setChoiceHeatmap(json)
-        } else {
-          setErrorChoiceHeatmap("数据不可用")
-        }
-      } catch (e) {
-        setErrorChoiceHeatmap("数据不可用")
-      } finally {
-        setLoadingChoiceHeatmap(false)
-      }
+  const reloadFutLatest = async (force = false) => {
+    setLoadingFut(true)
+    setErrorFut(null)
+    try {
+      const res = await fetch(`/ma/api/futures/latest${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorFut("数据不可用")
+      else if (json?.data && typeof json.data === "object") setFutLatest(json.data)
+      else setErrorFut("数据不可用")
+    } catch {
+      setErrorFut("数据不可用")
+    } finally {
+      setLoadingFut(false)
     }
-    run()
-  }, [])
+  }
 
-  useEffect(() => {
-    const run = async () => {
-      try {
-        const res = await fetch("/ma/api/futures/latest")
-        const json = await res.json()
-        if (json?.error) {
-          setErrorFut("数据不可用")
-        } else if (json?.data && typeof json.data === "object") {
-          setFutLatest(json.data)
-        } else {
-          setErrorFut("数据不可用")
-        }
-      } catch (e) {
-        setErrorFut("数据不可用")
-      } finally {
-        setLoadingFut(false)
-      }
+  const reloadBasisContDiffTs = async (force = false) => {
+    setLoadingBasisContDiffTs(true)
+    setErrorBasisContDiffTs(null)
+    try {
+      const res = await fetch(`/ma/api/basis/cont-diff-timeseries${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorBasisContDiffTs("数据不可用")
+      else if (json?.data && typeof json.data === "object") setBasisContDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
+      else setErrorBasisContDiffTs("数据不可用")
+    } catch {
+      setErrorBasisContDiffTs("数据不可用")
+    } finally {
+      setLoadingBasisContDiffTs(false)
     }
-    run()
-  }, [])
+  }
+
+  const reloadChoiceHeatmap = async (force = false) => {
+    setLoadingChoiceHeatmap(true)
+    setErrorChoiceHeatmap(null)
+    try {
+      const res = await fetch(`/ma/api/choice/amount-heatmap${q(force)}`)
+      const json = await res.json()
+      if (json?.error) setErrorChoiceHeatmap("数据不可用")
+      else if (json?.data && Array.isArray(json.data)) setChoiceHeatmap(json)
+      else setErrorChoiceHeatmap("数据不可用")
+    } catch {
+      setErrorChoiceHeatmap("数据不可用")
+    } finally {
+      setLoadingChoiceHeatmap(false)
+    }
+  }
+
+  useEffect(() => { reloadNhci(false) }, [])
+
+  useEffect(() => { reloadBasisFar(false) }, [])
+
+  useEffect(() => { reloadBasisNear(false) }, [])
+
+  useEffect(() => { reloadBasisTs(false) }, [])
+
+  useEffect(() => { reloadBasisDiffTs(false) }, [])
+
+  useEffect(() => { reloadBasisNearTs(false) }, [])
+
+  useEffect(() => { reloadBasisNearDiffTs(false) }, [])
+
+  useEffect(() => { reloadBasisContDiffTs(false) }, [])
+
+  useEffect(() => { reloadChoiceHeatmap(false) }, [])
+
+  useEffect(() => { reloadFutLatest(false) }, [])
   return (
     <div className="space-y-6">
       <div>
@@ -277,8 +250,16 @@ export default function FuturesMarketPage() {
       <div className="max-w-[760px] w-full">
         <Card>
           <CardHeader>
-            <CardTitle>南华商品指数</CardTitle>
-            <CardDescription>去年至今每日收盘价</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>南华商品指数</CardTitle>
+                <CardDescription>去年至今每日收盘价</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadNhci(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadNhci(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingNhci ? (
@@ -322,8 +303,16 @@ export default function FuturesMarketPage() {
       <div className="grid gap-6 md:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>远月期指</CardTitle>
-            <CardDescription>最新交易日主力合约收盘与结算涨跌幅</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>远月期指</CardTitle>
+                <CardDescription>最新交易日主力合约收盘与结算涨跌幅</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadFutLatest(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadFutLatest(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingFut ? (
@@ -379,8 +368,16 @@ export default function FuturesMarketPage() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>远月年化基差率</CardTitle>
-            <CardDescription>基于最新交易日远月合约与现货</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>远月年化基差率</CardTitle>
+                <CardDescription>基于最新交易日远月合约与现货</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadBasisFar(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadBasisFar(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingBasis ? (
@@ -438,8 +435,16 @@ export default function FuturesMarketPage() {
       <div className="w-full">
         <Card>
           <CardHeader>
-            <CardTitle>远月年化基差率时序</CardTitle>
-            <CardDescription>自2023-01-01至今，主连结算与现货</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>远月年化基差率时序</CardTitle>
+                <CardDescription>自2023-01-01至今，主连结算与现货</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadBasisTs(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadBasisTs(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingBasisTs ? (
@@ -497,8 +502,16 @@ export default function FuturesMarketPage() {
       <div className="w-full">
         <Card>
           <CardHeader>
-            <CardTitle>远月基差时序</CardTitle>
-            <CardDescription>自2023-01-01至今，主连结算 - 现货收盘</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>远月基差时序</CardTitle>
+                <CardDescription>自2023-01-01至今，主连结算 - 现货收盘</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadBasisDiffTs(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadBasisDiffTs(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingBasisDiffTs ? (
@@ -556,10 +569,18 @@ export default function FuturesMarketPage() {
       <div className="w-full">
         <div className="grid gap-6 md:grid-cols-2">
           <Card>
-            <CardHeader>
-              <CardTitle>近月期指</CardTitle>
-              <CardDescription>最新交易日当月连续收盘与结算涨跌幅</CardDescription>
-            </CardHeader>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>近月期指</CardTitle>
+                    <CardDescription>最新交易日当月连续收盘与结算涨跌幅</CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => reloadFutLatest(false)}>用缓存</Button>
+                    <Button variant="default" size="sm" onClick={() => reloadFutLatest(true)}>刷新</Button>
+                  </div>
+                </div>
+              </CardHeader>
             <CardContent>
               {loadingFut ? (
                 <div className="text-sm text-muted-foreground">正在加载…</div>
@@ -614,8 +635,16 @@ export default function FuturesMarketPage() {
           </Card>
             <Card>
               <CardHeader>
-                <CardTitle>近月年化基差率</CardTitle>
-                <CardDescription>基于最新交易日当月连续与现货</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle>近月年化基差率</CardTitle>
+                    <CardDescription>基于最新交易日当月连续与现货</CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => reloadBasisNear(false)}>用缓存</Button>
+                    <Button variant="default" size="sm" onClick={() => reloadBasisNear(true)}>刷新</Button>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
                 {loadingBasisNear ? (
@@ -674,8 +703,16 @@ export default function FuturesMarketPage() {
       <div className="w-full">
         <Card>
           <CardHeader>
-            <CardTitle>近月年化基差率时序</CardTitle>
-            <CardDescription>自2023-01-01至今，当月连续结算与现货</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>近月年化基差率时序</CardTitle>
+                <CardDescription>自2023-01-01至今，当月连续结算与现货</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadBasisNearTs(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadBasisNearTs(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingBasisNearTs ? (
@@ -732,8 +769,16 @@ export default function FuturesMarketPage() {
       <div className="w-full">
         <Card>
           <CardHeader>
-            <CardTitle>近月基差时序</CardTitle>
-            <CardDescription>自2023-01-01至今，当月连续结算 - 现货收盘</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>近月基差时序</CardTitle>
+                <CardDescription>自2023-01-01至今，当月连续结算 - 现货收盘</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadBasisNearDiffTs(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadBasisNearDiffTs(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingBasisNearDiffTs ? (
@@ -795,18 +840,24 @@ export default function FuturesMarketPage() {
                 <CardTitle>四大连续合约基差时序</CardTitle>
                 <CardDescription>当月/次月/当季/下季 结算 - 现货收盘</CardDescription>
               </div>
-              <div className="text-sm">
-                <label className="mr-2 text-muted-foreground">品种</label>
-                <select
-                  className="border rounded px-2 py-1 text-sm"
-                  value={selectedCode}
-                  onChange={(e) => setSelectedCode(e.target.value as any)}
-                >
-                  <option value="IH">IH</option>
-                  <option value="IF">IF</option>
-                  <option value="IC">IC</option>
-                  <option value="IM">IM</option>
-                </select>
+              <div className="flex items-center gap-3">
+                <div className="text-sm">
+                  <label className="mr-2 text-muted-foreground">品种</label>
+                  <select
+                    className="border rounded px-2 py-1 text-sm"
+                    value={selectedCode}
+                    onChange={(e) => setSelectedCode(e.target.value as any)}
+                  >
+                    <option value="IH">IH</option>
+                    <option value="IF">IF</option>
+                    <option value="IC">IC</option>
+                    <option value="IM">IM</option>
+                  </select>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => reloadBasisContDiffTs(false)}>用缓存</Button>
+                  <Button variant="default" size="sm" onClick={() => reloadBasisContDiffTs(true)}>刷新</Button>
+                </div>
               </div>
             </div>
           </CardHeader>
@@ -870,8 +921,16 @@ export default function FuturesMarketPage() {
       <div className="w-full">
         <Card>
           <CardHeader>
-            <CardTitle>商品期货 日成交额排行</CardTitle>
-            <CardDescription>按板块分组，颜色按板块</CardDescription>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>商品期货 日成交额排行</CardTitle>
+                <CardDescription>按板块分组，颜色按板块</CardDescription>
+              </div>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => reloadChoiceHeatmap(false)}>用缓存</Button>
+                <Button variant="default" size="sm" onClick={() => reloadChoiceHeatmap(true)}>刷新</Button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
             {loadingChoiceHeatmap ? (

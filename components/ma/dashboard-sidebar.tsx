@@ -3,7 +3,10 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, FileText } from "lucide-react"
+import type React from "react"
+
+const momReportUrl = (process.env.NEXT_PUBLIC_MOM_REPORT_URL || "/mom_report/report.html?v=debug") as string
 
 const navigation = [
   { name: "总览", href: "/ma/dashboard", icon: LayoutDashboard },
@@ -12,10 +15,13 @@ const navigation = [
   { name: "期货市场", href: "/ma/dashboard/futures-market", icon: Rocket },
   { name: "期权市场", href: "/ma/dashboard/options-market", icon: Target },
   { name: "私募基金", href: "/ma/dashboard/private-funds", icon: Briefcase },
+  // Add cache-busting query to ensure latest assets load in new tab
+  { name: "MOM 风控报告", href: momReportUrl, icon: FileText },
 ]
 
 export function DashboardSidebar() {
   const pathname = usePathname()
+  
 
   return (
     <aside className="w-64 border-r bg-card flex flex-col">
@@ -30,6 +36,9 @@ export function DashboardSidebar() {
             <Link
               key={item.name}
               href={item.href}
+              target={item.name === "MOM 风控报告" ? "_blank" : undefined}
+              rel={item.name === "MOM 风控报告" ? "noopener noreferrer" : undefined}
+              prefetch={item.name === "MOM 风控报告" ? false : undefined}
               className={cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                 isActive
