@@ -121,7 +121,16 @@ if command -v ldd >/dev/null 2>&1; then
   } || echo "Native deps OK"
 fi
 
-# 6) Install node deps and build with low memory
+# 6) Stop running app and kill lingering build processes (low RAM safety)
+pm2 stop "$PM2_APP_NAME" || pm2 stop all || true
+pkill -f "next build" || true
+pkill -f "pnpm build" || true
+pkill -f "node .*next" || true
+
+# Ensure we are in the project root
+cd "$PROJECT_ROOT"
+
+# Install node deps and build with low memory
 # Use --no-frozen-lockfile to avoid failures when package.json changes but lockfile is not yet updated
 NODE_OPTIONS=--max-old-space-size=1024 pnpm install --no-frozen-lockfile
 NODE_OPTIONS=--max-old-space-size=1024 pnpm build
