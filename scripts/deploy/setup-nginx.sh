@@ -44,6 +44,15 @@ if [[ ! -d "$MOM_PATH" ]]; then
   exit 1
 fi
 
+# For nginx to serve files reliably, avoid aliasing into /root; sync to web root
+WEB_MOM_PATH="/var/www/market_dashboard_website/mom_report"
+echo "Syncing MOM report to: $WEB_MOM_PATH"
+mkdir -p "$WEB_MOM_PATH"
+rsync -a --delete "$MOM_PATH"/ "$WEB_MOM_PATH"/
+# Ensure nginx user can traverse/read
+chown -R www-data:www-data "$WEB_MOM_PATH" || true
+chmod -R a+rX "$WEB_MOM_PATH" || true
+
 TEMPLATE="$PROJECT_ROOT/deploy/nginx/market_dashboard_website.conf.template"
 if [[ ! -f "$TEMPLATE" ]]; then
   echo "Template not found: $TEMPLATE" >&2
@@ -57,7 +66,7 @@ TMP_CONF="$(mktemp)"
 sed \
   -e "s#__DOMAIN__#${DOMAIN}#g" \
   -e "s#__APP_PORT__#${APP_PORT}#g" \
-  -e "s#__ABS_MOM_PATH__#${MOM_PATH}#g" \
+  -e "s#__ABS_MOM_PATH__#${WEB_MOM_PATH}#g" \
   "$TEMPLATE" > "$TMP_CONF"
 
 install -Dm644 "$TMP_CONF" "$CONF_OUT"
