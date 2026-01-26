@@ -121,8 +121,9 @@ if command -v ldd >/dev/null 2>&1; then
   } || echo "Native deps OK"
 fi
 
-# 6) Install node deps and build with low memory if needed
-NODE_OPTIONS=--max-old-space-size=1024 pnpm install --frozen-lockfile
+# 6) Install node deps and build with low memory
+# Use --no-frozen-lockfile to avoid failures when package.json changes but lockfile is not yet updated
+NODE_OPTIONS=--max-old-space-size=1024 pnpm install --no-frozen-lockfile
 NODE_OPTIONS=--max-old-space-size=1024 pnpm build
 
 # 7) PM2 start (ecosystem.config.js should read env vars)
