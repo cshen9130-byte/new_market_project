@@ -164,10 +164,12 @@ export async function GET(req: Request) {
   const cachePath = path.join(cacheDir, "basis_cache.json")
   let debugFlag = false
   let forceRecompute = false
+  let preferCache = false
   try {
     const url = new URL(req.url)
     debugFlag = url.searchParams.get("debug") === "1"
     forceRecompute = url.searchParams.get("force") === "1"
+    preferCache = url.searchParams.get("prefer_cache") === "1" || url.searchParams.get("cacheOnly") === "1"
   } catch {}
   let runPyArgs: (script: string, extraEnv?: Record<string, string>) => string[]
   if (isWin && !pythonExe) {
@@ -183,16 +185,26 @@ export async function GET(req: Request) {
   await ensureCacheDir(cacheDir)
   const cache = await readBasisCache(cachePath)
   const latestKey = latestDateKey(cache.entries)
-  if (!forceRecompute && latestKey && latestKey >= expectedYmd) {
-    const entry = cache.entries[latestKey]
-    if (hasCompleteData(entry)) {
-      return NextResponse.json(entry, { status: 200 })
+  if (preferCache) {
+    // Return latest complete cached entry regardless of date
+    const latestComplete = latestCompleteEntry(cache.entries)
+    if (latestComplete) return NextResponse.json(latestComplete.entry, { status: 200 })
+  } else {
+    if (!forceRecompute && latestKey && latestKey >= expectedYmd) {
+      const entry = cache.entries[latestKey]
+      if (hasCompleteData(entry)) {
+        return NextResponse.json(entry, { status: 200 })
+      }
     }
   }
 
   // Futures far-month data
   const futRes = await runPython(futScript, runPyArgs(futScript), { ...env, TUSHARE_TOKEN: process.env.TUSHARE_TOKEN })
-  if (futRes?.error) return NextResponse.json(futRes, { status: 500 })
+  if (futRes?.error) {
+    const latestComplete = latestCompleteEntry(cache.entries)
+    if (latestComplete) return NextResponse.json(latestComplete.entry, { status: 200 })
+    return NextResponse.json(futRes, { status: 500 })
+  }
   const tradeDateYmd: string = futRes?.trade_date
   const tradeDateIso = ymdToIso(tradeDateYmd)
 
@@ -213,6 +225,8 @@ export async function GET(req: Request) {
       SPOT_TRADE_DATE: tradeDateIso,
     })
     if (tsRes?.error) {
+      const latestComplete2 = latestCompleteEntry(cache.entries)
+      if (latestComplete2) return NextResponse.json(latestComplete2.entry, { status: 200 })
       return NextResponse.json(tsRes, { status: 500 })
     }
     spotRes = tsRes

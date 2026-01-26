@@ -34,6 +34,7 @@ function expectedTradeDate(): string {
 export async function GET(req: Request) {
   const url = new URL(req.url)
   const force = url.searchParams.get("force") === "1"
+  const preferCache = url.searchParams.get("prefer_cache") === "1" || url.searchParams.get("cacheOnly") === "1"
   const env = {
     ...process.env,
     TUSHARE_TOKEN: process.env.TUSHARE_TOKEN,
@@ -60,13 +61,19 @@ export async function GET(req: Request) {
   const cacheDir = process.env.FUTURES_CACHE_DIR || path.join(process.cwd(), "data")
   const cacheFile = path.join(cacheDir, "futures_cache.json")
   try {
-    if (!force) {
-      const txt = await fs.readFile(cacheFile, "utf-8")
-      const json = JSON.parse(txt)
+    const txt = await fs.readFile(cacheFile, "utf-8")
+    const json = JSON.parse(txt)
+    const codes = ["IH", "IF", "IC", "IM"]
+    if (preferCache) {
+      // Return the latest cached day with data
+      const keys = Object.keys(json).sort()
+      const latest = keys.at(-1)
+      if (latest && json[latest] && codes.every((c) => json[latest][c])) {
+        return NextResponse.json({ exchange: "CFFEX", trade_date: latest, data: json[latest] })
+      }
+    } else if (!force) {
       const dayData = json?.[expected]
-      const codes = ["IH", "IF", "IC", "IM"]
       if (dayData && codes.every((c) => dayData[c])) {
-        // If cached data lacks new near/far fields, treat as stale and recompute
         const hasNear = codes.every((c) => dayData[c]?.near_settle != null || dayData[c]?.near_close != null)
         const hasFar = codes.every((c) => dayData[c]?.far_settle != null || dayData[c]?.far_close != null)
         if (hasNear && hasFar) {
@@ -118,6 +125,17 @@ export async function GET(req: Request) {
   })
 
   if (result?.error) {
+    // Fallback to latest cached content if available
+    try {
+      const txt = await fs.readFile(cacheFile, "utf-8")
+      const json = JSON.parse(txt)
+      const keys = Object.keys(json).sort()
+      const latest = keys.at(-1)
+      const codes = ["IH", "IF", "IC", "IM"]
+      if (latest && json[latest] && codes.every((c) => json[latest][c])) {
+        return NextResponse.json({ exchange: "CFFEX", trade_date: latest, data: json[latest] })
+      }
+    } catch {}
     return NextResponse.json(result, { status: 500 })
   }
 

@@ -75,10 +75,12 @@ export async function GET(req: Request) {
   const expectedYmd = expectedTradeDate()
   let debugFlag = false
   let forceRecompute = false
+  let preferCache = false
   try {
     const url = new URL(req.url)
     debugFlag = url.searchParams.get("debug") === "1"
     forceRecompute = url.searchParams.get("force") === "1"
+    preferCache = url.searchParams.get("prefer_cache") === "1" || url.searchParams.get("cacheOnly") === "1"
   } catch {}
 
   const runArgs = (script: string, arg1?: string, arg2?: string) => {
@@ -89,15 +91,20 @@ export async function GET(req: Request) {
     return [exe as string, script, ...(arg1 ? [arg1] : []), ...(arg2 ? [arg2] : [])]
   }
 
-  // Cache-first: if cache end_date >= expected trading day and has data, return it (unless forced)
+  // Cache-first: if preferCache, return any cache; otherwise require freshness
   try {
     await fs.promises.mkdir(cacheDir, { recursive: true })
     const buf = await fs.promises.readFile(cachePath, "utf-8").catch(() => "")
-    if (buf && !forceRecompute) {
+    if (buf) {
       const obj = JSON.parse(buf)
       const end: string | undefined = obj?.end_date || obj?.end
-      if (end && end >= expectedYmd && obj?.data) {
+      if (preferCache && obj?.data) {
         return NextResponse.json(obj, { status: 200 })
+      }
+      if (!forceRecompute) {
+        if (end && end >= expectedYmd && obj?.data) {
+          return NextResponse.json(obj, { status: 200 })
+        }
       }
     }
   } catch {}
@@ -108,14 +115,32 @@ export async function GET(req: Request) {
   const endIso = ymdToIso(endYmd)
 
   const futRes = await runPython(runArgs(futScript, startYmd, endYmd), { ...env, TUSHARE_TOKEN: process.env.TUSHARE_TOKEN || "" })
-  if (futRes?.error) return NextResponse.json(futRes, { status: 500 })
+  if (futRes?.error) {
+    try {
+      const buf = await fs.promises.readFile(cachePath, "utf-8").catch(() => "")
+      if (buf) {
+        const obj = JSON.parse(buf)
+        if (obj?.data) return NextResponse.json(obj, { status: 200 })
+      }
+    } catch {}
+    return NextResponse.json(futRes, { status: 500 })
+  }
   const spotRes = await runPython(runArgs(spotScript, startIso, endIso), {
     ...env,
     EMQ_USERNAME: process.env.EMQ_USERNAME || "",
     EMQ_PASSWORD: process.env.EMQ_PASSWORD || "",
     EMQ_OPTIONS_EXTRA: process.env.EMQ_OPTIONS_EXTRA || "",
   })
-  if (spotRes?.error) return NextResponse.json(spotRes, { status: 500 })
+  if (spotRes?.error) {
+    try {
+      const buf = await fs.promises.readFile(cachePath, "utf-8").catch(() => "")
+      if (buf) {
+        const obj = JSON.parse(buf)
+        if (obj?.data) return NextResponse.json(obj, { status: 200 })
+      }
+    } catch {}
+    return NextResponse.json(spotRes, { status: 500 })
+  }
 
   const codes = ["IH", "IF", "IC", "IM"]
   const out: any = { start_date: startYmd, end_date: endYmd, data: {} }
