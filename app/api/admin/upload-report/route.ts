@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { writeFile, mkdir, stat, rename } from "fs/promises"
 import { existsSync } from "fs"
 import path from "path"
+import { spawn } from "child_process"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -39,6 +40,16 @@ export async function POST(req: Request) {
 
     const buf = Buffer.from(await file.arrayBuffer())
     await writeFile(targetFile, buf)
+    // Best-effort sync to the Nginx-served path if present (avoids stale content)
+    const webMomPath = process.env.MOM_REPORT_WEB_ROOT || "/var/www/market_dashboard_website/mom_report"
+    try {
+      const webTarget = path.join(webMomPath, "report.html")
+      // Write directly if we have permission
+      await mkdir(webMomPath, { recursive: true })
+      await writeFile(webTarget, buf)
+    } catch (e) {
+      // Ignore permission errors; ops script will sync on deploy
+    }
 
     return NextResponse.json({ ok: true, path: "/mom_report/report.html", size: buf.length })
   } catch (e: any) {

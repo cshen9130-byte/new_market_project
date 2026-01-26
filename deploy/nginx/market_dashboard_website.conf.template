@@ -1,6 +1,8 @@
 server {
     listen 80;
     server_name __DOMAIN__;
+    # Allow larger uploads (report.html can be big)
+    client_max_body_size 20m;
 
     # Proxy Next.js app (running with pm2 on localhost)
     location / {
