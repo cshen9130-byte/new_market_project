@@ -46,6 +46,7 @@ yarn-error.log*
 
 # env files
 .env*
+!.env.production.example
 /.choice_env.sh
 
 # Server-only vendor assets

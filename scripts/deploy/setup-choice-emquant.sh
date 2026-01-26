@@ -62,13 +62,17 @@ if [[ ! -d "$PROJECT_ROOT/.venv" ]]; then
   if [[ $VENV_CREATE_RC -ne 0 || ! -f "$PROJECT_ROOT/.venv/bin/python" ]]; then
     echo "Failed to create venv using $PY_CMD -m venv. Trying virtualenv..."
     "$PY_CMD" -m pip install --user virtualenv >/dev/null 2>&1 || true
-    "$PY_CMD" -m virtualenv "$PROJECT_ROOT/.venv" || {
-      echo "Virtualenv fallback failed. Ensure python3-venv or virtualenv is installed (e.g., apt install python3-venv)."; exit 1;
-    }
+    "$PY_CMD" -m virtualenv "$PROJECT_ROOT/.venv" || echo "virtualenv fallback not available; proceeding without venv"
   fi
 fi
 VENV_PY="$PROJECT_ROOT/.venv/bin/python"
-"$VENV_PY" -m pip install --upgrade pip
+if [[ -x "$VENV_PY" ]]; then
+  "$VENV_PY" -m pip install --upgrade pip || true
+else
+  echo "Venv python not found; proceeding with system $PY_CMD"
+  VENV_PY="$PY_CMD"
+  "$VENV_PY" -m pip install --upgrade pip || true
+fi
 
 # 2) Download EmQuant API package (idempotent)
 EMQ_DIR="$PROJECT_ROOT/EMQuantAPI_Python"
@@ -90,7 +94,11 @@ fi
 # 4) Export environment vars to a profile.d file for PM2 and shell logins
 LIB_DIR="$EMQ_DIR/EMQuantAPI_Python/python3/libs/linux/x64"
 PY_PATH="$EMQ_DIR/EMQuantAPI_Python/python3"
-PY_EXE_PATH="${PYTHON_EXE:-$PROJECT_ROOT/.venv/bin/python3}"
+if [[ -x "$PROJECT_ROOT/.venv/bin/python3" ]]; then
+  PY_EXE_PATH="${PYTHON_EXE:-$PROJECT_ROOT/.venv/bin/python3}"
+else
+  PY_EXE_PATH="${PYTHON_EXE:-$PY_CMD}"
+fi
 
 cat > "$PROJECT_ROOT/.choice_env.sh" <<EOF
 export EMQ_USERNAME="$EMQ_USERNAME"
