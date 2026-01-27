@@ -82,7 +82,11 @@ export default function AdminAccountsPage() {
   async function handleDelete(id: string) {
     const ok = window.confirm("确认删除该用户？")
     if (!ok) return
-    await authService.deleteUser(id)
+    const res = await authService.deleteUser(id)
+    if (!res.success) {
+      setError(res.error || "删除失败")
+      return
+    }
     if (editingId === id) cancelEdit()
     refreshUsers()
   }
