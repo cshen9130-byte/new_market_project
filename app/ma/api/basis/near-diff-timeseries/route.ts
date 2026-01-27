@@ -65,6 +65,7 @@ async function runPython(args: string[], env: NodeJS.ProcessEnv): Promise<any> {
 }
 
 export async function GET(req: Request) {
+  const json = (payload: any, status = 200) => NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } })
   const env = { ...process.env }
   const isWin = process.platform === "win32"
   let pythonExe = process.env.PYTHON_EXE
@@ -98,11 +99,11 @@ export async function GET(req: Request) {
       const obj = JSON.parse(buf)
       const end: string | undefined = obj?.end_date || obj?.end
       if (preferCache && obj?.data) {
-        return NextResponse.json(obj, { status: 200 })
+        return json(obj, 200)
       }
       if (!forceRecompute) {
         if (end && end >= expectedYmd && obj?.data) {
-          return NextResponse.json(obj, { status: 200 })
+          return json(obj, 200)
         }
       }
     }
@@ -119,10 +120,10 @@ export async function GET(req: Request) {
       const buf = await fs.promises.readFile(cachePath, "utf-8").catch(() => "")
       if (buf) {
         const obj = JSON.parse(buf)
-        if (obj?.data) return NextResponse.json(obj, { status: 200 })
+        if (obj?.data) return json(obj, 200)
       }
     } catch {}
-    return NextResponse.json(futRes, { status: 500 })
+    return json(futRes, 500)
   }
   const spotRes = await runPython(runArgs(spotScript, startIso, endIso), {
     ...env,
@@ -135,10 +136,10 @@ export async function GET(req: Request) {
       const buf = await fs.promises.readFile(cachePath, "utf-8").catch(() => "")
       if (buf) {
         const obj = JSON.parse(buf)
-        if (obj?.data) return NextResponse.json(obj, { status: 200 })
+        if (obj?.data) return json(obj, 200)
       }
     } catch {}
-    return NextResponse.json(spotRes, { status: 500 })
+    return json(spotRes, 500)
   }
 
   const codes = ["IH", "IF", "IC", "IM"]
@@ -189,5 +190,5 @@ export async function GET(req: Request) {
 
   const payloadBase = { ...out }
   const payload = debugFlag ? { ...payloadBase, debug_inputs: debugInputs } : payloadBase
-  return NextResponse.json(payload, { status: 200 })
+  return json(payload, 200)
 }

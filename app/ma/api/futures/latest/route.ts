@@ -32,6 +32,8 @@ function expectedTradeDate(): string {
 }
 
 export async function GET(req: Request) {
+  const jsonResp = (payload: any, status = 200) =>
+    NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } })
   const url = new URL(req.url)
   const force = url.searchParams.get("force") === "1"
   const preferCache = url.searchParams.get("prefer_cache") === "1" || url.searchParams.get("cacheOnly") === "1"
@@ -70,6 +72,7 @@ export async function GET(req: Request) {
       const latest = keys.at(-1)
       if (latest && json[latest] && codes.every((c) => json[latest][c])) {
         return NextResponse.json({ exchange: "CFFEX", trade_date: latest, data: json[latest] })
+        return jsonResp({ exchange: "CFFEX", trade_date: latest as string, data: (json as any)[latest as string] })
       }
     } else if (!force) {
       const dayData = json?.[expected]
@@ -78,6 +81,7 @@ export async function GET(req: Request) {
         const hasFar = codes.every((c) => dayData[c]?.far_settle != null || dayData[c]?.far_close != null)
         if (hasNear && hasFar) {
           return NextResponse.json({ exchange: "CFFEX", trade_date: expected, data: dayData })
+                  return jsonResp({ exchange: "CFFEX", trade_date: expected, data: dayData })
         }
       }
     }
@@ -135,8 +139,9 @@ export async function GET(req: Request) {
       if (latest && json[latest] && codes.every((c) => json[latest][c])) {
         return NextResponse.json({ exchange: "CFFEX", trade_date: latest, data: json[latest] })
       }
+        return jsonResp({ exchange: "CFFEX", trade_date: latest as string, data: (json as any)[latest as string] })
     } catch {}
-    return NextResponse.json(result, { status: 500 })
+    return jsonResp(result, 500)
   }
 
   // Write result to local cache file
@@ -152,4 +157,5 @@ export async function GET(req: Request) {
   } catch {}
 
   return NextResponse.json(result, { status: 200 })
+  return jsonResp(result, 200)
 }

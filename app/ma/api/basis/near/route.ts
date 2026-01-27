@@ -152,6 +152,7 @@ function latestCompleteEntry(entries: Record<string, any>): { key: string; entry
 }
 
 export async function GET(req: Request) {
+  const json = (payload: any, status = 200) => NextResponse.json(payload, { status, headers: { "Cache-Control": "no-store" } })
   const env = { ...process.env }
   const isWin = process.platform === "win32"
   let pythonExe = process.env.PYTHON_EXE
@@ -183,12 +184,12 @@ export async function GET(req: Request) {
   const latestKey = latestDateKey(cache.entries)
   if (preferCache) {
     const latestComplete = latestCompleteEntry(cache.entries)
-    if (latestComplete) return NextResponse.json(latestComplete.entry, { status: 200 })
+    if (latestComplete) return json(latestComplete.entry, 200)
   } else {
     if (!forceRecompute && latestKey && latestKey >= expectedYmd) {
       const entry = cache.entries[latestKey]
       if (hasCompleteData(entry)) {
-        return NextResponse.json(entry, { status: 200 })
+        return json(entry, 200)
       }
     }
   }
@@ -197,8 +198,8 @@ export async function GET(req: Request) {
   const futRes = await runPython(futScript, runPyArgs(futScript), { ...env, TUSHARE_TOKEN: process.env.TUSHARE_TOKEN })
   if (futRes?.error) {
     const latestComplete = latestCompleteEntry(cache.entries)
-    if (latestComplete) return NextResponse.json(latestComplete.entry, { status: 200 })
-    return NextResponse.json(futRes, { status: 500 })
+    if (latestComplete) return json(latestComplete.entry, 200)
+    return json(futRes, 500)
   }
   const tradeDateYmd: string = futRes?.trade_date
   const tradeDateIso = ymdToIso(tradeDateYmd)
@@ -220,8 +221,8 @@ export async function GET(req: Request) {
     })
     if (tsRes?.error) {
       const latestComplete2 = latestCompleteEntry(cache.entries)
-      if (latestComplete2) return NextResponse.json(latestComplete2.entry, { status: 200 })
-      return NextResponse.json(tsRes, { status: 500 })
+      if (latestComplete2) return json(latestComplete2.entry, 200)
+      return json(tsRes, 500)
     }
     spotRes = tsRes
   }
@@ -284,8 +285,8 @@ export async function GET(req: Request) {
     const latestComplete = latestCompleteEntry(cache.entries)
     if (latestComplete) {
       const stale = { ...latestComplete.entry, stale_from: latestComplete.key }
-      return NextResponse.json(stale, { status: 200 })
+      return json(stale, 200)
     }
   }
-  return NextResponse.json(entry, { status: 200 })
+  return json(entry, 200)
 }
