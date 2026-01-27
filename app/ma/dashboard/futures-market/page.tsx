@@ -58,14 +58,14 @@ export default function FuturesMarketPage() {
   const [loadingChoiceHeatmap, setLoadingChoiceHeatmap] = useState(true)
   const [errorChoiceHeatmap, setErrorChoiceHeatmap] = useState<string | null>(null)
 
-  const q = (force: boolean) => (force ? "?force=1" : "")
+  const q = (force: boolean) => (force ? `?force=1&_=${Date.now()}` : "")
   const qc = () => "?prefer_cache=1"
 
   const reloadNhci = async (force = false) => {
     setLoadingNhci(true)
     setErrorNhci(null)
     try {
-      const res = await fetch(`/ma/api/nanhua${q(force)}`)
+      const res = await fetch(`/ma/api/nanhua${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorNhci("数据不可用")
       else if (json?.data && Array.isArray(json.data) && json.data.length > 0) setNhci(json.data)
@@ -81,7 +81,7 @@ export default function FuturesMarketPage() {
     setLoadingBasis(true)
     setErrorBasis(null)
     try {
-      const res = await fetch(`/ma/api/basis/far${q(force)}`)
+      const res = await fetch(`/ma/api/basis/far${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorBasis("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisFar(json.data)
@@ -113,7 +113,7 @@ export default function FuturesMarketPage() {
     setLoadingBasisNear(true)
     setErrorBasisNear(null)
     try {
-      const res = await fetch(`/ma/api/basis/near${q(force)}`)
+      const res = await fetch(`/ma/api/basis/near${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorBasisNear("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisNear(json.data)
@@ -145,7 +145,7 @@ export default function FuturesMarketPage() {
     setLoadingBasisTs(true)
     setErrorBasisTs(null)
     try {
-      const res = await fetch(`/ma/api/basis/timeseries${q(force)}`)
+      const res = await fetch(`/ma/api/basis/timeseries${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorBasisTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -177,7 +177,7 @@ export default function FuturesMarketPage() {
     setLoadingBasisDiffTs(true)
     setErrorBasisDiffTs(null)
     try {
-      const res = await fetch(`/ma/api/basis/diff-timeseries${q(force)}`)
+      const res = await fetch(`/ma/api/basis/diff-timeseries${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorBasisDiffTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -209,7 +209,7 @@ export default function FuturesMarketPage() {
     setLoadingBasisNearTs(true)
     setErrorBasisNearTs(null)
     try {
-      const res = await fetch(`/ma/api/basis/near-timeseries${q(force)}`)
+      const res = await fetch(`/ma/api/basis/near-timeseries${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorBasisNearTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisNearTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -241,7 +241,7 @@ export default function FuturesMarketPage() {
     setLoadingBasisNearDiffTs(true)
     setErrorBasisNearDiffTs(null)
     try {
-      const res = await fetch(`/ma/api/basis/near-diff-timeseries${q(force)}`)
+      const res = await fetch(`/ma/api/basis/near-diff-timeseries${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorBasisNearDiffTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisNearDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -273,7 +273,7 @@ export default function FuturesMarketPage() {
     setLoadingFut(true)
     setErrorFut(null)
     try {
-      const res = await fetch(`/ma/api/futures/latest${q(force)}`)
+      const res = await fetch(`/ma/api/futures/latest${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorFut("数据不可用")
       else if (json?.data && typeof json.data === "object") setFutLatest(json.data)
@@ -305,7 +305,7 @@ export default function FuturesMarketPage() {
     setLoadingBasisContDiffTs(true)
     setErrorBasisContDiffTs(null)
     try {
-      const res = await fetch(`/ma/api/basis/cont-diff-timeseries${q(force)}`)
+      const res = await fetch(`/ma/api/basis/cont-diff-timeseries${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorBasisContDiffTs("数据不可用")
       else if (json?.data && typeof json.data === "object") setBasisContDiffTs({ start_date: json.start_date, end_date: json.end_date, data: json.data })
@@ -337,7 +337,7 @@ export default function FuturesMarketPage() {
     setLoadingChoiceHeatmap(true)
     setErrorChoiceHeatmap(null)
     try {
-      const res = await fetch(`/ma/api/choice/amount-heatmap${q(force)}`)
+      const res = await fetch(`/ma/api/choice/amount-heatmap${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) setErrorChoiceHeatmap("数据不可用")
       else if (json?.data && Array.isArray(json.data)) setChoiceHeatmap(json)

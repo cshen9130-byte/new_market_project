@@ -39,9 +39,9 @@ export default function AdminAccountsPage() {
     refreshUsers()
   }, [])
 
-  function refreshUsers() {
+  async function refreshUsers() {
     setLoading(true)
-    const list = authService.listUsers()
+    const list = await authService.listUsers()
     setUsers(list)
     setLoading(false)
   }
@@ -61,13 +61,13 @@ export default function AdminAccountsPage() {
     setEditPassword("")
   }
 
-  function handleAdd() {
+  async function handleAdd() {
     setError(null)
     if (!newEmail || !newPassword || !newName) {
       setError("请填写完整信息")
       return
     }
-    const { success, error } = authService.addUser(newEmail, newPassword, newName, newRole)
+    const { success, error } = await authService.addUser(newEmail, newPassword, newName, newRole)
     if (!success) {
       setError(error || "添加失败")
       return
@@ -79,17 +79,17 @@ export default function AdminAccountsPage() {
     refreshUsers()
   }
 
-  function handleDelete(id: string) {
+  async function handleDelete(id: string) {
     const ok = window.confirm("确认删除该用户？")
     if (!ok) return
-    authService.deleteUser(id)
+    await authService.deleteUser(id)
     if (editingId === id) cancelEdit()
     refreshUsers()
   }
 
-  function handleSaveEdit() {
+  async function handleSaveEdit() {
     if (!editingId) return
-    const { success, error } = authService.updateUser(editingId, {
+    const { success, error } = await authService.updateUser(editingId, {
       email: editEmail,
       name: editName,
       role: editRole,

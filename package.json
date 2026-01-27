@@ -72,7 +72,8 @@
     "three": "latest",
     "vaul": "^1.1.2",
     "zod": "3.25.76"
-  },
+    "bcryptjs": "^2.4.3"
+    }
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.9",
     "@types/node": "^22",

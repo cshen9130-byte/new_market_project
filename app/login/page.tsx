@@ -36,7 +36,7 @@ export default function LoginPage() {
     const identifier = formData.get("identifier") as string
     const password = formData.get("password") as string
 
-    const user = authService.login(identifier, password)
+    const user = await authService.login(identifier, password)
 
     if (user) {
       toast({

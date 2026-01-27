@@ -7,110 +7,89 @@ export interface User {
   role?: "admin" | "user"
 }
 
+async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data?.error || res.statusText)
+  return data as T
+}
+
 export const authService = {
-  init: (): void => {
-    const users = JSON.parse(localStorage.getItem("users") || "[]")
-    const exists = users.find(
-      (u: User & { password: string }) => u.name === "cshen" || u.email === "cshen@example.com"
-    )
-
-    if (!exists) {
-      const newUser = {
-        id: Math.random().toString(36).substr(2, 9),
-        email: "cshen@example.com",
-        password: "wygmmlhhhh8",
-        name: "cshen",
-        role: "admin",
-      }
-      users.push(newUser)
-      localStorage.setItem("users", JSON.stringify(users))
+  // Ensure server-side users store is initialized
+  init: async (): Promise<void> => {
+    try {
+      await jsonFetch<{ ok: true; users: User[] }>("/api/admin/users")
+    } catch {
+      // ignore
     }
   },
-  register: (email: string, password: string, name: string): boolean => {
-    const users = JSON.parse(localStorage.getItem("users") || "[]")
 
-    if (users.find((u: User & { password: string }) => u.email === email)) {
-      return false
-    }
-
-    const newUser = {
-      id: Math.random().toString(36).substr(2, 9),
-      email,
-      password,
-      name,
-      role: "user",
-    }
-
-    users.push(newUser)
-    localStorage.setItem("users", JSON.stringify(users))
-    return true
+  listUsers: async (): Promise<User[]> => {
+    const data = await jsonFetch<{ ok: true; users: User[] }>("/api/admin/users")
+    return data.users
   },
 
-  listUsers: (): Array<User> => {
-    const users = JSON.parse(localStorage.getItem("users") || "[]")
-    return users.map((u: any) => {
-      const { password, ...rest } = u
-      return rest
-    })
+  addUser: async (
+    email: string,
+    password: string,
+    name: string,
+    role: "admin" | "user" = "user",
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await jsonFetch<{ ok: true; user: User }>("/api/admin/users", {
+        method: "POST",
+        body: JSON.stringify({ email, password, name, role }),
+      })
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || "添加失败" }
+    }
   },
 
-  addUser: (email: string, password: string, name: string, role: "admin" | "user" = "user"): { success: boolean; error?: string } => {
-    const users = JSON.parse(localStorage.getItem("users") || "[]")
-    if (users.find((u: any) => u.email === email)) {
-      return { success: false, error: "邮箱已存在" }
+  deleteUser: async (id: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await jsonFetch<{ ok: true }>(`/api/admin/users/${id}`, { method: "DELETE" })
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || "删除失败" }
     }
-    const newUser = {
-      id: Math.random().toString(36).substr(2, 9),
-      email,
-      password,
-      name,
-      role,
-    }
-    users.push(newUser)
-    localStorage.setItem("users", JSON.stringify(users))
-    return { success: true }
   },
 
-  deleteUser: (id: string): { success: boolean } => {
-    const users = JSON.parse(localStorage.getItem("users") || "[]")
-    const next = users.filter((u: any) => u.id !== id)
-    localStorage.setItem("users", JSON.stringify(next))
-    return { success: true }
-  },
-
-  updateUser: (id: string, updates: Partial<{ email: string; name: string; password: string; role: "admin" | "user" }>): { success: boolean; error?: string } => {
-    const users = JSON.parse(localStorage.getItem("users") || "[]")
-    const idx = users.findIndex((u: any) => u.id === id)
-    if (idx === -1) return { success: false, error: "用户不存在" }
-    if (updates.email) {
-      const dup = users.find((u: any) => u.email === updates.email && u.id !== id)
-      if (dup) return { success: false, error: "邮箱已存在" }
+  updateUser: async (
+    id: string,
+    updates: Partial<{ email: string; name: string; password: string; role: "admin" | "user" }>,
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      await jsonFetch<{ ok: true; user: User }>(`/api/admin/users/${id}`, {
+        method: "PUT",
+        body: JSON.stringify(updates),
+      })
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || "更新失败" }
     }
-    users[idx] = { ...users[idx], ...updates }
-    localStorage.setItem("users", JSON.stringify(users))
-    return { success: true }
   },
 
   isAdmin: (): boolean => {
     const current = JSON.parse(localStorage.getItem("currentUser") || "null")
     if (!current) return false
-    // Only the designated admin account may access admin page
-    return current.name === "cshen"
+    return current.role === "admin"
   },
 
-  login: (identifier: string, password: string): User | null => {
-    const users = JSON.parse(localStorage.getItem("users") || "[]")
-    const user = users.find(
-      (u: User & { password: string }) => (u.email === identifier || u.name === identifier) && u.password === password
-    )
-
-    if (user) {
-      const { password, ...userWithoutPassword } = user
-      localStorage.setItem("currentUser", JSON.stringify(userWithoutPassword))
-      return userWithoutPassword
+  login: async (identifier: string, password: string): Promise<User | null> => {
+    try {
+      const data = await jsonFetch<{ ok: true; user: User }>("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ identifier, password }),
+      })
+      localStorage.setItem("currentUser", JSON.stringify(data.user))
+      return data.user
+    } catch {
+      return null
     }
-
-    return null
   },
 
   logout: () => {
