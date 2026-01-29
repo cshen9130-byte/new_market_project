@@ -5,8 +5,11 @@ import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, FileText } from "lucide-react"
 import type React from "react"
+import { Button } from "../ui/button"
+import { Download } from "lucide-react"
 
 const momReportUrl = (process.env.NEXT_PUBLIC_MOM_REPORT_URL || "/mom_report/report.html?v=debug") as string
+const downloadHref = "/mom_report/report.html"
 
 const navigation = [
   { name: "总览", href: "/ma/dashboard", icon: LayoutDashboard },
@@ -32,19 +35,40 @@ export function DashboardSidebar() {
       <nav className="flex-1 p-4 space-y-1">
         {navigation.map((item) => {
           const isActive = pathname === item.href
+          const baseClasses = cn(
+            "rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+            isActive
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+          )
+
+          if (item.name === "MOM 风控报告") {
+            return (
+              <div key={item.name} className={cn(baseClasses, "flex items-center justify-between gap-2")}>
+                <Link
+                  href={item.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  prefetch={false}
+                  className="flex items-center gap-3"
+                >
+                  <item.icon className="h-4 w-4" />
+                  {item.name}
+                </Link>
+                <Button asChild variant="ghost" size="sm" aria-label="下载 MOM 风控报告">
+                  <a href={downloadHref} download>
+                    <Download className="h-4 w-4" />
+                  </a>
+                </Button>
+              </div>
+            )
+          }
+
           return (
             <Link
               key={item.name}
               href={item.href}
-              target={item.name === "MOM 风控报告" ? "_blank" : undefined}
-              rel={item.name === "MOM 风控报告" ? "noopener noreferrer" : undefined}
-              prefetch={item.name === "MOM 风控报告" ? false : undefined}
-              className={cn(
-                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                isActive
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
+              className={cn(baseClasses, "flex items-center gap-3")}
             >
               <item.icon className="h-4 w-4" />
               {item.name}

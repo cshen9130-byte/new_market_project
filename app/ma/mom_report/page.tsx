@@ -1,12 +1,15 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { Button } from "../../../components/ui/button"
+import { Download } from "lucide-react"
 
 export default function MomReportWrapper() {
   const [logs, setLogs] = useState<string[]>(["Wrapper ready"])
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const sameOriginRef = useRef<boolean>(true)
   const reportUrl = (process.env.NEXT_PUBLIC_MOM_REPORT_URL || "/mom_report/report.html?v=debug") as string
+  const downloadHref = "/mom_report/report.html"
 
   useEffect(() => {
     // Determine if the report URL is same-origin; avoid cross-origin fetch/instrumentation
@@ -96,7 +99,15 @@ export default function MomReportWrapper() {
         />
       </div>
       <aside className="w-96 border-l bg-black text-green-400 font-mono text-xs overflow-auto">
-        <div className="p-2 border-b border-green-700 sticky top-0 bg-black">MOM Report Debug Log</div>
+        <div className="p-2 border-b border-green-700 sticky top-0 bg-black flex items-center gap-2">
+          <span className="flex-1">MOM Report Debug Log</span>
+          <Button asChild variant="outline" size="sm">
+            <a href={downloadHref} download>
+              <Download className="mr-1" />
+              下载 MOM 风控报告
+            </a>
+          </Button>
+        </div>
         <div className="p-2 space-y-1">
           {logs.map((l, i) => (
             <div key={i}>[MOM REPORT] {l}</div>
