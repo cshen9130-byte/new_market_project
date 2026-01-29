@@ -91,6 +91,11 @@ if [[ ! -f "$INSTALLER" ]]; then
 fi
 "$VENV_PY" "$INSTALLER"
 
+# 3.5) Install Python data libraries required by project scripts (idempotent)
+"$VENV_PY" -m pip install -U tushare pandas requests lxml || {
+  echo "Failed to install Python data libraries via pip"; exit 1;
+}
+
 # 4) Export environment vars to a profile.d file for PM2 and shell logins
 LIB_DIR="$EMQ_DIR/EMQuantAPI_Python/python3/libs/linux/x64"
 PY_PATH="$EMQ_DIR/EMQuantAPI_Python/python3"

@@ -83,6 +83,90 @@
         }
       },
       "calc": "settle"
+    },
+    "20260127": {
+      "trade_date": "20260127",
+      "data": {
+        "IH": {
+          "trade_date": "20260127",
+          "far_ts_code": "IHL1.CFX",
+          "far_close": 3064,
+          "far_settle": 3070.2,
+          "spot_close": 3052.3932,
+          "days_to_maturity": 24,
+          "annualized_basis_pct": 8.872112216735301
+        },
+        "IF": {
+          "trade_date": "20260127",
+          "far_ts_code": "IFL1.CFX",
+          "far_close": 4718.2,
+          "far_settle": 4729.6,
+          "spot_close": 4705.6918,
+          "days_to_maturity": 24,
+          "annualized_basis_pct": 7.726895225055147
+        },
+        "IC": {
+          "trade_date": "20260127",
+          "far_ts_code": "ICL1.CFX",
+          "far_close": 8547.6,
+          "far_settle": 8564,
+          "spot_close": 8548.9321,
+          "days_to_maturity": 24,
+          "annualized_basis_pct": 2.680541185177193
+        },
+        "IM": {
+          "trade_date": "20260127",
+          "far_ts_code": "IML1.CFX",
+          "far_close": 8357.2,
+          "far_settle": 8364.8,
+          "spot_close": 8382.1533,
+          "days_to_maturity": 24,
+          "annualized_basis_pct": -3.1485319032920045
+        }
+      },
+      "calc": "settle"
+    },
+    "20260129": {
+      "trade_date": "20260129",
+      "data": {
+        "IH": {
+          "trade_date": "20260129",
+          "far_ts_code": "IHL1.CFX",
+          "far_close": 3130.4,
+          "far_settle": 3125.2,
+          "spot_close": 3110.9135,
+          "days_to_maturity": 22,
+          "annualized_basis_pct": 7.619177541492807
+        },
+        "IF": {
+          "trade_date": "20260129",
+          "far_ts_code": "IFL1.CFX",
+          "far_close": 4784,
+          "far_settle": 4774,
+          "spot_close": 4753.8697,
+          "days_to_maturity": 22,
+          "annualized_basis_pct": 7.025433980084142
+        },
+        "IC": {
+          "trade_date": "20260129",
+          "far_ts_code": "ICL1.CFX",
+          "far_close": 8517.6,
+          "far_settle": 8539,
+          "spot_close": 8517.8429,
+          "days_to_maturity": 22,
+          "annualized_basis_pct": 4.120943845152141
+        },
+        "IM": {
+          "trade_date": "20260129",
+          "far_ts_code": "IML1.CFX",
+          "far_close": 8329,
+          "far_settle": 8330.2,
+          "spot_close": 8332.2067,
+          "days_to_maturity": 22,
+          "annualized_basis_pct": -0.3995697475042928
+        }
+      },
+      "calc": "settle"
     }
   }
 }
