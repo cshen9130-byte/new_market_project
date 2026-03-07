@@ -22,6 +22,10 @@ LOGIN_TYPE="2"
 PM2_APP_NAME="new_market_project"
 TUSHARE_TOKEN=""
 MOM_REPORT_URL="/mom_report/report.html"
+DASHSCOPE_API_KEY="${DASHSCOPE_API_KEY:-}"
+DASHSCOPE_BASE_URL="${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+DASHSCOPE_CHAT_MODEL="${DASHSCOPE_CHAT_MODEL:-qwen-plus}"
+DASHSCOPE_EMBEDDING_MODEL="${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v3}"
 BUILD_MEMORY_MB="1024"
 TEMP_SWAP_GB="4"
 DEBUG_BUILD="0"
@@ -37,6 +41,10 @@ while [[ $# -gt 0 ]]; do
     --pm2-app-name) PM2_APP_NAME="$2"; shift 2 ;;
     --tushare-token) TUSHARE_TOKEN="$2"; shift 2 ;;
     --mom-report-url) MOM_REPORT_URL="$2"; shift 2 ;;
+    --dashscope-api-key) DASHSCOPE_API_KEY="$2"; shift 2 ;;
+    --dashscope-base-url) DASHSCOPE_BASE_URL="$2"; shift 2 ;;
+    --dashscope-chat-model) DASHSCOPE_CHAT_MODEL="$2"; shift 2 ;;
+    --dashscope-embedding-model) DASHSCOPE_EMBEDDING_MODEL="$2"; shift 2 ;;
     --build-memory-mb) BUILD_MEMORY_MB="$2"; shift 2 ;;
     --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
     --debug-build) DEBUG_BUILD="1"; shift ;;
@@ -122,6 +130,10 @@ export PYTHONPATH="$PY_PATH"
 export LD_LIBRARY_PATH="$LIB_DIR:${LD_LIBRARY_PATH:-}"
 export TUSHARE_TOKEN="$TUSHARE_TOKEN"
 export NEXT_PUBLIC_MOM_REPORT_URL="$MOM_REPORT_URL"
+export DASHSCOPE_API_KEY="$DASHSCOPE_API_KEY"
+export DASHSCOPE_BASE_URL="$DASHSCOPE_BASE_URL"
+export DASHSCOPE_CHAT_MODEL="$DASHSCOPE_CHAT_MODEL"
+export DASHSCOPE_EMBEDDING_MODEL="$DASHSCOPE_EMBEDDING_MODEL"
 EOF
 
 # shellcheck disable=SC1091

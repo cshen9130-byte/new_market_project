@@ -142,6 +142,7 @@ bash scripts/deploy/setup-choice-emquant.sh \
 	--project-root /root/new_market_project \
 	--emq-username "<EMQ_USERNAME>" \
 	--emq-password "<EMQ_PASSWORD>" \
+	--dashscope-api-key "<DASHSCOPE_API_KEY>" \
 	--pm2-app-name new_market_project
 ```
 
@@ -155,6 +156,7 @@ What it does:
 Notes:
 - Do not commit credentials; pass them to the script or set them in the server shell before PM2 start.
 - `ecosystem.config.js` reads `EMQ_USERNAME`, `EMQ_PASSWORD`, `EMQ_OPTIONS_EXTRA`, `PYTHON_EXE`, and `LD_LIBRARY_PATH` from the environment.
+- `ecosystem.config.js` also reads `DASHSCOPE_API_KEY`, `DASHSCOPE_BASE_URL`, `DASHSCOPE_CHAT_MODEL`, and `DASHSCOPE_EMBEDDING_MODEL` from the environment for AI knowledge-base chat.
 - If EmQuant native library deps are missing, the script will warn/fail; install required system libraries (e.g., `libstdc++`, `libgcc`, etc.).
 - On low-memory Linux servers, the deploy script now auto-creates a temporary swap file during `next build` if RAM is small and swap is missing.
 - The `build:lowmem` script intentionally uses `next build --webpack` instead of the Next 16 default Turbopack build, because Webpack is more stable on very small servers.
@@ -166,6 +168,7 @@ bash scripts/deploy/setup-choice-emquant.sh \
 	--project-root /root/new_market_project \
 	--emq-username "<EMQ_USERNAME>" \
 	--emq-password "<EMQ_PASSWORD>" \
+	--dashscope-api-key "<DASHSCOPE_API_KEY>" \
 	--pm2-app-name new_market_project \
 	--build-memory-mb 1024 \
 	--temp-swap-gb 4
@@ -203,6 +206,7 @@ bash scripts/deploy/setup-choice-emquant.sh \
 	--emq-username "<EMQ_USERNAME>" \
 	--emq-password "<EMQ_PASSWORD>" \
 	--tushare-token "<TUSHARE_TOKEN>" \
+	--dashscope-api-key "<DASHSCOPE_API_KEY>" \
 	--mom-report-url /mom_report/report.html
 ```
 
