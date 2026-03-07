@@ -24,6 +24,8 @@ TUSHARE_TOKEN=""
 MOM_REPORT_URL="/mom_report/report.html"
 BUILD_MEMORY_MB="1024"
 TEMP_SWAP_GB="4"
+DEBUG_BUILD="0"
+BUILD_DEBUG_INTERVAL_SEC="30"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +39,8 @@ while [[ $# -gt 0 ]]; do
     --mom-report-url) MOM_REPORT_URL="$2"; shift 2 ;;
     --build-memory-mb) BUILD_MEMORY_MB="$2"; shift 2 ;;
     --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
+    --debug-build) DEBUG_BUILD="1"; shift ;;
+    --build-debug-interval-sec) BUILD_DEBUG_INTERVAL_SEC="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -191,10 +195,50 @@ cd "$PROJECT_ROOT"
 
 ensure_temp_swap
 
+monitor_build_progress() {
+  local build_pid="$1"
+
+  while kill -0 "$build_pid" >/dev/null 2>&1; do
+    echo ""
+    echo "[$(date '+%F %T')] Build heartbeat"
+    free -h || true
+    swapon --show || true
+    ps -eo pid,ppid,%mem,%cpu,rss,etime,cmd | grep -E "${build_pid}|next build|node .*next|webpack|pnpm" | grep -v grep || true
+    du -sh "$PROJECT_ROOT/.next" 2>/dev/null || true
+    sleep "$BUILD_DEBUG_INTERVAL_SEC"
+  done
+}
+
 # Install node deps and build with low memory
 # Use --no-frozen-lockfile to avoid failures when package.json changes but lockfile is not yet updated
 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm install --no-frozen-lockfile
-CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
+
+if [[ "$DEBUG_BUILD" == "1" ]]; then
+  BUILD_LOG_FILE="$PROJECT_ROOT/build-debug.log"
+  echo "Debug build enabled; logging to $BUILD_LOG_FILE"
+  rm -f "$BUILD_LOG_FILE"
+
+  set +e
+  (
+    set -o pipefail
+    CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
+      pnpm exec next build --webpack --debug 2>&1 | tee "$BUILD_LOG_FILE"
+  ) &
+  BUILD_PID=$!
+  monitor_build_progress "$BUILD_PID" &
+  MONITOR_PID=$!
+  wait "$BUILD_PID"
+  BUILD_RC=$?
+  kill "$MONITOR_PID" >/dev/null 2>&1 || true
+  wait "$MONITOR_PID" 2>/dev/null || true
+  set -e
+
+  if [[ "$BUILD_RC" -ne 0 ]]; then
+    exit "$BUILD_RC"
+  fi
+else
+  CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
+fi
 
 # 7) PM2 start (ecosystem.config.js should read env vars)
 pm2 stop "$PM2_APP_NAME" || true
