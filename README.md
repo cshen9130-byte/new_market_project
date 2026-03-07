@@ -157,6 +157,7 @@ Notes:
 - `ecosystem.config.js` reads `EMQ_USERNAME`, `EMQ_PASSWORD`, `EMQ_OPTIONS_EXTRA`, `PYTHON_EXE`, and `LD_LIBRARY_PATH` from the environment.
 - If EmQuant native library deps are missing, the script will warn/fail; install required system libraries (e.g., `libstdc++`, `libgcc`, etc.).
 - On low-memory Linux servers, the deploy script now auto-creates a temporary swap file during `next build` if RAM is small and swap is missing.
+- The `build:lowmem` script intentionally uses `next build --webpack` instead of the Next 16 default Turbopack build, because Webpack is more stable on very small servers.
 - You can override build memory and temporary swap size if needed:
 
 ```bash
