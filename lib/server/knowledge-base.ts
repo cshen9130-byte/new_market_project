@@ -1,7 +1,10 @@
 import { promises as fs } from "fs"
 import path from "path"
 import { PDFParse } from "pdf-parse"
+import { CanvasFactory, getData } from "pdf-parse/worker"
 import { getServerStoragePath } from "@/lib/server/storage"
+
+PDFParse.setWorker(getData())
 
 export type KnowledgeBaseDocumentNode = {
   name: string
@@ -240,7 +243,7 @@ function stripHtml(html: string) {
 async function readChatDocumentText(absolutePath: string, extension: string) {
   if (extension === ".pdf") {
     const buffer = await fs.readFile(absolutePath)
-    const parser = new PDFParse({ data: buffer })
+    const parser = new PDFParse({ data: buffer, CanvasFactory })
     try {
       const parsed = await parser.getText()
       return parsed.text.replace(/\s+/g, " ").trim()

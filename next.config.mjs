@@ -3,6 +3,7 @@ const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
+  serverExternalPackages: ["pdf-parse", "@napi-rs/canvas"],
   images: {
     unoptimized: true,
   },
