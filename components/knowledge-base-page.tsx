@@ -62,9 +62,12 @@ type KnowledgeBasePageProps = {
 const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
 
-type KnowledgeBaseUploadResponse =
-  | { ok: true; file?: DocumentNode; files?: DocumentNode[] }
-  | { ok: false; error?: string }
+type KnowledgeBaseUploadResponse = {
+  ok: boolean
+  error?: string
+  file?: DocumentNode
+  files?: DocumentNode[]
+}
 
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`

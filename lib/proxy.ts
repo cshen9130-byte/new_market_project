@@ -1,4 +1,4 @@
-import { updateSession } from "./lib/supabase/proxy"
+import { updateSession } from "./supabase/proxy"
 
 export default async function proxy(request: Request) {
   return await updateSession(request as any)

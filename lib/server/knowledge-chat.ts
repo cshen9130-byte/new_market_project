@@ -11,6 +11,8 @@ type KnowledgeBaseIndexCacheEntry = {
   indexedChunks: number
 }
 
+const DASHSCOPE_EMBEDDING_BATCH_SIZE = 10
+
 function getDashScopeApiKey() {
   const apiKey = process.env.DASHSCOPE_API_KEY
   if (!apiKey) {
@@ -94,6 +96,7 @@ async function getOrBuildVectorStore(folderPath: string) {
   const embeddings = new OpenAIEmbeddings({
     apiKey: getDashScopeApiKey(),
     model: getEmbeddingModel(),
+    batchSize: DASHSCOPE_EMBEDDING_BATCH_SIZE,
     configuration: {
       baseURL: getDashScopeBaseUrl(),
     },
