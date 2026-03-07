@@ -22,6 +22,8 @@ LOGIN_TYPE="2"
 PM2_APP_NAME="new_market_project"
 TUSHARE_TOKEN=""
 MOM_REPORT_URL="/mom_report/report.html"
+BUILD_MEMORY_MB="1024"
+TEMP_SWAP_GB="4"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -33,6 +35,8 @@ while [[ $# -gt 0 ]]; do
     --pm2-app-name) PM2_APP_NAME="$2"; shift 2 ;;
     --tushare-token) TUSHARE_TOKEN="$2"; shift 2 ;;
     --mom-report-url) MOM_REPORT_URL="$2"; shift 2 ;;
+    --build-memory-mb) BUILD_MEMORY_MB="$2"; shift 2 ;;
+    --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -132,13 +136,65 @@ pkill -f "next build" || true
 pkill -f "pnpm build" || true
 pkill -f "node .*next" || true
 
+TEMP_SWAP_FILE="/swapfile.market-dashboard"
+TEMP_SWAP_CREATED="0"
+
+cleanup_swap() {
+  if [[ "$TEMP_SWAP_CREATED" == "1" ]]; then
+    swapoff "$TEMP_SWAP_FILE" >/dev/null 2>&1 || true
+    rm -f "$TEMP_SWAP_FILE" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup_swap EXIT
+
+ensure_temp_swap() {
+  if ! command -v swapon >/dev/null 2>&1; then
+    return
+  fi
+
+  local mem_total_kb="0"
+  local swap_total_kb="0"
+
+  if [[ -r /proc/meminfo ]]; then
+    mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
+    swap_total_kb=$(awk '/SwapTotal/ { print $2 }' /proc/meminfo)
+  fi
+
+  if [[ -z "$mem_total_kb" || "$mem_total_kb" -ge 2500000 ]]; then
+    return
+  fi
+
+  if [[ -n "$swap_total_kb" && "$swap_total_kb" -ge 1000000 ]]; then
+    return
+  fi
+
+  if [[ -f "$TEMP_SWAP_FILE" ]]; then
+    return
+  fi
+
+  echo "Low-memory server detected; creating temporary ${TEMP_SWAP_GB}G swap for build..."
+  if command -v fallocate >/dev/null 2>&1; then
+    fallocate -l "${TEMP_SWAP_GB}G" "$TEMP_SWAP_FILE"
+  else
+    dd if=/dev/zero of="$TEMP_SWAP_FILE" bs=1M count="$((TEMP_SWAP_GB * 1024))" status=progress
+  fi
+
+  chmod 600 "$TEMP_SWAP_FILE"
+  mkswap "$TEMP_SWAP_FILE" >/dev/null
+  swapon "$TEMP_SWAP_FILE"
+  TEMP_SWAP_CREATED="1"
+}
+
 # Ensure we are in the project root
 cd "$PROJECT_ROOT"
 
+ensure_temp_swap
+
 # Install node deps and build with low memory
 # Use --no-frozen-lockfile to avoid failures when package.json changes but lockfile is not yet updated
-NODE_OPTIONS=--max-old-space-size=1024 pnpm install --no-frozen-lockfile
-NODE_OPTIONS=--max-old-space-size=1024 pnpm build
+NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm install --no-frozen-lockfile
+CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
 
 # 7) PM2 start (ecosystem.config.js should read env vars)
 pm2 stop "$PM2_APP_NAME" || true

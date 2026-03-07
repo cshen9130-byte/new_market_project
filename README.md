@@ -156,6 +156,18 @@ Notes:
 - Do not commit credentials; pass them to the script or set them in the server shell before PM2 start.
 - `ecosystem.config.js` reads `EMQ_USERNAME`, `EMQ_PASSWORD`, `EMQ_OPTIONS_EXTRA`, `PYTHON_EXE`, and `LD_LIBRARY_PATH` from the environment.
 - If EmQuant native library deps are missing, the script will warn/fail; install required system libraries (e.g., `libstdc++`, `libgcc`, etc.).
+- On low-memory Linux servers, the deploy script now auto-creates a temporary swap file during `next build` if RAM is small and swap is missing.
+- You can override build memory and temporary swap size if needed:
+
+```bash
+bash scripts/deploy/setup-choice-emquant.sh \
+	--project-root /root/new_market_project \
+	--emq-username "<EMQ_USERNAME>" \
+	--emq-password "<EMQ_PASSWORD>" \
+	--pm2-app-name new_market_project \
+	--build-memory-mb 1024 \
+	--temp-swap-gb 4
+```
 
 ### Tushare and MOM report
 
