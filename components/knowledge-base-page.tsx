@@ -18,6 +18,8 @@ import {
 } from "lucide-react"
 import { authService, type User } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
+import { Progress } from "@/components/ui/progress"
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -58,6 +60,11 @@ type KnowledgeBasePageProps = {
 }
 
 const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log"])
+const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
+
+type KnowledgeBaseUploadResponse =
+  | { ok: true; file?: DocumentNode; files?: DocumentNode[] }
+  | { ok: false; error?: string }
 
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`
@@ -92,6 +99,39 @@ function countDocuments(node: FolderNode | null): number {
   return node.documents.length + node.folders.reduce((total, folder) => total + countDocuments(folder), 0)
 }
 
+function getResponseErrorText(text: string, fallback: string) {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return fallback
+  }
+
+  if (trimmed.startsWith("<")) {
+    const htmlMessage = trimmed
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+
+    return htmlMessage || fallback
+  }
+
+  return trimmed
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const text = await response.text()
+  if (!text.trim()) {
+    return {} as T
+  }
+
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error(getResponseErrorText(text, response.statusText || "服务器返回了非 JSON 响应"))
+  }
+}
+
 export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: KnowledgeBasePageProps) {
   const router = useRouter()
   const traditionalChatScrollRef = useRef<HTMLDivElement | null>(null)
@@ -108,12 +148,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [storageRoot, setStorageRoot] = useState("")
   const [selectedFolder, setSelectedFolder] = useState("")
   const [selectedDocument, setSelectedDocument] = useState<DocumentNode | null>(null)
-  const [previewMode, setPreviewMode] = useState<"empty" | "text" | "frame">("empty")
+  const [previewMode, setPreviewMode] = useState<"empty" | "text" | "image" | "frame">("empty")
   const [previewContent, setPreviewContent] = useState("")
   const [previewLoading, setPreviewLoading] = useState(false)
   const [newFolderName, setNewFolderName] = useState("")
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [batchUploading, setBatchUploading] = useState(false)
+  const [batchUploadProgress, setBatchUploadProgress] = useState(0)
+  const [batchUploadSummary, setBatchUploadSummary] = useState("")
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [question, setQuestion] = useState("")
@@ -187,6 +229,56 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  function uploadKnowledgeBaseFormDataWithProgress(
+    form: FormData,
+    onProgress?: (loaded: number) => void,
+  ): Promise<KnowledgeBaseUploadResponse> {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      xhr.open("POST", "/api/knowledge-base/upload")
+      xhr.responseType = "text"
+      xhr.setRequestHeader("Accept", "application/json")
+
+      const authHeaders = getKnowledgeBaseAuthHeaders()
+      if (authHeaders) {
+        for (const [key, value] of Object.entries(authHeaders)) {
+          xhr.setRequestHeader(key, value)
+        }
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          onProgress?.(event.loaded)
+        }
+      }
+
+      xhr.onerror = () => reject(new Error("上传请求失败，请检查网络连接或稍后重试"))
+
+      xhr.onload = () => {
+        const responseText = typeof xhr.responseText === "string" ? xhr.responseText : ""
+        let parsed: KnowledgeBaseUploadResponse | null = null
+
+        if (responseText.trim()) {
+          try {
+            parsed = JSON.parse(responseText) as KnowledgeBaseUploadResponse
+          } catch {
+            reject(new Error(getResponseErrorText(responseText, xhr.statusText || "上传失败")))
+            return
+          }
+        }
+
+        if (xhr.status >= 200 && xhr.status < 300 && parsed?.ok) {
+          resolve(parsed)
+          return
+        }
+
+        reject(new Error(parsed?.error || xhr.statusText || "上传失败"))
+      }
+
+      xhr.send(form)
+    })
+  }
+
   async function refreshTree(initial = false, user: User | null = currentUser) {
     try {
       setError(null)
@@ -258,7 +350,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         headers: getKnowledgeBaseAuthHeaders(),
         body: form,
       })
-      const data = await res.json()
+      const data = await readJsonResponse<KnowledgeBaseUploadResponse>(res)
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || res.statusText)
       }
@@ -289,31 +381,41 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
     try {
       setBatchUploading(true)
+      setBatchUploadProgress(0)
+      setBatchUploadSummary(`准备上传 ${entries.length} 个文件`)
       setError(null)
 
-      const form = new FormData()
-      form.append("folderPath", selectedFolder)
+      const totalBytes = entries.reduce((sum, entry) => sum + Math.max(entry.file.size, 1), 0)
+      let uploadedBytes = 0
 
-      for (const entry of entries) {
+      for (let index = 0; index < entries.length; index += 1) {
+        const entry = entries[index]
+        const form = new FormData()
+        form.append("folderPath", selectedFolder)
         form.append("files", entry.file)
         form.append("relativePaths", entry.relativePath)
+
+        setBatchUploadSummary(`正在上传 ${index + 1}/${entries.length}: ${entry.relativePath}`)
+
+        await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
+          const currentLoaded = uploadedBytes + Math.min(loaded, Math.max(entry.file.size, 1))
+          setBatchUploadProgress(Math.min(100, Math.round((currentLoaded / totalBytes) * 100)))
+        })
+
+        uploadedBytes += Math.max(entry.file.size, 1)
+        setBatchUploadProgress(Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)))
       }
 
-      const res = await fetch("/api/knowledge-base/upload", {
-        method: "POST",
-        headers: getKnowledgeBaseAuthHeaders(),
-        body: form,
-      })
-      const data = await res.json()
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || res.statusText)
-      }
-
+      setBatchUploadSummary(`已完成上传 ${entries.length} 个文件`)
       await refreshTree()
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     } finally {
       setBatchUploading(false)
+      setTimeout(() => {
+        setBatchUploadProgress(0)
+        setBatchUploadSummary("")
+      }, 1200)
       if (batchUploadInputRef.current) {
         batchUploadInputRef.current.value = ""
       }
@@ -343,6 +445,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         }
         setPreviewMode("text")
         setPreviewContent(text)
+      } else if (IMAGE_PREVIEW_EXTENSIONS.has(document.extension)) {
+        setPreviewMode("image")
       } else {
         setPreviewMode("frame")
       }
@@ -492,6 +596,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   variant="outline"
                   className="border-cyan-500/40 text-cyan-200"
                   onClick={() => void handlePreview(document)}
+                  disabled={!document.canPreview}
                 >
                   <Eye className="h-4 w-4" />
                   查看
@@ -562,6 +667,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   size="sm"
                   variant="outline"
                   onClick={() => openTraditionalPreview(document)}
+                  disabled={!document.canPreview}
                 >
                   <Eye className="h-4 w-4" />
                   预览
@@ -629,8 +735,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       <div className="min-h-[calc(100vh-8rem)]">
         {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div>}
 
-        <div className="grid min-h-[calc(100vh-8rem)] items-start gap-0 lg:grid-cols-[minmax(0,560px)_1px_minmax(0,1fr)] xl:grid-cols-[minmax(0,620px)_1px_minmax(0,1fr)]">
-          <section className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden pr-8">
+        <ResizablePanelGroup direction="horizontal" className="min-h-[calc(100vh-8rem)] items-start gap-0">
+          <ResizablePanel defaultSize={42} minSize={28} className="min-w-[360px]">
+            <section className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden pr-4 lg:pr-6">
             <div ref={traditionalOperationsScrollRef} className="min-h-0 flex-1 overflow-y-auto pr-3">
               <div className="space-y-6 pb-4">
                 <div className="flex items-start justify-between gap-4">
@@ -703,6 +810,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           <pre className="whitespace-pre-wrap break-words text-sm leading-6">{previewContent}</pre>
                         </ScrollArea>
                       )}
+                      {!previewLoading && previewMode === "image" && selectedDocument && (
+                        <div className="flex h-[calc(100vh-19.5rem)] items-center justify-center overflow-hidden rounded-md bg-black/5">
+                          <img src={buildFileUrl(selectedDocument.relativePath)} alt={selectedDocument.name} className="max-h-full max-w-full object-contain" />
+                        </div>
+                      )}
                       {!previewLoading && previewMode === "frame" && selectedDocument && (
                         <iframe
                           key={selectedDocument.relativePath}
@@ -713,7 +825,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       )}
                       {!previewLoading && previewMode === "empty" && (
                         <div className="flex h-[calc(100vh-19.5rem)] items-center justify-center text-sm text-muted-foreground">
-                          暂无预览内容。txt、md、json、csv 支持文本预览，html、pdf 使用内嵌查看。
+                          暂无预览内容。txt、csv、json 支持文本预览；图片支持直接查看；html、pdf 支持内嵌查看；Word 和 Excel 支持上传、下载与知识库检索。
                         </div>
                       )}
                     </div>
@@ -742,7 +854,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         {batchUploading ? "批量上传中..." : "批量上传"}
                       </Button>
                     </div>
+                    {batchUploading && (
+                      <div className="space-y-2">
+                        <Progress value={batchUploadProgress} className="h-2" />
+                        <div className="text-xs text-muted-foreground">{batchUploadSummary} · {batchUploadProgress}%</div>
+                      </div>
+                    )}
                     <div className="text-xs text-muted-foreground">批量上传会保留所选文件夹的层级结构，并导入到当前目录下。</div>
+                    <div className="text-xs text-muted-foreground">支持图片、Word、Excel、CSV、PDF、TXT 等常见资料文件。</div>
                   </div>
                 )}
 
@@ -762,11 +881,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 )}
               </div>
             </div>
-          </section>
+            </section>
+          </ResizablePanel>
 
-          <div className="hidden lg:block w-px self-stretch bg-border" />
+          <ResizableHandle withHandle className="mx-1" />
 
-          <section className="sticky top-0 flex h-[calc(100vh-8rem)] flex-col overflow-hidden pl-8">
+          <ResizablePanel defaultSize={58} minSize={30}>
+            <section className="sticky top-0 flex h-[calc(100vh-8rem)] flex-col overflow-hidden pl-4 lg:pl-6">
             <div className="space-y-2 pb-4">
               <h2 className="text-xl font-semibold">知识库问答</h2>
               <div className="flex items-center justify-between text-sm text-muted-foreground">
@@ -826,8 +947,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 </div>
               </div>
             </div>
-          </section>
-        </div>
+            </section>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
     )
   }
@@ -909,6 +1031,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <div className="self-center text-xs text-cyan-300/75">可直接选择整个文件夹，保留内部目录结构。</div>
                 </div>
 
+                {batchUploading && (
+                  <div className="space-y-2">
+                    <Progress value={batchUploadProgress} className="h-2 bg-cyan-500/15" />
+                    <div className="text-xs text-cyan-300/75">{batchUploadSummary} · {batchUploadProgress}%</div>
+                  </div>
+                )}
+
+                <div className="text-xs text-cyan-300/75">支持图片、Word、Excel、CSV、PDF、TXT 等常见资料文件。</div>
+
                 <div className="rounded-xl border border-cyan-500/15 bg-black/25 px-3 py-2 text-xs text-cyan-300/80">
                   当前问答范围：{selectedFolder || "全部资料"}
                 </div>
@@ -943,6 +1074,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     </ScrollArea>
                   )}
 
+                  {!previewLoading && previewMode === "image" && selectedDocument && (
+                    <div className="flex h-[320px] items-center justify-center overflow-hidden rounded-lg bg-black/30 p-3">
+                      <img src={buildFileUrl(selectedDocument.relativePath)} alt={selectedDocument.name} className="max-h-full max-w-full object-contain" />
+                    </div>
+                  )}
+
                   {!previewLoading && previewMode === "frame" && selectedDocument && (
                     <iframe
                       key={selectedDocument.relativePath}
@@ -954,7 +1091,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                   {!previewLoading && previewMode === "empty" && (
                     <div className="flex h-[320px] items-center justify-center text-sm text-cyan-400/70">
-                      暂无预览内容。txt、md、json、csv 支持文本预览，html、pdf 使用内嵌查看。
+                      暂无预览内容。txt、csv、json 支持文本预览；图片支持直接查看；html、pdf 使用内嵌查看；Word 和 Excel 支持上传、下载与知识库检索。
                     </div>
                   )}
                 </div>

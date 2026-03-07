@@ -1,7 +1,9 @@
 import { promises as fs } from "fs"
 import path from "path"
+import * as mammoth from "mammoth"
 import { PDFParse } from "pdf-parse"
 import { CanvasFactory, getData } from "pdf-parse/worker"
+import * as XLSX from "xlsx"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 PDFParse.setWorker(getData())
@@ -52,21 +54,36 @@ const DEFAULT_STORAGE_ROOT = getServerStoragePath("ai-knowledge-base")
 const OWNERSHIP_STORAGE_DIR = getServerStoragePath("ai-knowledge-base-metadata")
 const OWNERSHIP_FILE = path.join(OWNERSHIP_STORAGE_DIR, "file-owners.json")
 
-const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log"])
+const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml"])
+const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
 const FRAME_PREVIEW_EXTENSIONS = new Set([".html", ".htm", ".pdf"])
-const CHAT_EXTENSIONS = new Set([...TEXT_PREVIEW_EXTENSIONS, ".html", ".htm", ".pdf"])
+const CHAT_EXTENSIONS = new Set([...TEXT_PREVIEW_EXTENSIONS, ".html", ".htm", ".pdf", ".docx", ".xlsx", ".xls"])
 const MAX_CHAT_FILE_BYTES = 10 * 1024 * 1024
 
 const MIME_TYPES: Record<string, string> = {
+  ".avif": "image/avif",
+  ".bmp": "image/bmp",
   ".csv": "text/csv; charset=utf-8",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".gif": "image/gif",
   ".htm": "text/html; charset=utf-8",
   ".html": "text/html; charset=utf-8",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".json": "application/json; charset=utf-8",
   ".log": "text/plain; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
   ".markdown": "text/markdown; charset=utf-8",
   ".pdf": "application/pdf",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".tsv": "text/tab-separated-values; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
+  ".webp": "image/webp",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".xml": "application/xml; charset=utf-8",
 }
 
 export function getKnowledgeBaseStorageRoot() {
@@ -211,12 +228,16 @@ export function isKnowledgeBaseTextPreview(extension: string) {
   return TEXT_PREVIEW_EXTENSIONS.has(extension)
 }
 
+export function isKnowledgeBaseImagePreview(extension: string) {
+  return IMAGE_PREVIEW_EXTENSIONS.has(extension)
+}
+
 export function isKnowledgeBaseFramePreview(extension: string) {
   return FRAME_PREVIEW_EXTENSIONS.has(extension)
 }
 
 export function isKnowledgeBasePreviewable(extension: string) {
-  return isKnowledgeBaseTextPreview(extension) || isKnowledgeBaseFramePreview(extension)
+  return isKnowledgeBaseTextPreview(extension) || isKnowledgeBaseImagePreview(extension) || isKnowledgeBaseFramePreview(extension)
 }
 
 export function isKnowledgeBaseChatSupported(extension: string) {
@@ -466,6 +487,23 @@ async function readChatDocumentText(absolutePath: string, extension: string) {
     } finally {
       await parser.destroy().catch(() => undefined)
     }
+  }
+
+  if (extension === ".docx") {
+    const buffer = await fs.readFile(absolutePath)
+    const parsed = await mammoth.extractRawText({ buffer })
+    return parsed.value.replace(/\s+/g, " ").trim()
+  }
+
+  if (extension === ".xlsx" || extension === ".xls") {
+    const workbook = XLSX.read(await fs.readFile(absolutePath), { type: "buffer" })
+    const sheetTexts = workbook.SheetNames.map((sheetName) => {
+      const worksheet = workbook.Sheets[sheetName]
+      const csv = XLSX.utils.sheet_to_csv(worksheet)
+      return `Sheet: ${sheetName}\n${csv}`.trim()
+    }).filter(Boolean)
+
+    return sheetTexts.join("\n\n").replace(/\s+/g, " ").trim()
   }
 
   const raw = await fs.readFile(absolutePath, "utf8")
