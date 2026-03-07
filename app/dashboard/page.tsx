@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation"
 import { authService } from "@/lib/auth"
 import { NeuralNetwork3D } from "@/components/neural-network-3d"
 import { Button } from "@/components/ui/button"
-import { LogOut } from "lucide-react"
+import { BrainCircuit, LogOut } from "lucide-react"
 
 export default function DashboardPage() {
   const router = useRouter()
@@ -57,6 +57,15 @@ export default function DashboardPage() {
       >
         <LogOut className="w-4 h-4 mr-2" />
         退出登录
+      </Button>
+
+      <Button
+        onClick={() => router.push("/dashboard/ai-knowledge")}
+        variant="outline"
+        className="absolute top-4 right-36 z-10 border-cyan-500/30 bg-black/80 text-cyan-400 hover:bg-cyan-500/20"
+      >
+        <BrainCircuit className="w-4 h-4 mr-2" />
+        AI知识库
       </Button>
 
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-0 text-center">

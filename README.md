@@ -86,6 +86,49 @@ Verify after reload:
 
 In production, `.env.production` sets `NEXT_PUBLIC_MOM_REPORT_URL=/mom_report/report.html` so the button and iframe use the same-origin Nginx alias.
 
+## AI 知识库（外部目录 + DashScope Qwen）
+
+新增页面：`/dashboard/ai-knowledge`
+
+功能：
+- 左侧显示服务器外部目录中的资料文件夹和文档，可新建文件夹、上传文件、在线预览、下载。
+- 右侧是知识库问答区，使用 LangChain 检索结构和 DashScope Qwen 模型进行文档问答。
+- 文档目录默认创建在项目目录之外，避免网站更新时被覆盖。
+
+建议在服务器设置以下环境变量：
+
+```bash
+AI_KB_STORAGE_DIR=/root/market_dashboard_storage/ai-knowledge-base
+DASHSCOPE_API_KEY=<YOUR_DASHSCOPE_API_KEY>
+DASHSCOPE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_CHAT_MODEL=qwen-plus
+DASHSCOPE_EMBEDDING_MODEL=text-embedding-v3
+```
+
+说明：
+- `AI_KB_STORAGE_DIR` 应指向项目仓库外的持久化目录，例如 `/root/market_dashboard_storage/ai-knowledge-base`。
+- 目录会在第一次访问知识库 API 时自动创建，无需手动预建。
+- 当前问答支持 `txt`、`md`、`json`、`csv`、`html`、`pdf` 文档；其它文件仍可上传和下载，但不会参与检索。
+
+## 用户与持久化数据存储
+
+当前登录用户数据已经改为存储在项目目录外，避免每次部署更新代码时被覆盖。
+
+建议在服务器设置以下环境变量：
+
+```bash
+MARKET_DASHBOARD_STORAGE_DIR=/root/market_dashboard_storage
+AI_KB_STORAGE_DIR=/root/market_dashboard_storage/ai-knowledge-base
+```
+
+说明：
+- 用户登录数据默认保存在 `MARKET_DASHBOARD_STORAGE_DIR/auth/users.json`。
+- AI 知识库默认保存在 `MARKET_DASHBOARD_STORAGE_DIR/ai-knowledge-base`，也可以单独用 `AI_KB_STORAGE_DIR` 覆盖。
+- 如果项目里原来已经有 `data/users.json`，服务第一次启动时会自动迁移到外部目录。
+- 这个结构也适合后续扩展更多持久化数据，例如聊天记录、操作日志或其他业务数据。
+
+如果后续你确定要保存更多结构化数据，数据库会比 JSON 文件更合适。当前这次改动先解决“部署覆盖登录数据”的问题，不要求你现在就安装数据库。
+
 ## Choice EmQuant API setup (Linux server)
 
 Automate server setup for Choice EmQuant API and PM2 using the provided script. This avoids manual steps and ensures updates don’t break the API.

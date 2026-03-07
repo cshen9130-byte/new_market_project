@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit } from "lucide-react"
 
 const navigation = [
   { name: "总览", href: "/dashboard", icon: LayoutDashboard },
@@ -12,6 +12,7 @@ const navigation = [
   { name: "期货市场", href: "/dashboard/futures-market", icon: Rocket },
   { name: "期权市场", href: "/analysis/options", icon: Target },
   { name: "私募基金", href: "/analysis/fund", icon: Briefcase },
+  { name: "AI知识库", href: "/dashboard/ai-knowledge", icon: BrainCircuit },
 ]
 
 export function DashboardSidebar() {

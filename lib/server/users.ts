@@ -1,6 +1,7 @@
 import { promises as fs } from "fs"
 import path from "path"
 import bcrypt from "bcryptjs"
+import { getServerStoragePath } from "@/lib/server/storage"
 
 export type StoredUser = {
   id: string
@@ -10,17 +11,48 @@ export type StoredUser = {
   passwordHash: string
 }
 
-const dataDir = path.join(process.cwd(), "data")
-const usersFile = path.join(dataDir, "users.json")
+const legacyDataDir = path.join(process.cwd(), "data")
+const legacyUsersFile = path.join(legacyDataDir, "users.json")
+
+function getUsersDir() {
+  return getServerStoragePath("auth")
+}
+
+function getUsersFile() {
+  return path.join(getUsersDir(), "users.json")
+}
 
 async function ensureDir() {
   try {
-    await fs.mkdir(dataDir, { recursive: true })
+    await fs.mkdir(getUsersDir(), { recursive: true })
   } catch {}
+}
+
+async function migrateLegacyUsersIfNeeded(usersFile: string) {
+  try {
+    await fs.access(usersFile)
+    return
+  } catch {}
+
+  try {
+    await fs.access(legacyUsersFile)
+  } catch {
+    return
+  }
+
+  const raw = await fs.readFile(legacyUsersFile, "utf8")
+  const parsed = JSON.parse(raw)
+  if (!Array.isArray(parsed)) {
+    throw new Error("旧用户数据格式不合法")
+  }
+
+  await fs.writeFile(usersFile, JSON.stringify(parsed, null, 2), "utf8")
 }
 
 async function seedIfMissing() {
   await ensureDir()
+  const usersFile = getUsersFile()
+  await migrateLegacyUsersIfNeeded(usersFile)
   try {
     await fs.access(usersFile)
   } catch {
@@ -63,6 +95,7 @@ async function seedIfMissing() {
 
 export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
   await seedIfMissing()
+  const usersFile = getUsersFile()
   const raw = await fs.readFile(usersFile, "utf8")
   const parsed: StoredUser[] = JSON.parse(raw)
   return parsed.map(({ passwordHash, ...rest }) => rest)
@@ -70,12 +103,14 @@ export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
 
 export async function getAll(): Promise<StoredUser[]> {
   await seedIfMissing()
+  const usersFile = getUsersFile()
   const raw = await fs.readFile(usersFile, "utf8")
   return JSON.parse(raw) as StoredUser[]
 }
 
 export async function writeAll(users: StoredUser[]) {
   await ensureDir()
+  const usersFile = getUsersFile()
   await fs.writeFile(usersFile, JSON.stringify(users, null, 2), "utf8")
 }
 

@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, FileText } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, FileText, BrainCircuit } from "lucide-react"
 import type React from "react"
 import { Button } from "../ui/button"
 import { Download } from "lucide-react"
@@ -20,6 +20,7 @@ const navigation = [
   { name: "私募基金", href: "/ma/dashboard/private-funds", icon: Briefcase },
   // Add cache-busting query to ensure latest assets load in new tab
   { name: "MOM 风控报告", href: momReportUrl, icon: FileText },
+  { name: "AI知识库", href: "/ma/dashboard/ai-knowledge", icon: BrainCircuit },
 ]
 
 export function DashboardSidebar() {

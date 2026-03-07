@@ -27,6 +27,19 @@ module.exports = {
 
         // Ensure client uses same-origin Nginx alias for MOM report in production
         NEXT_PUBLIC_MOM_REPORT_URL: process.env.NEXT_PUBLIC_MOM_REPORT_URL || "/mom_report/report.html",
+
+        // Shared external storage root for auth and future persistent data
+        MARKET_DASHBOARD_STORAGE_DIR:
+          process.env.MARKET_DASHBOARD_STORAGE_DIR || "/root/market_dashboard_storage",
+
+        // AI knowledge base external storage and DashScope settings
+        AI_KB_STORAGE_DIR:
+          process.env.AI_KB_STORAGE_DIR || "/root/market_dashboard_storage/ai-knowledge-base",
+        DASHSCOPE_API_KEY: process.env.DASHSCOPE_API_KEY || "",
+        DASHSCOPE_BASE_URL:
+          process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        DASHSCOPE_CHAT_MODEL: process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
+        DASHSCOPE_EMBEDDING_MODEL: process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v3",
       },
     },
   ],
