@@ -1,12 +1,15 @@
 import { NextResponse } from "next/server"
+import { getUserById } from "@/lib/server/users"
 import { getKnowledgeBaseStorageDisplayPath, listKnowledgeBaseTree } from "@/lib/server/knowledge-base"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
-    const tree = await listKnowledgeBaseTree()
+    const userId = String(req.headers.get("x-market-user-id") || "").trim()
+    const currentUser = userId ? await getUserById(userId) : null
+    const tree = await listKnowledgeBaseTree(currentUser?.id)
     return NextResponse.json({
       ok: true,
       rootPath: getKnowledgeBaseStorageDisplayPath(),

@@ -1,6 +1,6 @@
 "use client"
 
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
+import { type ChangeEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
 import {
   BrainCircuit,
@@ -13,9 +13,10 @@ import {
   MessageSquare,
   RefreshCw,
   Send,
+  Trash2,
   Upload,
 } from "lucide-react"
-import { authService } from "@/lib/auth"
+import { authService, type User } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -29,8 +30,12 @@ type DocumentNode = {
   extension: string
   size: number
   updatedAt: string
+  ownerId: string | null
+  ownerName: string
+  uploadedAt: string | null
   canPreview: boolean
   canChat: boolean
+  canDelete: boolean
 }
 
 type FolderNode = {
@@ -90,7 +95,13 @@ function countDocuments(node: FolderNode | null): number {
 export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: KnowledgeBasePageProps) {
   const router = useRouter()
   const traditionalChatScrollRef = useRef<HTMLDivElement | null>(null)
+  const traditionalOperationsScrollRef = useRef<HTMLDivElement | null>(null)
+  const traditionalPreviewRef = useRef<HTMLDivElement | null>(null)
+  const shouldScrollToPreviewRef = useRef(false)
+  const singleUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const batchUploadInputRef = useRef<HTMLInputElement | null>(null)
   const [authorized, setAuthorized] = useState(false)
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [tree, setTree] = useState<FolderNode | null>(null)
@@ -102,6 +113,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [previewLoading, setPreviewLoading] = useState(false)
   const [newFolderName, setNewFolderName] = useState("")
   const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [batchUploading, setBatchUploading] = useState(false)
+  const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [question, setQuestion] = useState("")
   const [chatLoading, setChatLoading] = useState(false)
@@ -122,8 +135,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       return
     }
 
+    setCurrentUser(currentUser)
     setAuthorized(true)
-    void refreshTree(true)
+    void refreshTree(true, currentUser)
   }, [router])
 
   useEffect(() => {
@@ -141,7 +155,39 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     return () => cancelAnimationFrame(frame)
   }, [chatLoading, chatMessages, variant])
 
-  async function refreshTree(initial = false) {
+  useEffect(() => {
+    if (variant !== "traditional" || traditionalPanel !== "preview" || !shouldScrollToPreviewRef.current) {
+      return
+    }
+
+    const frame = requestAnimationFrame(() => {
+      const scrollContainer = traditionalOperationsScrollRef.current
+      const previewSection = traditionalPreviewRef.current
+
+      if (scrollContainer && previewSection) {
+        scrollContainer.scrollTo({
+          top: Math.max(previewSection.offsetTop - 16, 0),
+          behavior: "smooth",
+        })
+      }
+
+      shouldScrollToPreviewRef.current = false
+    })
+
+    return () => cancelAnimationFrame(frame)
+  }, [previewLoading, selectedDocument, traditionalPanel, variant])
+
+  function getKnowledgeBaseAuthHeaders(user: User | null = currentUser) {
+    if (!user?.id) {
+      return undefined
+    }
+
+    return {
+      "x-market-user-id": user.id,
+    }
+  }
+
+  async function refreshTree(initial = false, user: User | null = currentUser) {
     try {
       setError(null)
       if (initial) {
@@ -150,7 +196,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         setRefreshing(true)
       }
 
-      const res = await fetch("/api/knowledge-base/tree", { cache: "no-store" })
+      const res = await fetch("/api/knowledge-base/tree", {
+        cache: "no-store",
+        headers: getKnowledgeBaseAuthHeaders(user),
+      })
       const data = await res.json()
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || res.statusText)
@@ -206,6 +255,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       const res = await fetch("/api/knowledge-base/upload", {
         method: "POST",
+        headers: getKnowledgeBaseAuthHeaders(),
         body: form,
       })
       const data = await res.json()
@@ -214,12 +264,69 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       }
 
       setPendingFile(null)
+      if (singleUploadInputRef.current) {
+        singleUploadInputRef.current.value = ""
+      }
       await refreshTree()
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     } finally {
       setUploading(false)
     }
+  }
+
+  async function handleBatchUpload(files: FileList | File[]) {
+    const entries = Array.from(files)
+      .map((file) => {
+        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+        return { file, relativePath }
+      })
+      .filter((entry) => entry.file.size > 0 || entry.relativePath)
+
+    if (!entries.length) {
+      return
+    }
+
+    try {
+      setBatchUploading(true)
+      setError(null)
+
+      const form = new FormData()
+      form.append("folderPath", selectedFolder)
+
+      for (const entry of entries) {
+        form.append("files", entry.file)
+        form.append("relativePaths", entry.relativePath)
+      }
+
+      const res = await fetch("/api/knowledge-base/upload", {
+        method: "POST",
+        headers: getKnowledgeBaseAuthHeaders(),
+        body: form,
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
+      }
+
+      await refreshTree()
+    } catch (requestError: any) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setBatchUploading(false)
+      if (batchUploadInputRef.current) {
+        batchUploadInputRef.current.value = ""
+      }
+    }
+  }
+
+  function handleBatchUploadChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = event.target.files
+    if (!files?.length) {
+      return
+    }
+
+    void handleBatchUpload(files)
   }
 
   async function handlePreview(document: DocumentNode) {
@@ -244,6 +351,44 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setError(requestError?.message || String(requestError))
     } finally {
       setPreviewLoading(false)
+    }
+  }
+
+  async function handleDelete(document: DocumentNode) {
+    if (!document.canDelete) {
+      setError("只有上传者可以删除该文件")
+      return
+    }
+
+    const confirmed = window.confirm(`确定删除文件“${document.name}”吗？`)
+    if (!confirmed) {
+      return
+    }
+
+    try {
+      setDeletingPath(document.relativePath)
+      setError(null)
+
+      const res = await fetch(buildFileUrl(document.relativePath), {
+        method: "DELETE",
+        headers: getKnowledgeBaseAuthHeaders(),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
+      }
+
+      if (selectedDocument?.relativePath === document.relativePath) {
+        setSelectedDocument(null)
+        setPreviewMode("empty")
+        setPreviewContent("")
+      }
+
+      await refreshTree()
+    } catch (requestError: any) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setDeletingPath(null)
     }
   }
 
@@ -302,6 +447,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  function openTraditionalPreview(document: DocumentNode) {
+    shouldScrollToPreviewRef.current = true
+    setTraditionalPanel("preview")
+    void handlePreview(document)
+  }
+
   function renderFolder(folder: FolderNode, depth = 0): React.ReactNode {
     return (
       <div key={folder.relativePath || "__root__"} className="space-y-2">
@@ -334,6 +485,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <div className="text-xs text-cyan-500/70">
                     {formatFileSize(document.size)} · {new Date(document.updatedAt).toLocaleString()}
                   </div>
+                  <div className="text-xs text-cyan-500/70">上传者：{document.ownerName}</div>
                 </div>
                 <Button
                   size="sm"
@@ -350,6 +502,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     下载
                   </a>
                 </Button>
+                {document.canDelete && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-red-500/40 text-red-200"
+                    disabled={deletingPath === document.relativePath}
+                    onClick={() => void handleDelete(document)}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    {deletingPath === document.relativePath ? "删除中..." : "删除"}
+                  </Button>
+                )}
               </div>
             ))}
           </div>
@@ -392,14 +556,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <div className="text-xs text-muted-foreground">
                     {formatFileSize(document.size)} · {new Date(document.updatedAt).toLocaleString()}
                   </div>
+                  <div className="text-xs text-muted-foreground">上传者：{document.ownerName}</div>
                 </div>
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => {
-                    setTraditionalPanel("preview")
-                    void handlePreview(document)
-                  }}
+                  onClick={() => openTraditionalPreview(document)}
                 >
                   <Eye className="h-4 w-4" />
                   预览
@@ -410,6 +572,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     下载
                   </a>
                 </Button>
+                {document.canDelete && (
+                  <Button size="sm" variant="outline" disabled={deletingPath === document.relativePath} onClick={() => void handleDelete(document)}>
+                    <Trash2 className="h-4 w-4" />
+                    {deletingPath === document.relativePath ? "删除中..." : "删除"}
+                  </Button>
+                )}
               </div>
             ))}
           </div>
@@ -461,120 +629,139 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       <div className="min-h-[calc(100vh-8rem)]">
         {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div>}
 
-        <div className="grid min-h-[calc(100vh-8rem)] items-start gap-0 lg:grid-cols-[430px_1px_minmax(0,1fr)]">
-          <section className="space-y-6 pr-8">
-            <div className="flex items-start justify-between gap-4">
-              <h2 className="text-xl font-semibold">资料操作区</h2>
-              <div className="text-right text-sm">
-                <div className="text-muted-foreground">资料总数</div>
-                <div className="font-semibold">{totalDocuments}</div>
-              </div>
-            </div>
-
-            <div className="space-y-2 text-sm">
-              <div>
-                <span className="text-muted-foreground">当前范围：</span>
-                <span className="font-medium">{selectedFolder || "全部资料"}</span>
-              </div>
-              <div className="truncate">
-                <span className="text-muted-foreground">存储位置：</span>
-                <span className="font-medium">{storageRoot || "加载中"}</span>
-              </div>
-            </div>
-
-            <div className="grid gap-2 sm:grid-cols-2">
-              {traditionalMenu.map((item) => {
-                const Icon = item.icon
-                const active = traditionalPanel === item.key
-
-                return (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => setTraditionalPanel(item.key)}
-                    className={cn(
-                      "border-b px-0 py-3 text-left transition-colors",
-                      active ? "border-foreground text-foreground" : "border-border text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                      <Icon className="h-4 w-4" />
-                      {item.title}
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-
-            {traditionalPanel === "library" && (
-              <div className="space-y-4">
-                <ScrollArea className="h-[calc(100vh-18rem)] pr-3">
-                  <div className="space-y-3">{tree ? renderTraditionalFolder(tree) : <div className="text-sm text-muted-foreground">暂无资料</div>}</div>
-                </ScrollArea>
-              </div>
-            )}
-
-            {traditionalPanel === "preview" && (
-              <div className="space-y-4">
-                <div className="text-sm text-muted-foreground">
-                  {selectedDocument
-                    ? `${selectedDocument.relativePath} · ${formatFileSize(selectedDocument.size)}`
-                    : "先在资料目录中选择一个文档进行预览。"}
+        <div className="grid min-h-[calc(100vh-8rem)] items-start gap-0 lg:grid-cols-[minmax(0,560px)_1px_minmax(0,1fr)] xl:grid-cols-[minmax(0,620px)_1px_minmax(0,1fr)]">
+          <section className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden pr-8">
+            <div ref={traditionalOperationsScrollRef} className="min-h-0 flex-1 overflow-y-auto pr-3">
+              <div className="space-y-6 pb-4">
+                <div className="flex items-start justify-between gap-4">
+                  <h2 className="text-xl font-semibold">资料操作区</h2>
+                  <div className="text-right text-sm">
+                    <div className="text-muted-foreground">资料总数</div>
+                    <div className="font-semibold">{totalDocuments}</div>
+                  </div>
                 </div>
-                <div className="min-h-[calc(100vh-18rem)]">
-                  {previewLoading && (
-                    <div className="flex h-[calc(100vh-18rem)] items-center justify-center text-muted-foreground">
-                      <LoaderCircle className="mr-2 h-5 w-5 animate-spin" />
-                      正在加载文档...
-                    </div>
-                  )}
-                  {!previewLoading && previewMode === "text" && (
+
+                <div className="space-y-2 text-sm">
+                  <div>
+                    <span className="text-muted-foreground">当前范围：</span>
+                    <span className="font-medium">{selectedFolder || "全部资料"}</span>
+                  </div>
+                  <div className="truncate">
+                    <span className="text-muted-foreground">存储位置：</span>
+                    <span className="font-medium">{storageRoot || "加载中"}</span>
+                  </div>
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {traditionalMenu.map((item) => {
+                    const Icon = item.icon
+                    const active = traditionalPanel === item.key
+
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => setTraditionalPanel(item.key)}
+                        className={cn(
+                          "border-b px-0 py-3 text-left transition-colors",
+                          active ? "border-foreground text-foreground" : "border-border text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        <div className="flex items-center gap-2 text-sm font-medium">
+                          <Icon className="h-4 w-4" />
+                          {item.title}
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {traditionalPanel === "library" && (
+                  <div className="space-y-4">
                     <ScrollArea className="h-[calc(100vh-18rem)] pr-3">
-                      <pre className="whitespace-pre-wrap break-words text-sm leading-6">{previewContent}</pre>
+                      <div className="space-y-3">{tree ? renderTraditionalFolder(tree) : <div className="text-sm text-muted-foreground">暂无资料</div>}</div>
                     </ScrollArea>
-                  )}
-                  {!previewLoading && previewMode === "frame" && selectedDocument && (
-                    <iframe
-                      key={selectedDocument.relativePath}
-                      src={buildFileUrl(selectedDocument.relativePath)}
-                      className="h-[calc(100vh-18rem)] w-full bg-white"
-                      title={selectedDocument.name}
-                    />
-                  )}
-                  {!previewLoading && previewMode === "empty" && (
-                    <div className="flex h-[calc(100vh-18rem)] items-center justify-center text-sm text-muted-foreground">
-                      暂无预览内容。txt、md、json、csv 支持文本预览，html、pdf 使用内嵌查看。
+                  </div>
+                )}
+
+                {traditionalPanel === "preview" && (
+                  <div ref={traditionalPreviewRef} className="space-y-4">
+                    <div className="text-sm text-muted-foreground">
+                      {selectedDocument
+                        ? `${selectedDocument.relativePath} · ${formatFileSize(selectedDocument.size)}`
+                        : "先在资料目录中选择一个文档进行预览。"}
                     </div>
-                  )}
-                </div>
-              </div>
-            )}
+                    <div className="min-h-[calc(100vh-18rem)] rounded-lg border bg-card/40 p-3">
+                      {previewLoading && (
+                        <div className="flex h-[calc(100vh-19.5rem)] items-center justify-center text-muted-foreground">
+                          <LoaderCircle className="mr-2 h-5 w-5 animate-spin" />
+                          正在加载文档...
+                        </div>
+                      )}
+                      {!previewLoading && previewMode === "text" && (
+                        <ScrollArea className="h-[calc(100vh-19.5rem)] pr-3">
+                          <pre className="whitespace-pre-wrap break-words text-sm leading-6">{previewContent}</pre>
+                        </ScrollArea>
+                      )}
+                      {!previewLoading && previewMode === "frame" && selectedDocument && (
+                        <iframe
+                          key={selectedDocument.relativePath}
+                          src={buildFileUrl(selectedDocument.relativePath)}
+                          className="h-[calc(100vh-19.5rem)] w-full rounded-md bg-white"
+                          title={selectedDocument.name}
+                        />
+                      )}
+                      {!previewLoading && previewMode === "empty" && (
+                        <div className="flex h-[calc(100vh-19.5rem)] items-center justify-center text-sm text-muted-foreground">
+                          暂无预览内容。txt、md、json、csv 支持文本预览，html、pdf 使用内嵌查看。
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
-            {traditionalPanel === "upload" && (
-              <div className="space-y-4">
-                <Input type="file" onChange={(event) => setPendingFile(event.target.files?.[0] || null)} />
-                <div className="text-sm text-muted-foreground">目标目录：{selectedFolder || "根目录 / 全部资料"}</div>
-                <Button disabled={!pendingFile || uploading} onClick={() => void handleUpload()}>
-                  <Upload className="h-4 w-4" />
-                  {uploading ? "上传中..." : "上传文档"}
-                </Button>
-              </div>
-            )}
+                {traditionalPanel === "upload" && (
+                  <div className="space-y-4">
+                    <Input ref={singleUploadInputRef} type="file" onChange={(event) => setPendingFile(event.target.files?.[0] || null)} />
+                    <div className="text-sm text-muted-foreground">目标目录：{selectedFolder || "根目录 / 全部资料"}</div>
+                    <div className="flex flex-wrap gap-3">
+                      <Button disabled={!pendingFile || uploading} onClick={() => void handleUpload()}>
+                        <Upload className="h-4 w-4" />
+                        {uploading ? "上传中..." : "上传文档"}
+                      </Button>
+                      <input
+                        ref={batchUploadInputRef}
+                        type="file"
+                        multiple
+                        className="hidden"
+                        onChange={handleBatchUploadChange}
+                        {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                      />
+                      <Button type="button" variant="outline" disabled={batchUploading} onClick={() => batchUploadInputRef.current?.click()}>
+                        <FolderOpen className="h-4 w-4" />
+                        {batchUploading ? "批量上传中..." : "批量上传"}
+                      </Button>
+                    </div>
+                    <div className="text-xs text-muted-foreground">批量上传会保留所选文件夹的层级结构，并导入到当前目录下。</div>
+                  </div>
+                )}
 
-            {traditionalPanel === "folder" && (
-              <div className="space-y-4">
-                <Input
-                  value={newFolderName}
-                  onChange={(event) => setNewFolderName(event.target.value)}
-                  placeholder={selectedFolder ? `在 ${selectedFolder} 下创建文件夹` : "新建一级文件夹"}
-                />
-                <div className="text-sm text-muted-foreground">新目录位置：{selectedFolder || "根目录 / 全部资料"}</div>
-                <Button onClick={() => void handleCreateFolder()}>
-                  <FolderPlus className="h-4 w-4" />
-                  新建文件夹
-                </Button>
+                {traditionalPanel === "folder" && (
+                  <div className="space-y-4">
+                    <Input
+                      value={newFolderName}
+                      onChange={(event) => setNewFolderName(event.target.value)}
+                      placeholder={selectedFolder ? `在 ${selectedFolder} 下创建文件夹` : "新建一级文件夹"}
+                    />
+                    <div className="text-sm text-muted-foreground">新目录位置：{selectedFolder || "根目录 / 全部资料"}</div>
+                    <Button onClick={() => void handleCreateFolder()}>
+                      <FolderPlus className="h-4 w-4" />
+                      新建文件夹
+                    </Button>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </section>
 
           <div className="hidden lg:block w-px self-stretch bg-border" />
@@ -695,6 +882,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                 <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
                   <Input
+                    ref={singleUploadInputRef}
                     type="file"
                     onChange={(event) => setPendingFile(event.target.files?.[0] || null)}
                     className="border-cyan-500/25 bg-black/30 text-cyan-100"
@@ -703,6 +891,22 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <Upload className="h-4 w-4" />
                     {uploading ? "上传中..." : "上传文档"}
                   </Button>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <input
+                    ref={batchUploadInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleBatchUploadChange}
+                    {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                  />
+                  <Button type="button" variant="outline" className="border-cyan-500/40 text-cyan-200" disabled={batchUploading} onClick={() => batchUploadInputRef.current?.click()}>
+                    <FolderOpen className="h-4 w-4" />
+                    {batchUploading ? "批量上传中..." : "批量上传"}
+                  </Button>
+                  <div className="self-center text-xs text-cyan-300/75">可直接选择整个文件夹，保留内部目录结构。</div>
                 </div>
 
                 <div className="rounded-xl border border-cyan-500/15 bg-black/25 px-3 py-2 text-xs text-cyan-300/80">

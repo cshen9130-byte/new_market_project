@@ -12,8 +12,12 @@ export type KnowledgeBaseDocumentNode = {
   extension: string
   size: number
   updatedAt: string
+  ownerId: string | null
+  ownerName: string
+  uploadedAt: string | null
   canPreview: boolean
   canChat: boolean
+  canDelete: boolean
 }
 
 export type KnowledgeBaseFolderNode = {
@@ -30,7 +34,23 @@ export type KnowledgeBaseChatDocument = {
   updatedAt: string
 }
 
+export type KnowledgeBaseFileOwner = {
+  ownerId: string
+  ownerName: string
+  ownerEmail?: string
+}
+
+type KnowledgeBaseOwnershipRecord = {
+  relativePath: string
+  ownerId: string
+  ownerName: string
+  ownerEmail?: string
+  uploadedAt: string
+}
+
 const DEFAULT_STORAGE_ROOT = getServerStoragePath("ai-knowledge-base")
+const OWNERSHIP_STORAGE_DIR = getServerStoragePath("ai-knowledge-base-metadata")
+const OWNERSHIP_FILE = path.join(OWNERSHIP_STORAGE_DIR, "file-owners.json")
 
 const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log"])
 const FRAME_PREVIEW_EXTENSIONS = new Set([".html", ".htm", ".pdf"])
@@ -55,6 +75,84 @@ export function getKnowledgeBaseStorageRoot() {
 
 export function getKnowledgeBaseStorageDisplayPath() {
   return process.env.AI_KB_STORAGE_DIR?.trim() || "服务器部署时由 AI_KB_STORAGE_DIR 指定"
+}
+
+async function ensureKnowledgeBaseMetadataStorage() {
+  await fs.mkdir(OWNERSHIP_STORAGE_DIR, { recursive: true })
+}
+
+async function readOwnershipRecords() {
+  await ensureKnowledgeBaseMetadataStorage()
+  try {
+    const raw = await fs.readFile(OWNERSHIP_FILE, "utf8")
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as KnowledgeBaseOwnershipRecord[]) : []
+  } catch {
+    return []
+  }
+}
+
+async function writeOwnershipRecords(records: KnowledgeBaseOwnershipRecord[]) {
+  await ensureKnowledgeBaseMetadataStorage()
+  await fs.writeFile(OWNERSHIP_FILE, JSON.stringify(records, null, 2), "utf8")
+}
+
+async function getOwnershipMap() {
+  const records = await readOwnershipRecords()
+  return new Map(records.map((record) => [record.relativePath, record]))
+}
+
+async function setKnowledgeBaseFileOwner(relativePath: string, owner: KnowledgeBaseFileOwner) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  const records = await readOwnershipRecords()
+  const uploadedAt = new Date().toISOString()
+  const nextRecord: KnowledgeBaseOwnershipRecord = {
+    relativePath: normalizedPath,
+    ownerId: owner.ownerId,
+    ownerName: owner.ownerName,
+    ownerEmail: owner.ownerEmail,
+    uploadedAt,
+  }
+  const next = records.filter((record) => record.relativePath !== normalizedPath)
+  next.push(nextRecord)
+  next.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
+  await writeOwnershipRecords(next)
+  return nextRecord
+}
+
+async function removeKnowledgeBaseFileOwner(relativePath: string) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  const records = await readOwnershipRecords()
+  const next = records.filter((record) => record.relativePath !== normalizedPath)
+  await writeOwnershipRecords(next)
+}
+
+function buildKnowledgeBaseDocumentNode(
+  input: {
+    name: string
+    relativePath: string
+    size: number
+    updatedAt: string
+  },
+  ownershipMap: Map<string, KnowledgeBaseOwnershipRecord>,
+  viewerUserId?: string,
+): KnowledgeBaseDocumentNode {
+  const extension = getExtension(input.name)
+  const ownership = ownershipMap.get(input.relativePath)
+
+  return {
+    name: input.name,
+    relativePath: input.relativePath,
+    extension,
+    size: input.size,
+    updatedAt: input.updatedAt,
+    ownerId: ownership?.ownerId || null,
+    ownerName: ownership?.ownerName || "未知",
+    uploadedAt: ownership?.uploadedAt || null,
+    canPreview: isKnowledgeBasePreviewable(extension),
+    canChat: isKnowledgeBaseChatSupported(extension),
+    canDelete: Boolean(viewerUserId && ownership?.ownerId && ownership.ownerId === viewerUserId),
+  }
 }
 
 export async function ensureKnowledgeBaseStorage() {
@@ -129,7 +227,12 @@ export function getKnowledgeBaseMimeType(fileName: string) {
   return MIME_TYPES[getExtension(fileName)] || "application/octet-stream"
 }
 
-async function buildFolderTree(absoluteDir: string, relativeDir: string): Promise<KnowledgeBaseFolderNode> {
+async function buildFolderTree(
+  absoluteDir: string,
+  relativeDir: string,
+  ownershipMap: Map<string, KnowledgeBaseOwnershipRecord>,
+  viewerUserId?: string,
+): Promise<KnowledgeBaseFolderNode> {
   const entries = await fs.readdir(absoluteDir, { withFileTypes: true })
 
   const folders: KnowledgeBaseFolderNode[] = []
@@ -140,7 +243,7 @@ async function buildFolderTree(absoluteDir: string, relativeDir: string): Promis
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
 
     if (entry.isDirectory()) {
-      folders.push(await buildFolderTree(absolutePath, relativePath))
+      folders.push(await buildFolderTree(absolutePath, relativePath, ownershipMap, viewerUserId))
       continue
     }
 
@@ -148,17 +251,19 @@ async function buildFolderTree(absoluteDir: string, relativeDir: string): Promis
       continue
     }
 
-    const extension = getExtension(entry.name)
     const stat = await fs.stat(absolutePath)
-    documents.push({
-      name: entry.name,
-      relativePath,
-      extension,
-      size: stat.size,
-      updatedAt: stat.mtime.toISOString(),
-      canPreview: isKnowledgeBasePreviewable(extension),
-      canChat: isKnowledgeBaseChatSupported(extension),
-    })
+    documents.push(
+      buildKnowledgeBaseDocumentNode(
+        {
+          name: entry.name,
+          relativePath,
+          size: stat.size,
+          updatedAt: stat.mtime.toISOString(),
+        },
+        ownershipMap,
+        viewerUserId,
+      ),
+    )
   }
 
   folders.sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))
@@ -172,9 +277,10 @@ async function buildFolderTree(absoluteDir: string, relativeDir: string): Promis
   }
 }
 
-export async function listKnowledgeBaseTree() {
+export async function listKnowledgeBaseTree(viewerUserId?: string) {
   const root = await ensureKnowledgeBaseStorage()
-  return buildFolderTree(root, "")
+  const ownershipMap = await getOwnershipMap()
+  return buildFolderTree(root, "", ownershipMap, viewerUserId)
 }
 
 export async function createKnowledgeBaseFolder(relativePath: string) {
@@ -186,7 +292,7 @@ export async function createKnowledgeBaseFolder(relativePath: string) {
   }
 }
 
-export async function saveKnowledgeBaseFile(folderPath: string, file: File) {
+export async function saveKnowledgeBaseFile(folderPath: string, file: File, owner?: KnowledgeBaseFileOwner) {
   const safeName = sanitizeFileName(file.name || "document")
   const { target: folderAbsolutePath, normalized } = await resolveKnowledgeBasePath(folderPath)
   await fs.mkdir(folderAbsolutePath, { recursive: true })
@@ -199,17 +305,127 @@ export async function saveKnowledgeBaseFile(folderPath: string, file: File) {
 
   const stat = await fs.stat(absolutePath)
   const relativePath = normalized ? `${normalized}/${safeName}` : safeName
-  const extension = getExtension(safeName)
+  const ownership = owner ? await setKnowledgeBaseFileOwner(relativePath, owner) : null
 
-  return {
-    name: safeName,
-    relativePath,
-    extension,
-    size: stat.size,
-    updatedAt: stat.mtime.toISOString(),
-    canPreview: isKnowledgeBasePreviewable(extension),
-    canChat: isKnowledgeBaseChatSupported(extension),
+  return buildKnowledgeBaseDocumentNode(
+    {
+      name: safeName,
+      relativePath,
+      size: stat.size,
+      updatedAt: stat.mtime.toISOString(),
+    },
+    new Map(
+      ownership
+        ? [
+            [
+              relativePath,
+              ownership,
+            ],
+          ]
+        : [],
+    ),
+    owner?.ownerId,
+  )
+}
+
+export async function saveKnowledgeBaseFileWithRelativePath(
+  folderPath: string,
+  relativeFilePath: string,
+  file: File,
+  owner?: KnowledgeBaseFileOwner,
+) {
+  const normalizedRelativeFilePath = normalizeKnowledgeBasePath(relativeFilePath)
+  const segments = normalizedRelativeFilePath.split("/").filter(Boolean)
+
+  if (!segments.length) {
+    throw new Error("文件路径不合法")
   }
+
+  const safeName = sanitizeFileName(segments[segments.length - 1] || file.name || "document")
+  const nestedFolder = segments.slice(0, -1).join("/")
+  const targetFolder = [folderPath, nestedFolder].filter(Boolean).join("/")
+
+  const { target: folderAbsolutePath, normalized } = await resolveKnowledgeBasePath(targetFolder)
+  await fs.mkdir(folderAbsolutePath, { recursive: true })
+
+  const absolutePath = path.join(folderAbsolutePath, safeName)
+  assertInsideRoot(await ensureKnowledgeBaseStorage(), absolutePath)
+
+  const buffer = Buffer.from(await file.arrayBuffer())
+  await fs.writeFile(absolutePath, buffer)
+
+  const stat = await fs.stat(absolutePath)
+  const relativePath = normalized ? `${normalized}/${safeName}` : safeName
+  const ownership = owner ? await setKnowledgeBaseFileOwner(relativePath, owner) : null
+
+  return buildKnowledgeBaseDocumentNode(
+    {
+      name: safeName,
+      relativePath,
+      size: stat.size,
+      updatedAt: stat.mtime.toISOString(),
+    },
+    new Map(
+      ownership
+        ? [
+            [
+              relativePath,
+              ownership,
+            ],
+          ]
+        : [],
+    ),
+    owner?.ownerId,
+  )
+}
+
+async function removeEmptyKnowledgeBaseDirectories(relativePath: string) {
+  const normalized = normalizeKnowledgeBasePath(relativePath)
+  if (!normalized) {
+    return
+  }
+
+  const root = await ensureKnowledgeBaseStorage()
+  const segments = normalized.split("/")
+
+  while (segments.length > 0) {
+    const currentPath = path.join(root, ...segments)
+    const entries = await fs.readdir(currentPath).catch(() => [])
+    if (entries.length > 0) {
+      break
+    }
+    await fs.rmdir(currentPath).catch(() => undefined)
+    segments.pop()
+  }
+}
+
+export async function deleteKnowledgeBaseFile(relativePath: string, actorUserId: string) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    throw new Error("缺少文件路径")
+  }
+  if (!actorUserId) {
+    throw new Error("缺少用户信息")
+  }
+
+  const ownershipMap = await getOwnershipMap()
+  const ownership = ownershipMap.get(normalizedPath)
+  if (!ownership) {
+    throw new Error("文件缺少归属信息，无法删除")
+  }
+  if (ownership.ownerId !== actorUserId) {
+    throw new Error("只有上传者可以删除该文件")
+  }
+
+  const { target } = await resolveKnowledgeBasePath(normalizedPath)
+  const stat = await fs.stat(target)
+  if (!stat.isFile()) {
+    throw new Error("目标不是文件")
+  }
+
+  await fs.unlink(target)
+  await removeKnowledgeBaseFileOwner(normalizedPath)
+  await removeEmptyKnowledgeBaseDirectories(path.posix.dirname(normalizedPath) === "." ? "" : path.posix.dirname(normalizedPath))
 }
 
 export async function getKnowledgeBaseFile(relativePath: string) {

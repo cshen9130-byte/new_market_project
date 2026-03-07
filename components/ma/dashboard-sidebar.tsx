@@ -25,25 +25,50 @@ const navigation = [
 
 export function DashboardSidebar() {
   const pathname = usePathname()
-  
+  const isCollapsed = pathname === "/ma/dashboard/ai-knowledge"
 
   return (
-    <aside className="w-64 border-r bg-card flex flex-col">
-      <div className="p-6 border-b">
-        <h2 className="text-lg font-semibold">市场监控</h2>
-        <p className="text-sm text-muted-foreground">分析看板（传统风格）</p>
+    <aside className={cn("border-r bg-card flex flex-col transition-all duration-200", isCollapsed ? "w-20" : "w-64")}>
+      <div className={cn("border-b", isCollapsed ? "px-3 py-6" : "p-6")}>
+        {isCollapsed ? (
+          <div className="text-center">
+            <div className="text-lg font-semibold">市监</div>
+          </div>
+        ) : (
+          <>
+            <h2 className="text-lg font-semibold">市场监控</h2>
+            <p className="text-sm text-muted-foreground">分析看板（传统风格）</p>
+          </>
+        )}
       </div>
-      <nav className="flex-1 p-4 space-y-1">
+      <nav className={cn("flex-1 space-y-1", isCollapsed ? "p-2" : "p-4")}>
         {navigation.map((item) => {
           const isActive = pathname === item.href
           const baseClasses = cn(
-            "rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+            "rounded-lg text-sm font-medium transition-colors",
+            isCollapsed ? "flex justify-center px-2 py-3" : "px-3 py-2",
             isActive
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )
 
           if (item.name === "MOM 风控报告") {
+            if (isCollapsed) {
+              return (
+                <Link
+                  key={item.name}
+                  href={item.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  prefetch={false}
+                  title={item.name}
+                  className={cn(baseClasses, "items-center")}
+                >
+                  <item.icon className="h-4 w-4" />
+                </Link>
+              )
+            }
+
             return (
               <div key={item.name} className={cn(baseClasses, "flex items-center justify-between gap-2")}>
                 <Link
@@ -69,10 +94,11 @@ export function DashboardSidebar() {
             <Link
               key={item.name}
               href={item.href}
+              title={isCollapsed ? item.name : undefined}
               className={cn(baseClasses, "flex items-center gap-3")}
             >
               <item.icon className="h-4 w-4" />
-              {item.name}
+              {!isCollapsed && item.name}
             </Link>
           )
         })}

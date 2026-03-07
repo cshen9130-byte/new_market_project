@@ -101,6 +101,15 @@ export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
   return parsed.map(({ passwordHash, ...rest }) => rest)
 }
 
+export async function getUserById(id: string): Promise<Omit<StoredUser, "passwordHash"> | null> {
+  if (!id) return null
+  const users = await getAll()
+  const user = users.find((entry) => entry.id === id)
+  if (!user) return null
+  const { passwordHash, ...rest } = user
+  return rest
+}
+
 export async function getAll(): Promise<StoredUser[]> {
   await seedIfMissing()
   const usersFile = getUsersFile()
