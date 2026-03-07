@@ -190,9 +190,26 @@ ensure_temp_swap() {
   TEMP_SWAP_CREATED="1"
 }
 
+auto_tune_build_settings() {
+  local mem_total_kb="0"
+
+  if [[ -r /proc/meminfo ]]; then
+    mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
+  fi
+
+  if [[ -n "$mem_total_kb" && "$mem_total_kb" -ge 3500000 && "$BUILD_MEMORY_MB" == "1024" ]]; then
+    BUILD_MEMORY_MB="2048"
+  elif [[ -n "$mem_total_kb" && "$mem_total_kb" -ge 2500000 && "$BUILD_MEMORY_MB" == "1024" ]]; then
+    BUILD_MEMORY_MB="1536"
+  fi
+
+  echo "Build settings: memory=${BUILD_MEMORY_MB}MB, temp_swap=${TEMP_SWAP_GB}G, debug=${DEBUG_BUILD}, interval=${BUILD_DEBUG_INTERVAL_SEC}s"
+}
+
 # Ensure we are in the project root
 cd "$PROJECT_ROOT"
 
+auto_tune_build_settings
 ensure_temp_swap
 
 monitor_build_progress() {
