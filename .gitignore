@@ -58,3 +58,16 @@ EMQuantAPI_Python/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Server-generated data / logs (live on server, not for VCS)
+build-debug.log
+data/users.json
+data/futures_cache.json
+data/basis_cache.json
+data/basis_cont_diff_timeseries_cache.json
+data/basis_diff_timeseries_cache.json
+data/basis_near_cache.json
+data/basis_near_diff_timeseries_cache.json
+data/basis_near_timeseries_cache.json
+data/basis_timeseries_cache.json
+public/mom_report/report.backup.*.html
