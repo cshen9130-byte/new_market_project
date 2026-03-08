@@ -1,6 +1,11 @@
 import { promises as fs } from "fs"
 import { NextResponse } from "next/server"
-import { deleteKnowledgeBaseFile, getKnowledgeBaseFile, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
+import {
+  deleteKnowledgeBaseFile,
+  getKnowledgeBaseFile,
+  normalizeKnowledgeBasePath,
+  readKnowledgeBasePreviewContent,
+} from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
 
 export const runtime = "nodejs"
@@ -19,6 +24,18 @@ export async function GET(req: Request) {
     }
 
     const download = searchParams.get("download") === "1"
+    const preview = searchParams.get("preview") === "1"
+
+    if (preview) {
+      const previewContent = await readKnowledgeBasePreviewContent(relativePath)
+      return new NextResponse(previewContent.content, {
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": previewContent.contentType,
+        },
+      })
+    }
+
     const file = await getKnowledgeBaseFile(relativePath)
     const buffer = await fs.readFile(file.absolutePath)
 
@@ -49,7 +66,7 @@ export async function DELETE(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少文件路径" }, { status: 400 })
     }
 
-    await deleteKnowledgeBaseFile(relativePath, currentUser.id)
+    await deleteKnowledgeBaseFile(relativePath, currentUser.id, currentUser.role === "admin")
     return NextResponse.json({ ok: true })
   } catch (error: any) {
     const message = error?.message || String(error)

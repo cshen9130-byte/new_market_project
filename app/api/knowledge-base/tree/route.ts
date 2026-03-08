@@ -9,7 +9,7 @@ export async function GET(req: Request) {
   try {
     const userId = String(req.headers.get("x-market-user-id") || "").trim()
     const currentUser = userId ? await getUserById(userId) : null
-    const tree = await listKnowledgeBaseTree(currentUser?.id)
+    const tree = await listKnowledgeBaseTree(currentUser?.id, currentUser?.role === "admin")
     return NextResponse.json({
       ok: true,
       rootPath: getKnowledgeBaseStorageDisplayPath(),

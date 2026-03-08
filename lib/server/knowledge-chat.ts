@@ -2,7 +2,7 @@ import { Document } from "@langchain/core/documents"
 import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai"
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters"
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory"
-import { collectKnowledgeBaseDocuments, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
+import { collectKnowledgeBaseDocuments, getKnowledgeBaseFile, readFileDocumentText, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
 
 type KnowledgeBaseIndexCacheEntry = {
   signature: string
@@ -139,14 +139,43 @@ function stringifyModelContent(content: unknown) {
   return String(content || "")
 }
 
-export async function askKnowledgeBaseQuestion(input: { question: string; folderPath?: string | null }) {
+export async function askKnowledgeBaseQuestion(input: { question: string; folderPath?: string | null; filePath?: string | null }) {
   const question = input.question.trim()
   if (!question) {
     throw new Error("请输入问题")
   }
 
-  const folderPath = normalizeKnowledgeBasePath(input.folderPath)
   const model = createChatModel()
+
+  // ── Single-file mode: skip vector store, feed the whole file as context ──
+  if (input.filePath) {
+    const file = await getKnowledgeBaseFile(input.filePath)
+    const text = await readFileDocumentText(file.absolutePath, file.extension)
+    const scopeLabel = file.relativePath
+    const response = await model.invoke([
+      {
+        role: "system",
+        content: text
+          ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文。"
+          : "你是市场研究助手。该文档内容为空或暂不支持提取文字。请告知用户无法解读该文件内容。回答使用中文。",
+      },
+      {
+        role: "user",
+        content: text
+          ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${text}`
+          : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`,
+      },
+    ])
+    return {
+      answer: stringifyModelContent(response.content),
+      sources: [file.relativePath],
+      indexedDocuments: 1,
+      indexedChunks: 1,
+    }
+  }
+
+  // ── Folder mode: vector-store similarity search ──
+  const folderPath = normalizeKnowledgeBasePath(input.folderPath)
   let index: KnowledgeBaseIndexCacheEntry | null = null
   let matches: Document[] = []
 

@@ -1,10 +1,16 @@
+import { execFile } from "child_process"
 import { promises as fs } from "fs"
+import os from "os"
 import path from "path"
+import { promisify } from "util"
 import * as mammoth from "mammoth"
 import { PDFParse } from "pdf-parse"
 import { CanvasFactory, getData } from "pdf-parse/worker"
+import WordExtractor from "word-extractor"
 import * as XLSX from "xlsx"
 import { getServerStoragePath } from "@/lib/server/storage"
+
+const execFileAsync = promisify(execFile)
 
 PDFParse.setWorker(getData())
 
@@ -25,6 +31,10 @@ export type KnowledgeBaseDocumentNode = {
 export type KnowledgeBaseFolderNode = {
   name: string
   relativePath: string
+  size: number
+  ownerId: string | null
+  ownerName: string
+  uploadedAt: string | null
   folders: KnowledgeBaseFolderNode[]
   documents: KnowledgeBaseDocumentNode[]
 }
@@ -44,6 +54,7 @@ export type KnowledgeBaseFileOwner = {
 
 type KnowledgeBaseOwnershipRecord = {
   relativePath: string
+  entryType?: "file" | "folder"
   ownerId: string
   ownerName: string
   ownerEmail?: string
@@ -54,10 +65,10 @@ const DEFAULT_STORAGE_ROOT = getServerStoragePath("ai-knowledge-base")
 const OWNERSHIP_STORAGE_DIR = getServerStoragePath("ai-knowledge-base-metadata")
 const OWNERSHIP_FILE = path.join(OWNERSHIP_STORAGE_DIR, "file-owners.json")
 
-const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml"])
+const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".doc", ".docx", ".xls", ".xlsx"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
 const FRAME_PREVIEW_EXTENSIONS = new Set([".html", ".htm", ".pdf"])
-const CHAT_EXTENSIONS = new Set([...TEXT_PREVIEW_EXTENSIONS, ".html", ".htm", ".pdf", ".docx", ".xlsx", ".xls"])
+const CHAT_EXTENSIONS = new Set([...TEXT_PREVIEW_EXTENSIONS, ".html", ".htm", ".pdf"])
 const MAX_CHAT_FILE_BYTES = 10 * 1024 * 1024
 
 const MIME_TYPES: Record<string, string> = {
@@ -119,12 +130,27 @@ async function getOwnershipMap() {
   return new Map(records.map((record) => [record.relativePath, record]))
 }
 
-async function setKnowledgeBaseFileOwner(relativePath: string, owner: KnowledgeBaseFileOwner) {
+async function setKnowledgeBaseOwnershipRecord(
+  relativePath: string,
+  owner: KnowledgeBaseFileOwner,
+  entryType: "file" | "folder",
+  overwrite = true,
+) {
   const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    return null
+  }
+
   const records = await readOwnershipRecords()
+  const existing = records.find((record) => record.relativePath === normalizedPath)
+  if (existing && !overwrite) {
+    return existing
+  }
+
   const uploadedAt = new Date().toISOString()
   const nextRecord: KnowledgeBaseOwnershipRecord = {
     relativePath: normalizedPath,
+    entryType,
     ownerId: owner.ownerId,
     ownerName: owner.ownerName,
     ownerEmail: owner.ownerEmail,
@@ -135,6 +161,23 @@ async function setKnowledgeBaseFileOwner(relativePath: string, owner: KnowledgeB
   next.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
   await writeOwnershipRecords(next)
   return nextRecord
+}
+
+async function setKnowledgeBaseFileOwner(relativePath: string, owner: KnowledgeBaseFileOwner) {
+  return setKnowledgeBaseOwnershipRecord(relativePath, owner, "file")
+}
+
+async function ensureKnowledgeBaseFolderOwner(relativePath: string, owner: KnowledgeBaseFileOwner) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    return
+  }
+
+  const segments = normalizedPath.split("/")
+  for (let index = 0; index < segments.length; index += 1) {
+    const currentPath = segments.slice(0, index + 1).join("/")
+    await setKnowledgeBaseOwnershipRecord(currentPath, owner, "folder", false)
+  }
 }
 
 async function removeKnowledgeBaseFileOwner(relativePath: string) {
@@ -153,6 +196,7 @@ function buildKnowledgeBaseDocumentNode(
   },
   ownershipMap: Map<string, KnowledgeBaseOwnershipRecord>,
   viewerUserId?: string,
+  isAdmin = false,
 ): KnowledgeBaseDocumentNode {
   const extension = getExtension(input.name)
   const ownership = ownershipMap.get(input.relativePath)
@@ -168,7 +212,7 @@ function buildKnowledgeBaseDocumentNode(
     uploadedAt: ownership?.uploadedAt || null,
     canPreview: isKnowledgeBasePreviewable(extension),
     canChat: isKnowledgeBaseChatSupported(extension),
-    canDelete: Boolean(viewerUserId && ownership?.ownerId && ownership.ownerId === viewerUserId),
+    canDelete: isAdmin || Boolean(viewerUserId && ownership?.ownerId && ownership.ownerId === viewerUserId),
   }
 }
 
@@ -253,6 +297,7 @@ async function buildFolderTree(
   relativeDir: string,
   ownershipMap: Map<string, KnowledgeBaseOwnershipRecord>,
   viewerUserId?: string,
+  isAdmin = false,
 ): Promise<KnowledgeBaseFolderNode> {
   const entries = await fs.readdir(absoluteDir, { withFileTypes: true })
 
@@ -264,7 +309,7 @@ async function buildFolderTree(
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
 
     if (entry.isDirectory()) {
-      folders.push(await buildFolderTree(absolutePath, relativePath, ownershipMap, viewerUserId))
+      folders.push(await buildFolderTree(absolutePath, relativePath, ownershipMap, viewerUserId, isAdmin))
       continue
     }
 
@@ -283,6 +328,7 @@ async function buildFolderTree(
         },
         ownershipMap,
         viewerUserId,
+        isAdmin,
       ),
     )
   }
@@ -290,23 +336,68 @@ async function buildFolderTree(
   folders.sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))
   documents.sort((left, right) => left.name.localeCompare(right.name, "zh-CN"))
 
+  const size = documents.reduce((total, document) => total + document.size, 0) + folders.reduce((total, folder) => total + folder.size, 0)
+  const explicitOwner = relativeDir ? ownershipMap.get(relativeDir) : null
+  let fallbackOwnerId: string | null = null
+  let fallbackOwnerName: string | null = null
+  let fallbackUploadedAt: string | null = null
+
+  const considerCandidate = (candidate: { ownerId: string | null; ownerName: string; uploadedAt: string | null }) => {
+    if (!candidate.uploadedAt || !candidate.ownerName || candidate.ownerName === "未知" || candidate.ownerName === "-") {
+      return
+    }
+
+    if (!fallbackUploadedAt) {
+      fallbackOwnerId = candidate.ownerId
+      fallbackOwnerName = candidate.ownerName
+      fallbackUploadedAt = candidate.uploadedAt
+      return
+    }
+
+    const currentTime = new Date(fallbackUploadedAt).getTime()
+    const nextTime = new Date(candidate.uploadedAt).getTime()
+    if (Number.isNaN(nextTime)) {
+      return
+    }
+    if (Number.isNaN(currentTime) || nextTime < currentTime) {
+      fallbackOwnerId = candidate.ownerId
+      fallbackOwnerName = candidate.ownerName
+      fallbackUploadedAt = candidate.uploadedAt
+    }
+  }
+
+  for (const document of documents) {
+    considerCandidate({ ownerId: document.ownerId, ownerName: document.ownerName, uploadedAt: document.uploadedAt })
+  }
+
+  for (const folder of folders) {
+    considerCandidate({ ownerId: folder.ownerId, ownerName: folder.ownerName, uploadedAt: folder.uploadedAt })
+  }
+
   return {
     name: relativeDir ? path.basename(relativeDir) : "全部资料",
     relativePath: relativeDir,
+    size,
+    ownerId: explicitOwner?.ownerId || fallbackOwnerId,
+    ownerName: explicitOwner?.ownerName || fallbackOwnerName || "-",
+    uploadedAt: explicitOwner?.uploadedAt || fallbackUploadedAt,
     folders,
     documents,
   }
 }
 
-export async function listKnowledgeBaseTree(viewerUserId?: string) {
+export async function listKnowledgeBaseTree(viewerUserId?: string, isAdmin = false) {
   const root = await ensureKnowledgeBaseStorage()
   const ownershipMap = await getOwnershipMap()
-  return buildFolderTree(root, "", ownershipMap, viewerUserId)
+  return buildFolderTree(root, "", ownershipMap, viewerUserId, isAdmin)
 }
 
-export async function createKnowledgeBaseFolder(relativePath: string) {
+export async function createKnowledgeBaseFolder(relativePath: string, owner?: KnowledgeBaseFileOwner) {
   const { target, normalized } = await resolveKnowledgeBasePath(relativePath)
   await fs.mkdir(target, { recursive: true })
+  if (owner) {
+    await ensureKnowledgeBaseFolderOwner(normalized, owner)
+  }
   return {
     relativePath: normalized,
     name: normalized ? path.basename(normalized) : "全部资料",
@@ -317,6 +408,9 @@ export async function saveKnowledgeBaseFile(folderPath: string, file: File, owne
   const safeName = sanitizeFileName(file.name || "document")
   const { target: folderAbsolutePath, normalized } = await resolveKnowledgeBasePath(folderPath)
   await fs.mkdir(folderAbsolutePath, { recursive: true })
+  if (owner) {
+    await ensureKnowledgeBaseFolderOwner(normalized, owner)
+  }
 
   const absolutePath = path.join(folderAbsolutePath, safeName)
   assertInsideRoot(await ensureKnowledgeBaseStorage(), absolutePath)
@@ -368,6 +462,9 @@ export async function saveKnowledgeBaseFileWithRelativePath(
 
   const { target: folderAbsolutePath, normalized } = await resolveKnowledgeBasePath(targetFolder)
   await fs.mkdir(folderAbsolutePath, { recursive: true })
+  if (owner) {
+    await ensureKnowledgeBaseFolderOwner(normalized, owner)
+  }
 
   const absolutePath = path.join(folderAbsolutePath, safeName)
   assertInsideRoot(await ensureKnowledgeBaseStorage(), absolutePath)
@@ -420,7 +517,7 @@ async function removeEmptyKnowledgeBaseDirectories(relativePath: string) {
   }
 }
 
-export async function deleteKnowledgeBaseFile(relativePath: string, actorUserId: string) {
+export async function deleteKnowledgeBaseFile(relativePath: string, actorUserId: string, isAdmin = false) {
   const normalizedPath = normalizeKnowledgeBasePath(relativePath)
   if (!normalizedPath) {
     throw new Error("缺少文件路径")
@@ -429,13 +526,15 @@ export async function deleteKnowledgeBaseFile(relativePath: string, actorUserId:
     throw new Error("缺少用户信息")
   }
 
-  const ownershipMap = await getOwnershipMap()
-  const ownership = ownershipMap.get(normalizedPath)
-  if (!ownership) {
-    throw new Error("文件缺少归属信息，无法删除")
-  }
-  if (ownership.ownerId !== actorUserId) {
-    throw new Error("只有上传者可以删除该文件")
+  if (!isAdmin) {
+    const ownershipMap = await getOwnershipMap()
+    const ownership = ownershipMap.get(normalizedPath)
+    if (!ownership) {
+      throw new Error("文件缺少归属信息，无法删除")
+    }
+    if (ownership.ownerId !== actorUserId) {
+      throw new Error("只有上传者可以删除该文件")
+    }
   }
 
   const { target } = await resolveKnowledgeBasePath(normalizedPath)
@@ -489,10 +588,25 @@ async function readChatDocumentText(absolutePath: string, extension: string) {
     }
   }
 
+  if (extension === ".doc") {
+    const extractor = new WordExtractor()
+    const parsed = await extractor.extract(absolutePath)
+    return parsed.getBody().replace(/\s+/g, " ").trim()
+  }
+
   if (extension === ".docx") {
     const buffer = await fs.readFile(absolutePath)
-    const parsed = await mammoth.extractRawText({ buffer })
-    return parsed.value.replace(/\s+/g, " ").trim()
+    try {
+      const parsed = await mammoth.extractRawText({ buffer })
+      const text = parsed.value.replace(/\s+/g, " ").trim()
+      if (text) return text
+    } catch {
+      // Fall through to word-extractor for misidentified .doc files
+    }
+    // Fallback: try word-extractor (handles .doc files renamed to .docx)
+    const extractor = new WordExtractor()
+    const parsed = await extractor.extract(absolutePath)
+    return parsed.getBody().replace(/\s+/g, " ").trim()
   }
 
   if (extension === ".xlsx" || extension === ".xls") {
@@ -521,6 +635,180 @@ async function readChatDocumentText(absolutePath: string, extension: string) {
   }
 
   return raw
+}
+
+export { readChatDocumentText as readFileDocumentText }
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
+function buildKnowledgeBasePreviewHtml(title: string, body: string) {
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #ffffff;
+        color: #111827;
+        line-height: 1.6;
+        word-break: break-word;
+      }
+      h1, h2, h3, h4, h5, h6 {
+        margin: 0 0 12px;
+        line-height: 1.35;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 16px 0;
+        font-size: 14px;
+      }
+      th, td {
+        border: 1px solid #d1d5db;
+        padding: 8px 10px;
+        vertical-align: top;
+      }
+      th {
+        background: #f3f4f6;
+        font-weight: 600;
+      }
+      section {
+        margin-bottom: 24px;
+      }
+      img {
+        max-width: 100%;
+        height: auto;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>${body}</body>
+</html>`
+}
+
+export async function readKnowledgeBasePreviewContent(relativePath: string) {
+  const file = await getKnowledgeBaseFile(relativePath)
+  if (!isKnowledgeBaseTextPreview(file.extension)) {
+    throw new Error("该文件暂不支持文本预览")
+  }
+
+  if (file.extension === ".docx") {
+    try {
+      const buffer = await fs.readFile(file.absolutePath)
+      const parsed = await mammoth.convertToHtml({ buffer })
+      if (parsed.value) {
+        return {
+          content: buildKnowledgeBasePreviewHtml(file.name, parsed.value),
+          contentType: "text/html; charset=utf-8",
+        }
+      }
+    } catch {
+      // fall through to plain-text fallback
+    }
+    const text = await readChatDocumentText(file.absolutePath, file.extension)
+    return {
+      content: buildKnowledgeBasePreviewHtml(file.name, `<pre>${escapeHtml(text)}</pre>`),
+      contentType: "text/html; charset=utf-8",
+    }
+  }
+
+  if (file.extension === ".doc") {
+    // Try converting .doc → .docx via LibreOffice, then use mammoth for rich HTML
+    try {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "doc-preview-"))
+      try {
+        await execFileAsync("soffice", [
+          "--headless",
+          "--convert-to", "docx",
+          "--outdir", tmpDir,
+          file.absolutePath,
+        ], { timeout: 30_000 })
+        const baseName = path.basename(file.name, path.extname(file.name))
+        const docxPath = path.join(tmpDir, `${baseName}.docx`)
+        const buffer = await fs.readFile(docxPath)
+        const parsed = await mammoth.convertToHtml({ buffer })
+        if (parsed.value) {
+          return {
+            content: buildKnowledgeBasePreviewHtml(file.name, parsed.value),
+            contentType: "text/html; charset=utf-8",
+          }
+        }
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => undefined)
+      }
+    } catch {
+      // LibreOffice not available or conversion failed — fall back to word-extractor
+    }
+    try {
+      const extractor = new WordExtractor()
+      const parsed = await extractor.extract(file.absolutePath)
+      const body = parsed.getBody()
+      const paragraphs = body.split(/\n+/).filter((p: string) => p.trim())
+      const html = paragraphs.map((p: string) => `<p>${escapeHtml(p.trim())}</p>`).join("\n")
+      return {
+        content: buildKnowledgeBasePreviewHtml(file.name, html),
+        contentType: "text/html; charset=utf-8",
+      }
+    } catch {
+      // fall through to plain-text fallback
+    }
+    const text = await readChatDocumentText(file.absolutePath, file.extension)
+    return {
+      content: buildKnowledgeBasePreviewHtml(file.name, `<pre>${escapeHtml(text)}</pre>`),
+      contentType: "text/html; charset=utf-8",
+    }
+  }
+
+  if (file.extension === ".xlsx" || file.extension === ".xls") {
+    try {
+      const workbook = XLSX.read(await fs.readFile(file.absolutePath), { type: "buffer" })
+      const sections = workbook.SheetNames.map((sheetName) => {
+        const worksheet = workbook.Sheets[sheetName]
+        const sheetHtml = XLSX.utils.sheet_to_html(worksheet)
+        return `<section><h2>${escapeHtml(sheetName)}</h2>${sheetHtml}</section>`
+      }).join("")
+
+      if (sections) {
+        return {
+          content: buildKnowledgeBasePreviewHtml(file.name, sections),
+          contentType: "text/html; charset=utf-8",
+        }
+      }
+    } catch {
+      // fall through to plain-text fallback
+    }
+    const text = await readChatDocumentText(file.absolutePath, file.extension)
+    return {
+      content: buildKnowledgeBasePreviewHtml(file.name, `<pre>${escapeHtml(text)}</pre>`),
+      contentType: "text/html; charset=utf-8",
+    }
+  }
+
+  const text = await readChatDocumentText(file.absolutePath, file.extension)
+  return {
+    content: text,
+    contentType: "text/plain; charset=utf-8",
+  }
 }
 
 async function collectChatDocumentsInDirectory(
@@ -553,7 +841,13 @@ async function collectChatDocumentsInDirectory(
       continue
     }
 
-    const text = await readChatDocumentText(absolutePath, extension)
+    let text: string
+    try {
+      text = await readChatDocumentText(absolutePath, extension)
+    } catch {
+      // Skip unreadable files so the rest of the folder can still be indexed
+      continue
+    }
     if (!text.trim()) {
       continue
     }
