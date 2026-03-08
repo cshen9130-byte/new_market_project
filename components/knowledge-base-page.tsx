@@ -1264,6 +1264,28 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     } catch {}
   }
 
+  const [reindexing, setReindexing] = useState(false)
+
+  async function handleReindex() {
+    if (reindexing) return
+    if (!window.confirm(`确认重新索引「${selectedFolder || "全部资料"}」？\n这将清除缓存并在下次提问时重新调用 AI 嵌入接口。`)) return
+    setReindexing(true)
+    try {
+      const res = await fetch("/api/knowledge-base/reindex", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ folderPath: selectedFolder || null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      setChatMessages([{ role: "assistant", content: `索引缓存已清除（${data.clearedFolder}）。下次提问时将自动重建索引。` }])
+    } catch (e: any) {
+      setChatMessages((c) => [...c, { role: "assistant", content: `重新索引失败：${e?.message || e}` }])
+    } finally {
+      setReindexing(false)
+    }
+  }
+
   async function handleAsk() {
     const trimmedQuestion = question.trim()
     if (!trimmedQuestion) return
@@ -1987,6 +2009,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             <div className="space-y-2 pb-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold">知识库问答</h2>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => void handleReindex()}
+                  disabled={reindexing}
+                  title="清除索引缓存，下次提问时重新嵌入"
+                >
+                  <RefreshCw className={cn("h-4 w-4", reindexing && "animate-spin")} />
+                  {reindexing ? "索引中..." : "重新索引"}
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -1997,6 +2031,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <History className="h-4 w-4" />
                   历史记录
                 </Button>
+              </div>
               </div>
               <div className="flex items-center justify-between text-sm text-muted-foreground">
                 <div className="flex items-center gap-2">

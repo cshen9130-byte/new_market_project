@@ -3,12 +3,67 @@ import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai"
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters"
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory"
 import { collectKnowledgeBaseDocuments, getKnowledgeBaseFile, readFileDocumentText, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
+import { createHash } from "crypto"
+import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from "fs"
+import path from "path"
+import { getServerStoragePath } from "@/lib/server/storage"
 
 type KnowledgeBaseIndexCacheEntry = {
   signature: string
   vectorStore: MemoryVectorStore
   indexedDocuments: number
   indexedChunks: number
+}
+
+// ── Disk persistence for vector index ────────────────────────────────────────
+
+type DiskIndexEntry = {
+  signature: string
+  indexedDocuments: number
+  indexedChunks: number
+  memoryVectors: Array<{ content: string; embedding: number[]; metadata: Record<string, unknown> }>
+}
+
+function getIndexCacheDir() {
+  return getServerStoragePath("kb_index")
+}
+
+function indexCacheFilePath(cacheKey: string) {
+  const hash = createHash("sha256").update(cacheKey).digest("hex").slice(0, 24)
+  return path.join(getIndexCacheDir(), `${hash}.json`)
+}
+
+function loadDiskIndex(cacheKey: string, signature: string): DiskIndexEntry | null {
+  try {
+    const file = indexCacheFilePath(cacheKey)
+    if (!existsSync(file)) return null
+    const data: DiskIndexEntry = JSON.parse(readFileSync(file, "utf-8"))
+    if (data.signature !== signature) return null
+    return data
+  } catch {
+    return null
+  }
+}
+
+function saveDiskIndex(cacheKey: string, entry: DiskIndexEntry) {
+  try {
+    mkdirSync(getIndexCacheDir(), { recursive: true })
+    writeFileSync(indexCacheFilePath(cacheKey), JSON.stringify(entry))
+  } catch {}
+}
+
+function deleteDiskIndex(cacheKey: string) {
+  try {
+    const file = indexCacheFilePath(cacheKey)
+    if (existsSync(file)) rmSync(file)
+  } catch {}
+}
+
+/** Clear both in-memory and on-disk vector index for a folder (or all if folderPath is null). */
+export function invalidateVectorStoreCache(folderPath?: string | null) {
+  const cacheKey = normalizeKnowledgeBasePath(folderPath) || "__root__"
+  getKnowledgeBaseIndexCache().delete(cacheKey)
+  deleteDiskIndex(cacheKey)
 }
 
 const DASHSCOPE_EMBEDDING_BATCH_SIZE = 5
@@ -70,11 +125,35 @@ async function getOrBuildVectorStore(folderPath: string) {
 
   const cacheKey = normalizedFolderPath || "__root__"
   const cache = getKnowledgeBaseIndexCache()
+
+  // 1. In-memory cache hit
   const existing = cache.get(cacheKey)
   if (existing && existing.signature === signature) {
     return existing
   }
 
+  // 2. Disk cache hit — restore without calling the embedding API
+  const diskEntry = loadDiskIndex(cacheKey, signature)
+  if (diskEntry) {
+    const embeddings = new OpenAIEmbeddings({
+      apiKey: getDashScopeApiKey(),
+      model: getEmbeddingModel(),
+      configuration: { baseURL: getDashScopeBaseUrl() },
+    })
+    const vectorStore = new MemoryVectorStore(embeddings)
+    // memoryVectors is a public property; inject saved vectors directly
+    ;(vectorStore as any).memoryVectors = diskEntry.memoryVectors
+    const restored: KnowledgeBaseIndexCacheEntry = {
+      signature,
+      vectorStore,
+      indexedDocuments: diskEntry.indexedDocuments,
+      indexedChunks: diskEntry.indexedChunks,
+    }
+    cache.set(cacheKey, restored)
+    return restored
+  }
+
+  // 3. Build from scratch — call DashScope embedding API
   const splitter = new RecursiveCharacterTextSplitter({
     chunkSize: 1200,
     chunkOverlap: 180,
@@ -111,7 +190,8 @@ async function getOrBuildVectorStore(folderPath: string) {
   } catch (err: any) {
     throw classifyApiError(err)
   }
-  const nextValue = {
+
+  const nextValue: KnowledgeBaseIndexCacheEntry = {
     signature,
     vectorStore,
     indexedDocuments: sourceDocuments.length,
@@ -119,6 +199,15 @@ async function getOrBuildVectorStore(folderPath: string) {
   }
 
   cache.set(cacheKey, nextValue)
+
+  // Persist to disk so restarts don't re-embed
+  saveDiskIndex(cacheKey, {
+    signature,
+    indexedDocuments: sourceDocuments.length,
+    indexedChunks: splitDocuments.length,
+    memoryVectors: (vectorStore as any).memoryVectors,
+  })
+
   return nextValue
 }
 
