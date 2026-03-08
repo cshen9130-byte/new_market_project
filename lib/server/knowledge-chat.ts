@@ -11,7 +11,7 @@ type KnowledgeBaseIndexCacheEntry = {
   indexedChunks: number
 }
 
-const DASHSCOPE_EMBEDDING_BATCH_SIZE = 10
+const DASHSCOPE_EMBEDDING_BATCH_SIZE = 5
 
 function getDashScopeApiKey() {
   const apiKey = process.env.DASHSCOPE_API_KEY
@@ -97,12 +97,20 @@ async function getOrBuildVectorStore(folderPath: string) {
     apiKey: getDashScopeApiKey(),
     model: getEmbeddingModel(),
     batchSize: DASHSCOPE_EMBEDDING_BATCH_SIZE,
+    // Serialize batches and retry with exponential backoff to avoid 429 rate limits
+    maxConcurrency: 1,
+    maxRetries: 6,
     configuration: {
       baseURL: getDashScopeBaseUrl(),
     },
   })
 
-  const vectorStore = await MemoryVectorStore.fromDocuments(splitDocuments, embeddings)
+  let vectorStore: MemoryVectorStore
+  try {
+    vectorStore = await MemoryVectorStore.fromDocuments(splitDocuments, embeddings)
+  } catch (err: any) {
+    throw classifyApiError(err)
+  }
   const nextValue = {
     signature,
     vectorStore,
@@ -112,6 +120,19 @@ async function getOrBuildVectorStore(folderPath: string) {
 
   cache.set(cacheKey, nextValue)
   return nextValue
+}
+
+/** Detect DashScope/OpenAI-style errors and rethrow with a Chinese-friendly message. */
+function classifyApiError(err: unknown): Error {
+  const msg = String((err as any)?.message || err || "")
+  const status = (err as any)?.status ?? (err as any)?.response?.status ?? 0
+  if (status === 429 || msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("quota")) {
+    return new Error(
+      "AI 接口调用频率超限（429）。原因可能是：①知识库文件较多、分块数量大，单次构建索引耗尽速率配额；②账号当前套餐额度已用完。" +
+      "\n建议：①切换到具体子文件夹提问（而非全部资料）；②稍等片刻后重试；③检查 DashScope 控制台账单与用量配额。"
+    )
+  }
+  return err instanceof Error ? err : new Error(msg || "AI 接口调用失败")
 }
 
 function extractTokenUsage(response: { usage_metadata?: unknown; response_metadata?: unknown }): { inputTokens: number; outputTokens: number; totalTokens: number } {
@@ -199,8 +220,9 @@ export async function askKnowledgeBaseQuestion(input: { question: string; folder
     index = await getOrBuildVectorStore(folderPath)
     matches = await index.vectorStore.similaritySearch(question, 6)
   } catch (error: any) {
-    if (!String(error?.message || error).includes("没有可用于问答的文档")) {
-      throw error
+    const msg = String(error?.message || error)
+    if (!msg.includes("没有可用于问答的文档")) {
+      throw classifyApiError(error)
     }
   }
 

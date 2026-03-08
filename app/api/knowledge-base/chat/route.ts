@@ -59,6 +59,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ ok: true, conversationId: effectiveConversationId, ...answer })
   } catch (error: any) {
-    return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
+    const msg: string = error?.message || String(error)
+    const isRateLimit = msg.includes("429") || msg.toLowerCase().includes("rate limit") || msg.toLowerCase().includes("quota")
+    return NextResponse.json({ ok: false, error: msg }, { status: isRateLimit ? 429 : 500 })
   }
 }
