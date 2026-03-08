@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
+import { invalidateVectorStoreCache, syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -45,6 +46,11 @@ export async function DELETE(req: Request) {
     }
 
     await deleteKnowledgeBaseFolder(relativePath, currentUser.id, currentUser.role === "admin")
+
+    // Folder deletion can affect multiple nested scopes; clear all caches then warm root.
+    invalidateVectorStoreCache()
+    void syncVectorStoreForScope("")
+
     return NextResponse.json({ ok: true })
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })

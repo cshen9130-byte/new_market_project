@@ -7,6 +7,7 @@ import {
   readKnowledgeBasePreviewContent,
 } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
+import { syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -67,6 +68,11 @@ export async function DELETE(req: Request) {
     }
 
     await deleteKnowledgeBaseFile(relativePath, currentUser.id, currentUser.role === "admin")
+
+    const parentFolder = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
+    // Warm incremental index for root and parent folder scope.
+    void Promise.allSettled([syncVectorStoreForScope(""), syncVectorStoreForScope(parentFolder)])
+
     return NextResponse.json({ ok: true })
   } catch (error: any) {
     const message = error?.message || String(error)

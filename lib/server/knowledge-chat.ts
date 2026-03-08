@@ -17,11 +17,30 @@ type KnowledgeBaseIndexCacheEntry = {
 
 // ── Disk persistence for vector index ────────────────────────────────────────
 
+type FileFingerprint = {
+  size: number
+  updatedAt: string
+}
+
+type MemoryVectorRow = {
+  content: string
+  embedding: number[]
+  metadata: Record<string, unknown>
+}
+
 type DiskIndexEntry = {
-  signature: string
+  version: 2
+  scope: string
+  model: string
+  splitter: {
+    chunkSize: number
+    chunkOverlap: number
+  }
+  files: Record<string, FileFingerprint>
   indexedDocuments: number
   indexedChunks: number
-  memoryVectors: Array<{ content: string; embedding: number[]; metadata: Record<string, unknown> }>
+  memoryVectors: MemoryVectorRow[]
+  updatedAt: string
 }
 
 function getIndexCacheDir() {
@@ -33,13 +52,33 @@ function indexCacheFilePath(cacheKey: string) {
   return path.join(getIndexCacheDir(), `${hash}.json`)
 }
 
-function loadDiskIndex(cacheKey: string, signature: string): DiskIndexEntry | null {
+function normalizeLoadedDiskEntry(cacheKey: string, data: any): DiskIndexEntry | null {
+  // Backward compatibility for v1 single-signature cache format
+  if (data && data.signature && Array.isArray(data.memoryVectors)) {
+    return {
+      version: 2,
+      scope: cacheKey === "__root__" ? "" : cacheKey,
+      model: getEmbeddingModel(),
+      splitter: { chunkSize: 1200, chunkOverlap: 180 },
+      files: {},
+      indexedDocuments: Number(data.indexedDocuments ?? 0),
+      indexedChunks: Number(data.indexedChunks ?? 0),
+      memoryVectors: data.memoryVectors,
+      updatedAt: new Date().toISOString(),
+    }
+  }
+  if (!data || data.version !== 2 || !Array.isArray(data.memoryVectors) || typeof data.files !== "object") {
+    return null
+  }
+  return data as DiskIndexEntry
+}
+
+function loadDiskIndex(cacheKey: string): DiskIndexEntry | null {
   try {
     const file = indexCacheFilePath(cacheKey)
     if (!existsSync(file)) return null
-    const data: DiskIndexEntry = JSON.parse(readFileSync(file, "utf-8"))
-    if (data.signature !== signature) return null
-    return data
+    const raw = JSON.parse(readFileSync(file, "utf-8"))
+    return normalizeLoadedDiskEntry(cacheKey, raw)
   } catch {
     return null
   }
@@ -59,10 +98,28 @@ function deleteDiskIndex(cacheKey: string) {
   } catch {}
 }
 
+function computeSignatureFromFiles(files: Record<string, FileFingerprint>) {
+  return Object.entries(files)
+    .sort(([a], [b]) => a.localeCompare(b, "zh-CN"))
+    .map(([p, f]) => `${p}:${f.size}:${f.updatedAt}`)
+    .join("|")
+}
+
 /** Clear both in-memory and on-disk vector index for a folder (or all if folderPath is null). */
 export function invalidateVectorStoreCache(folderPath?: string | null) {
-  const cacheKey = normalizeKnowledgeBasePath(folderPath) || "__root__"
-  getKnowledgeBaseIndexCache().delete(cacheKey)
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const cache = getKnowledgeBaseIndexCache()
+  if (!normalized) {
+    cache.clear()
+    try {
+      const dir = getIndexCacheDir()
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+    } catch {}
+    return
+  }
+
+  const cacheKey = normalized || "__root__"
+  cache.delete(cacheKey)
   deleteDiskIndex(cacheKey)
 }
 
@@ -111,68 +168,38 @@ function getKnowledgeBaseIndexCache() {
   return scope.__knowledgeBaseIndexCache
 }
 
-async function getOrBuildVectorStore(folderPath: string) {
-  const normalizedFolderPath = normalizeKnowledgeBasePath(folderPath)
-  const sourceDocuments = await collectKnowledgeBaseDocuments(normalizedFolderPath)
-
-  if (!sourceDocuments.length) {
-    throw new Error("当前文件夹没有可用于问答的文档。支持 txt、md、json、csv、html、pdf。")
+function getScopeLockMap() {
+  const scope = globalThis as typeof globalThis & {
+    __knowledgeBaseIndexLocks?: Map<string, Promise<void>>
   }
-
-  const signature = sourceDocuments
-    .map((document) => `${document.relativePath}:${document.size}:${document.updatedAt}`)
-    .join("|")
-
-  const cacheKey = normalizedFolderPath || "__root__"
-  const cache = getKnowledgeBaseIndexCache()
-
-  // 1. In-memory cache hit
-  const existing = cache.get(cacheKey)
-  if (existing && existing.signature === signature) {
-    return existing
+  if (!scope.__knowledgeBaseIndexLocks) {
+    scope.__knowledgeBaseIndexLocks = new Map()
   }
+  return scope.__knowledgeBaseIndexLocks
+}
 
-  // 2. Disk cache hit — restore without calling the embedding API
-  const diskEntry = loadDiskIndex(cacheKey, signature)
-  if (diskEntry) {
-    const embeddings = new OpenAIEmbeddings({
-      apiKey: getDashScopeApiKey(),
-      model: getEmbeddingModel(),
-      configuration: { baseURL: getDashScopeBaseUrl() },
-    })
-    const vectorStore = new MemoryVectorStore(embeddings)
-    // memoryVectors is a public property; inject saved vectors directly
-    ;(vectorStore as any).memoryVectors = diskEntry.memoryVectors
-    const restored: KnowledgeBaseIndexCacheEntry = {
-      signature,
-      vectorStore,
-      indexedDocuments: diskEntry.indexedDocuments,
-      indexedChunks: diskEntry.indexedChunks,
-    }
-    cache.set(cacheKey, restored)
-    return restored
-  }
-
-  // 3. Build from scratch — call DashScope embedding API
-  const splitter = new RecursiveCharacterTextSplitter({
-    chunkSize: 1200,
-    chunkOverlap: 180,
+async function withScopeLock<T>(cacheKey: string, task: () => Promise<T>): Promise<T> {
+  const locks = getScopeLockMap()
+  const prev = locks.get(cacheKey) ?? Promise.resolve()
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
   })
+  locks.set(cacheKey, prev.then(() => gate))
 
-  const documents = sourceDocuments.map(
-    (document) =>
-      new Document({
-        pageContent: document.text,
-        metadata: {
-          source: document.relativePath,
-          size: document.size,
-          updatedAt: document.updatedAt,
-        },
-      }),
-  )
+  await prev
+  try {
+    return await task()
+  } finally {
+    release()
+    if (locks.get(cacheKey) === gate) {
+      locks.delete(cacheKey)
+    }
+  }
+}
 
-  const splitDocuments = await splitter.splitDocuments(documents)
-  const embeddings = new OpenAIEmbeddings({
+function createIndexEmbeddingsModel() {
+  return new OpenAIEmbeddings({
     apiKey: getDashScopeApiKey(),
     model: getEmbeddingModel(),
     batchSize: DASHSCOPE_EMBEDDING_BATCH_SIZE,
@@ -183,32 +210,146 @@ async function getOrBuildVectorStore(folderPath: string) {
       baseURL: getDashScopeBaseUrl(),
     },
   })
+}
 
-  let vectorStore: MemoryVectorStore
-  try {
-    vectorStore = await MemoryVectorStore.fromDocuments(splitDocuments, embeddings)
-  } catch (err: any) {
-    throw classifyApiError(err)
+function createVectorStoreFromRows(rows: MemoryVectorRow[]) {
+  const vectorStore = new MemoryVectorStore(
+    new OpenAIEmbeddings({
+      apiKey: getDashScopeApiKey(),
+      model: getEmbeddingModel(),
+      configuration: { baseURL: getDashScopeBaseUrl() },
+    }),
+  )
+  ;(vectorStore as any).memoryVectors = rows
+  return vectorStore
+}
+
+function buildFileFingerprintMap(
+  sourceDocuments: Array<{ relativePath: string; size: number; updatedAt: string }>,
+): Record<string, FileFingerprint> {
+  const map: Record<string, FileFingerprint> = {}
+  for (const doc of sourceDocuments) {
+    map[doc.relativePath] = { size: doc.size, updatedAt: doc.updatedAt }
   }
+  return map
+}
 
-  const nextValue: KnowledgeBaseIndexCacheEntry = {
-    signature,
-    vectorStore,
-    indexedDocuments: sourceDocuments.length,
-    indexedChunks: splitDocuments.length,
-  }
+function fingerprintChanged(next: FileFingerprint | undefined, prev: FileFingerprint | undefined) {
+  if (!next || !prev) return true
+  return next.size !== prev.size || next.updatedAt !== prev.updatedAt
+}
 
-  cache.set(cacheKey, nextValue)
+async function getOrBuildVectorStore(folderPath: string) {
+  const normalizedFolderPath = normalizeKnowledgeBasePath(folderPath)
+  const cacheKey = normalizedFolderPath || "__root__"
 
-  // Persist to disk so restarts don't re-embed
-  saveDiskIndex(cacheKey, {
-    signature,
-    indexedDocuments: sourceDocuments.length,
-    indexedChunks: splitDocuments.length,
-    memoryVectors: (vectorStore as any).memoryVectors,
+  return withScopeLock(cacheKey, async () => {
+    const sourceDocuments = await collectKnowledgeBaseDocuments(normalizedFolderPath)
+
+    if (!sourceDocuments.length) {
+      throw new Error("当前文件夹没有可用于问答的文档。支持 txt、md、json、csv、html、pdf。")
+    }
+
+    const nextFiles = buildFileFingerprintMap(sourceDocuments)
+    const nextSignature = computeSignatureFromFiles(nextFiles)
+    const cache = getKnowledgeBaseIndexCache()
+    const inMemory = cache.get(cacheKey)
+    if (inMemory && inMemory.signature === nextSignature) {
+      return inMemory
+    }
+
+    const splitter = new RecursiveCharacterTextSplitter({
+      chunkSize: 1200,
+      chunkOverlap: 180,
+    })
+
+    const disk = loadDiskIndex(cacheKey)
+    const prevFiles = disk?.files ?? {}
+
+    const updatedOrAdded: string[] = []
+    for (const [relativePath, fp] of Object.entries(nextFiles)) {
+      if (fingerprintChanged(fp, prevFiles[relativePath])) {
+        updatedOrAdded.push(relativePath)
+      }
+    }
+
+    const deleted = new Set<string>()
+    for (const relativePath of Object.keys(prevFiles)) {
+      if (!nextFiles[relativePath]) {
+        deleted.add(relativePath)
+      }
+    }
+
+    const changed = new Set<string>([...updatedOrAdded, ...deleted])
+    const baseRows = (disk?.memoryVectors ?? []).filter((row) => {
+      const src = String(row?.metadata?.source || "")
+      return src && !changed.has(src)
+    })
+
+    let appendedRows: MemoryVectorRow[] = []
+    if (updatedOrAdded.length > 0) {
+      const docMap = new Map(sourceDocuments.map((doc) => [doc.relativePath, doc]))
+      const changedDocs = updatedOrAdded
+        .map((p) => docMap.get(p))
+        .filter((doc): doc is NonNullable<typeof docMap extends Map<any, infer V> ? V : never> => Boolean(doc))
+
+      const splitInput = changedDocs.map(
+        (document) =>
+          new Document({
+            pageContent: document.text,
+            metadata: {
+              source: document.relativePath,
+              size: document.size,
+              updatedAt: document.updatedAt,
+            },
+          }),
+      )
+      const splitDocuments = await splitter.splitDocuments(splitInput)
+      if (splitDocuments.length > 0) {
+        try {
+          const partialStore = await MemoryVectorStore.fromDocuments(splitDocuments, createIndexEmbeddingsModel())
+          appendedRows = ((partialStore as any).memoryVectors ?? []) as MemoryVectorRow[]
+        } catch (err: any) {
+          throw classifyApiError(err)
+        }
+      }
+    }
+
+    const mergedRows = [...baseRows, ...appendedRows]
+    const vectorStore = createVectorStoreFromRows(mergedRows)
+
+    const nextValue: KnowledgeBaseIndexCacheEntry = {
+      signature: nextSignature,
+      vectorStore,
+      indexedDocuments: sourceDocuments.length,
+      indexedChunks: mergedRows.length,
+    }
+    cache.set(cacheKey, nextValue)
+
+    saveDiskIndex(cacheKey, {
+      version: 2,
+      scope: normalizedFolderPath,
+      model: getEmbeddingModel(),
+      splitter: { chunkSize: 1200, chunkOverlap: 180 },
+      files: nextFiles,
+      indexedDocuments: sourceDocuments.length,
+      indexedChunks: mergedRows.length,
+      memoryVectors: mergedRows,
+      updatedAt: new Date().toISOString(),
+    })
+
+    return nextValue
   })
+}
 
-  return nextValue
+export async function syncVectorStoreForScope(folderPath?: string | null) {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const index = await getOrBuildVectorStore(normalized)
+  return {
+    scope: normalized || "",
+    indexedDocuments: index.indexedDocuments,
+    indexedChunks: index.indexedChunks,
+  }
 }
 
 /** Detect DashScope/OpenAI-style errors and rethrow with a Chinese-friendly message. */
