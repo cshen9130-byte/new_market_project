@@ -1291,6 +1291,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           folderName: selectedFolder || "全部资料",
         }),
       })
+      const contentType = res.headers.get("content-type") ?? ""
+      if (!contentType.includes("application/json")) {
+        const text = await res.text()
+        const preview = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120)
+        throw new Error(`服务器返回了非 JSON 响应（HTTP ${res.status}）：${preview || res.statusText}`)
+      }
       const data = await res.json()
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || res.statusText)
