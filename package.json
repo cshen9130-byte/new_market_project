@@ -79,12 +79,14 @@
     "tailwindcss-animate": "^1.0.7",
     "three": "latest",
     "vaul": "^1.1.2",
+    "better-sqlite3": "^11.0.0",
     "word-extractor": "^1.0.4",
     "xlsx": "^0.18.5",
     "zod": "3.25.76"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.1.9",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",

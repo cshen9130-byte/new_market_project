@@ -1,12 +1,46 @@
 /**
  * SQLite-backed chat history store.
  * Database file is stored outside the project directory so it survives deployments.
+ *
+ * Uses node:sqlite (Node 22+ / Node 24) when available at runtime,
+ * and falls back to better-sqlite3 (Node 20) otherwise.
  */
-import { DatabaseSync } from "node:sqlite"
 import { randomUUID } from "crypto"
 import { mkdirSync } from "fs"
 import path from "path"
 import { getServerStoragePath } from "@/lib/server/storage"
+
+// ── Cross-version SQLite compatibility ───────────────────────────────────────
+
+interface SqlStatement {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  run(...args: any[]): unknown
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  get(...args: any[]): any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  all(...args: any[]): any[]
+}
+
+interface SqlDatabase {
+  exec(sql: string): void
+  prepare(sql: string): SqlStatement
+}
+
+function openSqlite(filePath: string): SqlDatabase {
+  try {
+    // node:sqlite is stable in Node 23+ and available (with flag) in Node 22+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require("node:sqlite") as {
+      DatabaseSync: new (path: string) => SqlDatabase
+    }
+    return new DatabaseSync(filePath)
+  } catch {
+    // Fallback for Node 20 and any version without node:sqlite
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const BetterSqlite3 = require("better-sqlite3") as new (path: string) => SqlDatabase
+    return new BetterSqlite3(filePath)
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,16 +65,16 @@ export type ChatMessage = {
 
 // ── DB initialisation ─────────────────────────────────────────────────────────
 
-let _db: DatabaseSync | null = null
+let _db: SqlDatabase | null = null
 
-function getDb(): DatabaseSync {
+function getDb(): SqlDatabase {
   if (_db) return _db
 
   const dbDir = getServerStoragePath("chat_history")
   mkdirSync(dbDir, { recursive: true })
   const dbPath = path.join(dbDir, "chat_history.db")
 
-  const db = new DatabaseSync(dbPath)
+  const db = openSqlite(dbPath)
   db.exec(`PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;`)
 
   db.exec(`
