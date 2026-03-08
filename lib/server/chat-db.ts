@@ -1,46 +1,16 @@
 /**
- * SQLite-backed chat history store.
- * Database file is stored outside the project directory so it survives deployments.
+ * JSON file-backed chat history store.
+ * No native dependencies — works on any Node version (Node 18+).
+ * Files are stored outside the project directory so they survive deployments.
  *
- * Uses node:sqlite (Node 22+ / Node 24) when available at runtime,
- * and falls back to better-sqlite3 (Node 20) otherwise.
+ * Storage layout:
+ *   {storageDir}/chat_history/conversations.json   — all conversations array
+ *   {storageDir}/chat_history/messages/{id}.json   — messages for one conversation
  */
 import { randomUUID } from "crypto"
-import { mkdirSync } from "fs"
+import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from "fs"
 import path from "path"
 import { getServerStoragePath } from "@/lib/server/storage"
-
-// ── Cross-version SQLite compatibility ───────────────────────────────────────
-
-interface SqlStatement {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  run(...args: any[]): unknown
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  get(...args: any[]): any
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  all(...args: any[]): any[]
-}
-
-interface SqlDatabase {
-  exec(sql: string): void
-  prepare(sql: string): SqlStatement
-}
-
-function openSqlite(filePath: string): SqlDatabase {
-  try {
-    // node:sqlite is stable in Node 23+ and available (with flag) in Node 22+
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { DatabaseSync } = require("node:sqlite") as {
-      DatabaseSync: new (path: string) => SqlDatabase
-    }
-    return new DatabaseSync(filePath)
-  } catch {
-    // Fallback for Node 20 and any version without node:sqlite
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const BetterSqlite3 = require("better-sqlite3") as new (path: string) => SqlDatabase
-    return new BetterSqlite3(filePath)
-  }
-}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,65 +33,55 @@ export type ChatMessage = {
   createdAt: string
 }
 
-// ── DB initialisation ─────────────────────────────────────────────────────────
+// ── Storage helpers ───────────────────────────────────────────────────────────
 
-let _db: SqlDatabase | null = null
+function storageDir(): string {
+  return getServerStoragePath("chat_history")
+}
 
-function getDb(): SqlDatabase {
-  if (_db) return _db
+function convsFile(): string {
+  return path.join(storageDir(), "conversations.json")
+}
 
-  const dbDir = getServerStoragePath("chat_history")
-  mkdirSync(dbDir, { recursive: true })
-  const dbPath = path.join(dbDir, "chat_history.db")
+function msgsFile(conversationId: string): string {
+  return path.join(storageDir(), "messages", `${conversationId}.json`)
+}
 
-  const db = openSqlite(dbPath)
-  db.exec(`PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;`)
+function readConversations(): ChatConversation[] {
+  mkdirSync(storageDir(), { recursive: true })
+  const file = convsFile()
+  if (!existsSync(file)) return []
+  try { return JSON.parse(readFileSync(file, "utf-8")) } catch { return [] }
+}
 
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      id          TEXT PRIMARY KEY,
-      user_id     TEXT NOT NULL,
-      title       TEXT NOT NULL,
-      scope       TEXT NOT NULL DEFAULT '',
-      scope_type  TEXT NOT NULL DEFAULT 'folder',
-      created_at  TEXT NOT NULL,
-      updated_at  TEXT NOT NULL
-    );
+function writeConversations(convs: ChatConversation[]): void {
+  mkdirSync(storageDir(), { recursive: true })
+  writeFileSync(convsFile(), JSON.stringify(convs, null, 2))
+}
 
-    CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at DESC);
+function readMessages(conversationId: string): ChatMessage[] {
+  const file = msgsFile(conversationId)
+  if (!existsSync(file)) return []
+  try { return JSON.parse(readFileSync(file, "utf-8")) } catch { return [] }
+}
 
-    CREATE TABLE IF NOT EXISTS messages (
-      id              TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      role            TEXT NOT NULL CHECK(role IN ('user','assistant')),
-      content         TEXT NOT NULL,
-      sources         TEXT NOT NULL DEFAULT '[]',
-      created_at      TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at ASC);
-  `)
-
-  _db = db
-  return db
+function writeMessages(conversationId: string, messages: ChatMessage[]): void {
+  const dir = path.join(storageDir(), "messages")
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(msgsFile(conversationId), JSON.stringify(messages, null, 2))
 }
 
 // ── Conversations ─────────────────────────────────────────────────────────────
 
 export function listConversations(userId: string): ChatConversation[] {
-  const db = getDb()
-  const rows = db
-    .prepare(`SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC LIMIT 100`)
-    .all(userId) as Record<string, string>[]
-  return rows.map(rowToConversation)
+  return readConversations()
+    .filter(c => c.userId === userId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, 100)
 }
 
 export function getConversation(id: string, userId: string): ChatConversation | null {
-  const db = getDb()
-  const row = db
-    .prepare(`SELECT * FROM conversations WHERE id = ? AND user_id = ?`)
-    .get(id, userId) as Record<string, string> | undefined
-  return row ? rowToConversation(row) : null
+  return readConversations().find(c => c.id === id && c.userId === userId) ?? null
 }
 
 export function createConversation(
@@ -130,55 +90,55 @@ export function createConversation(
   scope: string,
   scopeType: "folder" | "file",
 ): ChatConversation {
-  const db = getDb()
   const id = randomUUID()
   const now = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO conversations(id, user_id, title, scope, scope_type, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, userId, title, scope, scopeType, now, now)
-  return { id, userId, title, scope, scopeType, createdAt: now, updatedAt: now }
+  const conv: ChatConversation = { id, userId, title, scope, scopeType, createdAt: now, updatedAt: now }
+  const convs = readConversations()
+  convs.push(conv)
+  writeConversations(convs)
+  return conv
 }
 
-export function updateConversationTitle(id: string, userId: string, title: string) {
-  const db = getDb()
-  db.prepare(`UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND user_id = ?`)
-    .run(title, new Date().toISOString(), id, userId)
+export function updateConversationTitle(id: string, userId: string, title: string): void {
+  const convs = readConversations()
+  const conv = convs.find(c => c.id === id && c.userId === userId)
+  if (conv) {
+    conv.title = title
+    conv.updatedAt = new Date().toISOString()
+    writeConversations(convs)
+  }
 }
 
-export function touchConversation(id: string) {
-  const db = getDb()
-  db.prepare(`UPDATE conversations SET updated_at = ? WHERE id = ?`)
-    .run(new Date().toISOString(), id)
+export function touchConversation(id: string): void {
+  const convs = readConversations()
+  const conv = convs.find(c => c.id === id)
+  if (conv) {
+    conv.updatedAt = new Date().toISOString()
+    writeConversations(convs)
+  }
 }
 
-export function deleteConversation(id: string, userId: string) {
-  const db = getDb()
-  db.prepare(`DELETE FROM conversations WHERE id = ? AND user_id = ?`).run(id, userId)
+export function deleteConversation(id: string, userId: string): void {
+  const convs = readConversations()
+  const idx = convs.findIndex(c => c.id === id && c.userId === userId)
+  if (idx !== -1) {
+    convs.splice(idx, 1)
+    writeConversations(convs)
+    const file = msgsFile(id)
+    if (existsSync(file)) { try { rmSync(file) } catch { /* ignore */ } }
+  }
 }
 
 export function countMessages(conversationId: string): number {
-  const db = getDb()
-  const row = db
-    .prepare(`SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?`)
-    .get(conversationId) as { cnt: number } | undefined
-  return row?.cnt ?? 0
+  return readMessages(conversationId).length
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
 
 export function getMessages(conversationId: string, userId: string): ChatMessage[] {
-  const db = getDb()
-  // Verify ownership
-  const conv = db
-    .prepare(`SELECT id FROM conversations WHERE id = ? AND user_id = ?`)
-    .get(conversationId, userId) as { id: string } | undefined
+  const conv = readConversations().find(c => c.id === conversationId && c.userId === userId)
   if (!conv) return []
-
-  const rows = db
-    .prepare(`SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`)
-    .all(conversationId) as Record<string, string>[]
-  return rows.map(rowToMessage)
+  return readMessages(conversationId)
 }
 
 export function appendMessage(
@@ -187,40 +147,12 @@ export function appendMessage(
   content: string,
   sources: string[] = [],
 ): ChatMessage {
-  const db = getDb()
   const id = randomUUID()
   const now = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO messages(id, conversation_id, role, content, sources, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(id, conversationId, role, content, JSON.stringify(sources), now)
+  const message: ChatMessage = { id, conversationId, role, content, sources, createdAt: now }
+  const messages = readMessages(conversationId)
+  messages.push(message)
+  writeMessages(conversationId, messages)
   touchConversation(conversationId)
-  return { id, conversationId, role, content, sources, createdAt: now }
-}
-
-// ── Row mappers ───────────────────────────────────────────────────────────────
-
-function rowToConversation(row: Record<string, string>): ChatConversation {
-  return {
-    id: row.id,
-    userId: row.user_id,
-    title: row.title,
-    scope: row.scope,
-    scopeType: row.scope_type as "folder" | "file",
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }
-}
-
-function rowToMessage(row: Record<string, string>): ChatMessage {
-  let sources: string[] = []
-  try { sources = JSON.parse(row.sources) } catch {}
-  return {
-    id: row.id,
-    conversationId: row.conversation_id,
-    role: row.role as "user" | "assistant",
-    content: row.content,
-    sources,
-    createdAt: row.created_at,
-  }
+  return message
 }
