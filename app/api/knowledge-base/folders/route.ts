@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { createKnowledgeBaseFolder, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
+import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
 
 export const runtime = "nodejs"
@@ -25,6 +25,27 @@ export async function POST(req: Request) {
       ownerEmail: currentUser.email,
     })
     return NextResponse.json({ ok: true, folder })
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
+  }
+}
+
+export async function DELETE(req: Request) {
+  try {
+    const userId = String(req.headers.get("x-market-user-id") || "").trim()
+    const currentUser = userId ? await getUserById(userId) : null
+    if (!currentUser) {
+      return NextResponse.json({ ok: false, error: "请先登录后再删除文件夹" }, { status: 401 })
+    }
+
+    const body = await req.json().catch(() => ({}))
+    const relativePath = normalizeKnowledgeBasePath(body?.path)
+    if (!relativePath) {
+      return NextResponse.json({ ok: false, error: "请提供文件夹路径" }, { status: 400 })
+    }
+
+    await deleteKnowledgeBaseFolder(relativePath, currentUser.id, currentUser.role === "admin")
+    return NextResponse.json({ ok: true })
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
   }

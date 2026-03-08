@@ -61,6 +61,7 @@ type FolderNode = {
   ownerId: string | null
   ownerName: string
   uploadedAt: string | null
+  canDelete: boolean
   folders: FolderNode[]
   documents: DocumentNode[]
 }
@@ -1128,6 +1129,42 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  async function handleDeleteFolder(folder: FolderNode) {
+    if (!folder.canDelete) {
+      setError("只有创建者或管理员可以删除该文件夹")
+      return
+    }
+
+    const confirmed = window.confirm(`确定删除文件夹“${folder.name}”及其全部内容吗？此操作不可撤销。`)
+    if (!confirmed) return
+
+    try {
+      setDeletingPath(folder.relativePath)
+      setError(null)
+
+      const res = await fetch("/api/knowledge-base/folders", {
+        method: "DELETE",
+        headers: { ...getKnowledgeBaseAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ path: folder.relativePath }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
+      }
+
+      // Navigate up if we were inside the deleted folder
+      if (selectedFolder === folder.relativePath || selectedFolder.startsWith(folder.relativePath + "/")) {
+        setSelectedFolder(folder.relativePath.includes("/") ? folder.relativePath.split("/").slice(0, -1).join("/") : "")
+      }
+      setSelectedExplorerEntry(null)
+      await refreshTree()
+    } catch (requestError: any) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setDeletingPath(null)
+    }
+  }
+
   // ── Conversation helpers ────────────────────────────────────────────────────
 
   async function loadConversations() {
@@ -1372,10 +1409,25 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             {activeExplorerEntry ? `${activeExplorerEntry.name} · ${activeExplorerEntry.typeLabel}` : "选择一个文件夹或文件"}
           </div>
           {activeExplorerEntry?.kind === "folder" && (
-            <Button type="button" size="sm" variant="outline" onClick={() => handleExplorerEntryOpen(activeExplorerEntry)} className={cn(isCyber && "border-cyan-500/40 text-cyan-200")}>
-              <FolderOpen className="h-4 w-4" />
-              打开
-            </Button>
+            <>
+              <Button type="button" size="sm" variant="outline" onClick={() => handleExplorerEntryOpen(activeExplorerEntry)} className={cn(isCyber && "border-cyan-500/40 text-cyan-200")}>
+                <FolderOpen className="h-4 w-4" />
+                打开
+              </Button>
+              {activeExplorerEntry.folder.canDelete && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={deletingPath === activeExplorerEntry.folder.relativePath}
+                  onClick={() => void handleDeleteFolder(activeExplorerEntry.folder)}
+                  className={cn(isCyber ? "border-red-500/40 text-red-200" : "")}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  {deletingPath === activeExplorerEntry.folder.relativePath ? "删除中..." : "删除"}
+                </Button>
+              )}
+            </>
           )}
           {activeExplorerEntry?.kind === "file" && (
             <>

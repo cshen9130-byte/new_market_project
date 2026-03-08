@@ -35,6 +35,7 @@ export type KnowledgeBaseFolderNode = {
   ownerId: string | null
   ownerName: string
   uploadedAt: string | null
+  canDelete: boolean
   folders: KnowledgeBaseFolderNode[]
   documents: KnowledgeBaseDocumentNode[]
 }
@@ -381,6 +382,8 @@ async function buildFolderTree(
     ownerId: explicitOwner?.ownerId || fallbackOwnerId,
     ownerName: explicitOwner?.ownerName || fallbackOwnerName || "-",
     uploadedAt: explicitOwner?.uploadedAt || fallbackUploadedAt,
+    // A folder can be deleted by its owner or by an admin; root folder ("") is never deletable
+    canDelete: Boolean(relativeDir) && (isAdmin || Boolean(viewerUserId && (explicitOwner?.ownerId || fallbackOwnerId) && (explicitOwner?.ownerId ?? fallbackOwnerId) === viewerUserId)),
     folders,
     documents,
   }
@@ -390,6 +393,40 @@ export async function listKnowledgeBaseTree(viewerUserId?: string, isAdmin = fal
   const root = await ensureKnowledgeBaseStorage()
   const ownershipMap = await getOwnershipMap()
   return buildFolderTree(root, "", ownershipMap, viewerUserId, isAdmin)
+}
+
+export async function deleteKnowledgeBaseFolder(relativePath: string, actorUserId: string, isAdmin = false) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    throw new Error("缺少文件夹路径")
+  }
+  if (!actorUserId) {
+    throw new Error("缺少用户信息")
+  }
+
+  if (!isAdmin) {
+    const ownershipMap = await getOwnershipMap()
+    const ownership = ownershipMap.get(normalizedPath)
+    if (!ownership || ownership.ownerId !== actorUserId) {
+      throw new Error("只有创建者或管理员可以删除该文件夹")
+    }
+  }
+
+  const { target } = await resolveKnowledgeBasePath(normalizedPath)
+  const stat = await fs.stat(target)
+  if (!stat.isDirectory()) {
+    throw new Error("目标不是文件夹")
+  }
+
+  await fs.rm(target, { recursive: true, force: true })
+
+  // Remove all ownership records whose paths are inside this folder
+  const records = await readOwnershipRecords()
+  const prefix = normalizedPath + "/"
+  const remaining = records.filter(
+    (r) => r.relativePath !== normalizedPath && !r.relativePath.startsWith(prefix)
+  )
+  await writeOwnershipRecords(remaining)
 }
 
 export async function createKnowledgeBaseFolder(relativePath: string, owner?: KnowledgeBaseFileOwner) {
