@@ -114,6 +114,20 @@ async function getOrBuildVectorStore(folderPath: string) {
   return nextValue
 }
 
+function extractTokenUsage(response: { usage_metadata?: unknown; response_metadata?: unknown }): { inputTokens: number; outputTokens: number; totalTokens: number } {
+  // LangChain AIMessage exposes usage_metadata (preferred) or response_metadata.token_usage
+  const meta: Record<string, unknown> =
+    (response.usage_metadata as Record<string, unknown>) ||
+    ((response.response_metadata as Record<string, unknown>)?.token_usage as Record<string, unknown>) ||
+    {}
+  return {
+    inputTokens: Number(meta.input_tokens ?? meta.prompt_tokens ?? 0),
+    outputTokens: Number(meta.output_tokens ?? meta.completion_tokens ?? 0),
+    totalTokens: Number(meta.total_tokens ?? 0) ||
+      (Number(meta.input_tokens ?? meta.prompt_tokens ?? 0) + Number(meta.output_tokens ?? meta.completion_tokens ?? 0)),
+  }
+}
+
 function stringifyModelContent(content: unknown) {
   if (typeof content === "string") {
     return content
@@ -171,6 +185,8 @@ export async function askKnowledgeBaseQuestion(input: { question: string; folder
       sources: [file.relativePath],
       indexedDocuments: 1,
       indexedChunks: 1,
+      tokenUsage: extractTokenUsage(response),
+      model: getChatModel(),
     }
   }
 
@@ -221,5 +237,7 @@ export async function askKnowledgeBaseQuestion(input: { question: string; folder
     sources,
     indexedDocuments: index?.indexedDocuments ?? 0,
     indexedChunks: index?.indexedChunks ?? 0,
+    tokenUsage: extractTokenUsage(response),
+    model: getChatModel(),
   }
 }

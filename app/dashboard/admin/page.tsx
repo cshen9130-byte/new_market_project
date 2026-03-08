@@ -10,6 +10,28 @@ import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import { Label } from "@/components/ui/label"
 
+type UserTokenStats = {
+  userId: string
+  userName: string
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  requestCount: number
+  lastUsed: string
+}
+
+type TokenRecord = {
+  id: string
+  userId: string
+  userName: string
+  timestamp: string
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+  model: string
+  questionPreview: string
+}
+
 export default function AdminAccountsPage() {
   const router = useRouter()
   const [authorized, setAuthorized] = useState<boolean>(false)
@@ -28,6 +50,14 @@ export default function AdminAccountsPage() {
   const [editPassword, setEditPassword] = useState("")
   const [editRole, setEditRole] = useState<"admin" | "user">("user")
 
+  // Token usage stats
+  const [tokenStats, setTokenStats] = useState<UserTokenStats[]>([])
+  const [recentRecords, setRecentRecords] = useState<TokenRecord[]>([])
+  const [totalTokens, setTotalTokens] = useState(0)
+  const [totalRequests, setTotalRequests] = useState(0)
+  const [tokenLoading, setTokenLoading] = useState(false)
+  const [showRecentRecords, setShowRecentRecords] = useState(false)
+
   useEffect(() => {
     authService.init()
     const isAdmin = authService.isAdmin()
@@ -37,7 +67,28 @@ export default function AdminAccountsPage() {
       return
     }
     refreshUsers()
+    refreshTokenStats()
   }, [])
+
+  async function refreshTokenStats() {
+    setTokenLoading(true)
+    try {
+      const currentUser = authService.getCurrentUser()
+      if (!currentUser) return
+      const res = await fetch("/api/admin/token-usage", {
+        headers: { "x-market-user-id": currentUser.id },
+      })
+      const data = await res.json()
+      if (data?.ok) {
+        setTokenStats(data.userStats ?? [])
+        setRecentRecords(data.recentRecords ?? [])
+        setTotalTokens(data.totalTokens ?? 0)
+        setTotalRequests(data.totalRequests ?? 0)
+      }
+    } finally {
+      setTokenLoading(false)
+    }
+  }
 
   async function refreshUsers() {
     setLoading(true)
@@ -192,6 +243,112 @@ export default function AdminAccountsPage() {
           <div className="mt-3 text-sm">
             预览：<a className="underline" href="/mom_report/report.html" target="_blank" rel="noopener noreferrer">/mom_report/report.html</a>
           </div>
+        </Card>
+
+        <Card className="bg-black/60 border border-cyan-500/30 backdrop-blur-md p-6">
+          <div className="flex items-center justify-between">
+            <div className="text-lg font-medium">AI Token 用量统计</div>
+            <Button variant="outline" className="border-cyan-500/50 text-cyan-300 text-xs" onClick={refreshTokenStats} disabled={tokenLoading}>
+              {tokenLoading ? "刷新中..." : "刷新"}
+            </Button>
+          </div>
+          <Separator className="my-4 bg-cyan-500/30" />
+          {tokenLoading ? (
+            <div className="text-cyan-500">加载中...</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+                <div className="bg-black/40 border border-cyan-500/20 rounded p-3">
+                  <div className="text-xs text-cyan-500 mb-1">累计总 Token</div>
+                  <div className="text-xl font-bold text-cyan-300">{totalTokens.toLocaleString()}</div>
+                </div>
+                <div className="bg-black/40 border border-cyan-500/20 rounded p-3">
+                  <div className="text-xs text-cyan-500 mb-1">累计请求次数</div>
+                  <div className="text-xl font-bold text-cyan-300">{totalRequests.toLocaleString()}</div>
+                </div>
+                <div className="bg-black/40 border border-cyan-500/20 rounded p-3">
+                  <div className="text-xs text-cyan-500 mb-1">活跃用户数</div>
+                  <div className="text-xl font-bold text-cyan-300">{tokenStats.length}</div>
+                </div>
+                <div className="bg-black/40 border border-cyan-500/20 rounded p-3">
+                  <div className="text-xs text-cyan-500 mb-1">均每次 Token</div>
+                  <div className="text-xl font-bold text-cyan-300">
+                    {totalRequests > 0 ? Math.round(totalTokens / totalRequests).toLocaleString() : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {tokenStats.length > 0 && (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-cyan-400">用户</TableHead>
+                      <TableHead className="text-cyan-400 text-right">请求次数</TableHead>
+                      <TableHead className="text-cyan-400 text-right">输入 Token</TableHead>
+                      <TableHead className="text-cyan-400 text-right">输出 Token</TableHead>
+                      <TableHead className="text-cyan-400 text-right">合计 Token</TableHead>
+                      <TableHead className="text-cyan-400">最后使用</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {tokenStats.map((s) => (
+                      <TableRow key={s.userId}>
+                        <TableCell className="text-cyan-200 font-medium">{s.userName}</TableCell>
+                        <TableCell className="text-cyan-200 text-right">{s.requestCount.toLocaleString()}</TableCell>
+                        <TableCell className="text-cyan-200 text-right">{s.inputTokens.toLocaleString()}</TableCell>
+                        <TableCell className="text-cyan-200 text-right">{s.outputTokens.toLocaleString()}</TableCell>
+                        <TableCell className="text-cyan-300 text-right font-semibold">{s.totalTokens.toLocaleString()}</TableCell>
+                        <TableCell className="text-cyan-500 text-xs">{new Date(s.lastUsed).toLocaleString("zh-CN")}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+              {tokenStats.length === 0 && (
+                <div className="text-cyan-600 text-sm">暂无数据，当用户使用 AI 知识库问答后将自动记录。</div>
+              )}
+
+              <div className="mt-4">
+                <button
+                  className="text-xs text-cyan-500 underline hover:text-cyan-300"
+                  onClick={() => setShowRecentRecords((v) => !v)}
+                >
+                  {showRecentRecords ? "折叠最近记录" : `查看最近 ${recentRecords.length} 条请求记录`}
+                </button>
+              </div>
+
+              {showRecentRecords && recentRecords.length > 0 && (
+                <div className="mt-3 overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-cyan-400">时间</TableHead>
+                        <TableHead className="text-cyan-400">用户</TableHead>
+                        <TableHead className="text-cyan-400">模型</TableHead>
+                        <TableHead className="text-cyan-400 text-right">输入</TableHead>
+                        <TableHead className="text-cyan-400 text-right">输出</TableHead>
+                        <TableHead className="text-cyan-400 text-right">合计</TableHead>
+                        <TableHead className="text-cyan-400">问题预览</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {recentRecords.map((r) => (
+                        <TableRow key={r.id}>
+                          <TableCell className="text-cyan-500 text-xs whitespace-nowrap">{new Date(r.timestamp).toLocaleString("zh-CN")}</TableCell>
+                          <TableCell className="text-cyan-200">{r.userName}</TableCell>
+                          <TableCell className="text-cyan-500 text-xs">{r.model}</TableCell>
+                          <TableCell className="text-cyan-200 text-right">{r.inputTokens.toLocaleString()}</TableCell>
+                          <TableCell className="text-cyan-200 text-right">{r.outputTokens.toLocaleString()}</TableCell>
+                          <TableCell className="text-cyan-300 text-right font-semibold">{r.totalTokens.toLocaleString()}</TableCell>
+                          <TableCell className="text-cyan-400 text-xs max-w-xs truncate">{r.questionPreview}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </>
+          )}
         </Card>
 
         <Card className="bg-black/60 border border-cyan-500/30 backdrop-blur-md p-6">
