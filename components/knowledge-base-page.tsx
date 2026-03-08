@@ -416,6 +416,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const shouldScrollToPreviewRef = useRef(false)
   const singleUploadInputRef = useRef<HTMLInputElement | null>(null)
   const batchUploadInputRef = useRef<HTMLInputElement | null>(null)
+  const syncFolderInputRef = useRef<HTMLInputElement | null>(null)
   const [authorized, setAuthorized] = useState(false)
   const [currentUser, setCurrentUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
@@ -444,6 +445,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [syncServerFolder, setSyncServerFolder] = useState<string | null>(null)
   const [syncLocalDirHandle, setSyncLocalDirHandle] = useState<FileSystemDirectoryHandle | null>(null)
   const [syncLocalDirName, setSyncLocalDirName] = useState<string>("")
+  // Flat file list collected from <input webkitdirectory> fallback (when showDirectoryPicker unavailable over HTTP)
+  const [syncWebkitFiles, setSyncWebkitFiles] = useState<Array<{ relPath: string; file: File }> | null>(null)
   const [showServerBrowser, setShowServerBrowser] = useState(false)
   const [syncBrowserSelectedFolder, setSyncBrowserSelectedFolder] = useState<string | null>(null)
   const [serverBrowserExpanded, setServerBrowserExpanded] = useState<Set<string>>(() => new Set([""]))
@@ -855,19 +858,47 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
   async function handlePickLocalFolder() {
     const fsApi = (window as unknown as { showDirectoryPicker?: (opts?: Record<string, unknown>) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker
-    if (!fsApi) {
-      setError("当前浏览器不支持文件夹选取（需要 Chrome / Edge 86+）")
-      return
+    if (fsApi) {
+      // Preferred path: File System Access API (requires HTTPS or localhost)
+      try {
+        const handle = await fsApi({ mode: "readwrite" })
+        setSyncLocalDirHandle(handle)
+        setSyncWebkitFiles(null)
+        setSyncLocalDirName(handle.name)
+        setSyncPreviewItems(null)
+        setSyncPendingFiles(null)
+      } catch (err: any) {
+        if (err?.name !== "AbortError") setError(err?.message || String(err))
+      }
+    } else {
+      // Fallback: <input webkitdirectory> — works over plain HTTP in all modern browsers
+      syncFolderInputRef.current?.click()
     }
-    try {
-      const handle = await fsApi({ mode: "readwrite" })
-      setSyncLocalDirHandle(handle)
-      setSyncLocalDirName(handle.name)
-      setSyncPreviewItems(null)
-      setSyncPendingFiles(null)
-    } catch (err: any) {
-      if (err?.name !== "AbortError") setError(err?.message || String(err))
+  }
+
+  function handleSyncFolderInputChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+    const collected: Array<{ relPath: string; file: File }> = []
+    let folderName = ""
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const webkitPath: string = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+      // webkitRelativePath = "FolderName/sub/file.txt" — strip the root folder segment
+      const parts = webkitPath.split("/")
+      if (!folderName && parts.length > 1) folderName = parts[0]
+      const relPath = parts.length > 1 ? parts.slice(1).join("/") : parts[0]
+      if (relPath && !relPath.startsWith("~") && file.size > 0) {
+        collected.push({ relPath, file })
+      }
     }
+    setSyncWebkitFiles(collected)
+    setSyncLocalDirHandle(null)
+    setSyncLocalDirName(folderName || "本地文件夹")
+    setSyncPreviewItems(null)
+    setSyncPendingFiles(null)
+    // Reset input so same folder can be re-selected
+    if (syncFolderInputRef.current) syncFolderInputRef.current.value = ""
   }
 
   async function collectLocalFiles(
@@ -890,12 +921,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
 
   async function handleCompare() {
-    if (!syncLocalDirHandle || syncServerFolder === null) return
+    const hasLocal = syncLocalDirHandle !== null || syncWebkitFiles !== null
+    if (!hasLocal || syncServerFolder === null) return
     try {
       setError(null)
       setSyncPreviewItems(null)
       setSyncPendingFiles(null)
-      const localFiles = await collectLocalFiles(syncLocalDirHandle)
+      const localFiles = syncWebkitFiles ?? await collectLocalFiles(syncLocalDirHandle!)
       const serverFileMap = new Map<string, number>(syncServerFiles.map((sf) => [sf.relPath, sf.size]))
       const preview: Array<{ relPath: string; status: "new" | "changed" | "same"; localSize: number; serverSize: number | null }> = []
       const pending: Array<{ file: File; strippedPath: string }> = []
@@ -956,7 +988,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       return
     }
     if (!syncLocalDirHandle) {
-      setError("请先在第①步选择本地文件夹")
+      if (syncWebkitFiles !== null) {
+        setError("同步到本地需要 HTTPS 连接，当前 HTTP 模式不支持写入本地文件系统。请使用 HTTPS 访问本站，或手动下载所需文件。")
+      } else {
+        setError("请先在第①步选择本地文件夹")
+      }
       return
     }
 
@@ -1677,6 +1713,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       onChange={handleBatchUploadChange}
                       {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
                     />
+                    {/* Hidden folder picker for sync (webkitdirectory fallback when showDirectoryPicker unavailable over HTTP) */}
+                    <input
+                      ref={syncFolderInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={handleSyncFolderInputChange}
+                      {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                    />
 
                     <div className="flex flex-wrap gap-3">
                       <Button disabled={!pendingFile || uploading || uploadTargetFolder === null} onClick={() => void handleUpload()}>
@@ -1741,7 +1786,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     </div>
 
                     {/* ② Summary & Compare */}
-                    {(syncServerFolder !== null || syncLocalDirHandle !== null) && (
+                    {(syncServerFolder !== null || syncLocalDirHandle !== null || syncWebkitFiles !== null) && (
                       <div className="space-y-2">
                         <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">② 目录对比</div>
 
@@ -1754,15 +1799,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           </div>
                         )}
 
-                        {syncLocalDirHandle !== null && (
+                        {(syncLocalDirHandle !== null || syncWebkitFiles !== null) && (
                           <div className="flex items-center gap-2 rounded-md border bg-muted/10 px-3 py-2 text-xs">
                             <Folder className="h-3.5 w-3.5 shrink-0 text-blue-500" />
                             <span className="text-muted-foreground">本地：</span>
                             <span className="flex-1 truncate font-medium">{syncLocalDirName}</span>
+                            {syncWebkitFiles !== null && <span className="shrink-0 text-muted-foreground">{syncWebkitFiles.length} 个文件</span>}
                           </div>
                         )}
 
-                        {syncServerFolder !== null && syncLocalDirHandle !== null && (
+                        {syncServerFolder !== null && (syncLocalDirHandle !== null || syncWebkitFiles !== null) && (
                           <Button size="sm" variant="outline" disabled={syncing} onClick={() => void handleCompare()}>
                             <RefreshCw className="h-4 w-4" />
                             对比
@@ -1785,7 +1831,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     )}
 
                     {/* ③ Sync */}
-                    {syncServerFolder !== null && syncLocalDirHandle !== null && (
+                    {syncServerFolder !== null && (syncLocalDirHandle !== null || syncWebkitFiles !== null) && (
                       <div className="space-y-3">
                         <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">③ 同步</div>
                         <div className="flex flex-wrap gap-2">
