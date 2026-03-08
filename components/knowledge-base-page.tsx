@@ -1713,15 +1713,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       onChange={handleBatchUploadChange}
                       {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
                     />
-                    {/* Hidden folder picker for sync (webkitdirectory fallback when showDirectoryPicker unavailable over HTTP) */}
-                    <input
-                      ref={syncFolderInputRef}
-                      type="file"
-                      multiple
-                      className="hidden"
-                      onChange={handleSyncFolderInputChange}
-                      {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
-                    />
+                    {/* Hidden folder picker for sync — moved to sync panel */}
 
                     <div className="flex flex-wrap gap-3">
                       <Button disabled={!pendingFile || uploading || uploadTargetFolder === null} onClick={() => void handleUpload()}>
@@ -1761,6 +1753,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                 {traditionalPanel === "sync" && (
                   <div className="space-y-5">
+                    {/* Hidden folder picker fallback for HTTP (showDirectoryPicker requires HTTPS) */}
+                    <input
+                      ref={syncFolderInputRef}
+                      type="file"
+                      multiple
+                      className="hidden"
+                      onChange={handleSyncFolderInputChange}
+                      {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                    />
 
                     {/* ① Setup */}
                     <div className="space-y-2">
