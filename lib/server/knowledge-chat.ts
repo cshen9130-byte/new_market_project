@@ -160,10 +160,10 @@ function getEmbeddingModel() {
   return process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v3"
 }
 
-function createChatModel() {
+function createChatModel(modelOverride?: string) {
   return new ChatOpenAI({
     apiKey: getDashScopeApiKey(),
-    model: getChatModel(),
+    model: modelOverride || getChatModel(),
     temperature: 0.2,
     configuration: {
       baseURL: getDashScopeBaseUrl(),
@@ -512,64 +512,62 @@ function stringifyModelContent(content: unknown) {
   return String(content || "")
 }
 
-export async function askKnowledgeBaseQuestion(input: {
+// ── Shared retrieval context builder ─────────────────────────────────────────
+
+type RetrievalContext = {
+  messages: Array<{ role: "system" | "user"; content: string }>
+  sources: string[]
+  indexedDocuments: number
+  indexedChunks: number
+}
+
+async function buildRetrievalContext(input: {
   question: string
   folderPath?: string | null
   filePath?: string | null
   useBm25?: boolean
-}) {
+}): Promise<RetrievalContext> {
   const question = input.question.trim()
-  if (!question) {
-    throw new Error("请输入问题")
-  }
   const enableBm25 = input.useBm25 !== false
 
-  const model = createChatModel()
-
-  // ── Single-file mode: skip vector store, feed the whole file as context ──
+  // ── Single-file mode ──
   if (input.filePath) {
     const file = await getKnowledgeBaseFile(input.filePath)
     const text = await readFileDocumentText(file.absolutePath, file.extension)
     const scopeLabel = file.relativePath
-    const response = await model.invoke([
-      {
-        role: "system",
-        content: text
-          ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文。"
-          : "你是市场研究助手。该文档内容为空或暂不支持提取文字。请告知用户无法解读该文件内容。回答使用中文。",
-      },
-      {
-        role: "user",
-        content: text
-          ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${text}`
-          : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`,
-      },
-    ])
     return {
-      answer: stringifyModelContent(response.content),
+      messages: [
+        {
+          role: "system",
+          content: text
+            ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文。"
+            : "你是市场研究助手。该文档内容为空或暂不支持提取文字。请告知用户无法解读该文件内容。回答使用中文。",
+        },
+        {
+          role: "user",
+          content: text
+            ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${text}`
+            : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`,
+        },
+      ],
       sources: [file.relativePath],
       indexedDocuments: 1,
       indexedChunks: 1,
-      tokenUsage: extractTokenUsage(response),
-      model: getChatModel(),
     }
   }
 
-  // ── Folder mode: vector-store similarity search ──
+  // ── Folder mode ──
   const folderPath = normalizeKnowledgeBasePath(input.folderPath)
   let index: KnowledgeBaseIndexCacheEntry | null = null
-  let matches: Document[] = []
+  const matches: Document[] = []
 
   try {
     index = await getOrBuildVectorStore(folderPath)
     const denseMatches = await index.vectorStore.similaritySearch(question, 4)
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
     const bm25Matches = enableBm25 ? bm25RankChunks(question, rows, index.bm25Index, 4) : []
-
-    // Hybrid fusion: dense + BM25 lexical, de-duplicate by source+content prefix.
     const merged = [...denseMatches, ...bm25Matches]
     const seen = new Set<string>()
-    matches = []
     for (const m of merged) {
       const source = String(m.metadata?.source || "")
       const key = `${source}|${m.pageContent.slice(0, 120)}`
@@ -580,45 +578,95 @@ export async function askKnowledgeBaseQuestion(input: {
     }
   } catch (error: any) {
     const msg = String(error?.message || error)
-    if (!msg.includes("没有可用于问答的文档")) {
-      throw classifyApiError(error)
-    }
+    if (!msg.includes("没有可用于问答的文档")) throw classifyApiError(error)
   }
 
   const context = matches
-    .map((match, indexNumber) => {
-      const source = String(match.metadata?.source || "未知来源")
-      return `资料 ${indexNumber + 1} (${source})\n${match.pageContent}`
-    })
+    .map((m, i) => `资料 ${i + 1} (${String(m.metadata?.source || "未知来源")})\n${m.pageContent}`)
     .join("\n\n")
 
-  const response = await model.invoke([
-    {
-      role: "system",
-      content:
-        matches.length > 0
-          ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
-          : "你是市场研究助手。当前本地知识库为空，因此本轮回答不引用本地资料。你可以直接回答用户的问题，但需要明确说明当前没有本地文档可供检索。回答使用中文。",
-    },
-    {
-      role: "user",
-      content:
-        matches.length > 0
-          ? `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n参考资料：\n${context}`
-          : `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n当前知识库目录为空，请直接基于通用能力回答，并提醒用户尚未上传资料。`,
-    },
-  ])
-
   const sources = Array.from(
-    new Set(matches.map((match) => String(match.metadata?.source || "")).filter(Boolean)),
+    new Set(matches.map((m) => String(m.metadata?.source || "")).filter(Boolean)),
   )
 
   return {
-    answer: stringifyModelContent(response.content),
+    messages: [
+      {
+        role: "system",
+        content:
+          matches.length > 0
+            ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
+            : "你是市场研究助手。当前本地知识库为空，因此本轮回答不引用本地资料。你可以直接回答用户的问题，但需要明确说明当前没有本地文档可供检索。回答使用中文。",
+      },
+      {
+        role: "user",
+        content:
+          matches.length > 0
+            ? `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n参考资料：\n${context}`
+            : `当前检索范围：${folderPath || "全部资料"}\n\n问题：${question}\n\n当前知识库目录为空，请直接基于通用能力回答，并提醒用户尚未上传资料。`,
+      },
+    ],
     sources,
     indexedDocuments: index?.indexedDocuments ?? 0,
     indexedChunks: index?.indexedChunks ?? 0,
+  }
+}
+
+export async function askKnowledgeBaseQuestion(input: {
+  question: string
+  folderPath?: string | null
+  filePath?: string | null
+  useBm25?: boolean
+  modelOverride?: string
+}) {
+  const question = input.question.trim()
+  if (!question) throw new Error("请输入问题")
+  const ctx = await buildRetrievalContext(input)
+  const model = createChatModel(input.modelOverride)
+  const response = await model.invoke(ctx.messages)
+  return {
+    answer: stringifyModelContent(response.content),
+    sources: ctx.sources,
+    indexedDocuments: ctx.indexedDocuments,
+    indexedChunks: ctx.indexedChunks,
     tokenUsage: extractTokenUsage(response),
-    model: getChatModel(),
+    model: input.modelOverride || getChatModel(),
+  }
+}
+
+/**
+ * Streams the LLM response token-by-token, yielding text deltas then a final
+ * done event with sources and metadata. Retrieval happens before the first
+ * yield, so time-to-first-token ≈ embedding API latency (~1s) rather than
+ * full generation time (~30s).
+ */
+export async function* streamKnowledgeBaseAnswer(input: {
+  question: string
+  folderPath?: string | null
+  filePath?: string | null
+  useBm25?: boolean
+  modelOverride?: string
+}): AsyncGenerator<
+  | { type: "text"; delta: string }
+  | { type: "done"; sources: string[]; indexedDocuments: number; indexedChunks: number; model: string }
+> {
+  const question = input.question.trim()
+  if (!question) {
+    yield { type: "done", sources: [], indexedDocuments: 0, indexedChunks: 0, model: input.modelOverride || getChatModel() }
+    return
+  }
+  const ctx = await buildRetrievalContext(input)
+  const model = createChatModel(input.modelOverride)
+  const stream = await model.stream(ctx.messages)
+  for await (const chunk of stream) {
+    const delta = stringifyModelContent(chunk.content)
+    if (delta) yield { type: "text", delta }
+  }
+  yield {
+    type: "done",
+    sources: ctx.sources,
+    indexedDocuments: ctx.indexedDocuments,
+    indexedChunks: ctx.indexedChunks,
+    model: input.modelOverride || getChatModel(),
   }
 }

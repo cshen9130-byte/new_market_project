@@ -473,6 +473,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [showConvSidebar, setShowConvSidebar] = useState(false)
   const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
   const [useBm25, setUseBm25] = useState(true)
+  const [modelSpeed, setModelSpeed] = useState<"plus" | "turbo">("plus")
 
   useEffect(() => {
     authService.init()
@@ -1316,46 +1317,79 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           folderPath: selectedFolder,
           filePath: selectedDocument?.relativePath ?? null,
           useBm25,
+          stream: true,
+          modelSpeed,
           conversationId: convId,
           title: selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料"),
           fileName: selectedDocument?.name,
           folderName: selectedFolder || "全部资料",
         }),
       })
-      const contentType = res.headers.get("content-type") ?? ""
-      if (!contentType.includes("application/json")) {
+
+      if (!res.ok) {
         const text = await res.text()
-        const preview = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120)
-        throw new Error(`服务器返回了非 JSON 响应（HTTP ${res.status}）：${preview || res.statusText}`)
-      }
-      const data = await res.json()
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || res.statusText)
+        let errMsg: string
+        try { errMsg = (JSON.parse(text) as { error?: string }).error || `服务器错误 HTTP ${res.status}` } catch { errMsg = `服务器错误 HTTP ${res.status}` }
+        throw new Error(errMsg)
       }
 
-      setChatMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: data.answer,
-          sources: data.sources,
-        },
-      ])
-      if (data?.conversationId && !activeConversationId) {
-        setActiveConversationId(String(data.conversationId))
+      // Add empty assistant message as streaming placeholder
+      setChatMessages((prev) => [...prev, { role: "assistant" as const, content: "" }])
+
+      const reader = res.body!.getReader()
+      const decoder = new TextDecoder()
+      let sseBuffer = ""
+      let fullContent = ""
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        sseBuffer += decoder.decode(value, { stream: true })
+        const parts = sseBuffer.split("\n\n")
+        sseBuffer = parts.pop() ?? ""
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue
+          const jsonStr = part.slice(6).trim()
+          if (jsonStr === "[DONE]") continue
+          let event: { type: string; delta?: string; sources?: string[]; conversationId?: string; message?: string } | null = null
+          try { event = JSON.parse(jsonStr) } catch { continue }
+          if (!event) continue
+          if (event.type === "text" && event.delta) {
+            fullContent += event.delta
+            setChatMessages((prev) => {
+              const msgs = [...prev]
+              msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], content: fullContent }
+              return msgs
+            })
+          } else if (event.type === "done") {
+            const doneEvent = event
+            setChatMessages((prev) => {
+              const msgs = [...prev]
+              msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], sources: doneEvent.sources ?? [] }
+              return msgs
+            })
+            if (event.conversationId && !activeConversationId) {
+              setActiveConversationId(String(event.conversationId))
+            }
+            void loadConversations()
+          } else if (event.type === "error") {
+            throw new Error(event.message ?? "未知错误")
+          }
+        }
       }
-      // Refresh sidebar list so updated_at + title show up
-      void loadConversations()
     } catch (requestError: any) {
       const message = requestError?.message || String(requestError)
       setError(message)
-      setChatMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: `请求失败：${message}`,
-        },
-      ])
+      setChatMessages((current) => {
+        const msgs = [...current]
+        const last = msgs[msgs.length - 1]
+        if (last?.role === "assistant" && !last.content) {
+          msgs[msgs.length - 1] = { role: "assistant", content: `请求失败：${message}` }
+        } else {
+          msgs.push({ role: "assistant", content: `请求失败：${message}` })
+        }
+        return msgs
+      })
     } finally {
       setChatLoading(false)
     }
@@ -2123,6 +2157,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     </div>
                     <p className="mt-2 text-[11px] text-muted-foreground">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
                   </div>
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 text-xs font-medium text-muted-foreground">模型速度</div>
+                    <div className="flex gap-1">
+                      <button type="button" onClick={() => setModelSpeed("plus")} className={cn("flex-1 rounded px-2 py-1 text-xs transition-colors", modelSpeed === "plus" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>标准</button>
+                      <button type="button" onClick={() => setModelSpeed("turbo")} className={cn("flex-1 rounded px-2 py-1 text-xs transition-colors", modelSpeed === "turbo" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>快速 ⚡</button>
+                    </div>
+                    <p className="mt-2 text-[11px] text-muted-foreground">快速：qwen-turbo，响应更快；标准：qwen-plus，质量更高。</p>
+                  </div>
                 </div>
               )}
 
@@ -2146,10 +2188,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       )}
                     </div>
                   ))}
-                  {chatLoading && (
+                  {chatLoading && !(chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === "assistant") && (
                     <div className="rounded-lg bg-muted/30 px-4 py-3 text-sm text-muted-foreground shadow-sm">
                       <LoaderCircle className="mr-2 inline h-4 w-4 animate-spin" />
-                      正在生成回答...
+                      正在检索文档并生成回答...
                     </div>
                   )}
                 </div>
@@ -2442,6 +2484,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <Switch checked={useBm25} onCheckedChange={setUseBm25} />
                     </div>
                     <p className="text-[11px] text-cyan-300/60">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
+                    <div className="mt-1 text-xs font-medium text-cyan-300/80">模型速度</div>
+                    <div className="flex gap-1">
+                      <button type="button" onClick={() => setModelSpeed("plus")} className={cn("flex-1 rounded-lg border px-2 py-1 text-xs transition-colors", modelSpeed === "plus" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>标准</button>
+                      <button type="button" onClick={() => setModelSpeed("turbo")} className={cn("flex-1 rounded-lg border px-2 py-1 text-xs transition-colors", modelSpeed === "turbo" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>快速 ⚡</button>
+                    </div>
+                    <p className="text-[11px] text-cyan-300/60">快速：qwen-turbo，响应更快；标准：qwen-plus，质量更高。</p>
                   </div>
                 )}
 
@@ -2468,7 +2516,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         )}
                       </div>
                     ))}
-                    {chatLoading && (
+                    {chatLoading && !(chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === "assistant") && (
                       <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-50">
                         <LoaderCircle className="mr-2 inline h-4 w-4 animate-spin" />
                         正在检索文档并生成回答...

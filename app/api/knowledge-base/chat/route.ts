@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
-import { askKnowledgeBaseQuestion } from "@/lib/server/knowledge-chat"
+import { askKnowledgeBaseQuestion, streamKnowledgeBaseAnswer } from "@/lib/server/knowledge-chat"
 import { appendMessage, countMessages, createConversation, updateConversationTitle } from "@/lib/server/chat-db"
 import { appendTokenUsage } from "@/lib/server/token-usage"
 
@@ -25,11 +25,65 @@ export async function POST(req: Request) {
       effectiveConversationId = created.id
     }
 
+    const modelOverride = body?.modelSpeed === "turbo" ? "qwen-turbo" : undefined
+
+    // ── Streaming path (SSE) ───────────────────────────────────────────
+    if (body?.stream === true) {
+      const textEncoder = new TextEncoder()
+      let fullAnswer = ""
+      const readableStream = new ReadableStream({
+        async start(controller) {
+          try {
+            const gen = streamKnowledgeBaseAnswer({
+              question: String(body?.question || ""),
+              folderPath: body?.folderPath,
+              filePath: body?.filePath ?? null,
+              useBm25: body?.useBm25 !== false,
+              modelOverride,
+            })
+            for await (const event of gen) {
+              if (event.type === "text") {
+                fullAnswer += event.delta
+                controller.enqueue(textEncoder.encode(`data: ${JSON.stringify(event)}\n\n`))
+              } else if (event.type === "done") {
+                if (effectiveConversationId && user) {
+                  const isFirst = countMessages(effectiveConversationId) === 0
+                  appendMessage(effectiveConversationId, "user", String(body?.question || ""))
+                  appendMessage(effectiveConversationId, "assistant", fullAnswer, event.sources)
+                  if (isFirst) {
+                    const q = String(body?.question || "").trim()
+                    if (q) updateConversationTitle(effectiveConversationId, user.id, q.slice(0, 80))
+                  }
+                }
+                // Token tracking (best-effort; streaming doesn't expose exact token counts)
+                controller.enqueue(textEncoder.encode(`data: ${JSON.stringify({ ...event, conversationId: effectiveConversationId })}\n\n`))
+                controller.enqueue(textEncoder.encode("data: [DONE]\n\n"))
+              }
+            }
+          } catch (err: any) {
+            const msg = String(err?.message || err)
+            controller.enqueue(textEncoder.encode(`data: ${JSON.stringify({ type: "error", message: msg })}\n\n`))
+          } finally {
+            controller.close()
+          }
+        },
+      })
+      return new Response(readableStream, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      })
+    }
+
+    // ── Non-streaming path ───────────────────────────────────────────────
     const answer = await askKnowledgeBaseQuestion({
       question: String(body?.question || ""),
       folderPath: body?.folderPath,
       filePath: body?.filePath ?? null,
       useBm25: body?.useBm25 !== false,
+      modelOverride,
     })
 
     if (effectiveConversationId && user) {
