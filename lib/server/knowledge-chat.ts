@@ -13,6 +13,7 @@ type KnowledgeBaseIndexCacheEntry = {
   vectorStore: MemoryVectorStore
   indexedDocuments: number
   indexedChunks: number
+  bm25Index: Bm25PreIndex
 }
 
 // ── Disk persistence for vector index ────────────────────────────────────────
@@ -40,7 +41,21 @@ type DiskIndexEntry = {
   indexedDocuments: number
   indexedChunks: number
   memoryVectors: MemoryVectorRow[]
+  bm25Index?: Bm25PreIndex
   updatedAt: string
+}
+
+// ── BM25 pre-computed inverted index ─────────────────────────────────────────
+
+type Bm25PreIndex = {
+  /** term → list of docIndices that contain the term */
+  postings: Record<string, number[]>
+  /** docIdx → { term → raw TF count } */
+  docTermFreqs: Record<string, number>[]
+  /** docIdx → total term count */
+  docLengths: number[]
+  /** average document length across all docs */
+  avgdl: number
 }
 
 function getIndexCacheDir() {
@@ -318,11 +333,17 @@ async function getOrBuildVectorStore(folderPath: string) {
     const mergedRows = [...baseRows, ...appendedRows]
     const vectorStore = createVectorStoreFromRows(mergedRows)
 
+    // Reuse pre-built BM25 index from disk when content is unchanged; otherwise rebuild.
+    const bm25Index = (changed.size === 0 && disk?.bm25Index)
+      ? disk.bm25Index
+      : buildBm25Index(mergedRows)
+
     const nextValue: KnowledgeBaseIndexCacheEntry = {
       signature: nextSignature,
       vectorStore,
       indexedDocuments: sourceDocuments.length,
       indexedChunks: mergedRows.length,
+      bm25Index,
     }
     cache.set(cacheKey, nextValue)
 
@@ -335,6 +356,7 @@ async function getOrBuildVectorStore(folderPath: string) {
       indexedDocuments: sourceDocuments.length,
       indexedChunks: mergedRows.length,
       memoryVectors: mergedRows,
+      bm25Index,
       updatedAt: new Date().toISOString(),
     })
 
@@ -385,60 +407,82 @@ function tokenizeForBm25(text: string) {
   return terms.filter((term) => term.trim().length > 0)
 }
 
+/** Build a BM25 inverted index from vector rows. Called once at index construction time. */
+function buildBm25Index(rows: MemoryVectorRow[]): Bm25PreIndex {
+  const N = rows.length
+  if (N === 0) return { postings: {}, docTermFreqs: [], docLengths: [], avgdl: 0 }
+
+  const docTermFreqs: Record<string, number>[] = new Array(N)
+  const docLengths: number[] = new Array(N)
+  const postings: Record<string, number[]> = {}
+  let totalLen = 0
+
+  for (let i = 0; i < N; i++) {
+    const terms = tokenizeForBm25(String(rows[i].content || ""))
+    const tf: Record<string, number> = {}
+    for (const term of terms) tf[term] = (tf[term] || 0) + 1
+    docTermFreqs[i] = tf
+    docLengths[i] = terms.length
+    totalLen += terms.length
+    for (const term of Object.keys(tf)) {
+      if (!postings[term]) postings[term] = []
+      postings[term].push(i)
+    }
+  }
+
+  return { postings, docTermFreqs, docLengths, avgdl: totalLen / N }
+}
+
+/**
+ * Rank chunks using a pre-built BM25 inverted index.
+ * O(|query_terms| × avg_postings) instead of O(N × avgDocLen).
+ */
 function bm25RankChunks(
   query: string,
   rows: MemoryVectorRow[],
+  preIndex: Bm25PreIndex,
   topK = 4,
 ): Document[] {
-  if (!rows.length) return []
-
-  const docs = rows.map((row) => {
-    const content = String(row.content || "")
-    const terms = tokenizeForBm25(content)
-    const tf = new Map<string, number>()
-    for (const term of terms) tf.set(term, (tf.get(term) || 0) + 1)
-    return { row, tf, len: terms.length }
-  })
+  const { postings, docTermFreqs, docLengths, avgdl } = preIndex
+  const N = rows.length
+  if (N === 0) return []
 
   const queryTerms = tokenizeForBm25(query)
   if (!queryTerms.length) return []
-
   const uniqueQueryTerms = Array.from(new Set(queryTerms))
-  const N = docs.length
-  const avgdl = docs.reduce((sum, d) => sum + d.len, 0) / Math.max(N, 1)
   const k1 = 1.5
   const b = 0.75
 
-  const dfs = new Map<string, number>()
+  // Only consider docs that contain at least one query term (inverted index lookup)
+  const candidateSet = new Set<number>()
   for (const term of uniqueQueryTerms) {
-    let df = 0
-    for (const d of docs) {
-      if (d.tf.has(term)) df += 1
+    const posting = postings[term]
+    if (posting) for (const idx of posting) candidateSet.add(idx)
+  }
+  if (!candidateSet.size) return []
+
+  const scored: Array<{ idx: number; score: number }> = []
+  for (const idx of candidateSet) {
+    if (idx >= N) continue
+    const tf = docTermFreqs[idx]
+    const dl = docLengths[idx]
+    let score = 0
+    for (const term of uniqueQueryTerms) {
+      const f = tf[term] || 0
+      if (!f) continue
+      const df = postings[term]?.length ?? 0
+      const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1)
+      const denom = f + k1 * (1 - b + b * (dl / Math.max(avgdl, 1)))
+      score += idf * ((f * (k1 + 1)) / Math.max(denom, 1e-9))
     }
-    dfs.set(term, df)
+    if (score > 0) scored.push({ idx, score })
   }
 
-  const scored = docs
-    .map((d) => {
-      let score = 0
-      for (const term of uniqueQueryTerms) {
-        const f = d.tf.get(term) || 0
-        if (!f) continue
-        const df = dfs.get(term) || 0
-        const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1)
-        const denom = f + k1 * (1 - b + b * (d.len / Math.max(avgdl, 1)))
-        score += idf * ((f * (k1 + 1)) / Math.max(denom, 1e-9))
-      }
-      return { d, score }
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK)
-
-  return scored.map(({ d }) =>
+  scored.sort((a, b) => b.score - a.score)
+  return scored.slice(0, topK).map(({ idx }) =>
     new Document({
-      pageContent: String(d.row.content || ""),
-      metadata: d.row.metadata || {},
+      pageContent: String(rows[idx].content || ""),
+      metadata: rows[idx].metadata || {},
     }),
   )
 }
@@ -520,7 +564,7 @@ export async function askKnowledgeBaseQuestion(input: {
     index = await getOrBuildVectorStore(folderPath)
     const denseMatches = await index.vectorStore.similaritySearch(question, 4)
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
-    const bm25Matches = enableBm25 ? bm25RankChunks(question, rows, 4) : []
+    const bm25Matches = enableBm25 ? bm25RankChunks(question, rows, index.bm25Index, 4) : []
 
     // Hybrid fusion: dense + BM25 lexical, de-duplicate by source+content prefix.
     const merged = [...denseMatches, ...bm25Matches]
