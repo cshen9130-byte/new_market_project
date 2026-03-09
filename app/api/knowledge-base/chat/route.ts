@@ -29,6 +29,7 @@ export async function POST(req: Request) {
       question: String(body?.question || ""),
       folderPath: body?.folderPath,
       filePath: body?.filePath ?? null,
+      useBm25: body?.useBm25 !== false,
     })
 
     if (effectiveConversationId && user) {

@@ -468,11 +468,17 @@ function stringifyModelContent(content: unknown) {
   return String(content || "")
 }
 
-export async function askKnowledgeBaseQuestion(input: { question: string; folderPath?: string | null; filePath?: string | null }) {
+export async function askKnowledgeBaseQuestion(input: {
+  question: string
+  folderPath?: string | null
+  filePath?: string | null
+  useBm25?: boolean
+}) {
   const question = input.question.trim()
   if (!question) {
     throw new Error("请输入问题")
   }
+  const enableBm25 = input.useBm25 !== false
 
   const model = createChatModel()
 
@@ -514,7 +520,7 @@ export async function askKnowledgeBaseQuestion(input: { question: string; folder
     index = await getOrBuildVectorStore(folderPath)
     const denseMatches = await index.vectorStore.similaritySearch(question, 4)
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
-    const bm25Matches = bm25RankChunks(question, rows, 4)
+    const bm25Matches = enableBm25 ? bm25RankChunks(question, rows, 4) : []
 
     // Hybrid fusion: dense + BM25 lexical, de-duplicate by source+content prefix.
     const merged = [...denseMatches, ...bm25Matches]

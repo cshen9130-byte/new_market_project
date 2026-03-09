@@ -26,6 +26,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Settings2,
   Trash2,
   Upload,
 } from "lucide-react"
@@ -36,6 +37,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
@@ -469,6 +471,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [conversations, setConversations] = useState<ConversationSummary[]>([])
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [showConvSidebar, setShowConvSidebar] = useState(false)
+  const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
+  const [useBm25, setUseBm25] = useState(true)
 
   useEffect(() => {
     authService.init()
@@ -1251,6 +1255,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  function handleToggleSettingsSidebar() {
+    setShowSettingsSidebar((v) => !v)
+  }
+
   async function handleDeleteConversation(id: string, e: React.MouseEvent) {
     e.stopPropagation()
     if (!currentUser) return
@@ -1307,6 +1315,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           question: trimmedQuestion,
           folderPath: selectedFolder,
           filePath: selectedDocument?.relativePath ?? null,
+          useBm25,
           conversationId: convId,
           title: selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料"),
           fileName: selectedDocument?.name,
@@ -2025,6 +2034,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   variant="ghost"
                   size="sm"
                   className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={handleToggleSettingsSidebar}
+                  title="检索设置"
+                >
+                  <Settings2 className="h-4 w-4" />
+                  设置
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
                   onClick={() => void handleToggleConvSidebar()}
                   title="对话历史"
                 >
@@ -2091,6 +2110,19 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       ))}
                     </div>
                   </ScrollArea>
+                </div>
+              )}
+
+              {showSettingsSidebar && (
+                <div className="flex w-52 shrink-0 flex-col gap-2 overflow-hidden border-r pr-3">
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 text-xs font-medium text-muted-foreground">检索设置</div>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs">启用 BM25</span>
+                      <Switch checked={useBm25} onCheckedChange={setUseBm25} />
+                    </div>
+                    <p className="mt-2 text-[11px] text-muted-foreground">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
+                  </div>
                 </div>
               )}
 
@@ -2327,6 +2359,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   variant="ghost"
                   size="sm"
                   className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
+                  onClick={handleToggleSettingsSidebar}
+                  title="检索设置"
+                >
+                  <Settings2 className="h-4 w-4" />
+                  设置
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
                   onClick={() => void handleToggleConvSidebar()}
                   title="对话历史"
                 >
@@ -2389,6 +2431,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         ))}
                       </div>
                     </ScrollArea>
+                  </div>
+                )}
+
+                {showSettingsSidebar && (
+                  <div className="flex w-52 shrink-0 flex-col gap-2 overflow-hidden rounded-xl border border-cyan-500/15 bg-black/25 p-3">
+                    <div className="text-xs font-medium text-cyan-300/80">检索设置</div>
+                    <div className="flex items-center justify-between gap-2 rounded-lg border border-cyan-500/20 bg-black/20 px-2 py-2 text-xs">
+                      <span>启用 BM25</span>
+                      <Switch checked={useBm25} onCheckedChange={setUseBm25} />
+                    </div>
+                    <p className="text-[11px] text-cyan-300/60">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
                   </div>
                 )}
 
