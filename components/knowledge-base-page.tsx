@@ -27,6 +27,7 @@ import {
   RefreshCw,
   Send,
   Settings2,
+  Square,
   Trash2,
   Upload,
 } from "lucide-react"
@@ -474,6 +475,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
   const [useBm25, setUseBm25] = useState(true)
   const [modelMode, setModelMode] = useState<"auto" | "plus" | "turbo" | "reasoning">("auto")
+  const [lastUsedModel, setLastUsedModel] = useState<string | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
     authService.init()
@@ -1295,6 +1298,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  function handleStop() {
+    abortControllerRef.current?.abort()
+  }
+
   async function handleAsk() {
     const trimmedQuestion = question.trim()
     if (!trimmedQuestion) return
@@ -1303,6 +1310,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     setChatMessages(nextMessages)
     setQuestion("")
     setChatLoading(true)
+    setLastUsedModel(null)
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
 
     // Prefer creating on client first for immediate sidebar feedback.
     const convId = await ensureConversation()
@@ -1312,6 +1323,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       const res = await fetch("/api/knowledge-base/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        signal: controller.signal,
         body: JSON.stringify({
           question: trimmedQuestion,
           folderPath: selectedFolder,
@@ -1340,6 +1352,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       const decoder = new TextDecoder()
       let sseBuffer = ""
       let fullContent = ""
+      let capturedModel: string | null = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -1351,10 +1364,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           if (!part.startsWith("data: ")) continue
           const jsonStr = part.slice(6).trim()
           if (jsonStr === "[DONE]") continue
-          let event: { type: string; delta?: string; sources?: string[]; conversationId?: string; message?: string } | null = null
+          let event: { type: string; delta?: string; modelId?: string; model?: string; sources?: string[]; conversationId?: string; message?: string } | null = null
           try { event = JSON.parse(jsonStr) } catch { continue }
           if (!event) continue
           if (event.type === "text" && event.delta) {
+            if (event.modelId && !capturedModel) {
+              capturedModel = event.modelId
+              setLastUsedModel(capturedModel)
+            }
             fullContent += event.delta
             setChatMessages((prev) => {
               const msgs = [...prev]
@@ -1362,6 +1379,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               return msgs
             })
           } else if (event.type === "done") {
+            if (event.model) {
+              capturedModel = event.model
+              setLastUsedModel(event.model)
+            }
             const doneEvent = event
             setChatMessages((prev) => {
               const msgs = [...prev]
@@ -1378,6 +1399,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         }
       }
     } catch (requestError: any) {
+      // Silently discard user-initiated stops
+      if (requestError?.name === "AbortError") return
       const message = requestError?.message || String(requestError)
       setError(message)
       setChatMessages((current) => {
@@ -1392,6 +1415,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       })
     } finally {
       setChatLoading(false)
+      abortControllerRef.current = null
     }
   }
 
@@ -2210,6 +2234,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   className="min-h-32"
                 />
                 <div className="flex items-center justify-end gap-2">
+                  {modelMode === "auto" && lastUsedModel && (
+                    <span className={cn(
+                      "flex items-center gap-1 rounded-md border px-2 py-1 text-xs",
+                      lastUsedModel.startsWith("qwq") ? "border-purple-400/40 bg-purple-500/10 text-purple-600 dark:text-purple-300" : "border-border text-muted-foreground",
+                    )}>
+                      {lastUsedModel.startsWith("qwq") ? "🧠 自动启用了推理" : "⚡ 自动使用标准模式"}
+                    </span>
+                  )}
                   <button
                     type="button"
                     onClick={() => setModelMode((m) => m === "reasoning" ? "auto" : "reasoning")}
@@ -2221,10 +2253,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   >
                     🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
                   </button>
-                  <Button disabled={chatLoading || !question.trim()} onClick={() => void handleAsk()}>
-                    <Send className="h-4 w-4" />
-                    发送问题
-                  </Button>
+                  {chatLoading ? (
+                    <Button variant="outline" onClick={handleStop} className="border-red-400/60 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20">
+                      <Square className="h-4 w-4 fill-current" />
+                      停止生成
+                    </Button>
+                  ) : (
+                    <Button disabled={!question.trim()} onClick={() => void handleAsk()}>
+                      <Send className="h-4 w-4" />
+                      发送问题
+                    </Button>
+                  )}
                 </div>
               </div>
             </div>
@@ -2552,6 +2591,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <div className="text-xs text-cyan-400/70">支持针对所选文件夹问答；未选择文件夹时默认检索全部资料。</div>
+                    {modelMode === "auto" && lastUsedModel && (
+                      <span className={cn(
+                        "flex items-center gap-1 rounded-lg border px-2 py-1 text-xs",
+                        lastUsedModel.startsWith("qwq")
+                          ? "border-purple-400/40 bg-purple-500/15 text-purple-300"
+                          : "border-cyan-500/20 bg-black/20 text-cyan-300/70",
+                      )}>
+                        {lastUsedModel.startsWith("qwq") ? "🧠 自动启用了推理" : "⚡ 自动使用标准模式"}
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -2567,10 +2616,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     >
                       🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
                     </button>
-                    <Button disabled={chatLoading || !question.trim()} className="bg-cyan-600 hover:bg-cyan-500" onClick={() => void handleAsk()}>
-                      <Send className="h-4 w-4" />
-                      发送问题
-                    </Button>
+                    {chatLoading ? (
+                      <Button onClick={handleStop} className="border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20">
+                        <Square className="h-4 w-4 fill-current" />
+                        停止生成
+                      </Button>
+                    ) : (
+                      <Button disabled={!question.trim()} className="bg-cyan-600 hover:bg-cyan-500" onClick={() => void handleAsk()}>
+                        <Send className="h-4 w-4" />
+                        发送问题
+                      </Button>
+                    )}
                   </div>
                 </div>
               </div>
