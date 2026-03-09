@@ -193,10 +193,10 @@ function createChatModel(modelId: string) {
   return new ChatOpenAI({
     apiKey: getDashScopeApiKey(),
     model: modelId,
-    // Reasoning models require temperature=1 and don't support streaming by default.
-    // We force streaming:false for them and use invoke() which waits for the full chain-of-thought.
+    // qwq-plus requires streaming=true; non-reasoning models benefit from it too.
+    // temperature=1 is required by reasoning models.
     temperature: isReasoning ? 1 : 0.2,
-    streaming: !isReasoning,
+    streaming: true,
     configuration: {
       baseURL: getDashScopeBaseUrl(),
     },
@@ -693,20 +693,12 @@ export async function* streamKnowledgeBaseAnswer(input: {
   }
   const ctx = await buildRetrievalContext(input)
   const modelId = selectModelForQuestion(input.modelMode ?? "auto", question)
-  const isReasoning = modelId.startsWith("qwq") || modelId.startsWith("deepseek-r")
   const model = createChatModel(modelId)
 
-  if (isReasoning) {
-    // Reasoning models: wait for full response, then send as one text event
-    const response = await model.invoke(ctx.messages)
-    const text = stringifyModelContent(response.content)
-    if (text) yield { type: "text", delta: text, modelId }
-  } else {
-    const stream = await model.stream(ctx.messages)
-    for await (const chunk of stream) {
-      const delta = stringifyModelContent(chunk.content)
-      if (delta) yield { type: "text", delta, modelId }
-    }
+  const stream = await model.stream(ctx.messages)
+  for await (const chunk of stream) {
+    const delta = stringifyModelContent(chunk.content)
+    if (delta) yield { type: "text", delta, modelId }
   }
 
   yield {
