@@ -2291,17 +2291,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       {lastUsedModel.startsWith("qwq") ? "🧠 自动启用了推理" : "⚡ 自动使用标准模式"}
                     </span>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setModelMode((m) => m === "reasoning" ? "auto" : "reasoning")}
-                    className={cn(
-                      "flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors",
-                      modelMode === "reasoning" ? "border-purple-400/60 bg-purple-500/15 text-purple-200" : "border-border text-muted-foreground hover:bg-muted",
-                    )}
-                    title="切换深度推理模式（deepseek-reasoner）"
-                  >
-                    🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
-                  </button>
                   {chatLoading ? (
                     <Button variant="outline" onClick={handleStop} className="border-red-400/60 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20">
                       <Square className="h-4 w-4 fill-current" />
@@ -2682,19 +2671,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setModelMode((m) => m === "reasoning" ? "auto" : "reasoning")}
-                      className={cn(
-                        "flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs transition-colors",
-                        modelMode === "reasoning"
-                          ? "border-purple-400/60 bg-purple-500/20 text-purple-200"
-                          : "border-cyan-500/25 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10",
-                      )}
-                      title="切换深度推理模式（deepseek-reasoner）"
-                    >
-                      🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
-                    </button>
                     {chatLoading ? (
                       <Button onClick={handleStop} className="border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20">
                         <Square className="h-4 w-4 fill-current" />
