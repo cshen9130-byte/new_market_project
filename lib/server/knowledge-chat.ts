@@ -160,11 +160,43 @@ function getEmbeddingModel() {
   return process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v3"
 }
 
-function createChatModel(modelOverride?: string) {
+// ── Model catalogue ───────────────────────────────────────────────────────────
+
+/** Canonical IDs accepted by both frontend and API route. */
+export type KbModelMode = "auto" | "plus" | "turbo" | "reasoning"
+
+const MODEL_IDS: Record<Exclude<KbModelMode, "auto">, string> = {
+  plus: "qwen-plus",
+  turbo: "qwen-turbo",
+  reasoning: "qwq-plus",
+}
+
+// Keywords that suggest a question needs step-by-step reasoning
+const REASONING_KEYWORDS = [
+  "计算", "推导", "推理", "证明", "逻辑", "分析", "对比", "比较", "排名", "排序",
+  "最高", "最低", "最大", "最小", "大于", "小于", "超过", "不足", "达到",
+  "年化", "夏普", "回撤", "波动", "收益率", "胜率", "相关性", "回归",
+  "哪些", "哪个", "多少", "几个", "筛选", "过滤", "符合", "满足", "条件",
+  "step by step", "reason", "calculate", "compare", "rank", "filter",
+]
+
+/** Returns the exact DashScope model ID to use given the mode + question text. */
+export function selectModelForQuestion(mode: KbModelMode, question: string): string {
+  if (mode !== "auto") return MODEL_IDS[mode]
+  const q = question.toLowerCase()
+  const isAnalytical = REASONING_KEYWORDS.some((kw) => q.includes(kw))
+  return isAnalytical ? MODEL_IDS.reasoning : MODEL_IDS.plus
+}
+
+function createChatModel(modelId: string) {
+  const isReasoning = modelId.startsWith("qwq") || modelId.startsWith("deepseek-r")
   return new ChatOpenAI({
     apiKey: getDashScopeApiKey(),
-    model: modelOverride || getChatModel(),
-    temperature: 0.2,
+    model: modelId,
+    // Reasoning models require temperature=1 and don't support streaming by default.
+    // We force streaming:false for them and use invoke() which waits for the full chain-of-thought.
+    temperature: isReasoning ? 1 : 0.2,
+    streaming: !isReasoning,
     configuration: {
       baseURL: getDashScopeBaseUrl(),
     },
@@ -617,12 +649,13 @@ export async function askKnowledgeBaseQuestion(input: {
   folderPath?: string | null
   filePath?: string | null
   useBm25?: boolean
-  modelOverride?: string
+  modelMode?: KbModelMode
 }) {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
   const ctx = await buildRetrievalContext(input)
-  const model = createChatModel(input.modelOverride)
+  const modelId = selectModelForQuestion(input.modelMode ?? "auto", question)
+  const model = createChatModel(modelId)
   const response = await model.invoke(ctx.messages)
   return {
     answer: stringifyModelContent(response.content),
@@ -630,7 +663,7 @@ export async function askKnowledgeBaseQuestion(input: {
     indexedDocuments: ctx.indexedDocuments,
     indexedChunks: ctx.indexedChunks,
     tokenUsage: extractTokenUsage(response),
-    model: input.modelOverride || getChatModel(),
+    model: modelId,
   }
 }
 
@@ -639,34 +672,48 @@ export async function askKnowledgeBaseQuestion(input: {
  * done event with sources and metadata. Retrieval happens before the first
  * yield, so time-to-first-token ≈ embedding API latency (~1s) rather than
  * full generation time (~30s).
+ *
+ * NOTE: reasoning models (qwq-*) don't support per-token streaming; they fall
+ * back to a single text event followed immediately by done.
  */
 export async function* streamKnowledgeBaseAnswer(input: {
   question: string
   folderPath?: string | null
   filePath?: string | null
   useBm25?: boolean
-  modelOverride?: string
+  modelMode?: KbModelMode
 }): AsyncGenerator<
-  | { type: "text"; delta: string }
+  | { type: "text"; delta: string; modelId?: string }
   | { type: "done"; sources: string[]; indexedDocuments: number; indexedChunks: number; model: string }
 > {
   const question = input.question.trim()
   if (!question) {
-    yield { type: "done", sources: [], indexedDocuments: 0, indexedChunks: 0, model: input.modelOverride || getChatModel() }
+    yield { type: "done", sources: [], indexedDocuments: 0, indexedChunks: 0, model: MODEL_IDS.plus }
     return
   }
   const ctx = await buildRetrievalContext(input)
-  const model = createChatModel(input.modelOverride)
-  const stream = await model.stream(ctx.messages)
-  for await (const chunk of stream) {
-    const delta = stringifyModelContent(chunk.content)
-    if (delta) yield { type: "text", delta }
+  const modelId = selectModelForQuestion(input.modelMode ?? "auto", question)
+  const isReasoning = modelId.startsWith("qwq") || modelId.startsWith("deepseek-r")
+  const model = createChatModel(modelId)
+
+  if (isReasoning) {
+    // Reasoning models: wait for full response, then send as one text event
+    const response = await model.invoke(ctx.messages)
+    const text = stringifyModelContent(response.content)
+    if (text) yield { type: "text", delta: text, modelId }
+  } else {
+    const stream = await model.stream(ctx.messages)
+    for await (const chunk of stream) {
+      const delta = stringifyModelContent(chunk.content)
+      if (delta) yield { type: "text", delta, modelId }
+    }
   }
+
   yield {
     type: "done",
     sources: ctx.sources,
     indexedDocuments: ctx.indexedDocuments,
     indexedChunks: ctx.indexedChunks,
-    model: input.modelOverride || getChatModel(),
+    model: modelId,
   }
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
-import { askKnowledgeBaseQuestion, streamKnowledgeBaseAnswer } from "@/lib/server/knowledge-chat"
+import { askKnowledgeBaseQuestion, streamKnowledgeBaseAnswer, type KbModelMode } from "@/lib/server/knowledge-chat"
 import { appendMessage, countMessages, createConversation, updateConversationTitle } from "@/lib/server/chat-db"
 import { appendTokenUsage } from "@/lib/server/token-usage"
 
@@ -25,7 +25,8 @@ export async function POST(req: Request) {
       effectiveConversationId = created.id
     }
 
-    const modelOverride = body?.modelSpeed === "turbo" ? "qwen-turbo" : undefined
+    const validModes: KbModelMode[] = ["auto", "plus", "turbo", "reasoning"]
+    const modelMode: KbModelMode = validModes.includes(body?.modelMode) ? body.modelMode : "auto"
 
     // ── Streaming path (SSE) ───────────────────────────────────────────
     if (body?.stream === true) {
@@ -39,7 +40,7 @@ export async function POST(req: Request) {
               folderPath: body?.folderPath,
               filePath: body?.filePath ?? null,
               useBm25: body?.useBm25 !== false,
-              modelOverride,
+              modelMode,
             })
             for await (const event of gen) {
               if (event.type === "text") {
@@ -83,7 +84,7 @@ export async function POST(req: Request) {
       folderPath: body?.folderPath,
       filePath: body?.filePath ?? null,
       useBm25: body?.useBm25 !== false,
-      modelOverride,
+      modelMode,
     })
 
     if (effectiveConversationId && user) {

@@ -473,7 +473,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [showConvSidebar, setShowConvSidebar] = useState(false)
   const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
   const [useBm25, setUseBm25] = useState(true)
-  const [modelSpeed, setModelSpeed] = useState<"plus" | "turbo">("plus")
+  const [modelMode, setModelMode] = useState<"auto" | "plus" | "turbo" | "reasoning">("auto")
 
   useEffect(() => {
     authService.init()
@@ -1318,7 +1318,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           filePath: selectedDocument?.relativePath ?? null,
           useBm25,
           stream: true,
-          modelSpeed,
+          modelMode,
           conversationId: convId,
           title: selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料"),
           fileName: selectedDocument?.name,
@@ -2158,12 +2158,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <p className="mt-2 text-[11px] text-muted-foreground">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
                   </div>
                   <div className="rounded-md border p-3">
-                    <div className="mb-2 text-xs font-medium text-muted-foreground">模型速度</div>
-                    <div className="flex gap-1">
-                      <button type="button" onClick={() => setModelSpeed("plus")} className={cn("flex-1 rounded px-2 py-1 text-xs transition-colors", modelSpeed === "plus" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>标准</button>
-                      <button type="button" onClick={() => setModelSpeed("turbo")} className={cn("flex-1 rounded px-2 py-1 text-xs transition-colors", modelSpeed === "turbo" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>快速 ⚡</button>
+                    <div className="mb-2 text-xs font-medium text-muted-foreground">模型选择</div>
+                    <div className="grid grid-cols-2 gap-1">
+                      <button type="button" onClick={() => setModelMode("auto")} className={cn("col-span-2 rounded px-2 py-1 text-xs transition-colors", modelMode === "auto" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🤖 自动（推荐）</button>
+                      <button type="button" onClick={() => setModelMode("plus")} className={cn("rounded px-2 py-1 text-xs transition-colors", modelMode === "plus" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>标准</button>
+                      <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>快速 ⚡</button>
+                      <button type="button" onClick={() => setModelMode("reasoning")} className={cn("col-span-2 rounded px-2 py-1 text-xs transition-colors", modelMode === "reasoning" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🧠 深度推理</button>
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">快速：qwen-turbo，响应更快；标准：qwen-plus，质量更高。</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：qwq-plus（适合筛选/计算/对比类问题）。</p>
                   </div>
                 </div>
               )}
@@ -2207,7 +2209,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   placeholder="例如：总结当前资料中的核心观点；如果库里没有文件，就直接给我一个市场判断。"
                   className="min-h-32"
                 />
-                <div className="flex items-center justify-end">
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setModelMode((m) => m === "reasoning" ? "auto" : "reasoning")}
+                    className={cn(
+                      "flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors",
+                      modelMode === "reasoning" ? "border-purple-400/60 bg-purple-500/15 text-purple-200" : "border-border text-muted-foreground hover:bg-muted",
+                    )}
+                    title="切换深度推理模式（qwq-plus）"
+                  >
+                    🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
+                  </button>
                   <Button disabled={chatLoading || !question.trim()} onClick={() => void handleAsk()}>
                     <Send className="h-4 w-4" />
                     发送问题
@@ -2484,12 +2497,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <Switch checked={useBm25} onCheckedChange={setUseBm25} />
                     </div>
                     <p className="text-[11px] text-cyan-300/60">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
-                    <div className="mt-1 text-xs font-medium text-cyan-300/80">模型速度</div>
-                    <div className="flex gap-1">
-                      <button type="button" onClick={() => setModelSpeed("plus")} className={cn("flex-1 rounded-lg border px-2 py-1 text-xs transition-colors", modelSpeed === "plus" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>标准</button>
-                      <button type="button" onClick={() => setModelSpeed("turbo")} className={cn("flex-1 rounded-lg border px-2 py-1 text-xs transition-colors", modelSpeed === "turbo" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>快速 ⚡</button>
+                    <div className="mt-1 text-xs font-medium text-cyan-300/80">模型选择</div>
+                    <div className="grid grid-cols-2 gap-1">
+                      <button type="button" onClick={() => setModelMode("auto")} className={cn("col-span-2 rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "auto" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🤖 自动（推荐）</button>
+                      <button type="button" onClick={() => setModelMode("plus")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "plus" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>标准</button>
+                      <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>快速 ⚡</button>
+                      <button type="button" onClick={() => setModelMode("reasoning")} className={cn("col-span-2 rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "reasoning" ? "border-purple-400/60 bg-purple-500/20 text-purple-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🧠 深度推理</button>
                     </div>
-                    <p className="text-[11px] text-cyan-300/60">快速：qwen-turbo，响应更快；标准：qwen-plus，质量更高。</p>
+                    <p className="text-[11px] text-cyan-300/60">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：qwq-plus。</p>
                   </div>
                 )}
 
@@ -2535,11 +2550,28 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   className="min-h-32 border-cyan-500/25 bg-black/30 text-cyan-100"
                 />
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-xs text-cyan-400/70">支持针对所选文件夹问答；未选择文件夹时默认检索全部资料。</div>
-                  <Button disabled={chatLoading || !question.trim()} className="bg-cyan-600 hover:bg-cyan-500" onClick={() => void handleAsk()}>
-                    <Send className="h-4 w-4" />
-                    发送问题
-                  </Button>
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs text-cyan-400/70">支持针对所选文件夹问答；未选择文件夹时默认检索全部资料。</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setModelMode((m) => m === "reasoning" ? "auto" : "reasoning")}
+                      className={cn(
+                        "flex items-center gap-1 rounded-lg border px-2 py-1.5 text-xs transition-colors",
+                        modelMode === "reasoning"
+                          ? "border-purple-400/60 bg-purple-500/20 text-purple-200"
+                          : "border-cyan-500/25 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10",
+                      )}
+                      title="切换深度推理模式（qwq-plus）"
+                    >
+                      🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
+                    </button>
+                    <Button disabled={chatLoading || !question.trim()} className="bg-cyan-600 hover:bg-cyan-500" onClick={() => void handleAsk()}>
+                      <Send className="h-4 w-4" />
+                      发送问题
+                    </Button>
+                  </div>
                 </div>
               </div>
             </CardContent>
