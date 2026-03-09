@@ -152,18 +152,6 @@ function getDashScopeBaseUrl() {
   return process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1"
 }
 
-function getDeepSeekApiKey() {
-  const apiKey = process.env.DEEPSEEK_API_KEY
-  if (!apiKey) {
-    throw new Error("缺少 DEEPSEEK_API_KEY，无法使用 deepseek-reasoner 推理模型")
-  }
-  return apiKey
-}
-
-function getDeepSeekBaseUrl() {
-  return process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com"
-}
-
 function getChatModel() {
   return process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus"
 }
@@ -175,43 +163,27 @@ function getEmbeddingModel() {
 // ── Model catalogue ───────────────────────────────────────────────────────────
 
 /** Canonical IDs accepted by both frontend and API route. */
-export type KbModelMode = "auto" | "plus" | "turbo" | "reasoning"
+export type KbModelMode = "auto" | "plus" | "turbo"
 
 const MODEL_IDS: Record<Exclude<KbModelMode, "auto">, string> = {
   plus: "qwen-plus",
   turbo: "qwen-turbo",
-  reasoning: "deepseek-reasoner",
 }
 
-// Keywords that suggest a question needs step-by-step reasoning
-const REASONING_KEYWORDS = [
-  "计算", "推导", "推理", "证明", "逻辑", "分析", "对比", "比较", "排名", "排序",
-  "最高", "最低", "最大", "最小", "大于", "小于", "超过", "不足", "达到",
-  "年化", "夏普", "回撤", "波动", "收益率", "胜率", "相关性", "回归",
-  "哪些", "哪个", "多少", "几个", "筛选", "过滤", "符合", "满足", "条件",
-  "step by step", "reason", "calculate", "compare", "rank", "filter",
-]
-
-/** Returns the exact DashScope model ID to use given the mode + question text. */
-export function selectModelForQuestion(mode: KbModelMode, question: string): string {
-  if (mode !== "auto") return MODEL_IDS[mode]
-  const q = question.toLowerCase()
-  const isAnalytical = REASONING_KEYWORDS.some((kw) => q.includes(kw))
-  return isAnalytical ? MODEL_IDS.reasoning : MODEL_IDS.plus
+/** Returns the DashScope model ID to use given the mode. */
+export function selectModelForQuestion(mode: KbModelMode): string {
+  if (mode === "turbo") return MODEL_IDS.turbo
+  return MODEL_IDS.plus
 }
 
 function createChatModel(modelId: string) {
-  const isReasoning = modelId.startsWith("qwq") || modelId.startsWith("deepseek-r")
-  const isDeepSeekReasoning = modelId === "deepseek-reasoner"
   return new ChatOpenAI({
-    apiKey: isDeepSeekReasoning ? getDeepSeekApiKey() : getDashScopeApiKey(),
+    apiKey: getDashScopeApiKey(),
     model: modelId,
-    // Keep streaming on for all models to support SSE token streaming in UI.
-    // temperature=1 is required by reasoning models.
-    temperature: isReasoning ? 1 : 0.2,
+    temperature: 0.2,
     streaming: true,
     configuration: {
-      baseURL: isDeepSeekReasoning ? getDeepSeekBaseUrl() : getDashScopeBaseUrl(),
+      baseURL: getDashScopeBaseUrl(),
     },
   })
 }
@@ -667,7 +639,7 @@ export async function askKnowledgeBaseQuestion(input: {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
   const ctx = await buildRetrievalContext(input)
-  const modelId = selectModelForQuestion(input.modelMode ?? "auto", question)
+  const modelId = selectModelForQuestion(input.modelMode ?? "auto")
   const model = createChatModel(modelId)
   const response = await model.invoke(ctx.messages)
   return {
@@ -685,9 +657,6 @@ export async function askKnowledgeBaseQuestion(input: {
  * done event with sources and metadata. Retrieval happens before the first
  * yield, so time-to-first-token ≈ embedding API latency (~1s) rather than
  * full generation time (~30s).
- *
- * NOTE: reasoning models (qwq-*) don't support per-token streaming; they fall
- * back to a single text event followed immediately by done.
  */
 export async function* streamKnowledgeBaseAnswer(input: {
   question: string
@@ -705,7 +674,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
     return
   }
   const ctx = await buildRetrievalContext(input)
-  const modelId = selectModelForQuestion(input.modelMode ?? "auto", question)
+  const modelId = selectModelForQuestion(input.modelMode ?? "auto")
   const model = createChatModel(modelId)
 
   const stream = await model.stream(ctx.messages)

@@ -41,9 +41,6 @@ module.exports = {
         DASHSCOPE_CHAT_MODEL: process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
         DASHSCOPE_EMBEDDING_MODEL: process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v3",
 
-        // DeepSeek settings for reasoning model (deepseek-reasoner)
-        DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY || "",
-        DEEPSEEK_BASE_URL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
       },
     },
   ],

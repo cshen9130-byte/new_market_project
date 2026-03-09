@@ -26,8 +26,6 @@ DASHSCOPE_API_KEY="${DASHSCOPE_API_KEY:-}"
 DASHSCOPE_BASE_URL="${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
 DASHSCOPE_CHAT_MODEL="${DASHSCOPE_CHAT_MODEL:-qwen-plus}"
 DASHSCOPE_EMBEDDING_MODEL="${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v3}"
-DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
-DEEPSEEK_BASE_URL="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
 BUILD_MEMORY_MB="1024"
 TEMP_SWAP_GB="4"
 DEBUG_BUILD="0"
@@ -47,8 +45,6 @@ while [[ $# -gt 0 ]]; do
     --dashscope-base-url) DASHSCOPE_BASE_URL="$2"; shift 2 ;;
     --dashscope-chat-model) DASHSCOPE_CHAT_MODEL="$2"; shift 2 ;;
     --dashscope-embedding-model) DASHSCOPE_EMBEDDING_MODEL="$2"; shift 2 ;;
-    --deepseek-api-key) DEEPSEEK_API_KEY="$2"; shift 2 ;;
-    --deepseek-base-url) DEEPSEEK_BASE_URL="$2"; shift 2 ;;
     --build-memory-mb) BUILD_MEMORY_MB="$2"; shift 2 ;;
     --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
     --debug-build) DEBUG_BUILD="1"; shift ;;
@@ -138,8 +134,6 @@ export DASHSCOPE_API_KEY="$DASHSCOPE_API_KEY"
 export DASHSCOPE_BASE_URL="$DASHSCOPE_BASE_URL"
 export DASHSCOPE_CHAT_MODEL="$DASHSCOPE_CHAT_MODEL"
 export DASHSCOPE_EMBEDDING_MODEL="$DASHSCOPE_EMBEDDING_MODEL"
-export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
-export DEEPSEEK_BASE_URL="$DEEPSEEK_BASE_URL"
 EOF
 
 # shellcheck disable=SC1091

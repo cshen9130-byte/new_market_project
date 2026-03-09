@@ -477,8 +477,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [showConvSidebar, setShowConvSidebar] = useState(false)
   const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
   const [useBm25, setUseBm25] = useState(true)
-  const [modelMode, setModelMode] = useState<"auto" | "plus" | "turbo" | "reasoning">("auto")
-  const [lastUsedModel, setLastUsedModel] = useState<string | null>(null)
+  const [modelMode, setModelMode] = useState<"auto" | "plus" | "turbo">("auto")
   const abortControllerRef = useRef<AbortController | null>(null)
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState("")
@@ -1329,7 +1328,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     setChatMessages(nextMessages)
     setQuestion("")
     setChatLoading(true)
-    setLastUsedModel(null)
 
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -1389,7 +1387,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           if (event.type === "text" && event.delta) {
             if (event.modelId && !capturedModel) {
               capturedModel = event.modelId
-              setLastUsedModel(capturedModel)
             }
             fullContent += event.delta
             setChatMessages((prev) => {
@@ -1400,7 +1397,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           } else if (event.type === "done") {
             if (event.model) {
               capturedModel = event.model
-              setLastUsedModel(event.model)
             }
             const doneEvent = event
             setChatMessages((prev) => {
@@ -2236,9 +2232,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <button type="button" onClick={() => setModelMode("auto")} className={cn("col-span-2 rounded px-2 py-1 text-xs transition-colors", modelMode === "auto" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🤖 自动（推荐）</button>
                       <button type="button" onClick={() => setModelMode("plus")} className={cn("rounded px-2 py-1 text-xs transition-colors", modelMode === "plus" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>标准</button>
                       <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>快速 ⚡</button>
-                      <button type="button" onClick={() => setModelMode("reasoning")} className={cn("col-span-2 rounded px-2 py-1 text-xs transition-colors", modelMode === "reasoning" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🧠 深度推理</button>
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：deepseek-reasoner（适合筛选/计算/对比类问题）。</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground">自动：默认标准模式（qwen-plus）；快速：qwen-turbo（更快，质量略低）。</p>
                   </div>
                 </div>
               )}
@@ -2283,14 +2278,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   className="min-h-32"
                 />
                 <div className="flex items-center justify-end gap-2">
-                  {modelMode === "auto" && lastUsedModel && (
-                    <span className={cn(
-                      "flex items-center gap-1 rounded-md border px-2 py-1 text-xs",
-                      lastUsedModel.startsWith("qwq") ? "border-purple-400/40 bg-purple-500/10 text-purple-600 dark:text-purple-300" : "border-border text-muted-foreground",
-                    )}>
-                      {lastUsedModel.startsWith("qwq") ? "🧠 自动启用了推理" : "⚡ 自动使用标准模式"}
-                    </span>
-                  )}
                   {chatLoading ? (
                     <Button variant="outline" onClick={handleStop} className="border-red-400/60 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20">
                       <Square className="h-4 w-4 fill-current" />
@@ -2609,9 +2596,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <button type="button" onClick={() => setModelMode("auto")} className={cn("col-span-2 rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "auto" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🤖 自动（推荐）</button>
                       <button type="button" onClick={() => setModelMode("plus")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "plus" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>标准</button>
                       <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>快速 ⚡</button>
-                      <button type="button" onClick={() => setModelMode("reasoning")} className={cn("col-span-2 rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "reasoning" ? "border-purple-400/60 bg-purple-500/20 text-purple-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🧠 深度推理</button>
                     </div>
-                    <p className="text-[11px] text-cyan-300/60">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：deepseek-reasoner。</p>
+                    <p className="text-[11px] text-cyan-300/60">自动：默认标准模式（qwen-plus）；快速：qwen-turbo（更快，质量略低）。</p>
                   </div>
                 )}
 
@@ -2659,16 +2645,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <div className="text-xs text-cyan-400/70">支持针对所选文件夹问答；未选择文件夹时默认检索全部资料。</div>
-                    {modelMode === "auto" && lastUsedModel && (
-                      <span className={cn(
-                        "flex items-center gap-1 rounded-lg border px-2 py-1 text-xs",
-                        lastUsedModel.startsWith("qwq")
-                          ? "border-purple-400/40 bg-purple-500/15 text-purple-300"
-                          : "border-cyan-500/20 bg-black/20 text-cyan-300/70",
-                      )}>
-                        {lastUsedModel.startsWith("qwq") ? "🧠 自动启用了推理" : "⚡ 自动使用标准模式"}
-                      </span>
-                    )}
                   </div>
                   <div className="flex items-center gap-2">
                     {chatLoading ? (
