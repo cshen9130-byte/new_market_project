@@ -23,6 +23,8 @@ import {
   History,
   LoaderCircle,
   MessageSquare,
+  MoreHorizontal,
+  Pencil,
   Plus,
   RefreshCw,
   Send,
@@ -42,6 +44,7 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
 type DocumentNode = {
   name: string
@@ -477,6 +480,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [modelMode, setModelMode] = useState<"auto" | "plus" | "turbo" | "reasoning">("auto")
   const [lastUsedModel, setLastUsedModel] = useState<string | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const [renamingConvId, setRenamingConvId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState("")
 
   useEffect(() => {
     authService.init()
@@ -1261,6 +1266,20 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
   function handleToggleSettingsSidebar() {
     setShowSettingsSidebar((v) => !v)
+  }
+
+  async function handleRenameConversation(id: string, title: string) {
+    const trimmed = title.trim()
+    setRenamingConvId(null)
+    if (!trimmed || !currentUser) return
+    try {
+      await fetch(`/api/knowledge-base/conversations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ title: trimmed }),
+      })
+      setConversations((prev) => prev.map((c) => c.id === id ? { ...c, title: trimmed } : c))
+    } catch {}
   }
 
   async function handleDeleteConversation(id: string, e: React.MouseEvent) {
@@ -2136,7 +2155,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <Plus className="h-3 w-3" />
                     新对话
                   </Button>
-                  <ScrollArea className="flex-1">
+                  <div className="flex-1 overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-transparent [&::-webkit-scrollbar-track]:transparent [&:hover::-webkit-scrollbar-thumb]:bg-border/60">
                     <div className="space-y-1">
                       {conversations.length === 0 && (
                         <p className="px-1 py-3 text-center text-xs text-muted-foreground">暂无对话记录</p>
@@ -2145,29 +2164,59 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         <div
                           key={conv.id}
                           className={cn(
-                            "group flex cursor-pointer items-start justify-between gap-1 rounded-md px-2 py-2 text-xs transition-colors hover:bg-muted/50",
+                            "group flex cursor-pointer items-start gap-1 rounded-md px-2 py-2 text-xs transition-colors hover:bg-muted/50",
                             activeConversationId === conv.id && "bg-muted",
                           )}
-                          onClick={() => void handleLoadConversation(conv.id)}
+                          onClick={() => renamingConvId !== conv.id && void handleLoadConversation(conv.id)}
                         >
                           <div className="min-w-0 flex-1">
-                            <div className="truncate font-medium leading-tight">{conv.title}</div>
+                            {renamingConvId === conv.id ? (
+                              <input
+                                autoFocus
+                                value={renameValue}
+                                onChange={(e) => setRenameValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") void handleRenameConversation(conv.id, renameValue)
+                                  if (e.key === "Escape") setRenamingConvId(null)
+                                  e.stopPropagation()
+                                }}
+                                onBlur={() => void handleRenameConversation(conv.id, renameValue)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="w-full rounded bg-background px-1 py-0.5 text-xs outline-none ring-1 ring-primary"
+                              />
+                            ) : (
+                              <div className="truncate font-medium leading-tight">{conv.title}</div>
+                            )}
                             <div className="mt-0.5 flex items-center gap-1 text-muted-foreground">
                               <Clock className="h-2.5 w-2.5 shrink-0" />
                               <span className="truncate">{new Date(conv.updatedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                             </div>
                           </div>
-                          <button
-                            className="mt-0.5 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
-                            onClick={(e) => void handleDeleteConversation(conv.id, e)}
-                            title="删除"
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <button
+                                className="mt-0.5 shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                                onClick={(e) => e.stopPropagation()}
+                                title="更多操作"
+                              >
+                                <MoreHorizontal className="h-3.5 w-3.5" />
+                              </button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-28">
+                              <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setRenamingConvId(conv.id); setRenameValue(conv.title) }}>
+                                <Pencil className="mr-2 h-3.5 w-3.5" />
+                                重命名
+                              </DropdownMenuItem>
+                              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={(e) => void handleDeleteConversation(conv.id, e)}>
+                                <Trash2 className="mr-2 h-3.5 w-3.5" />
+                                删除
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
                       ))}
                     </div>
-                  </ScrollArea>
+                  </div>
                 </div>
               )}
 
@@ -2493,7 +2542,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <Plus className="h-3 w-3" />
                       新对话
                     </Button>
-                    <ScrollArea className="flex-1">
+                    <div className="flex-1 overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-transparent [&::-webkit-scrollbar-track]:transparent [&:hover::-webkit-scrollbar-thumb]:bg-cyan-400/30">
                       <div className="space-y-0.5">
                         {conversations.length === 0 && (
                           <p className="px-1 py-3 text-center text-xs text-cyan-300/50">暂无对话记录</p>
@@ -2502,29 +2551,59 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           <div
                             key={conv.id}
                             className={cn(
-                              "group flex cursor-pointer items-start justify-between gap-1 rounded-lg px-2 py-2 text-xs transition-colors hover:bg-cyan-500/10",
+                              "group flex cursor-pointer items-start gap-1 rounded-lg px-2 py-2 text-xs transition-colors hover:bg-cyan-500/10",
                               activeConversationId === conv.id && "bg-cyan-500/15",
                             )}
-                            onClick={() => void handleLoadConversation(conv.id)}
+                            onClick={() => renamingConvId !== conv.id && void handleLoadConversation(conv.id)}
                           >
                             <div className="min-w-0 flex-1">
-                              <div className="truncate font-medium leading-tight text-cyan-100">{conv.title}</div>
+                              {renamingConvId === conv.id ? (
+                                <input
+                                  autoFocus
+                                  value={renameValue}
+                                  onChange={(e) => setRenameValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") void handleRenameConversation(conv.id, renameValue)
+                                    if (e.key === "Escape") setRenamingConvId(null)
+                                    e.stopPropagation()
+                                  }}
+                                  onBlur={() => void handleRenameConversation(conv.id, renameValue)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="w-full rounded border border-cyan-400/40 bg-black/40 px-1 py-0.5 text-xs text-cyan-100 outline-none ring-1 ring-cyan-400/60"
+                                />
+                              ) : (
+                                <div className="truncate font-medium leading-tight text-cyan-100">{conv.title}</div>
+                              )}
                               <div className="mt-0.5 flex items-center gap-1 text-cyan-300/50">
                                 <Clock className="h-2.5 w-2.5 shrink-0" />
                                 <span className="truncate">{new Date(conv.updatedAt).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                               </div>
                             </div>
-                            <button
-                              className="mt-0.5 shrink-0 text-cyan-300/30 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
-                              onClick={(e) => void handleDeleteConversation(conv.id, e)}
-                              title="删除"
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </button>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <button
+                                  className="mt-0.5 shrink-0 rounded p-0.5 text-cyan-300/30 opacity-0 transition-opacity hover:text-cyan-200 group-hover:opacity-100"
+                                  onClick={(e) => e.stopPropagation()}
+                                  title="更多操作"
+                                >
+                                  <MoreHorizontal className="h-3.5 w-3.5" />
+                                </button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="w-28">
+                                <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setRenamingConvId(conv.id); setRenameValue(conv.title) }}>
+                                  <Pencil className="mr-2 h-3.5 w-3.5" />
+                                  重命名
+                                </DropdownMenuItem>
+                                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={(e) => void handleDeleteConversation(conv.id, e)}>
+                                  <Trash2 className="mr-2 h-3.5 w-3.5" />
+                                  删除
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
                         ))}
                       </div>
-                    </ScrollArea>
+                    </div>
                   </div>
                 )}
 
