@@ -2238,7 +2238,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>快速 ⚡</button>
                       <button type="button" onClick={() => setModelMode("reasoning")} className={cn("col-span-2 rounded px-2 py-1 text-xs transition-colors", modelMode === "reasoning" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🧠 深度推理</button>
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：qwq-plus（适合筛选/计算/对比类问题）。</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：deepseek-reasoner（适合筛选/计算/对比类问题）。</p>
                   </div>
                 </div>
               )}
@@ -2298,7 +2298,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       "flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors",
                       modelMode === "reasoning" ? "border-purple-400/60 bg-purple-500/15 text-purple-200" : "border-border text-muted-foreground hover:bg-muted",
                     )}
-                    title="切换深度推理模式（qwq-plus）"
+                    title="切换深度推理模式（deepseek-reasoner）"
                   >
                     🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
                   </button>
@@ -2622,7 +2622,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>快速 ⚡</button>
                       <button type="button" onClick={() => setModelMode("reasoning")} className={cn("col-span-2 rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "reasoning" ? "border-purple-400/60 bg-purple-500/20 text-purple-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🧠 深度推理</button>
                     </div>
-                    <p className="text-[11px] text-cyan-300/60">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：qwq-plus。</p>
+                    <p className="text-[11px] text-cyan-300/60">自动：根据问题类型自动切换；标准：qwen-plus；快速：qwen-turbo；深度推理：deepseek-reasoner。</p>
                   </div>
                 )}
 
@@ -2691,7 +2691,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           ? "border-purple-400/60 bg-purple-500/20 text-purple-200"
                           : "border-cyan-500/25 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10",
                       )}
-                      title="切换深度推理模式（qwq-plus）"
+                      title="切换深度推理模式（deepseek-reasoner）"
                     >
                       🧠 {modelMode === "reasoning" ? "推理中" : "深度推理"}
                     </button>

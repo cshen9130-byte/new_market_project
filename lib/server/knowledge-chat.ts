@@ -152,6 +152,18 @@ function getDashScopeBaseUrl() {
   return process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1"
 }
 
+function getDeepSeekApiKey() {
+  const apiKey = process.env.DEEPSEEK_API_KEY
+  if (!apiKey) {
+    throw new Error("缺少 DEEPSEEK_API_KEY，无法使用 deepseek-reasoner 推理模型")
+  }
+  return apiKey
+}
+
+function getDeepSeekBaseUrl() {
+  return process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com"
+}
+
 function getChatModel() {
   return process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus"
 }
@@ -168,7 +180,7 @@ export type KbModelMode = "auto" | "plus" | "turbo" | "reasoning"
 const MODEL_IDS: Record<Exclude<KbModelMode, "auto">, string> = {
   plus: "qwen-plus",
   turbo: "qwen-turbo",
-  reasoning: "qwq-plus",
+  reasoning: "deepseek-reasoner",
 }
 
 // Keywords that suggest a question needs step-by-step reasoning
@@ -190,15 +202,16 @@ export function selectModelForQuestion(mode: KbModelMode, question: string): str
 
 function createChatModel(modelId: string) {
   const isReasoning = modelId.startsWith("qwq") || modelId.startsWith("deepseek-r")
+  const isDeepSeekReasoning = modelId === "deepseek-reasoner"
   return new ChatOpenAI({
-    apiKey: getDashScopeApiKey(),
+    apiKey: isDeepSeekReasoning ? getDeepSeekApiKey() : getDashScopeApiKey(),
     model: modelId,
-    // qwq-plus requires streaming=true; non-reasoning models benefit from it too.
+    // Keep streaming on for all models to support SSE token streaming in UI.
     // temperature=1 is required by reasoning models.
     temperature: isReasoning ? 1 : 0.2,
     streaming: true,
     configuration: {
-      baseURL: getDashScopeBaseUrl(),
+      baseURL: isDeepSeekReasoning ? getDeepSeekBaseUrl() : getDashScopeBaseUrl(),
     },
   })
 }
