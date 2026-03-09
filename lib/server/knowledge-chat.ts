@@ -379,6 +379,70 @@ function extractTokenUsage(response: { usage_metadata?: unknown; response_metada
   }
 }
 
+function tokenizeForBm25(text: string) {
+  const lowered = text.toLowerCase()
+  const terms = lowered.match(/[\u4e00-\u9fff]|[a-z0-9_]+/g) || []
+  return terms.filter((term) => term.trim().length > 0)
+}
+
+function bm25RankChunks(
+  query: string,
+  rows: MemoryVectorRow[],
+  topK = 4,
+): Document[] {
+  if (!rows.length) return []
+
+  const docs = rows.map((row) => {
+    const content = String(row.content || "")
+    const terms = tokenizeForBm25(content)
+    const tf = new Map<string, number>()
+    for (const term of terms) tf.set(term, (tf.get(term) || 0) + 1)
+    return { row, tf, len: terms.length }
+  })
+
+  const queryTerms = tokenizeForBm25(query)
+  if (!queryTerms.length) return []
+
+  const uniqueQueryTerms = Array.from(new Set(queryTerms))
+  const N = docs.length
+  const avgdl = docs.reduce((sum, d) => sum + d.len, 0) / Math.max(N, 1)
+  const k1 = 1.5
+  const b = 0.75
+
+  const dfs = new Map<string, number>()
+  for (const term of uniqueQueryTerms) {
+    let df = 0
+    for (const d of docs) {
+      if (d.tf.has(term)) df += 1
+    }
+    dfs.set(term, df)
+  }
+
+  const scored = docs
+    .map((d) => {
+      let score = 0
+      for (const term of uniqueQueryTerms) {
+        const f = d.tf.get(term) || 0
+        if (!f) continue
+        const df = dfs.get(term) || 0
+        const idf = Math.log((N - df + 0.5) / (df + 0.5) + 1)
+        const denom = f + k1 * (1 - b + b * (d.len / Math.max(avgdl, 1)))
+        score += idf * ((f * (k1 + 1)) / Math.max(denom, 1e-9))
+      }
+      return { d, score }
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+
+  return scored.map(({ d }) =>
+    new Document({
+      pageContent: String(d.row.content || ""),
+      metadata: d.row.metadata || {},
+    }),
+  )
+}
+
 function stringifyModelContent(content: unknown) {
   if (typeof content === "string") {
     return content
@@ -448,7 +512,22 @@ export async function askKnowledgeBaseQuestion(input: { question: string; folder
 
   try {
     index = await getOrBuildVectorStore(folderPath)
-    matches = await index.vectorStore.similaritySearch(question, 6)
+    const denseMatches = await index.vectorStore.similaritySearch(question, 4)
+    const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
+    const bm25Matches = bm25RankChunks(question, rows, 4)
+
+    // Hybrid fusion: dense + BM25 lexical, de-duplicate by source+content prefix.
+    const merged = [...denseMatches, ...bm25Matches]
+    const seen = new Set<string>()
+    matches = []
+    for (const m of merged) {
+      const source = String(m.metadata?.source || "")
+      const key = `${source}|${m.pageContent.slice(0, 120)}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      matches.push(m)
+      if (matches.length >= 6) break
+    }
   } catch (error: any) {
     const msg = String(error?.message || error)
     if (!msg.includes("没有可用于问答的文档")) {
