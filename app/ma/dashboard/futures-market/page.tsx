@@ -375,7 +375,7 @@ export default function FuturesMarketPage() {
       </div>
 
 
-      <div className="max-w-[760px] w-full">
+      <div className="w-full">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
