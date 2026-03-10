@@ -2,7 +2,6 @@
 
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
 import { useEffect, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { MoreVertical } from "lucide-react"
@@ -384,10 +383,6 @@ export default function FuturesMarketPage() {
                 <CardTitle>南华商品指数</CardTitle>
                 <CardDescription>去年至今每日收盘价</CardDescription>
               </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadNhci(false)}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadNhci(true)}>刷新</Button>
-              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -436,10 +431,6 @@ export default function FuturesMarketPage() {
               <div>
                 <CardTitle>远月期指</CardTitle>
                 <CardDescription>最新交易日主力合约收盘与结算涨跌幅</CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={reloadFutLatestCache}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadFutLatest(true)}>刷新</Button>
               </div>
             </div>
           </CardHeader>
@@ -501,10 +492,6 @@ export default function FuturesMarketPage() {
               <div>
                 <CardTitle>远月年化基差率</CardTitle>
                 <CardDescription>基于最新交易日远月合约与现货</CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={reloadBasisFarCache}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadBasisFar(true)}>刷新</Button>
               </div>
             </div>
           </CardHeader>
@@ -569,10 +556,6 @@ export default function FuturesMarketPage() {
                 <CardTitle>远月年化基差率时序</CardTitle>
                 <CardDescription>自2023-01-01至今，主连结算与现货</CardDescription>
               </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={reloadBasisTsCache}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadBasisTs(true)}>刷新</Button>
-              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -635,10 +618,6 @@ export default function FuturesMarketPage() {
               <div>
                 <CardTitle>远月基差时序</CardTitle>
                 <CardDescription>自2023-01-01至今，主连结算 - 现货收盘</CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={reloadBasisDiffTsCache}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadBasisDiffTs(true)}>刷新</Button>
               </div>
             </div>
           </CardHeader>
@@ -704,10 +683,6 @@ export default function FuturesMarketPage() {
                     <CardTitle>近月期指</CardTitle>
                     <CardDescription>最新交易日当月连续收盘与结算涨跌幅</CardDescription>
                   </div>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={reloadFutLatestCache}>用缓存</Button>
-                    <Button variant="default" size="sm" onClick={() => reloadFutLatest(true)}>刷新</Button>
-                  </div>
                 </div>
               </CardHeader>
             <CardContent>
@@ -768,10 +743,6 @@ export default function FuturesMarketPage() {
                   <div>
                     <CardTitle>近月年化基差率</CardTitle>
                     <CardDescription>基于最新交易日当月连续与现货</CardDescription>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={reloadBasisNearCache}>用缓存</Button>
-                    <Button variant="default" size="sm" onClick={() => reloadBasisNear(true)}>刷新</Button>
                   </div>
                 </div>
               </CardHeader>
@@ -837,10 +808,6 @@ export default function FuturesMarketPage() {
                 <CardTitle>近月年化基差率时序</CardTitle>
                 <CardDescription>自2023-01-01至今，当月连续结算与现货</CardDescription>
               </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={reloadBasisNearTsCache}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadBasisNearTs(true)}>刷新</Button>
-              </div>
             </div>
           </CardHeader>
           <CardContent>
@@ -902,10 +869,6 @@ export default function FuturesMarketPage() {
               <div>
                 <CardTitle>近月基差时序</CardTitle>
                 <CardDescription>自2023-01-01至今，当月连续结算 - 现货收盘</CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={reloadBasisNearDiffTsCache}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadBasisNearDiffTs(true)}>刷新</Button>
               </div>
             </div>
           </CardHeader>
@@ -983,10 +946,7 @@ export default function FuturesMarketPage() {
                     <option value="IM">IM</option>
                   </select>
                 </div>
-                <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={reloadBasisContDiffTsCache}>用缓存</Button>
-                  <Button variant="default" size="sm" onClick={() => reloadBasisContDiffTs(true)}>刷新</Button>
-                </div>
+
               </div>
             </div>
           </CardHeader>
@@ -1054,10 +1014,6 @@ export default function FuturesMarketPage() {
               <div>
                 <CardTitle>商品期货 日成交额排行</CardTitle>
                 <CardDescription>按板块分组，颜色按板块</CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => reloadChoiceHeatmap(false)}>用缓存</Button>
-                <Button variant="default" size="sm" onClick={() => reloadChoiceHeatmap(true)}>刷新</Button>
               </div>
             </div>
           </CardHeader>
