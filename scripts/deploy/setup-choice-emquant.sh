@@ -270,6 +270,13 @@ else
 fi
 
 # 7) PM2 start (ecosystem.config.js should read env vars)
+# Source .env so DATABASE_URL is visible to ecosystem.config.js at pm2 start time
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  set -o allexport
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/.env"
+  set +o allexport
+fi
 pm2 stop "$PM2_APP_NAME" || true
 pm2 start ecosystem.config.js --update-env
 pm2 save
