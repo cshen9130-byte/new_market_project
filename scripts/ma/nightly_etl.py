@@ -489,8 +489,105 @@ def step_futures_latest(conn, trade_date: date, *, force: bool = False) -> int:
         )
     conn.commit()
 
+    # Repair NULL near_settle_return / far_settle_return using previous-day
+    # settle from the DB.  Tushare sometimes omits pre_settle for continuous
+    # contracts (IHL.CFX / IHL1.CFX), leaving these columns NULL even when
+    # close / settle itself is populated.
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH prev AS (
+                SELECT DISTINCT ON (symbol)
+                    symbol,
+                    near_settle,
+                    far_settle
+                FROM derived_futures_snapshot
+                WHERE trade_date < %(td)s
+                ORDER BY symbol, trade_date DESC
+            )
+            UPDATE derived_futures_snapshot cur
+            SET
+                near_settle_return = CASE
+                    WHEN cur.near_settle_return IS NULL
+                         AND cur.near_close IS NOT NULL
+                         AND prev.near_settle IS NOT NULL
+                         AND prev.near_settle > 0
+                    THEN ROUND(100.0 * (cur.near_close / prev.near_settle - 1.0), 6)
+                    ELSE cur.near_settle_return
+                END,
+                far_settle_return = CASE
+                    WHEN cur.far_settle_return IS NULL
+                         AND cur.far_settle IS NOT NULL
+                         AND prev.far_settle IS NOT NULL
+                         AND prev.far_settle > 0
+                    THEN ROUND(100.0 * (cur.far_settle / prev.far_settle - 1.0), 6)
+                    ELSE cur.far_settle_return
+                END
+            FROM prev
+            WHERE cur.symbol = prev.symbol
+              AND cur.trade_date = %(td)s
+              AND (cur.near_settle_return IS NULL OR cur.far_settle_return IS NULL)
+            """,
+            {"td": actual_td},
+        )
+    conn.commit()
+    log.info("Repaired NULL settle_return values using previous-day data.")
+
     log.info("Futures latest: %d raw rows, %d snapshot rows (trade_date=%s).", raw_cnt, len(snap_records), actual_td)
     return raw_cnt + len(snap_records)
+
+
+def step_repair_settle_returns(conn) -> int:
+    """
+    One-shot (and nightly) repair: fill any NULL near_settle_return /
+    far_settle_return in derived_futures_snapshot by computing
+    (close / prev_settle - 1) * 100 from the preceding trading day's
+    settle stored in the same table.
+
+    Safe to run repeatedly; only touches rows where the value is NULL.
+    """
+    log.info("Repairing NULL settle_return values across all history …")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH prev AS (
+                SELECT
+                    symbol,
+                    trade_date,
+                    near_settle,
+                    far_settle,
+                    LAG(near_settle) OVER (PARTITION BY symbol ORDER BY trade_date) AS prev_near_settle,
+                    LAG(far_settle)  OVER (PARTITION BY symbol ORDER BY trade_date) AS prev_far_settle
+                FROM derived_futures_snapshot
+            )
+            UPDATE derived_futures_snapshot cur
+            SET
+                near_settle_return = CASE
+                    WHEN cur.near_settle_return IS NULL
+                         AND cur.near_close IS NOT NULL
+                         AND prev.prev_near_settle IS NOT NULL
+                         AND prev.prev_near_settle > 0
+                    THEN ROUND(100.0 * (cur.near_close / prev.prev_near_settle - 1.0), 6)
+                    ELSE cur.near_settle_return
+                END,
+                far_settle_return = CASE
+                    WHEN cur.far_settle_return IS NULL
+                         AND cur.far_settle IS NOT NULL
+                         AND prev.prev_far_settle IS NOT NULL
+                         AND prev.prev_far_settle > 0
+                    THEN ROUND(100.0 * (cur.far_settle / prev.prev_far_settle - 1.0), 6)
+                    ELSE cur.far_settle_return
+                END
+            FROM prev
+            WHERE cur.symbol = prev.symbol
+              AND cur.trade_date = prev.trade_date
+              AND (cur.near_settle_return IS NULL OR cur.far_settle_return IS NULL)
+            """
+        )
+        updated = cur.rowcount
+    conn.commit()
+    log.info("Repaired %d snapshot rows with NULL settle_return.", updated)
+    return updated
 
 
 def step_futures_range_backfill(conn, start_ymd: str, end_ymd: str) -> int:
@@ -841,6 +938,7 @@ ORDERED_STEPS = [
     "commodity_amounts",
     "derive_basis",
     "derive_basis_cont",
+    "repair_settle_returns",
 ]
 
 
@@ -901,8 +999,9 @@ def main():
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
-        "derive_basis":     lambda: step_compute_basis_daily(conn),
-        "derive_basis_cont":lambda: step_compute_basis_cont_daily(conn),
+        "derive_basis":          lambda: step_compute_basis_daily(conn),
+        "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn),
+        "repair_settle_returns": lambda: step_repair_settle_returns(conn),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS
