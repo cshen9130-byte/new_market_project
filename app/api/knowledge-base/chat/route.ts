@@ -56,7 +56,20 @@ export async function POST(req: Request) {
                     if (q) updateConversationTitle(effectiveConversationId, user.id, q.slice(0, 80))
                   }
                 }
-                // Token tracking (best-effort; streaming doesn't expose exact token counts)
+                // Record token usage for streaming responses when provider metadata is available.
+                if (user && (event.tokenUsage?.totalTokens ?? 0) > 0) {
+                  try {
+                    appendTokenUsage({
+                      userId: user.id,
+                      userName: user.name,
+                      inputTokens: event.tokenUsage!.inputTokens,
+                      outputTokens: event.tokenUsage!.outputTokens,
+                      totalTokens: event.tokenUsage!.totalTokens,
+                      model: event.model ?? "unknown",
+                      questionPreview: String(body?.question || "").trim().slice(0, 80),
+                    })
+                  } catch {}
+                }
                 controller.enqueue(textEncoder.encode(`data: ${JSON.stringify({ ...event, conversationId: effectiveConversationId })}\n\n`))
                 controller.enqueue(textEncoder.encode("data: [DONE]\n\n"))
               }

@@ -33,6 +33,14 @@ export async function query<T = Record<string, unknown>>(
   return res.rows as T[]
 }
 
+/** Like query() but returns the full QueryResult (rows, fields, rowCount, command). */
+export async function rawQuery(
+  sql: string,
+  params?: unknown[],
+) {
+  return pool.query(sql, params)
+}
+
 /** Format a pg DATE value (string "YYYY-MM-DD" or JS Date) to "YYYY-MM-DD" */
 export function fmtIso(d: Date | string): string {
   if (typeof d === "string") return d.slice(0, 10)

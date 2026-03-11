@@ -3,7 +3,8 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Database } from "lucide-react"
+import { authService } from "@/lib/auth"
 
 const navigation = [
   { name: "总览", href: "/dashboard", icon: LayoutDashboard },
@@ -17,6 +18,8 @@ const navigation = [
 
 export function DashboardSidebar() {
   const pathname = usePathname()
+  const currentUser = authService.getCurrentUser()
+  const isCshen = currentUser?.name === "cshen"
 
   return (
     <aside className="w-64 border-r bg-card flex flex-col">
@@ -43,6 +46,25 @@ export function DashboardSidebar() {
             </Link>
           )
         })}
+        {isCshen && (
+          <>
+            <div className="pt-2 pb-1">
+              <p className="px-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">管理</p>
+            </div>
+            <Link
+              href="/dashboard/db-explorer"
+              className={cn(
+                "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                pathname === "/dashboard/db-explorer"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+            >
+              <Database className="h-4 w-4" />
+              DB 浏览器
+            </Link>
+          </>
+        )}
       </nav>
     </aside>
   )

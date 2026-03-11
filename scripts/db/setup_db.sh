@@ -25,7 +25,7 @@ DB_PASS="${DB_PASS:-CHANGE_ME_STRONG_PASSWORD}"
 DB_PORT="${DB_PORT:-5432}"
 
 # Absolute path to this project on the server
-PROJECT_ROOT="${PROJECT_ROOT:-/root/market_dashboard_website}"
+PROJECT_ROOT="${PROJECT_ROOT:-/root/new_market_project}"
 
 # Python executable used to run the project scripts (should match PYTHON_EXE in .env)
 PYTHON_EXE="${PYTHON_EXE:-python3}"

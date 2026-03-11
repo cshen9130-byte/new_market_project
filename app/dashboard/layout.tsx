@@ -10,8 +10,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname()
   useEffect(() => {
     const current = authService.getCurrentUser()
-    // Allow admin route to render its own unauthorized view without auto-redirect
-    const isAdminRoute = pathname === "/dashboard/admin"
+    // Allow admin and db-explorer routes to render their own unauthorized views
+    const isAdminRoute = pathname === "/dashboard/admin" || pathname === "/dashboard/db-explorer"
     if (!current && !isAdminRoute) {
       router.replace("/login")
     }

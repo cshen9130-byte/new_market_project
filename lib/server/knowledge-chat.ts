@@ -404,18 +404,20 @@ function classifyApiError(err: unknown): Error {
   return err instanceof Error ? err : new Error(msg || "AI 接口调用失败")
 }
 
-function extractTokenUsage(response: { usage_metadata?: unknown; response_metadata?: unknown }): { inputTokens: number; outputTokens: number; totalTokens: number } {
-  // LangChain AIMessage exposes usage_metadata (preferred) or response_metadata.token_usage
+type TokenUsage = { inputTokens: number; outputTokens: number; totalTokens: number }
+
+function extractTokenUsage(response: { usage_metadata?: unknown; response_metadata?: unknown }): TokenUsage {
+  // LangChain may return usage in snake_case or camelCase keys depending on provider/version.
   const meta: Record<string, unknown> =
     (response.usage_metadata as Record<string, unknown>) ||
     ((response.response_metadata as Record<string, unknown>)?.token_usage as Record<string, unknown>) ||
     {}
-  return {
-    inputTokens: Number(meta.input_tokens ?? meta.prompt_tokens ?? 0),
-    outputTokens: Number(meta.output_tokens ?? meta.completion_tokens ?? 0),
-    totalTokens: Number(meta.total_tokens ?? 0) ||
-      (Number(meta.input_tokens ?? meta.prompt_tokens ?? 0) + Number(meta.output_tokens ?? meta.completion_tokens ?? 0)),
-  }
+
+  const inputTokens = Number(meta.input_tokens ?? meta.inputTokens ?? meta.prompt_tokens ?? meta.promptTokens ?? 0)
+  const outputTokens = Number(meta.output_tokens ?? meta.outputTokens ?? meta.completion_tokens ?? meta.completionTokens ?? 0)
+  const totalTokens = Number(meta.total_tokens ?? meta.totalTokens ?? 0) || (inputTokens + outputTokens)
+
+  return { inputTokens, outputTokens, totalTokens }
 }
 
 function tokenizeForBm25(text: string) {
@@ -666,7 +668,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
   modelMode?: KbModelMode
 }): AsyncGenerator<
   | { type: "text"; delta: string; modelId?: string }
-  | { type: "done"; sources: string[]; indexedDocuments: number; indexedChunks: number; model: string }
+  | { type: "done"; sources: string[]; indexedDocuments: number; indexedChunks: number; model: string; tokenUsage?: TokenUsage }
 > {
   const question = input.question.trim()
   if (!question) {
@@ -676,9 +678,14 @@ export async function* streamKnowledgeBaseAnswer(input: {
   const ctx = await buildRetrievalContext(input)
   const modelId = selectModelForQuestion(input.modelMode ?? "auto")
   const model = createChatModel(modelId)
+  let capturedUsage: TokenUsage | undefined
 
   const stream = await model.stream(ctx.messages)
   for await (const chunk of stream) {
+    const usage = extractTokenUsage(chunk as { usage_metadata?: unknown; response_metadata?: unknown })
+    if ((usage.totalTokens ?? 0) > 0) {
+      capturedUsage = usage
+    }
     const delta = stringifyModelContent(chunk.content)
     if (delta) yield { type: "text", delta, modelId }
   }
@@ -689,5 +696,6 @@ export async function* streamKnowledgeBaseAnswer(input: {
     indexedDocuments: ctx.indexedDocuments,
     indexedChunks: ctx.indexedChunks,
     model: modelId,
+    tokenUsage: capturedUsage,
   }
 }
