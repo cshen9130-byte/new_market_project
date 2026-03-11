@@ -1,4 +1,9 @@
-import { Pool } from "pg"
+import { Pool, types } from "pg"
+
+// DATE columns (OID 1082) come back from pg as JavaScript Date objects set to local
+// midnight. On UTC+8 servers this shifts every date back one day when .toISOString()
+// is called. Override the parser to keep DATE values as raw "YYYY-MM-DD" strings.
+types.setTypeParser(1082, (val: string) => val)
 
 // Singleton pool — reused across Next.js hot reloads in dev and across requests in prod.
 declare global {
@@ -28,13 +33,15 @@ export async function query<T = Record<string, unknown>>(
   return res.rows as T[]
 }
 
-/** Format a pg DATE value (returned as JS Date at UTC midnight) to YYYY-MM-DD */
-export function fmtIso(d: Date): string {
+/** Format a pg DATE value (string "YYYY-MM-DD" or JS Date) to "YYYY-MM-DD" */
+export function fmtIso(d: Date | string): string {
+  if (typeof d === "string") return d.slice(0, 10)
   return d.toISOString().slice(0, 10)
 }
 
-/** Format a pg DATE value to YYYYMMDD */
-export function fmtYmd(d: Date): string {
+/** Format a pg DATE value (string "YYYY-MM-DD" or JS Date) to "YYYYMMDD" */
+export function fmtYmd(d: Date | string): string {
+  if (typeof d === "string") return d.slice(0, 10).replace(/-/g, "")
   return d.toISOString().slice(0, 10).replace(/-/g, "")
 }
 
