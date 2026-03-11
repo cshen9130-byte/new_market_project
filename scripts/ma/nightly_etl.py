@@ -446,6 +446,8 @@ def step_futures_latest(conn, trade_date: date, *, force: bool = False) -> int:
         add_raw(row.get("near_ts_code"), safe_float(row.get("near_close")), safe_float(row.get("near_settle")), safe_float(row.get("near_settle_return")))
         # Far/L3
         add_raw(row.get("far_ts_code"), safe_float(row.get("far_close")), None, None)
+        # Far continuous L1 (needed by step_compute_basis_daily which looks for {sym}L1.CFX)
+        add_raw(row.get("far_cont_ts_code"), safe_float(row.get("far_settle")), safe_float(row.get("far_settle")), safe_float(row.get("far_settle_return")))
 
         snap_records.append((
             sym, td,
