@@ -406,8 +406,16 @@ def step_futures_latest(conn, trade_date: date, *, force: bool = False) -> int:
                 "SELECT COUNT(DISTINCT symbol) FROM raw_futures_daily WHERE trade_date = %s",
                 (trade_date,),
             )
-            if cur.fetchone()[0] >= 4:
-                log.info("Futures daily for %s already in DB, skipping.", trade_date)
+            raw_cnt = cur.fetchone()[0]
+            cur.execute(
+                "SELECT COUNT(DISTINCT symbol) FROM derived_futures_snapshot WHERE trade_date = %s",
+                (trade_date,),
+            )
+            snap_cnt = cur.fetchone()[0]
+            # Skip only when both raw and snapshot are complete for 4 symbols.
+            # This avoids a stale snapshot when a previous run failed mid-step.
+            if raw_cnt >= 4 and snap_cnt >= 4:
+                log.info("Futures for %s already complete in raw+snapshot, skipping.", trade_date)
                 return 0
 
     log.info("Fetching CFFEX futures latest …")
@@ -680,11 +688,15 @@ def step_commodity_amounts(conn, trade_date: date, *, force: bool = False) -> in
     if not items:
         raise RuntimeError("Commodity amounts: empty data")
 
+    # Choice may return the latest available trade date if requested day is not ready yet.
+    # Persist using the actual returned date to keep DB date semantics correct.
+    actual_td = to_date(str(out.get("trade_date", ""))) or trade_date
+
     records = []
     for item in items:
         code = item.get("code") or ""
         records.append((
-            trade_date,
+            actual_td,
             code,
             item.get("name"),
             _get_sector(code),
@@ -919,14 +931,18 @@ def step_compute_basis_cont_daily(conn) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def latest_trade_date() -> date:
-    """Best-guess of the latest exchange trade date (skips weekends)."""
+    """Target previous trading day for scheduled night runs (e.g. 01:00 local)."""
     today = date.today()
     wd    = today.weekday()  # 0=Mon … 6=Sun
+    # Nightly run should settle on yesterday's market data, not "today".
+    # Mon -> Fri, Tue..Fri -> previous day, Sat/Sun -> previous Friday.
+    if wd == 0:
+        return today - timedelta(days=3)
     if wd == 5:
         return today - timedelta(days=1)
     if wd == 6:
         return today - timedelta(days=2)
-    return today
+    return today - timedelta(days=1)
 
 
 JOB_NAME = "nightly_etl"
