@@ -448,6 +448,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [chatLoading, setChatLoading] = useState(false)
   const [chatElapsed, setChatElapsed] = useState(0)
   const chatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const userScrolledRef = useRef(false)
   const [previewScrollToken, setPreviewScrollToken] = useState(0)
   const [selectedExplorerEntry, setSelectedExplorerEntry] = useState<{ kind: "folder" | "file"; relativePath: string } | null>(null)
   const [traditionalPanel, setTraditionalPanel] = useState<"library" | "preview" | "upload" | "folder" | "sync">("library")
@@ -498,7 +499,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }, [router])
 
   useEffect(() => {
-    if (variant !== "traditional") {
+    if (variant !== "traditional" || userScrolledRef.current) {
       return
     }
 
@@ -1329,6 +1330,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     const nextMessages = [...chatMessages, { role: "user" as const, content: trimmedQuestion }]
     setChatMessages(nextMessages)
     setQuestion("")
+    userScrolledRef.current = false
     setChatElapsed(0)
     setChatLoading(true)
     chatTimerRef.current = setInterval(() => setChatElapsed(s => s + 1), 1000)
@@ -2244,7 +2246,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               )}
 
               {/* Chat messages */}
-              <div ref={traditionalChatScrollRef} className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <div
+                ref={traditionalChatScrollRef}
+                className="min-h-0 flex-1 overflow-y-auto pr-1"
+                onScroll={(e) => {
+                  const el = e.currentTarget
+                  const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+                  userScrolledRef.current = fromBottom > 80
+                }}
+              >
                 <div className="space-y-4">
                   {chatMessages.map((message, index) => (
                     <div
