@@ -446,6 +446,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [uploading, setUploading] = useState(false)
   const [question, setQuestion] = useState("")
   const [chatLoading, setChatLoading] = useState(false)
+  const [chatElapsed, setChatElapsed] = useState(0)
+  const chatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [previewScrollToken, setPreviewScrollToken] = useState(0)
   const [selectedExplorerEntry, setSelectedExplorerEntry] = useState<{ kind: "folder" | "file"; relativePath: string } | null>(null)
   const [traditionalPanel, setTraditionalPanel] = useState<"library" | "preview" | "upload" | "folder" | "sync">("library")
@@ -1327,7 +1329,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     const nextMessages = [...chatMessages, { role: "user" as const, content: trimmedQuestion }]
     setChatMessages(nextMessages)
     setQuestion("")
+    setChatElapsed(0)
     setChatLoading(true)
+    chatTimerRef.current = setInterval(() => setChatElapsed(s => s + 1), 1000)
 
     const controller = new AbortController()
     abortControllerRef.current = controller
@@ -1429,6 +1433,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         return msgs
       })
     } finally {
+      if (chatTimerRef.current) { clearInterval(chatTimerRef.current); chatTimerRef.current = null }
       setChatLoading(false)
       abortControllerRef.current = null
     }
@@ -2262,6 +2267,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <div className="rounded-lg bg-muted/30 px-4 py-3 text-sm text-muted-foreground shadow-sm">
                       <LoaderCircle className="mr-2 inline h-4 w-4 animate-spin" />
                       正在检索文档并生成回答...
+                      <span className="ml-2 tabular-nums">{chatElapsed}s</span>
                     </div>
                   )}
                 </div>
@@ -2628,6 +2634,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-50">
                         <LoaderCircle className="mr-2 inline h-4 w-4 animate-spin" />
                         正在检索文档并生成回答...
+                        <span className="ml-2 tabular-nums opacity-70">{chatElapsed}s</span>
                       </div>
                     )}
                   </div>
