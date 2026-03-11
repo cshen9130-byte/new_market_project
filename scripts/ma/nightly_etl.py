@@ -729,11 +729,12 @@ def step_commodity_amounts(conn, trade_date: date, *, force: bool = False) -> in
 # STEP 5 — Derived: basis_daily  (annualized basis for far/near L1/L)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def step_compute_basis_daily(conn) -> int:
+def step_compute_basis_daily(conn, *, force: bool = False) -> int:
     """
     For every (symbol, trade_date) where we have continuous-leg data (L and L1)
-    in raw_futures_daily AND spot data in raw_spot_daily but NOT yet in
-    derived_basis_daily, compute annualized basis % and basis diff.
+    in raw_futures_daily AND spot data in raw_spot_daily but NOT yet fully in
+    derived_basis_daily (both near AND far), compute annualized basis % and basis diff.
+    With force=True, recomputes all dates regardless of existing rows.
     """
     log.info("Computing derived_basis_daily …")
     symbols = ["IH", "IF", "IC", "IM"]
@@ -743,24 +744,41 @@ def step_compute_basis_daily(conn) -> int:
         near_code = f"{sym}L.CFX"
         far_code  = f"{sym}L1.CFX"
 
-        # Find dates that need computing
+        # Find dates that need computing.
+        # Skip a date only when BOTH near AND far rows already exist (count=2).
+        # A partial run that wrote only one type will be re-processed.
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT f.trade_date
-                FROM raw_futures_daily f
-                JOIN raw_spot_daily s
-                    ON s.symbol = %s AND s.trade_date = f.trade_date
-                WHERE f.symbol = %s
-                  AND f.ts_code IN (%s, %s)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM derived_basis_daily d
-                      WHERE d.symbol = %s AND d.trade_date = f.trade_date
-                  )
-                ORDER BY f.trade_date
-                """,
-                (sym, sym, near_code, far_code, sym),
-            )
+            if force:
+                cur.execute(
+                    """
+                    SELECT DISTINCT f.trade_date
+                    FROM raw_futures_daily f
+                    JOIN raw_spot_daily s
+                        ON s.symbol = %s AND s.trade_date = f.trade_date
+                    WHERE f.symbol = %s
+                      AND f.ts_code IN (%s, %s)
+                    ORDER BY f.trade_date
+                    """,
+                    (sym, sym, near_code, far_code),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT DISTINCT f.trade_date
+                    FROM raw_futures_daily f
+                    JOIN raw_spot_daily s
+                        ON s.symbol = %s AND s.trade_date = f.trade_date
+                    WHERE f.symbol = %s
+                      AND f.ts_code IN (%s, %s)
+                      AND (
+                          SELECT COUNT(DISTINCT basis_type)
+                          FROM derived_basis_daily d
+                          WHERE d.symbol = %s AND d.trade_date = f.trade_date
+                      ) < 2
+                    ORDER BY f.trade_date
+                    """,
+                    (sym, sym, near_code, far_code, sym),
+                )
             pending_dates = [r[0] for r in cur.fetchall()]
 
         if not pending_dates:
@@ -843,10 +861,11 @@ def step_compute_basis_daily(conn) -> int:
 # STEP 6 — Derived: basis_cont_daily  (basis diff for all L/L1/L2/L3 legs)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def step_compute_basis_cont_daily(conn) -> int:
+def step_compute_basis_cont_daily(conn, *, force: bool = False) -> int:
     """
     For all (symbol, leg, trade_date) in raw_futures_daily not yet in
     derived_basis_cont_daily, compute basis_diff = futures_settle - spot_close.
+    With force=True, recomputes all dates regardless of existing rows.
     """
     log.info("Computing derived_basis_cont_daily …")
     symbols = ["IH", "IF", "IC", "IM"]
@@ -858,20 +877,32 @@ def step_compute_basis_cont_daily(conn) -> int:
             ts_code = f"{sym}{leg}.CFX"
 
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT f.trade_date
-                    FROM raw_futures_daily f
-                    JOIN raw_spot_daily s ON s.symbol = %s AND s.trade_date = f.trade_date
-                    WHERE f.ts_code = %s
-                      AND NOT EXISTS (
-                          SELECT 1 FROM derived_basis_cont_daily d
-                          WHERE d.symbol = %s AND d.trade_date = f.trade_date AND d.leg = %s
-                      )
-                    ORDER BY f.trade_date
-                    """,
-                    (sym, ts_code, sym, leg),
-                )
+                if force:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT f.trade_date
+                        FROM raw_futures_daily f
+                        JOIN raw_spot_daily s ON s.symbol = %s AND s.trade_date = f.trade_date
+                        WHERE f.ts_code = %s
+                        ORDER BY f.trade_date
+                        """,
+                        (sym, ts_code),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT DISTINCT f.trade_date
+                        FROM raw_futures_daily f
+                        JOIN raw_spot_daily s ON s.symbol = %s AND s.trade_date = f.trade_date
+                        WHERE f.ts_code = %s
+                          AND NOT EXISTS (
+                              SELECT 1 FROM derived_basis_cont_daily d
+                              WHERE d.symbol = %s AND d.trade_date = f.trade_date AND d.leg = %s
+                          )
+                        ORDER BY f.trade_date
+                        """,
+                        (sym, ts_code, sym, leg),
+                    )
                 pending = [r[0] for r in cur.fetchall()]
 
             if not pending:
@@ -1015,8 +1046,8 @@ def main():
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
-        "derive_basis":          lambda: step_compute_basis_daily(conn),
-        "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn),
+        "derive_basis":          lambda: step_compute_basis_daily(conn, force=force),
+        "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
     }
 
