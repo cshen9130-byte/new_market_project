@@ -350,25 +350,25 @@ export default function FuturesMarketPage() {
     }
   }
 
-  useEffect(() => { reloadNhci(false) }, [])
+  useEffect(() => { reloadNhci(true) }, [])
 
-  useEffect(() => { reloadBasisFarCache() }, [])
+  useEffect(() => { reloadBasisFar(true) }, [])
 
-  useEffect(() => { reloadBasisNearCache() }, [])
+  useEffect(() => { reloadBasisNear(true) }, [])
 
-  useEffect(() => { reloadBasisTsCache() }, [])
+  useEffect(() => { reloadBasisTs(true) }, [])
 
-  useEffect(() => { reloadBasisDiffTsCache() }, [])
+  useEffect(() => { reloadBasisDiffTs(true) }, [])
 
-  useEffect(() => { reloadBasisNearTsCache() }, [])
+  useEffect(() => { reloadBasisNearTs(true) }, [])
 
-  useEffect(() => { reloadBasisNearDiffTsCache() }, [])
+  useEffect(() => { reloadBasisNearDiffTs(true) }, [])
 
-  useEffect(() => { reloadBasisContDiffTsCache() }, [])
+  useEffect(() => { reloadBasisContDiffTs(true) }, [])
 
-  useEffect(() => { reloadChoiceHeatmap(false) }, [])
+  useEffect(() => { reloadChoiceHeatmap(true) }, [])
 
-  useEffect(() => { reloadFutLatestCache() }, [])
+  useEffect(() => { reloadFutLatest(true) }, [])
   return (
     <div className="space-y-6">
       <div>
