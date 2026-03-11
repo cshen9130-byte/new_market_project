@@ -62,8 +62,8 @@ _load_env_files()
 
 # ── psycopg2 ──────────────────────────────────────────────────────────────────
 try:
-    import psycopg2
-    from psycopg2.extras import execute_values
+    import psycopg2 # type: ignore[import-untyped]
+    from psycopg2.extras import execute_values # type: ignore[import-untyped]
 except ImportError:
     log.error("psycopg2 not installed. Run: pip install psycopg2-binary")
     sys.exit(1)

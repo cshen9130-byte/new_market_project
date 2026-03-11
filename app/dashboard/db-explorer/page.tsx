@@ -48,7 +48,7 @@ type QueryResult = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getAuthHeaders() {
+function getAuthHeaders(): Record<string, string> {
   const user = authService.getCurrentUser()
   return user ? { "x-market-user-id": user.id } : {}
 }
