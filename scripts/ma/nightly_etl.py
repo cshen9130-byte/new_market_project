@@ -1020,14 +1020,22 @@ def main():
     parser.add_argument("--step", choices=ORDERED_STEPS, help="Run a single step only")
     parser.add_argument("--backfill", action="store_true", help="Force full history reload")
     parser.add_argument("--force", action="store_true", help="Re-fetch even if data already in DB")
+    parser.add_argument("--date", help="Override target trade date (YYYY-MM-DD or YYYYMMDD)")
     args = parser.parse_args()
 
     log.info("=" * 60)
     log.info("Nightly ETL starting  (pid=%d)", os.getpid())
     log.info("=" * 60)
 
-    td = latest_trade_date()
-    log.info("Target trade date: %s", td)
+    if args.date:
+        td = to_date(args.date)
+        if not td:
+            log.error("Invalid --date value: %s (use YYYY-MM-DD or YYYYMMDD)", args.date)
+            sys.exit(1)
+        log.info("Target trade date: %s  (overridden via --date)", td)
+    else:
+        td = latest_trade_date()
+        log.info("Target trade date: %s", td)
 
     try:
         conn = get_conn()
