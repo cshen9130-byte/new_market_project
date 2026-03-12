@@ -473,6 +473,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [syncSummary, setSyncSummary] = useState("")
   const [syncPreviewItems, setSyncPreviewItems] = useState<Array<{ relPath: string; status: "new" | "changed" | "same"; localSize: number; serverSize: number | null }> | null>(null)
   const [syncPendingFiles, setSyncPendingFiles] = useState<Array<{ file: File; strippedPath: string }> | null>(null)
+  const [syncLocalDirUpdatedAt, setSyncLocalDirUpdatedAt] = useState<Date | null>(null)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -913,6 +914,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         setSyncLocalDirName(handle.name)
         setSyncPreviewItems(null)
         setSyncPendingFiles(null)
+        setSyncLocalDirUpdatedAt(new Date())
+        // Auto-compare if server folder already selected (pass handle directly since React state is async)
+        if (syncServerFolder !== null) {
+          await handleCompare(handle, null)
+        }
       } catch (err: any) {
         if (err?.name !== "AbortError") setError(err?.message || String(err))
       }
@@ -943,8 +949,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     setSyncLocalDirName(folderName || "本地文件夹")
     setSyncPreviewItems(null)
     setSyncPendingFiles(null)
+    setSyncLocalDirUpdatedAt(new Date())
     // Reset input so same folder can be re-selected
     if (syncFolderInputRef.current) syncFolderInputRef.current.value = ""
+    // Auto-compare if server folder already selected
+    if (syncServerFolder !== null && collected.length > 0) {
+      void handleCompare(null, collected)
+    }
   }
 
   async function collectLocalFiles(
@@ -966,14 +977,19 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     return results
   }
 
-  async function handleCompare() {
-    const hasLocal = syncLocalDirHandle !== null || syncWebkitFiles !== null
+  async function handleCompare(
+    overrideDirHandle?: FileSystemDirectoryHandle | null,
+    overrideWebkitFiles?: Array<{ relPath: string; file: File }> | null,
+  ) {
+    const activeDirHandle = overrideDirHandle !== undefined ? overrideDirHandle : syncLocalDirHandle
+    const activeWebkitFiles = overrideWebkitFiles !== undefined ? overrideWebkitFiles : syncWebkitFiles
+    const hasLocal = activeDirHandle !== null || activeWebkitFiles !== null
     if (!hasLocal || syncServerFolder === null) return
     try {
       setError(null)
       setSyncPreviewItems(null)
       setSyncPendingFiles(null)
-      const localFiles = syncWebkitFiles ?? await collectLocalFiles(syncLocalDirHandle!)
+      const localFiles = activeWebkitFiles ?? await collectLocalFiles(activeDirHandle!)
       const serverFileMap = new Map<string, number>(syncServerFiles.map((sf) => [sf.relPath, sf.size]))
       const preview: Array<{ relPath: string; status: "new" | "changed" | "same"; localSize: number; serverSize: number | null }> = []
       const pending: Array<{ file: File; strippedPath: string }> = []
@@ -2199,6 +2215,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                             <Folder className="h-3.5 w-3.5 shrink-0 text-blue-500" />
                             <span className="text-muted-foreground">本地：</span>
                             <span className="flex-1 truncate font-medium">{syncLocalDirName}</span>
+                            {syncLocalDirUpdatedAt && (
+                              <span className="shrink-0 text-muted-foreground">
+                                {syncLocalDirUpdatedAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })} 选择
+                              </span>
+                            )}
                             {syncWebkitFiles !== null && <span className="shrink-0 text-muted-foreground">{syncWebkitFiles.length} 个文件</span>}
                           </div>
                         )}
