@@ -932,7 +932,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
   function handleSyncFolderInputChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files
-    if (!files || files.length === 0) return
+    if (!files) return
     const collected: Array<{ relPath: string; file: File }> = []
     let folderName = ""
     for (let i = 0; i < files.length; i++) {
@@ -946,6 +946,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         collected.push({ relPath, file })
       }
     }
+    // Even if 0 files (empty folder), register the selection so ②③ appear
     setSyncWebkitFiles(collected)
     setSyncLocalDirHandle(null)
     setSyncLocalDirName(folderName || "本地文件夹")
@@ -955,7 +956,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     // Reset input so same folder can be re-selected
     if (syncFolderInputRef.current) syncFolderInputRef.current.value = ""
     // Auto-compare if server folder already selected
-    if (syncServerFolder !== null && collected.length > 0) {
+    if (syncServerFolder !== null) {
       void handleCompare(null, collected)
     }
   }
@@ -1058,29 +1059,28 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       return
     }
 
-    // ── Resolve a writable FileSystemDirectoryHandle ──────────────────────
+    const serverFiles = syncServerFiles
+    if (!serverFiles.length) {
+      setError("该目录下没有文件")
+      return
+    }
+
+    // Filter out Office temp/lock files
+    const downloadableFiles = serverFiles.filter((sf) => {
+      const basename = sf.relPath.split("/").pop() ?? ""
+      return !basename.startsWith("~$") && !basename.startsWith("~")
+    })
+
+    if (!downloadableFiles.length) {
+      setError("没有可下载的文件")
+      return
+    }
+
+    // ── Try File System Access API (available when showDirectoryPicker exists) ──
     let writableHandle = syncLocalDirHandle
+    const fsApi = (window as unknown as { showDirectoryPicker?: (opts?: Record<string, unknown>) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker
 
-    if (!writableHandle) {
-      // File System Access API requires a secure context (HTTPS or localhost).
-      if (!window.isSecureContext) {
-        const port = window.location.port
-        const localUrl = `http://localhost${port ? `:${port}` : ""}`
-        setError(
-          `同步到本地需要浏览器文件写入权限（File System Access API），` +
-          `当前通过 "${window.location.host}" 访问时浏览器不支持此功能。` +
-          `请改用 ${localUrl} 访问本站即可启用（无需配置 HTTPS）。`,
-        )
-        return
-      }
-
-      const fsApi = (window as unknown as { showDirectoryPicker?: (opts?: Record<string, unknown>) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker
-      if (!fsApi) {
-        setError("当前浏览器不支持文件夹写入功能，请使用 Chrome 112+ 或 Edge 112+。")
-        return
-      }
-
-      // Auto-trigger folder picker so the user can pick or confirm a destination
+    if (!writableHandle && fsApi) {
       try {
         writableHandle = await fsApi({ mode: "readwrite" })
         setSyncLocalDirHandle(writableHandle)
@@ -1094,83 +1094,110 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       }
     }
 
-    // ── Verify write permissions (they expire after page reload) ──────────
-    const dirHandle = writableHandle as FileSystemDirectoryHandle
-    const handleWithPerm = dirHandle as unknown as {
-      queryPermission?: (opts: { mode: string }) => Promise<PermissionState>
-      requestPermission?: (opts: { mode: string }) => Promise<PermissionState>
-    }
-    if (handleWithPerm.queryPermission) {
-      const perm = await handleWithPerm.queryPermission({ mode: "readwrite" })
-      if (perm !== "granted") {
-        const granted = await handleWithPerm.requestPermission?.({ mode: "readwrite" })
-        if (granted !== "granted") {
-          setError("需要文件写入权限。请在浏览器弹出的对话框中点击「允许」，或点击①重新选择本地文件夹。")
-          return
-        }
+    if (writableHandle) {
+      // ── Preferred path: write directly into local folder ──
+      const dirHandle = writableHandle as FileSystemDirectoryHandle
+      const handleWithPerm = dirHandle as unknown as {
+        queryPermission?: (opts: { mode: string }) => Promise<PermissionState>
+        requestPermission?: (opts: { mode: string }) => Promise<PermissionState>
       }
-    }
-
-    // ── Download server files into the local folder ───────────────────────
-    const serverFiles = syncServerFiles
-    if (!serverFiles.length) {
-      setError("该目录下没有文件")
-      return
-    }
-
-    try {
-      setSyncing(true)
-      setSyncProgress(0)
-      setError(null)
-
-      // Filter out Office temp/lock files before counting
-      const downloadableFiles = serverFiles.filter((sf) => {
-        const basename = sf.relPath.split("/").pop() ?? ""
-        return !basename.startsWith("~$") && !basename.startsWith("~")
-      })
-
-      setSyncSummary(`准备下载 ${downloadableFiles.length} 个文件`)
-
-      for (let i = 0; i < downloadableFiles.length; i++) {
-        const sf = downloadableFiles[i]
-        setSyncSummary(`正在下载 ${i + 1}/${downloadableFiles.length}: ${sf.relPath}`)
-
-        const response = await fetch(buildFileUrl(sf.relativePath))
-        if (!response.ok) throw new Error(`下载失败: ${sf.relPath}`)
-        const blob = await response.blob()
-
-        // Walk path segments, sanitizing each name for the local file system
-        const rawParts = sf.relPath.split("/").filter(Boolean)
-        const parts = rawParts.map(sanitizeFSName).filter(Boolean)
-        if (!parts.length) continue
-        let currentDir: FileSystemDirectoryHandle = dirHandle
-        for (let p = 0; p < parts.length - 1; p++) {
-          try {
-            currentDir = await currentDir.getDirectoryHandle(parts[p], { create: true })
-          } catch (dirErr: any) {
-            throw new Error(`无效的目录名 "${rawParts[p]}" → "${parts[p]}": ${dirErr?.message ?? dirErr}`)
+      if (handleWithPerm.queryPermission) {
+        const perm = await handleWithPerm.queryPermission({ mode: "readwrite" })
+        if (perm !== "granted") {
+          const granted = await handleWithPerm.requestPermission?.({ mode: "readwrite" })
+          if (granted !== "granted") {
+            setError("需要文件写入权限。请在浏览器弹出的对话框中点击「允许」，或点击①重新选择本地文件夹。")
+            return
           }
         }
-        const fileName = parts[parts.length - 1]
-        let fh: FileSystemFileHandle
-        try {
-          fh = await currentDir.getFileHandle(fileName, { create: true })
-        } catch (fileErr: any) {
-          throw new Error(`无效的文件名 "${rawParts[rawParts.length - 1]}" → "${fileName}": ${fileErr?.message ?? fileErr}`)
-        }
-        const writable = await fh.createWritable()
-        await writable.write(blob)
-        await writable.close()
-
-        setSyncProgress(Math.round(((i + 1) / downloadableFiles.length) * 100))
       }
 
-      setSyncSummary(`已下载 ${downloadableFiles.length} 个文件`)
-    } catch (err: any) {
-      setError(err?.message || String(err))
-    } finally {
-      setSyncing(false)
-      setTimeout(() => { setSyncProgress(0); setSyncSummary("") }, 2000)
+      try {
+        setSyncing(true)
+        setSyncProgress(0)
+        setError(null)
+        setSyncSummary(`准备下载 ${downloadableFiles.length} 个文件`)
+
+        for (let i = 0; i < downloadableFiles.length; i++) {
+          const sf = downloadableFiles[i]
+          setSyncSummary(`正在下载 ${i + 1}/${downloadableFiles.length}: ${sf.relPath}`)
+
+          const response = await fetch(buildFileUrl(sf.relativePath))
+          if (!response.ok) throw new Error(`下载失败: ${sf.relPath}`)
+          const blob = await response.blob()
+
+          const rawParts = sf.relPath.split("/").filter(Boolean)
+          const parts = rawParts.map(sanitizeFSName).filter(Boolean)
+          if (!parts.length) continue
+          let currentDir: FileSystemDirectoryHandle = dirHandle
+          for (let p = 0; p < parts.length - 1; p++) {
+            try {
+              currentDir = await currentDir.getDirectoryHandle(parts[p], { create: true })
+            } catch (dirErr: any) {
+              throw new Error(`无效的目录名 "${rawParts[p]}" → "${parts[p]}": ${dirErr?.message ?? dirErr}`)
+            }
+          }
+          const fileName = parts[parts.length - 1]
+          let fh: FileSystemFileHandle
+          try {
+            fh = await currentDir.getFileHandle(fileName, { create: true })
+          } catch (fileErr: any) {
+            throw new Error(`无效的文件名 "${rawParts[rawParts.length - 1]}" → "${fileName}": ${fileErr?.message ?? fileErr}`)
+          }
+          const writable = await fh.createWritable()
+          await writable.write(blob)
+          await writable.close()
+
+          setSyncProgress(Math.round(((i + 1) / downloadableFiles.length) * 100))
+        }
+
+        setSyncSummary(`已下载 ${downloadableFiles.length} 个文件到本地文件夹`)
+      } catch (err: any) {
+        setError(err?.message || String(err))
+      } finally {
+        setSyncing(false)
+        setTimeout(() => { setSyncProgress(0); setSyncSummary("") }, 2000)
+      }
+    } else {
+      // ── Fallback: trigger individual browser downloads (works on any context) ──
+      try {
+        setSyncing(true)
+        setSyncProgress(0)
+        setError(null)
+        setSyncSummary(`准备下载 ${downloadableFiles.length} 个文件到浏览器下载目录`)
+
+        for (let i = 0; i < downloadableFiles.length; i++) {
+          const sf = downloadableFiles[i]
+          setSyncSummary(`正在下载 ${i + 1}/${downloadableFiles.length}: ${sf.relPath}`)
+
+          const response = await fetch(buildFileUrl(sf.relativePath, true))
+          if (!response.ok) throw new Error(`下载失败: ${sf.relPath}`)
+          const blob = await response.blob()
+
+          const fileName = sf.relPath.split("/").pop() ?? sf.relPath
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement("a")
+          a.href = url
+          a.download = fileName
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+
+          setSyncProgress(Math.round(((i + 1) / downloadableFiles.length) * 100))
+          // Small delay between downloads to avoid browser blocking
+          if (i < downloadableFiles.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 300))
+          }
+        }
+
+        setSyncSummary(`已下载 ${downloadableFiles.length} 个文件到浏览器下载目录`)
+      } catch (err: any) {
+        setError(err?.message || String(err))
+      } finally {
+        setSyncing(false)
+        setTimeout(() => { setSyncProgress(0); setSyncSummary("") }, 2000)
+      }
     }
   }
 
@@ -2254,7 +2281,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     )}
 
                     {/* ③ Sync */}
-                    {syncServerFolder !== null && (syncLocalDirHandle !== null || syncWebkitFiles !== null) && (
+                    {syncServerFolder !== null && (
                       <div className="space-y-3">
                         <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">③ 同步</div>
                         <div className="flex flex-wrap gap-2">
