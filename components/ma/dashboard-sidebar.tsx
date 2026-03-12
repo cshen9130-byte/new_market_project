@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, FileText, BrainCircuit } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, FileText, BrainCircuit, Home } from "lucide-react"
 import type React from "react"
 import { Button } from "../ui/button"
 import { Download } from "lucide-react"
@@ -31,9 +31,10 @@ export function DashboardSidebar() {
     <aside className={cn("border-r bg-card flex flex-col transition-all duration-200", isCollapsed ? "w-20" : "w-64")}>
       <div className={cn("border-b", isCollapsed ? "px-3 py-6" : "p-6")}>
         {isCollapsed ? (
-          <div className="text-center">
-            <div className="text-lg font-semibold">市监</div>
-          </div>
+          <Link href="/ma/dashboard" title="返回主页" className="flex flex-col items-center gap-1 hover:text-primary transition-colors">
+            <Home className="h-5 w-5" />
+            <div className="text-xs font-semibold">主页</div>
+          </Link>
         ) : (
           <>
             <h2 className="text-lg font-semibold">市场监控</h2>
