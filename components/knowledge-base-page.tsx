@@ -2163,21 +2163,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                 {/* Embed job progress bar */}
                 {embedJob && (
-                  <div className={cn(
-                    "rounded-lg border px-3 py-2 text-sm space-y-1.5",
-                    isCyber ? "border-cyan-500/30 bg-cyan-950/20" : "border-border bg-muted/40"
-                  )}>
+                  <div className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm space-y-1.5">
                     <div className="flex items-center gap-2">
                       {embedJob.status === "done" ? (
-                        <CheckCircle2 className={cn("h-4 w-4 shrink-0", isCyber ? "text-cyan-400" : "text-green-500")} />
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />
                       ) : embedJob.status === "error" ? (
                         <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />
                       ) : (
-                        <LoaderCircle className={cn("h-4 w-4 shrink-0 animate-spin", isCyber ? "text-cyan-400" : "text-primary")} />
+                        <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-primary" />
                       )}
                       <span className={cn(
                         "flex-1 truncate",
-                        embedJob.status === "error" ? "text-destructive" : isCyber ? "text-cyan-300" : "text-foreground"
+                        embedJob.status === "error" ? "text-destructive" : "text-foreground"
                       )}>
                         {embedJob.message}
                       </span>
@@ -2192,7 +2189,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         value={embedJob.totalFiles > 0
                           ? (embedJob.processedFiles / embedJob.totalFiles) * 100
                           : (embedJob.status === "running" ? 10 : 5)}
-                        className={cn("h-1.5", isCyber && "[&>div]:bg-cyan-400")}
+                        className="h-1.5"
                       />
                     )}
                   </div>
@@ -2848,6 +2845,40 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   </div>
                 )}
 
+                {/* Embed job progress bar */}
+                {embedJob && (
+                  <div className="rounded-lg border border-cyan-500/30 bg-cyan-950/20 px-3 py-2 text-sm space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      {embedJob.status === "done" ? (
+                        <CheckCircle2 className="h-4 w-4 shrink-0 text-cyan-400" />
+                      ) : embedJob.status === "error" ? (
+                        <AlertCircle className="h-4 w-4 shrink-0 text-red-400" />
+                      ) : (
+                        <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-cyan-400" />
+                      )}
+                      <span className={cn(
+                        "flex-1 truncate text-xs",
+                        embedJob.status === "error" ? "text-red-400" : "text-cyan-300"
+                      )}>
+                        {embedJob.message}
+                      </span>
+                      {embedJob.totalFiles > 0 && (
+                        <span className="shrink-0 text-xs text-cyan-300/60">
+                          {embedJob.processedFiles}/{embedJob.totalFiles}
+                        </span>
+                      )}
+                    </div>
+                    {embedJob.status !== "error" && (
+                      <Progress
+                        value={embedJob.totalFiles > 0
+                          ? (embedJob.processedFiles / embedJob.totalFiles) * 100
+                          : (embedJob.status === "running" ? 10 : 5)}
+                        className="h-1.5 bg-cyan-500/15 [&>div]:bg-cyan-400"
+                      />
+                    )}
+                  </div>
+                )}
+
                 <div className="text-xs text-cyan-300/75">支持图片、Word、Excel、CSV、PDF、TXT 等常见资料文件。</div>
 
                 <div className="rounded-xl border border-cyan-500/15 bg-black/25 px-3 py-2 text-xs text-cyan-300/80">
@@ -2962,6 +2993,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               </div>
             </CardHeader>
             <CardContent className="flex h-[calc(100vh-15rem)] min-h-[720px] flex-col gap-4">
+              {/* Embed in-progress warning in chat area */}
+              {embedJob && (embedJob.status === "queued" || embedJob.status === "running") && (
+                <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-950/20 px-4 py-2.5 text-xs text-amber-300">
+                  <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin" />
+                  <span className="flex-1">正在将新文件向量化（{embedJob.processedFiles}/{embedJob.totalFiles || "?"} 文档），完成后提问速度将恢复正常。</span>
+                </div>
+              )}
+
               <div className="flex items-center justify-between rounded-xl border border-cyan-500/15 bg-black/25 px-4 py-3 text-sm text-cyan-300/80">
                 <div className="flex items-center gap-2">
                   <MessageSquare className="h-4 w-4" />
