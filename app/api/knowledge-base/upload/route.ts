@@ -5,7 +5,7 @@ import {
   saveKnowledgeBaseFile,
   saveKnowledgeBaseFileWithRelativePath,
 } from "@/lib/server/knowledge-base"
-import { syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { syncVectorStoreForScope, startEmbedJob } from "@/lib/server/knowledge-chat"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -38,8 +38,9 @@ export async function POST(req: Request) {
         ),
       )
 
-      // Warm incremental index for root and selected scope.
-      void Promise.allSettled([syncVectorStoreForScope(""), syncVectorStoreForScope(folderPath)])
+      // Start tracked background embedding (both folder scope and root)
+      startEmbedJob(folderPath)
+      if (folderPath) startEmbedJob("")
 
       return NextResponse.json({ ok: true, files: savedFiles })
     }
@@ -55,8 +56,9 @@ export async function POST(req: Request) {
       ownerName: currentUser.name,
       ownerEmail: currentUser.email,
     })
-    // Warm incremental index for root and selected scope.
-    void Promise.allSettled([syncVectorStoreForScope(""), syncVectorStoreForScope(folderPath)])
+    // Start tracked background embedding (both folder scope and root)
+    startEmbedJob(folderPath)
+    if (folderPath) startEmbedJob("")
     return NextResponse.json({ ok: true, file: savedFile })
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })

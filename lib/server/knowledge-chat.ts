@@ -271,7 +271,10 @@ function fingerprintChanged(next: FileFingerprint | undefined, prev: FileFingerp
   return next.size !== prev.size || next.updatedAt !== prev.updatedAt
 }
 
-async function getOrBuildVectorStore(folderPath: string) {
+async function getOrBuildVectorStore(
+  folderPath: string,
+  onProgress?: (done: number, total: number, file: string) => void,
+) {
   const normalizedFolderPath = normalizeKnowledgeBasePath(folderPath)
   const cacheKey = normalizedFolderPath || "__root__"
 
@@ -325,25 +328,24 @@ async function getOrBuildVectorStore(folderPath: string) {
         .map((p) => docMap.get(p))
         .filter((doc): doc is NonNullable<typeof docMap extends Map<any, infer V> ? V : never> => Boolean(doc))
 
-      const splitInput = changedDocs.map(
-        (document) =>
-          new Document({
-            pageContent: document.text,
-            metadata: {
-              source: document.relativePath,
-              size: document.size,
-              updatedAt: document.updatedAt,
-            },
-          }),
-      )
-      const splitDocuments = await splitter.splitDocuments(splitInput)
-      if (splitDocuments.length > 0) {
-        try {
-          const partialStore = await MemoryVectorStore.fromDocuments(splitDocuments, createIndexEmbeddingsModel())
-          appendedRows = ((partialStore as any).memoryVectors ?? []) as MemoryVectorRow[]
-        } catch (err: any) {
-          throw classifyApiError(err)
+      // Process one file at a time so onProgress fires after each file
+      const embeddingsModel = createIndexEmbeddingsModel()
+      for (let i = 0; i < changedDocs.length; i++) {
+        const doc = changedDocs[i]
+        const fileDoc = new Document({
+          pageContent: doc.text,
+          metadata: { source: doc.relativePath, size: doc.size, updatedAt: doc.updatedAt },
+        })
+        const chunks = await splitter.splitDocuments([fileDoc])
+        if (chunks.length > 0) {
+          try {
+            const partStore = await MemoryVectorStore.fromDocuments(chunks, embeddingsModel)
+            appendedRows.push(...((partStore as any).memoryVectors ?? []) as MemoryVectorRow[])
+          } catch (err: any) {
+            throw classifyApiError(err)
+          }
         }
+        onProgress?.(i + 1, changedDocs.length, doc.relativePath)
       }
     }
 
@@ -389,6 +391,73 @@ export async function syncVectorStoreForScope(folderPath?: string | null) {
     indexedDocuments: index.indexedDocuments,
     indexedChunks: index.indexedChunks,
   }
+}
+
+// ── Embed job tracking ────────────────────────────────────────────────────────
+
+export type EmbedJobStatus = {
+  scope: string
+  status: "queued" | "running" | "done" | "error"
+  totalFiles: number
+  processedFiles: number
+  currentFile: string
+  message: string
+  startedAt: number
+  finishedAt?: number
+}
+
+function getEmbedJobMap(): Map<string, EmbedJobStatus> {
+  const g = globalThis as typeof globalThis & { __kbEmbedJobs?: Map<string, EmbedJobStatus> }
+  if (!g.__kbEmbedJobs) g.__kbEmbedJobs = new Map()
+  return g.__kbEmbedJobs
+}
+
+export function getEmbedJobStatus(folderPath?: string | null): EmbedJobStatus | null {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const key = normalized || "__root__"
+  return getEmbedJobMap().get(key) ?? null
+}
+
+/**
+ * Start background embedding for a scope and track progress in globalThis.
+ * Returns immediately; poll getEmbedJobStatus() to monitor progress.
+ */
+export function startEmbedJob(folderPath?: string | null) {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const key = normalized || "__root__"
+  const jobs = getEmbedJobMap()
+  const job: EmbedJobStatus = {
+    scope: normalized || "",
+    status: "queued",
+    totalFiles: 0,
+    processedFiles: 0,
+    currentFile: "",
+    message: "准备中...",
+    startedAt: Date.now(),
+  }
+  jobs.set(key, job)
+  void (async () => {
+    try {
+      const result = await getOrBuildVectorStore(normalized, (done, total, file) => {
+        job.status = "running"
+        job.totalFiles = total
+        job.processedFiles = done
+        job.currentFile = file
+        job.message = `正在向量化 ${done}/${total}: ${file.split("/").pop() ?? file}`
+      })
+      job.status = "done"
+      job.finishedAt = Date.now()
+      job.totalFiles = result.indexedDocuments
+      job.processedFiles = result.indexedDocuments
+      job.message = `向量化完成，共 ${result.indexedDocuments} 个文档`
+      setTimeout(() => { if (jobs.get(key) === job) jobs.delete(key) }, 30_000)
+    } catch (err: any) {
+      job.status = "error"
+      job.message = err?.message || String(err)
+      job.finishedAt = Date.now()
+      setTimeout(() => { if (jobs.get(key) === job) jobs.delete(key) }, 60_000)
+    }
+  })()
 }
 
 /** Detect DashScope/OpenAI-style errors and rethrow with a Chinese-friendly message. */

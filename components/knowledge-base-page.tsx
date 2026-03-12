@@ -26,6 +26,8 @@ import {
   LayoutGrid,
   LayoutList,
   LoaderCircle,
+  CheckCircle2,
+  AlertCircle,
   MessageSquare,
   MoreHorizontal,
   Pencil,
@@ -479,6 +481,40 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [syncComparing, setSyncComparing] = useState(false)
   const syncCompareSeqRef = useRef(0)
   const [explorerView, setExplorerView] = useState<"list" | "icon">("list")
+
+  // ── Embed job tracking ──────────────────────────────────────────────────────
+  type EmbedJobStatus = {
+    scope: string; status: "queued" | "running" | "done" | "error"
+    totalFiles: number; processedFiles: number; currentFile: string; message: string
+    startedAt: number; finishedAt?: number
+  }
+  const [embedJob, setEmbedJob] = useState<EmbedJobStatus | null>(null)
+  const embedPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  function startEmbedTracking(scope: string) {
+    if (embedPollRef.current) clearInterval(embedPollRef.current)
+    setEmbedJob({ scope, status: "queued", totalFiles: 0, processedFiles: 0, currentFile: "", message: "准备向量化...", startedAt: Date.now() })
+    embedPollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/knowledge-base/embed-status?scope=${encodeURIComponent(scope)}`, { headers: getKnowledgeBaseAuthHeaders() })
+        if (!res.ok) return
+        const data: EmbedJobStatus | null = await res.json()
+        if (!data) {
+          // Job no longer tracked — it completed and was cleaned up
+          clearInterval(embedPollRef.current!)
+          setEmbedJob(null)
+          return
+        }
+        setEmbedJob(data)
+        if (data.status === "done" || data.status === "error") {
+          clearInterval(embedPollRef.current!)
+          setTimeout(() => setEmbedJob(null), 5_000)
+        }
+      } catch {
+        // network hiccup — keep polling
+      }
+    }, 1200)
+  }
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -846,12 +882,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         throw new Error(data?.error || res.statusText)
       }
 
+      const uploadedScope = uploadTargetFolder ?? ""
       setPendingFile(null)
       if (singleUploadInputRef.current) {
         singleUploadInputRef.current.value = ""
       }
       setUploadTargetFolder(null)
       await refreshTree()
+      // Start tracked background embedding
+      startEmbedTracking(uploadedScope)
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     } finally {
@@ -905,6 +944,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       setBatchUploadSummary(`已完成上传 ${entries.length} 个文件`)
       await refreshTree()
+      // Start tracked background embedding
+      startEmbedTracking(resolvedTarget)
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     } finally {
@@ -2119,6 +2160,43 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <span className="font-medium">{storageRoot || "加载中"}</span>
                   </div>
                 </div>
+
+                {/* Embed job progress bar */}
+                {embedJob && (
+                  <div className={cn(
+                    "rounded-lg border px-3 py-2 text-sm space-y-1.5",
+                    isCyber ? "border-cyan-500/30 bg-cyan-950/20" : "border-border bg-muted/40"
+                  )}>
+                    <div className="flex items-center gap-2">
+                      {embedJob.status === "done" ? (
+                        <CheckCircle2 className={cn("h-4 w-4 shrink-0", isCyber ? "text-cyan-400" : "text-green-500")} />
+                      ) : embedJob.status === "error" ? (
+                        <AlertCircle className="h-4 w-4 shrink-0 text-destructive" />
+                      ) : (
+                        <LoaderCircle className={cn("h-4 w-4 shrink-0 animate-spin", isCyber ? "text-cyan-400" : "text-primary")} />
+                      )}
+                      <span className={cn(
+                        "flex-1 truncate",
+                        embedJob.status === "error" ? "text-destructive" : isCyber ? "text-cyan-300" : "text-foreground"
+                      )}>
+                        {embedJob.message}
+                      </span>
+                      {embedJob.totalFiles > 0 && (
+                        <span className="shrink-0 text-xs text-muted-foreground">
+                          {embedJob.processedFiles}/{embedJob.totalFiles}
+                        </span>
+                      )}
+                    </div>
+                    {embedJob.status !== "error" && (
+                      <Progress
+                        value={embedJob.totalFiles > 0
+                          ? (embedJob.processedFiles / embedJob.totalFiles) * 100
+                          : (embedJob.status === "running" ? 10 : 5)}
+                        className={cn("h-1.5", isCyber && "[&>div]:bg-cyan-400")}
+                      />
+                    )}
+                  </div>
+                )}
 
                 <div className="grid gap-2 sm:grid-cols-2">
                   {traditionalMenu.map((item) => {
