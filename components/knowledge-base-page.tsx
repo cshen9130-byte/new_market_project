@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation"
 import {
   ChevronDown,
   ChevronLeft,
+  ChevronUp,
+  ChevronsUpDown,
   BrainCircuit,
   ChevronRight,
   Clock,
@@ -44,6 +46,7 @@ import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 
 type DocumentNode = {
@@ -108,6 +111,8 @@ type KnowledgeBasePageProps = {
 
 const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".doc", ".docx", ".xls", ".xlsx"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
+const FRAME_PREVIEW_EXTENSIONS = new Set([".html", ".htm", ".pdf"])
+const CHAT_SUPPORTED_EXTENSIONS = new Set([...TEXT_PREVIEW_EXTENSIONS, ".html", ".htm", ".pdf"])
 
 type KnowledgeBaseUploadResponse = {
   ok: boolean
@@ -443,6 +448,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [batchUploadProgress, setBatchUploadProgress] = useState(0)
   const [batchUploadSummary, setBatchUploadSummary] = useState("")
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
+  const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  type ExplorerSortKey = "name" | "updatedAt" | "typeLabel" | "size" | "ownerName"
+  const [explorerSort, setExplorerSort] = useState<{ key: ExplorerSortKey; dir: "asc" | "desc" }>({ key: "updatedAt", dir: "desc" })
   const [uploading, setUploading] = useState(false)
   const [question, setQuestion] = useState("")
   const [chatLoading, setChatLoading] = useState(false)
@@ -707,6 +715,28 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
     return [...folderEntries, ...documentEntries]
   }, [currentFolderNode])
+  const sortedExplorerEntries = useMemo(() => {
+    const getVal = (entry: ExplorerEntry): string | number => {
+      switch (explorerSort.key) {
+        case "name": return entry.name.toLowerCase()
+        case "updatedAt": return entry.updatedAt ?? ""
+        case "typeLabel": return entry.typeLabel
+        case "size": return entry.kind === "file" ? entry.document.size : getFolderTotalSize(entry.folder)
+        case "ownerName": return entry.ownerName.toLowerCase()
+      }
+    }
+    return [...explorerEntries].sort((a, b) => {
+      const av = getVal(a)
+      const bv = getVal(b)
+      let cmp: number
+      if (typeof av === "number" && typeof bv === "number") {
+        cmp = av - bv
+      } else {
+        cmp = String(av).localeCompare(String(bv), "zh-CN")
+      }
+      return explorerSort.dir === "asc" ? cmp : -cmp
+    })
+  }, [explorerEntries, explorerSort])
   const activeExplorerEntry = useMemo(
     () =>
       selectedExplorerEntry
@@ -1003,22 +1033,67 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setError("请先选择服务器目录")
       return
     }
-    if (!syncLocalDirHandle) {
-      if (syncWebkitFiles !== null) {
-        setError("同步到本地需要 HTTPS 连接，当前 HTTP 模式不支持写入本地文件系统。请使用 HTTPS 访问本站，或手动下载所需文件。")
-      } else {
-        setError("请先在第①步选择本地文件夹")
+
+    // ── Resolve a writable FileSystemDirectoryHandle ──────────────────────
+    let writableHandle = syncLocalDirHandle
+
+    if (!writableHandle) {
+      // File System Access API requires a secure context (HTTPS or localhost).
+      if (!window.isSecureContext) {
+        const port = window.location.port
+        const localUrl = `http://localhost${port ? `:${port}` : ""}`
+        setError(
+          `同步到本地需要浏览器文件写入权限（File System Access API），` +
+          `当前通过 "${window.location.host}" 访问时浏览器不支持此功能。` +
+          `请改用 ${localUrl} 访问本站即可启用（无需配置 HTTPS）。`,
+        )
+        return
       }
-      return
+
+      const fsApi = (window as unknown as { showDirectoryPicker?: (opts?: Record<string, unknown>) => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker
+      if (!fsApi) {
+        setError("当前浏览器不支持文件夹写入功能，请使用 Chrome 112+ 或 Edge 112+。")
+        return
+      }
+
+      // Auto-trigger folder picker so the user can pick or confirm a destination
+      try {
+        writableHandle = await fsApi({ mode: "readwrite" })
+        setSyncLocalDirHandle(writableHandle)
+        setSyncWebkitFiles(null)
+        setSyncLocalDirName(writableHandle.name)
+        setSyncPreviewItems(null)
+        setSyncPendingFiles(null)
+      } catch (err: any) {
+        if (err?.name !== "AbortError") setError(err?.message || String(err))
+        return
+      }
     }
 
+    // ── Verify write permissions (they expire after page reload) ──────────
+    const dirHandle = writableHandle as FileSystemDirectoryHandle
+    const handleWithPerm = dirHandle as unknown as {
+      queryPermission?: (opts: { mode: string }) => Promise<PermissionState>
+      requestPermission?: (opts: { mode: string }) => Promise<PermissionState>
+    }
+    if (handleWithPerm.queryPermission) {
+      const perm = await handleWithPerm.queryPermission({ mode: "readwrite" })
+      if (perm !== "granted") {
+        const granted = await handleWithPerm.requestPermission?.({ mode: "readwrite" })
+        if (granted !== "granted") {
+          setError("需要文件写入权限。请在浏览器弹出的对话框中点击「允许」，或点击①重新选择本地文件夹。")
+          setSyncLocalDirHandle(null)
+          return
+        }
+      }
+    }
+
+    // ── Download server files into the local folder ───────────────────────
     const serverFiles = syncServerFiles
     if (!serverFiles.length) {
       setError("该目录下没有文件")
       return
     }
-
-    const dirHandle = syncLocalDirHandle
 
     try {
       setSyncing(true)
@@ -1177,6 +1252,98 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setError(requestError?.message || String(requestError))
     } finally {
       setDeletingPath(null)
+    }
+  }
+
+  async function handleRenameEntry(entry: ExplorerEntry) {
+    const canRename = entry.kind === "folder" ? entry.folder.canDelete : entry.document.canDelete
+    if (!canRename) {
+      setError(entry.kind === "folder" ? "只有创建者或管理员可以重命名该文件夹" : "只有上传者可以重命名该文件")
+      return
+    }
+
+    const nextName = window.prompt(`重命名${entry.kind === "folder" ? "文件夹" : "文件"}`, entry.name)
+    if (nextName === null) return
+
+    const trimmed = nextName.trim()
+    if (!trimmed || trimmed === entry.name) return
+
+    try {
+      setError(null)
+      setRenamingPath(entry.relativePath)
+
+      const endpoint = entry.kind === "folder" ? "/api/knowledge-base/folders" : "/api/knowledge-base/file"
+      const res = await fetch(endpoint, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ path: entry.relativePath, newName: trimmed }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
+      }
+
+      if (entry.kind === "folder") {
+        const newPath = String(data?.folder?.relativePath || "")
+        if (newPath && newPath !== entry.relativePath) {
+          if (selectedFolder === entry.relativePath || selectedFolder.startsWith(`${entry.relativePath}/`)) {
+            setSelectedFolder((current) => replacePathPrefix(current, entry.relativePath, newPath))
+          }
+
+          setSelectedExplorerEntry((current) => {
+            if (!current) return current
+            if (current.relativePath === entry.relativePath || current.relativePath.startsWith(`${entry.relativePath}/`)) {
+              return {
+                ...current,
+                relativePath: replacePathPrefix(current.relativePath, entry.relativePath, newPath),
+              }
+            }
+            return current
+          })
+
+          setSelectedDocument((current) => {
+            if (!current) return current
+            if (current.relativePath === entry.relativePath || current.relativePath.startsWith(`${entry.relativePath}/`)) {
+              return {
+                ...current,
+                relativePath: replacePathPrefix(current.relativePath, entry.relativePath, newPath),
+              }
+            }
+            return current
+          })
+        }
+      } else {
+        const renamedPath = String(data?.file?.relativePath || "")
+        const renamedName = String(data?.file?.name || trimmed)
+
+        if (renamedPath && selectedExplorerEntry?.kind === "file" && selectedExplorerEntry.relativePath === entry.relativePath) {
+          setSelectedExplorerEntry({ kind: "file", relativePath: renamedPath })
+        }
+
+        if (renamedPath && selectedDocument?.relativePath === entry.relativePath) {
+          const extension = getNameExtension(renamedName)
+          setSelectedDocument((current) => {
+            if (!current) return current
+            return {
+              ...current,
+              name: renamedName,
+              relativePath: renamedPath,
+              extension,
+              canPreview:
+                TEXT_PREVIEW_EXTENSIONS.has(extension) ||
+                IMAGE_PREVIEW_EXTENSIONS.has(extension) ||
+                FRAME_PREVIEW_EXTENSIONS.has(extension),
+              canChat: CHAT_SUPPORTED_EXTENSIONS.has(extension),
+            }
+          })
+        }
+      }
+
+      await refreshTree()
+    } catch (requestError: any) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setRenamingPath(null)
     }
   }
 
@@ -1492,6 +1659,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   onClick={() => {
                     setSelectedFolder(item.value)
                     setSelectedExplorerEntry(null)
+                    setSelectedDocument(null)
                   }}
                   className={cn("flex items-center gap-1 rounded px-1 py-0.5 transition-colors", isCyber ? "hover:bg-cyan-500/10" : "hover:bg-background")}
                 >
@@ -1508,6 +1676,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             <Button type="button" variant="outline" size="sm" onClick={() => {
               setSelectedFolder("")
               setSelectedExplorerEntry(null)
+              setSelectedDocument(null)
             }} disabled={!selectedFolder} className={cn(isCyber && "border-cyan-500/40 text-cyan-200")}>
               根目录
             </Button>
@@ -1515,6 +1684,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               if (parentFolderPath === null) return
               setSelectedFolder(parentFolderPath)
               setSelectedExplorerEntry(null)
+              setSelectedDocument(null)
             }} disabled={parentFolderPath === null} className={cn(isCyber && "border-cyan-500/40 text-cyan-200")}>
               返回上一级
             </Button>
@@ -1536,7 +1706,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={deletingPath === activeExplorerEntry.folder.relativePath}
+                  disabled={deletingPath === activeExplorerEntry.folder.relativePath || renamingPath === activeExplorerEntry.folder.relativePath}
                   onClick={() => void handleDeleteFolder(activeExplorerEntry.folder)}
                   className={cn(isCyber ? "border-red-500/40 text-red-200" : "")}
                 >
@@ -1570,7 +1740,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   type="button"
                   size="sm"
                   variant="outline"
-                  disabled={deletingPath === activeExplorerEntry.document.relativePath}
+                  disabled={deletingPath === activeExplorerEntry.document.relativePath || renamingPath === activeExplorerEntry.document.relativePath}
                   onClick={() => void handleDelete(activeExplorerEntry.document)}
                   className={cn(isCyber ? "border-red-500/40 text-red-200" : "")}
                 >
@@ -1584,62 +1754,117 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
         <div className={cn("overflow-hidden rounded-lg border", isCyber ? "border-cyan-500/15 bg-black/20" : "border-border bg-card") }>
           <div className={cn("grid grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-xs font-medium", isCyber ? "border-cyan-500/15 bg-black/25 text-cyan-300/80" : "border-border bg-muted/40 text-muted-foreground")}>
-            <div>名称</div>
-            <div>修改日期</div>
-            <div>类型</div>
-            <div>大小</div>
-            <div>上传者</div>
+            {(["name", "updatedAt", "typeLabel", "size", "ownerName"] as const).map((col) => {
+              const labels: Record<string, string> = { name: "名称", updatedAt: "修改日期", typeLabel: "类型", size: "大小", ownerName: "上传者" }
+              const active = explorerSort.key === col
+              const Icon = active ? (explorerSort.dir === "asc" ? ChevronUp : ChevronDown) : ChevronsUpDown
+              return (
+                <button
+                  key={col}
+                  type="button"
+                  onClick={() => setExplorerSort((prev) => prev.key === col ? { key: col, dir: prev.dir === "asc" ? "desc" : "asc" } : { key: col, dir: col === "updatedAt" ? "desc" : "asc" })}
+                  className={cn("flex items-center gap-1 select-none transition-colors", isCyber ? "hover:text-cyan-100" : "hover:text-foreground", active && (isCyber ? "text-cyan-100" : "text-foreground"))}
+                >
+                  {labels[col]}
+                  <Icon className="h-3 w-3 shrink-0" />
+                </button>
+              )
+            })}
           </div>
           <div>
-            {explorerEntries.length > 0 ? (
-              explorerEntries.map((entry) => {
+            {sortedExplorerEntries.length > 0 ? (
+              sortedExplorerEntries.map((entry) => {
                 const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
+                const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
                 return (
-                  <button
-                    key={entry.key}
-                    type="button"
-                    onClick={() => {
-                      setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
-                      if (entry.kind === "file") {
-                        setSelectedDocument(entry.document)
-                      }
-                    }}
-                    onDoubleClick={() => handleExplorerEntryOpen(entry)}
-                    className={cn(
-                      "grid w-full grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-left text-sm transition-colors last:border-b-0",
-                      isCyber
-                        ? selected
-                          ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-50"
-                          : "border-cyan-500/10 text-cyan-100 hover:bg-cyan-500/5"
-                        : selected
-                          ? "border-border bg-primary/5 text-foreground"
-                          : "border-border text-foreground hover:bg-muted/50",
-                    )}
-                    title={entry.relativePath}
-                  >
-                    <div className="flex min-w-0 items-center gap-2">
-                      {entry.kind === "folder" ? (
-                        <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600")}>
-                          <FolderOpen className="h-4 w-4" />
-                        </span>
-                      ) : (
-                        (() => {
-                          const fileIcon = getExplorerFileIcon(entry.document.extension)
-                          const Icon = fileIcon.icon
-                          return (
-                            <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fileIcon.className)}>
-                              <Icon className="h-4 w-4" />
+                  <ContextMenu key={entry.key}>
+                    <ContextMenuTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
+                          if (entry.kind === "file") {
+                            setSelectedDocument(entry.document)
+                          }
+                        }}
+                        onDoubleClick={() => handleExplorerEntryOpen(entry)}
+                        className={cn(
+                          "grid w-full grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-left text-sm transition-colors last:border-b-0",
+                          isCyber
+                            ? selected
+                              ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-50"
+                              : "border-cyan-500/10 text-cyan-100 hover:bg-cyan-500/5"
+                            : selected
+                              ? "border-border bg-primary/5 text-foreground"
+                              : "border-border text-foreground hover:bg-muted/50",
+                        )}
+                        title={entry.relativePath}
+                        disabled={busy}
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          {entry.kind === "folder" ? (
+                            <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600")}>
+                              <FolderOpen className="h-4 w-4" />
                             </span>
-                          )
-                        })()
+                          ) : (
+                            (() => {
+                              const fileIcon = getExplorerFileIcon(entry.document.extension)
+                              const Icon = fileIcon.icon
+                              return (
+                                <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fileIcon.className)}>
+                                  <Icon className="h-4 w-4" />
+                                </span>
+                              )
+                            })()
+                          )}
+                          <span className="truncate">{entry.name}</span>
+                        </div>
+                        <div className="truncate">{formatDateTime(entry.updatedAt)}</div>
+                        <div className="truncate">{entry.typeLabel}</div>
+                        <div className="truncate">{entry.kind === "file" ? formatFileSize(entry.document.size) : formatFileSize(getFolderTotalSize(entry.folder))}</div>
+                        <div className="truncate">{entry.ownerName}</div>
+                      </button>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent className="w-44">
+                      {entry.kind === "folder" ? (
+                        <>
+                          <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
+                            <FolderOpen className="h-4 w-4" />
+                            打开
+                          </ContextMenuItem>
+                          <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
+                            <Pencil className="h-4 w-4" />
+                            重命名
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
+                            <Trash2 className="h-4 w-4" />
+                            删除
+                          </ContextMenuItem>
+                        </>
+                      ) : (
+                        <>
+                          <ContextMenuItem disabled={!entry.document.canPreview} onClick={() => handleExplorerEntryOpen(entry)}>
+                            <Eye className="h-4 w-4" />
+                            预览
+                          </ContextMenuItem>
+                          <ContextMenuItem onClick={() => window.open(buildFileUrl(entry.document.relativePath, true), "_blank") }>
+                            <Download className="h-4 w-4" />
+                            下载
+                          </ContextMenuItem>
+                          <ContextMenuItem disabled={!entry.document.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
+                            <Pencil className="h-4 w-4" />
+                            重命名
+                          </ContextMenuItem>
+                          <ContextMenuSeparator />
+                          <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
+                            <Trash2 className="h-4 w-4" />
+                            删除
+                          </ContextMenuItem>
+                        </>
                       )}
-                      <span className="truncate">{entry.name}</span>
-                    </div>
-                    <div className="truncate">{formatDateTime(entry.updatedAt)}</div>
-                    <div className="truncate">{entry.typeLabel}</div>
-                      <div className="truncate">{entry.kind === "file" ? formatFileSize(entry.document.size) : formatFileSize(getFolderTotalSize(entry.folder))}</div>
-                    <div className="truncate">{entry.ownerName}</div>
-                  </button>
+                    </ContextMenuContent>
+                  </ContextMenu>
                 )
               })
             ) : (
@@ -2684,4 +2909,23 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       </div>
     </div>
   )
+}
+
+function getNameExtension(fileName: string) {
+  const dotIndex = fileName.lastIndexOf(".")
+  return dotIndex >= 0 ? fileName.slice(dotIndex).toLowerCase() : ""
+}
+
+function replacePathPrefix(pathValue: string, oldPrefix: string, newPrefix: string) {
+  if (pathValue === oldPrefix) {
+    return newPrefix
+  }
+  if (!pathValue.startsWith(`${oldPrefix}/`)) {
+    return pathValue
+  }
+  const suffix = pathValue.slice(oldPrefix.length)
+  if (!newPrefix) {
+    return suffix.replace(/^\//, "")
+  }
+  return `${newPrefix}${suffix}`
 }

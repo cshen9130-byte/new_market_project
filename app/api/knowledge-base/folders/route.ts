@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
+import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, normalizeKnowledgeBasePath, renameKnowledgeBaseFolder } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
 import { invalidateVectorStoreCache, syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
 
@@ -52,6 +52,36 @@ export async function DELETE(req: Request) {
     void syncVectorStoreForScope("")
 
     return NextResponse.json({ ok: true })
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
+  }
+}
+
+export async function PATCH(req: Request) {
+  try {
+    const userId = String(req.headers.get("x-market-user-id") || "").trim()
+    const currentUser = userId ? await getUserById(userId) : null
+    if (!currentUser) {
+      return NextResponse.json({ ok: false, error: "请先登录后再重命名文件夹" }, { status: 401 })
+    }
+
+    const body = await req.json().catch(() => ({}))
+    const relativePath = normalizeKnowledgeBasePath(body?.path)
+    const newName = String(body?.newName || "").trim()
+
+    if (!relativePath) {
+      return NextResponse.json({ ok: false, error: "请提供文件夹路径" }, { status: 400 })
+    }
+    if (!newName) {
+      return NextResponse.json({ ok: false, error: "请输入新的文件夹名称" }, { status: 400 })
+    }
+
+    const renamed = await renameKnowledgeBaseFolder(relativePath, newName, currentUser.id, currentUser.role === "admin")
+
+    invalidateVectorStoreCache()
+    void syncVectorStoreForScope("")
+
+    return NextResponse.json({ ok: true, folder: renamed })
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
   }

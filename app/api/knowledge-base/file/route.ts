@@ -4,10 +4,11 @@ import {
   deleteKnowledgeBaseFile,
   getKnowledgeBaseFile,
   normalizeKnowledgeBasePath,
+  renameKnowledgeBaseFile,
   readKnowledgeBasePreviewContent,
 } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
-import { syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { invalidateVectorStoreCache, syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -77,6 +78,39 @@ export async function DELETE(req: Request) {
   } catch (error: any) {
     const message = error?.message || String(error)
     const status = message.includes("只有上传者可以删除") || message.includes("缺少归属信息") ? 403 : 500
+    return NextResponse.json({ ok: false, error: message }, { status })
+  }
+}
+
+export async function PATCH(req: Request) {
+  try {
+    const userId = String(req.headers.get("x-market-user-id") || "").trim()
+    const currentUser = userId ? await getUserById(userId) : null
+    if (!currentUser) {
+      return NextResponse.json({ ok: false, error: "请先登录后再重命名文件" }, { status: 401 })
+    }
+
+    const body = await req.json().catch(() => ({}))
+    const relativePath = normalizeKnowledgeBasePath(body?.path)
+    const newName = String(body?.newName || "").trim()
+
+    if (!relativePath) {
+      return NextResponse.json({ ok: false, error: "缺少文件路径" }, { status: 400 })
+    }
+    if (!newName) {
+      return NextResponse.json({ ok: false, error: "请输入新的文件名" }, { status: 400 })
+    }
+
+    const renamed = await renameKnowledgeBaseFile(relativePath, newName, currentUser.id, currentUser.role === "admin")
+
+    // Rename can invalidate existing chunk paths; clear caches and warm root incrementally.
+    invalidateVectorStoreCache()
+    void syncVectorStoreForScope("")
+
+    return NextResponse.json({ ok: true, file: renamed })
+  } catch (error: any) {
+    const message = error?.message || String(error)
+    const status = message.includes("只有上传者可以重命名") || message.includes("缺少归属信息") ? 403 : 500
     return NextResponse.json({ ok: false, error: message }, { status })
   }
 }

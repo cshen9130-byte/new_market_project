@@ -265,6 +265,30 @@ function sanitizeFileName(fileName: string) {
   return cleaned
 }
 
+function sanitizePathSegment(name: string, label: string) {
+  const trimmed = String(name || "").trim()
+  if (!trimmed) {
+    throw new Error(`${label}不能为空`)
+  }
+  if (trimmed === "." || trimmed === "..") {
+    throw new Error(`${label}不合法`)
+  }
+  if (/[\\/]/.test(trimmed)) {
+    throw new Error(`${label}不能包含路径分隔符`)
+  }
+
+  const cleaned = trimmed
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")
+    .replace(/[. ]+$/g, "")
+    .trim()
+
+  if (!cleaned) {
+    throw new Error(`${label}不合法`)
+  }
+
+  return cleaned
+}
+
 function getExtension(fileName: string) {
   return path.extname(fileName).toLowerCase()
 }
@@ -583,6 +607,126 @@ export async function deleteKnowledgeBaseFile(relativePath: string, actorUserId:
   await fs.unlink(target)
   await removeKnowledgeBaseFileOwner(normalizedPath)
   await removeEmptyKnowledgeBaseDirectories(path.posix.dirname(normalizedPath) === "." ? "" : path.posix.dirname(normalizedPath))
+}
+
+async function ensurePathNotExists(absolutePath: string) {
+  try {
+    await fs.access(absolutePath)
+    throw new Error("目标名称已存在，请更换后重试")
+  } catch (error: any) {
+    if (error?.code !== "ENOENT") {
+      throw error
+    }
+  }
+}
+
+async function renameOwnershipPath(oldPath: string, newPath: string, entryType: "file" | "folder") {
+  const records = await readOwnershipRecords()
+  const prefix = `${oldPath}/`
+  const next = records.map((record) => {
+    if (record.relativePath === oldPath) {
+      return { ...record, relativePath: newPath, entryType: record.entryType || entryType }
+    }
+
+    if (entryType === "folder" && record.relativePath.startsWith(prefix)) {
+      return {
+        ...record,
+        relativePath: `${newPath}/${record.relativePath.slice(prefix.length)}`,
+      }
+    }
+
+    return record
+  })
+
+  next.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
+  await writeOwnershipRecords(next)
+}
+
+export async function renameKnowledgeBaseFile(relativePath: string, newName: string, actorUserId: string, isAdmin = false) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    throw new Error("缺少文件路径")
+  }
+  if (!actorUserId) {
+    throw new Error("缺少用户信息")
+  }
+
+  const safeName = sanitizePathSegment(newName, "文件名")
+  const parent = path.posix.dirname(normalizedPath) === "." ? "" : path.posix.dirname(normalizedPath)
+  const nextPath = normalizeKnowledgeBasePath(parent ? `${parent}/${safeName}` : safeName)
+  if (!nextPath) {
+    throw new Error("文件名不合法")
+  }
+  if (nextPath === normalizedPath) {
+    return { relativePath: normalizedPath, name: path.posix.basename(normalizedPath) }
+  }
+
+  if (!isAdmin) {
+    const ownershipMap = await getOwnershipMap()
+    const ownership = ownershipMap.get(normalizedPath)
+    if (!ownership) {
+      throw new Error("文件缺少归属信息，无法重命名")
+    }
+    if (ownership.ownerId !== actorUserId) {
+      throw new Error("只有上传者可以重命名该文件")
+    }
+  }
+
+  const { target } = await resolveKnowledgeBasePath(normalizedPath)
+  const sourceStat = await fs.stat(target)
+  if (!sourceStat.isFile()) {
+    throw new Error("目标不是文件")
+  }
+
+  const { target: nextTarget } = await resolveKnowledgeBasePath(nextPath)
+  await ensurePathNotExists(nextTarget)
+
+  await fs.rename(target, nextTarget)
+  await renameOwnershipPath(normalizedPath, nextPath, "file")
+
+  return { relativePath: nextPath, name: path.posix.basename(nextPath) }
+}
+
+export async function renameKnowledgeBaseFolder(relativePath: string, newName: string, actorUserId: string, isAdmin = false) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    throw new Error("缺少文件夹路径")
+  }
+  if (!actorUserId) {
+    throw new Error("缺少用户信息")
+  }
+
+  const safeName = sanitizePathSegment(newName, "文件夹名称")
+  const parent = path.posix.dirname(normalizedPath) === "." ? "" : path.posix.dirname(normalizedPath)
+  const nextPath = normalizeKnowledgeBasePath(parent ? `${parent}/${safeName}` : safeName)
+  if (!nextPath) {
+    throw new Error("文件夹名称不合法")
+  }
+  if (nextPath === normalizedPath) {
+    return { relativePath: normalizedPath, name: path.posix.basename(normalizedPath) }
+  }
+
+  if (!isAdmin) {
+    const ownershipMap = await getOwnershipMap()
+    const ownership = ownershipMap.get(normalizedPath)
+    if (!ownership || ownership.ownerId !== actorUserId) {
+      throw new Error("只有创建者或管理员可以重命名该文件夹")
+    }
+  }
+
+  const { target } = await resolveKnowledgeBasePath(normalizedPath)
+  const sourceStat = await fs.stat(target)
+  if (!sourceStat.isDirectory()) {
+    throw new Error("目标不是文件夹")
+  }
+
+  const { target: nextTarget } = await resolveKnowledgeBasePath(nextPath)
+  await ensurePathNotExists(nextTarget)
+
+  await fs.rename(target, nextTarget)
+  await renameOwnershipPath(normalizedPath, nextPath, "folder")
+
+  return { relativePath: nextPath, name: path.posix.basename(nextPath) }
 }
 
 export async function getKnowledgeBaseFile(relativePath: string) {
