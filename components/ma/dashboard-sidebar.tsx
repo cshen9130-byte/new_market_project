@@ -20,6 +20,7 @@ const navigation = [
   { name: "私募基金", href: "/ma/dashboard/private-funds", icon: Briefcase },
   // Add cache-busting query to ensure latest assets load in new tab
   { name: "MOM 风控报告", href: momReportUrl, icon: FileText },
+  { name: "__home__", href: "/ma/dashboard", icon: Home },
   { name: "AI知识库", href: "/ma/dashboard/ai-knowledge", icon: BrainCircuit },
 ]
 
@@ -88,6 +89,21 @@ export function DashboardSidebar() {
                   </a>
                 </Button>
               </div>
+            )
+          }
+
+          if (item.name === "__home__") {
+            if (!isCollapsed) return null
+            return (
+              <Link
+                key="__home__"
+                href={item.href}
+                title="返回主页"
+                className={cn(baseClasses, "flex flex-col items-center gap-0.5 border border-dashed border-border/60 py-2")}
+              >
+                <item.icon className="h-4 w-4" />
+                <span className="text-[10px] leading-none">返回</span>
+              </Link>
             )
           }
 
