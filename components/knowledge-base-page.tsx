@@ -23,6 +23,8 @@ import {
   FolderOpen,
   FolderPlus,
   History,
+  LayoutGrid,
+  LayoutList,
   LoaderCircle,
   MessageSquare,
   MoreHorizontal,
@@ -476,6 +478,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [syncLocalDirUpdatedAt, setSyncLocalDirUpdatedAt] = useState<Date | null>(null)
   const [syncComparing, setSyncComparing] = useState(false)
   const syncCompareSeqRef = useRef(0)
+  const [explorerView, setExplorerView] = useState<"list" | "icon">("list")
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -796,6 +799,26 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setSelectedFolder(fullPath)
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
+    }
+  }
+
+  async function handleCreateFolderInline(parentPath: string) {
+    const name = window.prompt(`在「${parentPath || "根目录"}」下新建文件夹：`, "新建文件夹")
+    if (!name || !name.trim()) return
+    const trimmed = name.trim()
+    const fullPath = parentPath ? `${parentPath}/${trimmed}` : trimmed
+    try {
+      setError(null)
+      const res = await fetch("/api/knowledge-base/folders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getKnowledgeBaseAuthHeaders() },
+        body: JSON.stringify({ path: fullPath }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      await refreshTree()
+    } catch (err: any) {
+      setError(err?.message || String(err))
     }
   }
 
@@ -1738,6 +1761,32 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             }} disabled={parentFolderPath === null} className={cn(isCyber && "border-cyan-500/40 text-cyan-200")}>
               返回上一级
             </Button>
+            <div className={cn("flex items-center rounded-md border", isCyber ? "border-cyan-500/30" : "border-border")}>
+              <button
+                type="button"
+                title="列表视图"
+                onClick={() => setExplorerView("list")}
+                className={cn("flex h-7 w-7 items-center justify-center rounded-l-md transition-colors",
+                  explorerView === "list"
+                    ? isCyber ? "bg-cyan-500/20 text-cyan-100" : "bg-muted text-foreground"
+                    : isCyber ? "text-cyan-300/60 hover:bg-cyan-500/10 hover:text-cyan-200" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                )}
+              >
+                <LayoutList className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title="图标视图"
+                onClick={() => setExplorerView("icon")}
+                className={cn("flex h-7 w-7 items-center justify-center rounded-r-md transition-colors",
+                  explorerView === "icon"
+                    ? isCyber ? "bg-cyan-500/20 text-cyan-100" : "bg-muted text-foreground"
+                    : isCyber ? "text-cyan-300/60 hover:bg-cyan-500/10 hover:text-cyan-200" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                )}
+              >
+                <LayoutGrid className="h-3.5 w-3.5" />
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1802,128 +1851,204 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           )}
         </div>
 
-        <div className={cn("overflow-hidden rounded-lg border", isCyber ? "border-cyan-500/15 bg-black/20" : "border-border bg-card") }>
-          <div className={cn("grid grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-xs font-medium", isCyber ? "border-cyan-500/15 bg-black/25 text-cyan-300/80" : "border-border bg-muted/40 text-muted-foreground")}>
-            {(["name", "updatedAt", "typeLabel", "size", "ownerName"] as const).map((col) => {
-              const labels: Record<string, string> = { name: "名称", updatedAt: "修改日期", typeLabel: "类型", size: "大小", ownerName: "上传者" }
-              const active = explorerSort.key === col
-              const Icon = active ? (explorerSort.dir === "asc" ? ChevronUp : ChevronDown) : ChevronsUpDown
-              return (
-                <button
-                  key={col}
-                  type="button"
-                  onClick={() => setExplorerSort((prev) => prev.key === col ? { key: col, dir: prev.dir === "asc" ? "desc" : "asc" } : { key: col, dir: col === "updatedAt" ? "desc" : "asc" })}
-                  className={cn("flex items-center gap-1 select-none transition-colors", isCyber ? "hover:text-cyan-100" : "hover:text-foreground", active && (isCyber ? "text-cyan-100" : "text-foreground"))}
-                >
-                  {labels[col]}
-                  <Icon className="h-3 w-3 shrink-0" />
-                </button>
-              )
-            })}
-          </div>
-          <div>
-            {sortedExplorerEntries.length > 0 ? (
-              sortedExplorerEntries.map((entry) => {
-                const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
-                const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
-                return (
-                  <ContextMenu key={entry.key}>
-                    <ContextMenuTrigger asChild>
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div className={cn("overflow-hidden rounded-lg border", isCyber ? "border-cyan-500/15 bg-black/20" : "border-border bg-card") }>
+              {explorerView === "list" && (
+                <div className={cn("grid grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-xs font-medium", isCyber ? "border-cyan-500/15 bg-black/25 text-cyan-300/80" : "border-border bg-muted/40 text-muted-foreground")}>
+                  {(["name", "updatedAt", "typeLabel", "size", "ownerName"] as const).map((col) => {
+                    const labels: Record<string, string> = { name: "名称", updatedAt: "修改日期", typeLabel: "类型", size: "大小", ownerName: "上传者" }
+                    const active = explorerSort.key === col
+                    const Icon = active ? (explorerSort.dir === "asc" ? ChevronUp : ChevronDown) : ChevronsUpDown
+                    return (
                       <button
+                        key={col}
                         type="button"
-                        onClick={() => {
-                          setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
-                          if (entry.kind === "file") {
-                            setSelectedDocument(entry.document)
-                          }
-                        }}
-                        onDoubleClick={() => handleExplorerEntryOpen(entry)}
-                        className={cn(
-                          "grid w-full grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-left text-sm transition-colors last:border-b-0",
-                          isCyber
-                            ? selected
-                              ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-50"
-                              : "border-cyan-500/10 text-cyan-100 hover:bg-cyan-500/5"
-                            : selected
-                              ? "border-border bg-primary/5 text-foreground"
-                              : "border-border text-foreground hover:bg-muted/50",
-                        )}
-                        title={entry.relativePath}
-                        disabled={busy}
+                        onClick={() => setExplorerSort((prev) => prev.key === col ? { key: col, dir: prev.dir === "asc" ? "desc" : "asc" } : { key: col, dir: col === "updatedAt" ? "desc" : "asc" })}
+                        className={cn("flex items-center gap-1 select-none transition-colors", isCyber ? "hover:text-cyan-100" : "hover:text-foreground", active && (isCyber ? "text-cyan-100" : "text-foreground"))}
                       >
-                        <div className="flex min-w-0 items-center gap-2">
-                          {entry.kind === "folder" ? (
-                            <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600")}>
-                              <FolderOpen className="h-4 w-4" />
-                            </span>
-                          ) : (
-                            (() => {
-                              const fileIcon = getExplorerFileIcon(entry.document.extension)
-                              const Icon = fileIcon.icon
-                              return (
-                                <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fileIcon.className)}>
-                                  <Icon className="h-4 w-4" />
-                                </span>
-                              )
-                            })()
-                          )}
-                          <span className="truncate">{entry.name}</span>
-                        </div>
-                        <div className="truncate">{formatDateTime(entry.updatedAt)}</div>
-                        <div className="truncate">{entry.typeLabel}</div>
-                        <div className="truncate">{entry.kind === "file" ? formatFileSize(entry.document.size) : formatFileSize(getFolderTotalSize(entry.folder))}</div>
-                        <div className="truncate">{entry.ownerName}</div>
+                        {labels[col]}
+                        <Icon className="h-3 w-3 shrink-0" />
                       </button>
-                    </ContextMenuTrigger>
-                    <ContextMenuContent className="w-44">
-                      {entry.kind === "folder" ? (
-                        <>
-                          <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
-                            <FolderOpen className="h-4 w-4" />
-                            打开
-                          </ContextMenuItem>
-                          <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
-                            <Pencil className="h-4 w-4" />
-                            重命名
-                          </ContextMenuItem>
-                          <ContextMenuSeparator />
-                          <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
-                            <Trash2 className="h-4 w-4" />
-                            删除
-                          </ContextMenuItem>
-                        </>
-                      ) : (
-                        <>
-                          <ContextMenuItem disabled={!entry.document.canPreview} onClick={() => handleExplorerEntryOpen(entry)}>
-                            <Eye className="h-4 w-4" />
-                            预览
-                          </ContextMenuItem>
-                          <ContextMenuItem onClick={() => window.open(buildFileUrl(entry.document.relativePath, true), "_blank") }>
-                            <Download className="h-4 w-4" />
-                            下载
-                          </ContextMenuItem>
-                          <ContextMenuItem disabled={!entry.document.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
-                            <Pencil className="h-4 w-4" />
-                            重命名
-                          </ContextMenuItem>
-                          <ContextMenuSeparator />
-                          <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
-                            <Trash2 className="h-4 w-4" />
-                            删除
-                          </ContextMenuItem>
-                        </>
-                      )}
-                    </ContextMenuContent>
-                  </ContextMenu>
-                )
-              })
-            ) : (
-              <div className={cn("px-3 py-6 text-sm", isCyber ? "text-cyan-300/70" : "text-muted-foreground")}>
-                当前目录暂无文件夹或文件。
-              </div>
-            )}
-          </div>
-        </div>
+                    )
+                  })}
+                </div>
+              )}
+              {explorerView === "list" ? (
+                <div>
+                  {sortedExplorerEntries.length > 0 ? (
+                    sortedExplorerEntries.map((entry) => {
+                      const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
+                      const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
+                      return (
+                        <ContextMenu key={entry.key}>
+                          <ContextMenuTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
+                                if (entry.kind === "file") setSelectedDocument(entry.document)
+                              }}
+                              onDoubleClick={() => handleExplorerEntryOpen(entry)}
+                              className={cn(
+                                "grid w-full grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-left text-sm transition-colors last:border-b-0",
+                                isCyber
+                                  ? selected ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-50" : "border-cyan-500/10 text-cyan-100 hover:bg-cyan-500/5"
+                                  : selected ? "border-border bg-primary/5 text-foreground" : "border-border text-foreground hover:bg-muted/50",
+                              )}
+                              title={entry.relativePath}
+                              disabled={busy}
+                            >
+                              <div className="flex min-w-0 items-center gap-2">
+                                {entry.kind === "folder" ? (
+                                  <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600")}>
+                                    <FolderOpen className="h-4 w-4" />
+                                  </span>
+                                ) : (() => {
+                                  const fi = getExplorerFileIcon(entry.document.extension)
+                                  return <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fi.className)}><fi.icon className="h-4 w-4" /></span>
+                                })()}
+                                <span className="truncate">{entry.name}</span>
+                              </div>
+                              <div className="truncate">{formatDateTime(entry.updatedAt)}</div>
+                              <div className="truncate">{entry.typeLabel}</div>
+                              <div className="truncate">{entry.kind === "file" ? formatFileSize(entry.document.size) : formatFileSize(getFolderTotalSize(entry.folder))}</div>
+                              <div className="truncate">{entry.ownerName}</div>
+                            </button>
+                          </ContextMenuTrigger>
+                          <ContextMenuContent className="w-48">
+                            {entry.kind === "folder" ? (
+                              <>
+                                <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
+                                  <FolderOpen className="h-4 w-4" />打开
+                                </ContextMenuItem>
+                                <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath)}>
+                                  <FolderPlus className="h-4 w-4" />新建文件夹
+                                </ContextMenuItem>
+                                <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
+                                  <Pencil className="h-4 w-4" />重命名
+                                </ContextMenuItem>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
+                                  <Trash2 className="h-4 w-4" />删除
+                                </ContextMenuItem>
+                              </>
+                            ) : (
+                              <>
+                                <ContextMenuItem disabled={!entry.document.canPreview} onClick={() => handleExplorerEntryOpen(entry)}>
+                                  <Eye className="h-4 w-4" />预览
+                                </ContextMenuItem>
+                                <ContextMenuItem onClick={() => window.open(buildFileUrl(entry.document.relativePath, true), "_blank")}>
+                                  <Download className="h-4 w-4" />下载
+                                </ContextMenuItem>
+                                <ContextMenuItem disabled={!entry.document.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
+                                  <Pencil className="h-4 w-4" />重命名
+                                </ContextMenuItem>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
+                                  <Trash2 className="h-4 w-4" />删除
+                                </ContextMenuItem>
+                              </>
+                            )}
+                          </ContextMenuContent>
+                        </ContextMenu>
+                      )
+                    })
+                  ) : (
+                    <div className={cn("px-3 py-6 text-sm", isCyber ? "text-cyan-300/70" : "text-muted-foreground")}>当前目录暂无文件夹或文件。</div>
+                  )}
+                </div>
+              ) : (
+                /* Icon grid view */
+                <div className="p-3">
+                  {sortedExplorerEntries.length > 0 ? (
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-2">
+                      {sortedExplorerEntries.map((entry) => {
+                        const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
+                        const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
+                        return (
+                          <ContextMenu key={entry.key}>
+                            <ContextMenuTrigger asChild>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
+                                  if (entry.kind === "file") setSelectedDocument(entry.document)
+                                }}
+                                onDoubleClick={() => handleExplorerEntryOpen(entry)}
+                                disabled={busy}
+                                title={entry.relativePath}
+                                className={cn(
+                                  "flex flex-col items-center gap-1.5 rounded-lg p-2 text-center transition-colors",
+                                  isCyber
+                                    ? selected ? "bg-cyan-500/15 text-cyan-50 ring-1 ring-cyan-400/40" : "text-cyan-100 hover:bg-cyan-500/8"
+                                    : selected ? "bg-primary/8 text-foreground ring-1 ring-primary/30" : "text-foreground hover:bg-muted/60",
+                                )}
+                              >
+                                {entry.kind === "folder" ? (
+                                  <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600")}>
+                                    <FolderOpen className="h-7 w-7" />
+                                  </span>
+                                ) : (() => {
+                                  const fi = getExplorerFileIcon(entry.document.extension)
+                                  return <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", fi.className)}><fi.icon className="h-7 w-7" /></span>
+                                })()}
+                                <span className="line-clamp-2 w-full break-all text-xs leading-tight">{entry.name}</span>
+                              </button>
+                            </ContextMenuTrigger>
+                            <ContextMenuContent className="w-48">
+                              {entry.kind === "folder" ? (
+                                <>
+                                  <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
+                                    <FolderOpen className="h-4 w-4" />打开
+                                  </ContextMenuItem>
+                                  <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath)}>
+                                    <FolderPlus className="h-4 w-4" />新建文件夹
+                                  </ContextMenuItem>
+                                  <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
+                                    <Pencil className="h-4 w-4" />重命名
+                                  </ContextMenuItem>
+                                  <ContextMenuSeparator />
+                                  <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
+                                    <Trash2 className="h-4 w-4" />删除
+                                  </ContextMenuItem>
+                                </>
+                              ) : (
+                                <>
+                                  <ContextMenuItem disabled={!entry.document.canPreview} onClick={() => handleExplorerEntryOpen(entry)}>
+                                    <Eye className="h-4 w-4" />预览
+                                  </ContextMenuItem>
+                                  <ContextMenuItem onClick={() => window.open(buildFileUrl(entry.document.relativePath, true), "_blank")}>
+                                    <Download className="h-4 w-4" />下载
+                                  </ContextMenuItem>
+                                  <ContextMenuItem disabled={!entry.document.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
+                                    <Pencil className="h-4 w-4" />重命名
+                                  </ContextMenuItem>
+                                  <ContextMenuSeparator />
+                                  <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
+                                    <Trash2 className="h-4 w-4" />删除
+                                  </ContextMenuItem>
+                                </>
+                              )}
+                            </ContextMenuContent>
+                          </ContextMenu>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <div className={cn("py-6 text-center text-sm", isCyber ? "text-cyan-300/70" : "text-muted-foreground")}>当前目录暂无文件夹或文件。</div>
+                  )}
+                </div>
+              )}
+            </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="w-48">
+            <ContextMenuItem onClick={() => void handleCreateFolderInline(selectedFolder)}>
+              <FolderPlus className="h-4 w-4" />
+              在此新建文件夹
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
       </div>
     )
   }
@@ -1956,12 +2081,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         title: "上传资料",
         description: "向当前目录添加新的知识库文件。",
         icon: Upload,
-      },
-      {
-        key: "folder" as const,
-        title: "新建文件夹",
-        description: "管理资料结构，扩展新的主题目录。",
-        icon: FolderPlus,
       },
       {
         key: "sync" as const,
@@ -2177,21 +2296,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       </div>
                     )}
                     <div className="text-xs text-muted-foreground">批量上传会保留所选文件夹的层级结构，统一导入到目标目录下。</div>
-                  </div>
-                )}
-
-                {traditionalPanel === "folder" && (
-                  <div className="space-y-4">
-                    <Input
-                      value={newFolderName}
-                      onChange={(event) => setNewFolderName(event.target.value)}
-                      placeholder={selectedFolder ? `在 ${selectedFolder} 下创建文件夹` : "新建一级文件夹"}
-                    />
-                    <div className="text-sm text-muted-foreground">新目录位置：{selectedFolder || "根目录 / 全部资料"}</div>
-                    <Button onClick={() => void handleCreateFolder()}>
-                      <FolderPlus className="h-4 w-4" />
-                      新建文件夹
-                    </Button>
                   </div>
                 )}
 
@@ -2630,19 +2734,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 <CardDescription>服务器目录：{storageRoot || "加载中..."}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-                  <Input
-                    value={newFolderName}
-                    onChange={(event) => setNewFolderName(event.target.value)}
-                    placeholder={selectedFolder ? `在 ${selectedFolder} 下创建文件夹` : "新建一级文件夹"}
-                    className="border-cyan-500/25 bg-black/30 text-cyan-100"
-                  />
-                  <Button className="bg-cyan-600 hover:bg-cyan-500" onClick={() => void handleCreateFolder()}>
-                    <FolderPlus className="h-4 w-4" />
-                    新建文件夹
-                  </Button>
-                </div>
-
                 <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
                   <Input
                     ref={singleUploadInputRef}
