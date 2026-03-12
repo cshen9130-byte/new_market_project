@@ -474,6 +474,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [syncPreviewItems, setSyncPreviewItems] = useState<Array<{ relPath: string; status: "new" | "changed" | "same"; localSize: number; serverSize: number | null }> | null>(null)
   const [syncPendingFiles, setSyncPendingFiles] = useState<Array<{ file: File; strippedPath: string }> | null>(null)
   const [syncLocalDirUpdatedAt, setSyncLocalDirUpdatedAt] = useState<Date | null>(null)
+  const [syncComparing, setSyncComparing] = useState(false)
+  const syncCompareSeqRef = useRef(0)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
@@ -915,9 +917,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         setSyncPreviewItems(null)
         setSyncPendingFiles(null)
         setSyncLocalDirUpdatedAt(new Date())
-        // Auto-compare if server folder already selected (pass handle directly since React state is async)
+        // Auto-compare (fire-and-forget so state updates render immediately)
         if (syncServerFolder !== null) {
-          await handleCompare(handle, null)
+          void handleCompare(handle, null)
         }
       } catch (err: any) {
         if (err?.name !== "AbortError") setError(err?.message || String(err))
@@ -985,11 +987,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     const activeWebkitFiles = overrideWebkitFiles !== undefined ? overrideWebkitFiles : syncWebkitFiles
     const hasLocal = activeDirHandle !== null || activeWebkitFiles !== null
     if (!hasLocal || syncServerFolder === null) return
+    const seq = ++syncCompareSeqRef.current
     try {
       setError(null)
+      setSyncComparing(true)
       setSyncPreviewItems(null)
       setSyncPendingFiles(null)
       const localFiles = activeWebkitFiles ?? await collectLocalFiles(activeDirHandle!)
+      if (seq !== syncCompareSeqRef.current) return // stale compare — a newer one superseded us
       const serverFileMap = new Map<string, number>(syncServerFiles.map((sf) => [sf.relPath, sf.size]))
       const preview: Array<{ relPath: string; status: "new" | "changed" | "same"; localSize: number; serverSize: number | null }> = []
       const pending: Array<{ file: File; strippedPath: string }> = []
@@ -999,10 +1004,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         preview.push({ relPath, status, localSize: file.size, serverSize })
         if (status !== "same") pending.push({ file, strippedPath: relPath })
       }
+      if (seq !== syncCompareSeqRef.current) return
       setSyncPreviewItems(preview)
       setSyncPendingFiles(pending)
     } catch (err: any) {
-      setError(err?.message || String(err))
+      if (seq === syncCompareSeqRef.current) setError(err?.message || String(err))
+    } finally {
+      if (seq === syncCompareSeqRef.current) setSyncComparing(false)
     }
   }
 
@@ -1098,7 +1106,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         const granted = await handleWithPerm.requestPermission?.({ mode: "readwrite" })
         if (granted !== "granted") {
           setError("需要文件写入权限。请在浏览器弹出的对话框中点击「允许」，或点击①重新选择本地文件夹。")
-          setSyncLocalDirHandle(null)
           return
         }
       }
@@ -2225,9 +2232,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         )}
 
                         {syncServerFolder !== null && (syncLocalDirHandle !== null || syncWebkitFiles !== null) && (
-                          <Button size="sm" variant="outline" disabled={syncing} onClick={() => void handleCompare()}>
-                            <RefreshCw className="h-4 w-4" />
-                            对比
+                          <Button size="sm" variant="outline" disabled={syncing || syncComparing} onClick={() => void handleCompare()}>
+                            <RefreshCw className={cn("h-4 w-4", syncComparing && "animate-spin")} />
+                            {syncComparing ? "正在对比..." : "对比"}
                           </Button>
                         )}
 
