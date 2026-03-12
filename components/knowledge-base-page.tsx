@@ -1600,6 +1600,47 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  function handleDownloadConversation() {
+    const userMessages = chatMessages.filter((m) => m.role === "user")
+    if (userMessages.length === 0) return
+
+    const scope = selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料")
+    const activeConv = conversations.find((c) => c.id === activeConversationId)
+    const title = activeConv?.title || "知识库对话"
+    const dateStr = new Date().toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
+
+    const lines: string[] = [
+      `📚 ${title}`,
+      `检索范围：${scope}`,
+      `导出时间：${dateStr}`,
+      "─".repeat(40),
+      "",
+    ]
+
+    for (const msg of chatMessages) {
+      if (msg.role === "user") {
+        lines.push(`🙋 我：`)
+        lines.push(msg.content)
+      } else {
+        lines.push(`🤖 AI：`)
+        lines.push(msg.content)
+        if (msg.sources && msg.sources.length > 0) {
+          lines.push(`来源：${msg.sources.join("、")}`)
+        }
+      }
+      lines.push("")
+    }
+
+    const text = lines.join("\n")
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${title.replace(/[/\\:*?"<>|]/g, "_")}_${new Date().toISOString().slice(0, 10)}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   function handleStop() {
     abortControllerRef.current?.abort()
   }
@@ -2573,6 +2614,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   variant="ghost"
                   size="sm"
                   className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={handleDownloadConversation}
+                  disabled={!chatMessages.some((m) => m.role === "user")}
+                  title="下载当前对话"
+                >
+                  <Download className="h-4 w-4" />
+                  分享
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
                   onClick={handleToggleSettingsSidebar}
                   title="检索设置"
                 >
@@ -2989,6 +3041,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 >
                   <History className="h-4 w-4" />
                   历史记录
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
+                  onClick={handleDownloadConversation}
+                  disabled={!chatMessages.some((m) => m.role === "user")}
+                  title="下载当前对话为文本文件"
+                >
+                  <Download className="h-4 w-4" />
+                  分享
                 </Button>
               </div>
             </CardHeader>
