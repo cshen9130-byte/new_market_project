@@ -35,7 +35,7 @@ export async function GET(req: Request) {
     )
 
     if (!rows.length) {
-      return NextResponse.json({ error: "No data" }, { status: 404 })
+      return NextResponse.json({ data: [], latest: null, start_date: null, end_date: null })
     }
 
     const data = rows.map((r) => ({

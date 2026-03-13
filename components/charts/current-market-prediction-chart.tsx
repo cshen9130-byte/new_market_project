@@ -167,6 +167,11 @@ export default function CurrentMarketPredictionChart() {
           <div className="h-[420px] flex items-center justify-center text-sm text-muted-foreground">加载中...</div>
         ) : error ? (
           <div className="h-[420px] flex items-center justify-center text-sm text-destructive">{error}</div>
+        ) : !rows.length ? (
+          <div className="h-[420px] flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+            <span>暂无{FREQ_LABELS[freq]}预测数据</span>
+            <span className="text-xs opacity-60">请在服务器运行：python3 scripts/ma/predict_market_cluster.py --freq {freq}</span>
+          </div>
         ) : (
           <ReactECharts option={option} style={{ height: "420px", width: "100%" }} />
         )}
