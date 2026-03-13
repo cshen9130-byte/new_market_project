@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
 
 type Point = {
   date: string
@@ -11,11 +12,21 @@ type Point = {
   pc2: number | null
 }
 
+type Freq = "daily" | "weekly" | "monthly"
+
+const FREQ_LABELS: Record<Freq, string> = { daily: "日线", weekly: "周线", monthly: "月线" }
+const FREQ_DESC:   Record<Freq, string> = {
+  daily:   "近一年，日频数据",
+  weekly:  "近两年，周频数据",
+  monthly: "近四年，月频数据",
+}
+
 // Colours mirror plot_current_prediction.py
 const CLUSTER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 const CLUSTER_LABELS = ["簇 0", "簇 1", "簇 2", "簇 3"]
 
 export default function CurrentMarketPredictionChart() {
+  const [freq, setFreq] = useState<Freq>("daily")
   const [rows, setRows] = useState<Point[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -26,7 +37,7 @@ export default function CurrentMarketPredictionChart() {
       setLoading(true)
       setError(null)
       try {
-        const res = await fetch("/ma/api/macro/current-market-prediction?days=365", { cache: "no-store" })
+        const res = await fetch(`/ma/api/macro/current-market-prediction?freq=${freq}`, { cache: "no-store" })
         const json = await res.json()
         if (!res.ok || !json.data) throw new Error(json.error || "failed")
         if (!cancelled) setRows(json.data)
@@ -38,7 +49,7 @@ export default function CurrentMarketPredictionChart() {
     }
     load()
     return () => { cancelled = true }
-  }, [])
+  }, [freq])
 
   const latest = useMemo(() => rows[rows.length - 1], [rows])
 
@@ -72,18 +83,20 @@ export default function CurrentMarketPredictionChart() {
             name: "最新交易日",
             type: "scatter" as const,
             data: [[latest.pc1, latest.pc2, latest.date]],
-            symbolSize: 22,
-            symbol: "pin",
+            symbolSize: 28,
+            symbol: "circle",
             itemStyle: {
-              color: latest.cluster !== null ? CLUSTER_COLORS[Math.min(3, Math.max(0, latest.cluster))] : "#000",
-              borderColor: "#fff",
-              borderWidth: 2,
+              color: "transparent",
+              borderColor: "#e00",
+              borderWidth: 3,
             },
             label: {
               show: true,
-              formatter: `${latest.date}\n簇 ${latest.cluster}`,
+              formatter: `${latest.date}  簇 ${latest.cluster}`,
               position: "top" as const,
               fontSize: 11,
+              color: "#e00",
+              fontWeight: "bold" as const,
             },
             z: 10,
             tooltip: {
@@ -123,11 +136,31 @@ export default function CurrentMarketPredictionChart() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>当前市场状态预测</CardTitle>
-        <CardDescription>
-          PCA 空间中的市场聚类分布（近一年）
-          {latest ? ` · 最新 ${latest.date}，所属簇 ${latest.cluster ?? "—"}` : ""}
-        </CardDescription>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle>当前市场状态预测</CardTitle>
+            <CardDescription>
+              PCA 空间中的市场聚类分布（{FREQ_DESC[freq]}）
+              {latest ? ` · 最新 ${latest.date}，所属簇 ${latest.cluster ?? "—"}` : ""}
+            </CardDescription>
+          </div>
+          <div className="flex shrink-0 gap-1 mt-0.5">
+            {(Object.keys(FREQ_LABELS) as Freq[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => setFreq(f)}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  freq === f
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {FREQ_LABELS[f]}
+              </button>
+            ))}
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
         {loading ? (

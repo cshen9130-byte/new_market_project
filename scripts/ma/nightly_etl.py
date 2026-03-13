@@ -1055,40 +1055,43 @@ def step_predict_market_cluster(
     conn,
     trade_date: date | None,
     *,
+    freq: str = "daily",
     force: bool = False,
 ) -> int:
     """
     Call predict_market_cluster.py to generate GMM cluster predictions.
 
-    trade_date=None  →  predict all dates that don't yet have a row
+    trade_date=None  →  predict all dates that don't yet have a row for this freq
                         (used during initial backfill)
     trade_date=<date> →  predict just that one date (nightly mode)
     """
     if not force and trade_date is not None:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM current_market_prediction WHERE trade_date = %s",
-                (trade_date,),
+                "SELECT 1 FROM current_market_prediction WHERE trade_date = %s AND freq = %s",
+                (trade_date, freq),
             )
             if cur.fetchone():
-                log.info("Market prediction for %s already exists, skipping.", trade_date)
+                log.info("Market prediction (%s) for %s already exists, skipping.", freq, trade_date)
                 return 0
 
     label = iso(trade_date) if trade_date else "all missing dates"
-    log.info("Predicting market cluster: %s …", label)
+    log.info("Predicting market cluster (%s): %s …", freq, label)
 
-    extra_args = [iso(trade_date), iso(trade_date)] if trade_date else []
+    extra_args: list[str] = ["--freq", freq]
+    if trade_date:
+        extra_args += [iso(trade_date), iso(trade_date)]
     out = run_script("predict_market_cluster.py", extra_args=extra_args, timeout=300)
     if not out or out.get("error"):
-        raise RuntimeError(f"Market prediction failed: {out}")
+        raise RuntimeError(f"Market prediction ({freq}) failed: {out}")
 
     predictions = out.get("data") or []
     if not predictions:
-        log.info("No new predictions returned.")
+        log.info("No new predictions returned for freq=%s.", freq)
         return 0
 
     records = [
-        (r["date"], r["cluster"], r["pc1"], r["pc2"])
+        (r["date"], r["cluster"], r["pc1"], r["pc2"], r.get("freq", freq))
         for r in predictions
         if r.get("date") and r.get("cluster") is not None
     ]
@@ -1096,9 +1099,9 @@ def step_predict_market_cluster(
         execute_values(
             cur,
             """
-            INSERT INTO current_market_prediction (trade_date, cluster, pc1, pc2)
+            INSERT INTO current_market_prediction (trade_date, cluster, pc1, pc2, freq)
             VALUES %s
-            ON CONFLICT (trade_date) DO UPDATE
+            ON CONFLICT (trade_date, freq) DO UPDATE
                 SET cluster     = EXCLUDED.cluster,
                     pc1         = EXCLUDED.pc1,
                     pc2         = EXCLUDED.pc2,
@@ -1107,7 +1110,7 @@ def step_predict_market_cluster(
             records,
         )
     conn.commit()
-    log.info("Market prediction: upserted %d rows.", len(records))
+    log.info("Market prediction (%s): upserted %d rows.", freq, len(records))
     return len(records)
 
 
@@ -1140,8 +1143,10 @@ ORDERED_STEPS = [
     "derive_basis",
     "derive_basis_cont",
     "repair_settle_returns",
-    "etf_prices",           # must run before predict_market_cluster
-    "predict_market_cluster",
+    "etf_prices",                   # must run before predict steps
+    "predict_market_cluster",       # daily
+    "predict_market_cluster_weekly",
+    "predict_market_cluster_monthly",
 ]
 
 
@@ -1181,12 +1186,13 @@ def run_backfill(conn, trade_date: date):
         log_run(conn, JOB_NAME, "backfill_etf", "failed", trade_date, error=str(exc))
 
     # Run predictions for all newly backfilled dates
-    try:
-        step_predict_market_cluster(conn, None, force=False)
-        log_run(conn, JOB_NAME, "backfill_predict_cluster", "success", trade_date)
-    except Exception as exc:
-        log.warning("Market prediction backfill failed (non-fatal): %s", exc)
-        log_run(conn, JOB_NAME, "backfill_predict_cluster", "failed", trade_date, error=str(exc))
+    for freq in ("daily", "weekly", "monthly"):
+        try:
+            step_predict_market_cluster(conn, None, freq=freq, force=False)
+            log_run(conn, JOB_NAME, f"backfill_predict_cluster_{freq}", "success", trade_date)
+        except Exception as exc:
+            log.warning("Market prediction backfill (%s) failed (non-fatal): %s", freq, exc)
+            log_run(conn, JOB_NAME, f"backfill_predict_cluster_{freq}", "failed", trade_date, error=str(exc))
 
 
 def main():
@@ -1234,10 +1240,9 @@ def main():
         "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
         "etf_prices":            lambda: step_etf_prices(conn, td, force=force),
-        # Pass trade_date=None so the script catches up ALL missing dates, not
-        # just today.  It checks the DB for already-predicted rows and skips
-        # them, so nightly runs stay fast while any historical gaps get filled.
-        "predict_market_cluster": lambda: step_predict_market_cluster(conn, None, force=force),
+        "predict_market_cluster":         lambda: step_predict_market_cluster(conn, None, freq="daily",   force=force),
+        "predict_market_cluster_weekly":   lambda: step_predict_market_cluster(conn, None, freq="weekly",  force=force),
+        "predict_market_cluster_monthly":  lambda: step_predict_market_cluster(conn, None, freq="monthly", force=force),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS

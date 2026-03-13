@@ -23,10 +23,16 @@ Output JSON schema
 {
   "count": <int>,
   "data": [
-    { "date": "YYYY-MM-DD", "cluster": 2, "pc1": 0.1234, "pc2": -0.5678 },
+    { "date": "YYYY-MM-DD", "cluster": 2, "pc1": 0.1234, "pc2": -0.5678, "freq": "daily" },
     ...
   ]
 }
+
+Frequency modes (--freq)
+------------------------
+  daily   — one log return per trading day (default)
+  weekly  — prices resampled to week-end (last price per calendar week)
+  monthly — prices resampled to month-end (last price per calendar month)
 """
 
 from __future__ import annotations
@@ -117,9 +123,24 @@ def _parse_date(s: str) -> date:
 
 # ── main ──────────────────────────────────────────────────────────────────────
 def main() -> None:
-    args = sys.argv[1:]
-    start_dt: date | None = _parse_date(args[0]) if len(args) >= 1 else None
-    end_dt:   date | None = _parse_date(args[1]) if len(args) >= 2 else start_dt
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Predict market cluster via GMM on PCA-reduced log returns."
+    )
+    parser.add_argument(
+        "--freq",
+        choices=["daily", "weekly", "monthly"],
+        default="daily",
+        help="Return frequency: daily, weekly, or monthly (default: daily)",
+    )
+    parser.add_argument("start_date", nargs="?", help="Start date YYYYMMDD or YYYY-MM-DD")
+    parser.add_argument("end_date",   nargs="?", help="End date   YYYYMMDD or YYYY-MM-DD")
+    pargs = parser.parse_args()
+
+    freq      = pargs.freq
+    start_dt: date | None = _parse_date(pargs.start_date) if pargs.start_date else None
+    end_dt:   date | None = _parse_date(pargs.end_date)   if pargs.end_date   else start_dt
 
     # ── locate model directory ─────────────────────────────────────────────────
     script_dir   = Path(__file__).resolve().parent        # scripts/ma/
@@ -211,6 +232,13 @@ def main() -> None:
         wide = wide.astype(float)
         wide = wide.dropna()
 
+        # ── resample prices to the requested frequency ────────────────────────
+        if freq == "weekly":
+            wide = wide.resample("W").last().dropna()
+        elif freq == "monthly":
+            wide = wide.resample("ME").last().dropna()
+        # (daily: no resampling needed)
+
         # ── compute log returns ────────────────────────────────────────────────
         log_ret = np.log(wide / wide.shift(1)).dropna()
         log_ret = log_ret[available_cols]
@@ -223,9 +251,12 @@ def main() -> None:
         elif start_dt is not None:
             target = log_ret[log_ret.index >= pd.Timestamp(start_dt)]
         else:
-            # Default: all dates not yet in current_market_prediction
+            # Default: all dates not yet in current_market_prediction for this freq
             with conn.cursor() as cur:
-                cur.execute("SELECT trade_date FROM current_market_prediction")
+                cur.execute(
+                    "SELECT trade_date FROM current_market_prediction WHERE freq = %s",
+                    (freq,),
+                )
                 already_done = {
                     pd.Timestamp(r[0]) for r in cur.fetchall()
                 }
@@ -248,6 +279,7 @@ def main() -> None:
                 "cluster": int(clusters[i]),
                 "pc1":     float(pcs[i, 0]),
                 "pc2":     float(pcs[i, 1]),
+                "freq":    freq,
             }
             for i, (idx, _) in enumerate(target.iterrows())
         ]
