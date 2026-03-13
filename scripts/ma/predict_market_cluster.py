@@ -262,8 +262,12 @@ def main() -> None:
             target   = log_ret[(log_ret.index >= start_ts) & (log_ret.index <= end_ts)]
         elif start_dt is not None:
             target = log_ret[log_ret.index >= pd.Timestamp(start_dt)]
+        elif save_to_db:
+            # Running directly with save_to_db: predict ALL dates and upsert
+            # (no skipping — we want a complete fresh set)
+            target = log_ret
         else:
-            # Default: all dates not yet in current_market_prediction for this freq
+            # nightly_etl (--no-save mode): only predict dates not yet in DB
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT trade_date FROM current_market_prediction WHERE freq = %s",
@@ -300,12 +304,6 @@ def main() -> None:
         if save_to_db and results:
             try:
                 from psycopg2.extras import execute_values  # type: ignore[import-untyped]
-                # First delete any existing rows for this freq so we replace stale dates
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "DELETE FROM current_market_prediction WHERE freq = %s",
-                        (freq,),
-                    )
                 records = [(r["date"], r["cluster"], r["pc1"], r["pc2"], r["freq"]) for r in results]
                 with conn.cursor() as cur:
                     execute_values(
