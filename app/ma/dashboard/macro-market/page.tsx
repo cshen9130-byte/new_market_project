@@ -14,6 +14,7 @@ import {
   Area,
   AreaChart,
 } from "recharts"
+import CurrentMarketPredictionChart from "@/components/charts/current-market-prediction-chart"
 
 // Placeholder data - replace with real API data
 const interestRateData = [
@@ -151,6 +152,8 @@ export default function Page() {
           </ChartContainer>
         </CardContent>
       </Card>
+
+      <CurrentMarketPredictionChart />
     </div>
   )
 }

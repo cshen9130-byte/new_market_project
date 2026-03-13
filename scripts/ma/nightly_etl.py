@@ -960,6 +960,158 @@ def step_compute_basis_cont_daily(conn, *, force: bool = False) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# STEP 7 — ETF daily prices  (EmQuant / Choice API)
+# Column order must match training data: 510300.SH 510500.SH 511010.SH
+#                                         511220.SH 511880.SH 518880.SH
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def step_etf_prices(conn, trade_date: date, *, force: bool = False) -> int:
+    """Fetch ORIGINALUNIT prices for the 6 model-input ETFs for one trade_date."""
+    if not force:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(DISTINCT ticker) FROM raw_etf_daily WHERE trade_date = %s",
+                (trade_date,),
+            )
+            count = cur.fetchone()[0]
+        if count >= 6:
+            log.info("ETF prices for %s already in DB (%d tickers), skipping.", trade_date, count)
+            return 0
+
+    log.info("Fetching ETF prices for %s …", trade_date)
+    out = run_script("get_etf_prices.py", extra_args=[iso(trade_date), iso(trade_date)])
+    if not out or out.get("error"):
+        raise RuntimeError(f"ETF price fetch failed: {out}")
+
+    items = out.get("data") or []
+    if not items:
+        log.warning("ETF prices: no data returned for %s.", trade_date)
+        return 0
+
+    records = [
+        (item["date"], item["ticker"], item.get("field", "ORIGINALUNIT"), item["value"], "emquant")
+        for item in items
+        if item.get("date") and item.get("ticker") and item.get("value") is not None
+    ]
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_etf_daily (trade_date, ticker, field, value, source)
+            VALUES %s
+            ON CONFLICT (trade_date, ticker, field) DO UPDATE
+                SET value = EXCLUDED.value, fetched_at = NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("ETF prices: upserted %d rows for %s.", len(records), trade_date)
+    return len(records)
+
+
+def step_etf_backfill(conn, start: date, end: date) -> int:
+    """Bulk-load ETF prices for a date range (used during initial backfill)."""
+    log.info("ETF backfill %s → %s …", start, end)
+    out = run_script(
+        "get_etf_prices.py",
+        extra_args=[iso(start), iso(end)],
+        timeout=600,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"ETF backfill failed: {out}")
+
+    items = out.get("data") or []
+    if not items:
+        log.warning("ETF backfill: no data returned.")
+        return 0
+
+    records = [
+        (item["date"], item["ticker"], item.get("field", "ORIGINALUNIT"), item["value"], "emquant")
+        for item in items
+        if item.get("date") and item.get("ticker") and item.get("value") is not None
+    ]
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_etf_daily (trade_date, ticker, field, value, source)
+            VALUES %s
+            ON CONFLICT (trade_date, ticker, field) DO UPDATE
+                SET value = EXCLUDED.value, fetched_at = NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("ETF backfill: upserted %d rows.", len(records))
+    return len(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 8 — Market cluster prediction  (scaler → PCA → GMM)
+# Requires raw_etf_daily + raw_nhci_daily to be populated first.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def step_predict_market_cluster(
+    conn,
+    trade_date: date | None,
+    *,
+    force: bool = False,
+) -> int:
+    """
+    Call predict_market_cluster.py to generate GMM cluster predictions.
+
+    trade_date=None  →  predict all dates that don't yet have a row
+                        (used during initial backfill)
+    trade_date=<date> →  predict just that one date (nightly mode)
+    """
+    if not force and trade_date is not None:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM current_market_prediction WHERE trade_date = %s",
+                (trade_date,),
+            )
+            if cur.fetchone():
+                log.info("Market prediction for %s already exists, skipping.", trade_date)
+                return 0
+
+    label = iso(trade_date) if trade_date else "all missing dates"
+    log.info("Predicting market cluster: %s …", label)
+
+    extra_args = [iso(trade_date), iso(trade_date)] if trade_date else []
+    out = run_script("predict_market_cluster.py", extra_args=extra_args, timeout=300)
+    if not out or out.get("error"):
+        raise RuntimeError(f"Market prediction failed: {out}")
+
+    predictions = out.get("data") or []
+    if not predictions:
+        log.info("No new predictions returned.")
+        return 0
+
+    records = [
+        (r["date"], r["cluster"], r["pc1"], r["pc2"])
+        for r in predictions
+        if r.get("date") and r.get("cluster") is not None
+    ]
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO current_market_prediction (trade_date, cluster, pc1, pc2)
+            VALUES %s
+            ON CONFLICT (trade_date) DO UPDATE
+                SET cluster     = EXCLUDED.cluster,
+                    pc1         = EXCLUDED.pc1,
+                    pc2         = EXCLUDED.pc2,
+                    computed_at = NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("Market prediction: upserted %d rows.", len(records))
+    return len(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -988,11 +1140,16 @@ ORDERED_STEPS = [
     "derive_basis",
     "derive_basis_cont",
     "repair_settle_returns",
+    "etf_prices",           # must run before predict_market_cluster
+    "predict_market_cluster",
 ]
 
 
 def _needs_backfill(conn: object) -> bool:
-    return row_count(conn, "raw_futures_daily") == 0
+    return (
+        row_count(conn, "raw_futures_daily") == 0
+        or row_count(conn, "raw_etf_daily") == 0
+    )
 
 
 def run_backfill(conn, trade_date: date):
@@ -1013,6 +1170,23 @@ def run_backfill(conn, trade_date: date):
     except Exception as exc:
         log.warning("Futures range backfill failed (non-fatal): %s", exc)
         log_run(conn, JOB_NAME, "backfill_futures", "failed", trade_date, error=str(exc))
+
+    # Backfill last-year ETF prices used by the market-prediction model
+    etf_start = trade_date - timedelta(days=365)
+    try:
+        step_etf_backfill(conn, etf_start, trade_date)
+        log_run(conn, JOB_NAME, "backfill_etf", "success", trade_date)
+    except Exception as exc:
+        log.warning("ETF backfill failed (non-fatal): %s", exc)
+        log_run(conn, JOB_NAME, "backfill_etf", "failed", trade_date, error=str(exc))
+
+    # Run predictions for all newly backfilled dates
+    try:
+        step_predict_market_cluster(conn, None, force=False)
+        log_run(conn, JOB_NAME, "backfill_predict_cluster", "success", trade_date)
+    except Exception as exc:
+        log.warning("Market prediction backfill failed (non-fatal): %s", exc)
+        log_run(conn, JOB_NAME, "backfill_predict_cluster", "failed", trade_date, error=str(exc))
 
 
 def main():
@@ -1059,6 +1233,8 @@ def main():
         "derive_basis":          lambda: step_compute_basis_daily(conn, force=force),
         "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
+        "etf_prices":            lambda: step_etf_prices(conn, td, force=force),
+        "predict_market_cluster": lambda: step_predict_market_cluster(conn, td, force=force),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS

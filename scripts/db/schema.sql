@@ -181,3 +181,41 @@ CREATE INDEX IF NOT EXISTS pipeline_runs_started_idx
     ON pipeline_runs (started_at DESC);
 CREATE INDEX IF NOT EXISTS pipeline_runs_status_idx
     ON pipeline_runs (status);
+
+
+-- =============================================================
+-- MARKET PREDICTION  (current_market_prediction model)
+-- =============================================================
+
+-- Raw daily prices for the 6 ETFs used by the scaler/PCA/GMM pipeline.
+-- Tickers: 510300.SH 510500.SH 511010.SH 511220.SH 511880.SH 518880.SH
+-- Field is always ORIGINALUNIT (adjusted NAV).  Source: EmQuant / Choice API.
+CREATE TABLE IF NOT EXISTS raw_etf_daily (
+    id          BIGSERIAL     PRIMARY KEY,
+    trade_date  DATE          NOT NULL,
+    ticker      VARCHAR(20)   NOT NULL,
+    field       VARCHAR(30)   NOT NULL DEFAULT 'ORIGINALUNIT',
+    value       NUMERIC(20,6),
+    source      VARCHAR(30)   NOT NULL DEFAULT 'emquant',
+    fetched_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT raw_etf_daily_uq UNIQUE (trade_date, ticker, field)
+);
+CREATE INDEX IF NOT EXISTS raw_etf_daily_date_idx
+    ON raw_etf_daily (trade_date DESC);
+CREATE INDEX IF NOT EXISTS raw_etf_daily_ticker_date_idx
+    ON raw_etf_daily (ticker, trade_date DESC);
+
+
+-- Daily market cluster prediction (PC1, PC2 coordinates + GMM cluster label).
+-- One row per trading day; written by predict_market_cluster.py via nightly ETL.
+CREATE TABLE IF NOT EXISTS current_market_prediction (
+    id          BIGSERIAL     PRIMARY KEY,
+    trade_date  DATE          NOT NULL,
+    cluster     SMALLINT,
+    pc1         NUMERIC(12,8),
+    pc2         NUMERIC(12,8),
+    computed_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT current_market_prediction_uq UNIQUE (trade_date)
+);
+CREATE INDEX IF NOT EXISTS current_market_prediction_date_idx
+    ON current_market_prediction (trade_date DESC);
