@@ -206,13 +206,13 @@ def main() -> None:
             return
 
         wide = wide[available_cols].sort_index()
+        # Cast to float64: psycopg2 returns NUMERIC as decimal.Decimal which
+        # numpy ufuncs cannot handle directly.
+        wide = wide.astype(float)
         wide = wide.dropna()
 
         # ── compute log returns ────────────────────────────────────────────────
-        # Use pandas .apply(np.log).diff() instead of np.log(df/df.shift(1))
-        # to avoid AttributeError on numpy 2.x where ufuncs no longer operate
-        # directly on DataFrames via __array_function__ in all edge cases.
-        log_ret = wide.apply(np.log).diff().dropna()
+        log_ret = np.log(wide / wide.shift(1)).dropna()
         log_ret = log_ret[available_cols]
 
         # ── determine which dates to predict ──────────────────────────────────
