@@ -134,11 +134,18 @@ def main() -> None:
         default="daily",
         help="Return frequency: daily, weekly, or monthly (default: daily)",
     )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        dest="no_save",
+        help="Print JSON to stdout only; do NOT write results to DB (used by nightly_etl)",
+    )
     parser.add_argument("start_date", nargs="?", help="Start date YYYYMMDD or YYYY-MM-DD")
     parser.add_argument("end_date",   nargs="?", help="End date   YYYYMMDD or YYYY-MM-DD")
     pargs = parser.parse_args()
 
-    freq      = pargs.freq
+    freq       = pargs.freq
+    save_to_db = not pargs.no_save
     start_dt: date | None = _parse_date(pargs.start_date) if pargs.start_date else None
     end_dt:   date | None = _parse_date(pargs.end_date)   if pargs.end_date   else start_dt
 
