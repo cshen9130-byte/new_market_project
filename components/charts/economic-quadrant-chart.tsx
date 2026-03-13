@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { FREQ_LABELS } from "@/components/charts/current-market-prediction-chart"
 import type { Freq } from "@/components/charts/current-market-prediction-chart"
 
 type Latest = {
@@ -54,7 +55,9 @@ const QUADRANTS = [
   },
 ]
 
-export default function EconomicQuadrantChart({ freq }: { freq: Freq }) {
+type Props = { freq: Freq; onFreqChange: (f: Freq) => void }
+
+export default function EconomicQuadrantChart({ freq, onFreqChange }: Props) {
   const [latest, setLatest] = useState<Latest | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -77,11 +80,31 @@ export default function EconomicQuadrantChart({ freq }: { freq: Freq }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>经济象限</CardTitle>
-        <CardDescription>
-          GMM 聚类对应的宏观经济状态
-          {latest ? ` · 当前：族 ${activeCluster}（${QUADRANTS.find(q => q.cluster === activeCluster)?.title ?? "—"}）` : ""}
-        </CardDescription>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <CardTitle>经济象限</CardTitle>
+            <CardDescription>
+              GMM 聚类对应的宏观经济状态
+              {latest ? ` · 当前：族 ${activeCluster}（${QUADRANTS.find(q => q.cluster === activeCluster)?.title ?? "—"}）` : ""}
+            </CardDescription>
+          </div>
+          <div className="flex shrink-0 gap-1 mt-0.5">
+            {(Object.keys(FREQ_LABELS) as Freq[]).map((f) => (
+              <button
+                key={f}
+                onClick={() => onFreqChange(f)}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  freq === f
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {FREQ_LABELS[f]}
+              </button>
+            ))}
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
         {loading ? (

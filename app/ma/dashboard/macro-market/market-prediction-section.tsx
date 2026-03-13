@@ -10,7 +10,7 @@ export default function MarketPredictionSection() {
   return (
     <div className="grid gap-6 md:grid-cols-2">
       <CurrentMarketPredictionChart freq={freq} onFreqChange={setFreq} />
-      <EconomicQuadrantChart freq={freq} />
+        <EconomicQuadrantChart freq={freq} onFreqChange={setFreq} />
     </div>
   )
 }
