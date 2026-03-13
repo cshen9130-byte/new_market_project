@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import type { Freq } from "@/components/charts/current-market-prediction-chart"
 
 type Latest = {
   date: string
@@ -53,21 +54,23 @@ const QUADRANTS = [
   },
 ]
 
-export default function EconomicQuadrantChart() {
+export default function EconomicQuadrantChart({ freq }: { freq: Freq }) {
   const [latest, setLatest] = useState<Latest | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let cancelled = false
-    fetch("/ma/api/macro/current-market-prediction?freq=daily", { cache: "no-store" })
+    setLoading(true)
+    fetch(`/ma/api/macro/current-market-prediction?freq=${freq}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((json) => {
         if (!cancelled && json.latest) setLatest(json.latest)
+        else if (!cancelled) setLatest(null)
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [])
+  }, [freq])
 
   const activeCluster = latest?.cluster ?? null
 

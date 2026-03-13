@@ -12,10 +12,10 @@ type Point = {
   pc2: number | null
 }
 
-type Freq = "daily" | "weekly" | "monthly"
+export type Freq = "daily" | "weekly" | "monthly"
 
-const FREQ_LABELS: Record<Freq, string> = { daily: "当日", weekly: "当周", monthly: "当月" }
-const FREQ_DESC:   Record<Freq, string> = {
+export const FREQ_LABELS: Record<Freq, string> = { daily: "当日", weekly: "当周", monthly: "当月" }
+const FREQ_DESC: Record<Freq, string> = {
   daily:   "近一年，每日数据",
   weekly:  "近一年，每周数据",
   monthly: "近一年，每月数据",
@@ -25,8 +25,12 @@ const FREQ_DESC:   Record<Freq, string> = {
 const CLUSTER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 const CLUSTER_LABELS = ["簇 0", "簇 1", "簇 2", "簇 3"]
 
-export default function CurrentMarketPredictionChart() {
-  const [freq, setFreq] = useState<Freq>("daily")
+type Props = {
+  freq: Freq
+  onFreqChange: (f: Freq) => void
+}
+
+export default function CurrentMarketPredictionChart({ freq, onFreqChange }: Props) {
   const [rows, setRows] = useState<Point[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -148,7 +152,7 @@ export default function CurrentMarketPredictionChart() {
             {(Object.keys(FREQ_LABELS) as Freq[]).map((f) => (
               <button
                 key={f}
-                onClick={() => setFreq(f)}
+                onClick={() => onFreqChange(f)}
                 className={cn(
                   "px-2 py-0.5 rounded text-xs font-medium transition-colors",
                   freq === f

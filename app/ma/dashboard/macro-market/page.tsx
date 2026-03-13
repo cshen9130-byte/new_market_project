@@ -14,8 +14,7 @@ import {
   Area,
   AreaChart,
 } from "recharts"
-import CurrentMarketPredictionChart from "@/components/charts/current-market-prediction-chart"
-import EconomicQuadrantChart from "@/components/charts/economic-quadrant-chart"
+import MarketPredictionSection from "./market-prediction-section"
 
 // Placeholder data - replace with real API data
 const interestRateData = [
@@ -154,10 +153,7 @@ export default function Page() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 md:grid-cols-2">
-        <CurrentMarketPredictionChart />
-        <EconomicQuadrantChart />
-      </div>
+      <MarketPredictionSection />
     </div>
   )
 }
