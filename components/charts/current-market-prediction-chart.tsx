@@ -17,8 +17,8 @@ type Freq = "daily" | "weekly" | "monthly"
 const FREQ_LABELS: Record<Freq, string> = { daily: "当日", weekly: "当周", monthly: "当月" }
 const FREQ_DESC:   Record<Freq, string> = {
   daily:   "近一年，每日数据",
-  weekly:  "近两年，每周数据",
-  monthly: "近四年，每月数据",
+  weekly:  "近一年，每周数据",
+  monthly: "近一年，每月数据",
 }
 
 // Colours mirror plot_current_prediction.py
@@ -169,8 +169,7 @@ export default function CurrentMarketPredictionChart() {
           <div className="h-[420px] flex items-center justify-center text-sm text-destructive">{error}</div>
         ) : !rows.length ? (
           <div className="h-[420px] flex flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
-            <span>暂无{FREQ_LABELS[freq]}预测数据</span>
-            <span className="text-xs opacity-60">请在服务器运行：python3 scripts/ma/predict_market_cluster.py --freq {freq}</span>
+            <span>暂无{FREQ_LABELS[freq]}预测数据，请稍候再试</span>
           </div>
         ) : (
           <ReactECharts option={option} style={{ height: "420px", width: "100%" }} />

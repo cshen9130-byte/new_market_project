@@ -240,10 +240,15 @@ def main() -> None:
         wide = wide.dropna()
 
         # ── resample prices to the requested frequency ────────────────────────
+        # Use the last ACTUAL trading date within each period (not calendar period-end)
         if freq == "weekly":
-            wide = wide.resample("W").last().dropna()
+            period_idx = wide.index.to_period("W")
+            last_real_dates = wide.groupby(period_idx).apply(lambda g: g.index[-1])
+            wide = wide.loc[last_real_dates.values].dropna()
         elif freq == "monthly":
-            wide = wide.resample("ME").last().dropna()
+            period_idx = wide.index.to_period("M")
+            last_real_dates = wide.groupby(period_idx).apply(lambda g: g.index[-1])
+            wide = wide.loc[last_real_dates.values].dropna()
         # (daily: no resampling needed)
 
         # ── compute log returns ────────────────────────────────────────────────
@@ -295,6 +300,12 @@ def main() -> None:
         if save_to_db and results:
             try:
                 from psycopg2.extras import execute_values  # type: ignore[import-untyped]
+                # First delete any existing rows for this freq so we replace stale dates
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "DELETE FROM current_market_prediction WHERE freq = %s",
+                        (freq,),
+                    )
                 records = [(r["date"], r["cluster"], r["pc1"], r["pc2"], r["freq"]) for r in results]
                 with conn.cursor() as cur:
                     execute_values(

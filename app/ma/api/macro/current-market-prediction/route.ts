@@ -14,16 +14,15 @@ type PredictionRow = {
 const VALID_FREQS = ["daily", "weekly", "monthly"] as const
 type Freq = typeof VALID_FREQS[number]
 
-// Show more history for lower-frequency views
-const DEFAULT_DAYS: Record<Freq, number> = { daily: 365, weekly: 730, monthly: 1460 }
+// Show 1 year of history for all frequencies
+const DEFAULT_DAYS: Record<Freq, number> = { daily: 365, weekly: 365, monthly: 365 }
 
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const freqParam = searchParams.get("freq") ?? "daily"
     const freq: Freq = VALID_FREQS.includes(freqParam as Freq) ? (freqParam as Freq) : "daily"
-    const maxDays = freq === "monthly" ? 1460 : freq === "weekly" ? 1460 : 365
-    const lookbackDays = Math.max(30, Math.min(maxDays, Number(searchParams.get("days") || DEFAULT_DAYS[freq])))
+    const lookbackDays = Math.max(30, Math.min(730, Number(searchParams.get("days") || DEFAULT_DAYS[freq])))
 
     const rows = await query<PredictionRow>(
       `SELECT trade_date, cluster, pc1, pc2
