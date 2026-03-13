@@ -209,7 +209,10 @@ def main() -> None:
         wide = wide.dropna()
 
         # ── compute log returns ────────────────────────────────────────────────
-        log_ret = np.log(wide / wide.shift(1)).dropna()
+        # Use pandas .apply(np.log).diff() instead of np.log(df/df.shift(1))
+        # to avoid AttributeError on numpy 2.x where ufuncs no longer operate
+        # directly on DataFrames via __array_function__ in all edge cases.
+        log_ret = wide.apply(np.log).diff().dropna()
         log_ret = log_ret[available_cols]
 
         # ── determine which dates to predict ──────────────────────────────────
