@@ -1143,8 +1143,9 @@ ORDERED_STEPS = [
     "derive_basis",
     "derive_basis_cont",
     "repair_settle_returns",
-    "etf_prices",                   # must run before predict steps
-    "predict_market_cluster",       # daily
+    "etf_prices",                    # nightly: today only
+    "etf_extended_backfill",         # on-demand: re-fetch 2 years of ETF history
+    "predict_market_cluster",        # daily
     "predict_market_cluster_weekly",
     "predict_market_cluster_monthly",
 ]
@@ -1176,8 +1177,8 @@ def run_backfill(conn, trade_date: date):
         log.warning("Futures range backfill failed (non-fatal): %s", exc)
         log_run(conn, JOB_NAME, "backfill_futures", "failed", trade_date, error=str(exc))
 
-    # Backfill last-year ETF prices used by the market-prediction model
-    etf_start = trade_date - timedelta(days=365)
+    # Backfill 2 years of ETF prices so monthly resampling has enough history
+    etf_start = trade_date - timedelta(days=760)
     try:
         step_etf_backfill(conn, etf_start, trade_date)
         log_run(conn, JOB_NAME, "backfill_etf", "success", trade_date)
@@ -1240,6 +1241,7 @@ def main():
         "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
         "etf_prices":            lambda: step_etf_prices(conn, td, force=force),
+        "etf_extended_backfill": lambda: step_etf_backfill(conn, td - timedelta(days=760), td),
         "predict_market_cluster":         lambda: step_predict_market_cluster(conn, None, freq="daily",   force=force),
         "predict_market_cluster_weekly":   lambda: step_predict_market_cluster(conn, None, freq="weekly",  force=force),
         "predict_market_cluster_monthly":  lambda: step_predict_market_cluster(conn, None, freq="monthly", force=force),
