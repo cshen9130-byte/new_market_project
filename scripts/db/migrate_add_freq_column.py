@@ -73,15 +73,27 @@ with conn.cursor() as cur:
     # 2. Drop the old single-column unique constraint (trade_date only)
     cur.execute("""
         ALTER TABLE current_market_prediction
+        DROP CONSTRAINT IF EXISTS current_market_prediction_uq
+    """)
+    cur.execute("""
+        ALTER TABLE current_market_prediction
         DROP CONSTRAINT IF EXISTS current_market_prediction_trade_date_key
     """)
     print("  - old unique(trade_date) constraint dropped (if existed)")
 
-    # 3. Add composite unique constraint (trade_date, freq)
+    # 3. Add composite unique constraint (trade_date, freq) — guarded via pg_constraint
     cur.execute("""
-        ALTER TABLE current_market_prediction
-        ADD CONSTRAINT IF NOT EXISTS current_market_prediction_trade_date_freq_key
-        UNIQUE (trade_date, freq)
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'current_market_prediction_trade_date_freq_key'
+            ) THEN
+                ALTER TABLE current_market_prediction
+                ADD CONSTRAINT current_market_prediction_trade_date_freq_key
+                UNIQUE (trade_date, freq);
+            END IF;
+        END $$;
     """)
     print("  + unique(trade_date, freq) constraint added (or already exists)")
 

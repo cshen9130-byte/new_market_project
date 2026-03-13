@@ -14,11 +14,11 @@ type Point = {
 
 type Freq = "daily" | "weekly" | "monthly"
 
-const FREQ_LABELS: Record<Freq, string> = { daily: "日线", weekly: "周线", monthly: "月线" }
+const FREQ_LABELS: Record<Freq, string> = { daily: "当日", weekly: "当周", monthly: "当月" }
 const FREQ_DESC:   Record<Freq, string> = {
-  daily:   "近一年，日频数据",
-  weekly:  "近两年，周频数据",
-  monthly: "近四年，月频数据",
+  daily:   "近一年，每日数据",
+  weekly:  "近两年，每周数据",
+  monthly: "近四年，每月数据",
 }
 
 // Colours mirror plot_current_prediction.py

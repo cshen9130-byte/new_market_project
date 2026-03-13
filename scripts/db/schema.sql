@@ -214,8 +214,9 @@ CREATE TABLE IF NOT EXISTS current_market_prediction (
     cluster     SMALLINT,
     pc1         NUMERIC(12,8),
     pc2         NUMERIC(12,8),
+    freq        VARCHAR(10)   NOT NULL DEFAULT 'daily',
     computed_at TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
-    CONSTRAINT current_market_prediction_uq UNIQUE (trade_date)
+    CONSTRAINT current_market_prediction_uq UNIQUE (trade_date, freq)
 );
 CREATE INDEX IF NOT EXISTS current_market_prediction_date_idx
     ON current_market_prediction (trade_date DESC);
