@@ -1078,7 +1078,7 @@ def step_predict_market_cluster(
     label = iso(trade_date) if trade_date else "all missing dates"
     log.info("Predicting market cluster (%s): %s …", freq, label)
 
-    extra_args: list[str] = ["--freq", freq]
+    extra_args: list[str] = ["--freq", freq, "--no-save"]
     if trade_date:
         extra_args += [iso(trade_date), iso(trade_date)]
     out = run_script("predict_market_cluster.py", extra_args=extra_args, timeout=300)

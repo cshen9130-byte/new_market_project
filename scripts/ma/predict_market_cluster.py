@@ -284,6 +284,30 @@ def main() -> None:
             for i, (idx, _) in enumerate(target.iterrows())
         ]
 
+        # ── save to DB if requested (default: yes) ─────────────────────────────
+        if save_to_db and results:
+            try:
+                from psycopg2.extras import execute_values  # type: ignore[import-untyped]
+                records = [(r["date"], r["cluster"], r["pc1"], r["pc2"], r["freq"]) for r in results]
+                with conn.cursor() as cur:
+                    execute_values(
+                        cur,
+                        """
+                        INSERT INTO current_market_prediction (trade_date, cluster, pc1, pc2, freq)
+                        VALUES %s
+                        ON CONFLICT (trade_date, freq) DO UPDATE
+                            SET cluster     = EXCLUDED.cluster,
+                                pc1         = EXCLUDED.pc1,
+                                pc2         = EXCLUDED.pc2,
+                                computed_at = NOW()
+                        """,
+                        records,
+                    )
+                conn.commit()
+                sys.stderr.write(f"Saved {len(records)} rows (freq={freq}) to DB.\n")
+            except Exception as exc:
+                sys.stderr.write(f"WARNING: DB save failed: {exc}\n")
+
         print(json.dumps({"data": results, "count": len(results)}))
 
     finally:
