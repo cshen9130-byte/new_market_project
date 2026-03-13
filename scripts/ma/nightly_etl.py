@@ -1234,7 +1234,10 @@ def main():
         "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
         "etf_prices":            lambda: step_etf_prices(conn, td, force=force),
-        "predict_market_cluster": lambda: step_predict_market_cluster(conn, td, force=force),
+        # Pass trade_date=None so the script catches up ALL missing dates, not
+        # just today.  It checks the DB for already-predicted rows and skips
+        # them, so nightly runs stay fast while any historical gaps get filled.
+        "predict_market_cluster": lambda: step_predict_market_cluster(conn, None, force=force),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS
