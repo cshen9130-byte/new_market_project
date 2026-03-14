@@ -68,7 +68,7 @@ const VAR_LABELS: Record<keyof ZScores, string> = {
   pmi_chg:    "PMI变化（同比）",
   yield_chg:  "10Y收益率变化",
   spread_chg: "期限利差变化",
-  nhci_yoy:   "南华商品指数同比",
+  nhci_yoy:   "南华工业品指数同比",
   afre:       "社融存量同比",
   m1:         "M1同比",
   cpi:        "CPI同比",
