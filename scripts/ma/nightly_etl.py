@@ -233,15 +233,18 @@ def row_count(conn, table: str, where_sql: str = "", params=()) -> int:
 # STEP 1 — NHCI (South China Commodity Index)  via EmQuant
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def step_nhci(conn, *, force: bool = False) -> int:
+def step_nhci(conn, *, force: bool = False, start: date | None = None) -> int:
     cur_max = max_date(conn, "raw_nhci_daily")
     today = date.today()
-    if not force and cur_max and cur_max >= today - timedelta(days=1):
+    if not force and start is None and cur_max and cur_max >= today - timedelta(days=1):
         log.info("NHCI up-to-date (%s), skipping.", cur_max)
         return 0
 
     log.info("Fetching NHCI …")
-    out = run_script("get_nanhua_index.py")
+    extra_args: list[str] = []
+    if start:
+        extra_args = [iso(start), iso(today)]
+    out = run_script("get_nanhua_index.py", extra_args=extra_args or None)
     if not out or out.get("error"):
         raise RuntimeError(f"NHCI fetch failed: {out}")
 

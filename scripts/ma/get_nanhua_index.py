@@ -74,11 +74,21 @@ def main():
     except Exception as e:
         print(json.dumps({"error": f"EmQuantAPI import failed: {e}"}))
         sys.exit(1)
-    # Compute last year start through today's date
+
+    # ── optional CLI args: start_date [end_date] in YYYYMMDD or YYYY-MM-DD ──
     today = datetime.today()
-    last_year = today.year - 1
-    start_date = f"{last_year}-01-01"
-    end_date = today.strftime("%Y-%m-%d")
+    args = sys.argv[1:]
+    if args:
+        def _parse(s: str) -> str:
+            s = s.strip().replace("-", "")
+            return datetime.strptime(s, "%Y%m%d").strftime("%Y-%m-%d")
+        start_date = _parse(args[0])
+        end_date = _parse(args[1]) if len(args) > 1 else today.strftime("%Y-%m-%d")
+    else:
+        # Default: last year Jan 1 → today
+        last_year = today.year - 1
+        start_date = f"{last_year}-01-01"
+        end_date = today.strftime("%Y-%m-%d")
 
     username = os.environ.get("EMQ_USERNAME")
     password = os.environ.get("EMQ_PASSWORD")
