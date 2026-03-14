@@ -1138,6 +1138,20 @@ def latest_trade_date() -> date:
 
 JOB_NAME = "nightly_etl"
 
+def step_regime_indicators(conn, *, force: bool = False) -> int:
+    """Fetch monthly macro indicators (PMI, M1, CPI, bond yields, NHCI) into DB."""
+    result = run_script("fetch_regime_indicators.py", timeout=300)
+    return result.get("upserted", 0) if result else 0
+
+
+def step_regime_similarity(conn) -> int:
+    """Compute rolling z-score regime similarity and save top-20 results to DB."""
+    result = run_script("calc_regime_similarity.py", timeout=120)
+    if result and result.get("status") == "ok":
+        return result.get("rows_top", 0)
+    return 0
+
+
 ORDERED_STEPS = [
     "nhci",
     "spot_closes",
@@ -1151,6 +1165,8 @@ ORDERED_STEPS = [
     "predict_market_cluster",        # daily
     "predict_market_cluster_weekly",
     "predict_market_cluster_monthly",
+    "regime_indicators",             # monthly macro indicators for regime model
+    "regime_similarity",             # compute economic regime similarity
 ]
 
 
@@ -1245,9 +1261,11 @@ def main():
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
         "etf_prices":            lambda: step_etf_prices(conn, td, force=force),
         "etf_extended_backfill": lambda: step_etf_backfill(conn, td - timedelta(days=760), td),
-        "predict_market_cluster":         lambda: step_predict_market_cluster(conn, None, freq="daily",   force=force),
+        "predict_market_cluster":          lambda: step_predict_market_cluster(conn, None, freq="daily",   force=force),
         "predict_market_cluster_weekly":   lambda: step_predict_market_cluster(conn, None, freq="weekly",  force=force),
         "predict_market_cluster_monthly":  lambda: step_predict_market_cluster(conn, None, freq="monthly", force=force),
+        "regime_indicators":               lambda: step_regime_indicators(conn, force=force),
+        "regime_similarity":               lambda: step_regime_similarity(conn),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS

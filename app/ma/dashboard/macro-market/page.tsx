@@ -16,6 +16,12 @@ export default function Page() {
           PCA 聚类模型 ↓
         </button>
         <button
+          onClick={() => document.getElementById("regime-section")?.scrollIntoView({ behavior: "smooth" })}
+          className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+        >
+          经济体制相似性 ↓
+        </button>
+        <button
           onClick={() => document.getElementById("page-top")?.scrollIntoView({ behavior: "smooth" })}
           className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
         >
