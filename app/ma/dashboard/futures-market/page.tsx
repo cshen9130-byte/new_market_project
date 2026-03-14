@@ -291,7 +291,7 @@ export default function FuturesMarketPage() {
 
   useEffect(() => { reloadFutLatest(true) }, [])
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pt-6">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">期货市场分析</h1>
         <p className="text-muted-foreground mt-2">大宗商品期货与合约分析</p>

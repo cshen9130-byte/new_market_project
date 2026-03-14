@@ -4,14 +4,24 @@ import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import type { Freq } from "./current-market-prediction-chart"
 
 // ── types ─────────────────────────────────────────────────────────────────────
 type AssetMeta = { key: string; label: string }
 type DataPoint = { date: string; value: number }
+type LatestReturn = { key: string; label: string; date: string | null; value: number | null }
+type PeriodReturn = { key: string; label: string; date: string | null; value: number | null }
 type ApiResponse = {
   assets: AssetMeta[]
   series: Record<string, DataPoint[]>
+  latest_returns: LatestReturn[]
+  period_returns: PeriodReturn[]
+  period_label: string
+  favored_asset_keys: string[]
+  favored_asset_stars?: Record<string, 1 | 2 | 3>
 }
+
+type ViewMode = "cumulative" | "period"
 
 // ── colors: each asset gets a distinct color ──────────────────────────────────
 const ASSET_COLORS: Record<string, string> = {
@@ -26,6 +36,7 @@ const ASSET_COLORS: Record<string, string> = {
 
 // ── day-range selector ────────────────────────────────────────────────────────
 const RANGE_OPTIONS = [
+  { label: "当日", days: 1 },
   { label: "近1月", days: 30 },
   { label: "近3月", days: 90 },
   { label: "近6月", days: 180 },
@@ -34,8 +45,13 @@ const RANGE_OPTIONS = [
 type Range = typeof RANGE_OPTIONS[number]["days"]
 
 // ── component ─────────────────────────────────────────────────────────────────
-export default function AssetReturnsChart() {
+type Props = {
+  freq: Freq
+}
+
+export default function AssetReturnsChart({ freq }: Props) {
   const [range, setRange] = useState<Range>(365)
+  const [viewMode, setViewMode] = useState<ViewMode>("cumulative")
   const [data, setData] = useState<ApiResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -44,7 +60,7 @@ export default function AssetReturnsChart() {
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetch(`/ma/api/macro/asset-returns?days=${range}`, { cache: "no-store" })
+    fetch(`/ma/api/macro/asset-returns?days=${range}&freq=${freq}`, { cache: "no-store" })
       .then((r) => r.json())
       .then((d: ApiResponse) => {
         if (!cancelled) { setData(d); setLoading(false) }
@@ -53,9 +69,9 @@ export default function AssetReturnsChart() {
         if (!cancelled) { setError(e?.message || "数据不可用"); setLoading(false) }
       })
     return () => { cancelled = true }
-  }, [range])
+  }, [freq, range])
 
-  const option = useMemo(() => {
+  const cumulativeOption = useMemo(() => {
     if (!data?.assets?.length) return {}
 
     const allDates = Array.from(
@@ -121,6 +137,80 @@ export default function AssetReturnsChart() {
     }
   }, [data])
 
+  const periodOption = useMemo(() => {
+    if (!data?.period_returns?.length) return {}
+
+    const rows = [...data.period_returns]
+      .filter((item) => item.value != null)
+      .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
+
+    if (!rows.length) return {}
+
+    const periodTitle = range <= 1 ? "当日收益率" : `${data.period_label}收益率`
+
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "item",
+        formatter: (p: any) => `${p.name}<br/>${periodTitle}: ${(+p.value).toFixed(2)}%`,
+      },
+      grid: { left: "10%", right: "4%", top: "12%", bottom: "22%" },
+      xAxis: {
+        type: "category" as const,
+        data: rows.map((item) => item.label),
+        axisLabel: {
+          interval: 0,
+          rotate: 22,
+          fontSize: 10,
+        },
+      },
+      yAxis: {
+        type: "value" as const,
+        name: "收益率 (%)",
+        nameLocation: "middle" as const,
+        nameGap: 42,
+        axisLabel: {
+          formatter: (v: number) => `${v.toFixed(1)}%`,
+          fontSize: 10,
+        },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      series: [
+        {
+          type: "bar" as const,
+          data: rows.map((item) => {
+            const stars = data.favored_asset_stars?.[item.key] ?? 0
+            const isFavored = stars > 0
+            const starStr = isFavored ? "★".repeat(stars) : ""
+            return {
+              value: item.value,
+              name: item.label,
+              itemStyle: {
+                color: isFavored
+                  ? "#f59e0b"
+                  : (item.value ?? 0) >= 0
+                    ? "#dc2626"
+                    : "#2563eb",
+                borderColor: isFavored ? "#92400e" : "transparent",
+                borderWidth: isFavored ? 2 : 0,
+              },
+              label: {
+                show: true,
+                position: (item.value ?? 0) >= 0 ? "top" : "bottom",
+                formatter: ({ value }: { value: number }) =>
+                  isFavored ? `${value.toFixed(2)}%${starStr}` : `${value.toFixed(2)}%`,
+                color: isFavored ? "#b45309" : "#334155",
+                fontSize: 11,
+                fontWeight: isFavored ? "bold" : "normal",
+              },
+            }
+          }),
+          barWidth: 28,
+        },
+      ],
+    }
+  }, [data, range])
+
   return (
     <Card>
       <CardHeader>
@@ -128,24 +218,52 @@ export default function AssetReturnsChart() {
           <div>
             <CardTitle>各资产累计收益</CardTitle>
             <CardDescription>
-              累计对数收益率（基期=0，按选定时间段起始日重置）
+              {viewMode === "cumulative"
+                ? "累计对数收益率（基期=0，按选定时间段起始日重置）"
+                : `${data?.period_label ?? "当期"}各资产收益率${ (data?.favored_asset_keys?.length ?? 0) > 0 ? " · ★为预测偏强资产" : ""}`}
             </CardDescription>
           </div>
-          <div className="flex shrink-0 gap-1 mt-0.5">
-            {RANGE_OPTIONS.map((opt) => (
+          <div className="flex shrink-0 flex-col gap-2 mt-0.5">
+            <div className="flex justify-end gap-1">
               <button
-                key={opt.days}
-                onClick={() => setRange(opt.days)}
+                onClick={() => setViewMode("cumulative")}
                 className={cn(
                   "px-2 py-0.5 rounded text-xs font-medium transition-colors",
-                  range === opt.days
+                  viewMode === "cumulative"
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:bg-muted",
                 )}
               >
-                {opt.label}
+                累计收益
               </button>
-            ))}
+              <button
+                onClick={() => setViewMode("period")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  viewMode === "period"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                当期收益
+              </button>
+            </div>
+            <div className="flex justify-end gap-1">
+              {RANGE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.days}
+                  onClick={() => setRange(opt.days)}
+                  className={cn(
+                    "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                    range === opt.days
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-muted",
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </CardHeader>
@@ -163,7 +281,13 @@ export default function AssetReturnsChart() {
             暂无数据
           </div>
         ) : (
-          <ReactECharts option={option} style={{ height: 380 }} />
+          <ReactECharts
+            key={`${viewMode}-${range}-${freq}-${data?.period_label ?? ""}`}
+            option={viewMode === "cumulative" ? cumulativeOption : periodOption}
+            style={{ height: 380 }}
+            notMerge
+            lazyUpdate={false}
+          />
         )}
       </CardContent>
     </Card>

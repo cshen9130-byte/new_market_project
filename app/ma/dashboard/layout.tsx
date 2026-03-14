@@ -29,7 +29,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <DashboardSidebar />
       <div className="flex flex-col flex-1 overflow-hidden">
         <DashboardHeader user={headerUser} />
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+        <main className="flex-1 overflow-y-auto px-6 pb-6">{children}</main>
       </div>
     </div>
   )

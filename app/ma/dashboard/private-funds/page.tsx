@@ -32,7 +32,7 @@ const allocationData = [
 
 export default function PrivateFundsPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pt-6">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">私募基金业绩</h1>
         <p className="text-muted-foreground mt-2">基金分析与业绩指标</p>

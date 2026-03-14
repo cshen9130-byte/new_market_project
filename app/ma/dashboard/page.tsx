@@ -3,7 +3,7 @@ import { TrendingUp, BarChart3, Activity, PieChart } from "lucide-react"
 
 export default function DashboardPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pt-6">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">市场总览</h1>
         <p className="text-muted-foreground mt-2">欢迎使用市场监控看板</p>

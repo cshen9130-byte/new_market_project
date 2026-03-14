@@ -33,7 +33,7 @@ const volumeData = [
 
 export default function StockMarketPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pt-6">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">股票市场分析</h1>
         <p className="text-muted-foreground mt-2">股票表现与行业分析</p>

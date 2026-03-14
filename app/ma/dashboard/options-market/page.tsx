@@ -50,7 +50,7 @@ const greeksData = [
 
 export default function OptionsMarketPage() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pt-6">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">期权市场分析</h1>
         <p className="text-muted-foreground mt-2">期权链、波动率与希腊值分析</p>
