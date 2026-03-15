@@ -28,7 +28,7 @@ type Point = {
 }
 
 // ── constants ────────────────────────────────────────────────────────────────
-const CLUSTER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+const CLUSTER_COLORS = ["#1f77b4", "#ff7f0e", "#d62728", "#2ca02c"]
 const CLUSTER_LABELS = ["簇 0", "簇 1", "簇 2", "簇 3"]
 const ARROW_SCALE = 0.85   // arrows end at loading × 0.85
 
