@@ -18,7 +18,7 @@ Variables stored
   cpi          CPI YoY %
   yield_10y    10-year govt bond yield (monthly mean)
   spread_10y1y 10Y-1Y term spread (monthly mean)
-  nhci         Nanhua Commodity Index (month-end close, from raw_nhci_daily)
+  nhci         Nanhua Industrial Products Index / NHII (month-end close, from akshare NHII.NH)
 
 Usage
 -----
@@ -265,8 +265,43 @@ def fetch_bond_akshare() -> pd.DataFrame:
     return monthly
 
 
+def fetch_nhii_akshare() -> pd.DataFrame:
+    """NHII (南华工业品指数) from akshare, resampled to month-end close.
+
+    Tries spot_hist_nhci_em(symbol='南华工业品指数') first.
+    Falls back to spot_symbol_table_nhci_em + lookup if symbol name differs.
+    """
+    import akshare as ak
+
+    # Try fetching by the known symbol name
+    for symbol in ('南华工业品指数', 'NHII'):
+        try:
+            df = ak.spot_hist_nhci_em(symbol=symbol)
+            if df is not None and not df.empty:
+                # Normalise columns — usually '日期' and '收盘'
+                df.columns = [str(c).strip() for c in df.columns]
+                date_col  = next((c for c in df.columns if '日期' in c or c.lower() == 'date'), df.columns[0])
+                close_col = next((c for c in df.columns if '收盘' in c or 'close' in c.lower()), df.columns[-1])
+                df = df[[date_col, close_col]].copy()
+                df.columns = ['date', 'nhci']
+                df['date']  = pd.to_datetime(df['date'])
+                df['nhci']  = pd.to_numeric(df['nhci'], errors='coerce')
+                df = df.dropna().sort_values('date').set_index('date')
+                monthly = df['nhci'].resample('ME').last().reset_index()
+                monthly.columns = ['date', 'nhci']
+                log.info('NHII via akshare (symbol=%s): %d monthly rows', symbol, len(monthly))
+                return monthly
+        except Exception as e:
+            log.debug('akshare NHII symbol=%s failed: %s', symbol, e)
+
+    raise RuntimeError('Could not fetch NHII (南华工业品指数) from akshare')
+
+
 def fetch_nhci_from_db(conn) -> pd.DataFrame:
-    """NHCI from raw_nhci_daily, resampled to month-end close."""
+    """Fallback: NHCI (南华商品指数) from raw_nhci_daily.
+    NOTE: This is the commodity index, not the industrial index (NHII).
+    Only used if akshare NHII fetch fails.
+    """
     with conn.cursor() as cur:
         cur.execute(
             'SELECT trade_date, close FROM raw_nhci_daily ORDER BY trade_date'
@@ -384,11 +419,17 @@ def main():
                 log.warning('Bond: fetch failed — %s', exc)
 
             try:
-                nhci_df = fetch_nhci_from_db(conn)
-                log.info('NHCI: %d rows', len(nhci_df))
-                dfs.append(nhci_df)
+                nhii_df = fetch_nhii_akshare()
+                log.info('NHII (工业品): %d rows', len(nhii_df))
+                dfs.append(nhii_df)
             except Exception as exc:
-                log.warning('NHCI: fetch failed — %s', exc)
+                log.warning('NHII akshare failed (%s); falling back to NHCI from DB', exc)
+                try:
+                    nhii_df = fetch_nhci_from_db(conn)
+                    log.warning('Using NHCI (商品指数) fallback: %d rows — NOTE: not the same as NHII', len(nhii_df))
+                    dfs.append(nhii_df)
+                except Exception as exc2:
+                    log.warning('NHCI fallback also failed — %s', exc2)
 
             merged = merge_all(dfs)
 
