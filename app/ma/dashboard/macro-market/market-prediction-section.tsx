@@ -7,6 +7,7 @@ import PcaBiplotChart from "@/components/charts/pca-biplot-chart"
 import AssetReturnsChart from "@/components/charts/asset-returns-chart"
 import PredictionTimeseriesChart from "@/components/charts/prediction-timeseries-chart"
 import RegimeSimilarityChart from "@/components/charts/regime-similarity-chart"
+import MoneyCreditChart from "@/components/charts/money-credit-chart"
 
 export default function MarketPredictionSection() {
   const [freq, setFreq] = useState<Freq>("daily")
@@ -34,6 +35,12 @@ export default function MarketPredictionSection() {
         <div className="flex-1 border-t border-border" />
       </div>
       <RegimeSimilarityChart />
+
+      <div id="money-credit-section" className="flex items-center gap-3 scroll-mt-4">
+        <h2 className="text-lg font-semibold tracking-tight">货币+信用 周期模型</h2>
+        <div className="flex-1 border-t border-border" />
+      </div>
+      <MoneyCreditChart />
     </div>
   )
 }

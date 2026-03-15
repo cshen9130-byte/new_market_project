@@ -22,6 +22,12 @@ export default function Page() {
           经济体制相似性 ↓
         </button>
         <button
+          onClick={() => document.getElementById("money-credit-section")?.scrollIntoView({ behavior: "smooth" })}
+          className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+        >
+          货币+信用 ↓
+        </button>
+        <button
           onClick={() => document.getElementById("page-top")?.scrollIntoView({ behavior: "smooth" })}
           className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
         >

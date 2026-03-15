@@ -1152,6 +1152,20 @@ def step_regime_similarity(conn) -> int:
     return 0
 
 
+def step_shibor_3m(conn, *, force: bool = False) -> int:
+    """Fetch monthly SHIBOR 3M data from akshare into shibor_3m_monthly."""
+    result = run_script("fetch_shibor_3m.py", timeout=120)
+    return result.get("upserted", 0) if result else 0
+
+
+def step_money_credit(conn) -> int:
+    """Compute 货币+信用 cycle from DB data and upsert into money_credit_cycle."""
+    result = run_script("calc_money_credit.py", timeout=120)
+    if result and result.get("status") == "ok":
+        return result.get("rows", 0)
+    return 0
+
+
 ORDERED_STEPS = [
     "nhci",
     "spot_closes",
@@ -1167,6 +1181,8 @@ ORDERED_STEPS = [
     "predict_market_cluster_monthly",
     "regime_indicators",             # monthly macro indicators for regime model
     "regime_similarity",             # compute economic regime similarity
+    "shibor_3m",                     # monthly SHIBOR 3M data
+    "money_credit",                  # money+credit cycle calculation
 ]
 
 
@@ -1266,6 +1282,8 @@ def main():
         "predict_market_cluster_monthly":  lambda: step_predict_market_cluster(conn, None, freq="monthly", force=force),
         "regime_indicators":               lambda: step_regime_indicators(conn, force=force),
         "regime_similarity":               lambda: step_regime_similarity(conn),
+        "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),
+        "money_credit":                    lambda: step_money_credit(conn),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS
