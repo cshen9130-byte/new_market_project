@@ -15,43 +15,46 @@ type Latest = {
 const CLUSTER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
 // Layout: 2×2 grid, top row = PC2+ (避险↑), left col = PC1- (增长↓)
-// Order: [top-left Q2=族1, top-right Q1=族0, bottom-left Q3=族2, bottom-right Q4=族3]
+// 簇0 → top-left  (增长↓ 避险↑) 滞涨/中性
+// 簇1 → bottom-left  (增长↓ 避险↓) 衰退
+// 簇2 → top-right (增长↑ 避险↑) 过热
+// 簇3 → bottom-right (增长↑ 避险↓) 复苏
 const QUADRANTS = [
   {
-    cluster: 1,
-    col: 1, row: 1,                         // top-left  (PC1-, PC2+)
-    title: "衰退期",
-    axes: "增长↓  避险↑",
-    summary: "债券 · 黄金走强，股票 · 商品承压",
-    detail:
-      "经济持续下行，市场全面避险。债券与黄金受益，股票和大宗商品普遍承压。",
-  },
-  {
     cluster: 0,
-    col: 2, row: 1,                         // top-right (PC1+, PC2+)
-    title: "滞胀 / 政策收紧担忧",
-    axes: "增长↑  避险↑",
-    summary: "股票最纠结，黄金 · 国债受青睐",
+    col: 1, row: 1,                         // top-left  (PC1-, PC2+)
+    title: "滞涨 / 中性",
+    axes: "增长↓  避险↑",
+    summary: "黄金 · 国债受青睐，股票表现分化",
     detail:
-      "经济数据强劲，但市场担忧通胀与加息，资金涌入黄金与国债避险，股票表现最为分化。",
+      "经济动能放缓，避险情绪升温。黄金与国债走强，股票表现最为分化，商品承压。",
   },
   {
     cluster: 2,
-    col: 1, row: 2,                         // bottom-left  (PC1-, PC2-)
-    title: "复苏早期",
-    axes: "增长↓  避险↓",
-    summary: "政策宽松，股票筑底，信用债受益",
+    col: 2, row: 1,                         // top-right (PC1+, PC2+)
+    title: "过热期",
+    axes: "增长↑  避险↑",
+    summary: "经济强劲但避险并行，股票与黄金齐升",
     detail:
-      "经济数据仍弱，但政策开始宽松，市场情绪回暖。信用债率先受益，股票可能正在筑底反弹。",
+      "经济数据强劲，同时市场保持一定避险需求。股票与黄金可能同步上行，通胀压力显现。",
+  },
+  {
+    cluster: 1,
+    col: 1, row: 2,                         // bottom-left  (PC1-, PC2-)
+    title: "衰退期",
+    axes: "增长↓  避险↓",
+    summary: "增长下滑，政策宽松预期升温",
+    detail:
+      "经济明显下行，政策开始宽松。债券受益于降息预期，股票处于底部探寻阶段，信用债和成长股可能率先反弹。",
   },
   {
     cluster: 3,
     col: 2, row: 2,                         // bottom-right (PC1+, PC2-)
-    title: "过热 / 繁荣期",
+    title: "复苏期",
     axes: "增长↑  避险↓",
-    summary: "股票 · 商品大涨，债券遭抛售",
+    summary: "股票 · 商品走强，风险偏好回升",
     detail:
-      "经济强劲，风险偏好高涨。股票与大宗商品大幅上涨，债券遭抛售，利率上行。",
+      "经济持续复苏，风险偏好升温。股票与大宗商品上行，资金从债券流向权益类资产。",
   },
 ]
 
