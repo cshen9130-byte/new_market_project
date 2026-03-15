@@ -9,56 +9,40 @@ import type { Freq } from "@/components/charts/current-market-prediction-chart"
 type Latest = {
   date: string
   cluster: number | null
-  pc1: number | null
-  pc2: number | null
-}
-
-// Determine highlighted quadrant from actual PC1/PC2 scores (not cluster number)
-// This is more accurate because GMM cluster centroids don't map 1:1 to PC quadrants
-function getActiveQuadrant(latest: Latest | null): { col: number; row: number } | null {
-  if (!latest || latest.pc1 == null || latest.pc2 == null) return null
-  return {
-    col: latest.pc1 >= 0 ? 2 : 1,  // PC1+ → right col, PC1- → left col
-    row: latest.pc2 >= 0 ? 1 : 2,  // PC2+ → top row,  PC2- → bottom row
-  }
 }
 
 // Match CLUSTER_COLORS from the scatter chart
 const CLUSTER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
-// Cluster centroids from GMM model (verified from pca_scores_clustered.csv):
-//   Cluster 0: PC1≈-0.03, PC2≈+0.12  → top-left  (PC1-, PC2+)  | ~64% of days
-//   Cluster 1: PC1≈-0.32, PC2≈+0.02  → left-side, near-zero PC2  | ~13% of days
-//   Cluster 2: PC1≈+24.3, PC2≈-10.4  → extreme bottom-right outlier | 1 data point
-//   Cluster 3: PC1≈+0.19, PC2≈-0.16  → bottom-right (PC1+, PC2-)  | ~22% of days
 // Layout: 2×2 grid, top row = PC2+ (避险↑), left col = PC1- (增长↓)
+// Order: [top-left Q2=族1, top-right Q1=族0, bottom-left Q3=族2, bottom-right Q4=族3]
 const QUADRANTS = [
   {
-    cluster: 0,
+    cluster: 1,
     col: 1, row: 1,                         // top-left  (PC1-, PC2+)
-    title: "均衡 / 低增长",
+    title: "衰退期",
     axes: "增长↓  避险↑",
-    summary: "防守类资产相对占优，市场情绪偏谨慎",
+    summary: "债券 · 黄金走强，股票 · 商品承压",
     detail:
-      "经济温和放缓，防守情绪主导。债券与黄金相对占优，股票和大宗商品整体承压。历史上最常见宏观状态（约占65%）。",
+      "经济持续下行，市场全面避险。债券与黄金受益，股票和大宗商品普遍承压。",
+  },
+  {
+    cluster: 0,
+    col: 2, row: 1,                         // top-right (PC1+, PC2+)
+    title: "滞胀 / 政策收紧担忧",
+    axes: "增长↑  避险↑",
+    summary: "股票最纠结，黄金 · 国债受青睐",
+    detail:
+      "经济数据强劲，但市场担忧通胀与加息，资金涌入黄金与国债避险，股票表现最为分化。",
   },
   {
     cluster: 2,
-    col: 2, row: 1,                         // top-right (PC1+, PC2+) — extreme outlier, < 0.1% of days
-    title: "极端压力 / 危机",
-    axes: "增长↑  避险↑",
-    summary: "极低概率极端状态，历史极少出现",
-    detail:
-      "统计极端状态，历史上极少发生（< 0.1%），通常对应极端市场冲击或宏观异常事件。",
-  },
-  {
-    cluster: 1,
     col: 1, row: 2,                         // bottom-left  (PC1-, PC2-)
-    title: "衰退期",
+    title: "复苏早期",
     axes: "增长↓  避险↓",
-    summary: "增长明显下滑，政策宽松预期升温",
+    summary: "政策宽松，股票筑底，信用债受益",
     detail:
-      "经济明显下行，政策开始宽松。债券受益于降息预期，股票处于底部探寻阶段，信用债和成长股可能率先反弹。",
+      "经济数据仍弱，但政策开始宽松，市场情绪回暖。信用债率先受益，股票可能正在筑底反弹。",
   },
   {
     cluster: 3,
@@ -92,7 +76,6 @@ export default function EconomicQuadrantChart({ freq, onFreqChange }: Props) {
   }, [freq])
 
   const activeCluster = latest?.cluster ?? null
-  const activeQuadrant = getActiveQuadrant(latest)
 
   return (
     <Card>
@@ -102,9 +85,7 @@ export default function EconomicQuadrantChart({ freq, onFreqChange }: Props) {
             <CardTitle>经济象限</CardTitle>
             <CardDescription>
               GMM 聚类对应的宏观经济状态
-              {activeQuadrant
-                ? ` · 当前：${QUADRANTS.find(q => q.col === activeQuadrant.col && q.row === activeQuadrant.row)?.title ?? "—"}（族 ${activeCluster}）`
-                : ""}
+              {latest ? ` · 当前：族 ${activeCluster}（${QUADRANTS.find(q => q.cluster === activeCluster)?.title ?? "—"}）` : ""}
             </CardDescription>
           </div>
           <div className="flex shrink-0 gap-1 mt-0.5">
@@ -153,9 +134,7 @@ export default function EconomicQuadrantChart({ freq, onFreqChange }: Props) {
               {/* ── four quadrant cells ── */}
               <div className="absolute inset-0 grid grid-cols-2 grid-rows-2 gap-1 p-1">
                 {QUADRANTS.map((q) => {
-                  const isActive = activeQuadrant
-                    ? q.col === activeQuadrant.col && q.row === activeQuadrant.row
-                    : false
+                  const isActive = activeCluster === q.cluster
                   const color = CLUSTER_COLORS[q.cluster]
                   return (
                     <div
