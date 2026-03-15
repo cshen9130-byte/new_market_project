@@ -15,10 +15,10 @@ type Latest = {
 const CLUSTER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
 
 // Layout: 2×2 grid, top row = PC2+ (避险↑), left col = PC1- (增长↓)
-// 簇0 → top-left  (增长↓ 避险↑) 滞涨/中性
-// 簇1 → bottom-left  (增长↓ 避险↓) 衰退
-// 簇2 → top-right (增长↑ 避险↑) 过热
-// 簇3 → bottom-right (增长↑ 避险↓) 复苏
+// 簇0 → top-left    第三象限 (增长↓ 避险↑) 滞涨/中性
+// 簇2 → top-right   第一象限 (增长↑ 避险↑) 过热
+// 簇3 → bottom-left 第二象限 (增长↑ 避险↓) 复苏
+// 簇1 → bottom-right 第四象限 (增长↓ 避险↓) 衰退
 const QUADRANTS = [
   {
     cluster: 0,
@@ -40,7 +40,7 @@ const QUADRANTS = [
   },
   {
     cluster: 1,
-    col: 1, row: 2,                         // bottom-left  (PC1-, PC2-)
+    col: 2, row: 2,                         // bottom-right (PC1+, PC2-)
     title: "衰退期",
     axes: "增长↓  避险↓",
     summary: "增长下滑，政策宽松预期升温",
@@ -49,7 +49,7 @@ const QUADRANTS = [
   },
   {
     cluster: 3,
-    col: 2, row: 2,                         // bottom-right (PC1+, PC2-)
+    col: 1, row: 2,                         // bottom-left  (PC1-, PC2-)
     title: "复苏期",
     axes: "增长↑  避险↓",
     summary: "股票 · 商品走强，风险偏好回升",
