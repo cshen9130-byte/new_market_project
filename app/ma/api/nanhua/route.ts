@@ -6,8 +6,11 @@ export const dynamic = "force-dynamic"
 
 export async function GET() {
   try {
+    const lastYear = new Date().getFullYear() - 1
+    const since = `${lastYear}-01-01`
     const rows = await query<{ trade_date: Date; close: string }>(
-      "SELECT trade_date, close FROM raw_nhci_daily ORDER BY trade_date ASC",
+      "SELECT trade_date, close FROM raw_nhci_daily WHERE trade_date >= $1 ORDER BY trade_date ASC",
+      [since],
     )
     if (!rows.length) return NextResponse.json({ error: "No data" }, { status: 404 })
 
