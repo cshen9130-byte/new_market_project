@@ -279,6 +279,55 @@ def step_nhci(conn, *, force: bool = False, start: date | None = None) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# STEP 1b — NHECI (South China Energy & Chemical Index)  via EmQuant
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def step_nheci(conn, *, force: bool = False, start: date | None = None) -> int:
+    cur_max = max_date(conn, "raw_nheci_daily")
+    today = date.today()
+    if not force and start is None and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("NHECI up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    log.info("Fetching NHECI …")
+    extra_args: list[str] = []
+    if start:
+        extra_args = [iso(start), iso(today)]
+    out = run_script("get_nanhua_energy_index.py", extra_args=extra_args or None)
+    if not out or out.get("error"):
+        raise RuntimeError(f"NHECI fetch failed: {out}")
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        raise RuntimeError("NHECI: empty data returned")
+
+    records = []
+    for r in rows_raw:
+        d = to_date(str(r.get("date", "")).replace("-", ""))
+        cl = safe_float(r.get("close"))
+        if d and cl is not None:
+            records.append((d, cl, "emquant"))
+
+    if not records:
+        raise RuntimeError("NHECI: no valid rows parsed")
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_nheci_daily (trade_date, close, source)
+            VALUES %s
+            ON CONFLICT (trade_date) DO UPDATE
+                SET close = EXCLUDED.close, fetched_at = NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("NHECI: upserted %d rows (max date now %s).", len(records), max(r[0] for r in records))
+    return len(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Spot index closes  (EmQuant with Tushare fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1168,6 +1217,7 @@ def step_money_credit(conn) -> int:
 
 ORDERED_STEPS = [
     "nhci",
+    "nheci",
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
@@ -1269,6 +1319,7 @@ def main():
 
     step_fns = {
         "nhci":             lambda: step_nhci(conn, force=force),
+        "nheci":            lambda: step_nheci(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),

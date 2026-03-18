@@ -30,6 +30,20 @@ CREATE INDEX IF NOT EXISTS raw_nhci_daily_date_idx
     ON raw_nhci_daily (trade_date DESC);
 
 
+-- South-China Energy & Chemical Index (NHECI) daily close
+-- Source: EmQuant  (get_nanhua_energy_index.py)
+CREATE TABLE IF NOT EXISTS raw_nheci_daily (
+    id          BIGSERIAL     PRIMARY KEY,
+    trade_date  DATE          NOT NULL,
+    close       NUMERIC(12,4) NOT NULL,
+    source      VARCHAR(30)   NOT NULL DEFAULT 'emquant',
+    fetched_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT raw_nheci_daily_uq UNIQUE (trade_date)
+);
+CREATE INDEX IF NOT EXISTS raw_nheci_daily_date_idx
+    ON raw_nheci_daily (trade_date DESC);
+
+
 -- CFFEX index futures daily quotes
 -- Covers both specific-expiry contracts (IF2506.CFX) and
 -- continuous legs (IFL.CFX = near/L, IFL1.CFX = L1, IFL2.CFX, IFL3.CFX)

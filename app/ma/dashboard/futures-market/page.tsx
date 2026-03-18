@@ -13,6 +13,9 @@ export default function FuturesMarketPage() {
   const [nhci, setNhci] = useState<Array<{ date: string; close: number }>>([])
   const [loadingNhci, setLoadingNhci] = useState(true)
   const [errorNhci, setErrorNhci] = useState<string | null>(null)
+  const [nheci, setNheci] = useState<Array<{ date: string; close: number }>>([])
+  const [loadingNheci, setLoadingNheci] = useState(true)
+  const [errorNheci, setErrorNheci] = useState<string | null>(null)
 
   const [futLatest, setFutLatest] = useState<Record<string, {
     trade_date: string;
@@ -83,6 +86,26 @@ export default function FuturesMarketPage() {
       else setErrorNhci("数据不可用")
     } finally {
       setLoadingNhci(false)
+    }
+  }
+
+  const reloadNheci = async (force = false) => {
+    setLoadingNheci(true)
+    setErrorNheci(null)
+    try {
+      const res = await fetch(`/ma/api/nanhua-energy${q(force)}`, force ? { cache: "no-store" } : undefined)
+      const json = await res.json()
+      if (json?.error) throw new Error("api")
+      if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
+        setNheci(json.data)
+        lsSave("nheci", json.data)
+      } else throw new Error("empty")
+    } catch {
+      const cached = lsLoad("nheci")
+      if (cached) setNheci(cached)
+      else setErrorNheci("数据不可用")
+    } finally {
+      setLoadingNheci(false)
     }
   }
 
@@ -272,6 +295,7 @@ export default function FuturesMarketPage() {
   }
 
   useEffect(() => { reloadNhci(true) }, [])
+  useEffect(() => { reloadNheci(true) }, [])
 
   useEffect(() => { reloadBasisFar(true) }, [])
 
@@ -402,6 +426,114 @@ export default function FuturesMarketPage() {
                           colorStops: [
                             { offset: 0, color: "rgba(56,189,248,0.28)" },
                             { offset: 1, color: "rgba(56,189,248,0.02)" },
+                          ],
+                        },
+                      },
+                    },
+                  ],
+                }
+                return <ReactECharts option={option} style={{ height: 320 }} notMerge lazyUpdate />
+              })()
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="w-full">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>南华能化指数</CardTitle>
+                <CardDescription>去年至今每日收盘价</CardDescription>
+              </div>
+              {nheci.length > 0 && (() => {
+                const latest = nheci[nheci.length - 1]
+                const prev = nheci[nheci.length - 2]
+                const chg = prev ? latest.close - prev.close : null
+                const chgPct = prev ? (chg! / prev.close) * 100 : null
+                const up = chg === null ? null : chg >= 0
+                return (
+                  <div className="text-right">
+                    <div className="text-2xl font-bold tabular-nums">{latest.close.toFixed(2)}</div>
+                    <div className={`text-xs font-medium ${up === null ? "text-muted-foreground" : up ? "text-emerald-500" : "text-red-500"}`}>
+                      {chg !== null ? `${up ? "▲" : "▼"} ${Math.abs(chg).toFixed(2)} (${Math.abs(chgPct!).toFixed(2)}%)` : ""}
+                      <span className="ml-1 text-muted-foreground font-normal">{latest.date}</span>
+                    </div>
+                  </div>
+                )
+              })()}
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {loadingNheci ? (
+              <div className="text-sm text-muted-foreground">正在加载…</div>
+            ) : errorNheci ? (
+              <div className="text-sm text-destructive">{errorNheci}</div>
+            ) : (
+              (() => {
+                const values = nheci
+                  .map((d) => d.close)
+                  .filter((v) => typeof v === "number" && isFinite(v)) as number[]
+                const minVal = values.length ? Math.min(...values) : 0
+                const maxVal = values.length ? Math.max(...values) : 1000
+                const range = Math.max(1, maxVal - minVal)
+                const pad = Math.max(5, range * 0.05)
+                const yMin = Math.max(0, Math.floor(minVal - pad))
+                const yMax = Math.ceil(maxVal + pad)
+
+                const option = {
+                  grid: { top: 16, right: 16, bottom: 40, left: 56 },
+                  tooltip: {
+                    trigger: "axis",
+                    backgroundColor: "rgba(15,23,42,0.85)",
+                    borderColor: "transparent",
+                    textStyle: { color: "#f8fafc", fontSize: 12 },
+                    formatter: (params: any) => {
+                      const p = params[0]
+                      if (!p) return ""
+                      return `<span style="color:#94a3b8">${p.axisValue}</span><br/>${p.marker} <b>${typeof p.value === "number" ? p.value.toFixed(2) : "-"}</b>`
+                    },
+                    axisPointer: { lineStyle: { color: "#475569", type: "dashed" as const } },
+                  },
+                  xAxis: {
+                    type: "category" as const,
+                    data: nheci.map((d) => d.date),
+                    axisLine: { lineStyle: { color: "#334155" } },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 11,
+                      interval: Math.max(1, Math.floor(nheci.length / 7)),
+                      formatter: (v: string) => v.slice(5),
+                    },
+                    splitLine: { show: false },
+                  },
+                  yAxis: {
+                    type: "value" as const,
+                    min: yMin,
+                    max: yMax,
+                    scale: true,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: { color: "#64748b", fontSize: 11 },
+                    splitLine: { lineStyle: { color: "#1e293b", type: "dashed" as const } },
+                  },
+                  series: [
+                    {
+                      type: "line",
+                      name: "南华能化指数",
+                      data: nheci.map((d) => d.close),
+                      smooth: 0.3,
+                      symbol: "none",
+                      lineStyle: { width: 2.5, color: "#f97316" },
+                      areaStyle: {
+                        color: {
+                          type: "linear",
+                          x: 0, y: 0, x2: 0, y2: 1,
+                          colorStops: [
+                            { offset: 0, color: "rgba(249,115,22,0.28)" },
+                            { offset: 1, color: "rgba(249,115,22,0.02)" },
                           ],
                         },
                       },
