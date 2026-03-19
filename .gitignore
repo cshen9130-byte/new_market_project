@@ -71,3 +71,6 @@ data/basis_near_diff_timeseries_cache.json
 data/basis_near_timeseries_cache.json
 data/basis_timeseries_cache.json
 public/mom_report/report.backup.*.html
+
+# MOM data - stored outside project folder
+mom_data/

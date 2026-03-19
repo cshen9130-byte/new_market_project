@@ -5,7 +5,7 @@ import { NextResponse } from "next/server"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-const BASE_DIR = path.join(process.cwd(), "mom_data", "03.投顾逐日")
+const BASE_DIR = process.env.MOM_DATA_DIR ?? path.join(process.cwd(), "..", "mom_data", "03.投顾逐日")
 
 // Start scanning from this date (inclusive)
 const SCAN_FROM = "20250704"
