@@ -3,13 +3,8 @@
 import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, FileText, BrainCircuit, Home, Wrench } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2 } from "lucide-react"
 import type React from "react"
-import { Button } from "../ui/button"
-import { Download } from "lucide-react"
-
-const momReportUrl = (process.env.NEXT_PUBLIC_MOM_REPORT_URL || "/mom_report/report.html?v=debug") as string
-const downloadHref = "/mom_report/report.html"
 
 const navigation = [
   { name: "总览", href: "/ma/dashboard", icon: LayoutDashboard },
@@ -18,8 +13,7 @@ const navigation = [
   { name: "期货市场", href: "/ma/dashboard/futures-market", icon: Rocket },
   { name: "期权市场", href: "/ma/dashboard/options-market", icon: Target },
   { name: "私募基金", href: "/ma/dashboard/private-funds", icon: Briefcase },
-  // Add cache-busting query to ensure latest assets load in new tab
-  { name: "MOM 风控报告", href: momReportUrl, icon: FileText },
+  { name: "MOM分析", href: "/ma/dashboard/mom-analysis", icon: BarChart2 },
   { name: "小工具", href: "/ma/dashboard/tools", icon: Wrench },
   { name: "__home__", href: "/ma/dashboard", icon: Home },
   { name: "AI知识库", href: "/ma/dashboard/ai-knowledge", icon: BrainCircuit },
@@ -54,44 +48,6 @@ export function DashboardSidebar() {
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-muted hover:text-foreground",
           )
-
-          if (item.name === "MOM 风控报告") {
-            if (isCollapsed) {
-              return (
-                <Link
-                  key={item.name}
-                  href={item.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  prefetch={false}
-                  title={item.name}
-                  className={cn(baseClasses, "items-center")}
-                >
-                  <item.icon className="h-4 w-4" />
-                </Link>
-              )
-            }
-
-            return (
-              <div key={item.name} className={cn(baseClasses, "flex items-center justify-between gap-2")}>
-                <Link
-                  href={item.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  prefetch={false}
-                  className="flex items-center gap-3"
-                >
-                  <item.icon className="h-4 w-4" />
-                  {item.name}
-                </Link>
-                <Button asChild variant="ghost" size="sm" aria-label="下载 MOM 风控报告">
-                  <a href={downloadHref} download>
-                    <Download className="h-4 w-4" />
-                  </a>
-                </Button>
-              </div>
-            )
-          }
 
           if (item.name === "__home__") {
             if (!isCollapsed) return null
