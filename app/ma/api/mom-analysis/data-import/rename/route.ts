@@ -90,7 +90,9 @@ export async function POST(request: Request): Promise<Response> {
         if (fname !== expectedName) {
           const newPath = path.join(folderPath, expectedName)
           if (fs.existsSync(newPath)) {
-            result.duplicates.push(`[${folder}] 文件已存在，跳过: ${fname} → ${expectedName}`)
+            // Standardized file already exists — delete the old-format duplicate
+            fs.unlinkSync(fpath)
+            result.duplicates.push(`[${folder}] 已删除重复旧文件: ${fname}`)
           } else {
             fs.renameSync(fpath, newPath)
             result.renamedFiles.push(`[${folder}] ${fname} → ${expectedName}`)
