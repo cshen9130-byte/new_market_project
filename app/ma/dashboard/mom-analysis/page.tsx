@@ -17,7 +17,7 @@ const functions = [
   },
   {
     title: "数据导入",
-    description: "上传基金净值或收益率文件，自动解析并预览导入数据。",
+    description: "上传逐日核算 ZIP 包，自动解压、标准化命名并检查交易日覆盖情况。",
     href: "/ma/dashboard/mom-analysis/data-import",
     downloadHref: null,
     icon: Upload,
