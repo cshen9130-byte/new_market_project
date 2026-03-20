@@ -162,6 +162,39 @@ SUMMARY_DETAIL_COLUMNS: List[Tuple[str, str]] = [
 ]
 SUMMARY_DETAIL_SQL_COLS = ['"账户"', '"交易日期"'] + [f'"{sql}"' for _, sql in SUMMARY_DETAIL_COLUMNS]
 
+DAILY_REPORT_SHEET_NAME = "客户交易核算日报"
+# Ordered (cell_ref, column_name) pairs to read from 客户交易核算日报 sheet.
+DAILY_REPORT_COL_ORDER: List[Tuple[str, str]] = [
+    ("D6",  "账户"),
+    ("I6",  "交易日期"),
+    ("D11", "上日结存"),
+    ("I11", "客户权益"),
+    ("D12", "当日存取合计"),
+    ("I12", "实有货币资金"),
+    ("D13", "当日盈亏"),
+    ("I13", "非货币充抖金额"),
+    ("D14", "当日总权利金"),
+    ("I14", "货币充抖金额"),
+    ("D15", "当日手续费"),
+    ("I15", "冻结资金"),
+    ("D16", "当日结存"),
+    ("I16", "保证金占用"),
+    ("D17", "可用资金"),
+    ("I17", "风险度"),
+    ("D18", "追加保证金"),
+    ("I18", "市値权益"),
+    ("D19", "多头期权市値"),
+    ("I19", "空头期权市値"),
+    ("D20", "权利金收入"),
+    ("I20", "权利金支出"),
+    ("D21", "行权手续费"),
+    ("I21", "行权盈亏"),
+    ("D22", "申报费"),
+    ("D23", "平仓盈亏"),
+    ("I23", "持仓盈亏"),
+]
+DAILY_REPORT_SQL_COLS = [f'"{col}"' for _, col in DAILY_REPORT_COL_ORDER]
+
 def load_env_files() -> None:
     """Walk up and load .env/.env.local without overriding existing env vars."""
     candidates = [Path(__file__).resolve().parent, Path.cwd()]
@@ -332,6 +365,26 @@ def parse_summary_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_s
     return account, trade_date
 
 
+def parse_daily_report_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str]) -> Dict[str, str]:
+    """Read specific cells from 客户交易核算日报 and return {cell_ref: value}."""
+    target_cells = {ref for ref, _ in DAILY_REPORT_COL_ORDER}
+    values: Dict[str, str] = {ref: "" for ref, _ in DAILY_REPORT_COL_ORDER}
+    with workbook_zip.open(sheet_path) as sheet_file:
+        for _, element in ET.iterparse(sheet_file, events=("end",)):
+            if element.tag != f"{{{MAIN_NS}}}row":
+                continue
+            row_number = int(element.attrib.get("r", "0"))
+            if row_number > 23:
+                element.clear()
+                break
+            for cell in element.findall(f"{{{MAIN_NS}}}c"):
+                ref = cell.attrib.get("r", "")
+                if ref in target_cells:
+                    values[ref] = str(clean_cell(extract_cell_value(cell, shared_strings))).strip()
+            element.clear()
+    return values
+
+
 def parse_detail_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str], last_col: int | None = None) -> Tuple[List[str], List[List[str]]]:
     headers: List[str] = []
     rows: List[List[str]] = []
@@ -418,6 +471,7 @@ def drop_tables(conn) -> None:
         cur.execute("DROP TABLE IF EXISTS mom_futures_position_details CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_order_details CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_summary_details CASCADE")
+        cur.execute("DROP TABLE IF EXISTS mom_daily_reports CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_trade_detail_file_state CASCADE")
     conn.commit()
 
@@ -429,6 +483,9 @@ def ensure_tables(conn) -> None:
     position_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in POSITION_COLUMNS)
     order_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in ORDER_COLUMNS)
     summary_detail_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in SUMMARY_DETAIL_COLUMNS)
+    daily_report_non_key_cols = "\n".join(
+        f'  "{col}" TEXT,' for _, col in DAILY_REPORT_COL_ORDER if col not in ("账户", "交易日期")
+    )
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -499,7 +556,7 @@ def ensure_tables(conn) -> None:
             )
             """
         )
-        for col in ("futures_row_count", "options_row_count", "close_row_count", "position_row_count", "options_position_row_count", "futures_position_row_count", "order_row_count", "summary_row_count"):
+        for col in ("futures_row_count", "options_row_count", "close_row_count", "position_row_count", "options_position_row_count", "futures_position_row_count", "order_row_count", "summary_row_count", "daily_report_count"):
             cur.execute(
                 f"""
                 ALTER TABLE mom_trade_detail_file_state
@@ -625,6 +682,24 @@ def ensure_tables(conn) -> None:
               ON mom_summary_details ("账户", "交易日期")
             """
         )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS mom_daily_reports (
+              id              BIGSERIAL PRIMARY KEY,
+              "账户"          TEXT NOT NULL,
+              "交易日期"      DATE,
+{daily_report_non_key_cols}
+              source_file_rel TEXT NOT NULL,
+              UNIQUE (source_file_rel)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mom_daily_reports_account_date
+              ON mom_daily_reports ("账户", "交易日期")
+            """
+        )
     conn.commit()
 
 
@@ -650,13 +725,13 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
     return state
 
 
-def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, account: str, trade_date: str, row_count: int, futures_row_count: int, options_row_count: int, close_row_count: int, position_row_count: int, options_position_row_count: int, futures_position_row_count: int, order_row_count: int, summary_row_count: int, status: str, error_message: str | None) -> None:
+def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, account: str, trade_date: str, row_count: int, futures_row_count: int, options_row_count: int, close_row_count: int, position_row_count: int, options_position_row_count: int, futures_position_row_count: int, order_row_count: int, summary_row_count: int, daily_report_count: int, status: str, error_message: str | None) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO mom_trade_detail_file_state
-              (source_file_rel, source_mtime, source_size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, status, error_message, processed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+              (source_file_rel, source_mtime, source_size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, daily_report_count, status, error_message, processed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (source_file_rel) DO UPDATE SET
               source_mtime                = EXCLUDED.source_mtime,
               source_size                 = EXCLUDED.source_size,
@@ -671,11 +746,12 @@ def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, accoun
               futures_position_row_count  = EXCLUDED.futures_position_row_count,
               order_row_count             = EXCLUDED.order_row_count,
               summary_row_count           = EXCLUDED.summary_row_count,
+              daily_report_count          = EXCLUDED.daily_report_count,
               status                      = EXCLUDED.status,
               error_message               = EXCLUDED.error_message,
               processed_at                = NOW()
             """,
-            (file_rel, mtime_dt, size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, status, error_message),
+            (file_rel, mtime_dt, size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, daily_report_count, status, error_message),
         )
 
 
@@ -691,7 +767,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         with zipfile.ZipFile(file_path) as workbook_zip:
             sheet_paths = get_sheet_paths(workbook_zip)
             if SUMMARY_SHEET_NAME not in sheet_paths or DETAIL_SHEET_NAME not in sheet_paths:
-                upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing required sheet")
+                upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing required sheet")
                 conn.commit()
                 return False, f"missing sheet: {rel}"
 
@@ -801,9 +877,21 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                     last_col=SUMMARY_DETAIL_LAST_COLUMN,
                 )
 
+            # 客户交易核算日报 sheet — reads specific cells from rows 6 and 11-23.
+            daily_report_row: dict | None = None
+            dr_account = ""
+            dr_date_raw = ""
+            if DAILY_REPORT_SHEET_NAME in sheet_paths:
+                daily_cells = parse_daily_report_sheet(
+                    workbook_zip, sheet_paths[DAILY_REPORT_SHEET_NAME], shared_strings
+                )
+                dr_account = daily_cells.get("D6", "")
+                dr_date_raw = daily_cells.get("I6", "")
+                daily_report_row = daily_cells
+
         trade_date = normalize_trade_date(trade_date_raw)
         if not account or not trade_date:
-            upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing account/date in summary")
+            upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing account/date in summary")
             conn.commit()
             return False, f"missing account/date: {rel}"
 
@@ -839,6 +927,10 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         summary_detail_account = summary_detail_account or account
         summary_detail_date = summary_detail_date or trade_date
 
+        dr_date = normalize_trade_date(dr_date_raw)
+        dr_account = dr_account or account
+        dr_date = dr_date or trade_date
+
         # Build column-position map (tolerates minor header variations).
         header_index_map: Dict[str, int] = {h.strip(): i for i, h in enumerate(headers)}
         col_positions: List[int | None] = [
@@ -855,6 +947,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         futures_position_date_iso = f"{futures_position_date[:4]}-{futures_position_date[4:6]}-{futures_position_date[6:8]}" if re.fullmatch(r"\d{8}", futures_position_date) else None
         order_date_iso = f"{order_date[:4]}-{order_date[4:6]}-{order_date[6:8]}" if re.fullmatch(r"\d{8}", order_date) else None
         summary_detail_date_iso = f"{summary_detail_date[:4]}-{summary_detail_date[4:6]}-{summary_detail_date[6:8]}" if re.fullmatch(r"\d{8}", summary_detail_date) else None
+        dr_date_iso = f"{dr_date[:4]}-{dr_date[4:6]}-{dr_date[6:8]}" if re.fullmatch(r"\d{8}", dr_date) else None
 
         with conn.cursor() as cur:
             # ── 成交明细 ──────────────────────────────────────────────────────
@@ -993,14 +1086,34 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                     sumvalues, page_size=1000,
                 )
 
-        upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, len(rows), len(futures_rows), len(options_rows), len(close_rows), len(position_rows), len(options_position_rows), len(futures_position_rows), len(order_rows), len(summary_detail_rows), "ok", None)
+            # ── 客户交易核算日报 ────────────────────────────────────────────────
+            cur.execute("DELETE FROM mom_daily_reports WHERE source_file_rel = %s", (rel,))
+            if daily_report_row is not None:
+                dr_vals: list = []
+                for ref, col in DAILY_REPORT_COL_ORDER:
+                    if col == "账户":
+                        dr_vals.append(dr_account)
+                    elif col == "交易日期":
+                        dr_vals.append(dr_date_iso)
+                    else:
+                        dr_vals.append(daily_report_row.get(ref, ""))
+                dr_vals.append(rel)
+                dr_insert_cols = ", ".join(DAILY_REPORT_SQL_COLS) + ", source_file_rel"
+                placeholders = ", ".join(["%s"] * len(dr_vals))
+                cur.execute(
+                    f"INSERT INTO mom_daily_reports ({dr_insert_cols}) VALUES ({placeholders})",
+                    dr_vals,
+                )
+            daily_report_count = 1 if daily_report_row is not None else 0
+
+        upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, len(rows), len(futures_rows), len(options_rows), len(close_rows), len(position_rows), len(options_position_rows), len(futures_position_rows), len(order_rows), len(summary_detail_rows), daily_report_count, "ok", None)
         conn.commit()
-        return True, f"ok: {rel} rows={len(rows)} futures={len(futures_rows)} options={len(options_rows)} close={len(close_rows)} pos={len(position_rows)} optpos={len(options_position_rows)} futpos={len(futures_position_rows)} ord={len(order_rows)} sum={len(summary_detail_rows)}"
+        return True, f"ok: {rel} rows={len(rows)} futures={len(futures_rows)} options={len(options_rows)} close={len(close_rows)} pos={len(position_rows)} optpos={len(options_position_rows)} futpos={len(futures_position_rows)} ord={len(order_rows)} sum={len(summary_detail_rows)} daily={daily_report_count}"
 
     except Exception as exc:
         conn.rollback()
         try:
-            upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", str(exc))
+            upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", str(exc))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1087,6 +1200,9 @@ def run(base_dir: Path, reset: bool = False) -> int:
         total_summary = sum(
             1 for msg in messages if "sum=" in msg and not msg.startswith("error")
         )
+        total_daily = sum(
+            1 for msg in messages if "daily=1" in msg and not msg.startswith("error")
+        )
         out = {
             "job": JOB_NAME,
             "total_files": len(files),
@@ -1101,6 +1217,7 @@ def run(base_dir: Path, reset: bool = False) -> int:
             "futures_position_files_with_data": total_futures_position,
             "order_files_with_data": total_order,
             "summary_files_with_data": total_summary,
+            "daily_report_files_with_data": total_daily,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
