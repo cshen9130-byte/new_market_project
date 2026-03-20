@@ -49,6 +49,29 @@ LAST_COLUMN = 17
 
 JOB_NAME = "mom_data_etl"
 
+# Ordered list of (xlsx header text, SQL column name).
+# Matches columns B-Q in 成交明细 sheet, same order as export_trade_details_by_account.py.
+DETAIL_COLUMNS: List[Tuple[str, str]] = [
+    ("合约",           "合约"),
+    ("成交编号",        "成交编号"),
+    ("成交时间",        "成交时间"),
+    ("买/卖",          "买/卖"),
+    ("投机/套保",       "投机/套保"),
+    ("成交价",         "成交价"),
+    ("手数",           "手数"),
+    ("成交额",         "成交额"),
+    ("开/平",          "开/平"),
+    ("手续费",         "手续费"),
+    ("平仓盈亏",        "平仓盈亏"),
+    ("资金账户报单编号", "资金账户报单编号"),
+    ("成交日期",        "成交日期"),
+    ("权利金收支",      "权利金收支"),
+    ("资金账户成交编号", "资金账户成交编号"),
+    ("交易所",         "交易所"),
+]
+DETAIL_SQL_COLS = [f'"{sql}"' for _, sql in DETAIL_COLUMNS]
+DETAIL_XLSX_HEADERS = [xlsx for xlsx, _ in DETAIL_COLUMNS]
+
 
 def load_env_files() -> None:
     """Walk up and load .env/.env.local without overriding existing env vars."""
@@ -280,21 +303,40 @@ def row_hash(file_rel: str, account: str, trade_date: str, values: Iterable[str]
     return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
 
 
-def ensure_tables(conn) -> None:
+def _old_schema_detected(conn) -> bool:
+    """Return True if mom_trade_details still has the old JSONB 'detail_payload' column."""
     with conn.cursor() as cur:
         cur.execute(
             """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name   = 'mom_trade_details'
+              AND column_name  = 'detail_payload'
+            """
+        )
+        return cur.fetchone() is not None
+
+
+def drop_tables(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("DROP TABLE IF EXISTS mom_trade_details CASCADE")
+        cur.execute("DROP TABLE IF EXISTS mom_trade_detail_file_state CASCADE")
+    conn.commit()
+
+
+def ensure_tables(conn) -> None:
+    detail_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in DETAIL_COLUMNS)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
             CREATE TABLE IF NOT EXISTS mom_trade_details (
-              id BIGSERIAL PRIMARY KEY,
+              id              BIGSERIAL PRIMARY KEY,
+              account         TEXT NOT NULL,
+              trade_date      DATE,
+{detail_col_defs}
               source_file_rel TEXT NOT NULL,
-              source_folder TEXT NOT NULL,
-              account TEXT NOT NULL,
-              trade_date DATE,
-              row_hash TEXT NOT NULL,
-              detail_payload JSONB NOT NULL,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-              UNIQUE (source_file_rel, row_hash)
+              row_hash        TEXT NOT NULL,
+              UNIQUE (row_hash)
             )
             """
         )
@@ -302,21 +344,21 @@ def ensure_tables(conn) -> None:
             """
             CREATE TABLE IF NOT EXISTS mom_trade_detail_file_state (
               source_file_rel TEXT PRIMARY KEY,
-              source_mtime TIMESTAMPTZ NOT NULL,
-              source_size BIGINT NOT NULL,
-              account TEXT,
-              trade_date TEXT,
-              row_count INTEGER NOT NULL DEFAULT 0,
-              status TEXT NOT NULL DEFAULT 'ok',
-              error_message TEXT,
-              processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+              source_mtime    TIMESTAMPTZ NOT NULL,
+              source_size     BIGINT NOT NULL,
+              account         TEXT,
+              trade_date      TEXT,
+              row_count       INTEGER NOT NULL DEFAULT 0,
+              status          TEXT NOT NULL DEFAULT 'ok',
+              error_message   TEXT,
+              processed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
         )
         cur.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_mom_trade_details_trade_date_account
-              ON mom_trade_details (trade_date, account)
+            CREATE INDEX IF NOT EXISTS idx_mom_trade_details_account_date
+              ON mom_trade_details (account, trade_date)
             """
         )
     conn.commit()
@@ -391,37 +433,34 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             conn.commit()
             return False, f"missing account/date: {rel}"
 
+        # Build a mapping from xlsx header position → DETAIL_COLUMNS index.
+        # Tolerates minor header variations (extra spaces, etc.).
+        header_index_map: Dict[str, int] = {h.strip(): i for i, h in enumerate(headers)}
+        col_positions: List[int | None] = [
+            header_index_map.get(xlsx_hdr.strip())
+            for xlsx_hdr in DETAIL_XLSX_HEADERS
+        ]
+
+        trade_date_iso = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}" if re.fullmatch(r"\d{8}", trade_date) else None
+
         # Replace rows for this source file to avoid duplication on reprocess.
         with conn.cursor() as cur:
             cur.execute("DELETE FROM mom_trade_details WHERE source_file_rel = %s", (rel,))
 
+            insert_cols = "account, trade_date, " + ", ".join(DETAIL_SQL_COLS) + ", source_file_rel, row_hash"
             values = []
-            folder = rel.split("/")[0] if "/" in rel else ""
-            trade_date_iso = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}" if re.fullmatch(r"\d{8}", trade_date) else None
             for rv in rows:
-                payload = {"headers": headers, "values": rv}
-                values.append(
-                    (
-                        rel,
-                        folder,
-                        account,
-                        trade_date_iso,
-                        row_hash(rel, account, trade_date, rv),
-                        json.dumps(payload, ensure_ascii=False),
-                    )
-                )
+                detail_vals = [
+                    rv[pos] if pos is not None and pos < len(rv) else ""
+                    for pos in col_positions
+                ]
+                rh = row_hash(rel, account, trade_date, rv)
+                values.append(tuple([account, trade_date_iso] + detail_vals + [rel, rh]))
 
             if values:
                 execute_values(
                     cur,
-                    """
-                    INSERT INTO mom_trade_details
-                      (source_file_rel, source_folder, account, trade_date, row_hash, detail_payload)
-                    VALUES %s
-                    ON CONFLICT (source_file_rel, row_hash) DO UPDATE SET
-                      detail_payload = EXCLUDED.detail_payload,
-                      updated_at = NOW()
-                    """,
+                    f"INSERT INTO mom_trade_details ({insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
                     values,
                     page_size=1000,
                 )
@@ -440,7 +479,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         return False, f"error: {rel} {exc}"
 
 
-def run(base_dir: Path) -> int:
+def run(base_dir: Path, reset: bool = False) -> int:
     files = collect_xlsx_files(base_dir)
     if not files:
         print(json.dumps({"job": JOB_NAME, "processed": 0, "changed": 0, "message": "No xlsx files found"}, ensure_ascii=False))
@@ -448,6 +487,11 @@ def run(base_dir: Path) -> int:
 
     conn = get_conn()
     try:
+        if reset:
+            drop_tables(conn)
+        elif _old_schema_detected(conn):
+            # Auto-migrate: old JSONB schema detected, drop and recreate.
+            drop_tables(conn)
         ensure_tables(conn)
 
         state = load_file_state(conn, files, base_dir)
@@ -504,6 +548,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Incremental ETL for MOM 成交明细 to PostgreSQL")
     parser.add_argument("--base-dir", default=None, help="MOM data directory, defaults to MOM_DATA_DIR")
+    parser.add_argument("--reset", action="store_true", help="Drop and recreate tables before processing (full reload)")
     args = parser.parse_args()
 
     base_dir = resolve_base_dir(args.base_dir)
@@ -511,7 +556,7 @@ def main() -> None:
         print(json.dumps({"job": JOB_NAME, "error": f"base dir not found: {base_dir}"}, ensure_ascii=False))
         sys.exit(1)
 
-    code = run(base_dir)
+    code = run(base_dir, reset=args.reset)
     sys.exit(code)
 
 
