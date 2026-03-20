@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Database, TableIcon, ChevronRight, Download, Play, RefreshCw,
   AlertCircle, CheckCircle2, Clock, Rows3, ArrowLeft, ArrowRight,
+  ChevronsLeft, ChevronsRight,
 } from "lucide-react"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -412,27 +413,49 @@ export default function DbExplorerPage() {
                 {/* Pagination */}
                 {totalPages > 1 && (
                   <div className="flex items-center justify-between px-4 py-2 border-t bg-card text-xs">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 gap-1"
-                      disabled={previewPage === 0 || previewLoading}
-                      onClick={() => handlePreviewPage(previewPage - 1)}
-                    >
-                      <ArrowLeft className="h-3 w-3" /> 上一页
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1"
+                        disabled={previewPage === 0 || previewLoading}
+                        onClick={() => handlePreviewPage(0)}
+                      >
+                        <ChevronsLeft className="h-3 w-3" /> 首页
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1"
+                        disabled={previewPage === 0 || previewLoading}
+                        onClick={() => handlePreviewPage(previewPage - 1)}
+                      >
+                        <ArrowLeft className="h-3 w-3" /> 上一页
+                      </Button>
+                    </div>
                     <span className="text-muted-foreground">
                       {previewPage * PAGE_SIZE + 1}–{Math.min((previewPage + 1) * PAGE_SIZE, previewTotal)} / {previewTotal.toLocaleString()}
                     </span>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 gap-1"
-                      disabled={previewPage >= totalPages - 1 || previewLoading}
-                      onClick={() => handlePreviewPage(previewPage + 1)}
-                    >
-                      下一页 <ArrowRight className="h-3 w-3" />
-                    </Button>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1"
+                        disabled={previewPage >= totalPages - 1 || previewLoading}
+                        onClick={() => handlePreviewPage(previewPage + 1)}
+                      >
+                        下一页 <ArrowRight className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1"
+                        disabled={previewPage >= totalPages - 1 || previewLoading}
+                        onClick={() => handlePreviewPage(totalPages - 1)}
+                      >
+                        尾页 <ChevronsRight className="h-3 w-3" />
+                      </Button>
+                    </div>
                   </div>
                 )}
               </TabsContent>
