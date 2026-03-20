@@ -75,6 +75,10 @@ FUTURES_DETAIL_SHEET_NAME = "期货成交明细"
 # 期货成交明细 rows: same B-Q columns as 成交明细, plus 账户 (D6) and 交易日期 (I6).
 FUTURES_SQL_COLS = ['"账户"', '"交易日期"'] + DETAIL_SQL_COLS
 
+OPTIONS_DETAIL_SHEET_NAME = "期权成交明细"
+# 期权成交明细 rows: same B-Q columns, plus 账户 (D6) and 交易日期 (I6).
+OPTIONS_SQL_COLS = ['"账户"', '"交易日期"'] + DETAIL_SQL_COLS
+
 def load_env_files() -> None:
     """Walk up and load .env/.env.local without overriding existing env vars."""
     candidates = [Path(__file__).resolve().parent, Path.cwd()]
@@ -323,13 +327,14 @@ def drop_tables(conn) -> None:
     with conn.cursor() as cur:
         cur.execute("DROP TABLE IF EXISTS mom_trade_details CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_futures_trade_details CASCADE")
+        cur.execute("DROP TABLE IF EXISTS mom_options_trade_details CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_trade_detail_file_state CASCADE")
     conn.commit()
 
 
 def ensure_tables(conn) -> None:
     detail_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in DETAIL_COLUMNS)
-    futures_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in DETAIL_COLUMNS)
+    sub_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in DETAIL_COLUMNS)
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -350,7 +355,20 @@ def ensure_tables(conn) -> None:
               id              BIGSERIAL PRIMARY KEY,
               "账户"          TEXT NOT NULL,
               "交易日期"      DATE,
-{futures_col_defs}
+{sub_col_defs}
+              source_file_rel TEXT NOT NULL,
+              row_hash        TEXT NOT NULL,
+              UNIQUE (row_hash)
+            )
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS mom_options_trade_details (
+              id              BIGSERIAL PRIMARY KEY,
+              "账户"          TEXT NOT NULL,
+              "交易日期"      DATE,
+{sub_col_defs}
               source_file_rel TEXT NOT NULL,
               row_hash        TEXT NOT NULL,
               UNIQUE (row_hash)
@@ -367,19 +385,20 @@ def ensure_tables(conn) -> None:
               trade_date         TEXT,
               row_count          INTEGER NOT NULL DEFAULT 0,
               futures_row_count  INTEGER NOT NULL DEFAULT 0,
+              options_row_count  INTEGER NOT NULL DEFAULT 0,
               status             TEXT NOT NULL DEFAULT 'ok',
               error_message      TEXT,
               processed_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
             """
         )
-        # Add futures_row_count to existing tables that predate this column.
-        cur.execute(
-            """
-            ALTER TABLE mom_trade_detail_file_state
-              ADD COLUMN IF NOT EXISTS futures_row_count INTEGER NOT NULL DEFAULT 0
-            """
-        )
+        for col in ("futures_row_count", "options_row_count"):
+            cur.execute(
+                f"""
+                ALTER TABLE mom_trade_detail_file_state
+                  ADD COLUMN IF NOT EXISTS {col} INTEGER NOT NULL DEFAULT 0
+                """
+            )
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_mom_trade_details_account_date
@@ -390,6 +409,12 @@ def ensure_tables(conn) -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_mom_futures_trade_details_account_date
               ON mom_futures_trade_details ("账户", "交易日期")
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mom_options_trade_details_account_date
+              ON mom_options_trade_details ("账户", "交易日期")
             """
         )
     conn.commit()
@@ -417,13 +442,13 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
     return state
 
 
-def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, account: str, trade_date: str, row_count: int, futures_row_count: int, status: str, error_message: str | None) -> None:
+def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, account: str, trade_date: str, row_count: int, futures_row_count: int, options_row_count: int, status: str, error_message: str | None) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO mom_trade_detail_file_state
-              (source_file_rel, source_mtime, source_size, account, trade_date, row_count, futures_row_count, status, error_message, processed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+              (source_file_rel, source_mtime, source_size, account, trade_date, row_count, futures_row_count, options_row_count, status, error_message, processed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (source_file_rel) DO UPDATE SET
               source_mtime      = EXCLUDED.source_mtime,
               source_size       = EXCLUDED.source_size,
@@ -431,11 +456,12 @@ def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, accoun
               trade_date        = EXCLUDED.trade_date,
               row_count         = EXCLUDED.row_count,
               futures_row_count = EXCLUDED.futures_row_count,
+              options_row_count = EXCLUDED.options_row_count,
               status            = EXCLUDED.status,
               error_message     = EXCLUDED.error_message,
               processed_at      = NOW()
             """,
-            (file_rel, mtime_dt, size, account, trade_date, row_count, futures_row_count, status, error_message),
+            (file_rel, mtime_dt, size, account, trade_date, row_count, futures_row_count, options_row_count, status, error_message),
         )
 
 
@@ -471,15 +497,31 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                     workbook_zip, sheet_paths[FUTURES_DETAIL_SHEET_NAME], shared_strings
                 )
 
+            # 期权成交明细 sheet — same B-Q structure; D6/I6 carry account/date too.
+            options_rows: list = []
+            options_account = ""
+            options_date_raw = ""
+            if OPTIONS_DETAIL_SHEET_NAME in sheet_paths:
+                options_account, options_date_raw = parse_summary_sheet(
+                    workbook_zip, sheet_paths[OPTIONS_DETAIL_SHEET_NAME], shared_strings
+                )
+                _, options_rows = parse_detail_sheet(
+                    workbook_zip, sheet_paths[OPTIONS_DETAIL_SHEET_NAME], shared_strings
+                )
+
         trade_date = normalize_trade_date(trade_date_raw)
         if not account or not trade_date:
-            upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, 0, 0, "error", "Missing account/date in summary")
+            upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, 0, 0, 0, "error", "Missing account/date in summary")
             conn.commit()
             return False, f"missing account/date: {rel}"
 
         futures_date = normalize_trade_date(futures_date_raw)
         futures_account = futures_account or account
         futures_date = futures_date or trade_date
+
+        options_date = normalize_trade_date(options_date_raw)
+        options_account = options_account or account
+        options_date = options_date or trade_date
 
         # Build column-position map (tolerates minor header variations).
         header_index_map: Dict[str, int] = {h.strip(): i for i, h in enumerate(headers)}
@@ -490,6 +532,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
 
         trade_date_iso = f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}" if re.fullmatch(r"\d{8}", trade_date) else None
         futures_date_iso = f"{futures_date[:4]}-{futures_date[4:6]}-{futures_date[6:8]}" if re.fullmatch(r"\d{8}", futures_date) else None
+        options_date_iso = f"{options_date[:4]}-{options_date[4:6]}-{options_date[6:8]}" if re.fullmatch(r"\d{8}", options_date) else None
 
         with conn.cursor() as cur:
             # ── 成交明细 ──────────────────────────────────────────────────────
@@ -522,14 +565,29 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                     fvalues, page_size=1000,
                 )
 
-        upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, len(rows), len(futures_rows), "ok", None)
+            # ── 期权成交明细 ──────────────────────────────────────────────────
+            cur.execute("DELETE FROM mom_options_trade_details WHERE source_file_rel = %s", (rel,))
+            options_insert_cols = ", ".join(OPTIONS_SQL_COLS) + ", source_file_rel, row_hash"
+            ovalues = []
+            for rv in options_rows:
+                detail_vals = [rv[pos] if pos is not None and pos < len(rv) else "" for pos in col_positions]
+                rh = row_hash(rel + "#options", options_account, options_date, rv)
+                ovalues.append(tuple([options_account, options_date_iso] + detail_vals + [rel, rh]))
+            if ovalues:
+                execute_values(
+                    cur,
+                    f"INSERT INTO mom_options_trade_details ({options_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
+                    ovalues, page_size=1000,
+                )
+
+        upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, len(rows), len(futures_rows), len(options_rows), "ok", None)
         conn.commit()
-        return True, f"ok: {rel} rows={len(rows)} futures={len(futures_rows)}"
+        return True, f"ok: {rel} rows={len(rows)} futures={len(futures_rows)} options={len(options_rows)}"
 
     except Exception as exc:
         conn.rollback()
         try:
-            upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, "error", str(exc))
+            upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, "error", str(exc))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -541,6 +599,18 @@ def run(base_dir: Path, reset: bool = False) -> int:
     if not files:
         print(json.dumps({"job": JOB_NAME, "processed": 0, "changed": 0, "message": "No xlsx files found"}, ensure_ascii=False))
         return 0
+
+    try:
+        from tqdm import tqdm as _tqdm  # type: ignore[import-untyped]
+        def progress(iterable, **kwargs):
+            return _tqdm(iterable, file=sys.stderr, **kwargs)
+    except ImportError:
+        def progress(iterable, desc="", total=None, **kwargs):  # type: ignore[misc]
+            total = total or len(iterable) if hasattr(iterable, "__len__") else "?"
+            for i, item in enumerate(iterable, 1):
+                print(f"\r{desc} {i}/{total}", end="", flush=True, file=sys.stderr)
+                yield item
+            print(file=sys.stderr)
 
     conn = get_conn()
     try:
@@ -572,7 +642,7 @@ def run(base_dir: Path, reset: bool = False) -> int:
         err_count = 0
         messages: List[str] = []
 
-        for fp in changed:
+        for fp in progress(changed, desc="处理文件", total=len(changed)):
             ok, msg = process_file(conn, base_dir, fp)
             messages.append(msg)
             if ok:
@@ -583,6 +653,9 @@ def run(base_dir: Path, reset: bool = False) -> int:
         total_futures = sum(
             1 for msg in messages if "futures=" in msg and not msg.startswith("error")
         )
+        total_options = sum(
+            1 for msg in messages if "options=" in msg and not msg.startswith("error")
+        )
         out = {
             "job": JOB_NAME,
             "total_files": len(files),
@@ -590,6 +663,7 @@ def run(base_dir: Path, reset: bool = False) -> int:
             "processed_ok": ok_count,
             "processed_error": err_count,
             "futures_files_with_data": total_futures,
+            "options_files_with_data": total_options,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
