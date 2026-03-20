@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useCallback, useEffect, useRef, useState } from "react"
 import {
+  Activity,
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
@@ -52,6 +53,18 @@ export default function DataImportPage() {
   const [isCheckingDates, setIsCheckingDates] = useState(false)
   const [showMissingDates, setShowMissingDates] = useState(false)
 
+  const [etlStatus, setEtlStatus] = useState<{
+    notYetRun: boolean
+    lastRun: string | null
+    totalFiles: number
+    okFiles: number
+    errorFiles: number
+    totalRows: number
+    recentErrors: { file: string; message: string | null; at: string | null }[]
+  } | null>(null)
+  const [isLoadingEtl, setIsLoadingEtl] = useState(false)
+  const [showEtlErrors, setShowEtlErrors] = useState(false)
+
   const [isDragOver, setIsDragOver] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadQueue, setUploadQueue] = useState<{ name: string; status: "pending" | "done" | "error"; msg?: string }[]>([])
@@ -80,6 +93,20 @@ export default function DataImportPage() {
     }
   }, [])
 
+  const checkEtlStatus = useCallback(async () => {
+    setIsLoadingEtl(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/data-import/etl-status")
+      const data = await res.json()
+      if (!res.ok) throw new Error(readError(data, "ETL状态查询失败"))
+      setEtlStatus(data)
+    } catch {
+      // non-critical, don't toast
+    } finally {
+      setIsLoadingEtl(false)
+    }
+  }, [])
+
   const loadFolders = useCallback(async () => {
     setIsLoading(true)
     try {
@@ -95,7 +122,7 @@ export default function DataImportPage() {
     }
   }, [toast])
 
-  useEffect(() => { loadFolders(); checkDates() }, [loadFolders, checkDates])
+  useEffect(() => { loadFolders(); checkDates(); checkEtlStatus() }, [loadFolders, checkDates, checkEtlStatus])
 
   async function toggleFolder(name: string) {
     if (expandedFolder === name) {
@@ -373,6 +400,72 @@ export default function DataImportPage() {
               >
                 {d.slice(0,4)}-{d.slice(4,6)}-{d.slice(6,8)}
               </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ETL pipeline status */}
+      <div className="rounded-lg border border-border/60 bg-card px-4 py-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 text-sm">
+            {isLoadingEtl ? (
+              <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />
+            ) : etlStatus ? (
+              etlStatus.notYetRun
+                ? <Activity className="h-4 w-4 text-muted-foreground" />
+                : etlStatus.errorFiles > 0
+                  ? <AlertCircle className="h-4 w-4 text-amber-500" />
+                  : <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+            ) : null}
+            <span className="font-medium">ETL 入库状态</span>
+          </div>
+          <div className="flex items-center gap-3 text-sm">
+            {etlStatus && !etlStatus.notYetRun ? (
+              <>
+                <span className="text-muted-foreground tabular-nums">
+                  {etlStatus.totalFiles} 个文件 · {etlStatus.totalRows.toLocaleString()} 行
+                </span>
+                {etlStatus.errorFiles > 0 ? (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    {etlStatus.okFiles} 成功 / {etlStatus.errorFiles} 失败
+                  </span>
+                ) : (
+                  <span className="text-emerald-600 dark:text-emerald-400">全部成功</span>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  最后运行：{etlStatus.lastRun ? new Date(etlStatus.lastRun).toLocaleString("zh-CN") : "—"}
+                </span>
+                {etlStatus.errorFiles > 0 && (
+                  <button
+                    onClick={() => setShowEtlErrors((v) => !v)}
+                    className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                  >
+                    {showEtlErrors ? "收起" : "查看错误"}
+                  </button>
+                )}
+              </>
+            ) : etlStatus?.notYetRun ? (
+              <span className="text-muted-foreground">从未运行</span>
+            ) : null}
+            <button
+              onClick={checkEtlStatus}
+              disabled={isLoadingEtl}
+              className="ml-1 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              title="刷新ETL状态"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isLoadingEtl ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        </div>
+
+        {showEtlErrors && etlStatus && etlStatus.recentErrors.length > 0 && (
+          <div className="mt-3 space-y-1.5">
+            {etlStatus.recentErrors.map((e, i) => (
+              <div key={i} className="rounded bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 text-xs">
+                <span className="font-mono text-amber-800 dark:text-amber-300">{e.file}</span>
+                {e.message && <span className="ml-2 text-muted-foreground">{e.message}</span>}
+              </div>
             ))}
           </div>
         )}
