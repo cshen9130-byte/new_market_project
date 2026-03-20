@@ -10,7 +10,9 @@
 #   2. Creates the database user and database
 #   3. Applies schema.sql
 #   4. Installs psycopg2-binary into the Python env used by the project
-#   5. Sets up a daily cron job at 01:00 AM to run nightly_etl.py
+#   5. Sets up daily cron jobs:
+#      - 01:00 AM run nightly_etl.py
+#      - 07:30 PM run mom_data_etl.py
 #   6. Prints the DATABASE_URL to add to .env
 #
 # Customise the four variables below before running.
@@ -34,12 +36,19 @@ PYTHON_EXE="${PYTHON_EXE:-python3}"
 CRON_HOUR="${CRON_HOUR:-1}"
 CRON_MIN="${CRON_MIN:-0}"
 
+# MOM data ETL cron time (hour minute in server local time)
+MOM_CRON_HOUR="${MOM_CRON_HOUR:-19}"
+MOM_CRON_MIN="${MOM_CRON_MIN:-30}"
+
 # Log file for nightly ETL
 ETL_LOG="${ETL_LOG:-/var/log/market_etl.log}"
+# Log file for MOM data ETL
+MOM_ETL_LOG="${MOM_ETL_LOG:-/var/log/mom_data_etl.log}"
 # -----------------------------------------------------------------------
 
 SCHEMA_FILE="$PROJECT_ROOT/scripts/db/schema.sql"
 ETL_SCRIPT="$PROJECT_ROOT/scripts/ma/nightly_etl.py"
+MOM_ETL_SCRIPT="$PROJECT_ROOT/scripts/ma/mom_data_etl.py"
 
 # ---- 1. Install PostgreSQL if missing ---------------------------------
 if ! command -v psql &>/dev/null; then
@@ -99,8 +108,13 @@ touch "$ETL_LOG"
 chmod 644 "$ETL_LOG"
 echo "[setup_db] Log file: $ETL_LOG"
 
+touch "$MOM_ETL_LOG"
+chmod 644 "$MOM_ETL_LOG"
+echo "[setup_db] Log file: $MOM_ETL_LOG"
+
 # ---- 8. Set up cron job -----------------------------------------------
 CRON_CMD="$CRON_MIN $CRON_HOUR * * * cd $PROJECT_ROOT && $PYTHON_EXE $ETL_SCRIPT >> $ETL_LOG 2>&1"
+MOM_CRON_CMD="$MOM_CRON_MIN $MOM_CRON_HOUR * * * cd $PROJECT_ROOT && $PYTHON_EXE $MOM_ETL_SCRIPT >> $MOM_ETL_LOG 2>&1"
 
 # Check if cron entry already exists
 EXISTING=$(crontab -l 2>/dev/null || true)
@@ -109,6 +123,14 @@ if echo "$EXISTING" | grep -qF "$ETL_SCRIPT"; then
 else
   (echo "$EXISTING"; echo "$CRON_CMD") | crontab -
   echo "[setup_db] Cron job added: $CRON_CMD"
+fi
+
+EXISTING=$(crontab -l 2>/dev/null || true)
+if echo "$EXISTING" | grep -qF "$MOM_ETL_SCRIPT"; then
+  echo "[setup_db] MOM cron job already configured, skipping."
+else
+  (echo "$EXISTING"; echo "$MOM_CRON_CMD") | crontab -
+  echo "[setup_db] MOM cron job added: $MOM_CRON_CMD"
 fi
 
 # ---- Summary -----------------------------------------------------------
@@ -121,7 +143,9 @@ echo " Database : $DB_NAME"
 echo " User     : $DB_USER"
 echo " Port     : $DB_PORT"
 echo " Cron     : daily at ${CRON_HOUR}:$(printf '%02d' $CRON_MIN) -> $ETL_SCRIPT"
+echo " Cron     : daily at ${MOM_CRON_HOUR}:$(printf '%02d' $MOM_CRON_MIN) -> $MOM_ETL_SCRIPT"
 echo " Log      : $ETL_LOG"
+echo " Log      : $MOM_ETL_LOG"
 echo ""
 echo " Make sure these are set in $PROJECT_ROOT/.env (or .env.local):"
 echo ""
@@ -129,7 +153,9 @@ echo "   DATABASE_URL=$DB_URL"
 echo ""
 echo " You can run the ETL manually to test or force an initial load:"
 echo "   cd $PROJECT_ROOT && $PYTHON_EXE $ETL_SCRIPT"
+echo "   cd $PROJECT_ROOT && $PYTHON_EXE $MOM_ETL_SCRIPT"
 echo ""
 echo " To watch the nightly log:"
 echo "   tail -f $ETL_LOG"
+echo "   tail -f $MOM_ETL_LOG"
 echo "============================================================="
