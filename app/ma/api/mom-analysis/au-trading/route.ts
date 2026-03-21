@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { query } from "@/lib/db"
+import { query, rawQuery } from "@/lib/db"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -131,67 +131,64 @@ function numericExpr(columnName: string): string {
 }
 
 async function loadMomAccountingDailyPnl(from: string, to: string, account: string, product: string) {
-  const columnRows = await query<{ table_name: string; column_name: string }>(
-    `SELECT table_name, column_name
-     FROM information_schema.columns
-     WHERE table_schema = 'public'
-       AND table_name IN ('mom_trade_details_full', 'mom_position_details_full')`
-  )
+  // Use LIMIT 0 to get real field names directly from pg (avoids information_schema issues)
+  const [tradeSchemaRes, positionSchemaRes] = await Promise.all([
+    rawQuery("SELECT * FROM mom_trade_details_full LIMIT 0"),
+    rawQuery("SELECT * FROM mom_position_details_full LIMIT 0"),
+  ])
 
-  const columnsByTable = new Map<string, Set<string>>()
-  for (const row of columnRows) {
-    if (!columnsByTable.has(row.table_name)) columnsByTable.set(row.table_name, new Set())
-    columnsByTable.get(row.table_name)!.add(row.column_name)
-  }
+  const tradeCols = new Set(tradeSchemaRes.fields.map((f) => f.name))
+  const positionCols = new Set(positionSchemaRes.fields.map((f) => f.name))
 
-  const tradeCols = columnsByTable.get("mom_trade_details_full") ?? new Set<string>()
-  const positionCols = columnsByTable.get("mom_position_details_full") ?? new Set<string>()
-
-  const tradeDateCol = pickColumn(tradeCols, ["交易日期", "日期", "trade_date", "date"])
-  const tradeAccountCol = pickColumn(tradeCols, ["账户", "期货账户", "account"])
-  const tradeProductCol = pickColumn(tradeCols, ["品种", "合约", "contract", "symbol"])
+  const tradeDateCol = pickColumn(tradeCols, ["交易日期", "日期", "结算日期", "trade_date", "date"])
+  const tradeAccountCol = pickColumn(tradeCols, ["账户", "期货账户", "账号", "客户号", "account"])
+  const tradeProductCol = pickColumn(tradeCols, ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
   const realizedPnlCol = pickColumn(tradeCols, ["平仓盈亏", "realized_pnl", "close_pnl"])
 
-  const positionDateCol = pickColumn(positionCols, ["交易日期", "日期", "trade_date", "date"])
-  const positionAccountCol = pickColumn(positionCols, ["账户", "期货账户", "account"])
-  const positionProductCol = pickColumn(positionCols, ["品种", "合约", "contract", "symbol"])
+  const positionDateCol = pickColumn(positionCols, ["交易日期", "日期", "结算日期", "trade_date", "date"])
+  const positionAccountCol = pickColumn(positionCols, ["账户", "期货账户", "账号", "客户号", "account"])
+  const positionProductCol = pickColumn(positionCols, ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
   const holdingPnlCol = pickColumn(positionCols, ["持仓盈亏", "holding_pnl", "position_pnl"])
 
   if (!tradeDateCol || !tradeAccountCol || !tradeProductCol || !realizedPnlCol) {
-    const found = [...tradeCols].join(" | ")
-    throw new Error(`mom_trade_details_full 实际列名: [${found}] — 未匹配出日期/账户/品种/平仓盈亏，无法使用 MOM 核算法`)
+    const found = JSON.stringify([...tradeCols])
+    throw new Error(`mom_trade_details_full cols=${found} missing=${[!tradeDateCol&&"date",!tradeAccountCol&&"acct",!tradeProductCol&&"prod",!realizedPnlCol&&"pnl"].filter(Boolean).join(",")}`)
   }
   if (!positionDateCol || !positionAccountCol || !positionProductCol || !holdingPnlCol) {
-    const found = [...positionCols].join(" | ")
-    throw new Error(`mom_position_details_full 实际列名: [${found}] — 未匹配出日期/账户/品种/持仓盈亏，无法使用 MOM 核算法`)
+    const found = JSON.stringify([...positionCols])
+    throw new Error(`mom_position_details_full cols=${found} missing=${[!positionDateCol&&"date",!positionAccountCol&&"acct",!positionProductCol&&"prod",!holdingPnlCol&&"pnl"].filter(Boolean).join(",")}`)
   }
 
-  const tradeProductExpr = ["合约", "contract", "symbol"].includes(tradeProductCol)
-    ? `${upperTrimExpr(tradeProductCol)} ~ ('^' || $2 || '[0-9]')`
-    : `${upperTrimExpr(tradeProductCol)} = $2`
-  const positionProductExpr = ["合约", "contract", "symbol"].includes(positionProductCol)
-    ? `${upperTrimExpr(positionProductCol)} ~ ('^' || $2 || '[0-9]')`
-    : `${upperTrimExpr(positionProductCol)} = $2`
+  // Non-null assertions safe here — guards above throw if any are null
+  const td = tradeDateCol!, ta = tradeAccountCol!, tp = tradeProductCol!, rp = realizedPnlCol!
+  const pd = positionDateCol!, pa = positionAccountCol!, pp = positionProductCol!, hp = holdingPnlCol!
+
+  const tradeProductExpr = ["品种代码", "合约", "合约代码", "contract", "symbol"].includes(tp)
+    ? `${upperTrimExpr(tp)} ~ ('^' || $2 || '[0-9]')`
+    : `${upperTrimExpr(tp)} = $2`
+  const positionProductExpr = ["品种代码", "合约", "合约代码", "contract", "symbol"].includes(pp)
+    ? `${upperTrimExpr(pp)} ~ ('^' || $2 || '[0-9]')`
+    : `${upperTrimExpr(pp)} = $2`
 
   const [realizedRows, holdingRows] = await Promise.all([
     query<{ date: string; pnl: number }>(
-      `SELECT (${quoteIdent(tradeDateCol)}::date)::text AS date,
-              SUM(${numericExpr(realizedPnlCol)})      AS pnl
+      `SELECT (${quoteIdent(td)}::date)::text AS date,
+              SUM(${numericExpr(rp)})         AS pnl
        FROM mom_trade_details_full
-       WHERE ${upperTrimExpr(tradeAccountCol)} ILIKE $1
+       WHERE ${upperTrimExpr(ta)} ILIKE $1
          AND ${tradeProductExpr}
-         AND ${quoteIdent(tradeDateCol)}::date BETWEEN $3::date AND $4::date
+         AND ${quoteIdent(td)}::date BETWEEN $3::date AND $4::date
        GROUP BY 1
        ORDER BY 1`,
       [`%${account.toUpperCase()}%`, product, from, to],
     ),
     query<{ date: string; pnl: number }>(
-      `SELECT (${quoteIdent(positionDateCol)}::date)::text AS date,
-              SUM(${numericExpr(holdingPnlCol)})          AS pnl
+      `SELECT (${quoteIdent(pd)}::date)::text AS date,
+              SUM(${numericExpr(hp)})         AS pnl
        FROM mom_position_details_full
-       WHERE ${upperTrimExpr(positionAccountCol)} ILIKE $1
+       WHERE ${upperTrimExpr(pa)} ILIKE $1
          AND ${positionProductExpr}
-         AND ${quoteIdent(positionDateCol)}::date BETWEEN $3::date AND $4::date
+         AND ${quoteIdent(pd)}::date BETWEEN $3::date AND $4::date
        GROUP BY 1
        ORDER BY 1`,
       [`%${account.toUpperCase()}%`, product, from, to],
