@@ -127,6 +127,7 @@ _PRODUCT_EXCHANGE: dict[str, str] = {
     "A":  "DCE",  # 大豆1号
     "B":  "DCE",  # 大豆2号
     "BB": "DCE",  # 胶合板
+    "BZ": "DCE",  # 丁二烯
     "C":  "DCE",  # 玉米
     "CS": "DCE",  # 玉米淀粉
     "EB": "DCE",  # 苯乙烯
@@ -147,6 +148,7 @@ _PRODUCT_EXCHANGE: dict[str, str] = {
     "V":  "DCE",  # PVC
     "Y":  "DCE",  # 豆油
     # ── SHFE (上海期货交易所) ──────────────────────────────────────────────
+    "AD": "SHF",  # 氧化铝(新)
     "AG": "SHF",  # 白银
     "AL": "SHF",  # 铝
     "AO": "SHF",  # 氧化铝
@@ -520,9 +522,30 @@ def main():
             try:
                 data = c.csd(codes_str, CSD_FIELDS, start_date, end_date, CSD_OPTS)
                 if data.ErrorCode != 0:
-                    sys.stderr.write(
-                        f"\n[batch {batch_idx+1}] API error ({data.ErrorCode}): {data.ErrorMsg}\n"
-                    )
+                    if data.ErrorCode == 10003008 and len(batch) > 1:
+                        # Batch contains at least one invalid/delisted code — retry individually
+                        sys.stderr.write(
+                            f"\n[batch {batch_idx+1}] invalid code in batch, retrying individually...\n"
+                        )
+                        good = bad = 0
+                        for single_code in batch:
+                            try:
+                                sd = c.csd(single_code, CSD_FIELDS, start_date, end_date, CSD_OPTS)
+                                if sd.ErrorCode != 0:
+                                    bad += 1
+                                else:
+                                    rows = _parse_batch(sd, [single_code])
+                                    all_records.extend(rows)
+                                    good += 1
+                            except Exception:
+                                bad += 1
+                        sys.stderr.write(
+                            f"[batch {batch_idx+1}] retry: {good} ok, {bad} bad\n"
+                        )
+                    else:
+                        sys.stderr.write(
+                            f"\n[batch {batch_idx+1}] API error ({data.ErrorCode}): {data.ErrorMsg}\n"
+                        )
                     continue
                 rows = _parse_batch(data, batch)
                 sys.stderr.write(
