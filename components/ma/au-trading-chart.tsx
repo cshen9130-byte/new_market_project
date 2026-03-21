@@ -56,10 +56,25 @@ function fmtYuan(v: number) {
   return v.toFixed(0)
 }
 
+// ── Product info (label shown in dropdown + series name) ──────────────────────
+const PRODUCT_LABEL: Record<string, string> = {
+  AU: "黄金", AG: "白银", CU: "铜", AL: "铝", ZN: "锌", NI: "镍",
+  PB: "铅", SN: "锡", SS: "不锈钢", RB: "螺纹钢", HC: "热轧卷板", SC: "原油",
+}
+function productLabel(code: string) { return PRODUCT_LABEL[code] ? `${PRODUCT_LABEL[code]}(${code})` : code }
+function indexLabel(code: string) { return PRODUCT_LABEL[code] ? `南华${PRODUCT_LABEL[code]}指数` : `${code}指数` }
+
 // ── Props ────────────────────────────────────────────────────────────────────
+
+interface MetaData {
+  ok: boolean
+  accounts: string[]
+  products: string[]
+}
 
 interface Props {
   account?: string
+  product?: string
   chartHeight?: number
   // Starting capital used to convert absolute P&L (yuan) to a return ratio.
   // Defaults to 1,000,000 yuan (100万). Adjust to match actual account equity.
@@ -68,18 +83,35 @@ interface Props {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function AuTradingChart({ account = "rx000", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
+export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
   const [from, setFrom] = useState(() => "2025-01-01")
   const [to,   setTo]   = useState(() => isoToday())
+  const [account, setAccount] = useState(defaultAccount)
+  const [product, setProduct] = useState(defaultProduct)
   const [data,    setData]    = useState<ApiData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
+  const [availableAccounts, setAvailableAccounts] = useState<string[]>([])
+  const [availableProducts, setAvailableProducts] = useState<string[]>([])
 
-  const load = useCallback(async (f: string, t: string) => {
+  // Fetch available accounts and products from meta endpoint
+  useEffect(() => {
+    fetch("/ma/api/mom-analysis/au-trading/meta")
+      .then(r => r.json())
+      .then((m: MetaData) => {
+        if (m.ok) {
+          if (m.accounts.length) setAvailableAccounts(m.accounts)
+          if (m.products.length) setAvailableProducts(m.products)
+        }
+      })
+      .catch(() => { /* non-critical, keep defaults */ })
+  }, [])
+
+  const load = useCallback(async (f: string, t: string, acc: string, prod: string) => {
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ from: f, to: t, account })
+      const params = new URLSearchParams({ from: f, to: t, account: acc, product: prod })
       const res  = await fetch(`/ma/api/mom-analysis/au-trading?${params}`)
       const json: ApiData = await res.json()
       if (!json.ok) throw new Error(json.error || "请求失败")
@@ -89,13 +121,14 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
     } finally {
       setLoading(false)
     }
-  }, [account])
+  }, [])
 
-  useEffect(() => { load(from, to) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(from, to, account, product) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Build ECharts option (useMemo ensures a new object ref when data changes)
 
   const option = useMemo<object>(() => {
+    const bmLabel = indexLabel(product)
     if (!data) return {}
 
     const bench   = data.benchmark
@@ -184,7 +217,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
       legend: {
         top: 4, right: 8,
         textStyle: { fontSize: 10 },
-        data: ["MA5", "MA20", "权益累计涨跌%", "指数累计涨跌%"],
+        data: ["MA5", "MA20", "权益累计涨跌%", `${bmLabel}涨跌%`],
         selected: { "MA5": false, "MA20": false },
       },
       tooltip: {
@@ -230,8 +263,8 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
               const pct = ((v - 1) * 100).toFixed(2) + "%"
               if (p.seriesName === "权益累计涨跌%") {
                 lines.push(`${p.marker}权益累计涨跌%: ${pct}`)
-              } else if (p.seriesName === "指数累计涨跌%") {
-                lines.push(`${p.marker}指数累计涨跌%: ${pct}`)
+              } else if (p.seriesName === `${bmLabel}涨跌%`) {
+                lines.push(`${p.marker}${bmLabel}涨跌%: ${pct}`)
               }
             }
             const relCum = alignedCumPnl[dataIdx] - pnlAtStart
@@ -336,7 +369,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
       series: [
         // ── Panel 0: benchmark candlestick ─────────────────────────────────
         {
-          name: "南华黄金指数",
+          name: bmLabel,
           type: "candlestick",
           xAxisIndex: 0, yAxisIndex: 0,
           data: ohlc,
@@ -395,7 +428,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
           areaStyle: { opacity: 0.08, color: "#3b82f6" },
         },
         {
-          name: "指数累计涨跌%",
+          name: `${bmLabel}涨跌%`,
           type: "line", xAxisIndex: 1, yAxisIndex: 1,
           data: bmIndexed, smooth: false, symbol: "none",
           color: "#f59e0b",
@@ -443,7 +476,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         },
       ],
     }
-  }, [data, initialCapital])
+  }, [data, initialCapital, product])
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -452,13 +485,33 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
       <CardHeader className="pb-2 shrink-0">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium">
-            南华黄金指数 · AU交易回顾（{account.toUpperCase()}）
+            {indexLabel(product)} · {productLabel(product)}交易回顾（{account.toUpperCase()}）
           </CardTitle>
           <div className="flex flex-wrap items-center gap-1.5">
+            {/* Account selector */}
+            <select
+              value={account}
+              onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product) }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+            >
+              {(availableAccounts.length ? availableAccounts : [account]).map(a => (
+                <option key={a} value={a}>{a.toUpperCase()}</option>
+              ))}
+            </select>
+            {/* Product selector */}
+            <select
+              value={product}
+              onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p) }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+            >
+              {(availableProducts.length ? availableProducts : [product]).map(p => (
+                <option key={p} value={p}>{productLabel(p)}</option>
+              ))}
+            </select>
             {QUICK_RANGES.map(r => (
               <button
                 key={r.label}
-                onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t) }}
+                onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product) }}
                 className="rounded px-2 py-0.5 text-xs bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
               >
                 {r.label}
@@ -473,7 +526,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             />
             <button
-              onClick={() => load(from, to)}
+              onClick={() => load(from, to, account, product)}
               className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
@@ -496,8 +549,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         {!loading && !error && data?.benchmark.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center p-6 text-center">
             <p className="text-sm text-muted-foreground">
-              暂无 NHAU.NH 基准数据。<br />
-              请先运行 ETL：<code>--step nanhua_commodity_indices</code>
+              暂无基准行情数据（{product}）。如已有交易数据，盈亏图表仍将正常显示。
             </p>
           </div>
         )}

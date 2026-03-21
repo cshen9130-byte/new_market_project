@@ -4,11 +4,27 @@ import { query } from "@/lib/db"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-// Normalise CTP-format AU contract to Choice API format
+// ── Product config: NH benchmark code, exchange suffix, lot multiplier ──────
+const PRODUCT_CONFIG: Record<string, { nhCode: string | null; exchange: string; multiplier: number }> = {
+  AU: { nhCode: "NHAU.NH", exchange: "SHF", multiplier: 1000 },
+  AG: { nhCode: "NHAG.NH", exchange: "SHF", multiplier: 15 },
+  CU: { nhCode: "NHCU.NH", exchange: "SHF", multiplier: 5 },
+  AL: { nhCode: null,       exchange: "SHF", multiplier: 5 },
+  ZN: { nhCode: null,       exchange: "SHF", multiplier: 5 },
+  NI: { nhCode: null,       exchange: "SHF", multiplier: 1 },
+  PB: { nhCode: null,       exchange: "SHF", multiplier: 5 },
+  SN: { nhCode: null,       exchange: "SHF", multiplier: 1 },
+  SS: { nhCode: null,       exchange: "SHF", multiplier: 5 },
+  RB: { nhCode: "NHRB.NH", exchange: "SHF", multiplier: 10 },
+  HC: { nhCode: null,       exchange: "SHF", multiplier: 10 },
+  SC: { nhCode: null,       exchange: "INE", multiplier: 1000 },
+}
+
+// Normalise CTP-format contract to <PRODUCT><EXPIRY>.<EXCHANGE>
 // e.g.  au2509  →  AU2509.SHF   |   AU2509.SHF  →  AU2509.SHF (pass-through)
-function normalizeAuContract(raw: string): string {
+function normalizeContract(raw: string, exchange: string): string {
   const upper = raw.toUpperCase().trim()
-  return upper.includes(".") ? upper : upper + ".SHF"
+  return upper.includes(".") ? upper : `${upper}.${exchange}`
 }
 
 export async function GET(req: Request) {
@@ -18,28 +34,36 @@ export async function GET(req: Request) {
     const to      = searchParams.get("to")      || new Date().toISOString().slice(0, 10)
     const account = searchParams.get("account") || "rx000"
 
+    // Validate product against whitelist (prevents injection)
+    const rawProduct = (searchParams.get("product") || "AU").toUpperCase().trim()
+    const product = /^[A-Z]{1,4}$/.test(rawProduct) ? rawProduct : "AU"
+    const config = PRODUCT_CONFIG[product] ?? { nhCode: null, exchange: "SHF", multiplier: 1 }
+    const { nhCode, exchange, multiplier: MULTIPLIER } = config
+
     // Fetch prices/trades from PRICE_FROM so positions opened before "from" are captured
     const PRICE_FROM = "2025-01-01"
 
     // ── Run queries in parallel ────────────────────────────────────────────────
     const [benchmarkRows, tradeRows, priceRows] = await Promise.all([
 
-      // 1. NH gold index daily candles (NHAU.NH from single-commodity indices)
-      query<{ date: string; open: number; high: number; low: number; close: number; volume: number }>(
-        `SELECT trade_date::text                      AS date,
-                CAST(open  AS float8)                 AS open,
-                CAST(high  AS float8)                 AS high,
-                CAST(low   AS float8)                 AS low,
-                CAST(close AS float8)                 AS close,
-                CAST(COALESCE(volume, 0) AS float8)   AS volume
-         FROM raw_nanhua_commodity_indices_daily
-         WHERE code = 'NHAU.NH'
-           AND trade_date BETWEEN $1 AND $2
-         ORDER BY trade_date`,
-        [from, to],
-      ).catch(() => [] as { date: string; open: number; high: number; low: number; close: number; volume: number }[]),
+      // 1. NH single-commodity index daily candles (e.g. NHAU.NH for gold)
+      nhCode
+        ? query<{ date: string; open: number; high: number; low: number; close: number; volume: number }>(
+            `SELECT trade_date::text                      AS date,
+                    CAST(open  AS float8)                 AS open,
+                    CAST(high  AS float8)                 AS high,
+                    CAST(low   AS float8)                 AS low,
+                    CAST(close AS float8)                 AS close,
+                    CAST(COALESCE(volume, 0) AS float8)   AS volume
+             FROM raw_nanhua_commodity_indices_daily
+             WHERE code = $1
+               AND trade_date BETWEEN $2 AND $3
+             ORDER BY trade_date`,
+            [nhCode, from, to],
+          ).catch(() => [] as { date: string; open: number; high: number; low: number; close: number; volume: number }[])
+        : Promise.resolve([] as { date: string; open: number; high: number; low: number; close: number; volume: number }[]),
 
-      // 2. All AU futures transactions for the account
+      // 2. All product futures transactions for the account
       query<{ trade_date: string; contract: string; direction: string; action: string; price: number | null; lots: number | null }>(
         `SELECT "交易日期"::text                                            AS trade_date,
                 UPPER(TRIM("合约"))                                        AS contract,
@@ -49,23 +73,23 @@ export async function GET(req: Request) {
                 ABS(CAST(NULLIF(TRIM(COALESCE("手数",'')),'') AS float8))  AS lots
          FROM mom_futures_trade_details
          WHERE "账户" ILIKE $1
-           AND UPPER(TRIM("合约")) LIKE 'AU%'
-           AND "交易日期" BETWEEN $2 AND $3
+           AND UPPER(TRIM("合约")) LIKE $2
+           AND "交易日期" BETWEEN $3 AND $4
          ORDER BY "交易日期", "合约"`,
-        [`%${account}%`, PRICE_FROM, to],
+        [`%${account}%`, `${product}%`, PRICE_FROM, to],
       ),
 
-      // 3. Daily OHLCV for all AU.SHF contracts
+      // 3. Daily OHLCV for all contracts of this product
       query<{ date: string; contract: string; close: number; preclose: number }>(
         `SELECT trade_date::text                                    AS date,
                 contract,
                 CAST(close                   AS float8)            AS close,
                 CAST(COALESCE(preclose,close) AS float8)           AS preclose
          FROM raw_futures_contracts_daily
-         WHERE contract LIKE 'AU%.SHF'
-           AND trade_date BETWEEN $1 AND $2
+         WHERE UPPER(contract) LIKE $1
+           AND trade_date BETWEEN $2 AND $3
          ORDER BY trade_date, contract`,
-        [PRICE_FROM, to],
+        [`${product}%`, PRICE_FROM, to],
       ),
     ])
 
@@ -88,7 +112,7 @@ export async function GET(req: Request) {
 
     for (const t of tradeRows) {
       if (!t.lots || !t.trade_date || t.price === null) continue
-      const contract = normalizeAuContract(t.contract)
+      const contract = normalizeContract(t.contract, exchange)
       const sign = t.direction === "买" ? 1 : -1
       if (!tradesByDate.has(t.trade_date)) tradesByDate.set(t.trade_date, [])
       tradesByDate.get(t.trade_date)!.push({ contract, sign, lots: t.lots, price: t.price })
@@ -113,8 +137,7 @@ export async function GET(req: Request) {
     // This correctly handles intraday round-trips (net 0 carry, only fill spread counted)
     // and overnight positions (carry from settled close to new close).
     //
-    // AU on SHFE: 1 lot = 1000g, price in yuan/g → multiplier = 1000 yuan per point per lot
-    const AU_MULTIPLIER = 1000
+    // Multiplier from PRODUCT_CONFIG (e.g. AU: 1000, CU: 5)
     const allTradingDates = [...new Set(priceRows.map(p => p.date))].sort()
     const positions = new Map<string, number>() // contract → net lots (EOD of previous day)
     const dailyPnl: { date: string; pnl: number; cumPnl: number }[] = []
@@ -129,14 +152,14 @@ export async function GET(req: Request) {
         if (prevLots === 0) continue
         const p = priceMap.get(`${contract}|${date}`)
         if (!p) continue
-        dayPnl += prevLots * (p.close - p.preclose) * AU_MULTIPLIER
+        dayPnl += prevLots * (p.close - p.preclose) * MULTIPLIER
       }
 
       // 2. Trade P&L: each fill marked from trade price to today's EOD close
       for (const t of todayTrades) {
         const p = priceMap.get(`${t.contract}|${date}`)
         if (!p) continue
-        dayPnl += t.sign * t.lots * (p.close - t.price) * AU_MULTIPLIER
+        dayPnl += t.sign * t.lots * (p.close - t.price) * MULTIPLIER
       }
 
       // 3. Update positions for next day
