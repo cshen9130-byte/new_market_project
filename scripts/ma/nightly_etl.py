@@ -344,6 +344,7 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
             CREATE TABLE IF NOT EXISTS raw_nanhua_indices_daily (
                 trade_date  DATE        NOT NULL,
                 code        TEXT        NOT NULL,
+                name        TEXT,
                 open        NUMERIC,
                 close       NUMERIC,
                 high        NUMERIC,
@@ -359,6 +360,11 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
                 fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 PRIMARY KEY (trade_date, code)
             )
+        """)
+        # Add name column if upgrading from an older schema
+        cur.execute("""
+            ALTER TABLE raw_nanhua_indices_daily
+            ADD COLUMN IF NOT EXISTS name TEXT
         """)
     conn.commit()
 
@@ -401,6 +407,7 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
             continue
         records.append((
             d, code,
+            r.get("name") or "",
             safe_float(r.get("open")),
             safe_float(r.get("close")),
             safe_float(r.get("high")),
@@ -424,11 +431,11 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
             cur,
             """
             INSERT INTO raw_nanhua_indices_daily
-                (trade_date, code, open, close, high, low, preclose,
+                (trade_date, code, name, open, close, high, low, preclose,
                  change, pct_change, volume, amount, turn, amplitude, source)
             VALUES %s
             ON CONFLICT (trade_date, code) DO UPDATE
-                SET open=EXCLUDED.open, close=EXCLUDED.close, high=EXCLUDED.high,
+                SET name=EXCLUDED.name, open=EXCLUDED.open, close=EXCLUDED.close, high=EXCLUDED.high,
                     low=EXCLUDED.low, preclose=EXCLUDED.preclose, change=EXCLUDED.change,
                     pct_change=EXCLUDED.pct_change, volume=EXCLUDED.volume,
                     amount=EXCLUDED.amount, turn=EXCLUDED.turn,

@@ -50,6 +50,26 @@ NH_CODES = [
     "NHPMI.NH",  "NHQFII.NH",
 ]
 
+NH_NAMES: dict[str, str] = {
+    "NHAECI.NH":  "南华经济作物指数",
+    "NHAI.NH":    "南华农产品指数",
+    "NHBMI.NH":   "南华建材指数",
+    "NHCCI.NH":   "南华煎制化工指数",
+    "NHCI.NH":    "南华商品指数",
+    "NHECI.NH":   "南华能化指数",
+    "NHEI.NH":    "南华能源指数",
+    "NHFI.NH":    "南华黑色指数",
+    "NHFMI.NH":   "南华黑色原材料指数",
+    "NHII.NH":    "南华工业品指数",
+    "NHMI.NH":    "南华金属指数",
+    "NHNEI.NH":   "南华新能源指数",
+    "NHNFI.NH":   "南华有色金属指数",
+    "NHOOI.NH":   "南华油脂油料指数",
+    "NHPCI.NH":   "南华石油化工指数",
+    "NHPMI.NH":   "南华贵金属指数",
+    "NHQFII.NH":  "南华QFII商品指数",
+}
+
 FIELD_NAMES = [
     "OPEN", "CLOSE", "HIGH", "LOW", "PRECLOSE",
     "CHANGE", "PCTCHANGE", "VOLUME", "AMOUNT", "TURN", "AMPLITUDE",
@@ -281,6 +301,7 @@ def main():
                 rows = extract_multi_field_single_code(data, code)
                 for r in rows:
                     r["code"] = code
+                    r["name"] = NH_NAMES.get(code, "")
                     records.append(r)
             except Exception as exc:
                 sys.stderr.write(f"[{code}] Exception: {exc}\n")
