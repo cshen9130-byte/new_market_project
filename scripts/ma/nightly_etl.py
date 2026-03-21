@@ -756,6 +756,191 @@ def step_futures_contracts_ohlcv(conn, *, force: bool = False) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# STEP 1b — Options contracts OHLCV + greeks
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_OPTIONS_CONTRACTS_BACKFILL_START = date(2025, 1, 1)
+
+# DB columns for upsert (matches fetch script output keys)
+_OC_FIELDS = (
+    "close", "open", "high", "low", "preclose", "clear", "preclear",
+    "change", "pct_change", "change_clear", "pct_change_clear",
+    "hqoi", "volume", "amount", "change_oi", "amplitude",
+    "impl_vol", "em_delta", "delta", "gamma", "rho", "theta", "vega",
+    "em_theta", "em_gamma", "em_vega", "em_rho",
+)
+
+
+def step_options_contracts_ohlcv(conn, *, force: bool = False) -> int:
+    """Fetch daily OHLCV + greeks for every options contract MOM has traded.
+
+    Source table : mom_options_trade_details."合约"
+    Target table : raw_options_contracts_daily  (trade_date, contract) PK
+    First run    : backfills 2025-01-01 → today
+    Subsequent   : incremental from last stored date + 1 day
+    """
+
+    # ── Create / migrate target table ─────────────────────────────────────────
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_options_contracts_daily (
+                trade_date        DATE        NOT NULL,
+                contract          TEXT        NOT NULL,
+                -- price
+                close             NUMERIC,
+                open              NUMERIC,
+                high              NUMERIC,
+                low               NUMERIC,
+                preclose          NUMERIC,
+                clear             NUMERIC,
+                preclear          NUMERIC,
+                change            NUMERIC,
+                pct_change        NUMERIC,
+                change_clear      NUMERIC,
+                pct_change_clear  NUMERIC,
+                -- volume / open interest
+                hqoi              NUMERIC,
+                volume            NUMERIC,
+                amount            NUMERIC,
+                change_oi         NUMERIC,
+                amplitude         NUMERIC,
+                -- implied vol + greeks
+                impl_vol          NUMERIC,
+                em_delta          NUMERIC,
+                delta             NUMERIC,
+                gamma             NUMERIC,
+                rho               NUMERIC,
+                theta             NUMERIC,
+                vega              NUMERIC,
+                -- EM-calculated greeks
+                em_theta          NUMERIC,
+                em_gamma          NUMERIC,
+                em_vega           NUMERIC,
+                em_rho            NUMERIC,
+                -- metadata
+                source            TEXT        NOT NULL DEFAULT 'emquant',
+                fetched_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, contract)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_raw_options_contracts_daily_contract
+              ON raw_options_contracts_daily (contract)
+        """)
+    conn.commit()
+
+    today   = date.today()
+    cur_max = max_date(conn, "raw_options_contracts_daily")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("Options contracts OHLCV up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    if cur_max is None or force:
+        start = _OPTIONS_CONTRACTS_BACKFILL_START
+        log.info("Options contracts OHLCV: %s, backfilling from %s …",
+                 "forced" if force else "first run", start)
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("Options contracts OHLCV: incremental fetch %s → %s …", start, today)
+
+    if start > today:
+        log.info("Options contracts OHLCV: already up-to-date.")
+        return 0
+
+    # ── Check that source table exists ────────────────────────────────────────
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'mom_options_trade_details'
+            )
+        """)
+        if not cur.fetchone()[0]:
+            log.warning("mom_options_trade_details does not exist — skipping options OHLCV step.")
+            return 0
+
+    out = run_script(
+        "fetch_options_contracts_daily.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=1200,
+        log_stderr=True,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"Options contracts fetch failed: {out}")
+
+    contracts_found = out.get("contracts") or []
+    log.info("Options contracts: %d unique contracts loaded from DB (first 5: %s)",
+             len(contracts_found), contracts_found[:5])
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        log.warning("Options contracts OHLCV: empty data returned for %s → %s.",
+                    start, today)
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d        = to_date(str(r.get("date", "")).replace("-", ""))
+        contract = r.get("contract", "").strip()
+        if not d or not contract:
+            continue
+        records.append((
+            d, contract,
+            safe_float(r.get("close")),
+            safe_float(r.get("open")),
+            safe_float(r.get("high")),
+            safe_float(r.get("low")),
+            safe_float(r.get("preclose")),
+            safe_float(r.get("clear")),
+            safe_float(r.get("preclear")),
+            safe_float(r.get("change")),
+            safe_float(r.get("pct_change")),
+            safe_float(r.get("change_clear")),
+            safe_float(r.get("pct_change_clear")),
+            safe_float(r.get("hqoi")),
+            safe_float(r.get("volume")),
+            safe_float(r.get("amount")),
+            safe_float(r.get("change_oi")),
+            safe_float(r.get("amplitude")),
+            safe_float(r.get("impl_vol")),
+            safe_float(r.get("em_delta")),
+            safe_float(r.get("delta")),
+            safe_float(r.get("gamma")),
+            safe_float(r.get("rho")),
+            safe_float(r.get("theta")),
+            safe_float(r.get("vega")),
+            safe_float(r.get("em_theta")),
+            safe_float(r.get("em_gamma")),
+            safe_float(r.get("em_vega")),
+            safe_float(r.get("em_rho")),
+            "emquant",
+        ))
+
+    if not records:
+        log.warning("Options contracts OHLCV: no valid rows parsed.")
+        return 0
+
+    col_list  = "trade_date, contract, " + ", ".join(_OC_FIELDS) + ", source"
+    update_set = ", ".join(f"{f}=EXCLUDED.{f}" for f in _OC_FIELDS) + ", fetched_at=NOW()"
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            f"""
+            INSERT INTO raw_options_contracts_daily ({col_list})
+            VALUES %s
+            ON CONFLICT (trade_date, contract) DO UPDATE
+                SET {update_set}
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("Options contracts OHLCV: upserted %d rows (max date %s).",
+             len(records), max(r[0] for r in records))
+    return len(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Spot index closes  (EmQuant with Tushare fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1648,7 +1833,8 @@ ORDERED_STEPS = [
     "nheci",
     "nanhua_indices",              # all 17 NH sub-indices OHLCV
     "nanhua_commodity_indices",    # all 80 NH single-commodity indices OHLCV
-    "futures_contracts_ohlcv",      # OHLCV for every contract MOM traded
+    "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded
+    "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
@@ -1754,6 +1940,7 @@ def main():
         "nanhua_indices":            lambda: step_nanhua_indices(conn, force=force),
         "nanhua_commodity_indices":  lambda: step_nanhua_commodity_indices(conn, force=force),
         "futures_contracts_ohlcv":    lambda: step_futures_contracts_ohlcv(conn, force=force),
+        "options_contracts_ohlcv":    lambda: step_options_contracts_ohlcv(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
