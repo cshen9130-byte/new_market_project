@@ -60,11 +60,14 @@ function fmtYuan(v: number) {
 interface Props {
   account?: string
   chartHeight?: number
+  // Starting capital used to convert absolute P&L (yuan) to a return ratio.
+  // Defaults to 1,000,000 yuan (100万). Adjust to match actual account equity.
+  initialCapital?: number
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function AuTradingChart({ account = "rx000", chartHeight = 540 }: Props) {
+export default function AuTradingChart({ account = "rx000", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
   const [from, setFrom] = useState(() => "2025-01-01")
   const [to,   setTo]   = useState(() => isoToday())
   const [data,    setData]    = useState<ApiData | null>(null)
@@ -113,11 +116,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
     const ma5    = calcMA(closes, 5)
     const ma20   = calcMA(closes, 20)
 
-    // Benchmark % return from first close
-    const base = bench[0]?.close || 1
-    const bmReturn = bench.map(b => +((b.close - base) / base * 100).toFixed(3))
-
-    // Align daily P&L to bmDates
+    // ── Align daily P&L to bmDates ──────────────────────────────────────────
     const pnlByDate = new Map(data.dailyPnl.map(r => [r.date, r]))
     let lastCum = 0
     const alignedDailyPnl = bmDates.map(d => {
@@ -127,9 +126,20 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
     const alignedCumPnl = bmDates.map(d => {
       const r = pnlByDate.get(d)
       if (r) { lastCum = r.cumPnl; return r.cumPnl }
-      // Forward fill on non-trading days (holidays between data points)
-      return lastCum
+      return lastCum  // forward-fill holidays
     })
+
+    // ── Indexed returns: both start at 1.0 at first trading day in window ────
+    const firstClose   = bench[0]?.close || 1
+    const bmIndexed    = bench.map(b => +(b.close / firstClose).toFixed(6))
+
+    const firstPnlDate = data.dailyPnl[0]?.date ?? ""
+    const pnlAtStart   = data.dailyPnl[0]?.cumPnl ?? 0
+    const equityIndexed = alignedCumPnl.map((v, i) =>
+      bmDates[i] < firstPnlDate
+        ? null
+        : +(1 + (v - pnlAtStart) / initialCapital).toFixed(6)
+    )
 
     // ── Trade markers (scatter on benchmark chart) ───────────────────────────
     // Group: 买开 / 卖开 / 平仓 (vague — includes both 卖平 and 买平)
@@ -155,7 +165,8 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
       legend: {
         top: 4, right: 8,
         textStyle: { fontSize: 10 },
-        data: ["MA5", "MA20", "累计盈亏", "指数涨跌(%)"],
+        data: ["MA5", "MA20", "权益涨跌%", "指数涨跌%"],
+        selected: { "MA5": false, "MA20": false },
       },
       tooltip: {
         trigger: "axis",
@@ -171,10 +182,17 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
               const [o, c, l, h] = p.value as number[]
               const arrow = c >= o ? `<span style="color:#ef4444">▲</span>` : `<span style="color:#22c55e">▼</span>`
               lines.push(`${arrow} 开${o?.toFixed(2)} 收<b>${c?.toFixed(2)}</b> 高${h?.toFixed(2)} 低${l?.toFixed(2)}`)
-            } else if (p.value !== null && p.value !== undefined && p.seriesName !== "买开" && p.seriesName !== "卖开" && p.seriesName !== "平仓") {
-              const v = typeof p.value === "number" ? p.value : (p.value as number[])[1]
+            } else if (!["买开", "卖开", "平仓"].includes(p.seriesName)) {
+              const v = typeof p.value === "number" ? p.value : (Array.isArray(p.value) ? (p.value as number[])[1] : null)
               if (v === null || v === undefined) continue
-              const label = p.seriesName === "累计盈亏" ? fmtYuan(v) + "元" : v.toFixed(2) + "%"
+              let label: string
+              if (p.seriesName === "权益涨跌%" || p.seriesName === "指数涨跌%") {
+                label = ((v - 1) * 100).toFixed(2) + "%"
+              } else if (p.seriesName === "当日盈亏") {
+                label = fmtYuan(v) + "元"
+              } else {
+                label = v.toFixed(2)
+              }
               lines.push(`${p.marker}${p.seriesName}: ${label}`)
             }
           }
@@ -183,12 +201,13 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
       },
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       grid: [
-        // Panel 0: benchmark candle  (top 8% → 8%+40% = 48%)
-        { left: 55, right: 12, top: "8%",  height: "40%" },
-        // Panel 1: cumulative P&L    (top 52% → 52%+20% = 72%)
-        { left: 55, right: 55, top: "52%", height: "19%" },
-        // Panel 2: daily P&L bars   (top 75% → 75%+16% = 91%)
-        { left: 55, right: 12, top: "75%", height: "15%" },
+        // All panels share identical left/right so x-axis ticks align perfectly
+        // Panel 0: benchmark candle  (top 8% → 48%)
+        { left: 55, right: 45, top: "8%",  height: "40%" },
+        // Panel 1: indexed returns   (top 52% → 71%)
+        { left: 55, right: 45, top: "52%", height: "19%" },
+        // Panel 2: daily P&L bars   (top 75% → 90%)
+        { left: 55, right: 45, top: "75%", height: "15%" },
       ],
       xAxis: [
         // Grid 0 — benchmark candle
@@ -199,11 +218,12 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
           boundaryGap: true,
           splitLine: { show: false },
         },
-        // Grid 1 — P&L lines (same dates)
+        // Grid 1 — indexed return lines (same dates)
         {
           gridIndex: 1, type: "category", data: bmDates,
           axisLabel: { show: false },
           axisLine: { onZero: false },
+          boundaryGap: true,
           splitLine: { show: false },
         },
         // Grid 2 — daily P&L bars (same dates)
@@ -215,13 +235,19 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
         },
       ],
       yAxis: [
-        // Grid 0: benchmark price
+        // yAxisIndex 0 — Grid 0: benchmark price
         { gridIndex: 0, scale: true, splitNumber: 4, axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { opacity: 0.15 } } },
-        // Grid 1 left: cum P&L (yuan)
-        { gridIndex: 1, name: "元", nameTextStyle: { fontSize: 8 }, scale: true, splitNumber: 3, axisLabel: { fontSize: 8 }, splitLine: { lineStyle: { opacity: 0.15 } } },
-        // Grid 1 right: benchmark return (%)
-        { gridIndex: 1, name: "%", nameTextStyle: { fontSize: 8 }, position: "right", scale: true, splitNumber: 3, axisLabel: { fontSize: 8 }, splitLine: { show: false } },
-        // Grid 2: daily P&L
+        // yAxisIndex 1 — Grid 1: indexed return (both lines share this axis)
+        {
+          gridIndex: 1, scale: true, splitNumber: 3,
+          axisLabel: {
+            fontSize: 8,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            formatter: (v: any) => `${((v - 1) * 100).toFixed(0)}%`,
+          },
+          splitLine: { lineStyle: { opacity: 0.15 } },
+        },
+        // yAxisIndex 2 — Grid 2: daily P&L (yuan)
         { gridIndex: 2, scale: true, splitNumber: 2, axisLabel: { fontSize: 8 }, splitLine: { show: false } },
       ],
       dataZoom: [
@@ -280,25 +306,25 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
           tooltip: { show: false },
         },
 
-        // ── Panel 1: cumulative P&L (left y) + benchmark return (right y) ──
+        // ── Panel 1: both lines rebased to 1.0 at window start ──────────────
         {
-          name: "累计盈亏",
+          name: "权益涨跌%",
           type: "line", xAxisIndex: 1, yAxisIndex: 1,
-          data: alignedCumPnl, smooth: false, symbol: "none", connectNulls: true,
+          data: equityIndexed, smooth: false, symbol: "none", connectNulls: false,
           lineStyle: { width: 2, color: "#3b82f6" },
           areaStyle: { opacity: 0.08, color: "#3b82f6" },
         },
         {
-          name: "指数涨跌(%)",
-          type: "line", xAxisIndex: 1, yAxisIndex: 2,
-          data: bmReturn, smooth: false, symbol: "none",
+          name: "指数涨跌%",
+          type: "line", xAxisIndex: 1, yAxisIndex: 1,
+          data: bmIndexed, smooth: false, symbol: "none",
           lineStyle: { width: 1.5, color: "#f59e0b", type: "dashed" },
         },
 
         // ── Panel 2: daily P&L bars ─────────────────────────────────────────
         {
           name: "当日盈亏",
-          type: "bar", xAxisIndex: 2, yAxisIndex: 3,
+          type: "bar", xAxisIndex: 2, yAxisIndex: 2,
           data: alignedDailyPnl.map(v =>
             v === null ? null : {
               value: v,
