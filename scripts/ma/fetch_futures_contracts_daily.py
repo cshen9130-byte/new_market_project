@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -115,6 +116,130 @@ ALL_API_FIELDS = list(FIELD_MAP.keys())
 
 # Batch size — how many contracts per c.csd() call
 _BATCH_SIZE = 20
+
+
+# ── Contract code normalizer ──────────────────────────────────────────────────
+# Broker/CTP codes look like: 'a2605', 'ag2506', 'CF2501'
+# Choice API requires:        'A2605.DCE', 'AG2506.SHF', 'CF2501.CZC'
+
+_PRODUCT_EXCHANGE: dict[str, str] = {
+    # ── DCE (大连商品交易所) ───────────────────────────────────────────────
+    "A":  "DCE",  # 大豆1号
+    "B":  "DCE",  # 大豆2号
+    "BB": "DCE",  # 胶合板
+    "C":  "DCE",  # 玉米
+    "CS": "DCE",  # 玉米淀粉
+    "EB": "DCE",  # 苯乙烯
+    "EG": "DCE",  # 乙二醇
+    "FB": "DCE",  # 纤维板
+    "I":  "DCE",  # 铁矿石
+    "J":  "DCE",  # 焦炭
+    "JD": "DCE",  # 鸡蛋
+    "JM": "DCE",  # 焦煤
+    "L":  "DCE",  # 聚乙烯
+    "LG": "DCE",  # 原木
+    "LH": "DCE",  # 生猪
+    "M":  "DCE",  # 豆粕
+    "P":  "DCE",  # 棕榈油
+    "PG": "DCE",  # LPG
+    "PP": "DCE",  # 聚丙烯
+    "RR": "DCE",  # 粳米
+    "V":  "DCE",  # PVC
+    "Y":  "DCE",  # 豆油
+    # ── SHFE (上海期货交易所) ──────────────────────────────────────────────
+    "AG": "SHF",  # 白银
+    "AL": "SHF",  # 铝
+    "AO": "SHF",  # 氧化铝
+    "AU": "SHF",  # 黄金
+    "BC": "SHF",  # 国际铜
+    "BR": "SHF",  # 丁二烯橡胶
+    "BU": "SHF",  # 沥青
+    "CU": "SHF",  # 铜
+    "FU": "SHF",  # 燃油
+    "HC": "SHF",  # 热轧卷板
+    "NI": "SHF",  # 镍
+    "NR": "SHF",  # 20号胶
+    "PB": "SHF",  # 铅
+    "RB": "SHF",  # 螺纹钢
+    "RU": "SHF",  # 天然橡胶
+    "SN": "SHF",  # 锡
+    "SP": "SHF",  # 纸浆
+    "SS": "SHF",  # 不锈钢
+    "WR": "SHF",  # 线材
+    "ZN": "SHF",  # 锌
+    # ── INE (上海国际能源中心, SHFE subsidiary) ────────────────────────────
+    "EC": "INE",  # 集运欧线
+    "LU": "INE",  # 低硫燃料油
+    "SC": "INE",  # 原油
+    # ── CZCE (郑州商品交易所) ──────────────────────────────────────────────
+    "AP": "CZC",  # 苹果
+    "CF": "CZC",  # 棉花
+    "CJ": "CZC",  # 红枣
+    "CY": "CZC",  # 棉纱
+    "ER": "CZC",  # 早籼稻
+    "FG": "CZC",  # 玻璃
+    "JR": "CZC",  # 粳稻
+    "LR": "CZC",  # 晚籼稻
+    "MA": "CZC",  # 甲醇
+    "OI": "CZC",  # 菜籽油
+    "PF": "CZC",  # 短纤
+    "PK": "CZC",  # 花生
+    "PM": "CZC",  # 普通小麦
+    "PR": "CZC",  # 瓶片
+    "PX": "CZC",  # 对二甲苯
+    "RI": "CZC",  # 晚籼稻(旧)
+    "RM": "CZC",  # 菜籽粕
+    "RO": "CZC",  # 菜籽油(旧)
+    "RS": "CZC",  # 油菜籽
+    "SA": "CZC",  # 纯碱
+    "SF": "CZC",  # 硅铁
+    "SH": "CZC",  # 烧碱
+    "SM": "CZC",  # 锰硅
+    "SR": "CZC",  # 白糖
+    "TA": "CZC",  # PTA
+    "TC": "CZC",  # 动力煤(旧)
+    "UR": "CZC",  # 尿素
+    "WH": "CZC",  # 强麦
+    "WS": "CZC",  # 强麦2
+    "ZC": "CZC",  # 动力煤
+    # ── GFEX (广州期货交易所) ──────────────────────────────────────────────
+    "LC": "GFE",  # 碳酸锂
+    "PS": "GFE",  # 多晶硅
+    "SI": "GFE",  # 工业硅
+}
+
+
+def _normalize_contract(raw: str) -> str | None:
+    """
+    Convert a broker/CTP contract code to Choice API format.
+
+    Input examples :  'a2605'  /  'ag2506'  /  'CF2501'  /  'A2605.DCE'
+    Output examples:  'A2605.DCE'  /  'AG2506.SHF'  /  'CF2501.CZC'  / pass-through
+    """
+    code = raw.strip()
+    if not code:
+        return None
+
+    # Already has exchange suffix — normalise casing only
+    if "." in code:
+        product_part, exch_part = code.upper().split(".", 1)
+        return f"{product_part}.{exch_part}"
+
+    # Strip anything non-alphanumeric
+    code = re.sub(r"[^A-Za-z0-9]", "", code)
+
+    # Split into letters (product) + digits (delivery month)
+    m = re.match(r"^([A-Za-z]+)(\d{3,4})$", code)
+    if not m:
+        return None
+
+    product  = m.group(1).upper()
+    month    = m.group(2)
+    exchange = _PRODUCT_EXCHANGE.get(product)
+    if not exchange:
+        return None
+
+    return f"{product}{month}.{exchange}"
 
 
 # ── env / .env loader ─────────────────────────────────────────────────────────
@@ -169,7 +294,7 @@ def _get_conn():
 
 
 def _fetch_traded_contracts() -> list[str]:
-    """Return sorted distinct contract codes from mom_futures_trade_details."""
+    """Return sorted distinct Choice-API-format contract codes from mom_futures_trade_details."""
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -181,9 +306,28 @@ def _fetch_traded_contracts() -> list[str]:
                 ORDER BY 1
                 """
             )
-            return [row[0] for row in cur.fetchall()]
+            raw_codes = [row[0] for row in cur.fetchall()]
     finally:
         conn.close()
+
+    normalized: list[str] = []
+    skipped:    list[str] = []
+    for raw in raw_codes:
+        norm = _normalize_contract(raw)
+        if norm:
+            normalized.append(norm)
+        else:
+            skipped.append(raw)
+
+    unique = sorted(set(normalized))
+    sys.stderr.write(
+        f"Contracts: {len(raw_codes)} raw → {len(unique)} normalized"
+        + (f", {len(skipped)} skipped: {skipped[:5]}" if skipped else "")
+        + "\n"
+    )
+    if unique:
+        sys.stderr.write(f"Sample codes: {unique[:5]}\n")
+    return unique
 
 
 # ── Value helpers ─────────────────────────────────────────────────────────────
@@ -324,7 +468,8 @@ def main():
 
     # Resolve contracts
     if manual_contracts:
-        contracts = manual_contracts
+        # Normalize manually-passed codes too
+        contracts = [_normalize_contract(c_) or c_ for c_ in manual_contracts]
         sys.stderr.write(f"Using {len(contracts)} manually-specified contracts\n")
     else:
         try:
