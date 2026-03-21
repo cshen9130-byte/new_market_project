@@ -194,8 +194,9 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
             for (const p of params) {
               if (p.seriesType === "candlestick") {
                 const [o, c, l, h] = p.value as number[]
-                const arrow = c >= o ? `<span style="color:#ef4444">▲</span>` : `<span style="color:#22c55e">▼</span>`
-                lines.push(`${arrow} 开${o?.toFixed(2)} 收<b>${c?.toFixed(2)}</b> 高${h?.toFixed(2)} 低${l?.toFixed(2)}`)
+                // Use a filled square (▪) for OHLC — keeps triangles reserved for orders
+                const sq = c >= o ? `<span style="color:#ef4444">▪</span>` : `<span style="color:#22c55e">▪</span>`
+                lines.push(`${sq} 开${o?.toFixed(2)} 收<b>${c?.toFixed(2)}</b> 高${h?.toFixed(2)} 低${l?.toFixed(2)}`)
               }
             }
             const trades = tradesByIdx.get(dataIdx)
@@ -203,8 +204,12 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
               for (const t of trades) {
                 const priceStr = t.price != null ? ` @${t.price.toFixed(2)}` : ""
                 const lotsStr  = t.lots  != null ? ` ${Math.round(t.lots)}手` : ""
-                const col = t.name.startsWith("买") ? "#ef4444" : "#22c55e"
-                lines.push(`<span style="color:${col}">● ${t.name}${priceStr}${lotsStr}</span>`)
+                // Match chart symbols: 买开=▲red, 卖开=▽green, 买平/卖平=◆grey
+                let icon: string
+                if      (t.name === "买开") icon = `<span style="color:#ef4444">▲</span>`
+                else if (t.name === "卖开") icon = `<span style="color:#22c55e">▽</span>`
+                else                        icon = `<span style="color:#94a3b8">◆</span>`
+                lines.push(`${icon} <span style="color:${t.name === "买开" ? "#ef4444" : t.name === "卖开" ? "#22c55e" : "#94a3b8"}">${t.name}${priceStr}${lotsStr}</span>`)
               }
             }
 
