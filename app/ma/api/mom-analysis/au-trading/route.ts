@@ -75,10 +75,10 @@ export async function GET(req: Request) {
       priceMap.set(`${p.contract}|${p.date}`, { close: p.close, preclose: p.preclose })
     }
 
-    // ── Build position deltas from trades ────────────────────────────────────
-    // deltas:  normalised_contract → (date → net_lot_change)
-    type DeltaMap = Map<string, number>
-    const deltas = new Map<string, DeltaMap>()
+    // ── Build per-date trade list (signed, with price) ────────────────────────
+    // trades_by_date:  date → [{contract, sign, lots, price}]
+    type TradeEntry = { contract: string; sign: number; lots: number; price: number }
+    const tradesByDate = new Map<string, TradeEntry[]>()
 
     // Trade markers within the display range
     const tradeMarkers: {
@@ -87,12 +87,11 @@ export async function GET(req: Request) {
     }[] = []
 
     for (const t of tradeRows) {
-      if (!t.lots || !t.trade_date) continue
+      if (!t.lots || !t.trade_date || t.price === null) continue
       const contract = normalizeAuContract(t.contract)
       const sign = t.direction === "买" ? 1 : -1
-      if (!deltas.has(contract)) deltas.set(contract, new Map())
-      const m = deltas.get(contract)!
-      m.set(t.trade_date, (m.get(t.trade_date) || 0) + sign * t.lots)
+      if (!tradesByDate.has(t.trade_date)) tradesByDate.set(t.trade_date, [])
+      tradesByDate.get(t.trade_date)!.push({ contract, sign, lots: t.lots, price: t.price })
 
       if (t.trade_date >= from && t.trade_date <= to) {
         tradeMarkers.push({
@@ -107,30 +106,44 @@ export async function GET(req: Request) {
     }
 
     // ── Walk through all trading dates to compute MTM P&L ─────────────────────
-    // AU on SHFE: 1 lot = 1000g, price in yuan/g → 1 point = 1000 yuan per lot
+    // Correct continuous formula per day:
+    //   dayPnl = Σ prevLots × (close − preclose)           ← carry: overnight hold
+    //          + Σ tradeSign × tradeLots × (close − tradePrice)  ← fill-to-EOD for each trade
+    //
+    // This correctly handles intraday round-trips (net 0 carry, only fill spread counted)
+    // and overnight positions (carry from settled close to new close).
+    //
+    // AU on SHFE: 1 lot = 1000g, price in yuan/g → multiplier = 1000 yuan per point per lot
     const AU_MULTIPLIER = 1000
     const allTradingDates = [...new Set(priceRows.map(p => p.date))].sort()
-    const positions = new Map<string, number>() // contract → net lots
+    const positions = new Map<string, number>() // contract → net lots (EOD of previous day)
     const dailyPnl: { date: string; pnl: number; cumPnl: number }[] = []
     let cumPnl = 0
 
     for (const date of allTradingDates) {
-      // Apply position changes from trades on this date
-      for (const [contract, dm] of deltas) {
-        const delta = dm.get(date)
-        if (delta !== undefined) {
-          positions.set(contract, (positions.get(contract) || 0) + delta)
-        }
-      }
-
-      // EOD MTM P&L = Σ net_lots × (close − preclose) × multiplier
+      const todayTrades = tradesByDate.get(date) ?? []
       let dayPnl = 0
-      for (const [contract, lots] of positions) {
-        if (lots === 0) continue
+
+      // 1. Carry P&L: positions held from yesterday MTM to today's close
+      for (const [contract, prevLots] of positions) {
+        if (prevLots === 0) continue
         const p = priceMap.get(`${contract}|${date}`)
         if (!p) continue
-        dayPnl += lots * (p.close - p.preclose) * AU_MULTIPLIER
+        dayPnl += prevLots * (p.close - p.preclose) * AU_MULTIPLIER
       }
+
+      // 2. Trade P&L: each fill marked from trade price to today's EOD close
+      for (const t of todayTrades) {
+        const p = priceMap.get(`${t.contract}|${date}`)
+        if (!p) continue
+        dayPnl += t.sign * t.lots * (p.close - t.price) * AU_MULTIPLIER
+      }
+
+      // 3. Update positions for next day
+      for (const t of todayTrades) {
+        positions.set(t.contract, (positions.get(t.contract) || 0) + t.sign * t.lots)
+      }
+
       cumPnl += dayPnl
 
       if (date >= from) {
@@ -138,21 +151,24 @@ export async function GET(req: Request) {
       }
     }
 
-    // ── Snapshot total net lots per day (from=window start) ───────────────────
-    // Re-walk to emit net lots per date within the display window
-    const positions2 = new Map<string, number>() // contract → net lots
+    // ── Snapshot intraday peak (max abs) net lots per day ─────────────────────
+    // EOD lots are 0 for day-traders, so we show the peak long or short during the day.
+    const positions3 = new Map<string, number>()
     const positionHistory: { date: string; totalLots: number }[] = []
     for (const date of allTradingDates) {
-      for (const [contract, dm] of deltas) {
-        const delta = dm.get(date)
-        if (delta !== undefined) {
-          positions2.set(contract, (positions2.get(contract) || 0) + delta)
-        }
+      const todayTrades = tradesByDate.get(date) ?? []
+      // snapshot before trades = previous EOD
+      const beforeLots = [...positions3.values()].reduce((s, v) => s + v, 0)
+      // apply trades
+      for (const t of todayTrades) {
+        positions3.set(t.contract, (positions3.get(t.contract) || 0) + t.sign * t.lots)
       }
+      const afterLots = [...positions3.values()].reduce((s, v) => s + v, 0)
+      // use whichever is larger in abs (captures the peak holding during the day)
+      const peakLots = Math.abs(beforeLots) >= Math.abs(afterLots) ? beforeLots : afterLots
+
       if (date >= from) {
-        let total = 0
-        for (const lots of positions2.values()) total += lots
-        positionHistory.push({ date, totalLots: total })
+        positionHistory.push({ date, totalLots: peakLots })
       }
     }
 
