@@ -38,10 +38,10 @@ export async function GET(req: Request) {
         MIN("交易日期"::text)                                                                AS first_date,
         MAX("交易日期"::text)                                                                AS last_date,
         COUNT(*)::text                                                                       AS trading_days,
-        SUM(CAST(NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏",    ''), ',', ''), ' ', '') AS NUMERIC))::numeric(20,4))::text  AS period_pnl,
-        SUM(CAST(NULLIF(REPLACE(REPLACE(COALESCE("当日手续费",  ''), ',', ''), ' ', '') AS NUMERIC))::numeric(20,4))::text  AS period_fee,
-        SUM(CAST(NULLIF(REPLACE(REPLACE(COALESCE("平仓盈亏",    ''), ',', ''), ' ', '') AS NUMERIC))::numeric(20,4))::text  AS close_pnl,
-        SUM(CAST(NULLIF(REPLACE(REPLACE(COALESCE("持仓盈亏",    ''), ',', ''), ' ', '') AS NUMERIC))::numeric(20,4))::text  AS position_pnl,
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏",    ''), ',', ''), ' ', ''), ''))::numeric)::text  AS period_pnl,
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE("当日手续费",  ''), ',', ''), ' ', ''), ''))::numeric)::text  AS period_fee,
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE("平仓盈亏",    ''), ',', ''), ' ', ''), ''))::numeric)::text  AS close_pnl,
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE("持仓盈亏",    ''), ',', ''), ' ', ''), ''))::numeric)::text  AS position_pnl,
         (array_agg("客户权益"   ORDER BY "交易日期" DESC NULLS LAST))[1]                   AS latest_equity,
         (array_agg("当日结存"   ORDER BY "交易日期" DESC NULLS LAST))[1]                   AS latest_balance,
         (array_agg("风险度"     ORDER BY "交易日期" DESC NULLS LAST))[1]                   AS latest_risk_ratio,
@@ -51,7 +51,7 @@ export async function GET(req: Request) {
       ${where}
       GROUP BY "账户"
       ORDER BY
-        SUM(CAST(NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏", ''), ',', ''), ' ', '') AS NUMERIC)) ) DESC NULLS LAST
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏", ''), ',', ''), ' ', ''), ''))::numeric) DESC NULLS LAST
     `
 
     const rows = await query<{
