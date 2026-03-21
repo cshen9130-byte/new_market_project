@@ -57,27 +57,31 @@ interface Props {
   code?:   string
   title?:  string
   height?: number
+  from?:   string   // controlled: parent can drive the date range
+  to?:     string
 }
 
 export default function NhciCandleChart({
   code  = "NHCI.NH",
   title = "南华商品指数（NHCI.NH）日K线",
   height = 300,
+  from: propFrom,
+  to:   propTo,
 }: Props) {
-  const [fromDate, setFromDate] = useState(() => isoMonthOffset(-3))
-  const [toDate,   setToDate]   = useState(() => isoToday())
+  const [fromDate, setFromDate] = useState(() => propFrom ?? isoMonthOffset(-6))
+  const [toDate,   setToDate]   = useState(() => propTo   ?? isoToday())
   const [data,     setData]     = useState<CandleRow[]>([])
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
 
-  const load = useCallback(async (from: string, to: string) => {
+  const load = useCallback(async (from: string, to: string, loadCode: string) => {
     setLoading(true)
     setError(null)
     try {
       const p = new URLSearchParams()
       if (from) p.set("from", from)
       if (to)   p.set("to",   to)
-      p.set("code", code)
+      p.set("code", loadCode)
       const res = await fetch(`/ma/api/mom-analysis/nhci-candle?${p}`)
       const d: ApiResponse = await res.json()
       if (!d.ok) throw new Error(d.error || "加载失败")
@@ -90,9 +94,23 @@ export default function NhciCandleChart({
   }, [])
 
   useEffect(() => {
-    load(fromDate, toDate)
+    load(fromDate, toDate, code)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Reload when code (sector index) changes
+  useEffect(() => {
+    load(fromDate, toDate, code)
+  }, [code]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync when parent-controlled from/to props change
+  useEffect(() => {
+    if (propFrom && propTo) {
+      setFromDate(propFrom)
+      setToDate(propTo)
+      load(propFrom, propTo, code)
+    }
+  }, [propFrom, propTo]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Chart data ─────────────────────────────────────────────────────────────
 
@@ -267,7 +285,7 @@ export default function NhciCandleChart({
                       const t = r.to()
                       setFromDate(f)
                       setToDate(t)
-                      load(f, t)
+                      load(f, t, code)
                     }}
                     className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
                       active
@@ -299,7 +317,7 @@ export default function NhciCandleChart({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => load(fromDate, toDate)}
+              onClick={() => load(fromDate, toDate, code)}
               disabled={loading}
               className="h-7 w-7 p-0"
             >

@@ -1,8 +1,8 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { RefreshCw } from "lucide-react"
+import { Maximize2, Minimize2, RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -40,6 +40,7 @@ function isoYearOffset(y: number) {
 }
 
 const QUICK_RANGES = [
+  { label: "近一月",  from: () => isoMonthOffset(-1), to: () => isoToday() },
   { label: "近三月",  from: () => isoMonthOffset(-3), to: () => isoToday() },
   { label: "近六月",  from: () => isoMonthOffset(-6), to: () => isoToday() },
   { label: "近一年",  from: () => isoYearOffset(-1),  to: () => isoToday() },
@@ -59,6 +60,16 @@ function fmtYuan(v: number) {
   if (Math.abs(v) >= 1e6) return (v / 1e4).toFixed(1) + "万"
   if (Math.abs(v) >= 1e3) return (v / 1e4).toFixed(2) + "万"
   return v.toFixed(0)
+}
+function fmtPnl(v: number) {
+  const abs = Math.abs(v)
+  const sign = v >= 0 ? "+" : "-"
+  if (abs >= 1e6) return sign + (abs / 1e4).toFixed(1) + "万"
+  if (abs >= 1e3) return sign + (abs / 1e4).toFixed(2) + "万"
+  return sign + abs.toFixed(0)
+}
+function fmtSignPct(v: number) {
+  return (v >= 0 ? "+" : "") + v.toFixed(1) + "%"
 }
 
 // ── Product info (label shown in dropdown + series name) ──────────────────────
@@ -111,17 +122,20 @@ interface Props {
   product?: string
   method?: PnlMethod
   bench?: BenchType
+  from?: string        // controlled: if provided, overrides internal state on change
+  to?: string          // controlled: if provided, overrides internal state on change
   chartHeight?: number
   // Starting capital used to convert absolute P&L (yuan) to a return ratio.
   // Defaults to 1,000,000 yuan (100万). Adjust to match actual account equity.
   initialCapital?: number
+  onProductChange?: (product: string) => void
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", bench: defaultBench = "nh", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
-  const [from, setFrom] = useState(() => "2025-01-01")
-  const [to,   setTo]   = useState(() => isoToday())
+export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", bench: defaultBench = "nh", from: propFrom, to: propTo, chartHeight = 540, initialCapital = 1_000_000, onProductChange }: Props) {
+  const [from, setFrom] = useState(() => propFrom ?? isoMonthOffset(-6))
+  const [to,   setTo]   = useState(() => propTo   ?? isoToday())
   const [account, setAccount] = useState(defaultAccount)
   const [product, setProduct] = useState(defaultProduct)
   const [method, setMethod] = useState<PnlMethod>(defaultMethod)
@@ -162,6 +176,32 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
   }, [])
 
   useEffect(() => { load(from, to, account, product, method, bench) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [contentHeight, setContentHeight] = useState<number | null>(null)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false) }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
+  useEffect(() => {
+    if (!isFullscreen) { setContentHeight(null); return }
+    const el = contentRef.current
+    if (!el) return
+    const ro = new ResizeObserver(entries => setContentHeight(entries[0].contentRect.height))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [isFullscreen])
+
+  // Sync when parent-controlled from/to props change
+  useEffect(() => {
+    if (propFrom && propTo && (propFrom !== from || propTo !== to)) {
+      setFrom(propFrom)
+      setTo(propTo)
+      load(propFrom, propTo, account, product, method, bench)
+    }
+  }, [propFrom, propTo]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Build ECharts option (useMemo ensures a new object ref when data changes)
 
@@ -523,8 +563,56 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
 
   // ── Render ──────────────────────────────────────────────────
 
+  const effectiveChartHeight = isFullscreen
+    ? (contentHeight ?? (typeof window !== "undefined" ? window.innerHeight - 200 : chartHeight))
+    : chartHeight
+
+  // ── Statistics ─────────────────────────────────────────────────────────────
+  const stats = useMemo(() => {
+    if (!data || data.dailyPnl.length === 0) return null
+    const pnls    = data.dailyPnl.map(r => r.pnl)
+    const cumPnls = data.dailyPnl.map(r => r.cumPnl)
+    const n       = pnls.length
+
+    const totalPnl = cumPnls[n - 1] ?? 0
+    const winDays  = pnls.filter(p => p > 0).length
+    const winRate  = n > 0 ? winDays / n : 0
+
+    const mean    = pnls.reduce((s, v) => s + v, 0) / n
+    const std     = Math.sqrt(pnls.reduce((s, v) => s + (v - mean) ** 2, 0) / n)
+    const sharpe  = std > 0 ? (mean / std) * Math.sqrt(252) : (mean > 0 ? 99 : 0)
+
+    // Max drawdown (yuan, then as % of initialCapital)
+    let peak = -Infinity, peakEquity = initialCapital, maxDD = 0
+    for (const cp of cumPnls) {
+      const equity = initialCapital + cp
+      if (equity > peakEquity) peakEquity = equity
+      const dd = peakEquity - equity
+      if (dd > maxDD) { maxDD = dd; peak = peakEquity }
+    }
+    const maxDDPct = peak > 0 ? (maxDD / peak) * 100 : 0
+
+    // Annualized return (simple, calendar-day basis)
+    const ms = new Date(data.dailyPnl[n - 1].date).getTime() - new Date(data.dailyPnl[0].date).getTime()
+    const calDays = ms / 86_400_000 + 1
+    const annReturn = calDays > 0 ? (totalPnl / initialCapital) * (365 / calDays) * 100 : 0
+
+    // Close transaction count
+    const closeTrades = data.trades.filter(t => t.action && !t.action.includes("开")).length
+
+    // Profit factor (sum of winning days / sum of losing days magnitude)
+    const winSum  = pnls.filter(v => v > 0).reduce((s, v) => s + v, 0)
+    const lossSum = Math.abs(pnls.filter(v => v < 0).reduce((s, v) => s + v, 0))
+    const profitFactor = lossSum > 0 ? winSum / lossSum : null
+
+    return { totalPnl, tradingDays: n, winRate, sharpe, maxDDPct, annReturn, closeTrades, profitFactor }
+  }, [data, initialCapital])
+
   return (
-    <Card className="flex flex-col h-full">
+    <Card className={isFullscreen
+      ? "fixed inset-0 z-50 flex flex-col bg-background overflow-hidden rounded-none"
+      : "flex flex-col h-full"
+    }>
       <CardHeader className="pb-2 shrink-0">
         <div className="flex flex-col gap-1.5">
           {/* Row 1: title + account/product/date controls */}
@@ -546,22 +634,29 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               {/* Product selector */}
               <select
                 value={product}
-                onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p, method, bench) }}
+                onChange={e => { const p = e.target.value; setProduct(p); onProductChange?.(p); load(from, to, account, p, method, bench) }}
                 className="rounded border border-input bg-background px-2 py-0.5 text-xs"
               >
                 {(availableProducts.length ? availableProducts : [product]).map(p => (
                   <option key={p} value={p}>{productLabel(p)}</option>
                 ))}
               </select>
-              {QUICK_RANGES.map(r => (
-                <button
-                  key={r.label}
-                  onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product, method, bench) }}
-                  className="rounded px-2 py-0.5 text-xs bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
-                >
-                  {r.label}
-                </button>
-              ))}
+              {QUICK_RANGES.map(r => {
+                const isActive = from === r.from() && to === r.to()
+                return (
+                  <button
+                    key={r.label}
+                    onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product, method, bench) }}
+                    className={`rounded px-2 py-0.5 text-xs transition-colors ${
+                      isActive
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                )
+              })}
               <input
                 type="date" value={from} onChange={e => setFrom(e.target.value)}
                 className="rounded border border-input bg-background px-2 py-0.5 text-xs"
@@ -575,6 +670,15 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
                 className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              </button>
+              <button
+                onClick={() => setIsFullscreen(v => !v)}
+                title={isFullscreen ? "退出全屏 (Esc)" : "全屏"}
+                className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors"
+              >
+                {isFullscreen
+                  ? <Minimize2 className="h-3.5 w-3.5" />
+                  : <Maximize2 className="h-3.5 w-3.5" />}
               </button>
             </div>
           </div>
@@ -605,12 +709,12 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               onKeyDown={e => {
                 if (e.key === "Enter") {
                   const p = (e.currentTarget.value || "").trim().toUpperCase()
-                  if (/^[A-Z]{1,4}$/.test(p)) { setProduct(p); load(from, to, account, p, method, bench) }
+                  if (/^[A-Z]{1,4}$/.test(p)) { setProduct(p); onProductChange?.(p); load(from, to, account, p, method, bench) }
                 }
               }}
               onBlur={e => {
                 const p = e.currentTarget.value.trim().toUpperCase()
-                if (/^[A-Z]{1,4}$/.test(p) && p !== product) { setProduct(p); load(from, to, account, p, method, bench) }
+                if (/^[A-Z]{1,4}$/.test(p) && p !== product) { setProduct(p); onProductChange?.(p); load(from, to, account, p, method, bench) }
               }}
               className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24 uppercase"
             />
@@ -644,7 +748,8 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
         </div>
       </CardHeader>
 
-      <CardContent className="flex-1 relative p-0 pb-1 min-h-0">
+      <CardContent className="flex-1 p-0 pb-1 min-h-0 overflow-hidden">
+        <div ref={contentRef} className="h-full w-full relative">
         {loading && !data && (
           <div className="absolute inset-0 flex items-center justify-center bg-card/80 z-10">
             <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -665,12 +770,34 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
         {data && data.benchmark.length > 0 && (
           <ReactECharts
             option={option}
-            style={{ height: chartHeight }}
+            style={{ height: effectiveChartHeight }}
             opts={{ renderer: "canvas" }}
             notMerge
           />
         )}
+        </div>
       </CardContent>
+
+      {/* ── Stats strip ──────────────────────────────────────────────────── */}
+      {stats && (
+        <div className="px-4 py-2.5 border-t border-border/60 grid grid-cols-4 gap-x-6 gap-y-2.5">
+          {([
+            { label: "\u603b\u76c8\u4e8f",    value: fmtPnl(stats.totalPnl),    color: stats.totalPnl >= 0 ? "text-red-500" : "text-green-500" },
+            { label: "\u5e74\u5316\u6536\u76ca\u7387", value: fmtSignPct(stats.annReturn),  color: stats.annReturn >= 0 ? "text-red-500" : "text-green-500" },
+            { label: "\u65e5\u80dc\u7387",    value: `${(stats.winRate * 100).toFixed(1)}%`, color: "" },
+            { label: "\u590f\u666e\u6bd4\u7387",   value: stats.sharpe >= 99 ? "\u221e" : stats.sharpe.toFixed(2), color: stats.sharpe >= 1 ? "text-red-500" : stats.sharpe < 0 ? "text-green-500" : "" },
+            { label: "\u6700\u5927\u56de\u64a4",   value: `-${stats.maxDDPct.toFixed(1)}%`, color: "text-green-500" },
+            { label: "\u76c8\u4e8f\u6bd4",    value: stats.profitFactor != null ? stats.profitFactor.toFixed(2) : "N/A", color: "" },
+            { label: "\u5e73\u4ed3\u7b14\u6570",   value: `${stats.closeTrades}\u7b14`, color: "" },
+            { label: "\u4ea4\u6613\u5929\u6570",   value: `${stats.tradingDays}\u5929`, color: "" },
+          ] as { label: string; value: string; color: string }[]).map(({ label, value, color }) => (
+            <div key={label} className="flex flex-col gap-0.5">
+              <span className="text-[10px] text-muted-foreground leading-none">{label}</span>
+              <span className={`text-sm font-semibold leading-none ${color}`}>{value}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </Card>
   )
 }

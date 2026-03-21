@@ -186,6 +186,86 @@ export default function TraderAnalysisPage() {
   const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review">("pnl-rank")
   const [isFullscreen, setIsFullscreen] = useState(false)
 
+  // Shared date range for 品种交易回顾 tab
+  const VIEW_RANGES = [
+    { label: "近一月",  from: () => isoMonthOffset(-1),  to: () => isoToday() },
+    { label: "近三月",  from: () => isoMonthOffset(-3),  to: () => isoToday() },
+    { label: "近六月",  from: () => isoMonthOffset(-6),  to: () => isoToday() },
+    { label: "近一年",  from: () => isoMonthOffset(-12), to: () => isoToday() },
+    { label: "全部",    from: () => "2025-01-01",         to: () => isoToday() },
+  ]
+  const [viewFrom, setViewFrom] = useState(() => isoMonthOffset(-6))
+  const [viewTo,   setViewTo]   = useState(() => isoToday())
+  const [viewRange, setViewRange] = useState("近六月")
+
+  // Sector index for second candle chart — updates when trading product changes
+  const SECTOR_INDEX: Record<string, { code: string; title: string }> = {
+    // Precious metals
+    AU: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
+    AG: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
+    PT: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
+    PD: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
+    // Energy & chemicals
+    SC: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    FU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    LU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    PG: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    BU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    EC: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    TA: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    EG: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    PF: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    PR: { code: "NHECI.NH", title: "南剎能化指数（NHECI.NH）日K线" },
+    PL: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    PP: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    L:  { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    BZ: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    PX: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    EB: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    RU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    BR: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    NR: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    SA: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    SH: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    V:  { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    UR: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    MA: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
+    // Agricultural
+    C:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    CS: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    WH: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    PM: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    RR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    RI: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    JR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    LR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    A:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    B:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    M:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    Y:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    RM: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    OI: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    RS: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    PK: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    P:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    SR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    CF: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    CY: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    AP: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    CJ: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    LH: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    JD: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    LG: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    SP: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    OP: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    BB: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+    FB: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+  }
+  const DEFAULT_SECTOR = { code: "NHCI.NH", title: "南华商品指数（NHCI.NH）日K线" }
+
+  const [tradingProduct, setTradingProduct] = useState("AU")
+  const sectorInfo = SECTOR_INDEX[tradingProduct] ?? DEFAULT_SECTOR
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false) }
     window.addEventListener("keydown", onKey)
@@ -283,25 +363,108 @@ export default function TraderAnalysisPage() {
 
       {/* 品种交易回顾 */}
       {activeTab === "variety-review" && (
-        <div className="grid grid-cols-2 gap-4">
-          {/* left column: two equal-height charts stacked */}
-          <div className="flex flex-col gap-4">
-            <NhciCandleChart
-              code="NHCI.NH"
-              title="南华商品指数（NHCI.NH）日K线"
-              height={280}
-            />
-            <NhciCandleChart
-              code="NHPMI.NH"
-              title="南华贵金属指数（NHPMI.NH）日K线"
-              height={280}
-            />
+        <>
+          {/* shared quick-range bar */}
+          <div className="flex items-center gap-1.5">
+            {VIEW_RANGES.map(r => {
+              const isActive = viewRange === r.label
+              return (
+                <button
+                  key={r.label}
+                  onClick={() => {
+                    const f = r.from(); const t = r.to()
+                    setViewFrom(f); setViewTo(t); setViewRange(r.label)
+                  }}
+                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                    isActive
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {r.label}
+                </button>
+              )
+            })}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="ml-auto h-7 w-7"
+              title={isFullscreen ? "退出全屏 (Esc)" : "全屏"}
+              onClick={() => setIsFullscreen(v => !v)}
+            >
+              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            </Button>
           </div>
-          {/* right column: AU trading review chart */}
-          <div className="flex flex-col">
-            <AuTradingChart account="rx000" chartHeight={540} />
+
+          {/* chart grid — fullscreen overlay when isFullscreen */}
+          <div className={isFullscreen
+            ? "fixed inset-0 z-50 bg-background overflow-auto p-4 flex flex-col gap-4"
+            : "grid grid-cols-2 gap-4"
+          }>
+            {isFullscreen && (
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {VIEW_RANGES.map(r => {
+                  const isActive = viewRange === r.label
+                  return (
+                    <button
+                      key={r.label}
+                      onClick={() => {
+                        const f = r.from(); const t = r.to()
+                        setViewFrom(f); setViewTo(t); setViewRange(r.label)
+                      }}
+                      className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                        isActive
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                      }`}
+                    >
+                      {r.label}
+                    </button>
+                  )
+                })}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="ml-auto h-7 w-7"
+                  title="退出全屏 (Esc)"
+                  onClick={() => setIsFullscreen(false)}
+                >
+                  <Minimize2 className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+
+            <div className={isFullscreen ? "grid grid-cols-2 gap-4 flex-1 min-h-0" : "contents"}>
+              {/* left column: two equal-height charts stacked */}
+              <div className="flex flex-col gap-4">
+                <NhciCandleChart
+                  code="NHCI.NH"
+                  title="南华商品指数（NHCI.NH）日K线"
+                  height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
+                  from={viewFrom}
+                  to={viewTo}
+                />
+                <NhciCandleChart
+                  code={sectorInfo.code}
+                  title={sectorInfo.title}
+                  height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
+                  from={viewFrom}
+                  to={viewTo}
+                />
+              </div>
+              {/* right column: AU trading review chart */}
+              <div className="flex flex-col">
+                <AuTradingChart
+                  account="rx000"
+                  chartHeight={isFullscreen ? window.innerHeight - 120 : 540}
+                  from={viewFrom}
+                  to={viewTo}
+                  onProductChange={setTradingProduct}
+                />
+              </div>
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       {/* 盈亏排名 */}
