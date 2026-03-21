@@ -328,6 +328,120 @@ def step_nheci(conn, *, force: bool = False, start: date | None = None) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# STEP 1c — 南华17指数 daily OHLCV  (EmQuant / Choice API)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_NH_INDICES_BACKFILL_START = date(2025, 1, 1)
+
+
+def step_nanhua_indices(conn, *, force: bool = False) -> int:
+    """Fetch OPEN/CLOSE/HIGH/LOW/... for all 17 南华 sub-indices into raw_nanhua_indices_daily.
+    First run: backfills from 2025-01-01. Subsequent runs: incremental from last stored date."""
+
+    # Create table on first use so no separate migration is required
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_nanhua_indices_daily (
+                trade_date  DATE        NOT NULL,
+                code        TEXT        NOT NULL,
+                open        NUMERIC,
+                close       NUMERIC,
+                high        NUMERIC,
+                low         NUMERIC,
+                preclose    NUMERIC,
+                change      NUMERIC,
+                pct_change  NUMERIC,
+                volume      NUMERIC,
+                amount      NUMERIC,
+                turn        NUMERIC,
+                amplitude   NUMERIC,
+                source      TEXT        NOT NULL DEFAULT 'emquant',
+                fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, code)
+            )
+        """)
+    conn.commit()
+
+    today = date.today()
+    cur_max = max_date(conn, "raw_nanhua_indices_daily")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("NH indices up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    if cur_max is None:
+        start = _NH_INDICES_BACKFILL_START
+        log.info("NH indices: first run, backfilling from %s …", start)
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("NH indices: incremental fetch %s → %s …", start, today)
+
+    if start > today:
+        log.info("NH indices: already up-to-date, nothing to do.")
+        return 0
+
+    out = run_script(
+        "get_nanhua_indices_daily.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=300,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"NH indices fetch failed: {out}")
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        log.warning("NH indices: empty data returned for %s → %s.", start, today)
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d    = to_date(str(r.get("date", "")).replace("-", ""))
+        code = r.get("code")
+        if not d or not code:
+            continue
+        records.append((
+            d, code,
+            safe_float(r.get("open")),
+            safe_float(r.get("close")),
+            safe_float(r.get("high")),
+            safe_float(r.get("low")),
+            safe_float(r.get("preclose")),
+            safe_float(r.get("change")),
+            safe_float(r.get("pct_change")),
+            safe_float(r.get("volume")),
+            safe_float(r.get("amount")),
+            safe_float(r.get("turn")),
+            safe_float(r.get("amplitude")),
+            "emquant",
+        ))
+
+    if not records:
+        log.warning("NH indices: no valid rows parsed.")
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_nanhua_indices_daily
+                (trade_date, code, open, close, high, low, preclose,
+                 change, pct_change, volume, amount, turn, amplitude, source)
+            VALUES %s
+            ON CONFLICT (trade_date, code) DO UPDATE
+                SET open=EXCLUDED.open, close=EXCLUDED.close, high=EXCLUDED.high,
+                    low=EXCLUDED.low, preclose=EXCLUDED.preclose, change=EXCLUDED.change,
+                    pct_change=EXCLUDED.pct_change, volume=EXCLUDED.volume,
+                    amount=EXCLUDED.amount, turn=EXCLUDED.turn,
+                    amplitude=EXCLUDED.amplitude, fetched_at=NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("NH indices: upserted %d rows (max date %s).", len(records), max(r[0] for r in records))
+    return len(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Spot index closes  (EmQuant with Tushare fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1218,6 +1332,7 @@ def step_money_credit(conn) -> int:
 ORDERED_STEPS = [
     "nhci",
     "nheci",
+    "nanhua_indices",              # all 17 NH sub-indices OHLCV
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
@@ -1320,6 +1435,7 @@ def main():
     step_fns = {
         "nhci":             lambda: step_nhci(conn, force=force),
         "nheci":            lambda: step_nheci(conn, force=force),
+        "nanhua_indices":   lambda: step_nanhua_indices(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
