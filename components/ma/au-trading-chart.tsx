@@ -157,13 +157,25 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
       else                                       closePos.push([idx, y])
     }
 
+    // Build per-date-index trade detail lookup for tooltip
+    type TradeDetail = { name: string; direction: string; action: string; price: number | null; lots: number | null }
+    const tradesByIdx = new Map<number, TradeDetail[]>()
+    for (const t of data.trades) {
+      const idx = getDateIdx(t.date)
+      if (idx < 0) continue
+      const isOpen2 = !t.action || t.action.includes("开")
+      const name = isOpen2 ? (t.direction === "买" ? "买开" : "卖开") : (t.direction === "买" ? "买平" : "卖平")
+      if (!tradesByIdx.has(idx)) tradesByIdx.set(idx, [])
+      tradesByIdx.get(idx)!.push({ name, direction: t.direction, action: t.action, price: t.price, lots: t.lots })
+    }
+
     return {
       backgroundColor: "transparent",
       animation: false,
       legend: {
         top: 4, right: 8,
         textStyle: { fontSize: 10 },
-        data: ["MA5", "MA20", "权益涨跌%", "指数涨跌%"],
+        data: ["MA5", "MA20", "权益累计涨跌%", "指数累计涨跌%"],
         selected: { "MA5": false, "MA20": false },
       },
       tooltip: {
@@ -172,28 +184,59 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         formatter(params: any[]) {
           if (!params?.length) return ""
-          const idx = params[0].dataIndex as number
-          const date = bmDates[idx] ?? ""
+          const dataIdx  = params[0].dataIndex as number
+          const axisIdx  = params[0].axisIndex  as number
+          const date     = bmDates[dataIdx] ?? ""
           const lines: string[] = [`<b>${date}</b>`]
-          for (const p of params) {
-            if (p.seriesType === "candlestick") {
-              const [o, c, l, h] = p.value as number[]
-              const arrow = c >= o ? `<span style="color:#ef4444">▲</span>` : `<span style="color:#22c55e">▼</span>`
-              lines.push(`${arrow} 开${o?.toFixed(2)} 收<b>${c?.toFixed(2)}</b> 高${h?.toFixed(2)} 低${l?.toFixed(2)}`)
-            } else if (!["买开", "卖开", "平仓"].includes(p.seriesName)) {
+
+          if (axisIdx === 0) {
+            // ── Panel 0: OHLC + trade order details ────────────────────────
+            for (const p of params) {
+              if (p.seriesType === "candlestick") {
+                const [o, c, l, h] = p.value as number[]
+                const arrow = c >= o ? `<span style="color:#ef4444">▲</span>` : `<span style="color:#22c55e">▼</span>`
+                lines.push(`${arrow} 开${o?.toFixed(2)} 收<b>${c?.toFixed(2)}</b> 高${h?.toFixed(2)} 低${l?.toFixed(2)}`)
+              }
+            }
+            const trades = tradesByIdx.get(dataIdx)
+            if (trades?.length) {
+              for (const t of trades) {
+                const priceStr = t.price != null ? ` @${t.price.toFixed(2)}` : ""
+                const lotsStr  = t.lots  != null ? ` ${Math.round(t.lots)}手` : ""
+                const col = t.name.startsWith("买") ? "#ef4444" : "#22c55e"
+                lines.push(`<span style="color:${col}">● ${t.name}${priceStr}${lotsStr}</span>`)
+              }
+            }
+
+          } else if (axisIdx === 1) {
+            // ── Panel 1: cumulative returns + cumulative raw P&L ───────────
+            for (const p of params) {
               const v = typeof p.value === "number" ? p.value : (Array.isArray(p.value) ? (p.value as number[])[1] : null)
               if (v === null || v === undefined) continue
-              let label: string
-              if (p.seriesName === "权益涨跌%" || p.seriesName === "指数涨跌%") {
-                label = ((v - 1) * 100).toFixed(2) + "%"
-              } else if (p.seriesName === "当日盈亏") {
-                label = fmtYuan(v) + "元"
-              } else {
-                label = v.toFixed(2)
+              const pct = ((v - 1) * 100).toFixed(2) + "%"
+              if (p.seriesName === "权益累计涨跌%") {
+                lines.push(`<span style="color:#3b82f6">${p.marker}权益累计涨跌%: ${pct}</span>`)
+              } else if (p.seriesName === "指数累计涨跌%") {
+                lines.push(`${p.marker}指数累计涨跌%: ${pct}`)
               }
-              lines.push(`${p.marker}${p.seriesName}: ${label}`)
+            }
+            const relCum = alignedCumPnl[dataIdx] - pnlAtStart
+            const cumCol = relCum >= 0 ? "#ef4444" : "#22c55e"
+            lines.push(`<span style="color:${cumCol}">权益累计盈亏: ${fmtYuan(relCum)}元</span>`)
+
+          } else if (axisIdx === 2) {
+            // ── Panel 2: daily P&L only ────────────────────────────────────
+            for (const p of params) {
+              if (p.seriesName === "当日盈亏") {
+                const v = typeof p.value === "number" ? p.value : (Array.isArray(p.value) ? (p.value as number[])[1] : null)
+                if (v != null) {
+                  const col = v >= 0 ? "#ef4444" : "#22c55e"
+                  lines.push(`<span style="color:${col}">${p.marker}当日盈亏: ${fmtYuan(v)}元</span>`)
+                }
+              }
             }
           }
+
           return lines.join("<br/>")
         },
       },
@@ -306,14 +349,14 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
 
         // ── Panel 1: both lines rebased to 1.0 at window start ──────────────
         {
-          name: "权益涨跌%",
+          name: "权益累计涨跌%",
           type: "line", xAxisIndex: 1, yAxisIndex: 1,
           data: equityIndexed, smooth: false, symbol: "none", connectNulls: false,
           lineStyle: { width: 2, color: "#3b82f6" },
           areaStyle: { opacity: 0.08, color: "#3b82f6" },
         },
         {
-          name: "指数涨跌%",
+          name: "指数累计涨跌%",
           type: "line", xAxisIndex: 1, yAxisIndex: 1,
           data: bmIndexed, smooth: false, symbol: "none",
           lineStyle: { width: 1.5, color: "#f59e0b", type: "dashed" },
