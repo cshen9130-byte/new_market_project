@@ -5,7 +5,8 @@ import dynamic from "next/dynamic"
 import { useCallback, useEffect, useState } from "react"
 import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, Maximize2, Minimize2, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
 
-const NhciCandleChart = dynamic(() => import("@/components/ma/nhci-candle-chart"), { ssr: false })
+const NhciCandleChart   = dynamic(() => import("@/components/ma/nhci-candle-chart"),  { ssr: false })
+const AuTradingChart    = dynamic(() => import("@/components/ma/au-trading-chart"),    { ssr: false })
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -296,9 +297,9 @@ export default function TraderAnalysisPage() {
               height={280}
             />
           </div>
-          {/* right column: one tall chart spanning both rows */}
-          <div className="rounded-lg border border-border/60 bg-card flex items-center justify-center text-sm text-muted-foreground">
-            图表三 — 即将上线
+          {/* right column: AU trading review chart */}
+          <div className="flex flex-col">
+            <AuTradingChart account="rx000" chartHeight={540} />
           </div>
         </div>
       )}
