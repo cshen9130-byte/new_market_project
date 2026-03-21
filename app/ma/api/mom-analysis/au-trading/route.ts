@@ -148,6 +148,9 @@ export async function GET(req: Request) {
         : Promise.resolve([] as { date: string; open: number; high: number; low: number; close: number; volume: number }[]),
 
       // 2. All product futures transactions for the account
+      // Use regex '^PRODUCT[0-9]' instead of LIKE 'PRODUCT%' so that single-letter
+      // products (A=soybean, M=meal, C=corn, etc.) don't accidentally match
+      // multi-letter products sharing the same prefix (AU, MA, CU, CF, CS, etc.)
       query<{ trade_date: string; contract: string; direction: string; action: string; price: number | null; lots: number | null }>(
         `SELECT "交易日期"::text                                            AS trade_date,
                 UPPER(TRIM("合约"))                                        AS contract,
@@ -157,23 +160,24 @@ export async function GET(req: Request) {
                 ABS(CAST(NULLIF(TRIM(COALESCE("手数",'')),'') AS float8))  AS lots
          FROM mom_futures_trade_details
          WHERE "账户" ILIKE $1
-           AND UPPER(TRIM("合约")) LIKE $2
+           AND UPPER(TRIM("合约")) ~ ('^' || $2 || '[0-9]')
            AND "交易日期" BETWEEN $3 AND $4
          ORDER BY "交易日期", "合约"`,
-        [`%${account}%`, `${product}%`, PRICE_FROM, to],
+        [`%${account}%`, product, PRICE_FROM, to],
       ),
 
       // 3. Daily OHLCV for all contracts of this product
+      // Same regex to prevent prefix collision
       query<{ date: string; contract: string; close: number; preclose: number }>(
         `SELECT trade_date::text                                    AS date,
                 contract,
                 CAST(close                   AS float8)            AS close,
                 CAST(COALESCE(preclose,close) AS float8)           AS preclose
          FROM raw_futures_contracts_daily
-         WHERE UPPER(contract) LIKE $1
+         WHERE UPPER(contract) ~ ('^' || $1 || '[0-9]')
            AND trade_date BETWEEN $2 AND $3
          ORDER BY trade_date, contract`,
-        [`${product}%`, PRICE_FROM, to],
+        [product, PRICE_FROM, to],
       ),
     ])
 
