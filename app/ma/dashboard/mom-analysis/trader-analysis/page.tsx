@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
-import { ArrowLeft, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
+import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -66,6 +66,52 @@ const QUICK_RANGES = [
   { label: "近一年",   from: () => isoMonthOffset(-12),  to: () => isoToday()          },
 ]
 
+// ── sorting ──────────────────────────────────────────────────────────────────
+
+type SortKey = keyof Trader | null
+type SortDir = "asc" | "desc"
+
+function sortValue(t: Trader, key: SortKey): number | string {
+  if (!key) return 0
+  const v = t[key]
+  if (v === null || v === undefined) return -Infinity
+  if (typeof v === "number") return v
+  // parse percentage strings like "12.5%" for latestRiskRatio
+  const cleaned = String(v).replace(/[%,\s]/g, "")
+  const n = parseFloat(cleaned)
+  return isNaN(n) ? String(v) : n
+}
+
+function SortableHead({
+  label,
+  colKey,
+  sortKey,
+  sortDir,
+  onSort,
+  className = "",
+}: {
+  label: string
+  colKey: SortKey
+  sortKey: SortKey
+  sortDir: SortDir
+  onSort: (k: SortKey) => void
+  className?: string
+}) {
+  const active = sortKey === colKey
+  const Icon = active ? (sortDir === "asc" ? ChevronUp : ChevronDown) : ChevronsUpDown
+  return (
+    <th
+      className={`whitespace-nowrap px-4 py-3 text-right text-xs font-medium text-muted-foreground select-none cursor-pointer hover:text-foreground transition-colors ${className}`}
+      onClick={() => onSort(colKey)}
+    >
+      <span className="inline-flex items-center justify-end gap-1">
+        {label}
+        <Icon className={`h-3 w-3 shrink-0 ${active ? "text-foreground" : "text-muted-foreground/50"}`} />
+      </span>
+    </th>
+  )
+}
+
 // ── types ─────────────────────────────────────────────────────────────────────
 
 interface Trader {
@@ -102,6 +148,17 @@ export default function TraderAnalysisPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [notYetRun, setNotYetRun] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sortKey, setSortKey] = useState<SortKey>("periodPnl")
+  const [sortDir, setSortDir] = useState<SortDir>("desc")
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    } else {
+      setSortKey(key)
+      setSortDir("desc")
+    }
+  }
 
   const load = useCallback(async (from: string, to: string) => {
     setIsLoading(true)
@@ -128,6 +185,17 @@ export default function TraderAnalysisPage() {
   }, [])
 
   // ── derived stats ──────────────────────────────────────────────────────────
+
+  const sorted = sortKey
+    ? [...traders].sort((a, b) => {
+        const av = sortValue(a, sortKey)
+        const bv = sortValue(b, sortKey)
+        if (av === -Infinity && bv !== -Infinity) return 1
+        if (bv === -Infinity && av !== -Infinity) return -1
+        const cmp = typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number)
+        return sortDir === "asc" ? cmp : -cmp
+      })
+    : traders
 
   const totalPnl = traders.reduce((s, t) => s + (t.periodPnl ?? 0), 0)
   const totalFee = traders.reduce((s, t) => s + (t.periodFee ?? 0), 0)
@@ -269,23 +337,23 @@ export default function TraderAnalysisPage() {
           <Table>
             <TableHeader>
               <TableRow className="hover:bg-transparent">
-                <TableHead className="whitespace-nowrap">账户</TableHead>
-                <TableHead className="whitespace-nowrap text-right">交易天数</TableHead>
-                <TableHead className="whitespace-nowrap text-right">起止日期</TableHead>
-                <TableHead className="whitespace-nowrap text-right">期间盈亏</TableHead>
-                <TableHead className="whitespace-nowrap text-right">期间手续费</TableHead>
-                <TableHead className="whitespace-nowrap text-right">净盈亏</TableHead>
-                <TableHead className="whitespace-nowrap text-right">累计平仓盈亏</TableHead>
-                <TableHead className="whitespace-nowrap text-right">累计持仓盈亏</TableHead>
-                <TableHead className="whitespace-nowrap text-right">最新客户权益</TableHead>
-                <TableHead className="whitespace-nowrap text-right">最新结存</TableHead>
-                <TableHead className="whitespace-nowrap text-right">风险度</TableHead>
-                <TableHead className="whitespace-nowrap text-right">保证金占用</TableHead>
-                <TableHead className="whitespace-nowrap text-right">可用资金</TableHead>
+                <SortableHead label="账户"      colKey="account"        sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-left" />
+                <SortableHead label="交易天数"  colKey="tradingDays"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-medium text-muted-foreground">起止日期</th>
+                <SortableHead label="期间盈亏"  colKey="periodPnl"     sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="期间手续费" colKey="periodFee"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="净盈亏"    colKey="netPnl"        sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="累计平仓盈亏" colKey="closePnl"   sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="累计持仓盈亏" colKey="positionPnl" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="最新客户权益" colKey="latestEquity" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="最新结存"  colKey="latestBalance"  sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="风险度"    colKey="latestRiskRatio" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="保证金占用" colKey="latestMargin"  sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="可用资金"  colKey="latestAvailable" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {traders.map((t) => (
+              {sorted.map((t) => (
                 <TableRow key={t.account}>
                   <TableCell className="font-medium whitespace-nowrap">{t.account}</TableCell>
                   <TableCell className="text-right tabular-nums">{t.tradingDays}</TableCell>
