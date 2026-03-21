@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
-import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
+import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -29,6 +29,41 @@ function fmtPct(raw: string | null): string {
   if (!raw) return "—"
   const s = String(raw).trim()
   return s.endsWith("%") ? s : `${s}%`
+}
+
+function downloadCsv(rows: Trader[], from: string, to: string) {
+  const headers = [
+    "账户", "交易天数", "起始日期", "截止日期",
+    "期间盈亏", "期间手续费", "净盈亏",
+    "累计平仓盈亏", "累计持仓盈亏",
+    "最新客户权益", "最新结存", "风险度",
+    "保证金占用", "可用资金",
+  ]
+  const escape = (v: unknown) => {
+    const s = v === null || v === undefined ? "" : String(v)
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"`
+      : s
+  }
+  const lines = [
+    headers.join(","),
+    ...rows.map((t) =>
+      [
+        t.account, t.tradingDays, t.firstDate ?? "", t.lastDate ?? "",
+        t.periodPnl ?? "", t.periodFee ?? "", t.netPnl ?? "",
+        t.closePnl ?? "", t.positionPnl ?? "",
+        t.latestEquity ?? "", t.latestBalance ?? "", t.latestRiskRatio ?? "",
+        t.latestMargin ?? "", t.latestAvailable ?? "",
+      ].map(escape).join(",")
+    ),
+  ]
+  const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8;" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `盘手分析_${from}_${to}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function pnlClass(n: number | null): string {
@@ -277,6 +312,16 @@ export default function TraderAnalysisPage() {
         >
           重置
         </Button>
+        {sorted.length > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => downloadCsv(sorted, fromDate, toDate)}
+          >
+            <Download className="h-3.5 w-3.5 mr-1.5" />
+            下载 CSV
+          </Button>
+        )}
       </div>
 
       {/* error / not-yet-run */}
