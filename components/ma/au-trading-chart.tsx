@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -92,17 +92,17 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
 
   useEffect(() => { load(from, to) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Build ECharts option ──────────────────────────────────────────────────
+  // ── Build ECharts option (useMemo ensures a new object ref when data changes)
 
-  const option = useRef<object>({})
+  const option = useMemo<object>(() => {
+    if (!data) return {}
 
-  if (data) {
-    const bench = data.benchmark
+    const bench   = data.benchmark
     const bmDates = bench.map(b => b.date)
     const bmIdxMap = new Map(bmDates.map((d, i) => [d, i] as [string, number]))
 
     // Best-effort index lookup: exact match, else nearest previous trading day
-    function getDateIdx(date: string): number {
+    const getDateIdx = (date: string): number => {
       if (bmIdxMap.has(date)) return bmIdxMap.get(date)!
       let best = -1
       for (const [d, idx] of bmIdxMap) {
@@ -130,8 +130,8 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
     })
 
     // ── Indexed returns: both start at 1.0 at first trading day in window ────
-    const firstClose   = bench[0]?.close || 1
-    const bmIndexed    = bench.map(b => +(b.close / firstClose).toFixed(6))
+    const firstClose  = bench[0]?.close || 1
+    const bmIndexed   = bench.map(b => +(b.close / firstClose).toFixed(6))
 
     const firstPnlDate = data.dailyPnl[0]?.date ?? ""
     const pnlAtStart   = data.dailyPnl[0]?.cumPnl ?? 0
@@ -142,7 +142,6 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
     )
 
     // ── Trade markers (scatter on benchmark chart) ───────────────────────────
-    // Group: 买开 / 卖开 / 平仓 (vague — includes both 卖平 and 买平)
     const openLong:  [number, number][] = []
     const openShort: [number, number][] = []
     const closePos:  [number, number][] = []
@@ -152,14 +151,13 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
       if (idx < 0) continue
       const y = bench[idx]?.close
       if (y === undefined) continue
-
       const isOpen = !t.action || t.action.includes("开")
-      if (isOpen && t.direction === "买")  openLong.push([idx, y])
-      else if (isOpen && t.direction === "卖") openShort.push([idx, y])
-      else closePos.push([idx, y])
+      if (isOpen && t.direction === "买")        openLong.push([idx, y])
+      else if (isOpen && t.direction === "卖")   openShort.push([idx, y])
+      else                                       closePos.push([idx, y])
     }
 
-    option.current = {
+    return {
       backgroundColor: "transparent",
       animation: false,
       legend: {
@@ -335,7 +333,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         },
       ],
     }
-  }
+  }, [data, initialCapital])
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -395,7 +393,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         )}
         {data && data.benchmark.length > 0 && (
           <ReactECharts
-            option={option.current}
+            option={option}
             style={{ height: chartHeight }}
             opts={{ renderer: "canvas" }}
             notMerge
