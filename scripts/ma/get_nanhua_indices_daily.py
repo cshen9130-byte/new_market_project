@@ -180,11 +180,36 @@ def extract_multi_field_single_code(csd_result, code: str = "") -> list[dict]:
     field_series: dict[str, list] = {}
 
     if isinstance(DD, dict):
-        # dict keyed by field name: {"OPEN": [...], "CLOSE": [...], ...}
-        for fn in FIELD_NAMES:
-            s = DD.get(fn) or DD.get(fn.lower())
-            if s is not None:
-                field_series[fn] = _flatten(s)
+        # Shape A: keyed by field name → {"OPEN": [...], "CLOSE": [...]}
+        # Shape B: keyed by code      → {"NHAECI.NH": [open_v, close_v, ...]} aligned to Indicators
+        first_key = next(iter(DD), None)
+        if first_key and first_key.upper() not in [fn.upper() for fn in FIELD_NAMES]:
+            # Shape B — values are scalars or single-element lists (one date row)
+            vals = DD.get(code) or DD.get(list(DD.keys())[0])
+            if vals is None:
+                sys.stderr.write(f"[{code}] Data keyed by code but code key missing\n")
+                return []
+            # vals is either a list of [field0, field1, ...] per indicator
+            # or already the scalar values themselves
+            if isinstance(vals, (list, tuple)):
+                # Each element corresponds to one Indicator entry
+                for fn in FIELD_NAMES:
+                    try:
+                        idx = ind_upper.index(fn)
+                        v = vals[idx]
+                        # wrap scalar into list aligned with dates
+                        field_series[fn] = list(v) if isinstance(v, (list, tuple)) else [v] * len(dates)
+                    except (ValueError, IndexError):
+                        pass
+            else:
+                sys.stderr.write(f"[{code}] Unexpected vals type: {type(vals)}\n")
+                return []
+        else:
+            # Shape A: keyed by field name
+            for fn in FIELD_NAMES:
+                s = DD.get(fn) or DD.get(fn.lower())
+                if s is not None:
+                    field_series[fn] = _flatten(s)
     elif isinstance(DD, (list, tuple)):
         # list of series: DD[field_index] = [values per date]
         for fn in FIELD_NAMES:
