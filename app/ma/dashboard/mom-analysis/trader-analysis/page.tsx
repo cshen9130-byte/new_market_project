@@ -259,21 +259,28 @@ export default function TraderAnalysisPage() {
       <div className="flex flex-wrap items-center gap-3">
         {/* quick-select buttons */}
         <div className="flex items-center gap-1.5">
-          {QUICK_RANGES.map((r) => (
-            <button
-              key={r.label}
-              onClick={() => {
-                const f = r.from()
-                const t = r.to()
-                setFromDate(f)
-                setToDate(t)
-                load(f, t)
-              }}
-              className="rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-            >
-              {r.label}
-            </button>
-          ))}
+          {QUICK_RANGES.map((r) => {
+            const active = fromDate === r.from() && toDate === r.to()
+            return (
+              <button
+                key={r.label}
+                onClick={() => {
+                  const f = r.from()
+                  const t = r.to()
+                  setFromDate(f)
+                  setToDate(t)
+                  load(f, t)
+                }}
+                className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                  active
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
+              >
+                {r.label}
+              </button>
+            )
+          })}
         </div>
         <div className="flex items-center gap-2 text-sm">
           <span className="text-muted-foreground">起始日期</span>
