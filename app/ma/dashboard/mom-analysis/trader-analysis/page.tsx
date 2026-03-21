@@ -262,6 +262,21 @@ export default function TraderAnalysisPage() {
           <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${isLoading ? "animate-spin" : ""}`} />
           查询
         </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            const r = defaultRange()
+            setFromDate(r.from)
+            setToDate(r.to)
+            setSortKey("periodPnl")
+            setSortDir("desc")
+            load(r.from, r.to)
+          }}
+          disabled={isLoading}
+        >
+          重置
+        </Button>
       </div>
 
       {/* error / not-yet-run */}
