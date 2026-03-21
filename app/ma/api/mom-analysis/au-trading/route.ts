@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic"
 
 // ── Product config: NH benchmark code, exchange suffix, lot multiplier ──────
 // Exchange codes match raw_futures_contracts_daily contract suffixes:
-//   SHF=上期所  DCE=大商所  ZCE=郑商所  INE=上海国际能源  GFEX=广州期货
+//   SHF=上期所  DCE=大商所  ZCE=郑商所  INE=上海国际能源  GFE=广州期货
 // Multiplier = lot_size_in_primary_unit (yuan per 1 unit price move per lot)
 const PRODUCT_CONFIG: Record<string, { nhCode: string | null; exchange: string; multiplier: number }> = {
   // ── Grains ─────────────────────────────────────────────────────────────────
@@ -57,9 +57,9 @@ const PRODUCT_CONFIG: Record<string, { nhCode: string | null; exchange: string; 
   PB: { nhCode: "NHPB.NH",  exchange: "SHF",  multiplier: 5    }, // 沪铅
   NI: { nhCode: "NHNI.NH",  exchange: "SHF",  multiplier: 1    }, // 沪镍 (1 ton/lot)
   SN: { nhCode: "NHSN.NH",  exchange: "SHF",  multiplier: 1    }, // 沪锡 (1 ton/lot)
-  LC: { nhCode: "NHLC.NH",  exchange: "GFEX", multiplier: 5    }, // 碳酸锂
-  PS: { nhCode: null,        exchange: "GFEX", multiplier: 3    }, // 多晶硅
-  SI: { nhCode: "NHSI.NH",  exchange: "GFEX", multiplier: 5    }, // 工业硅
+  LC: { nhCode: "NHLC.NH",  exchange: "GFE",  multiplier: 5    }, // 碳酸锂
+  PS: { nhCode: null,        exchange: "GFE",  multiplier: 3    }, // 多晶硅
+  SI: { nhCode: "NHSI.NH",  exchange: "GFE",  multiplier: 5    }, // 工业硅
   // ── Ferrous metals ─────────────────────────────────────────────────────────
   I:  { nhCode: "NHI.NH",   exchange: "DCE",  multiplier: 100  }, // 铁矿石 (100 tons/lot)
   SF: { nhCode: "NHSF.NH",  exchange: "ZCE",  multiplier: 5    }, // 硅铁
