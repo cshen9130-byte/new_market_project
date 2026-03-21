@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Download, FileText, Upload } from "lucide-react"
+import { Download, FileText, Upload, Users } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 
@@ -21,6 +21,14 @@ const functions = [
     href: "/ma/dashboard/mom-analysis/data-import",
     downloadHref: null,
     icon: Upload,
+    openInNewTab: false,
+  },
+  {
+    title: "盘手分析",
+    description: "基于客户交易核算日报，按账户汇总期间盈亏、手续费、权益等绩效指标。",
+    href: "/ma/dashboard/mom-analysis/trader-analysis",
+    downloadHref: null,
+    icon: Users,
     openInNewTab: false,
   },
 ]
