@@ -53,7 +53,11 @@ const QUICK_RANGES = [
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function NhciCandleChart() {
+interface Props {
+  height?: number
+}
+
+export default function NhciCandleChart({ height = 300 }: Props) {
   const [fromDate, setFromDate] = useState(() => isoMonthOffset(-3))
   const [toDate,   setToDate]   = useState(() => isoToday())
   const [data,     setData]     = useState<CandleRow[]>([])
@@ -300,24 +304,24 @@ export default function NhciCandleChart() {
 
       <CardContent className="px-2 pb-4">
         {error && (
-          <div className="flex h-80 items-center justify-center text-sm text-destructive">
+          <div className="flex items-center justify-center text-sm text-destructive" style={{ height }}>
             {error}
           </div>
         )}
         {!error && loading && (
-          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
+          <div className="flex items-center justify-center text-sm text-muted-foreground" style={{ height }}>
             加载中…
           </div>
         )}
         {!error && !loading && data.length === 0 && (
-          <div className="flex h-80 items-center justify-center text-sm text-muted-foreground">
+          <div className="flex items-center justify-center text-sm text-muted-foreground" style={{ height }}>
             暂无数据
           </div>
         )}
         {!error && !loading && data.length > 0 && (
           <ReactECharts
             option={option}
-            style={{ height: hasVolume ? "500px" : "380px" }}
+            style={{ height: `${height}px` }}
             notMerge={true}
           />
         )}

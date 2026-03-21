@@ -282,8 +282,19 @@ export default function TraderAnalysisPage() {
 
       {/* 品种交易回顾 */}
       {activeTab === "variety-review" && (
-        <div className="space-y-4">
-          <NhciCandleChart />
+        <div className="grid grid-cols-2 gap-4">
+          {/* left column: two equal-height charts stacked */}
+          <div className="flex flex-col gap-4">
+            <NhciCandleChart height={280} />
+            {/* chart 2 placeholder — will be replaced later */}
+            <div className="rounded-lg border border-border/60 bg-card flex items-center justify-center text-sm text-muted-foreground" style={{ minHeight: 340 }}>
+              图表二 — 即将上线
+            </div>
+          </div>
+          {/* right column: one tall chart spanning both rows */}
+          <div className="rounded-lg border border-border/60 bg-card flex items-center justify-center text-sm text-muted-foreground">
+            图表三 — 即将上线
+          </div>
         </div>
       )}
 
