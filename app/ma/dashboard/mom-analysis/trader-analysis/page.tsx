@@ -2,18 +2,11 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useState } from "react"
-import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
+import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, Maximize2, Minimize2, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
+
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -134,12 +127,13 @@ function SortableHead({
 }) {
   const active = sortKey === colKey
   const Icon = active ? (sortDir === "asc" ? ChevronUp : ChevronDown) : ChevronsUpDown
+  const isCenter = className.includes("text-center")
   return (
     <th
-      className={`whitespace-nowrap px-4 py-3 text-right text-xs font-medium text-muted-foreground select-none cursor-pointer hover:text-foreground transition-colors ${className}`}
+      className={`sticky top-0 z-10 bg-card whitespace-nowrap px-4 py-3 text-xs font-medium text-muted-foreground select-none cursor-pointer hover:text-foreground transition-colors ${isCenter ? "text-center" : "text-right"} ${className}`}
       onClick={() => onSort(colKey)}
     >
-      <span className="inline-flex items-center justify-end gap-1">
+      <span className={`inline-flex items-center gap-1 ${isCenter ? "justify-center" : "justify-end"}`}>
         {label}
         <Icon className={`h-3 w-3 shrink-0 ${active ? "text-foreground" : "text-muted-foreground/50"}`} />
       </span>
@@ -186,6 +180,13 @@ export default function TraderAnalysisPage() {
   const [sortKey, setSortKey] = useState<SortKey>("periodPnl")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
   const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review">("pnl-rank")
+  const [isFullscreen, setIsFullscreen] = useState(false)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false) }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -359,6 +360,16 @@ export default function TraderAnalysisPage() {
             下载 CSV
           </Button>
         )}
+        {sorted.length > 0 && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setIsFullscreen(true)}
+          >
+            <Maximize2 className="h-3.5 w-3.5 mr-1.5" />
+            全屏
+          </Button>
+        )}
       </div>
 
       {/* error / not-yet-run */}
@@ -430,13 +441,24 @@ export default function TraderAnalysisPage() {
 
       {/* table */}
       {traders.length > 0 && (
-        <div className="rounded-lg border border-border/60 bg-card overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <SortableHead label="账户"      colKey="account"        sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-left" />
-                <SortableHead label="交易天数"  colKey="tradingDays"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-medium text-muted-foreground">起止日期</th>
+        <div className={isFullscreen ? "fixed inset-0 z-50 bg-background p-4 flex flex-col gap-3" : ""}>
+          {isFullscreen && (
+            <div className="flex items-center justify-between shrink-0">
+              <span className="font-semibold text-sm">盈亏排名</span>
+              <Button size="sm" variant="ghost" onClick={() => setIsFullscreen(false)}>
+                <Minimize2 className="h-3.5 w-3.5 mr-1.5" />
+                退出全屏
+              </Button>
+            </div>
+          )}
+        <div className={`rounded-lg border border-border/60 bg-card overflow-auto ${isFullscreen ? "flex-1" : "max-h-[70vh]"}`}>
+          <table className="w-full caption-bottom text-sm">
+            <thead>
+              <tr className="border-b">
+                <th className="sticky top-0 z-10 bg-card w-10 whitespace-nowrap px-4 py-3 text-center text-xs font-medium text-muted-foreground">序号</th>
+                <SortableHead label="账户"      colKey="account"        sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-center" />
+                <SortableHead label="交易天数"  colKey="tradingDays"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-center" />
+                <th className="sticky top-0 z-10 bg-card whitespace-nowrap px-4 py-3 text-right text-xs font-medium text-muted-foreground">起止日期</th>
                 <SortableHead label="期间盈亏"  colKey="periodPnl"     sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="期间手续费" colKey="periodFee"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="净盈亏"    colKey="netPnl"        sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -447,40 +469,42 @@ export default function TraderAnalysisPage() {
                 <SortableHead label="风险度"    colKey="latestRiskRatio" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="保证金占用" colKey="latestMargin"  sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="可用资金"  colKey="latestAvailable" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sorted.map((t) => (
-                <TableRow key={t.account}>
-                  <TableCell className="font-medium whitespace-nowrap">{t.account}</TableCell>
-                  <TableCell className="text-right tabular-nums">{t.tradingDays}</TableCell>
-                  <TableCell className="text-right tabular-nums whitespace-nowrap text-xs text-muted-foreground">
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((t, i) => (
+                <tr key={t.account} className="hover:bg-muted/50 border-b transition-colors">
+                  <td className="px-4 py-3 text-center tabular-nums text-sm text-muted-foreground">{i + 1}</td>
+                  <td className="px-4 py-3 text-center font-medium whitespace-nowrap text-sm">{t.account}</td>
+                  <td className="px-4 py-3 text-center tabular-nums text-sm">{t.tradingDays}</td>
+                  <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap text-xs text-muted-foreground">
                     {t.firstDate ?? "—"} ~ {t.lastDate ?? "—"}
-                  </TableCell>
-                  <TableCell className={`text-right tabular-nums font-medium ${pnlClass(t.periodPnl)}`}>
+                  </td>
+                  <td className={`px-4 py-3 text-right tabular-nums text-sm font-medium ${pnlClass(t.periodPnl)}`}>
                     {fmt(t.periodPnl)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-sm text-muted-foreground">
                     {fmt(t.periodFee)}
-                  </TableCell>
-                  <TableCell className={`text-right tabular-nums font-medium ${pnlClass(t.netPnl)}`}>
+                  </td>
+                  <td className={`px-4 py-3 text-right tabular-nums text-sm font-medium ${pnlClass(t.netPnl)}`}>
                     {fmt(t.netPnl)}
-                  </TableCell>
-                  <TableCell className={`text-right tabular-nums ${pnlClass(t.closePnl)}`}>
+                  </td>
+                  <td className={`px-4 py-3 text-right tabular-nums text-sm ${pnlClass(t.closePnl)}`}>
                     {fmt(t.closePnl)}
-                  </TableCell>
-                  <TableCell className={`text-right tabular-nums ${pnlClass(t.positionPnl)}`}>
+                  </td>
+                  <td className={`px-4 py-3 text-right tabular-nums text-sm ${pnlClass(t.positionPnl)}`}>
                     {fmt(t.positionPnl)}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">{fmt(t.latestEquity)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{fmt(t.latestBalance)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{fmtPct(t.latestRiskRatio)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{fmt(t.latestMargin)}</TableCell>
-                  <TableCell className="text-right tabular-nums">{fmt(t.latestAvailable)}</TableCell>
-                </TableRow>
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-sm">{fmt(t.latestEquity)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-sm">{fmt(t.latestBalance)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-sm">{fmtPct(t.latestRiskRatio)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-sm">{fmt(t.latestMargin)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums text-sm">{fmt(t.latestAvailable)}</td>
+                </tr>
               ))}
-            </TableBody>
-          </Table>
+            </tbody>
+          </table>
+        </div>
         </div>
       )}
 
