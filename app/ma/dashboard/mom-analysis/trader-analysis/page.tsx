@@ -33,8 +33,8 @@ function fmtPct(raw: string | null): string {
 
 function pnlClass(n: number | null): string {
   if (n === null) return "text-muted-foreground"
-  if (n > 0) return "text-emerald-600 dark:text-emerald-400"
-  if (n < 0) return "text-red-600 dark:text-red-400"
+  if (n > 0) return "text-red-600 dark:text-red-400"
+  if (n < 0) return "text-emerald-600 dark:text-emerald-400"
   return ""
 }
 
@@ -187,9 +187,9 @@ export default function TraderAnalysisPage() {
             <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-4">
               <CardTitle className="text-xs font-medium text-muted-foreground">期间总盈亏</CardTitle>
               {totalPnl >= 0 ? (
-                <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
+                <TrendingUp className="h-3.5 w-3.5 text-red-500" />
               ) : (
-                <TrendingDown className="h-3.5 w-3.5 text-red-500" />
+                <TrendingDown className="h-3.5 w-3.5 text-emerald-500" />
               )}
             </CardHeader>
             <CardContent className="px-4 pb-4">
@@ -200,7 +200,7 @@ export default function TraderAnalysisPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-4">
               <CardTitle className="text-xs font-medium text-muted-foreground">最佳盘手</CardTitle>
-              <TrendingUp className="h-3.5 w-3.5 text-emerald-500" />
+              <TrendingUp className="h-3.5 w-3.5 text-red-500" />
             </CardHeader>
             <CardContent className="px-4 pb-4">
               <p className="text-lg font-semibold leading-tight">{bestTrader?.account ?? "—"}</p>
@@ -213,7 +213,7 @@ export default function TraderAnalysisPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-4">
               <CardTitle className="text-xs font-medium text-muted-foreground">最差盘手</CardTitle>
-              <TrendingDown className="h-3.5 w-3.5 text-red-500" />
+              <TrendingDown className="h-3.5 w-3.5 text-emerald-500" />
             </CardHeader>
             <CardContent className="px-4 pb-4">
               <p className="text-lg font-semibold leading-tight">{worstTrader?.account ?? "—"}</p>
