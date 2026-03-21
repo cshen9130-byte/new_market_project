@@ -128,7 +128,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540 }:
       const r = pnlByDate.get(d)
       if (r) { lastCum = r.cumPnl; return r.cumPnl }
       // Forward fill on non-trading days (holidays between data points)
-      return lastCum || null
+      return lastCum
     })
 
     // ── Trade markers (scatter on benchmark chart) ───────────────────────────

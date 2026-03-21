@@ -46,14 +46,14 @@ export async function GET(req: Request) {
                 TRIM("买/卖")                                              AS direction,
                 TRIM("开/平")                                              AS action,
                 CAST(NULLIF(TRIM(COALESCE("成交价",'')),'') AS float8)    AS price,
-                ABS(CAST(NULLIF(TRIM(COALESCE("手数",'')),'') AS integer)) AS lots
+                ABS(CAST(NULLIF(TRIM(COALESCE("手数",'')),'') AS float8))  AS lots
          FROM mom_futures_trade_details
          WHERE "账户" ILIKE $1
            AND UPPER(TRIM("合约")) LIKE 'AU%'
            AND "交易日期" BETWEEN $2 AND $3
          ORDER BY "交易日期", "合约"`,
         [`%${account}%`, PRICE_FROM, to],
-      ).catch(() => [] as { trade_date: string; contract: string; direction: string; action: string; price: number | null; lots: number | null }[]),
+      ),
 
       // 3. Daily OHLCV for all AU.SHF contracts
       query<{ date: string; contract: string; close: number; preclose: number }>(
@@ -66,7 +66,7 @@ export async function GET(req: Request) {
            AND trade_date BETWEEN $1 AND $2
          ORDER BY trade_date, contract`,
         [PRICE_FROM, to],
-      ).catch(() => [] as { date: string; contract: string; close: number; preclose: number }[]),
+      ),
     ])
 
     // ── Build price lookup:  "CONTRACT|DATE" → {close, preclose} ──────────────
