@@ -526,12 +526,61 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
   return (
     <Card className="flex flex-col h-full">
       <CardHeader className="pb-2 shrink-0">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-sm font-medium">
-            {benchLabel} · {productLabel(product)}交易回顾（{account.toUpperCase()}）
-          </CardTitle>
+        <div className="flex flex-col gap-1.5">
+          {/* Row 1: title + account/product/date controls */}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <CardTitle className="text-sm font-medium">
+              {benchLabel} · {productLabel(product)}交易回顾（{account.toUpperCase()}）
+            </CardTitle>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {/* Account selector */}
+              <select
+                value={account}
+                onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product, method, bench) }}
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+              >
+                {(availableAccounts.length ? availableAccounts : [account]).map(a => (
+                  <option key={a} value={a}>{a.toUpperCase()}</option>
+                ))}
+              </select>
+              {/* Product selector */}
+              <select
+                value={product}
+                onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p, method, bench) }}
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+              >
+                {(availableProducts.length ? availableProducts : [product]).map(p => (
+                  <option key={p} value={p}>{productLabel(p)}</option>
+                ))}
+              </select>
+              {QUICK_RANGES.map(r => (
+                <button
+                  key={r.label}
+                  onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product, method, bench) }}
+                  className="rounded px-2 py-0.5 text-xs bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
+                >
+                  {r.label}
+                </button>
+              ))}
+              <input
+                type="date" value={from} onChange={e => setFrom(e.target.value)}
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+              />
+              <input
+                type="date" value={to} onChange={e => setTo(e.target.value)}
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+              />
+              <button
+                onClick={() => load(from, to, account, product, method, bench)}
+                className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+          </div>
+          {/* Row 2: benchmark + calculation method filters */}
           <div className="flex flex-wrap items-center gap-1.5">
-            {/* Benchmark selector */}
+            <span className="text-xs text-muted-foreground">基准:</span>
             <select
               value={bench}
               onChange={e => {
@@ -544,6 +593,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               <option value="nh">南华指数</option>
               <option value="dominant">主连合约</option>
             </select>
+            <span className="text-xs text-muted-foreground ml-2">盈亏法:</span>
             <select
               value={method}
               onChange={e => {
@@ -556,49 +606,6 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               <option value="continuous">连续价格MTM</option>
               <option value="mom">MOM核算表</option>
             </select>
-            {/* Account selector */}
-            <select
-              value={account}
-              onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product, method, bench) }}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
-            >
-              {(availableAccounts.length ? availableAccounts : [account]).map(a => (
-                <option key={a} value={a}>{a.toUpperCase()}</option>
-              ))}
-            </select>
-            {/* Product selector */}
-            <select
-              value={product}
-              onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p, method, bench) }}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
-            >
-              {(availableProducts.length ? availableProducts : [product]).map(p => (
-                <option key={p} value={p}>{productLabel(p)}</option>
-              ))}
-            </select>
-            {QUICK_RANGES.map(r => (
-              <button
-                key={r.label}
-                onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product, method, bench) }}
-                className="rounded px-2 py-0.5 text-xs bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
-              >
-                {r.label}
-              </button>
-            ))}
-            <input
-              type="date" value={from} onChange={e => setFrom(e.target.value)}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
-            />
-            <input
-              type="date" value={to} onChange={e => setTo(e.target.value)}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
-            />
-            <button
-              onClick={() => load(from, to, account, product, method, bench)}
-              className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            </button>
           </div>
         </div>
       </CardHeader>
