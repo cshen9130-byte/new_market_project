@@ -46,6 +46,26 @@ function defaultRange() {
   return { from: fmt(from), to: fmt(to) }
 }
 
+const isoToday = () => new Date().toISOString().slice(0, 10)
+function isoOffset(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+function isoMonthOffset(months: number): string {
+  const d = new Date()
+  d.setMonth(d.getMonth() + months)
+  return d.toISOString().slice(0, 10)
+}
+
+const QUICK_RANGES = [
+  { label: "今日",     from: () => isoToday(),          to: () => isoToday()          },
+  { label: "近一周",   from: () => isoOffset(-7),        to: () => isoToday()          },
+  { label: "近一月",   from: () => isoMonthOffset(-1),   to: () => isoToday()          },
+  { label: "近一季度", from: () => isoMonthOffset(-3),   to: () => isoToday()          },
+  { label: "近一年",   from: () => isoMonthOffset(-12),  to: () => isoToday()          },
+]
+
 // ── types ─────────────────────────────────────────────────────────────────────
 
 interface Trader {
@@ -134,6 +154,24 @@ export default function TraderAnalysisPage() {
 
       {/* date range + refresh */}
       <div className="flex flex-wrap items-center gap-3">
+        {/* quick-select buttons */}
+        <div className="flex items-center gap-1.5">
+          {QUICK_RANGES.map((r) => (
+            <button
+              key={r.label}
+              onClick={() => {
+                const f = r.from()
+                const t = r.to()
+                setFromDate(f)
+                setToDate(t)
+                load(f, t)
+              }}
+              className="rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
         <div className="flex items-center gap-2 text-sm">
           <span className="text-muted-foreground">起始日期</span>
           <input
@@ -238,7 +276,7 @@ export default function TraderAnalysisPage() {
                 <TableHead className="whitespace-nowrap text-right">期间手续费</TableHead>
                 <TableHead className="whitespace-nowrap text-right">净盈亏</TableHead>
                 <TableHead className="whitespace-nowrap text-right">累计平仓盈亏</TableHead>
-                <TableHead className="whitespace-nowrap text-right">持仓盈亏</TableHead>
+                <TableHead className="whitespace-nowrap text-right">累计持仓盈亏</TableHead>
                 <TableHead className="whitespace-nowrap text-right">最新客户权益</TableHead>
                 <TableHead className="whitespace-nowrap text-right">最新结存</TableHead>
                 <TableHead className="whitespace-nowrap text-right">风险度</TableHead>
