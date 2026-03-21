@@ -138,11 +138,30 @@ export async function GET(req: Request) {
       }
     }
 
+    // ── Snapshot total net lots per day (from=window start) ───────────────────
+    // Re-walk to emit net lots per date within the display window
+    const positions2 = new Map<string, number>() // contract → net lots
+    const positionHistory: { date: string; totalLots: number }[] = []
+    for (const date of allTradingDates) {
+      for (const [contract, dm] of deltas) {
+        const delta = dm.get(date)
+        if (delta !== undefined) {
+          positions2.set(contract, (positions2.get(contract) || 0) + delta)
+        }
+      }
+      if (date >= from) {
+        let total = 0
+        for (const lots of positions2.values()) total += lots
+        positionHistory.push({ date, totalLots: total })
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       benchmark: benchmarkRows,
       dailyPnl,
       trades: tradeMarkers,
+      positionHistory,
     })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)

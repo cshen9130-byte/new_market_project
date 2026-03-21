@@ -20,6 +20,7 @@ interface ApiData {
   benchmark: BenchmarkRow[]
   dailyPnl: DailyPnlRow[]
   trades: TradeMarker[]
+  positionHistory: { date: string; totalLots: number }[]
   error?: string
 }
 
@@ -141,6 +142,14 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         : +(1 + (v - pnlAtStart) / initialCapital).toFixed(6)
     )
 
+    // ── Align position history to bmDates (forward-fill) ─────────────────────
+    const posMap = new Map((data.positionHistory ?? []).map(r => [r.date, r.totalLots]))
+    let lastLots = 0
+    const alignedLots = bmDates.map(d => {
+      if (posMap.has(d)) { lastLots = posMap.get(d)!; return lastLots }
+      return lastLots // forward-fill non-trading days
+    })
+
     // ── Trade markers (scatter on benchmark chart) ───────────────────────────
     const openLong:  [number, number][] = []
     const openShort: [number, number][] = []
@@ -240,6 +249,12 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
                 }
               }
             }
+          } else if (axisIdx === 3) {
+            // ── Panel 3: net position ──────────────────────────────────────
+            const lots = alignedLots[dataIdx] ?? 0
+            const col  = lots > 0 ? "#ef4444" : lots < 0 ? "#22c55e" : "#94a3b8"
+            const dir  = lots > 0 ? "净多" : lots < 0 ? "净空" : "空仓"
+            lines.push(`<span style="color:#a78bfa">●</span> <span style="color:${col}">${dir} ${Math.abs(lots)}手</span>`)
           }
 
           return lines.join("<br/>")
@@ -248,12 +263,14 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       grid: [
         // All panels share identical left/right so x-axis ticks align perfectly
-        // Panel 0: benchmark candle  (top 8% → 48%)
-        { left: 55, right: 45, top: "8%",  height: "40%" },
-        // Panel 1: indexed returns   (top 52% → 71%)
-        { left: 55, right: 45, top: "52%", height: "19%" },
-        // Panel 2: daily P&L bars   (top 75% → 90%)
-        { left: 55, right: 45, top: "75%", height: "15%" },
+        // Panel 0: benchmark candle  (top 6% → 43%)
+        { left: 55, right: 45, top: "6%",  height: "37%" },
+        // Panel 1: indexed returns   (top 47% → 64%)
+        { left: 55, right: 45, top: "47%", height: "16%" },
+        // Panel 2: daily P&L bars   (top 67% → 79%)
+        { left: 55, right: 45, top: "67%", height: "12%" },
+        // Panel 3: net position (lots)  (top 82% → 92%)
+        { left: 55, right: 45, top: "82%", height: "10%" },
       ],
       xAxis: [
         // Grid 0 — benchmark candle
@@ -275,6 +292,13 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         // Grid 2 — daily P&L bars (same dates)
         {
           gridIndex: 2, type: "category", data: bmDates,
+          axisLabel: { show: false },
+          boundaryGap: true,
+          splitLine: { show: false },
+        },
+        // Grid 3 — net position
+        {
+          gridIndex: 3, type: "category", data: bmDates,
           axisLabel: { fontSize: 9, rotate: 30 },
           boundaryGap: true,
           splitLine: { show: false },
@@ -295,10 +319,19 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
         },
         // yAxisIndex 2 — Grid 2: daily P&L (yuan)
         { gridIndex: 2, scale: true, splitNumber: 2, axisLabel: { fontSize: 8 }, splitLine: { show: false } },
+        // yAxisIndex 3 — Grid 3: net position (lots)
+        {
+          gridIndex: 3, splitNumber: 2,
+          axisLabel: { fontSize: 8,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            formatter: (v: any) => `${v}手`
+          },
+          splitLine: { show: false },
+        },
       ],
       dataZoom: [
-        { type: "inside", xAxisIndex: [0, 1, 2], start: 0, end: 100 },
-        { type: "slider",  xAxisIndex: [0, 1, 2], bottom: 4, height: 20 },
+        { type: "inside", xAxisIndex: [0, 1, 2, 3], start: 0, end: 100 },
+        { type: "slider",  xAxisIndex: [0, 1, 2, 3], bottom: 4, height: 20 },
       ],
       series: [
         // ── Panel 0: benchmark candlestick ─────────────────────────────────
@@ -380,6 +413,33 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
             }
           ),
           barMaxWidth: 6,
+        },
+
+        // ── Panel 3: net holding position (lots) ────────────────────────────
+        {
+          name: "持仓手数",
+          type: "line",
+          step: "end",
+          xAxisIndex: 3, yAxisIndex: 3,
+          data: alignedLots,
+          symbol: "none",
+          color: "#a78bfa",
+          lineStyle: { width: 1.5, color: "#a78bfa" },
+          areaStyle: {
+            opacity: 0.25,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            color: (params: any) => {
+              const v = typeof params === "number" ? params : 0
+              return v >= 0 ? "rgba(239,68,68,0.3)" : "rgba(34,197,94,0.3)"
+            },
+          },
+          markLine: {
+            silent: true,
+            symbol: "none",
+            data: [{ yAxis: 0 }],
+            lineStyle: { color: "#64748b", width: 1, type: "solid" },
+            label: { show: false },
+          },
         },
       ],
     }
