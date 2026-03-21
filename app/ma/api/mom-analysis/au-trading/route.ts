@@ -1,5 +1,21 @@
 import { NextResponse } from "next/server"
+import { readFileSync } from "fs"
+import { join } from "path"
 import { query, rawQuery } from "@/lib/db"
+
+// ── Dynamic multiplier cache (loaded from data/contract_multipliers.json) ────
+// Populated by scripts/ma/fetch_contract_multipliers.py
+let _multiplierCache: Record<string, number> | null = null
+function getMultiplierCache(): Record<string, number> {
+  if (_multiplierCache) return _multiplierCache
+  try {
+    const raw = readFileSync(join(process.cwd(), "data", "contract_multipliers.json"), "utf-8")
+    _multiplierCache = JSON.parse(raw) as Record<string, number>
+  } catch {
+    _multiplierCache = {}
+  }
+  return _multiplierCache
+}
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -246,7 +262,10 @@ export async function GET(req: Request) {
     const rawProduct = (searchParams.get("product") || "AU").toUpperCase().trim()
     const product = /^[A-Z]{1,4}$/.test(rawProduct) ? rawProduct : "AU"
     const config = PRODUCT_CONFIG[product] ?? { nhCode: null, exchange: "SHF", multiplier: 1 }
-    const { nhCode, exchange, multiplier: MULTIPLIER } = config
+    const { nhCode, exchange } = config
+    // Dynamic multiplier from OpenCTP cache overrides hard-coded value if available
+    const cachedMultiplier = getMultiplierCache()[product]
+    const MULTIPLIER = cachedMultiplier ?? config.multiplier
 
     // Fetch prices/trades from PRICE_FROM so positions opened before "from" are captured
     const PRICE_FROM = "2025-01-01"
