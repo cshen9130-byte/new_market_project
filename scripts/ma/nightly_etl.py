@@ -375,9 +375,9 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
         log.info("NH indices up-to-date (%s), skipping.", cur_max)
         return 0
 
-    if cur_max is None:
+    if cur_max is None or force:
         start = _NH_INDICES_BACKFILL_START
-        log.info("NH indices: first run, backfilling from %s …", start)
+        log.info("NH indices: %s, backfilling from %s …", "forced" if force else "first run", start)
     else:
         start = cur_max + timedelta(days=1)
         log.info("NH indices: incremental fetch %s → %s …", start, today)
@@ -445,6 +445,128 @@ def step_nanhua_indices(conn, *, force: bool = False) -> int:
         )
     conn.commit()
     log.info("NH indices: upserted %d rows (max date %s).", len(records), max(r[0] for r in records))
+    return len(records)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 1c — 南华单商品指数 OHLCV  (80 commodity-level NH indices)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_NH_COMMODITY_BACKFILL_START = date(2025, 1, 1)
+
+
+def step_nanhua_commodity_indices(conn, *, force: bool = False) -> int:
+    """Fetch OHLCV for 80 南华单商品指数 into raw_nanhua_commodity_indices_daily.
+    First run: backfills from 2025-01-01. Subsequent runs: incremental."""
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_nanhua_commodity_indices_daily (
+                trade_date  DATE        NOT NULL,
+                code        TEXT        NOT NULL,
+                name        TEXT,
+                open        NUMERIC,
+                close       NUMERIC,
+                high        NUMERIC,
+                low         NUMERIC,
+                preclose    NUMERIC,
+                change      NUMERIC,
+                pct_change  NUMERIC,
+                volume      NUMERIC,
+                amount      NUMERIC,
+                turn        NUMERIC,
+                amplitude   NUMERIC,
+                source      TEXT        NOT NULL DEFAULT 'emquant',
+                fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, code)
+            )
+        """)
+        cur.execute("""
+            ALTER TABLE raw_nanhua_commodity_indices_daily
+            ADD COLUMN IF NOT EXISTS name TEXT
+        """)
+    conn.commit()
+
+    today   = date.today()
+    cur_max = max_date(conn, "raw_nanhua_commodity_indices_daily")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("NH commodity indices up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    if cur_max is None or force:
+        start = _NH_COMMODITY_BACKFILL_START
+        log.info("NH commodity indices: %s, backfilling from %s …",
+                 "forced" if force else "first run", start)
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("NH commodity indices: incremental fetch %s → %s …", start, today)
+
+    if start > today:
+        log.info("NH commodity indices: already up-to-date, nothing to do.")
+        return 0
+
+    out = run_script(
+        "get_nanhua_commodity_indices_daily.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=600,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"NH commodity indices fetch failed: {out}")
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        log.warning("NH commodity indices: empty data returned for %s → %s.", start, today)
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d    = to_date(str(r.get("date", "")).replace("-", ""))
+        code = r.get("code")
+        if not d or not code:
+            continue
+        records.append((
+            d, code,
+            r.get("name") or "",
+            safe_float(r.get("open")),
+            safe_float(r.get("close")),
+            safe_float(r.get("high")),
+            safe_float(r.get("low")),
+            safe_float(r.get("preclose")),
+            safe_float(r.get("change")),
+            safe_float(r.get("pct_change")),
+            safe_float(r.get("volume")),
+            safe_float(r.get("amount")),
+            safe_float(r.get("turn")),
+            safe_float(r.get("amplitude")),
+            "emquant",
+        ))
+
+    if not records:
+        log.warning("NH commodity indices: no valid rows parsed.")
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_nanhua_commodity_indices_daily
+                (trade_date, code, name, open, close, high, low, preclose,
+                 change, pct_change, volume, amount, turn, amplitude, source)
+            VALUES %s
+            ON CONFLICT (trade_date, code) DO UPDATE
+                SET name=EXCLUDED.name, open=EXCLUDED.open, close=EXCLUDED.close,
+                    high=EXCLUDED.high, low=EXCLUDED.low, preclose=EXCLUDED.preclose,
+                    change=EXCLUDED.change, pct_change=EXCLUDED.pct_change,
+                    volume=EXCLUDED.volume, amount=EXCLUDED.amount,
+                    turn=EXCLUDED.turn, amplitude=EXCLUDED.amplitude,
+                    fetched_at=NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("NH commodity indices: upserted %d rows (max date %s).",
+             len(records), max(r[0] for r in records))
     return len(records)
 
 
@@ -1340,6 +1462,7 @@ ORDERED_STEPS = [
     "nhci",
     "nheci",
     "nanhua_indices",              # all 17 NH sub-indices OHLCV
+    "nanhua_commodity_indices",    # all 80 NH single-commodity indices OHLCV
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
@@ -1442,7 +1565,8 @@ def main():
     step_fns = {
         "nhci":             lambda: step_nhci(conn, force=force),
         "nheci":            lambda: step_nheci(conn, force=force),
-        "nanhua_indices":   lambda: step_nanhua_indices(conn, force=force),
+        "nanhua_indices":            lambda: step_nanhua_indices(conn, force=force),
+        "nanhua_commodity_indices":  lambda: step_nanhua_commodity_indices(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
