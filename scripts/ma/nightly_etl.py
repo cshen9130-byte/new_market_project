@@ -724,8 +724,8 @@ def step_futures_contracts_ohlcv(conn, *, force: bool = False) -> int:
 
     col_list = "trade_date, contract, " + ", ".join(_FC_FIELDS) + ", source"
     update_set = ", ".join(
-        f"{f}=EXCLUDED.{f}" for f in (*_FC_FIELDS, "fetched_at")
-    )
+        f"{f}=EXCLUDED.{f}" for f in _FC_FIELDS
+    ) + ", fetched_at=NOW()"
     with conn.cursor() as cur:
         execute_values(
             cur,
