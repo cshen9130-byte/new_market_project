@@ -162,6 +162,9 @@ _PRODUCT_EXCHANGE: dict[str, str] = {
     "NI": "SHF",  # 镍
     "NR": "SHF",  # 20号胶
     "PB": "SHF",  # 铅
+    "PD": "SHF",  # 钯金
+    "PL": "SHF",  # 铂金(旧代码)
+    "PT": "SHF",  # 铂金
     "RB": "SHF",  # 螺纹钢
     "RU": "SHF",  # 天然橡胶
     "SN": "SHF",  # 锡
