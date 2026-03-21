@@ -8,10 +8,11 @@ export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const from = searchParams.get("from")
-    const to = searchParams.get("to")
+    const to   = searchParams.get("to")
+    const code = searchParams.get("code") || "NHCI.NH"
 
-    const conditions = ["code = 'NHCI.NH'"]
-    const params: unknown[] = []
+    const params: unknown[] = [code]
+    const conditions = [`code = $1`]
 
     if (from) {
       params.push(from)

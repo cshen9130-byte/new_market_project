@@ -54,10 +54,16 @@ const QUICK_RANGES = [
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
+  code?:   string
+  title?:  string
   height?: number
 }
 
-export default function NhciCandleChart({ height = 300 }: Props) {
+export default function NhciCandleChart({
+  code  = "NHCI.NH",
+  title = "南华商品指数（NHCI.NH）日K线",
+  height = 300,
+}: Props) {
   const [fromDate, setFromDate] = useState(() => isoMonthOffset(-3))
   const [toDate,   setToDate]   = useState(() => isoToday())
   const [data,     setData]     = useState<CandleRow[]>([])
@@ -71,6 +77,7 @@ export default function NhciCandleChart({ height = 300 }: Props) {
       const p = new URLSearchParams()
       if (from) p.set("from", from)
       if (to)   p.set("to",   to)
+      p.set("code", code)
       const res = await fetch(`/ma/api/mom-analysis/nhci-candle?${p}`)
       const d: ApiResponse = await res.json()
       if (!d.ok) throw new Error(d.error || "加载失败")
@@ -245,7 +252,7 @@ export default function NhciCandleChart({ height = 300 }: Props) {
       <CardHeader className="pb-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium">
-            南华商品指数（NHCI.NH）日K线
+            {title}
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             {/* quick-range buttons */}
