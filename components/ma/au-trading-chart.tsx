@@ -365,6 +365,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
           name: "指数累计涨跌%",
           type: "line", xAxisIndex: 1, yAxisIndex: 1,
           data: bmIndexed, smooth: false, symbol: "none",
+          color: "#f59e0b",
           lineStyle: { width: 1.5, color: "#f59e0b", type: "dashed" },
         },
 
