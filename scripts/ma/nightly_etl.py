@@ -570,6 +570,179 @@ def step_nanhua_commodity_indices(conn, *, force: bool = False) -> int:
     return len(records)
 
 
+# ───────────────────────────────────────────────────────────────────────────────
+# STEP 1d — MOM traded futures contracts OHLCV  (all distinct contracts in DB)
+# ───────────────────────────────────────────────────────────────────────────────
+
+_FUTURES_CONTRACTS_BACKFILL_START = date(2025, 1, 1)
+
+# DB columns for upsert (matches fetch script output keys)
+_FC_FIELDS = (
+    "open", "close", "high", "low", "preclose", "average",
+    "change", "pct_change", "volume", "amount", "spread",
+    "clear", "preclear", "pct_change_clear", "change_clear",
+    "hqoi", "change_oi", "amplitude", "mainforce",
+    "uni_volume", "uni_amount", "uni_hqoi", "uni_change_oi",
+    "change_close", "pct_change_close",
+)
+
+
+def step_futures_contracts_ohlcv(conn, *, force: bool = False) -> int:
+    """Fetch daily OHLCV + settlement for every contract MOM has traded.
+
+    Source table : mom_futures_trade_details."合约"
+    Target table : raw_futures_contracts_daily  (trade_date, contract) PK
+    First run    : backfills 2025-01-01 → today
+    Subsequent   : incremental from last stored date + 1 day
+    """
+
+    # ── Create / migrate target table ─────────────────────────────────────────
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_futures_contracts_daily (
+                trade_date        DATE        NOT NULL,
+                contract          TEXT        NOT NULL,
+                open              NUMERIC,
+                close             NUMERIC,
+                high              NUMERIC,
+                low               NUMERIC,
+                preclose          NUMERIC,
+                average           NUMERIC,
+                change            NUMERIC,
+                pct_change        NUMERIC,
+                volume            NUMERIC,
+                amount            NUMERIC,
+                spread            NUMERIC,
+                clear             NUMERIC,
+                preclear          NUMERIC,
+                pct_change_clear  NUMERIC,
+                change_clear      NUMERIC,
+                hqoi              NUMERIC,
+                change_oi         NUMERIC,
+                amplitude         NUMERIC,
+                mainforce         TEXT,
+                uni_volume        NUMERIC,
+                uni_amount        NUMERIC,
+                uni_hqoi          NUMERIC,
+                uni_change_oi     NUMERIC,
+                change_close      NUMERIC,
+                pct_change_close  NUMERIC,
+                source            TEXT        NOT NULL DEFAULT 'emquant',
+                fetched_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, contract)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_raw_futures_contracts_daily_contract
+              ON raw_futures_contracts_daily (contract)
+        """)
+    conn.commit()
+
+    today   = date.today()
+    cur_max = max_date(conn, "raw_futures_contracts_daily")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("Futures contracts OHLCV up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    if cur_max is None or force:
+        start = _FUTURES_CONTRACTS_BACKFILL_START
+        log.info("Futures contracts OHLCV: %s, backfilling from %s …",
+                 "forced" if force else "first run", start)
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("Futures contracts OHLCV: incremental fetch %s → %s …", start, today)
+
+    if start > today:
+        log.info("Futures contracts OHLCV: already up-to-date.")
+        return 0
+
+    # ── Check that source table exists ────────────────────────────────────────
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'mom_futures_trade_details'
+            )
+        """)
+        if not cur.fetchone()[0]:
+            log.warning("mom_futures_trade_details does not exist — skipping futures OHLCV step.")
+            return 0
+
+    out = run_script(
+        "fetch_futures_contracts_daily.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=900,  # may take a while for 100+ contracts × 15 months
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"Futures contracts fetch failed: {out}")
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        log.warning("Futures contracts OHLCV: empty data returned for %s → %s.", start, today)
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d        = to_date(str(r.get("date", "")).replace("-", ""))
+        contract = r.get("contract", "").strip()
+        if not d or not contract:
+            continue
+        records.append((
+            d, contract,
+            safe_float(r.get("open")),
+            safe_float(r.get("close")),
+            safe_float(r.get("high")),
+            safe_float(r.get("low")),
+            safe_float(r.get("preclose")),
+            safe_float(r.get("average")),
+            safe_float(r.get("change")),
+            safe_float(r.get("pct_change")),
+            safe_float(r.get("volume")),
+            safe_float(r.get("amount")),
+            safe_float(r.get("spread")),
+            safe_float(r.get("clear")),
+            safe_float(r.get("preclear")),
+            safe_float(r.get("pct_change_clear")),
+            safe_float(r.get("change_clear")),
+            safe_float(r.get("hqoi")),
+            safe_float(r.get("change_oi")),
+            safe_float(r.get("amplitude")),
+            r.get("mainforce") or None,       # TEXT — may be a contract code
+            safe_float(r.get("uni_volume")),
+            safe_float(r.get("uni_amount")),
+            safe_float(r.get("uni_hqoi")),
+            safe_float(r.get("uni_change_oi")),
+            safe_float(r.get("change_close")),
+            safe_float(r.get("pct_change_close")),
+            "emquant",
+        ))
+
+    if not records:
+        log.warning("Futures contracts OHLCV: no valid rows parsed.")
+        return 0
+
+    col_list = "trade_date, contract, " + ", ".join(_FC_FIELDS) + ", source"
+    update_set = ", ".join(
+        f"{f}=EXCLUDED.{f}" for f in (*_FC_FIELDS, "fetched_at")
+    )
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            f"""
+            INSERT INTO raw_futures_contracts_daily ({col_list})
+            VALUES %s
+            ON CONFLICT (trade_date, contract) DO UPDATE
+                SET {update_set}
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("Futures contracts OHLCV: upserted %d rows (max date %s).",
+             len(records), max(r[0] for r in records))
+    return len(records)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Spot index closes  (EmQuant with Tushare fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1463,6 +1636,7 @@ ORDERED_STEPS = [
     "nheci",
     "nanhua_indices",              # all 17 NH sub-indices OHLCV
     "nanhua_commodity_indices",    # all 80 NH single-commodity indices OHLCV
+    "futures_contracts_ohlcv",      # OHLCV for every contract MOM traded
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
@@ -1567,6 +1741,7 @@ def main():
         "nheci":            lambda: step_nheci(conn, force=force),
         "nanhua_indices":            lambda: step_nanhua_indices(conn, force=force),
         "nanhua_commodity_indices":  lambda: step_nanhua_commodity_indices(conn, force=force),
+        "futures_contracts_ohlcv":    lambda: step_futures_contracts_ohlcv(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
