@@ -578,36 +578,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               </button>
             </div>
           </div>
-          {/* Row 2: benchmark + calculation method filters */}
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">基准:</span>
-            <select
-              value={bench}
-              onChange={e => {
-                const b = e.target.value as BenchType
-                setBench(b)
-                load(from, to, account, product, method, b)
-              }}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
-            >
-              <option value="nh">南华指数</option>
-              <option value="dominant">主连合约</option>
-            </select>
-            <span className="text-xs text-muted-foreground ml-2">盈亏法:</span>
-            <select
-              value={method}
-              onChange={e => {
-                const nextMethod = e.target.value as PnlMethod
-                setMethod(nextMethod)
-                load(from, to, account, product, nextMethod, bench)
-              }}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
-            >
-              <option value="continuous">连续价格MTM</option>
-              <option value="mom">MOM核算表</option>
-            </select>
-          </div>
-          {/* Row 3: free-text account + product inputs */}
+          {/* Row 2: free-text account + product inputs · benchmark + calculation method filters */}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-xs text-muted-foreground">账户:</span>
             <input
@@ -643,6 +614,32 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               }}
               className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24 uppercase"
             />
+            <span className="text-xs text-muted-foreground ml-2">基准:</span>
+            <select
+              value={bench}
+              onChange={e => {
+                const b = e.target.value as BenchType
+                setBench(b)
+                load(from, to, account, product, method, b)
+              }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+            >
+              <option value="nh">南华指数</option>
+              <option value="dominant">主连合约</option>
+            </select>
+            <span className="text-xs text-muted-foreground ml-2">盈亏法:</span>
+            <select
+              value={method}
+              onChange={e => {
+                const nextMethod = e.target.value as PnlMethod
+                setMethod(nextMethod)
+                load(from, to, account, product, nextMethod, bench)
+              }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+            >
+              <option value="continuous">连续价格MTM</option>
+              <option value="mom">MOM核算表</option>
+            </select>
           </div>
         </div>
       </CardHeader>
