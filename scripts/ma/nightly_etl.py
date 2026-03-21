@@ -92,6 +92,7 @@ def run_script(
     extra_env: dict | None = None,
     extra_args: list | None = None,
     timeout: int = 180,
+    log_stderr: bool = False,
 ) -> dict | None:
     """Run a Python script in scripts/ma/ and return its JSON stdout."""
     script_path = SCRIPT_DIR / script_name
@@ -112,7 +113,9 @@ def run_script(
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         if result.returncode != 0:
-            log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:400])
+            log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
+        elif log_stderr and stderr:
+            log.info("[%s] stderr:\n%s", script_name, stderr[:2000])
         if stdout:
             first = stdout.find("{")
             last = stdout.rfind("}")
@@ -122,6 +125,8 @@ def run_script(
                 except json.JSONDecodeError:
                     pass
         log.warning("[%s] no valid JSON in stdout", script_name)
+        if stderr:
+            log.warning("[%s] stderr: %s", script_name, stderr[:800])
         return None
     except subprocess.TimeoutExpired:
         log.error("[%s] timed out after %ds", script_name, timeout)
@@ -672,14 +677,21 @@ def step_futures_contracts_ohlcv(conn, *, force: bool = False) -> int:
     out = run_script(
         "fetch_futures_contracts_daily.py",
         extra_args=[iso(start), iso(today)],
-        timeout=900,  # may take a while for 100+ contracts × 15 months
+        timeout=900,
+        log_stderr=True,  # surface progress + API errors
     )
     if not out or out.get("error"):
         raise RuntimeError(f"Futures contracts fetch failed: {out}")
 
+    contracts_found = out.get("contracts") or []
+    log.info("Futures contracts: %d unique contracts loaded from DB (first 5: %s)",
+             len(contracts_found), contracts_found[:5])
+
     rows_raw = out.get("data") or []
     if not rows_raw:
-        log.warning("Futures contracts OHLCV: empty data returned for %s → %s.", start, today)
+        log.warning("Futures contracts OHLCV: empty data returned for %s → %s. "
+                    "contracts=%d  full_response_keys=%s",
+                    start, today, len(contracts_found), list(out.keys()))
         return 0
 
     records = []
