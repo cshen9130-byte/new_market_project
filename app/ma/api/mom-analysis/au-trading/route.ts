@@ -257,6 +257,7 @@ export async function GET(req: Request) {
     const to      = searchParams.get("to")      || new Date().toISOString().slice(0, 10)
     const account = searchParams.get("account") || "rx000"
     const method  = searchParams.get("method") === "mom" ? "mom" : "continuous"
+    const bench   = searchParams.get("bench")   === "dominant" ? "dominant" : "nh"
 
     // Validate product against whitelist (prevents injection)
     const rawProduct = (searchParams.get("product") || "AU").toUpperCase().trim()
@@ -273,22 +274,49 @@ export async function GET(req: Request) {
     // ── Run queries in parallel ────────────────────────────────────────────────
     const [benchmarkRows, tradeRows, priceRows] = await Promise.all([
 
-      // 1. NH single-commodity index daily candles (e.g. NHAU.NH for gold)
-      nhCode
+      // 1a. NH single-commodity index daily candles — used when bench=="nh"
+      // 1b. Dominant contract (highest OI per day) — used when bench=="dominant"
+      bench === "dominant"
         ? query<{ date: string; open: number; high: number; low: number; close: number; volume: number }>(
-            `SELECT trade_date::text                      AS date,
-                    CAST(open  AS float8)                 AS open,
-                    CAST(high  AS float8)                 AS high,
-                    CAST(low   AS float8)                 AS low,
-                    CAST(close AS float8)                 AS close,
-                    CAST(COALESCE(volume, 0) AS float8)   AS volume
-             FROM raw_nanhua_commodity_indices_daily
-             WHERE code = $1
-               AND trade_date BETWEEN $2 AND $3
-             ORDER BY trade_date`,
-            [nhCode, from, to],
+            // Pick the contract with the highest open-interest (hqoi) for each date.
+            // Tie-break by volume. Mirrors the typical 主连 definition used by exchanges.
+            `WITH ranked AS (
+               SELECT trade_date::text AS date,
+                      contract,
+                      CAST(open  AS float8) AS open,
+                      CAST(high  AS float8) AS high,
+                      CAST(low   AS float8) AS low,
+                      CAST(close AS float8) AS close,
+                      CAST(COALESCE(hqoi,   0) AS float8) AS oi,
+                      CAST(COALESCE(volume, 0) AS float8) AS volume,
+                      ROW_NUMBER() OVER (
+                        PARTITION BY trade_date
+                        ORDER BY COALESCE(hqoi, 0) DESC, COALESCE(volume, 0) DESC
+                      ) AS rn
+               FROM raw_futures_contracts_daily
+               WHERE UPPER(contract) ~ ('^' || $1 || '[0-9]')
+                 AND trade_date BETWEEN $2 AND $3
+             )
+             SELECT date, contract, open, high, low, close, volume
+             FROM ranked WHERE rn = 1
+             ORDER BY date`,
+            [product, from, to],
           ).catch(() => [] as { date: string; open: number; high: number; low: number; close: number; volume: number }[])
-        : Promise.resolve([] as { date: string; open: number; high: number; low: number; close: number; volume: number }[]),
+        : nhCode
+          ? query<{ date: string; open: number; high: number; low: number; close: number; volume: number }>(
+              `SELECT trade_date::text                      AS date,
+                      CAST(open  AS float8)                 AS open,
+                      CAST(high  AS float8)                 AS high,
+                      CAST(low   AS float8)                 AS low,
+                      CAST(close AS float8)                 AS close,
+                      CAST(COALESCE(volume, 0) AS float8)   AS volume
+               FROM raw_nanhua_commodity_indices_daily
+               WHERE code = $1
+                 AND trade_date BETWEEN $2 AND $3
+               ORDER BY trade_date`,
+              [nhCode, from, to],
+            ).catch(() => [] as { date: string; open: number; high: number; low: number; close: number; volume: number }[])
+          : Promise.resolve([] as { date: string; open: number; high: number; low: number; close: number; volume: number }[]),
 
       // 2. All product futures transactions for the account
       // Use regex '^PRODUCT[0-9]' instead of LIKE 'PRODUCT%' so that single-letter
@@ -425,6 +453,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       method,
+      bench,
       benchmark: benchmarkRows,
       dailyPnl,
       trades: tradeMarkers,

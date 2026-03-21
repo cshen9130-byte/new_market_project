@@ -18,6 +18,7 @@ interface TradeMarker {
 interface ApiData {
   ok: boolean
   method?: PnlMethod
+  bench?: BenchType
   benchmark: BenchmarkRow[]
   dailyPnl: DailyPnlRow[]
   trades: TradeMarker[]
@@ -26,6 +27,7 @@ interface ApiData {
 }
 
 type PnlMethod = "continuous" | "mom"
+type BenchType = "nh" | "dominant"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -108,6 +110,7 @@ interface Props {
   account?: string
   product?: string
   method?: PnlMethod
+  bench?: BenchType
   chartHeight?: number
   // Starting capital used to convert absolute P&L (yuan) to a return ratio.
   // Defaults to 1,000,000 yuan (100万). Adjust to match actual account equity.
@@ -116,12 +119,13 @@ interface Props {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
+export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", bench: defaultBench = "nh", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
   const [from, setFrom] = useState(() => "2025-01-01")
   const [to,   setTo]   = useState(() => isoToday())
   const [account, setAccount] = useState(defaultAccount)
   const [product, setProduct] = useState(defaultProduct)
   const [method, setMethod] = useState<PnlMethod>(defaultMethod)
+  const [bench, setBench] = useState<BenchType>(defaultBench)
   const [data,    setData]    = useState<ApiData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
@@ -141,11 +145,11 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
       .catch(() => { /* non-critical, keep defaults */ })
   }, [])
 
-  const load = useCallback(async (f: string, t: string, acc: string, prod: string, pnlMethod: PnlMethod) => {
+  const load = useCallback(async (f: string, t: string, acc: string, prod: string, pnlMethod: PnlMethod, benchType: BenchType) => {
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ from: f, to: t, account: acc, product: prod, method: pnlMethod })
+      const params = new URLSearchParams({ from: f, to: t, account: acc, product: prod, method: pnlMethod, bench: benchType })
       const res  = await fetch(`/ma/api/mom-analysis/au-trading?${params}`)
       const json: ApiData = await res.json()
       if (!json.ok) throw new Error(json.error || "请求失败")
@@ -157,16 +161,16 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
     }
   }, [])
 
-  useEffect(() => { load(from, to, account, product, method) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(from, to, account, product, method, bench) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Build ECharts option (useMemo ensures a new object ref when data changes)
 
   const option = useMemo<object>(() => {
-    const bmLabel = indexLabel(product)
+    const bmLabel = bench === "dominant" ? `${PRODUCT_LABEL[product] ?? product}主连合约` : indexLabel(product)
     if (!data) return {}
 
-    const bench   = data.benchmark
-    const bmDates = bench.map(b => b.date)
+    const bm      = data.benchmark
+    const bmDates = bm.map(b => b.date)
     const bmIdxMap = new Map(bmDates.map((d, i) => [d, i] as [string, number]))
 
     // Best-effort index lookup: exact match, else nearest previous trading day
@@ -179,8 +183,8 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
       return best
     }
 
-    const ohlc   = bench.map(b => [b.open, b.close, b.low, b.high])
-    const closes = bench.map(b => b.close)
+    const ohlc   = bm.map(b => [b.open, b.close, b.low, b.high])
+    const closes = bm.map(b => b.close)
     const ma5    = calcMA(closes, 5)
     const ma20   = calcMA(closes, 20)
 
@@ -198,8 +202,8 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
     })
 
     // ── Indexed returns: both start at 1.0 at first trading day in window ────
-    const firstClose  = bench[0]?.close || 1
-    const bmIndexed   = bench.map(b => +(b.close / firstClose).toFixed(6))
+    const firstClose  = bm[0]?.close || 1
+    const bmIndexed   = bm.map(b => +(b.close / firstClose).toFixed(6))
 
     const firstPnlDate = data.dailyPnl[0]?.date ?? ""
     const pnlAtStart   = data.dailyPnl[0]?.cumPnl ?? 0
@@ -225,7 +229,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
     for (const t of data.trades) {
       const idx = getDateIdx(t.date)
       if (idx < 0) continue
-      const y = bench[idx]?.close
+      const y = bm[idx]?.close
       if (y === undefined) continue
       const isOpen = !t.action || t.action.includes("开")
       if (isOpen && t.direction === "买")        openLong.push([idx, y])
@@ -510,24 +514,42 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
         },
       ],
     }
-  }, [data, initialCapital, product])
+  }, [data, initialCapital, product, bench])
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // Benchmark panel title depends on which benchmark is selected
+  const benchLabel = bench === "dominant"
+    ? `${PRODUCT_LABEL[product] ?? product}主连合约`
+    : indexLabel(product)
+
+  // ── Render ──────────────────────────────────────────────────
 
   return (
     <Card className="flex flex-col h-full">
       <CardHeader className="pb-2 shrink-0">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium">
-            {indexLabel(product)} · {productLabel(product)}交易回顾（{account.toUpperCase()}）
+            {benchLabel} · {productLabel(product)}交易回顾（{account.toUpperCase()}）
           </CardTitle>
           <div className="flex flex-wrap items-center gap-1.5">
+            {/* Benchmark selector */}
+            <select
+              value={bench}
+              onChange={e => {
+                const b = e.target.value as BenchType
+                setBench(b)
+                load(from, to, account, product, method, b)
+              }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+            >
+              <option value="nh">南华指数</option>
+              <option value="dominant">主连合约</option>
+            </select>
             <select
               value={method}
               onChange={e => {
                 const nextMethod = e.target.value as PnlMethod
                 setMethod(nextMethod)
-                load(from, to, account, product, nextMethod)
+                load(from, to, account, product, nextMethod, bench)
               }}
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             >
@@ -537,7 +559,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
             {/* Account selector */}
             <select
               value={account}
-              onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product, method) }}
+              onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product, method, bench) }}
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             >
               {(availableAccounts.length ? availableAccounts : [account]).map(a => (
@@ -547,7 +569,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
             {/* Product selector */}
             <select
               value={product}
-              onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p, method) }}
+              onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p, method, bench) }}
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             >
               {(availableProducts.length ? availableProducts : [product]).map(p => (
@@ -557,7 +579,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
             {QUICK_RANGES.map(r => (
               <button
                 key={r.label}
-                onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product, method) }}
+                onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product, method, bench) }}
                 className="rounded px-2 py-0.5 text-xs bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
               >
                 {r.label}
@@ -572,7 +594,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             />
             <button
-              onClick={() => load(from, to, account, product, method)}
+              onClick={() => load(from, to, account, product, method, bench)}
               className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
