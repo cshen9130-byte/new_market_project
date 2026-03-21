@@ -357,6 +357,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
           name: "权益累计涨跌%",
           type: "line", xAxisIndex: 1, yAxisIndex: 1,
           data: equityIndexed, smooth: false, symbol: "none", connectNulls: false,
+          color: "#3b82f6",
           lineStyle: { width: 2, color: "#3b82f6" },
           areaStyle: { opacity: 0.08, color: "#3b82f6" },
         },
