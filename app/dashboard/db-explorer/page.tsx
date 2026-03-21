@@ -117,6 +117,9 @@ export default function DbExplorerPage() {
   const [queryLoading, setQueryLoading] = useState(false)
   const sqlRef = useRef<HTMLTextAreaElement>(null)
 
+  // Export full table
+  const [exportLoading, setExportLoading] = useState(false)
+
   // ── Auth ──────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -187,6 +190,21 @@ export default function DbExplorerPage() {
     if (!selectedTable) return
     setPreviewPage(next)
     await loadPreview(selectedTable, next)
+  }
+
+  async function exportTable() {
+    if (!selectedTable) return
+    setExportLoading(true)
+    try {
+      const data = await apiFetch(
+        `/api/db-explorer?action=export_table&table=${encodeURIComponent(selectedTable)}`,
+      )
+      if (data.ok) {
+        downloadCsv(data.columns, data.rows, `${selectedTable}_full.csv`)
+      }
+    } finally {
+      setExportLoading(false)
+    }
   }
 
   async function runQuery() {
@@ -355,6 +373,18 @@ export default function DbExplorerPage() {
                     <span>第 {previewPage + 1} / {Math.max(totalPages, 1)} 页</span>
                   </div>
                   <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="default"
+                      className="h-7 text-xs gap-1"
+                      onClick={exportTable}
+                      disabled={exportLoading || !selectedTable}
+                    >
+                      {exportLoading
+                        ? <RefreshCw className="h-3 w-3 animate-spin" />
+                        : <Download className="h-3 w-3" />}
+                      导出该表
+                    </Button>
                     <Button
                       size="sm"
                       variant="outline"

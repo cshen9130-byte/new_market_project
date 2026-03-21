@@ -69,6 +69,15 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: true, rows: rows.rows, columns: rows.fields.map(f => f.name), total })
     }
 
+    if (action === "export_table") {
+      const table = searchParams.get("table") ?? ""
+      if (!table || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table)) {
+        return NextResponse.json({ error: "无效的表名" }, { status: 400 })
+      }
+      const rows = await rawQuery(`SELECT * FROM "${table}"`)
+      return NextResponse.json({ ok: true, rows: rows.rows, columns: rows.fields.map(f => f.name) })
+    }
+
     return NextResponse.json({ error: "未知 action" }, { status: 400 })
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "服务器错误" }, { status: 500 })
