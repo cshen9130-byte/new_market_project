@@ -185,6 +185,7 @@ export default function TraderAnalysisPage() {
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>("periodPnl")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
+  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review">("pnl-rank")
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -255,7 +256,36 @@ export default function TraderAnalysisPage() {
         </div>
       </div>
 
-      {/* date range + refresh */}
+      {/* tab bar */}
+      <div className="flex gap-1 border-b border-border">
+        {([
+          { key: "pnl-rank",       label: "盈亏排名" },
+          { key: "variety-review", label: "品种交易回顾" },
+        ] as const).map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              activeTab === tab.key
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* 品种交易回顾 — placeholder */}
+      {activeTab === "variety-review" && (
+        <div className="rounded-md bg-muted px-4 py-10 text-center text-sm text-muted-foreground">
+          品种交易回顾 — 即将上线，敬请期待。
+        </div>
+      )}
+
+      {/* 盈亏排名 */}
+      {activeTab === "pnl-rank" && (
+        <>
       <div className="flex flex-wrap items-center gap-3">
         {/* quick-select buttons */}
         <div className="flex items-center gap-1.5">
@@ -458,6 +488,8 @@ export default function TraderAnalysisPage() {
         <div className="rounded-md bg-muted px-4 py-6 text-center text-sm text-muted-foreground">
           所选日期范围内无数据。
         </div>
+      )}
+        </>
       )}
     </div>
   )
