@@ -220,7 +220,7 @@ export default function AuTradingChart({ account = "rx000", chartHeight = 540, i
               if (v === null || v === undefined) continue
               const pct = ((v - 1) * 100).toFixed(2) + "%"
               if (p.seriesName === "权益累计涨跌%") {
-                lines.push(`<span style="color:#3b82f6">${p.marker}权益累计涨跌%: ${pct}</span>`)
+                lines.push(`${p.marker}权益累计涨跌%: ${pct}`)
               } else if (p.seriesName === "指数累计涨跌%") {
                 lines.push(`${p.marker}指数累计涨跌%: ${pct}`)
               }
