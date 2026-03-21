@@ -196,12 +196,22 @@ export default function DbExplorerPage() {
     if (!selectedTable) return
     setExportLoading(true)
     try {
-      const data = await apiFetch(
+      const res = await fetch(
         `/api/db-explorer?action=export_table&table=${encodeURIComponent(selectedTable)}`,
+        { headers: { ...getAuthHeaders() } },
       )
-      if (data.ok) {
-        downloadCsv(data.columns, data.rows, `${selectedTable}_full.csv`)
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        alert(err.error || "导出失败")
+        return
       }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `${selectedTable}_full.csv`
+      a.click()
+      URL.revokeObjectURL(url)
     } finally {
       setExportLoading(false)
     }

@@ -74,8 +74,28 @@ export async function GET(req: Request) {
       if (!table || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(table)) {
         return NextResponse.json({ error: "无效的表名" }, { status: 400 })
       }
-      const rows = await rawQuery(`SELECT * FROM "${table}"`)
-      return NextResponse.json({ ok: true, rows: rows.rows, columns: rows.fields.map(f => f.name) })
+      const result = await rawQuery(`SELECT * FROM "${table}"`)
+      const cols = result.fields.map((f: { name: string }) => f.name)
+      const escapeCsv = (v: unknown) => {
+        const s = v == null ? "" : String(v)
+        if (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r")) {
+          return `"${s.replace(/"/g, '""')}"`
+        }
+        return s
+      }
+      const lines: string[] = [
+        cols.map(escapeCsv).join(","),
+        ...result.rows.map((r: Record<string, unknown>) => cols.map((c: string) => escapeCsv(r[c])).join(",")),
+      ]
+      // UTF-8 BOM (\uFEFF) ensures Excel on Windows opens Chinese correctly
+      const csv = "\uFEFF" + lines.join("\r\n")
+      const filename = encodeURIComponent(`${table}_full.csv`)
+      return new Response(csv, {
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename*=UTF-8''${filename}`,
+        },
+      })
     }
 
     return NextResponse.json({ error: "未知 action" }, { status: 400 })
