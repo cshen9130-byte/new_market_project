@@ -57,7 +57,7 @@ const PRODUCT_CONFIG: Record<string, { nhCode: string | null; exchange: string; 
   PB: { nhCode: "NHPB.NH",  exchange: "SHF",  multiplier: 5    }, // 沪铅
   NI: { nhCode: "NHNI.NH",  exchange: "SHF",  multiplier: 1    }, // 沪镍 (1 ton/lot)
   SN: { nhCode: "NHSN.NH",  exchange: "SHF",  multiplier: 1    }, // 沪锡 (1 ton/lot)
-  LC: { nhCode: "NHLC.NH",  exchange: "GFE",  multiplier: 5    }, // 碳酸锂
+  LC: { nhCode: "NHLC.NH",  exchange: "GFE",  multiplier: 1    }, // 碳酸锂 (1 ton/lot)
   PS: { nhCode: null,        exchange: "GFE",  multiplier: 3    }, // 多晶硅
   SI: { nhCode: "NHSI.NH",  exchange: "GFE",  multiplier: 5    }, // 工业硅
   // ── Ferrous metals ─────────────────────────────────────────────────────────
