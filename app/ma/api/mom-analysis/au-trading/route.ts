@@ -131,10 +131,36 @@ function numericExpr(columnName: string): string {
 }
 
 async function loadMomAccountingDailyPnl(from: string, to: string, account: string, product: string) {
-  // Use LIMIT 0 to get real field names directly from pg (avoids information_schema issues)
+  // Step 1: discover actual table names (handles case differences, schema prefix, etc.)
+  const allTables = await query<{ schemaname: string; tablename: string }>(
+    `SELECT schemaname, tablename FROM pg_tables
+     WHERE tablename ILIKE '%mom%trade%' OR tablename ILIKE '%mom%position%'
+        OR tablename ILIKE '%trade%detail%' OR tablename ILIKE '%position%detail%'
+     ORDER BY tablename`
+  )
+  if (allTables.length === 0) {
+    throw new Error(`No MOM tables found in database. Searched pg_tables for patterns: mom%trade%, mom%position%, trade%detail%, position%detail%`)
+  }
+
+  const findTable = (keywords: string[]): string | null => {
+    const t = allTables.find((r) =>
+      keywords.every((kw) => r.tablename.toLowerCase().includes(kw.toLowerCase()))
+    )
+    return t ? `${t.schemaname === "public" ? "" : `"${t.schemaname}".`}"${t.tablename}"` : null
+  }
+
+  const tradeTable = findTable(["trade"]) ?? findTable(["mom"])
+  const positionTable = findTable(["position"])
+
+  if (!tradeTable || !positionTable) {
+    const names = allTables.map((r) => `${r.schemaname}.${r.tablename}`).join(", ")
+    throw new Error(`Cannot identify trade/position tables. Found: ${names}`)
+  }
+
+  // Step 2: get column names via LIMIT 0
   const [tradeSchemaRes, positionSchemaRes] = await Promise.all([
-    rawQuery("SELECT * FROM mom_trade_details_full LIMIT 0"),
-    rawQuery("SELECT * FROM mom_position_details_full LIMIT 0"),
+    rawQuery(`SELECT * FROM ${tradeTable} LIMIT 0`),
+    rawQuery(`SELECT * FROM ${positionTable} LIMIT 0`),
   ])
 
   const tradeCols = new Set(tradeSchemaRes.fields.map((f) => f.name))
@@ -174,7 +200,7 @@ async function loadMomAccountingDailyPnl(from: string, to: string, account: stri
     query<{ date: string; pnl: number }>(
       `SELECT (${quoteIdent(td)}::date)::text AS date,
               SUM(${numericExpr(rp)})         AS pnl
-       FROM mom_trade_details_full
+       FROM ${tradeTable}
        WHERE ${upperTrimExpr(ta)} ILIKE $1
          AND ${tradeProductExpr}
          AND ${quoteIdent(td)}::date BETWEEN $3::date AND $4::date
@@ -185,7 +211,7 @@ async function loadMomAccountingDailyPnl(from: string, to: string, account: stri
     query<{ date: string; pnl: number }>(
       `SELECT (${quoteIdent(pd)}::date)::text AS date,
               SUM(${numericExpr(hp)})         AS pnl
-       FROM mom_position_details_full
+       FROM ${positionTable}
        WHERE ${upperTrimExpr(pa)} ILIKE $1
          AND ${positionProductExpr}
          AND ${quoteIdent(pd)}::date BETWEEN $3::date AND $4::date
