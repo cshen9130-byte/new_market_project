@@ -21,7 +21,7 @@ const navigation = [
 
 export function DashboardSidebar() {
   const pathname = usePathname()
-  const isCollapsed = pathname === "/ma/dashboard/ai-knowledge"
+  const isCollapsed = pathname === "/ma/dashboard/ai-knowledge" || pathname.startsWith("/ma/dashboard/mom-analysis/trader-analysis")
 
   return (
     <aside className={cn("border-r bg-card flex flex-col transition-all duration-200", isCollapsed ? "w-20" : "w-64")}>
