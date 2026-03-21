@@ -1,8 +1,11 @@
 "use client"
 
 import Link from "next/link"
+import dynamic from "next/dynamic"
 import { useCallback, useEffect, useState } from "react"
 import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, Maximize2, Minimize2, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
+
+const NhciCandleChart = dynamic(() => import("@/components/ma/nhci-candle-chart"), { ssr: false })
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -277,10 +280,10 @@ export default function TraderAnalysisPage() {
         ))}
       </div>
 
-      {/* 品种交易回顾 — placeholder */}
+      {/* 品种交易回顾 */}
       {activeTab === "variety-review" && (
-        <div className="rounded-md bg-muted px-4 py-10 text-center text-sm text-muted-foreground">
-          品种交易回顾 — 即将上线，敬请期待。
+        <div className="space-y-4">
+          <NhciCandleChart />
         </div>
       )}
 
