@@ -607,6 +607,43 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               <option value="mom">MOM核算表</option>
             </select>
           </div>
+          {/* Row 3: free-text account + product inputs */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-muted-foreground">账户:</span>
+            <input
+              type="text"
+              defaultValue={account}
+              placeholder="输入账户名，回车确认"
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  const a = (e.currentTarget.value || "").trim()
+                  if (a) { setAccount(a); load(from, to, a, product, method, bench) }
+                }
+              }}
+              onBlur={e => {
+                const a = e.currentTarget.value.trim()
+                if (a && a !== account) { setAccount(a); load(from, to, a, product, method, bench) }
+              }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-32"
+            />
+            <span className="text-xs text-muted-foreground ml-2">品种:</span>
+            <input
+              type="text"
+              defaultValue={product}
+              placeholder="输入品种代码，回车确认"
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  const p = (e.currentTarget.value || "").trim().toUpperCase()
+                  if (/^[A-Z]{1,4}$/.test(p)) { setProduct(p); load(from, to, account, p, method, bench) }
+                }
+              }}
+              onBlur={e => {
+                const p = e.currentTarget.value.trim().toUpperCase()
+                if (/^[A-Z]{1,4}$/.test(p) && p !== product) { setProduct(p); load(from, to, account, p, method, bench) }
+              }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24 uppercase"
+            />
+          </div>
         </div>
       </CardHeader>
 
