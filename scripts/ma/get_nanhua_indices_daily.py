@@ -135,22 +135,44 @@ def _flatten(series) -> list:
 
 # ── response normalizer ───────────────────────────────────────────────────────
 
-def extract_multi_field_single_code(csd_result) -> list[dict]:
+def extract_multi_field_single_code(csd_result, code: str = "") -> list[dict]:
     """
     Parse EmQuant c.csd result for a single code + multiple fields.
     Returns list of row dicts with lower-case field keys plus 'date'.
-    Handles two common Data shapes:
-      - dict:  {"OPEN": [...], "CLOSE": [...], ...}
-      - list:  Data[field_index] = [values]
     """
-    dates = list(getattr(csd_result, "Dates", []) or [])
+    # EmQuant uses different attribute names depending on version / data type
+    dates = (
+        list(getattr(csd_result, "Dates",  []) or []) or
+        list(getattr(csd_result, "Times",  []) or []) or
+        list(getattr(csd_result, "dates",  []) or [])
+    )
     if not dates:
+        sys.stderr.write(
+            f"[{code}] NO DATES. attrs={[a for a in dir(csd_result) if not a.startswith('_')]}\n"
+        )
         return []
 
-    DD = getattr(csd_result, "Data", None)
+    DD = getattr(csd_result, "Data", None) or getattr(csd_result, "data", None)
+    if DD is None:
+        sys.stderr.write(f"[{code}] Data is None\n")
+        return []
+
+    # Log raw structure once for first code to aid debugging
+    if code == NH_CODES[0]:
+        sys.stderr.write(
+            f"[{code}] Data type={type(DD).__name__}, "
+            f"Indicators={getattr(csd_result,'Indicators',None)}, "
+            f"Fields={getattr(csd_result,'Fields',None)}, "
+            f"len(dates)={len(dates)}\n"
+        )
+        if isinstance(DD, dict):
+            sys.stderr.write(f"[{code}] Data keys={list(DD.keys())[:5]}\n")
+        elif isinstance(DD, (list, tuple)):
+            sys.stderr.write(f"[{code}] Data shape: {len(DD)} series, first len={len(DD[0]) if DD else 0}\n")
+
     indicators = list(
         getattr(csd_result, "Indicators", None)
-        or getattr(csd_result, "Fields", None)
+        or getattr(csd_result, "Fields",     None)
         or FIELD_NAMES
     )
     ind_upper = [str(i).upper() for i in indicators]
@@ -158,11 +180,13 @@ def extract_multi_field_single_code(csd_result) -> list[dict]:
     field_series: dict[str, list] = {}
 
     if isinstance(DD, dict):
+        # dict keyed by field name: {"OPEN": [...], "CLOSE": [...], ...}
         for fn in FIELD_NAMES:
             s = DD.get(fn) or DD.get(fn.lower())
             if s is not None:
                 field_series[fn] = _flatten(s)
     elif isinstance(DD, (list, tuple)):
+        # list of series: DD[field_index] = [values per date]
         for fn in FIELD_NAMES:
             try:
                 idx = ind_upper.index(fn)
@@ -171,9 +195,9 @@ def extract_multi_field_single_code(csd_result) -> list[dict]:
                 pass
 
     if not field_series:
+        sys.stderr.write(f"[{code}] Could not extract any field series from Data\n")
         return []
 
-    # Map PCTCHANGE → pct_change for DB column name consistency
     key_map = {fn: (fn.lower() if fn != "PCTCHANGE" else "pct_change") for fn in FIELD_NAMES}
 
     rows = []
@@ -229,7 +253,7 @@ def main():
                         f"[{code}] API error ({data.ErrorCode}): {data.ErrorMsg}\n"
                     )
                     continue
-                rows = extract_multi_field_single_code(data)
+                rows = extract_multi_field_single_code(data, code)
                 for r in rows:
                     r["code"] = code
                     records.append(r)
