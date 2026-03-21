@@ -58,8 +58,37 @@ function fmtYuan(v: number) {
 
 // ── Product info (label shown in dropdown + series name) ──────────────────────
 const PRODUCT_LABEL: Record<string, string> = {
-  AU: "黄金", AG: "白银", CU: "铜", AL: "铝", ZN: "锌", NI: "镍",
-  PB: "铅", SN: "锡", SS: "不锈钢", RB: "螺纹钢", HC: "热轧卷板", SC: "原油",
+  // Grains
+  C: "玉米", CS: "玉米淀粉", WH: "强麦", PM: "普麦",
+  RR: "粳米", RI: "早籼稻", JR: "粳稻", LR: "晚籼稻",
+  // Oilseeds
+  A: "黄大豆1号", B: "黄大豆2号", M: "豆粕", Y: "豆油",
+  RM: "菜籽粕", OI: "菜籽油", RS: "油菜籽", PK: "花生", P: "棕榈油",
+  // Soft
+  SR: "白糖", CF: "棉花", CY: "棉纱", AP: "苹果", CJ: "红枣", LH: "生猪", JD: "鸡蛋",
+  // Forestry / paper
+  LG: "原木", SP: "纸浆", OP: "双胶纸", BB: "胶合板", FB: "纤维板",
+  // Precious metals
+  AU: "黄金", AG: "白银", PT: "铂", PD: "钯",
+  // Base metals
+  CU: "沪铜", BC: "国际铜", AL: "沪铝", AO: "氧化铝", AD: "铝合金",
+  ZN: "沪锌", PB: "沪铅", NI: "沪镍", SN: "沪锡",
+  LC: "碳酸锂", PS: "多晶硅", SI: "工业硅",
+  // Ferrous
+  I: "铁矿石", SF: "硅铁", SM: "锰硅", RB: "螺纹钢", HC: "热卷", SS: "不锈钢", WR: "线材",
+  // Coal
+  JM: "焦煤", J: "焦炭", ZC: "动力煤",
+  // Building materials
+  FG: "玻璃",
+  // Energy
+  SC: "原油", FU: "燃料油", LU: "低硫燃料油", PG: "液化石油气", BU: "沥青", EC: "航运",
+  // Petrochemicals
+  TA: "PTA", EG: "乙二醇", PF: "短纤", PR: "瓶片", PL: "丙烯",
+  PP: "聚丙烯", L: "塑料", BZ: "纯苯", PX: "对二甲苯", EB: "苯乙烯",
+  // Rubber
+  RU: "天然橡胶", BR: "丁二烯橡胶", NR: "20号胶",
+  // Chemicals
+  SA: "纯碱", SH: "烧碱", V: "PVC", UR: "尿素", MA: "甲醇",
 }
 function productLabel(code: string) { return PRODUCT_LABEL[code] ? `${PRODUCT_LABEL[code]}(${code})` : code }
 function indexLabel(code: string) { return PRODUCT_LABEL[code] ? `南华${PRODUCT_LABEL[code]}指数` : `${code}指数` }

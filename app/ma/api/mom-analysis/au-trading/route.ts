@@ -5,19 +5,103 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 // ── Product config: NH benchmark code, exchange suffix, lot multiplier ──────
+// Exchange codes match raw_futures_contracts_daily contract suffixes:
+//   SHF=上期所  DCE=大商所  ZCE=郑商所  INE=上海国际能源  GFEX=广州期货
+// Multiplier = lot_size_in_primary_unit (yuan per 1 unit price move per lot)
 const PRODUCT_CONFIG: Record<string, { nhCode: string | null; exchange: string; multiplier: number }> = {
-  AU: { nhCode: "NHAU.NH", exchange: "SHF", multiplier: 1000 },
-  AG: { nhCode: "NHAG.NH", exchange: "SHF", multiplier: 15 },
-  CU: { nhCode: "NHCU.NH", exchange: "SHF", multiplier: 5 },
-  AL: { nhCode: null,       exchange: "SHF", multiplier: 5 },
-  ZN: { nhCode: null,       exchange: "SHF", multiplier: 5 },
-  NI: { nhCode: null,       exchange: "SHF", multiplier: 1 },
-  PB: { nhCode: null,       exchange: "SHF", multiplier: 5 },
-  SN: { nhCode: null,       exchange: "SHF", multiplier: 1 },
-  SS: { nhCode: null,       exchange: "SHF", multiplier: 5 },
-  RB: { nhCode: "NHRB.NH", exchange: "SHF", multiplier: 10 },
-  HC: { nhCode: null,       exchange: "SHF", multiplier: 10 },
-  SC: { nhCode: null,       exchange: "INE", multiplier: 1000 },
+  // ── Grains ─────────────────────────────────────────────────────────────────
+  C:  { nhCode: "NHC.NH",   exchange: "DCE",  multiplier: 10   }, // 玉米
+  CS: { nhCode: "NHCS.NH",  exchange: "DCE",  multiplier: 10   }, // 玉米淀粉
+  WH: { nhCode: "NHWH.NH",  exchange: "ZCE",  multiplier: 20   }, // 强麦
+  PM: { nhCode: null,        exchange: "ZCE",  multiplier: 50   }, // 普麦
+  RR: { nhCode: "NHRR.NH",  exchange: "DCE",  multiplier: 10   }, // 粳米
+  RI: { nhCode: "NHRI.NH",  exchange: "ZCE",  multiplier: 20   }, // 早籼稻
+  JR: { nhCode: "NHJR.NH",  exchange: "ZCE",  multiplier: 20   }, // 粳稻
+  LR: { nhCode: "NHLR.NH",  exchange: "ZCE",  multiplier: 10   }, // 晚籼稻
+  // ── Oilseeds & fats ────────────────────────────────────────────────────────
+  A:  { nhCode: "NHA.NH",   exchange: "DCE",  multiplier: 10   }, // 黄大豆1号
+  B:  { nhCode: "NHB.NH",   exchange: "DCE",  multiplier: 10   }, // 黄大豆2号
+  M:  { nhCode: "NHM.NH",   exchange: "DCE",  multiplier: 10   }, // 豆粕
+  Y:  { nhCode: "NHY.NH",   exchange: "DCE",  multiplier: 10   }, // 豆油
+  RM: { nhCode: "NHRM.NH",  exchange: "ZCE",  multiplier: 10   }, // 菜籽粕
+  OI: { nhCode: "NHOI.NH",  exchange: "ZCE",  multiplier: 10   }, // 菜籽油
+  RS: { nhCode: "NHRS.NH",  exchange: "ZCE",  multiplier: 10   }, // 油菜籽
+  PK: { nhCode: "NHPK.NH",  exchange: "ZCE",  multiplier: 10   }, // 花生
+  P:  { nhCode: "NHP.NH",   exchange: "DCE",  multiplier: 10   }, // 棕榈油
+  // ── Soft commodities ───────────────────────────────────────────────────────
+  SR: { nhCode: null,        exchange: "ZCE",  multiplier: 10   }, // 白糖
+  CF: { nhCode: null,        exchange: "ZCE",  multiplier: 5    }, // 棉花
+  CY: { nhCode: "NHCY.NH",  exchange: "ZCE",  multiplier: 5    }, // 棉纱
+  AP: { nhCode: "NHAP.NH",  exchange: "ZCE",  multiplier: 10   }, // 苹果
+  CJ: { nhCode: "NHCJ.NH",  exchange: "ZCE",  multiplier: 5    }, // 红枣
+  LH: { nhCode: "NHLH.NH",  exchange: "DCE",  multiplier: 16   }, // 生猪 (16 tons/lot)
+  JD: { nhCode: "NHJD.NH",  exchange: "DCE",  multiplier: 5    }, // 鸡蛋
+  // ── Forestry / paper ───────────────────────────────────────────────────────
+  LG: { nhCode: "NHLG.NH",  exchange: "DCE",  multiplier: 20   }, // 原木
+  SP: { nhCode: "NHSP.NH",  exchange: "SHF",  multiplier: 10   }, // 纸浆
+  OP: { nhCode: null,        exchange: "ZCE",  multiplier: 5    }, // 双胶纸
+  BB: { nhCode: "NHBB.NH",  exchange: "DCE",  multiplier: 500  }, // 胶合板 (500张/lot)
+  FB: { nhCode: "NHFB.NH",  exchange: "DCE",  multiplier: 500  }, // 纤维板 (500张/lot)
+  // ── Precious metals ────────────────────────────────────────────────────────
+  AU: { nhCode: "NHAU.NH",  exchange: "SHF",  multiplier: 1000 }, // 黄金 (1000g/lot, yuan/g)
+  AG: { nhCode: "NHAG.NH",  exchange: "SHF",  multiplier: 15   }, // 白银 (15kg/lot, yuan/kg)
+  PT: { nhCode: null,        exchange: "SHF",  multiplier: 500  }, // 铂 (500g/lot)
+  PD: { nhCode: null,        exchange: "SHF",  multiplier: 500  }, // 钯 (500g/lot)
+  // ── Base metals ────────────────────────────────────────────────────────────
+  CU: { nhCode: "NHCU.NH",  exchange: "SHF",  multiplier: 5    }, // 沪铜
+  BC: { nhCode: "NHBC.NH",  exchange: "INE",  multiplier: 5    }, // 国际铜
+  AL: { nhCode: "NHAL.NH",  exchange: "SHF",  multiplier: 5    }, // 沪铝
+  AO: { nhCode: "NHAO.NH",  exchange: "SHF",  multiplier: 20   }, // 氧化铝 (20 tons/lot)
+  AD: { nhCode: null,        exchange: "SHF",  multiplier: 5    }, // 铝合金
+  ZN: { nhCode: "NHZN.NH",  exchange: "SHF",  multiplier: 5    }, // 沪锌
+  PB: { nhCode: "NHPB.NH",  exchange: "SHF",  multiplier: 5    }, // 沪铅
+  NI: { nhCode: "NHNI.NH",  exchange: "SHF",  multiplier: 1    }, // 沪镍 (1 ton/lot)
+  SN: { nhCode: "NHSN.NH",  exchange: "SHF",  multiplier: 1    }, // 沪锡 (1 ton/lot)
+  LC: { nhCode: "NHLC.NH",  exchange: "GFEX", multiplier: 5    }, // 碳酸锂
+  PS: { nhCode: null,        exchange: "GFEX", multiplier: 3    }, // 多晶硅
+  SI: { nhCode: "NHSI.NH",  exchange: "GFEX", multiplier: 5    }, // 工业硅
+  // ── Ferrous metals ─────────────────────────────────────────────────────────
+  I:  { nhCode: "NHI.NH",   exchange: "DCE",  multiplier: 100  }, // 铁矿石 (100 tons/lot)
+  SF: { nhCode: "NHSF.NH",  exchange: "ZCE",  multiplier: 5    }, // 硅铁
+  SM: { nhCode: "NHSM.NH",  exchange: "ZCE",  multiplier: 5    }, // 锰硅
+  RB: { nhCode: "NHRB.NH",  exchange: "SHF",  multiplier: 10   }, // 螺纹钢
+  HC: { nhCode: null,        exchange: "SHF",  multiplier: 10   }, // 热卷
+  SS: { nhCode: "NHSS.NH",  exchange: "SHF",  multiplier: 5    }, // 不锈钢
+  WR: { nhCode: "NHWR.NH",  exchange: "SHF",  multiplier: 10   }, // 线材
+  // ── Coal & coke ────────────────────────────────────────────────────────────
+  JM: { nhCode: "NHJM.NH",  exchange: "DCE",  multiplier: 60   }, // 焦煤 (60 tons/lot)
+  J:  { nhCode: null,        exchange: "DCE",  multiplier: 100  }, // 焦炭 (100 tons/lot)
+  ZC: { nhCode: "NHZC.NH",  exchange: "ZCE",  multiplier: 100  }, // 动力煤 (100 tons/lot)
+  // ── Building materials ─────────────────────────────────────────────────────
+  FG: { nhCode: "NHFG.NH",  exchange: "ZCE",  multiplier: 20   }, // 玻璃 (20 tons/lot)
+  // ── Energy ─────────────────────────────────────────────────────────────────
+  SC: { nhCode: "NHSC.NH",  exchange: "INE",  multiplier: 1000 }, // 原油 (1000 bbl/lot)
+  FU: { nhCode: null,        exchange: "SHF",  multiplier: 10   }, // 燃料油
+  LU: { nhCode: "NHLU.NH",  exchange: "INE",  multiplier: 10   }, // 低硫燃料油
+  PG: { nhCode: null,        exchange: "DCE",  multiplier: 20   }, // 液化石油气
+  BU: { nhCode: "NHBU.NH",  exchange: "SHF",  multiplier: 10   }, // 沥青
+  EC: { nhCode: null,        exchange: "SHF",  multiplier: 50   }, // 航运
+  // ── Petrochemicals ─────────────────────────────────────────────────────────
+  TA: { nhCode: "NHTA.NH",  exchange: "ZCE",  multiplier: 5    }, // PTA
+  EG: { nhCode: "NHEG.NH",  exchange: "DCE",  multiplier: 10   }, // 乙二醇
+  PF: { nhCode: "NHPF.NH",  exchange: "ZCE",  multiplier: 5    }, // 短纤
+  PR: { nhCode: "NHPR.NH",  exchange: "ZCE",  multiplier: 5    }, // 瓶片
+  PL: { nhCode: null,        exchange: "SHF",  multiplier: 5    }, // 丙烯
+  PP: { nhCode: "NHPP.NH",  exchange: "DCE",  multiplier: 5    }, // 聚丙烯
+  L:  { nhCode: "NHL.NH",   exchange: "DCE",  multiplier: 5    }, // 塑料
+  BZ: { nhCode: null,        exchange: "SHF",  multiplier: 5    }, // 纯苯
+  PX: { nhCode: "NHPX.NH",  exchange: "SHF",  multiplier: 5    }, // 对二甲苯
+  EB: { nhCode: "NHEB.NH",  exchange: "DCE",  multiplier: 5    }, // 苯乙烯
+  // ── Rubber ─────────────────────────────────────────────────────────────────
+  RU: { nhCode: null,        exchange: "SHF",  multiplier: 10   }, // 天然橡胶
+  BR: { nhCode: "NHBR.NH",  exchange: "INE",  multiplier: 5    }, // 丁二烯橡胶
+  NR: { nhCode: "NHNR.NH",  exchange: "INE",  multiplier: 10   }, // 20号胶
+  // ── Chemicals ──────────────────────────────────────────────────────────────
+  SA: { nhCode: "NHSA.NH",  exchange: "ZCE",  multiplier: 20   }, // 纯碱
+  SH: { nhCode: "NHSH.NH",  exchange: "ZCE",  multiplier: 30   }, // 烧碱
+  V:  { nhCode: "NHV.NH",   exchange: "DCE",  multiplier: 5    }, // PVC
+  UR: { nhCode: "NHUR.NH",  exchange: "ZCE",  multiplier: 20   }, // 尿素
+  MA: { nhCode: "NHMA.NH",  exchange: "ZCE",  multiplier: 10   }, // 甲醇
 }
 
 // Normalise CTP-format contract to <PRODUCT><EXPIRY>.<EXCHANGE>
