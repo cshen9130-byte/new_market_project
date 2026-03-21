@@ -111,12 +111,111 @@ function normalizeContract(raw: string, exchange: string): string {
   return upper.includes(".") ? upper : `${upper}.${exchange}`
 }
 
+function quoteIdent(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`
+}
+
+function pickColumn(columns: Set<string>, candidates: string[]): string | null {
+  for (const candidate of candidates) {
+    if (columns.has(candidate)) return candidate
+  }
+  return null
+}
+
+function upperTrimExpr(columnName: string): string {
+  return `UPPER(TRIM(${quoteIdent(columnName)}::text))`
+}
+
+function numericExpr(columnName: string): string {
+  return `COALESCE(CAST(NULLIF(TRIM(COALESCE(${quoteIdent(columnName)}::text, '')), '') AS float8), 0)`
+}
+
+async function loadMomAccountingDailyPnl(from: string, to: string, account: string, product: string) {
+  const columnRows = await query<{ table_name: string; column_name: string }>(
+    `SELECT table_name, column_name
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name IN ('mom_trade_details_full', 'mom_position_details_full')`
+  )
+
+  const columnsByTable = new Map<string, Set<string>>()
+  for (const row of columnRows) {
+    if (!columnsByTable.has(row.table_name)) columnsByTable.set(row.table_name, new Set())
+    columnsByTable.get(row.table_name)!.add(row.column_name)
+  }
+
+  const tradeCols = columnsByTable.get("mom_trade_details_full") ?? new Set<string>()
+  const positionCols = columnsByTable.get("mom_position_details_full") ?? new Set<string>()
+
+  const tradeDateCol = pickColumn(tradeCols, ["交易日期", "日期", "trade_date", "date"])
+  const tradeAccountCol = pickColumn(tradeCols, ["账户", "期货账户", "account"])
+  const tradeProductCol = pickColumn(tradeCols, ["品种", "合约", "contract", "symbol"])
+  const realizedPnlCol = pickColumn(tradeCols, ["平仓盈亏", "realized_pnl", "close_pnl"])
+
+  const positionDateCol = pickColumn(positionCols, ["交易日期", "日期", "trade_date", "date"])
+  const positionAccountCol = pickColumn(positionCols, ["账户", "期货账户", "account"])
+  const positionProductCol = pickColumn(positionCols, ["品种", "合约", "contract", "symbol"])
+  const holdingPnlCol = pickColumn(positionCols, ["持仓盈亏", "holding_pnl", "position_pnl"])
+
+  if (!tradeDateCol || !tradeAccountCol || !tradeProductCol || !realizedPnlCol) {
+    throw new Error("mom_trade_details_full 缺少交易日期/账户/品种/平仓盈亏列，无法使用 MOM 核算法")
+  }
+  if (!positionDateCol || !positionAccountCol || !positionProductCol || !holdingPnlCol) {
+    throw new Error("mom_position_details_full 缺少交易日期/账户/品种/持仓盈亏列，无法使用 MOM 核算法")
+  }
+
+  const tradeProductExpr = ["合约", "contract", "symbol"].includes(tradeProductCol)
+    ? `${upperTrimExpr(tradeProductCol)} ~ ('^' || $2 || '[0-9]')`
+    : `${upperTrimExpr(tradeProductCol)} = $2`
+  const positionProductExpr = ["合约", "contract", "symbol"].includes(positionProductCol)
+    ? `${upperTrimExpr(positionProductCol)} ~ ('^' || $2 || '[0-9]')`
+    : `${upperTrimExpr(positionProductCol)} = $2`
+
+  const [realizedRows, holdingRows] = await Promise.all([
+    query<{ date: string; pnl: number }>(
+      `SELECT (${quoteIdent(tradeDateCol)}::date)::text AS date,
+              SUM(${numericExpr(realizedPnlCol)})      AS pnl
+       FROM mom_trade_details_full
+       WHERE ${upperTrimExpr(tradeAccountCol)} ILIKE $1
+         AND ${tradeProductExpr}
+         AND ${quoteIdent(tradeDateCol)}::date BETWEEN $3::date AND $4::date
+       GROUP BY 1
+       ORDER BY 1`,
+      [`%${account.toUpperCase()}%`, product, from, to],
+    ),
+    query<{ date: string; pnl: number }>(
+      `SELECT (${quoteIdent(positionDateCol)}::date)::text AS date,
+              SUM(${numericExpr(holdingPnlCol)})          AS pnl
+       FROM mom_position_details_full
+       WHERE ${upperTrimExpr(positionAccountCol)} ILIKE $1
+         AND ${positionProductExpr}
+         AND ${quoteIdent(positionDateCol)}::date BETWEEN $3::date AND $4::date
+       GROUP BY 1
+       ORDER BY 1`,
+      [`%${account.toUpperCase()}%`, product, from, to],
+    ),
+  ])
+
+  const pnlByDate = new Map<string, number>()
+  for (const row of realizedRows) pnlByDate.set(row.date, (pnlByDate.get(row.date) || 0) + Number(row.pnl || 0))
+  for (const row of holdingRows) pnlByDate.set(row.date, (pnlByDate.get(row.date) || 0) + Number(row.pnl || 0))
+
+  let cumPnl = 0
+  return [...pnlByDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, pnl]) => {
+      cumPnl += pnl
+      return { date, pnl: Math.round(pnl), cumPnl: Math.round(cumPnl) }
+    })
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const from    = searchParams.get("from")    || "2025-01-01"
     const to      = searchParams.get("to")      || new Date().toISOString().slice(0, 10)
     const account = searchParams.get("account") || "rx000"
+    const method  = searchParams.get("method") === "mom" ? "mom" : "continuous"
 
     // Validate product against whitelist (prevents injection)
     const rawProduct = (searchParams.get("product") || "AU").toUpperCase().trim()
@@ -217,48 +316,44 @@ export async function GET(req: Request) {
       }
     }
 
-    // ── Walk through all trading dates to compute MTM P&L ─────────────────────
-    // Correct continuous formula per day:
-    //   dayPnl = Σ prevLots × (close − preclose)           ← carry: overnight hold
-    //          + Σ tradeSign × tradeLots × (close − tradePrice)  ← fill-to-EOD for each trade
-    //
-    // This correctly handles intraday round-trips (net 0 carry, only fill spread counted)
-    // and overnight positions (carry from settled close to new close).
-    //
-    // Multiplier from PRODUCT_CONFIG (e.g. AU: 1000, CU: 5)
     const allTradingDates = [...new Set(priceRows.map(p => p.date))].sort()
-    const positions = new Map<string, number>() // contract → net lots (EOD of previous day)
-    const dailyPnl: { date: string; pnl: number; cumPnl: number }[] = []
-    let cumPnl = 0
+    let dailyPnl: { date: string; pnl: number; cumPnl: number }[] = []
 
-    for (const date of allTradingDates) {
-      const todayTrades = tradesByDate.get(date) ?? []
-      let dayPnl = 0
+    if (method === "mom") {
+      dailyPnl = await loadMomAccountingDailyPnl(from, to, account, product)
+    } else {
+      // ── Walk through all trading dates to compute MTM P&L ───────────────────
+      // Correct continuous formula per day:
+      //   dayPnl = Σ prevLots × (close − preclose)           ← carry: overnight hold
+      //          + Σ tradeSign × tradeLots × (close − tradePrice)  ← fill-to-EOD for each trade
+      const positions = new Map<string, number>() // contract → net lots (EOD of previous day)
+      let cumPnl = 0
 
-      // 1. Carry P&L: positions held from yesterday MTM to today's close
-      for (const [contract, prevLots] of positions) {
-        if (prevLots === 0) continue
-        const p = priceMap.get(`${contract}|${date}`)
-        if (!p) continue
-        dayPnl += prevLots * (p.close - p.preclose) * MULTIPLIER
-      }
+      for (const date of allTradingDates) {
+        const todayTrades = tradesByDate.get(date) ?? []
+        let dayPnl = 0
 
-      // 2. Trade P&L: each fill marked from trade price to today's EOD close
-      for (const t of todayTrades) {
-        const p = priceMap.get(`${t.contract}|${date}`)
-        if (!p) continue
-        dayPnl += t.sign * t.lots * (p.close - t.price) * MULTIPLIER
-      }
+        for (const [contract, prevLots] of positions) {
+          if (prevLots === 0) continue
+          const p = priceMap.get(`${contract}|${date}`)
+          if (!p) continue
+          dayPnl += prevLots * (p.close - p.preclose) * MULTIPLIER
+        }
 
-      // 3. Update positions for next day
-      for (const t of todayTrades) {
-        positions.set(t.contract, (positions.get(t.contract) || 0) + t.sign * t.lots)
-      }
+        for (const t of todayTrades) {
+          const p = priceMap.get(`${t.contract}|${date}`)
+          if (!p) continue
+          dayPnl += t.sign * t.lots * (p.close - t.price) * MULTIPLIER
+        }
 
-      cumPnl += dayPnl
+        for (const t of todayTrades) {
+          positions.set(t.contract, (positions.get(t.contract) || 0) + t.sign * t.lots)
+        }
 
-      if (date >= from) {
-        dailyPnl.push({ date, pnl: Math.round(dayPnl), cumPnl: Math.round(cumPnl) })
+        cumPnl += dayPnl
+        if (date >= from) {
+          dailyPnl.push({ date, pnl: Math.round(dayPnl), cumPnl: Math.round(cumPnl) })
+        }
       }
     }
 
@@ -285,6 +380,7 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       ok: true,
+      method,
       benchmark: benchmarkRows,
       dailyPnl,
       trades: tradeMarkers,

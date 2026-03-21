@@ -17,12 +17,15 @@ interface TradeMarker {
 }
 interface ApiData {
   ok: boolean
+  method?: PnlMethod
   benchmark: BenchmarkRow[]
   dailyPnl: DailyPnlRow[]
   trades: TradeMarker[]
   positionHistory: { date: string; totalLots: number }[]
   error?: string
 }
+
+type PnlMethod = "continuous" | "mom"
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -104,6 +107,7 @@ interface MetaData {
 interface Props {
   account?: string
   product?: string
+  method?: PnlMethod
   chartHeight?: number
   // Starting capital used to convert absolute P&L (yuan) to a return ratio.
   // Defaults to 1,000,000 yuan (100万). Adjust to match actual account equity.
@@ -112,11 +116,12 @@ interface Props {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
+export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", chartHeight = 540, initialCapital = 1_000_000 }: Props) {
   const [from, setFrom] = useState(() => "2025-01-01")
   const [to,   setTo]   = useState(() => isoToday())
   const [account, setAccount] = useState(defaultAccount)
   const [product, setProduct] = useState(defaultProduct)
+  const [method, setMethod] = useState<PnlMethod>(defaultMethod)
   const [data,    setData]    = useState<ApiData | null>(null)
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState<string | null>(null)
@@ -136,11 +141,11 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
       .catch(() => { /* non-critical, keep defaults */ })
   }, [])
 
-  const load = useCallback(async (f: string, t: string, acc: string, prod: string) => {
+  const load = useCallback(async (f: string, t: string, acc: string, prod: string, pnlMethod: PnlMethod) => {
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ from: f, to: t, account: acc, product: prod })
+      const params = new URLSearchParams({ from: f, to: t, account: acc, product: prod, method: pnlMethod })
       const res  = await fetch(`/ma/api/mom-analysis/au-trading?${params}`)
       const json: ApiData = await res.json()
       if (!json.ok) throw new Error(json.error || "请求失败")
@@ -152,7 +157,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
     }
   }, [])
 
-  useEffect(() => { load(from, to, account, product) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(from, to, account, product, method) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Build ECharts option (useMemo ensures a new object ref when data changes)
 
@@ -517,10 +522,22 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
             {indexLabel(product)} · {productLabel(product)}交易回顾（{account.toUpperCase()}）
           </CardTitle>
           <div className="flex flex-wrap items-center gap-1.5">
+            <select
+              value={method}
+              onChange={e => {
+                const nextMethod = e.target.value as PnlMethod
+                setMethod(nextMethod)
+                load(from, to, account, product, nextMethod)
+              }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+            >
+              <option value="continuous">连续价格MTM</option>
+              <option value="mom">MOM核算表</option>
+            </select>
             {/* Account selector */}
             <select
               value={account}
-              onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product) }}
+              onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product, method) }}
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             >
               {(availableAccounts.length ? availableAccounts : [account]).map(a => (
@@ -530,7 +547,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
             {/* Product selector */}
             <select
               value={product}
-              onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p) }}
+              onChange={e => { const p = e.target.value; setProduct(p); load(from, to, account, p, method) }}
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             >
               {(availableProducts.length ? availableProducts : [product]).map(p => (
@@ -540,7 +557,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
             {QUICK_RANGES.map(r => (
               <button
                 key={r.label}
-                onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product) }}
+                onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t, account, product, method) }}
                 className="rounded px-2 py-0.5 text-xs bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
               >
                 {r.label}
@@ -555,7 +572,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               className="rounded border border-input bg-background px-2 py-0.5 text-xs"
             />
             <button
-              onClick={() => load(from, to, account, product)}
+              onClick={() => load(from, to, account, product, method)}
               className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
