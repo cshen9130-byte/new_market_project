@@ -158,10 +158,12 @@ async function loadMomAccountingDailyPnl(from: string, to: string, account: stri
   const holdingPnlCol = pickColumn(positionCols, ["持仓盈亏", "holding_pnl", "position_pnl"])
 
   if (!tradeDateCol || !tradeAccountCol || !tradeProductCol || !realizedPnlCol) {
-    throw new Error("mom_trade_details_full 缺少交易日期/账户/品种/平仓盈亏列，无法使用 MOM 核算法")
+    const found = [...tradeCols].join(" | ")
+    throw new Error(`mom_trade_details_full 实际列名: [${found}] — 未匹配出日期/账户/品种/平仓盈亏，无法使用 MOM 核算法`)
   }
   if (!positionDateCol || !positionAccountCol || !positionProductCol || !holdingPnlCol) {
-    throw new Error("mom_position_details_full 缺少交易日期/账户/品种/持仓盈亏列，无法使用 MOM 核算法")
+    const found = [...positionCols].join(" | ")
+    throw new Error(`mom_position_details_full 实际列名: [${found}] — 未匹配出日期/账户/品种/持仓盈亏，无法使用 MOM 核算法`)
   }
 
   const tradeProductExpr = ["合约", "contract", "symbol"].includes(tradeProductCol)
