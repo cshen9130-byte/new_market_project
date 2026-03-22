@@ -941,6 +941,121 @@ def step_options_contracts_ohlcv(conn, *, force: bool = False) -> int:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# STEP 1e — AkShare futures daily OHLCV  (87 continuous main contracts / Sina)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_AK_FUTURES_BACKFILL_START = date(2025, 1, 1)
+
+
+def step_akshare_futures_daily(conn, *, force: bool = False) -> int:
+    """Fetch daily OHLCV + settlement for 87 continuous futures contracts via AkShare.
+
+    Source : ak.futures_zh_daily_sina()  (Sina Finance — public, no auth needed)
+    Table  : raw_akshare_futures_daily  (trade_date, code) PK
+    Codes  : 87 continuous main contracts across DCE / SHF / CZC / INE / GFE / CFE
+    First run  : backfills from 2025-01-01 → today
+    Subsequent : incremental from last stored date + 1 day
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_akshare_futures_daily (
+                trade_date  DATE        NOT NULL,
+                code        TEXT        NOT NULL,
+                open        NUMERIC,
+                close       NUMERIC,
+                high        NUMERIC,
+                low         NUMERIC,
+                pct_change  NUMERIC,
+                volume      NUMERIC,
+                clear       NUMERIC,
+                source      TEXT        NOT NULL DEFAULT 'akshare',
+                fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, code)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_raw_akshare_futures_daily_code
+              ON raw_akshare_futures_daily (code)
+        """)
+    conn.commit()
+
+    today   = date.today()
+    cur_max = max_date(conn, "raw_akshare_futures_daily")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("AkShare futures daily up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    if cur_max is None or force:
+        start = _AK_FUTURES_BACKFILL_START
+        log.info("AkShare futures daily: %s, backfilling from %s …",
+                 "forced" if force else "first run", start)
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("AkShare futures daily: incremental fetch %s → %s …", start, today)
+
+    if start > today:
+        log.info("AkShare futures daily: already up-to-date.")
+        return 0
+
+    out = run_script(
+        "fetch_akshare_futures_daily.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=900,
+        log_stderr=True,   # surface tqdm progress + warnings
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"AkShare futures daily fetch failed: {out}")
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        log.warning("AkShare futures daily: empty data for %s → %s.", start, today)
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d    = to_date(str(r.get("date", "")).replace("-", ""))
+        code = r.get("code", "").strip()
+        if not d or not code:
+            continue
+        records.append((
+            d, code,
+            safe_float(r.get("open")),
+            safe_float(r.get("close")),
+            safe_float(r.get("high")),
+            safe_float(r.get("low")),
+            safe_float(r.get("pct_change")),
+            safe_float(r.get("volume")),
+            safe_float(r.get("clear")),
+            "akshare",
+        ))
+
+    if not records:
+        log.warning("AkShare futures daily: no valid rows parsed.")
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_akshare_futures_daily
+                (trade_date, code, open, close, high, low, pct_change, volume, clear, source)
+            VALUES %s
+            ON CONFLICT (trade_date, code) DO UPDATE
+                SET open=EXCLUDED.open, close=EXCLUDED.close,
+                    high=EXCLUDED.high, low=EXCLUDED.low,
+                    pct_change=EXCLUDED.pct_change, volume=EXCLUDED.volume,
+                    clear=EXCLUDED.clear, fetched_at=NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("AkShare futures daily: upserted %d rows (max date %s).",
+             len(records), max(r[0] for r in records))
+    return len(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # STEP 2 — Spot index closes  (EmQuant with Tushare fallback)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1835,6 +1950,7 @@ ORDERED_STEPS = [
     "nanhua_commodity_indices",    # all 80 NH single-commodity indices OHLCV
     "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded
     "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
+    "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
@@ -1941,6 +2057,7 @@ def main():
         "nanhua_commodity_indices":  lambda: step_nanhua_commodity_indices(conn, force=force),
         "futures_contracts_ohlcv":    lambda: step_futures_contracts_ohlcv(conn, force=force),
         "options_contracts_ohlcv":    lambda: step_options_contracts_ohlcv(conn, force=force),
+        "akshare_futures_daily":      lambda: step_akshare_futures_daily(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),

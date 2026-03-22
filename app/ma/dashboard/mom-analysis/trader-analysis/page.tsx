@@ -198,73 +198,34 @@ export default function TraderAnalysisPage() {
   const [viewTo,   setViewTo]   = useState(() => isoToday())
   const [viewRange, setViewRange] = useState("近六月")
 
-  // Sector index for second candle chart — updates when trading product changes
-  const SECTOR_INDEX: Record<string, { code: string; title: string }> = {
-    // Precious metals
-    AU: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
-    AG: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
-    PT: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
-    PD: { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
-    // Energy & chemicals
-    SC: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    FU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    LU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    PG: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    BU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    EC: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    TA: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    EG: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    PF: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    PR: { code: "NHECI.NH", title: "南剎能化指数（NHECI.NH）日K线" },
-    PL: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    PP: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    L:  { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    BZ: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    PX: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    EB: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    RU: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    BR: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    NR: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    SA: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    SH: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    V:  { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    UR: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    MA: { code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
-    // Agricultural
-    C:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    CS: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    WH: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    PM: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    RR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    RI: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    JR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    LR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    A:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    B:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    M:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    Y:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    RM: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    OI: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    RS: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    PK: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    P:  { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    SR: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    CF: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    CY: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    AP: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    CJ: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    LH: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    JD: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    LG: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    SP: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    OP: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    BB: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
-    FB: { code: "NHAGI.NH", title: "南华农产品指数（NHAGI.NH）日K线" },
+  // Two-step sector lookup: product → sector name → NH index code
+  // NH codes sourced from raw_nanhua_indices_daily (17 sub-indices fetched by nightly_etl)
+  const SECTOR_RULES: Record<string, string[]> = {
+    "农产":    ["C","CS","WH","PM","RR","RI","JR","LR","A","B","M","Y","RM","OI","RS","PK","P","SR","CF","CY","AP","CJ","LH","JD","LG","SP","OP"],
+    "贵金属":  ["AU","AG","PT","PD"],
+    "有色":    ["CU","BC","AL","AO","AD","ZN","PB","NI","SN"],
+    "新能源":  ["LC","PS","SI"],
+    "黑色":    ["I","SF","SM","RB","HC","SS","WR","JM","J","ZC","FG","BB","FB"],
+    "能源化工":["SC","FU","LU","PG","BU","TA","EG","PF","PR","PL","PP","L","BZ","PX","EB","RU","BR","NR","SA","SH","V","UR","MA"],
+    "航运":    ["EC"],
+    "股指":    ["IH","IF","IC","IM","MO"],
+    "国债":    ["TS","TF","T","TL"],
+  }
+  const SECTOR_TO_NH: Record<string, { code: string; title: string }> = {
+    "农产":    { code: "NHAI.NH",  title: "南华农产品指数（NHAI.NH）日K线" },
+    "贵金属":  { code: "NHPMI.NH", title: "南华贵金属指数（NHPMI.NH）日K线" },
+    "有色":    { code: "NHNFI.NH", title: "南华有色金属指数（NHNFI.NH）日K线" },
+    "新能源":  { code: "NHNEI.NH", title: "南华新能源指数（NHNEI.NH）日K线" },
+    "黑色":    { code: "NHFI.NH",  title: "南华黑色指数（NHFI.NH）日K线" },
+    "能源化工":{ code: "NHECI.NH", title: "南华能化指数（NHECI.NH）日K线" },
   }
   const DEFAULT_SECTOR = { code: "NHCI.NH", title: "南华商品指数（NHCI.NH）日K线" }
 
   const [tradingProduct, setTradingProduct] = useState("AU")
-  const sectorInfo = SECTOR_INDEX[tradingProduct] ?? DEFAULT_SECTOR
+  const sectorInfo = (() => {
+    const sector = Object.entries(SECTOR_RULES).find(([, prods]) => prods.includes(tradingProduct))?.[0]
+    return (sector && SECTOR_TO_NH[sector]) ?? DEFAULT_SECTOR
+  })()
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false) }
