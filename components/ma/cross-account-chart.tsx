@@ -204,11 +204,15 @@ export default function CrossAccountChart({
         formatter: (params: any[]) => {
           const date = params[0]?.axisValue as string
           let html = `<div style="font-size:11px;margin-bottom:4px;font-weight:600">${date}</div>`
+          const accountCount = data.series.length
           for (const p of params) {
             if (p.value == null) continue
             const v = p.value as number
             const sign = v >= 0 ? "+" : ""
-            html += `<div style="font-size:11px">${p.marker}${p.seriesName}: <b>${sign}${v.toFixed(2)}%</b></div>`
+            const isAccount = p.seriesIndex < accountCount
+            // initial capital = 100万, so 1% ≡ 1万元
+            const wan = isAccount ? `, <span style="color:#94a3b8">${sign}${v.toFixed(2)}万元</span>` : ""
+            html += `<div style="font-size:11px">${p.marker}${p.seriesName}: <b>${sign}${v.toFixed(2)}%</b>${wan}</div>`
           }
           return html
         },
