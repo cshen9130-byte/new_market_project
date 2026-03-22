@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -105,6 +105,9 @@ export default function CrossAccountChart({
   const [data,     setData]     = useState<ApiData | null>(null)
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
+  const [allVisible, setAllVisible] = useState(true)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const chartRef = useRef<any>(null)
 
   // Fetch available products from meta endpoint
   useEffect(() => {
@@ -125,6 +128,7 @@ export default function CrossAccountChart({
       const json: ApiData = await res.json()
       if (!json.ok) throw new Error(json.error || "请求失败")
       setData(json)
+      setAllVisible(true)
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败")
     } finally {
@@ -251,6 +255,16 @@ export default function CrossAccountChart({
     }
   }, [data, product])
 
+  const toggleAllAccounts = () => {
+    if (!data || !chartRef.current) return
+    const instance = chartRef.current.getEchartsInstance()
+    const next = !allVisible
+    for (const s of data.series) {
+      instance.dispatchAction({ type: next ? "legendSelect" : "legendUnSelect", name: s.account.toUpperCase() })
+    }
+    setAllVisible(next)
+  }
+
   const handleConfirm = () => {
     const p = inputVal.trim().toUpperCase()
     if (/^[A-Z]{1,4}$/.test(p)) {
@@ -337,6 +351,12 @@ export default function CrossAccountChart({
               return list.map(p => <option key={p} value={p}>{prodLabel(p)}</option>)
             })()}
           </select>
+          <button
+            onClick={toggleAllAccounts}
+            className="h-7 rounded px-2 text-xs font-medium bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
+          >
+            {allVisible ? "全隐藏" : "全显示"}
+          </button>
           <span className="text-muted-foreground/40 text-xs">|</span>
           <input
             value={inputVal}
@@ -365,7 +385,7 @@ export default function CrossAccountChart({
           </div>
         )}
         {!loading && !error && hasData && (
-          <ReactECharts option={option} style={{ height: `${height}px` }} notMerge={true} />
+          <ReactECharts ref={chartRef} option={option} style={{ height: `${height}px` }} notMerge={true} />
         )}
       </CardContent>
     </Card>
