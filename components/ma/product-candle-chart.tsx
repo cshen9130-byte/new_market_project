@@ -427,18 +427,6 @@ export default function ProductCandleChart({
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
-            {!showTable && (
-              <div className="flex items-center gap-0 rounded border border-input overflow-hidden text-xs">
-                {(["vol", "atr", "rsi"] as SubChart[]).map(s => (
-                  <button key={s} onClick={() => setSubChart(s)}
-                    className={`px-2 py-0.5 font-medium transition-colors ${
-                      subChart === s ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
-                    }`}>
-                    {s === "vol" ? "成交量" : s === "atr" ? "ATR" : "RSI"}
-                  </button>
-                ))}
-              </div>
-            )}
             {showTable && tableData && (
               <Button size="sm" variant="outline" onClick={() => downloadTableCsv(tableData, propProduct)} className="h-7 px-2 text-xs gap-1">
                 <Download className="h-3 w-3" />下载
@@ -534,7 +522,21 @@ export default function ProductCandleChart({
           </div>
         )}
         {!showTable && !loading && !error && data && data.data.length > 0 && (
-          <ReactECharts option={option} style={{ height: `${height}px` }} notMerge={true} />
+          <div style={{ position: "relative" }}>
+            <ReactECharts option={option} style={{ height: `${height}px` }} notMerge={true} />
+            {/* sub-chart toggle — floats inside the lower panel */}
+            <div style={{ position: "absolute", top: "76%", left: 62, zIndex: 10 }}
+              className="flex items-center gap-0 rounded border border-input bg-background/80 overflow-hidden text-xs backdrop-blur-sm shadow-sm">
+              {(["vol", "atr", "rsi"] as SubChart[]).map(s => (
+                <button key={s} onClick={() => setSubChart(s)}
+                  className={`px-2 py-0.5 font-medium transition-colors ${
+                    subChart === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                  }`}>
+                  {s === "vol" ? "成交量" : s === "atr" ? "ATR" : "RSI"}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
