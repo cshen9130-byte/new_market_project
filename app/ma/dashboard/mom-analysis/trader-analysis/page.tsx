@@ -410,7 +410,7 @@ export default function TraderAnalysisPage() {
 
             {/* chart grid — fullscreen overlay when isFullscreen */}
             <div className={isFullscreen
-              ? "fixed inset-0 z-50 bg-background overflow-auto p-4 flex flex-col gap-4"
+              ? "fixed inset-0 z-50 bg-background overflow-hidden p-4 flex flex-col gap-4"
               : "grid grid-cols-2 gap-4"
             }>
               {isFullscreen && (
@@ -452,14 +452,14 @@ export default function TraderAnalysisPage() {
                   <NhciCandleChart
                     code="NHCI.NH"
                     title="南华商品指数（NHCI.NH）日K线"
-                    height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
+                    height={isFullscreen ? Math.floor((window.innerHeight - 320) / 2) : 280}
                     from={viewFrom}
                     to={viewTo}
                   />
                   <NhciCandleChart
                     code={sectorInfo.code}
                     title={sectorInfo.title}
-                    height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
+                    height={isFullscreen ? Math.floor((window.innerHeight - 320) / 2) : 280}
                     from={viewFrom}
                     to={viewTo}
                     fallbackCode={akshareCode}
@@ -472,7 +472,7 @@ export default function TraderAnalysisPage() {
                   <AuTradingChart
                     account="rx000"
                     product={selectedProduct}
-                    chartHeight={isFullscreen ? window.innerHeight - 120 : 540}
+                    chartHeight={isFullscreen ? Math.floor(window.innerHeight - 340) : 540}
                     from={viewFrom}
                     to={viewTo}
                     onProductChange={setTradingProduct}
