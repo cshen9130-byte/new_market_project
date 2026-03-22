@@ -187,6 +187,7 @@ export default function TraderAnalysisPage() {
   const [sortDir, setSortDir] = useState<SortDir>("desc")
   const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review">("pnl-rank")
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isMultiFullscreen, setIsMultiFullscreen] = useState(false)
 
   // Shared date range for 品种交易回顾 tab
   const VIEW_RANGES = [
@@ -252,7 +253,9 @@ export default function TraderAnalysisPage() {
   const akshareCode = PRODUCT_TO_AKSHARE[tradingProduct]
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false) }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { setIsFullscreen(false); setIsMultiFullscreen(false) }
+    }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
   }, [])
@@ -485,23 +488,45 @@ export default function TraderAnalysisPage() {
             <div className="flex items-center gap-3 scroll-mt-4">
               <h2 className="text-lg font-semibold tracking-tight">单品种，多账户</h2>
               <div className="flex-1 border-t border-border" />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 flex-shrink-0"
+                title={isMultiFullscreen ? "退出全屏 (Esc)" : "全屏"}
+                onClick={() => setIsMultiFullscreen(v => !v)}
+              >
+                {isMultiFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </Button>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <ProductCandleChart
-                  product={selectedProduct}
-                  from={viewFrom}
-                  to={viewTo}
-                  height={360}
-                />
-              </div>
-              <div>
-                <CrossAccountChart
-                  defaultProduct={selectedProduct}
-                  from={viewFrom}
-                  to={viewTo}
-                  height={320}
-                />
+            <div className={isMultiFullscreen
+              ? "fixed inset-0 z-50 bg-background overflow-auto p-4 flex flex-col gap-4"
+              : "grid grid-cols-2 gap-4"
+            }>
+              {isMultiFullscreen && (
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-sm font-semibold">单品种，多账户</span>
+                  <Button variant="ghost" size="icon" className="ml-auto h-7 w-7" title="退出全屏 (Esc)" onClick={() => setIsMultiFullscreen(false)}>
+                    <Minimize2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+              <div className={isMultiFullscreen ? "grid grid-cols-2 gap-4 flex-1 min-h-0" : "contents"}>
+                <div>
+                  <ProductCandleChart
+                    product={selectedProduct}
+                    from={viewFrom}
+                    to={viewTo}
+                    height={isMultiFullscreen ? Math.floor((window.innerHeight - 100) / 1) : 360}
+                  />
+                </div>
+                <div>
+                  <CrossAccountChart
+                    defaultProduct={selectedProduct}
+                    from={viewFrom}
+                    to={viewTo}
+                    height={isMultiFullscreen ? Math.floor((window.innerHeight - 100) / 1) : 320}
+                  />
+                </div>
               </div>
             </div>
           </section>
