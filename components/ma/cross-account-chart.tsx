@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { RefreshCw } from "lucide-react"
+import { Maximize2, Minimize2, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
@@ -106,8 +106,15 @@ export default function CrossAccountChart({
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
   const [allVisible, setAllVisible] = useState(true)
+  const [isFullscreen, setIsFullscreen] = useState(false)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const chartRef = useRef<any>(null)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false) }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [])
 
   // Fetch available products from meta endpoint
   useEffect(() => {
@@ -276,8 +283,11 @@ export default function CrossAccountChart({
   const hasData = data && data.series.length > 0
   const isEmpty = data && data.series.length === 0
 
+  const fsHeight = typeof window !== "undefined" ? window.innerHeight - 220 : 600
+
   return (
-    <Card>
+    <div className={isFullscreen ? "fixed inset-0 z-50 bg-background overflow-auto p-4 flex flex-col" : "contents"}>
+    <Card className={isFullscreen ? "flex flex-col flex-1" : ""}>
       <CardHeader className="pb-2">
         {/* Row 1: title + quick-ranges + date pickers + refresh */}
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -317,6 +327,9 @@ export default function CrossAccountChart({
             <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setActiveRange(""); load(from, to, product) }}>查询</Button>
             <Button size="sm" variant="outline" onClick={() => load(from, to, product)} disabled={loading} className="h-7 w-7 p-0">
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setIsFullscreen(v => !v)} className="h-7 w-7 p-0" title={isFullscreen ? "退出全屏 (Esc)" : "全屏"}>
+              {isFullscreen ? <Minimize2 className="h-3 w-3" /> : <Maximize2 className="h-3 w-3" />}
             </Button>
           </div>
         </div>
@@ -385,9 +398,10 @@ export default function CrossAccountChart({
           </div>
         )}
         {!loading && !error && hasData && (
-          <ReactECharts ref={chartRef} option={option} style={{ height: `${height}px` }} notMerge={true} />
+          <ReactECharts ref={chartRef} option={option} style={{ height: `${isFullscreen ? fsHeight : height}px` }} notMerge={true} />
         )}
       </CardContent>
     </Card>
+    </div>
   )
 }
