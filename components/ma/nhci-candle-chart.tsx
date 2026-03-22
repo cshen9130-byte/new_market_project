@@ -2,10 +2,39 @@
 
 import { useCallback, useEffect, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { RefreshCw, TableIcon, BarChart2 } from "lucide-react"
+import { RefreshCw, TableIcon, BarChart2, Download } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+
+// ── CSV download helper ──────────────────────────────────────────────────────
+function downloadTableCsv(rows: ProductStat[], account: string) {
+  const headers = ["序号","代码","品种","总盈亏(元)","交易天数","日胜率(%)","盈亏比","夏普比率","最大回撤(%)","平仓笔数","首次交易","最近交易"]
+  const lines = [
+    headers.join(","),
+    ...rows.map((r, i) => [
+      i + 1,
+      r.product,
+      prodLabel(r.product),
+      r.totalPnl,
+      r.tradingDays,
+      (r.winRate * 100).toFixed(1),
+      r.profitFactor != null ? r.profitFactor.toFixed(2) : "",
+      r.sharpe != null ? r.sharpe.toFixed(2) : "",
+      (r.maxDdPct * 100).toFixed(1),
+      r.closeTrades,
+      r.firstDate,
+      r.lastDate,
+    ].join(","))
+  ]
+  const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8;" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${account.toUpperCase()}_全品种统计.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 // ── Product labels (for stats table) ─────────────────────────────────────────
 const PRODUCT_LABEL: Record<string, string> = {
@@ -407,6 +436,16 @@ export default function NhciCandleChart({
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
+            {account && showTable && tableData && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => downloadTableCsv(tableData, account)}
+                className="h-7 px-2 text-xs gap-1"
+              >
+                <Download className="h-3 w-3" />下载
+              </Button>
+            )}
             {account && (
               <Button
                 size="sm"

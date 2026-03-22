@@ -5,8 +5,9 @@ import dynamic from "next/dynamic"
 import { useCallback, useEffect, useState } from "react"
 import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, Maximize2, Minimize2, RefreshCw, TrendingDown, TrendingUp, Users } from "lucide-react"
 
-const NhciCandleChart   = dynamic(() => import("@/components/ma/nhci-candle-chart"),  { ssr: false })
-const AuTradingChart    = dynamic(() => import("@/components/ma/au-trading-chart"),    { ssr: false })
+const NhciCandleChart      = dynamic(() => import("@/components/ma/nhci-candle-chart"),       { ssr: false })
+const AuTradingChart       = dynamic(() => import("@/components/ma/au-trading-chart"),         { ssr: false })
+const CrossAccountChart    = dynamic(() => import("@/components/ma/cross-account-chart"),      { ssr: false })
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -450,6 +451,15 @@ export default function TraderAnalysisPage() {
                   onAccountChange={setSelectedAccount}
                 />
               </div>
+            </div>
+            {/* cross-account comparison chart — full width below the 2-col grid */}
+            <div className={isFullscreen ? "" : "col-span-2"}>
+              <CrossAccountChart
+                defaultProduct={selectedProduct}
+                from={viewFrom}
+                to={viewTo}
+                height={320}
+              />
             </div>
           </div>
         </>
