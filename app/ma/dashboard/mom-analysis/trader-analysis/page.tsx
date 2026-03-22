@@ -349,112 +349,138 @@ export default function TraderAnalysisPage() {
       {/* 品种交易回顾 */}
       {activeTab === "variety-review" && (
         <>
-          {/* shared quick-range bar */}
-          <div className="flex items-center gap-1.5">
-            {VIEW_RANGES.map(r => {
-              const isActive = viewRange === r.label
-              return (
-                <button
-                  key={r.label}
-                  onClick={() => {
-                    const f = r.from(); const t = r.to()
-                    setViewFrom(f); setViewTo(t); setViewRange(r.label)
-                  }}
-                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                    isActive
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                  }`}
-                >
-                  {r.label}
-                </button>
-              )
-            })}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="ml-auto h-7 w-7"
-              title={isFullscreen ? "退出全屏 (Esc)" : "全屏"}
-              onClick={() => setIsFullscreen(v => !v)}
+          {/* 快捷导航 */}
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-single-account")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >
-              {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-            </Button>
+              单品种，单账户 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-multi-account")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              单品种，多账户 ↓
+            </button>
           </div>
 
-          {/* chart grid — fullscreen overlay when isFullscreen */}
-          <div className={isFullscreen
-            ? "fixed inset-0 z-50 bg-background overflow-auto p-4 flex flex-col gap-4"
-            : "grid grid-cols-2 gap-4"
-          }>
-            {isFullscreen && (
-              <div className="flex items-center gap-1.5 flex-shrink-0">
-                {VIEW_RANGES.map(r => {
-                  const isActive = viewRange === r.label
-                  return (
-                    <button
-                      key={r.label}
-                      onClick={() => {
-                        const f = r.from(); const t = r.to()
-                        setViewFrom(f); setViewTo(t); setViewRange(r.label)
-                      }}
-                      className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                        isActive
-                          ? "border-primary bg-primary text-primary-foreground"
-                          : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                      }`}
-                    >
-                      {r.label}
-                    </button>
-                  )
-                })}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="ml-auto h-7 w-7"
-                  title="退出全屏 (Esc)"
-                  onClick={() => setIsFullscreen(false)}
-                >
-                  <Minimize2 className="h-4 w-4" />
-                </Button>
-              </div>
-            )}
+          {/* Section 1: 单品种，单账户 */}
+          <section id="section-single-account" className="space-y-4 pt-2">
+            <h2 className="text-lg font-semibold tracking-tight">单品种，单账户</h2>
 
-            <div className={isFullscreen ? "grid grid-cols-2 gap-4 flex-1 min-h-0" : "contents"}>
-              {/* left column: two equal-height charts stacked */}
-              <div className="flex flex-col gap-4">
-                <NhciCandleChart
-                  code="NHCI.NH"
-                  title="南华商品指数（NHCI.NH）日K线"
-                  height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
-                  from={viewFrom}
-                  to={viewTo}
-                />
-                <NhciCandleChart
-                  code={sectorInfo.code}
-                  title={sectorInfo.title}
-                  height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
-                  from={viewFrom}
-                  to={viewTo}
-                  fallbackCode={akshareCode}
-                  account={selectedAccount}
-                  onProductSelect={setSelectedProduct}
-                />
-              </div>
-              {/* right column: AU trading review chart */}
-              <div className="flex flex-col">
-                <AuTradingChart
-                  account="rx000"
-                  product={selectedProduct}
-                  chartHeight={isFullscreen ? window.innerHeight - 120 : 540}
-                  from={viewFrom}
-                  to={viewTo}
-                  onProductChange={setTradingProduct}
-                  onAccountChange={setSelectedAccount}
-                />
+            {/* shared quick-range bar */}
+            <div className="flex items-center gap-1.5">
+              {VIEW_RANGES.map(r => {
+                const isActive = viewRange === r.label
+                return (
+                  <button
+                    key={r.label}
+                    onClick={() => {
+                      const f = r.from(); const t = r.to()
+                      setViewFrom(f); setViewTo(t); setViewRange(r.label)
+                    }}
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                      isActive
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                )
+              })}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="ml-auto h-7 w-7"
+                title={isFullscreen ? "退出全屏 (Esc)" : "全屏"}
+                onClick={() => setIsFullscreen(v => !v)}
+              >
+                {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </Button>
+            </div>
+
+            {/* chart grid — fullscreen overlay when isFullscreen */}
+            <div className={isFullscreen
+              ? "fixed inset-0 z-50 bg-background overflow-auto p-4 flex flex-col gap-4"
+              : "grid grid-cols-2 gap-4"
+            }>
+              {isFullscreen && (
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {VIEW_RANGES.map(r => {
+                    const isActive = viewRange === r.label
+                    return (
+                      <button
+                        key={r.label}
+                        onClick={() => {
+                          const f = r.from(); const t = r.to()
+                          setViewFrom(f); setViewTo(t); setViewRange(r.label)
+                        }}
+                        className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                          isActive
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                        }`}
+                      >
+                        {r.label}
+                      </button>
+                    )
+                  })}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="ml-auto h-7 w-7"
+                    title="退出全屏 (Esc)"
+                    onClick={() => setIsFullscreen(false)}
+                  >
+                    <Minimize2 className="h-4 w-4" />
+                  </Button>
+                </div>
+              )}
+
+              <div className={isFullscreen ? "grid grid-cols-2 gap-4 flex-1 min-h-0" : "contents"}>
+                {/* left column: two equal-height charts stacked */}
+                <div className="flex flex-col gap-4">
+                  <NhciCandleChart
+                    code="NHCI.NH"
+                    title="南华商品指数（NHCI.NH）日K线"
+                    height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
+                    from={viewFrom}
+                    to={viewTo}
+                  />
+                  <NhciCandleChart
+                    code={sectorInfo.code}
+                    title={sectorInfo.title}
+                    height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
+                    from={viewFrom}
+                    to={viewTo}
+                    fallbackCode={akshareCode}
+                    account={selectedAccount}
+                    onProductSelect={setSelectedProduct}
+                  />
+                </div>
+                {/* right column: AU trading review chart */}
+                <div className="flex flex-col">
+                  <AuTradingChart
+                    account="rx000"
+                    product={selectedProduct}
+                    chartHeight={isFullscreen ? window.innerHeight - 120 : 540}
+                    from={viewFrom}
+                    to={viewTo}
+                    onProductChange={setTradingProduct}
+                    onAccountChange={setSelectedAccount}
+                  />
+                </div>
               </div>
             </div>
-            {/* cross-account comparison chart — right half; product candle — left half */}
-            <div className={isFullscreen ? "" : "col-span-2 grid grid-cols-2 gap-4"}>
+          </section>
+
+          {/* Section 2: 单品种，多账户 */}
+          <section id="section-multi-account" className="space-y-4 pt-2">
+            <h2 className="text-lg font-semibold tracking-tight">单品种，多账户</h2>
+            <div className="grid grid-cols-2 gap-4">
               <div>
                 <ProductCandleChart
                   product={selectedProduct}
@@ -464,14 +490,15 @@ export default function TraderAnalysisPage() {
                 />
               </div>
               <div>
-              <CrossAccountChart
-                defaultProduct={selectedProduct}
-                from={viewFrom}
-                to={viewTo}
-                height={320}
-              />
-            </div></div>
-          </div>
+                <CrossAccountChart
+                  defaultProduct={selectedProduct}
+                  from={viewFrom}
+                  to={viewTo}
+                  height={320}
+                />
+              </div>
+            </div>
+          </section>
         </>
       )}
 
