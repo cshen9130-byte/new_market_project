@@ -633,8 +633,8 @@ export default function NhciCandleChart({
               style={{ height: `${height}px` }}
               notMerge={true}
             />
-            {/* sub-chart toggle — floats inside the lower panel */}
-            <div style={{ position: "absolute", top: "73%", left: 68, zIndex: 10 }}
+            {/* sub-chart toggle — floats just above the lower panel */}
+            <div style={{ position: "absolute", top: "calc(73% - 22px)", left: 68, zIndex: 10 }}
               className="flex items-center gap-0 rounded border border-input bg-background/80 overflow-hidden text-xs backdrop-blur-sm shadow-sm">
               {(["vol", "atr", "rsi"] as SubChart[]).map(s => (
                 <button key={s} onClick={() => setSubChart(s)}

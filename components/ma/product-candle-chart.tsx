@@ -524,8 +524,8 @@ export default function ProductCandleChart({
         {!showTable && !loading && !error && data && data.data.length > 0 && (
           <div style={{ position: "relative" }}>
             <ReactECharts option={option} style={{ height: `${height}px` }} notMerge={true} />
-            {/* sub-chart toggle — floats inside the lower panel */}
-            <div style={{ position: "absolute", top: "76%", left: 62, zIndex: 10 }}
+            {/* sub-chart toggle — floats just above the lower panel */}
+            <div style={{ position: "absolute", top: "calc(76% - 22px)", left: 62, zIndex: 10 }}
               className="flex items-center gap-0 rounded border border-input bg-background/80 overflow-hidden text-xs backdrop-blur-sm shadow-sm">
               {(["vol", "atr", "rsi"] as SubChart[]).map(s => (
                 <button key={s} onClick={() => setSubChart(s)}
