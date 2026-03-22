@@ -141,9 +141,12 @@ export async function GET(req: Request) {
         const akCode = AKSHARE_CODE[product]
         if (!akCode) return [] as BmRow[]
         return query<BmRow>(
-          `SELECT trade_date::text                    AS date,
-                  CAST(close AS float8)               AS close,
-                  CAST(COALESCE(preclose, close) AS float8) AS preclose
+          `SELECT trade_date::text AS date,
+                  CAST(close AS float8) AS close,
+                  COALESCE(
+                    CAST(close AS float8) / NULLIF(1 + CAST(pct_change AS float8) / 100, 0),
+                    CAST(close AS float8)
+                  ) AS preclose
            FROM raw_akshare_futures_daily
            WHERE code = $1 AND trade_date BETWEEN $2 AND $3
            ORDER BY trade_date`,
