@@ -8,6 +8,7 @@ import { ArrowLeft, ChevronDown, ChevronUp, ChevronsUpDown, Download, Maximize2,
 const NhciCandleChart      = dynamic(() => import("@/components/ma/nhci-candle-chart"),       { ssr: false })
 const AuTradingChart       = dynamic(() => import("@/components/ma/au-trading-chart"),         { ssr: false })
 const CrossAccountChart    = dynamic(() => import("@/components/ma/cross-account-chart"),      { ssr: false })
+const ProductCandleChart   = dynamic(() => import("@/components/ma/product-candle-chart"),     { ssr: false })
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -452,8 +453,17 @@ export default function TraderAnalysisPage() {
                 />
               </div>
             </div>
-            {/* cross-account comparison chart — right half */}
-            <div className={isFullscreen ? "" : "col-span-2 grid grid-cols-2 gap-4"}><div /><div>
+            {/* cross-account comparison chart — right half; product candle — left half */}
+            <div className={isFullscreen ? "" : "col-span-2 grid grid-cols-2 gap-4"}>
+              <div>
+                <ProductCandleChart
+                  product={selectedProduct}
+                  from={viewFrom}
+                  to={viewTo}
+                  height={320}
+                />
+              </div>
+              <div>
               <CrossAccountChart
                 defaultProduct={selectedProduct}
                 from={viewFrom}
