@@ -90,7 +90,20 @@ const PRODUCT_LABEL: Record<string, string> = {
 function prodLabel(code: string) {
   return PRODUCT_LABEL[code] ? `${PRODUCT_LABEL[code]}(${code})` : code
 }
+// ── Quick ranges ────────────────────────────────────────────────────────────
 
+function isoToday() { return new Date().toISOString().slice(0, 10) }
+function isoMonthOffset(m: number) {
+  const d = new Date(); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10)
+}
+
+const QUICK_RANGES = [
+  { label: "近一月", from: () => isoMonthOffset(-1),  to: () => isoToday() },
+  { label: "近三月", from: () => isoMonthOffset(-3),  to: () => isoToday() },
+  { label: "近六月", from: () => isoMonthOffset(-6),  to: () => isoToday() },
+  { label: "近一年", from: () => isoMonthOffset(-12), to: () => isoToday() },
+  { label: "全部",   from: () => "2025-01-01",         to: () => isoToday() },
+]
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -106,8 +119,8 @@ export default function ProductCandleChart({
   to: propTo,
   height = 360,
 }: Props) {
-  const today     = new Date().toISOString().slice(0, 10)
-  const sixMonAgo = (() => { const d = new Date(); d.setMonth(d.getMonth() - 6); return d.toISOString().slice(0, 10) })()
+  const [fromDate, setFromDate] = useState(() => propFrom ?? isoMonthOffset(-6))
+  const [toDate,   setToDate]   = useState(() => propTo   ?? isoToday())
 
   const [data,         setData]         = useState<ApiData | null>(null)
   const [loading,      setLoading]      = useState(false)
@@ -151,14 +164,21 @@ export default function ProductCandleChart({
     }
   }, [tableData])
 
-  // Reload whenever product / date range changes from parent
+  // Sync parent-driven date props into local state
   useEffect(() => {
-    load(propProduct, propFrom ?? sixMonAgo, propTo ?? today)
-    // clear stale table so it reloads for new product
+    if (propFrom && propTo) {
+      setFromDate(propFrom)
+      setToDate(propTo)
+      load(propProduct, propFrom, propTo)
+    }
+  }, [propFrom, propTo]) // eslint-disable-line
+
+  // Reload (and clear table) when selected product changes
+  useEffect(() => {
+    load(propProduct, fromDate, toDate)
     setTableData(null)
     setTableError(null)
-    if (showTable) loadTable(propProduct)
-  }, [propProduct, propFrom, propTo]) // eslint-disable-line
+  }, [propProduct]) // eslint-disable-line
 
   // ── ECharts option ──────────────────────────────────────────────────────────
 
@@ -262,27 +282,64 @@ export default function ProductCandleChart({
 
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className="pb-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium">
             {showTable
               ? `${prodLabel(propProduct)} 全账户全周期统计表`
               : `${prodLabel(propProduct)} — 主连K线`}
           </CardTitle>
-          <div className="flex items-center gap-1.5">
-            {showTable && tableData && (
-              <Button size="sm" variant="outline" onClick={() => downloadTableCsv(tableData, propProduct)} className="h-7 px-2 text-xs gap-1">
-                <Download className="h-3 w-3" />下载
-              </Button>
-            )}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* quick-range buttons */}
+            <div className="flex items-center gap-1">
+              {QUICK_RANGES.map(r => {
+                const active = fromDate === r.from() && toDate === r.to()
+                return (
+                  <button
+                    key={r.label}
+                    onClick={() => {
+                      const f = r.from(); const t = r.to()
+                      setFromDate(f); setToDate(t)
+                      load(propProduct, f, t)
+                    }}
+                    className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                      active
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                )
+              })}
+            </div>
+            {/* manual date pickers */}
+            <div className="flex items-center gap-1 text-xs">
+              <input
+                type="date" value={fromDate}
+                onChange={e => setFromDate(e.target.value)}
+                className="rounded border border-input bg-background px-2 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+              <span className="text-muted-foreground">—</span>
+              <input
+                type="date" value={toDate}
+                onChange={e => setToDate(e.target.value)}
+                className="rounded border border-input bg-background px-2 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
             <Button
               size="sm" variant="outline"
-              onClick={() => load(propProduct, propFrom ?? sixMonAgo, propTo ?? today)}
+              onClick={() => load(propProduct, fromDate, toDate)}
               disabled={loading}
               className="h-7 w-7 p-0"
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
+            {showTable && tableData && (
+              <Button size="sm" variant="outline" onClick={() => downloadTableCsv(tableData, propProduct)} className="h-7 px-2 text-xs gap-1">
+                <Download className="h-3 w-3" />下载
+              </Button>
+            )}
             <Button
               size="sm"
               variant={showTable ? "default" : "outline"}
