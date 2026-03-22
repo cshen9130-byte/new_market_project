@@ -186,6 +186,8 @@ export default function NhciCandleChart({
   const [tableLoading, setTableLoading] = useState(false)
   const [tableError,   setTableError]   = useState<string | null>(null)
   const [subChart,     setSubChart]     = useState<SubChart>("vol")
+  const [sortKey,      setSortKey]      = useState<string>("totalPnl")
+  const [sortDir,      setSortDir]      = useState<"asc" | "desc">("desc")
 
   // When account prop changes, auto-refresh table if visible; else clear stale cache
   useEffect(() => {
@@ -461,7 +463,34 @@ export default function NhciCandleChart({
         : []),
     ],
   }
+  // ── Sorted table data + sort helpers ───────────────────────────────────────────────
 
+  const sortedTableData = tableData
+    ? [...tableData].sort((a, b) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const av = (a as any)[sortKey] ?? -Infinity
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bv = (b as any)[sortKey] ?? -Infinity
+        return sortDir === "desc" ? Number(bv) - Number(av) : Number(av) - Number(bv)
+      })
+    : null
+
+  const sortTh = (col: string, label: string, align: "left" | "right" | "center" = "right") => {
+    const active = sortKey === col
+    return (
+      <th
+        onClick={() => {
+          if (sortKey === col) setSortDir(d => d === "asc" ? "desc" : "asc")
+          else { setSortKey(col); setSortDir("desc") }
+        }}
+        className={`px-2 py-1.5 text-${align} font-medium sticky top-0 z-10 bg-card cursor-pointer select-none whitespace-nowrap ${
+          active ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+        }`}
+      >
+        {label}<span className={`text-[9px] ml-0.5 ${active ? "" : "opacity-35"}`}>{active ? (sortDir === "desc" ? "▼" : "▲") : "⇅"}</span>
+      </th>
+    )
+  }
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -564,22 +593,22 @@ export default function NhciCandleChart({
             {!tableLoading && !tableError && tableData && (
               <table className="w-full text-xs border-collapse">
                 <thead>
-                  <tr className="text-muted-foreground">
-                    <th className="px-2 py-1.5 text-center font-medium sticky top-0 z-10 bg-card">序号</th>
-                    <th className="px-2 py-1.5 text-left font-medium sticky top-0 z-10 bg-card">品种</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">总盈亏(元)</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">交易天数</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">日胜率</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">盈亏比</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">夏普比率</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">最大回撤</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">平仓笔数</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">首次交易</th>
-                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">最近交易</th>
+                  <tr>
+                    <th className="px-2 py-1.5 text-center font-medium sticky top-0 z-10 bg-card text-muted-foreground">序号</th>
+                    <th className="px-2 py-1.5 text-left font-medium sticky top-0 z-10 bg-card text-muted-foreground">品种</th>
+                    {sortTh("totalPnl",     "总盈亏(元)")}
+                    {sortTh("tradingDays",  "交易天数")}
+                    {sortTh("winRate",      "日胜率")}
+                    {sortTh("profitFactor", "盈亏比")}
+                    {sortTh("sharpe",       "夏普比率")}
+                    {sortTh("maxDdPct",     "最大回撤")}
+                    {sortTh("closeTrades",  "平仓笔数")}
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card text-muted-foreground">首次交易</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card text-muted-foreground">最近交易</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {tableData.map((r, i) => {
+                  {(sortedTableData ?? []).map((r, i) => {
                     const pnlColor = r.totalPnl > 0 ? "text-red-500" : r.totalPnl < 0 ? "text-green-600" : ""
                     return (
                       <tr key={r.product} className={`border-b border-border/50 hover:bg-muted/40 ${i % 2 === 0 ? "" : "bg-muted/20"} ${onProductSelect ? "cursor-pointer" : ""}`} onClick={() => onProductSelect?.(r.product)}>
