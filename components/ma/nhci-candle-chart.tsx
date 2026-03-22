@@ -96,6 +96,7 @@ interface Props {
   to?:           string
   fallbackCode?: string   // akshare code to use when NH index has no data
   account?:      string   // when provided, enables the per-product stats table toggle
+  onProductSelect?: (product: string) => void
 }
 
 export default function NhciCandleChart({
@@ -106,6 +107,7 @@ export default function NhciCandleChart({
   to:   propTo,
   fallbackCode,
   account,
+  onProductSelect,
 }: Props) {
   const [fromDate, setFromDate] = useState(() => propFrom ?? isoMonthOffset(-6))
   const [toDate,   setToDate]   = useState(() => propTo   ?? isoToday())
@@ -352,7 +354,7 @@ export default function NhciCandleChart({
       <CardHeader className="pb-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium">
-            {title}
+            {showTable && account ? `${account.toUpperCase()} 全品种全周期统计表` : title}
           </CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             {/* quick-range buttons */}
@@ -455,7 +457,7 @@ export default function NhciCandleChart({
                   {tableData.map((r, i) => {
                     const pnlColor = r.totalPnl > 0 ? "text-red-500" : r.totalPnl < 0 ? "text-green-600" : ""
                     return (
-                      <tr key={r.product} className={`border-b border-border/50 hover:bg-muted/40 ${i % 2 === 0 ? "" : "bg-muted/20"}`}>
+                      <tr key={r.product} className={`border-b border-border/50 hover:bg-muted/40 ${i % 2 === 0 ? "" : "bg-muted/20"} ${onProductSelect ? "cursor-pointer" : ""}`} onClick={() => onProductSelect?.(r.product)}>
                         <td className="px-2 py-1.5 text-center text-muted-foreground">{i + 1}</td>
                         <td className="px-2 py-1.5 font-medium whitespace-nowrap">{prodLabel(r.product)}</td>
                         <td className={`px-2 py-1.5 text-right font-medium ${pnlColor}`}>

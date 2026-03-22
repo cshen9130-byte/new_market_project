@@ -150,7 +150,7 @@ interface Props {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", bench: defaultBench = "nh", from: propFrom, to: propTo, chartHeight = 540, initialCapital = 1_000_000, onProductChange, onAccountChange }: Props) {
+export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "mom", bench: defaultBench = "dominant", from: propFrom, to: propTo, chartHeight = 540, initialCapital = 1_000_000, onProductChange, onAccountChange }: Props) {
   const [from, setFrom] = useState(() => propFrom ?? isoMonthOffset(-6))
   const [to,   setTo]   = useState(() => propTo   ?? isoToday())
   const [account, setAccount] = useState(defaultAccount)
@@ -194,6 +194,15 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
   }, [])
 
   useEffect(() => { load(from, to, account, product, method, bench) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // React to externally-driven product changes (e.g. clicking a row in the stats table)
+  useEffect(() => {
+    if (defaultProduct && defaultProduct !== product) {
+      setProduct(defaultProduct)
+      onProductChange?.(defaultProduct)
+      load(from, to, account, defaultProduct, method, bench)
+    }
+  }, [defaultProduct]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const [isFullscreen, setIsFullscreen] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
