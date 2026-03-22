@@ -221,11 +221,31 @@ export default function TraderAnalysisPage() {
   }
   const DEFAULT_SECTOR = { code: "NHCI.NH", title: "南华商品指数（NHCI.NH）日K线" }
 
+  // Maps product code → continuous contract code in raw_akshare_futures_daily (fallback)
+  const PRODUCT_TO_AKSHARE: Record<string, string> = {
+    A:"A0.DCE",   AD:"AD0.SHF",  AG:"AG0.SHF",  AL:"AL0.SHF",  AO:"AO0.SHF",  AP:"AP0.CZC",
+    AU:"AU0.SHF", B:"B0.DCE",    BB:"BB0.DCE",  BC:"BCM.INE",  BR:"BR0.SHF",  BU:"BU0.SHF",
+    BZ:"BZ0.DCE", C:"C0.DCE",    CF:"CF0.CZC",  CJ:"CJ0.CZC",  CS:"CS0.DCE",  CU:"CU0.SHF",
+    CY:"CY0.CZC", EB:"EB0.DCE",  EC:"ECM.INE",  EG:"EG0.DCE",  FB:"FB0.DCE",  FG:"FG0.CZC",
+    FU:"FU0.SHF", HC:"HC0.SHF",  I:"I0.DCE",    IC:"IC0.CFE",  IF:"IF0.CFE",  IH:"IH0.CFE",
+    IM:"IM0.CFE", J:"J0.DCE",    JD:"JD0.DCE",  JM:"JM0.DCE",  JR:"JR0.CZC",  L:"L0.DCE",
+    LC:"LCM.GFE", LF:"LF0.DCE",  LG:"LG0.DCE",  LH:"LH0.DCE",  LR:"LR0.CZC",  LU:"LUM.INE",
+    M:"M0.DCE",   MA:"MA0.CZC",  NI:"NI0.SHF",  NR:"NRM.INE",  OI:"OI0.CZC",  OP:"OP0.SHF",
+    P:"P0.DCE",   PB:"PB0.SHF",  PD:"PDM.GFE",  PF:"PF0.CZC",  PG:"PG0.DCE",  PK:"PK0.CZC",
+    PL:"PL0.CZC", PM:"PM0.CZC",  PP:"PP0.DCE",  PR:"PR0.CZC",  PS:"PSM.GFE",  PT:"PTM.GFE",
+    PX:"PX0.CZC", RB:"RB0.SHF",  RI:"RI0.CZC",  RM:"RM0.CZC",  RR:"RR0.DCE",  RS:"RS0.CZC",
+    RU:"RU0.SHF", SA:"SA0.CZC",  SC:"SCM.INE",  SF:"SF0.CZC",  SH:"SH0.CZC",  SI:"SIM.GFE",
+    SM:"SM0.CZC", SN:"SN0.SHF",  SP:"SP0.SHF",  SR:"SR0.CZC",  SS:"SS0.SHF",  TA:"TA0.CZC",
+    T:"T0.CFE",   TF:"TF0.CFE",  TL:"TL0.CFE",  TS:"TS0.CFE",  UR:"UR0.CZC",  V:"V0.DCE",
+    VF:"VF0.DCE", WH:"WH0.CZC",  WR:"WR0.SHF",  Y:"Y0.DCE",   ZC:"ZC0.CZC",  ZN:"ZN0.SHF",
+  }
+
   const [tradingProduct, setTradingProduct] = useState("AU")
   const sectorInfo = (() => {
-    const sector = Object.entries(SECTOR_RULES).find(([, prods]) => prods.includes(tradingProduct))?.[0]
-    return (sector && SECTOR_TO_NH[sector]) ?? DEFAULT_SECTOR
+    const sector = Object.entries(SECTOR_RULES).find(([, prods]) => prods.includes(tradingProduct))?.[0] ?? null
+    return (sector ? SECTOR_TO_NH[sector] : null) ?? DEFAULT_SECTOR
   })()
+  const akshareCode = PRODUCT_TO_AKSHARE[tradingProduct]
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setIsFullscreen(false) }
@@ -411,6 +431,7 @@ export default function TraderAnalysisPage() {
                   height={isFullscreen ? Math.floor((window.innerHeight - 160) / 2) : 280}
                   from={viewFrom}
                   to={viewTo}
+                  fallbackCode={akshareCode}
                 />
               </div>
               {/* right column: AU trading review chart */}

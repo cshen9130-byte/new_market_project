@@ -54,11 +54,12 @@ const QUICK_RANGES = [
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
-  code?:   string
-  title?:  string
-  height?: number
-  from?:   string   // controlled: parent can drive the date range
-  to?:     string
+  code?:         string
+  title?:        string
+  height?:       number
+  from?:         string   // controlled: parent can drive the date range
+  to?:           string
+  fallbackCode?: string   // akshare code to use when NH index has no data (e.g. "AU0.SHF")
 }
 
 export default function NhciCandleChart({
@@ -67,6 +68,7 @@ export default function NhciCandleChart({
   height = 300,
   from: propFrom,
   to:   propTo,
+  fallbackCode,
 }: Props) {
   const [fromDate, setFromDate] = useState(() => propFrom ?? isoMonthOffset(-6))
   const [toDate,   setToDate]   = useState(() => propTo   ?? isoToday())
@@ -82,6 +84,7 @@ export default function NhciCandleChart({
       if (from) p.set("from", from)
       if (to)   p.set("to",   to)
       p.set("code", loadCode)
+      if (fallbackCode) p.set("fallbackCode", fallbackCode)
       const res = await fetch(`/ma/api/mom-analysis/nhci-candle?${p}`)
       const d: ApiResponse = await res.json()
       if (!d.ok) throw new Error(d.error || "加载失败")
