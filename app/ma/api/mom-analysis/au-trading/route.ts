@@ -61,8 +61,8 @@ const PRODUCT_CONFIG: Record<string, { nhCode: string | null; exchange: string; 
   // ── Precious metals ────────────────────────────────────────────────────────
   AU: { nhCode: "NHAU.NH",  exchange: "SHF",  multiplier: 1000 }, // 黄金 (1000g/lot, yuan/g)
   AG: { nhCode: "NHAG.NH",  exchange: "SHF",  multiplier: 15   }, // 白银 (15kg/lot, yuan/kg)
-  PT: { nhCode: null,        exchange: "SHF",  multiplier: 500  }, // 铂 (500g/lot)
-  PD: { nhCode: null,        exchange: "SHF",  multiplier: 500  }, // 钯 (500g/lot)
+  PT: { nhCode: null,        exchange: "GFE",  multiplier: 500  }, // 铂 (500g/lot, Guangzhou Futures Exchange)
+  PD: { nhCode: null,        exchange: "GFE",  multiplier: 500  }, // 钯 (500g/lot)
   // ── Base metals ────────────────────────────────────────────────────────────
   CU: { nhCode: "NHCU.NH",  exchange: "SHF",  multiplier: 5    }, // 沪铜
   BC: { nhCode: "NHBC.NH",  exchange: "INE",  multiplier: 5    }, // 国际铜
@@ -118,6 +118,16 @@ const PRODUCT_CONFIG: Record<string, { nhCode: string | null; exchange: string; 
   V:  { nhCode: "NHV.NH",   exchange: "DCE",  multiplier: 5    }, // PVC
   UR: { nhCode: "NHUR.NH",  exchange: "ZCE",  multiplier: 20   }, // 尿素
   MA: { nhCode: "NHMA.NH",  exchange: "ZCE",  multiplier: 10   }, // 甲醇
+  // ── CFFEX — stock index futures ────────────────────────────────────────────
+  IH: { nhCode: null,        exchange: "CFE",  multiplier: 300  }, // 上证50股指期货
+  IF: { nhCode: null,        exchange: "CFE",  multiplier: 300  }, // 沪深300股指期货
+  IC: { nhCode: null,        exchange: "CFE",  multiplier: 200  }, // 中证500股指期货
+  IM: { nhCode: null,        exchange: "CFE",  multiplier: 200  }, // 中证1000股指期货
+  // ── CFFEX — treasury bond futures ──────────────────────────────────────────
+  TS: { nhCode: null,        exchange: "CFE",  multiplier: 20000 }, // 2年期国债期货
+  TF: { nhCode: null,        exchange: "CFE",  multiplier: 10000 }, // 5年期国债期货
+  T:  { nhCode: null,        exchange: "CFE",  multiplier: 10000 }, // 10年期国债期货
+  TL: { nhCode: null,        exchange: "CFE",  multiplier: 10000 }, // 30年期国债期货
 }
 
 // Normalise CTP-format contract to <PRODUCT><EXPIRY>.<EXCHANGE>
@@ -472,19 +482,24 @@ export async function GET(req: Request) {
 
     // ── Snapshot intraday peak (max abs) net lots per day ─────────────────────
     // EOD lots are 0 for day-traders, so we show the peak long or short during the day.
+    // Use union of price dates + trade dates so products absent from raw_futures_contracts_daily
+    // (e.g. PT/GFE products) still produce a position history.
+    const allPositionDates = [...new Set([...allTradingDates, ...tradesByDate.keys()])].sort()
     const positions3 = new Map<string, number>()
     const positionHistory: { date: string; totalLots: number }[] = []
-    for (const date of allTradingDates) {
+    for (const date of allPositionDates) {
       const todayTrades = tradesByDate.get(date) ?? []
       // snapshot before trades = previous EOD
       const beforeLots = [...positions3.values()].reduce((s, v) => s + v, 0)
-      // apply trades
+      // Walk through each trade and track running net lots to capture true intraday peak.
+      // Simply comparing before vs after misses day-traders who open AND close intraday
+      // (both snapshots = 0, but peak was non-zero).
+      let peakLots = beforeLots
       for (const t of todayTrades) {
         positions3.set(t.contract, (positions3.get(t.contract) || 0) + t.sign * t.lots)
+        const running = [...positions3.values()].reduce((s, v) => s + v, 0)
+        if (Math.abs(running) > Math.abs(peakLots)) peakLots = running
       }
-      const afterLots = [...positions3.values()].reduce((s, v) => s + v, 0)
-      // use whichever is larger in abs (captures the peak holding during the day)
-      const peakLots = Math.abs(beforeLots) >= Math.abs(afterLots) ? beforeLots : afterLots
 
       if (date >= from) {
         positionHistory.push({ date, totalLots: peakLots })
