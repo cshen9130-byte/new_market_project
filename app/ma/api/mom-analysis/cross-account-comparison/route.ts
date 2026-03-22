@@ -101,7 +101,7 @@ export async function GET(req: Request) {
          ORDER BY 1, 2`,
         [product, from, to],
       ),
-      // Dominant contract (highest OI) per day as benchmark
+      // Dominant contract (highest OI) per day as benchmark — with akshare fallback
       query<BmRow>(
         `WITH ranked AS (
            SELECT trade_date::text AS date,
@@ -117,7 +117,39 @@ export async function GET(req: Request) {
          )
          SELECT date, close, preclose FROM ranked WHERE rn = 1 ORDER BY date`,
         [product, from, to],
-      ).catch(() => [] as BmRow[]),
+      ).then(async (rows) => {
+        if (rows.length > 0) return rows
+        // Fallback: akshare continuous contract (handles ZCE and other exchanges
+        // whose data may be absent from raw_futures_contracts_daily)
+        const AKSHARE_CODE: Record<string, string> = {
+          A:"A0.DCE",   AD:"AD0.SHF",  AG:"AG0.SHF",  AL:"AL0.SHF",  AO:"AO0.SHF",  AP:"AP0.CZC",
+          AU:"AU0.SHF", B:"B0.DCE",    BB:"BB0.DCE",  BC:"BCM.INE",  BR:"BR0.SHF",  BU:"BU0.SHF",
+          BZ:"BZ0.DCE", C:"C0.DCE",    CF:"CF0.CZC",  CJ:"CJ0.CZC",  CS:"CS0.DCE",  CU:"CU0.SHF",
+          CY:"CY0.CZC", EB:"EB0.DCE",  EC:"ECM.INE",  EG:"EG0.DCE",  FB:"FB0.DCE",  FG:"FG0.CZC",
+          FU:"FU0.SHF", HC:"HC0.SHF",  I:"I0.DCE",    IC:"IC0.CFE",  IF:"IF0.CFE",  IH:"IH0.CFE",
+          IM:"IM0.CFE", J:"J0.DCE",    JD:"JD0.DCE",  JM:"JM0.DCE",  JR:"JR0.CZC",  L:"L0.DCE",
+          LC:"LCM.GFE", LG:"LG0.DCE",  LH:"LH0.DCE",  LR:"LR0.CZC",  LU:"LUM.INE",
+          M:"M0.DCE",   MA:"MA0.CZC",  NI:"NI0.SHF",  NR:"NRM.INE",  OI:"OI0.CZC",  OP:"OP0.SHF",
+          P:"P0.DCE",   PB:"PB0.SHF",  PF:"PF0.CZC",  PG:"PG0.DCE",  PK:"PK0.CZC",
+          PL:"PL0.CZC", PM:"PM0.CZC",  PP:"PP0.DCE",  PR:"PR0.CZC",
+          PX:"PX0.CZC", RB:"RB0.SHF",  RI:"RI0.CZC",  RM:"RM0.CZC",  RR:"RR0.DCE",  RS:"RS0.CZC",
+          RU:"RU0.SHF", SA:"SA0.CZC",  SC:"SCM.INE",  SF:"SF0.CZC",  SH:"SH0.CZC",
+          SM:"SM0.CZC", SN:"SN0.SHF",  SP:"SP0.SHF",  SR:"SR0.CZC",  SS:"SS0.SHF",  TA:"TA0.CZC",
+          T:"T0.CFE",   TF:"TF0.CFE",  TL:"TL0.CFE",  TS:"TS0.CFE",  UR:"UR0.CZC",  V:"V0.DCE",
+          WH:"WH0.CZC", WR:"WR0.SHF",  Y:"Y0.DCE",   ZC:"ZC0.CZC",  ZN:"ZN0.SHF",
+        }
+        const akCode = AKSHARE_CODE[product]
+        if (!akCode) return [] as BmRow[]
+        return query<BmRow>(
+          `SELECT trade_date::text                    AS date,
+                  CAST(close AS float8)               AS close,
+                  CAST(COALESCE(preclose, close) AS float8) AS preclose
+           FROM raw_akshare_futures_daily
+           WHERE code = $1 AND trade_date BETWEEN $2 AND $3
+           ORDER BY trade_date`,
+          [akCode, from, to],
+        ).catch(() => [] as BmRow[])
+      }).catch(() => [] as BmRow[]),
     ])
 
     // ── Merge PnL by account + date ──────────────────────────────────────────

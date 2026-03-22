@@ -452,15 +452,15 @@ export default function TraderAnalysisPage() {
                 />
               </div>
             </div>
-            {/* cross-account comparison chart — full width below the 2-col grid */}
-            <div className={isFullscreen ? "" : "col-span-2"}>
+            {/* cross-account comparison chart — right half */}
+            <div className={isFullscreen ? "" : "col-span-2 grid grid-cols-2 gap-4"}><div /><div>
               <CrossAccountChart
                 defaultProduct={selectedProduct}
                 from={viewFrom}
                 to={viewTo}
                 height={320}
               />
-            </div>
+            </div></div>
           </div>
         </>
       )}

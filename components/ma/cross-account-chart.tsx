@@ -51,6 +51,33 @@ function prodLabel(code: string) {
   return PRODUCT_LABEL[code] ? `${PRODUCT_LABEL[code]}(${code})` : code
 }
 
+// ── Quick ranges ─────────────────────────────────────────────────────────────
+
+function isoToday() { return new Date().toISOString().slice(0, 10) }
+function isoMonthOffset(m: number) {
+  const d = new Date(); d.setMonth(d.getMonth() + m); return d.toISOString().slice(0, 10)
+}
+
+const QUICK_RANGES = [
+  { label: "近一月", from: () => isoMonthOffset(-1),  to: () => isoToday() },
+  { label: "近三月", from: () => isoMonthOffset(-3),  to: () => isoToday() },
+  { label: "近六月", from: () => isoMonthOffset(-6),  to: () => isoToday() },
+  { label: "近一年", from: () => isoMonthOffset(-12), to: () => isoToday() },
+  { label: "全部",   from: () => "2025-01-01",         to: () => isoToday() },
+]
+
+const SECTOR_RULES: Record<string, Set<string>> = {
+  "农产":    new Set(["C","CS","WH","PM","RR","RI","JR","LR","A","B","M","Y","RM","OI","RS","PK","P","SR","CF","CY","AP","CJ","LH","JD","LG","SP","OP"]),
+  "贵金属":  new Set(["AU","AG","PT","PD"]),
+  "有色":    new Set(["CU","BC","AL","AO","AD","ZN","PB","NI","SN"]),
+  "新能源":  new Set(["LC","PS","SI"]),
+  "黑色":    new Set(["I","SF","SM","RB","HC","SS","WR","JM","J","ZC","FG","BB","FB"]),
+  "能源化工":new Set(["SC","FU","LU","PG","BU","TA","EG","PF","PR","PL","PP","L","BZ","PX","EB","RU","BR","NR","SA","SH","V","UR","MA"]),
+  "航运":    new Set(["EC"]),
+  "股指":    new Set(["IH","IF","IC","IM"]),
+  "国债":    new Set(["TS","TF","T","TL"]),
+}
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -70,11 +97,24 @@ export default function CrossAccountChart({
 }: Props) {
   const [product,  setProduct]  = useState(defaultProduct)
   const [inputVal, setInputVal] = useState(defaultProduct)
-  const [from,     setFrom]     = useState(propFrom ?? "2025-01-01")
-  const [to,       setTo]       = useState(propTo   ?? new Date().toISOString().slice(0, 10))
+  const [from,     setFrom]     = useState(propFrom ?? isoMonthOffset(-6))
+  const [to,       setTo]       = useState(propTo   ?? isoToday())
+  const [activeRange, setActiveRange] = useState("近六月")
+  const [sector,   setSector]   = useState("全部")
+  const [availableProducts, setAvailableProducts] = useState<string[]>([])
   const [data,     setData]     = useState<ApiData | null>(null)
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
+
+  // Fetch available products from meta endpoint
+  useEffect(() => {
+    fetch("/ma/api/mom-analysis/au-trading/meta")
+      .then(r => r.json())
+      .then((m: { ok: boolean; products?: string[] }) => {
+        if (m.ok && m.products?.length) setAvailableProducts(m.products)
+      })
+      .catch(() => {})
+  }, [])
 
   const load = useCallback(async (f: string, t: string, prod: string) => {
     setLoading(true)
@@ -181,7 +221,11 @@ export default function CrossAccountChart({
         itemHeight: 8,
         pageIconSize: 10,
       },
-      grid: { left: 58, right: 16, top: 12, bottom: 52 },
+      grid: { left: 58, right: 16, top: 12, bottom: 72 },
+      dataZoom: [
+        { type: "inside", start: 0, end: 100 },
+        { type: "slider",  bottom: 28, height: 18, borderColor: "transparent", fillerColor: "rgba(148,163,184,0.15)", handleStyle: { color: "#94a3b8" }, dataBackground: { lineStyle: { color: "#94a3b8" }, areaStyle: { color: "rgba(148,163,184,0.1)" } } },
+      ],
       xAxis: {
         type: "category",
         data: allDates,
@@ -217,36 +261,87 @@ export default function CrossAccountChart({
   return (
     <Card>
       <CardHeader className="pb-2">
+        {/* Row 1: title + quick-ranges + date pickers + refresh */}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-sm font-medium">
             {prodLabel(product)} — 各账户权益累计涨跌% vs 主连基准
           </CardTitle>
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {QUICK_RANGES.map(r => (
+              <button
+                key={r.label}
+                onClick={() => {
+                  const f = r.from(); const t = r.to()
+                  setFrom(f); setTo(t); setActiveRange(r.label)
+                  load(f, t, product)
+                }}
+                className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  activeRange === r.label
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+            <span className="text-muted-foreground/40 text-xs">|</span>
             <input
-              value={inputVal}
-              onChange={(e) => setInputVal(e.target.value.toUpperCase())}
-              onKeyDown={(e) => { if (e.key === "Enter") handleConfirm() }}
-              placeholder="品种代码"
-              className="h-7 w-20 rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              type="date" value={from}
+              onChange={(e) => { setFrom(e.target.value); setActiveRange("") }}
+              className="h-7 rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
             />
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-7 px-2 text-xs"
-              onClick={handleConfirm}
-            >
-              确认
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => load(from, to, product)}
-              disabled={loading}
-              className="h-7 w-7 p-0"
-            >
+            <span className="text-muted-foreground text-xs">—</span>
+            <input
+              type="date" value={to}
+              onChange={(e) => { setTo(e.target.value); setActiveRange("") }}
+              className="h-7 rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setActiveRange(""); load(from, to, product) }}>查询</Button>
+            <Button size="sm" variant="outline" onClick={() => load(from, to, product)} disabled={loading} className="h-7 w-7 p-0">
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
           </div>
+        </div>
+        {/* Row 2: sector filter + product select + text input + confirm */}
+        <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+          <span className="text-xs text-muted-foreground">板块:</span>
+          <select
+            value={sector}
+            onChange={e => {
+              const s = e.target.value
+              setSector(s)
+              if (s !== "全部" && SECTOR_RULES[s] && !SECTOR_RULES[s].has(product)) {
+                const base = availableProducts.length ? availableProducts : [product]
+                const first = base.find(p => SECTOR_RULES[s]?.has(p))
+                if (first) { setProduct(first); setInputVal(first); load(from, to, first) }
+              }
+            }}
+            className="h-7 rounded border border-input bg-background px-2 text-xs"
+          >
+            <option value="全部">全部</option>
+            {Object.keys(SECTOR_RULES).map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select
+            value={product}
+            onChange={e => { const p = e.target.value; setProduct(p); setInputVal(p); load(from, to, p) }}
+            className="h-7 rounded border border-input bg-background px-2 text-xs w-32 truncate"
+          >
+            {(() => {
+              const base = availableProducts.length ? availableProducts : [product]
+              const filtered = sector === "全部" ? base : base.filter(p => SECTOR_RULES[sector]?.has(p))
+              const list = filtered.length ? filtered : base
+              return list.map(p => <option key={p} value={p}>{prodLabel(p)}</option>)
+            })()}
+          </select>
+          <span className="text-muted-foreground/40 text-xs">|</span>
+          <input
+            value={inputVal}
+            onChange={(e) => setInputVal(e.target.value.toUpperCase())}
+            onKeyDown={(e) => { if (e.key === "Enter") handleConfirm() }}
+            placeholder="品种代码"
+            className="h-7 w-20 rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={handleConfirm}>确认</Button>
         </div>
       </CardHeader>
       <CardContent className="px-2 pb-3">
