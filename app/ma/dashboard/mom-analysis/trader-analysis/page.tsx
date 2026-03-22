@@ -460,7 +460,7 @@ export default function TraderAnalysisPage() {
                   product={selectedProduct}
                   from={viewFrom}
                   to={viewTo}
-                  height={320}
+                  height={360}
                 />
               </div>
               <div>
