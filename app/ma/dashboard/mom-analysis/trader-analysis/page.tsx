@@ -368,7 +368,10 @@ export default function TraderAnalysisPage() {
 
           {/* Section 1: 单品种，单账户 */}
           <section id="section-single-account" className="space-y-4 pt-2">
-            <h2 className="text-lg font-semibold tracking-tight">单品种，单账户</h2>
+            <div className="flex items-center gap-3 scroll-mt-4">
+              <h2 className="text-lg font-semibold tracking-tight">单品种，单账户</h2>
+              <div className="flex-1 border-t border-border" />
+            </div>
 
             {/* shared quick-range bar */}
             <div className="flex items-center gap-1.5">
@@ -479,7 +482,10 @@ export default function TraderAnalysisPage() {
 
           {/* Section 2: 单品种，多账户 */}
           <section id="section-multi-account" className="space-y-4 pt-2">
-            <h2 className="text-lg font-semibold tracking-tight">单品种，多账户</h2>
+            <div className="flex items-center gap-3 scroll-mt-4">
+              <h2 className="text-lg font-semibold tracking-tight">单品种，多账户</h2>
+              <div className="flex-1 border-t border-border" />
+            </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <ProductCandleChart
