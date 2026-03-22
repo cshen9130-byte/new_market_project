@@ -241,6 +241,7 @@ export default function TraderAnalysisPage() {
   }
 
   const [tradingProduct, setTradingProduct] = useState("AU")
+  const [selectedAccount, setSelectedAccount] = useState("rx000")
   const sectorInfo = (() => {
     const sector = Object.entries(SECTOR_RULES).find(([, prods]) => prods.includes(tradingProduct))?.[0] ?? null
     return (sector ? SECTOR_TO_NH[sector] : null) ?? DEFAULT_SECTOR
@@ -432,6 +433,7 @@ export default function TraderAnalysisPage() {
                   from={viewFrom}
                   to={viewTo}
                   fallbackCode={akshareCode}
+                  account={selectedAccount}
                 />
               </div>
               {/* right column: AU trading review chart */}
@@ -442,6 +444,7 @@ export default function TraderAnalysisPage() {
                   from={viewFrom}
                   to={viewTo}
                   onProductChange={setTradingProduct}
+                  onAccountChange={setSelectedAccount}
                 />
               </div>
             </div>

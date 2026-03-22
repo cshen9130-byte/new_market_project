@@ -2,10 +2,32 @@
 
 import { useCallback, useEffect, useState } from "react"
 import ReactECharts from "echarts-for-react"
-import { RefreshCw } from "lucide-react"
+import { RefreshCw, TableIcon, BarChart2 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+
+// ── Product labels (for stats table) ─────────────────────────────────────────
+const PRODUCT_LABEL: Record<string, string> = {
+  A:"黄大豆1", AD:"铝合金", AG:"白银", AL:"沪铝", AO:"氧化铝", AP:"苹果",
+  AU:"黄金", B:"黄大豆2", BB:"胶合板", BC:"国际铜", BR:"丁二烯", BU:"沥青",
+  BZ:"纯苯", C:"玉米", CF:"棉花", CJ:"红枣", CS:"玉米淀粉", CU:"沪铜",
+  CY:"棉纱", EB:"苯乙烯", EC:"航运", EG:"乙二醇", FB:"纤维板", FG:"玻璃",
+  FU:"燃料油", HC:"热卷", I:"铁矿石", IC:"中证500", IF:"沪深300", IH:"上证50",
+  IM:"中证1000", J:"焦炭", JD:"鸡蛋", JM:"焦煤", JR:"粳稻", L:"塑料",
+  LC:"碳酸锂", LG:"原木", LH:"生猪", LR:"晚籼稻", LU:"低硫油", M:"豆粕",
+  MA:"甲醇", NI:"沪镍", NR:"20号胶", OI:"菜籽油", OP:"双胶纸", P:"棕榈油",
+  PB:"沪铅", PD:"钯", PF:"短纤", PG:"液化气", PK:"花生", PL:"丙烯",
+  PM:"普麦", PP:"聚丙烯", PR:"瓶片", PS:"多晶硅", PT:"铂", PX:"对二甲苯",
+  RB:"螺纹钢", RI:"早籼稻", RM:"菜籽粕", RR:"粳米", RS:"油菜籽", RU:"天胶",
+  SA:"纯碱", SC:"原油", SF:"硅铁", SH:"烧碱", SI:"工业硅", SM:"锰硅",
+  SN:"沪锡", SP:"纸浆", SR:"白糖", SS:"不锈钢", T:"10年债", TA:"PTA",
+  TF:"5年债", TL:"30年债", TS:"2年债", UR:"尿素", V:"PVC", WH:"强麦",
+  WR:"线材", Y:"豆油", ZC:"动力煤", ZN:"沪锌",
+}
+function prodLabel(code: string) {
+  return PRODUCT_LABEL[code] ? `${PRODUCT_LABEL[code]}(${code})` : code
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -22,6 +44,19 @@ type ApiResponse = {
   ok: boolean
   data: CandleRow[]
   error?: string
+}
+
+type ProductStat = {
+  product: string
+  totalPnl: number
+  tradingDays: number
+  closeTrades: number
+  winRate: number
+  sharpe: number | null
+  maxDdPct: number
+  profitFactor: number | null
+  firstDate: string
+  lastDate: string
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -59,7 +94,8 @@ interface Props {
   height?:       number
   from?:         string   // controlled: parent can drive the date range
   to?:           string
-  fallbackCode?: string   // akshare code to use when NH index has no data (e.g. "AU0.SHF")
+  fallbackCode?: string   // akshare code to use when NH index has no data
+  account?:      string   // when provided, enables the per-product stats table toggle
 }
 
 export default function NhciCandleChart({
@@ -69,12 +105,55 @@ export default function NhciCandleChart({
   from: propFrom,
   to:   propTo,
   fallbackCode,
+  account,
 }: Props) {
   const [fromDate, setFromDate] = useState(() => propFrom ?? isoMonthOffset(-6))
   const [toDate,   setToDate]   = useState(() => propTo   ?? isoToday())
   const [data,     setData]     = useState<CandleRow[]>([])
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState<string | null>(null)
+
+  // ── Stats table state ──────────────────────────────────────────────────────
+  const [showTable,    setShowTable]    = useState(false)
+  const [tableData,    setTableData]    = useState<ProductStat[] | null>(null)
+  const [tableLoading, setTableLoading] = useState(false)
+  const [tableError,   setTableError]   = useState<string | null>(null)
+
+  // When account prop changes, auto-refresh table if visible; else clear stale cache
+  useEffect(() => {
+    if (!account) return
+    setTableData(null)
+    setTableError(null)
+    if (showTable) {
+      const acct = account
+      setTableLoading(true)
+      fetch(`/ma/api/mom-analysis/account-product-summary?account=${encodeURIComponent(acct)}`)
+        .then(r => r.json())
+        .then(d => {
+          if (!d.ok) throw new Error(d.error || "加载失败")
+          setTableData(d.rows)
+        })
+        .catch(e => setTableError(e instanceof Error ? e.message : "加载失败"))
+        .finally(() => setTableLoading(false))
+    }
+  }, [account]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadTable = useCallback(async (acct: string) => {
+    if (tableData) { setShowTable(true); return }   // already loaded
+    setTableLoading(true)
+    setTableError(null)
+    try {
+      const res = await fetch(`/ma/api/mom-analysis/account-product-summary?account=${encodeURIComponent(acct)}`)
+      const d = await res.json()
+      if (!d.ok) throw new Error(d.error || "加载失败")
+      setTableData(d.rows)
+    } catch (e) {
+      setTableError(e instanceof Error ? e.message : "加载失败")
+    } finally {
+      setTableLoading(false)
+      setShowTable(true)
+    }
+  }, [tableData])
 
   const load = useCallback(async (from: string, to: string, loadCode: string) => {
     setLoading(true)
@@ -326,27 +405,101 @@ export default function NhciCandleChart({
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
+            {account && (
+              <Button
+                size="sm"
+                variant={showTable ? "default" : "outline"}
+                onClick={() => {
+                  if (showTable) { setShowTable(false) }
+                  else { loadTable(account) }
+                }}
+                className="h-7 px-2 text-xs gap-1"
+              >
+                {showTable
+                  ? <><BarChart2 className="h-3 w-3" />回到K线</>
+                  : <><TableIcon className="h-3 w-3" />全品种统计</>}
+              </Button>
+            )}
           </div>
         </div>
       </CardHeader>
 
       <CardContent className="px-2 pb-4">
-        {error && (
+        {/* ── Stats table view ─────────────────────────────────────────── */}
+        {showTable && (
+          <div style={{ height, overflowY: "auto", position: "relative" }}>
+            {tableLoading && (
+              <div className="flex items-center justify-center h-full text-sm text-muted-foreground">加载中…</div>
+            )}
+            {tableError && (
+              <div className="flex items-center justify-center h-full text-sm text-destructive">{tableError}</div>
+            )}
+            {!tableLoading && !tableError && tableData && (
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="text-muted-foreground">
+                    <th className="px-2 py-1.5 text-center font-medium sticky top-0 z-10 bg-card">序号</th>
+                    <th className="px-2 py-1.5 text-left font-medium sticky top-0 z-10 bg-card">品种</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">总盈亏(元)</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">交易天数</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">日胜率</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">盈亏比</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">夏普比率</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">最大回撤</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">平仓笔数</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">首次交易</th>
+                    <th className="px-2 py-1.5 text-right font-medium sticky top-0 z-10 bg-card">最近交易</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableData.map((r, i) => {
+                    const pnlColor = r.totalPnl > 0 ? "text-red-500" : r.totalPnl < 0 ? "text-green-600" : ""
+                    return (
+                      <tr key={r.product} className={`border-b border-border/50 hover:bg-muted/40 ${i % 2 === 0 ? "" : "bg-muted/20"}`}>
+                        <td className="px-2 py-1.5 text-center text-muted-foreground">{i + 1}</td>
+                        <td className="px-2 py-1.5 font-medium whitespace-nowrap">{prodLabel(r.product)}</td>
+                        <td className={`px-2 py-1.5 text-right font-medium ${pnlColor}`}>
+                          {r.totalPnl >= 0 ? "+" : ""}{r.totalPnl.toLocaleString()}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">{r.tradingDays}</td>
+                        <td className="px-2 py-1.5 text-right">{(r.winRate * 100).toFixed(1)}%</td>
+                        <td className="px-2 py-1.5 text-right">
+                          {r.profitFactor != null ? r.profitFactor.toFixed(2) : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          {r.sharpe != null ? r.sharpe.toFixed(2) : "—"}
+                        </td>
+                        <td className="px-2 py-1.5 text-right">
+                          -{(r.maxDdPct * 100).toFixed(1)}%
+                        </td>
+                        <td className="px-2 py-1.5 text-right">{r.closeTrades}</td>
+                        <td className="px-2 py-1.5 text-right text-muted-foreground">{r.firstDate}</td>
+                        <td className="px-2 py-1.5 text-right text-muted-foreground">{r.lastDate}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+        {/* ── Candle chart view ────────────────────────────────────────── */}
+        {!showTable && error && (
           <div className="flex items-center justify-center text-sm text-destructive" style={{ height }}>
             {error}
           </div>
         )}
-        {!error && loading && (
+        {!showTable && !error && loading && (
           <div className="flex items-center justify-center text-sm text-muted-foreground" style={{ height }}>
             加载中…
           </div>
         )}
-        {!error && !loading && data.length === 0 && (
+        {!showTable && !error && !loading && data.length === 0 && (
           <div className="flex items-center justify-center text-sm text-muted-foreground" style={{ height }}>
             暂无数据
           </div>
         )}
-        {!error && !loading && data.length > 0 && (
+        {!showTable && !error && !loading && data.length > 0 && (
           <ReactECharts
             option={option}
             style={{ height: `${height}px` }}

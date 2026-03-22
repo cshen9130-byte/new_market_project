@@ -105,9 +105,25 @@ const PRODUCT_LABEL: Record<string, string> = {
   RU: "天然橡胶", BR: "丁二烯橡胶", NR: "20号胶",
   // Chemicals
   SA: "纯碱", SH: "烧碱", V: "PVC", UR: "尿素", MA: "甲醇",
+  // Stock index futures
+  IH: "上证50股指期货", IF: "沪深300股指期货", IC: "中证500股指期货", IM: "中证1000股指期货",
+  // Treasury bond futures
+  TS: "2年期国债期货", TF: "5年期国债期货", T: "10年期国债期货", TL: "30年期国债期货",
 }
 function productLabel(code: string) { return PRODUCT_LABEL[code] ? `${PRODUCT_LABEL[code]}(${code})` : code }
 function indexLabel(code: string) { return PRODUCT_LABEL[code] ? `南华${PRODUCT_LABEL[code]}指数` : `${code}指数` }
+
+const SECTOR_RULES: Record<string, Set<string>> = {
+  "农产":   new Set(["C","CS","WH","PM","RR","RI","JR","LR","A","B","M","Y","RM","OI","RS","PK","P","SR","CF","CY","AP","CJ","LH","JD","LG","SP","OP"]),
+  "贵金属": new Set(["AU","AG","PT","PD"]),
+  "有色":   new Set(["CU","BC","AL","AO","AD","ZN","PB","NI","SN"]),
+  "新能源": new Set(["LC","PS","SI"]),
+  "黑色":   new Set(["I","SF","SM","RB","HC","SS","WR","JM","J","ZC","FG","BB","FB"]),
+  "能源化工":new Set(["SC","FU","LU","PG","BU","TA","EG","PF","PR","PL","PP","L","BZ","PX","EB","RU","BR","NR","SA","SH","V","UR","MA"]),
+  "航运":   new Set(["EC"]),
+  "股指":   new Set(["IH","IF","IC","IM","MO"]),
+  "国债":   new Set(["TS","TF","T","TL"]),
+}
 
 // ── Props ────────────────────────────────────────────────────────────────────
 
@@ -129,11 +145,12 @@ interface Props {
   // Defaults to 1,000,000 yuan (100万). Adjust to match actual account equity.
   initialCapital?: number
   onProductChange?: (product: string) => void
+  onAccountChange?: (account: string) => void
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", bench: defaultBench = "nh", from: propFrom, to: propTo, chartHeight = 540, initialCapital = 1_000_000, onProductChange }: Props) {
+export default function AuTradingChart({ account: defaultAccount = "rx000", product: defaultProduct = "AU", method: defaultMethod = "continuous", bench: defaultBench = "nh", from: propFrom, to: propTo, chartHeight = 540, initialCapital = 1_000_000, onProductChange, onAccountChange }: Props) {
   const [from, setFrom] = useState(() => propFrom ?? isoMonthOffset(-6))
   const [to,   setTo]   = useState(() => propTo   ?? isoToday())
   const [account, setAccount] = useState(defaultAccount)
@@ -145,6 +162,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
   const [error,   setError]   = useState<string | null>(null)
   const [availableAccounts, setAvailableAccounts] = useState<string[]>([])
   const [availableProducts, setAvailableProducts] = useState<string[]>([])
+  const [sector, setSector] = useState<string>("全部")
 
   // Fetch available accounts and products from meta endpoint
   useEffect(() => {
@@ -269,12 +287,17 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
     for (const t of data.trades) {
       const idx = getDateIdx(t.date)
       if (idx < 0) continue
-      const y = bm[idx]?.close
-      if (y === undefined) continue
+      const bar = bm[idx]
+      if (!bar) continue
       const isOpen = !t.action || t.action.includes("开")
-      if (isOpen && t.direction === "买")        openLong.push([idx, y])
-      else if (isOpen && t.direction === "卖")   openShort.push([idx, y])
-      else                                       closePos.push([idx, y])
+      // Place marker outside the candle wick so it never hides price action:
+      //   买开 → below the low (upward triangle pointing at price)
+      //   卖开 → above the high (downward triangle pointing at price)
+      //   平仓 → above the high (diamond above candle)
+      const offset = (bar.high - bar.low) * 0.4 || bar.close * 0.008
+      if (isOpen && t.direction === "买")        openLong.push([idx, bar.low  - offset])
+      else if (isOpen && t.direction === "卖")   openShort.push([idx, bar.high + offset])
+      else                                       closePos.push([idx, bar.high + offset])
     }
 
     // Build per-date-index trade detail lookup for tooltip
@@ -324,12 +347,12 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               for (const t of trades) {
                 const priceStr = t.price != null ? ` @${t.price.toFixed(2)}` : ""
                 const lotsStr  = t.lots  != null ? ` ${Math.round(t.lots)}手` : ""
-                // Match chart symbols: 买开=▲red, 卖开=▽green, 买平/卖平=◆grey
+                // Match chart symbols: 买开=▲red, 卖开=▽green, 平仓=◆amber
                 let icon: string
                 if      (t.name === "买开") icon = `<span style="color:#ef4444">▲</span>`
                 else if (t.name === "卖开") icon = `<span style="color:#22c55e">▽</span>`
-                else                        icon = `<span style="color:#94a3b8">◆</span>`
-                lines.push(`${icon} <span style="color:${t.name === "买开" ? "#ef4444" : t.name === "卖开" ? "#22c55e" : "#94a3b8"}">${t.name}${priceStr}${lotsStr}</span>`)
+                else                        icon = `<span style="color:#f59e0b">◆</span>`
+                lines.push(`${icon} <span style="color:${t.name === "买开" ? "#ef4444" : t.name === "卖开" ? "#22c55e" : "#f59e0b"}">${t.name}${priceStr}${lotsStr}</span>`)
               }
             }
 
@@ -474,7 +497,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
           type: "scatter", xAxisIndex: 0, yAxisIndex: 0,
           data: openLong,
           symbol: "triangle", symbolSize: 10,
-          itemStyle: { color: "#ef4444" },
+          itemStyle: { color: "#ef4444", borderColor: "#fff", borderWidth: 1.5 },
           tooltip: { show: false },
         },
         // Trade open markers — 卖开 (short entry): green downward triangle
@@ -483,7 +506,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
           type: "scatter", xAxisIndex: 0, yAxisIndex: 0,
           data: openShort,
           symbol: "triangle", symbolRotate: 180, symbolSize: 10,
-          itemStyle: { color: "#22c55e" },
+          itemStyle: { color: "#22c55e", borderColor: "#fff", borderWidth: 1.5 },
           tooltip: { show: false },
         },
         // Close markers — 平仓 (both long/short exit): grey diamond
@@ -491,8 +514,8 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
           name: "平仓",
           type: "scatter", xAxisIndex: 0, yAxisIndex: 0,
           data: closePos,
-          symbol: "diamond", symbolSize: 8,
-          itemStyle: { color: "#94a3b8", borderColor: "#64748b", borderWidth: 1 },
+          symbol: "diamond", symbolSize: 9,
+          itemStyle: { color: "#f59e0b", borderColor: "#fff", borderWidth: 1.5 },
           tooltip: { show: false },
         },
 
@@ -624,8 +647,8 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               {/* Account selector */}
               <select
                 value={account}
-                onChange={e => { const a = e.target.value; setAccount(a); load(from, to, a, product, method, bench) }}
-                className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+                onChange={e => { const a = e.target.value; setAccount(a); onAccountChange?.(a); load(from, to, a, product, method, bench) }}
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24"
               >
                 {(availableAccounts.length ? availableAccounts : [account]).map(a => (
                   <option key={a} value={a}>{a.toUpperCase()}</option>
@@ -635,11 +658,14 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               <select
                 value={product}
                 onChange={e => { const p = e.target.value; setProduct(p); onProductChange?.(p); load(from, to, account, p, method, bench) }}
-                className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs w-[6rem] truncate"
               >
-                {(availableProducts.length ? availableProducts : [product]).map(p => (
-                  <option key={p} value={p}>{productLabel(p)}</option>
-                ))}
+                {(() => {
+                  const base = availableProducts.length ? availableProducts : [product]
+                  const filtered = sector === "全部" ? base : base.filter(p => SECTOR_RULES[sector]?.has(p))
+                  const list = filtered.length ? filtered : base
+                  return list.map(p => <option key={p} value={p}>{productLabel(p)}</option>)
+                })()}
               </select>
               {QUICK_RANGES.map(r => {
                 const isActive = from === r.from() && to === r.to()
@@ -682,30 +708,28 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               </button>
             </div>
           </div>
-          {/* Row 2: free-text account + product inputs · benchmark + calculation method filters */}
+          {/* Row 2: free-text inputs + sector/bench/method filters */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">账户:</span>
             <input
               type="text"
               defaultValue={account}
-              placeholder="输入账户名，回车确认"
+              placeholder="账户名，回车确认"
               onKeyDown={e => {
                 if (e.key === "Enter") {
                   const a = (e.currentTarget.value || "").trim()
-                  if (a) { setAccount(a); load(from, to, a, product, method, bench) }
+                  if (a) { setAccount(a); onAccountChange?.(a); load(from, to, a, product, method, bench) }
                 }
               }}
               onBlur={e => {
                 const a = e.currentTarget.value.trim()
-                if (a && a !== account) { setAccount(a); load(from, to, a, product, method, bench) }
+                if (a && a !== account) { setAccount(a); onAccountChange?.(a); load(from, to, a, product, method, bench) }
               }}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-32"
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24"
             />
-            <span className="text-xs text-muted-foreground ml-2">品种:</span>
             <input
               type="text"
               defaultValue={product}
-              placeholder="输入品种代码，回车确认"
+              placeholder="品种代码"
               onKeyDown={e => {
                 if (e.key === "Enter") {
                   const p = (e.currentTarget.value || "").trim().toUpperCase()
@@ -716,9 +740,28 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
                 const p = e.currentTarget.value.trim().toUpperCase()
                 if (/^[A-Z]{1,4}$/.test(p) && p !== product) { setProduct(p); onProductChange?.(p); load(from, to, account, p, method, bench) }
               }}
-              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24 uppercase"
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-[6rem] uppercase"
             />
-            <span className="text-xs text-muted-foreground ml-2">基准:</span>
+            <span className="text-xs text-muted-foreground">板块:</span>
+            <select
+              value={sector}
+              onChange={e => {
+                const s = e.target.value
+                setSector(s)
+                if (s !== "全部" && SECTOR_RULES[s] && !SECTOR_RULES[s].has(product)) {
+                  const base = availableProducts.length ? availableProducts : [product]
+                  const first = base.find(p => SECTOR_RULES[s].has(p))
+                  if (first) { setProduct(first); onProductChange?.(first); load(from, to, account, first, method, bench) }
+                }
+              }}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+            >
+              <option value="全部">全部</option>
+              {Object.keys(SECTOR_RULES).map(s => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+            <span className="text-xs text-muted-foreground">基准:</span>
             <select
               value={bench}
               onChange={e => {
@@ -731,7 +774,7 @@ export default function AuTradingChart({ account: defaultAccount = "rx000", prod
               <option value="nh">南华指数</option>
               <option value="dominant">主连合约</option>
             </select>
-            <span className="text-xs text-muted-foreground ml-2">盈亏法:</span>
+            <span className="text-xs text-muted-foreground">盈亏法:</span>
             <select
               value={method}
               onChange={e => {
