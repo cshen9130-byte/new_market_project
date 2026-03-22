@@ -639,7 +639,7 @@ export default function NhciCandleChart({
               {(["vol", "atr", "rsi"] as SubChart[]).map(s => (
                 <button key={s} onClick={() => setSubChart(s)}
                   className={`px-2 py-0.5 font-medium transition-colors ${
-                    subChart === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                    subChart === s ? "bg-muted/60 text-foreground font-semibold" : "text-muted-foreground hover:bg-muted/40 hover:text-foreground"
                   }`}>
                   {s === "vol" ? "成交量" : s === "atr" ? "ATR" : "RSI"}
                 </button>
