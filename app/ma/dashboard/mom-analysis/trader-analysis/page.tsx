@@ -499,7 +499,7 @@ export default function TraderAnalysisPage() {
               </Button>
             </div>
             <div className={isMultiFullscreen
-              ? "fixed inset-0 z-50 bg-background overflow-auto p-4 flex flex-col gap-4"
+              ? "fixed inset-0 z-50 bg-background overflow-hidden p-4 flex flex-col gap-4"
               : "grid grid-cols-2 gap-4"
             }>
               {isMultiFullscreen && (
@@ -516,7 +516,7 @@ export default function TraderAnalysisPage() {
                     product={selectedProduct}
                     from={viewFrom}
                     to={viewTo}
-                    height={isMultiFullscreen ? Math.floor((window.innerHeight - 100) / 1) : 360}
+                    height={isMultiFullscreen ? Math.floor(window.innerHeight - 280) : 360}
                   />
                 </div>
                 <div>
@@ -524,7 +524,7 @@ export default function TraderAnalysisPage() {
                     defaultProduct={selectedProduct}
                     from={viewFrom}
                     to={viewTo}
-                    height={isMultiFullscreen ? Math.floor((window.innerHeight - 100) / 1) : 320}
+                    height={isMultiFullscreen ? Math.floor(window.innerHeight - 260) : 320}
                   />
                 </div>
               </div>
