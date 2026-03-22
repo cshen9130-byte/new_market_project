@@ -85,6 +85,7 @@ interface Props {
   from?: string
   to?: string
   height?: number
+  onProductChange?: (product: string) => void
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -94,6 +95,7 @@ export default function CrossAccountChart({
   from: propFrom,
   to: propTo,
   height = 360,
+  onProductChange,
 }: Props) {
   const [product,  setProduct]  = useState(defaultProduct)
   const [inputVal, setInputVal] = useState(defaultProduct)
@@ -277,6 +279,7 @@ export default function CrossAccountChart({
     if (/^[A-Z]{1,4}$/.test(p)) {
       setProduct(p)
       load(from, to, p)
+      onProductChange?.(p)
     }
   }
 
@@ -344,7 +347,7 @@ export default function CrossAccountChart({
               if (s !== "全部" && SECTOR_RULES[s] && !SECTOR_RULES[s].has(product)) {
                 const base = availableProducts.length ? availableProducts : [product]
                 const first = base.find(p => SECTOR_RULES[s]?.has(p))
-                if (first) { setProduct(first); setInputVal(first); load(from, to, first) }
+                if (first) { setProduct(first); setInputVal(first); load(from, to, first); onProductChange?.(first) }
               }
             }}
             className="h-7 rounded border border-input bg-background px-2 text-xs"
@@ -354,7 +357,7 @@ export default function CrossAccountChart({
           </select>
           <select
             value={product}
-            onChange={e => { const p = e.target.value; setProduct(p); setInputVal(p); load(from, to, p) }}
+            onChange={e => { const p = e.target.value; setProduct(p); setInputVal(p); load(from, to, p); onProductChange?.(p) }}
             className="h-7 rounded border border-input bg-background px-2 text-xs w-32 truncate"
           >
             {(() => {

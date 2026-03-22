@@ -196,7 +196,6 @@ export default function ProductCandleChart({
   }, [])
 
   const loadTable = useCallback(async (prod: string) => {
-    if (tableData) { setShowTable(true); return }
     setTableLoading(true)
     setTableError(null)
     try {
@@ -210,7 +209,7 @@ export default function ProductCandleChart({
       setTableLoading(false)
       setShowTable(true)
     }
-  }, [tableData])
+  }, [])
 
   // Sync parent-driven date props into local state
   useEffect(() => {
@@ -221,11 +220,15 @@ export default function ProductCandleChart({
     }
   }, [propFrom, propTo]) // eslint-disable-line
 
-  // Reload (and clear table) when selected product changes
+  // Reload (and refresh table) when selected product changes
   useEffect(() => {
     load(propProduct, fromDate, toDate)
-    setTableData(null)
-    setTableError(null)
+    if (showTable) {
+      loadTable(propProduct)
+    } else {
+      setTableData(null)
+      setTableError(null)
+    }
   }, [propProduct]) // eslint-disable-line
 
   // ── ECharts option ──────────────────────────────────────────────────────────

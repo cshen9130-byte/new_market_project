@@ -522,6 +522,7 @@ export default function TraderAnalysisPage() {
                 <div>
                   <CrossAccountChart
                     defaultProduct={selectedProduct}
+                    onProductChange={setSelectedProduct}
                     from={viewFrom}
                     to={viewTo}
                     height={isMultiFullscreen ? Math.floor(window.innerHeight - 260) : 320}
