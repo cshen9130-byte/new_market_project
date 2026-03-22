@@ -436,8 +436,6 @@ export default function TraderAnalysisPage() {
                   from={viewFrom}
                   to={viewTo}
                   fallbackCode={akshareCode}
-                  account={selectedAccount}
-                  onProductSelect={setSelectedProduct}
                 />
               </div>
               {/* right column: AU trading review chart */}
