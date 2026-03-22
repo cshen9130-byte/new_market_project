@@ -452,14 +452,14 @@ export default function TraderAnalysisPage() {
                   <NhciCandleChart
                     code="NHCI.NH"
                     title="南华商品指数（NHCI.NH）日K线"
-                    height={isFullscreen ? Math.floor((window.innerHeight - 320) / 2) : 280}
+                    height={isFullscreen ? Math.max(Math.floor((window.innerHeight - 420) / 2), 120) : 280}
                     from={viewFrom}
                     to={viewTo}
                   />
                   <NhciCandleChart
                     code={sectorInfo.code}
                     title={sectorInfo.title}
-                    height={isFullscreen ? Math.floor((window.innerHeight - 320) / 2) : 280}
+                    height={isFullscreen ? Math.max(Math.floor((window.innerHeight - 420) / 2), 120) : 280}
                     from={viewFrom}
                     to={viewTo}
                     fallbackCode={akshareCode}
@@ -472,7 +472,7 @@ export default function TraderAnalysisPage() {
                   <AuTradingChart
                     account="rx000"
                     product={selectedProduct}
-                    chartHeight={isFullscreen ? Math.floor(window.innerHeight - 340) : 540}
+                    chartHeight={isFullscreen ? Math.max(window.innerHeight - 380, 200) : 540}
                     from={viewFrom}
                     to={viewTo}
                     onProductChange={setTradingProduct}
