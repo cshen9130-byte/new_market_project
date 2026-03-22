@@ -106,7 +106,13 @@ const QUICK_RANGES = [
 ]
 
 // ── Technical indicators ──────────────────────────────────────────────────────
-
+function calcMA(closes: number[], period: number): (number | null)[] {
+  return closes.map((_, i) => {
+    if (i < period - 1) return null
+    const sum = closes.slice(i - period + 1, i + 1).reduce((s, v) => s + v, 0)
+    return parseFloat((sum / period).toFixed(4))
+  })
+}
 function calcATR(rows: CandleRow[], period = 14): number[] {
   const tr = rows.map((r, i) => {
     if (i === 0) return r.high - r.low
@@ -228,10 +234,14 @@ export default function ProductCandleChart({
 
     const dates   = rows.map(r => r.date.slice(5)) // MM-DD
     const candles = rows.map(r => [r.open, r.close, r.low, r.high])
+    const closes  = rows.map(r => r.close)
     const volumes = rows.map(r => r.volume)
     const maxVol  = Math.max(...volumes, 1)
     const atrVals = calcATR(rows)
     const rsiVals = calcRSI(rows)
+    const ma5     = calcMA(closes, 5)
+    const ma20    = calcMA(closes, 20)
+    const ma60    = calcMA(closes, 60)
 
     return {
       backgroundColor: "transparent",
@@ -250,6 +260,10 @@ export default function ProductCandleChart({
           let html   = `<div style="font-size:11px;margin-bottom:2px;font-weight:600">${row.date}</div>`
           html += `<div style="font-size:11px">${sq} 开: <b style="color:${col}">${row.open}</b>&nbsp; 收: <b style="color:${col}">${row.close}</b></div>`
           html += `<div style="font-size:11px">高: ${row.high}&nbsp; 低: ${row.low}</div>`
+          const m5 = ma5[idx]; const m20 = ma20[idx]; const m60 = ma60[idx]
+          if (m5  != null) html += `<div style="font-size:10px;color:#f59e0b">MA5\u00a0\u00a0${m5.toFixed(2)}</div>`
+          if (m20 != null) html += `<div style="font-size:10px;color:#8b5cf6">MA20&nbsp;${m20.toFixed(2)}</div>`
+          if (m60 != null) html += `<div style="font-size:10px;color:#06b6d4">MA60&nbsp;${m60.toFixed(2)}</div>`
           if (subChart === "vol" && row.volume > 0) {
             const v = row.volume >= 10000 ? `${(row.volume / 10000).toFixed(1)}万手` : `${row.volume}手`
             html += `<div style="font-size:11px">成交量: ${v}</div>`
@@ -264,6 +278,11 @@ export default function ProductCandleChart({
           }
           return html
         },
+      },
+      legend: {
+        top: 4, right: 16,
+        data: ["MA5", "MA20", "MA60"],
+        textStyle: { fontSize: 10 },
       },
       axisPointer: { link: [{ xAxisIndex: "all" }] },
       grid: [
@@ -329,6 +348,9 @@ export default function ProductCandleChart({
             borderColor: "#ef4444", borderColor0: "#22c55e",
           },
         },
+        { name: "MA5",  type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma5,  smooth: false, symbol: "none", connectNulls: true, lineStyle: { color: "#f59e0b", width: 1.2 }, itemStyle: { color: "#f59e0b" } },
+        { name: "MA20", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma20, smooth: false, symbol: "none", connectNulls: true, lineStyle: { color: "#8b5cf6", width: 1.2 }, itemStyle: { color: "#8b5cf6" } },
+        { name: "MA60", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma60, smooth: false, symbol: "none", connectNulls: true, lineStyle: { color: "#06b6d4", width: 1.2 }, itemStyle: { color: "#06b6d4" } },
         subChart === "vol"
           ? {
               name: "成交量",
