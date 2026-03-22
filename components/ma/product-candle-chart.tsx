@@ -104,6 +104,45 @@ const QUICK_RANGES = [
   { label: "近一年", from: () => isoMonthOffset(-12), to: () => isoToday() },
   { label: "全部",   from: () => "2025-01-01",         to: () => isoToday() },
 ]
+
+// ── Technical indicators ──────────────────────────────────────────────────────
+
+function calcATR(rows: CandleRow[], period = 14): number[] {
+  const tr = rows.map((r, i) => {
+    if (i === 0) return r.high - r.low
+    const pc = rows[i - 1].close
+    return Math.max(r.high - r.low, Math.abs(r.high - pc), Math.abs(r.low - pc))
+  })
+  const atr: number[] = new Array(rows.length).fill(NaN)
+  if (rows.length < period) return atr
+  atr[period - 1] = tr.slice(0, period).reduce((a, b) => a + b, 0) / period
+  for (let i = period; i < rows.length; i++)
+    atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+  return atr
+}
+
+function calcRSI(rows: CandleRow[], period = 14): number[] {
+  const rsi: number[] = new Array(rows.length).fill(NaN)
+  if (rows.length <= period) return rsi
+  let avgGain = 0, avgLoss = 0
+  for (let i = 1; i <= period; i++) {
+    const d = rows[i].close - rows[i - 1].close
+    if (d > 0) avgGain += d; else avgLoss -= d
+  }
+  avgGain /= period; avgLoss /= period
+  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+  for (let i = period + 1; i < rows.length; i++) {
+    const d = rows[i].close - rows[i - 1].close
+    const g = d > 0 ? d : 0; const l = d < 0 ? -d : 0
+    avgGain = (avgGain * (period - 1) + g) / period
+    avgLoss = (avgLoss * (period - 1) + l) / period
+    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+  }
+  return rsi
+}
+
+type SubChart = "vol" | "atr" | "rsi"
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -130,6 +169,7 @@ export default function ProductCandleChart({
   const [tableData,    setTableData]    = useState<AccountStat[] | null>(null)
   const [tableLoading, setTableLoading] = useState(false)
   const [tableError,   setTableError]   = useState<string | null>(null)
+  const [subChart,     setSubChart]     = useState<SubChart>("vol")
 
   const load = useCallback(async (prod: string, from: string, to: string) => {
     setLoading(true)
@@ -190,6 +230,8 @@ export default function ProductCandleChart({
     const candles = rows.map(r => [r.open, r.close, r.low, r.high])
     const volumes = rows.map(r => r.volume)
     const maxVol  = Math.max(...volumes, 1)
+    const atrVals = calcATR(rows)
+    const rsiVals = calcRSI(rows)
 
     return {
       backgroundColor: "transparent",
@@ -208,9 +250,17 @@ export default function ProductCandleChart({
           let html   = `<div style="font-size:11px;margin-bottom:2px;font-weight:600">${row.date}</div>`
           html += `<div style="font-size:11px">${sq} 开: <b style="color:${col}">${row.open}</b>&nbsp; 收: <b style="color:${col}">${row.close}</b></div>`
           html += `<div style="font-size:11px">高: ${row.high}&nbsp; 低: ${row.low}</div>`
-          if (row.volume > 0) {
+          if (subChart === "vol" && row.volume > 0) {
             const v = row.volume >= 10000 ? `${(row.volume / 10000).toFixed(1)}万手` : `${row.volume}手`
             html += `<div style="font-size:11px">成交量: ${v}</div>`
+          }
+          if (subChart === "atr") {
+            const atr = atrVals[idx]
+            if (!isNaN(atr)) html += `<div style="font-size:11px">ATR(14): ${atr.toFixed(2)}</div>`
+          }
+          if (subChart === "rsi") {
+            const rsi = rsiVals[idx]
+            if (!isNaN(rsi)) html += `<div style="font-size:11px">RSI(14): ${rsi.toFixed(1)}</div>`
           }
           return html
         },
@@ -249,12 +299,24 @@ export default function ProductCandleChart({
           axisLabel: { fontSize: 10 },
           splitLine: { lineStyle: { type: "dashed", color: "rgba(148,163,184,0.2)" } },
         },
-        {
-          type: "value", gridIndex: 1, scale: true,
-          axisLabel: { fontSize: 9, formatter: (v: number) => v >= 10000 ? `${(v/10000).toFixed(0)}w` : `${v}` },
-          splitLine: { show: false },
-          max: maxVol * 3, // keep bars from filling the grid
-        },
+        subChart === "vol"
+          ? {
+              type: "value", gridIndex: 1, scale: true,
+              axisLabel: { fontSize: 9, formatter: (v: number) => v >= 10000 ? `${(v/10000).toFixed(0)}w` : `${v}` },
+              splitLine: { show: false },
+              max: maxVol * 3,
+            }
+          : subChart === "rsi"
+          ? {
+              type: "value", gridIndex: 1, scale: false, min: 0, max: 100,
+              axisLabel: { fontSize: 9 },
+              splitLine: { lineStyle: { type: "dashed", color: "rgba(148,163,184,0.2)" } },
+            }
+          : {
+              type: "value", gridIndex: 1, scale: true,
+              axisLabel: { fontSize: 9 },
+              splitLine: { lineStyle: { type: "dashed", color: "rgba(148,163,184,0.2)" } },
+            },
       ],
       series: [
         {
@@ -267,18 +329,48 @@ export default function ProductCandleChart({
             borderColor: "#ef4444", borderColor0: "#22c55e",
           },
         },
-        {
-          name: "成交量",
-          type: "bar",
-          xAxisIndex: 1, yAxisIndex: 1,
-          data: volumes,
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          itemStyle: { color: (p: any) => rows[p.dataIndex]?.close >= rows[p.dataIndex]?.open ? "#ef4444" : "#22c55e" },
-          barMaxWidth: 8,
-        },
+        subChart === "vol"
+          ? {
+              name: "成交量",
+              type: "bar",
+              xAxisIndex: 1, yAxisIndex: 1,
+              data: volumes,
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              itemStyle: { color: (p: any) => rows[p.dataIndex]?.close >= rows[p.dataIndex]?.open ? "#ef4444" : "#22c55e" },
+              barMaxWidth: 8,
+            }
+          : subChart === "atr"
+          ? {
+              name: "ATR(14)",
+              type: "line",
+              xAxisIndex: 1, yAxisIndex: 1,
+              data: atrVals,
+              smooth: false,
+              symbol: "none",
+              lineStyle: { color: "#f59e0b", width: 1.5 },
+              itemStyle: { color: "#f59e0b" },
+            }
+          : {
+              name: "RSI(14)",
+              type: "line",
+              xAxisIndex: 1, yAxisIndex: 1,
+              data: rsiVals,
+              smooth: false,
+              symbol: "none",
+              lineStyle: { color: "#8b5cf6", width: 1.5 },
+              itemStyle: { color: "#8b5cf6" },
+              markLine: {
+                silent: true,
+                symbol: ["none", "none"],
+                lineStyle: { type: "dashed", color: "rgba(148,163,184,0.5)", width: 1 },
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                data: [{ yAxis: 30 }, { yAxis: 70 }],
+                label: { fontSize: 9, formatter: (p: any) => `${p.value}` },
+              },
+            },
       ],
     }
-  }, [data])
+  }, [data, subChart])
 
   return (
     <Card>
@@ -335,6 +427,18 @@ export default function ProductCandleChart({
             >
               <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
             </Button>
+            {!showTable && (
+              <div className="flex items-center gap-0 rounded border border-input overflow-hidden text-xs">
+                {(["vol", "atr", "rsi"] as SubChart[]).map(s => (
+                  <button key={s} onClick={() => setSubChart(s)}
+                    className={`px-2 py-0.5 font-medium transition-colors ${
+                      subChart === s ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
+                    }`}>
+                    {s === "vol" ? "成交量" : s === "atr" ? "ATR" : "RSI"}
+                  </button>
+                ))}
+              </div>
+            )}
             {showTable && tableData && (
               <Button size="sm" variant="outline" onClick={() => downloadTableCsv(tableData, propProduct)} className="h-7 px-2 text-xs gap-1">
                 <Download className="h-3 w-3" />下载
