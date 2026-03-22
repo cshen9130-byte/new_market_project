@@ -98,6 +98,42 @@ function calcMA(closes: number[], period: number): (number | null)[] {
   })
 }
 
+function calcATR(rows: CandleRow[], period = 14): number[] {
+  const tr = rows.map((r, i) => {
+    if (i === 0) return r.high - r.low
+    const pc = rows[i - 1].close
+    return Math.max(r.high - r.low, Math.abs(r.high - pc), Math.abs(r.low - pc))
+  })
+  const atr: number[] = new Array(rows.length).fill(NaN)
+  if (rows.length < period) return atr
+  atr[period - 1] = tr.slice(0, period).reduce((a, b) => a + b, 0) / period
+  for (let i = period; i < rows.length; i++)
+    atr[i] = (atr[i - 1] * (period - 1) + tr[i]) / period
+  return atr
+}
+
+function calcRSI(rows: CandleRow[], period = 14): number[] {
+  const rsi: number[] = new Array(rows.length).fill(NaN)
+  if (rows.length <= period) return rsi
+  let avgGain = 0, avgLoss = 0
+  for (let i = 1; i <= period; i++) {
+    const d = rows[i].close - rows[i - 1].close
+    if (d > 0) avgGain += d; else avgLoss -= d
+  }
+  avgGain /= period; avgLoss /= period
+  rsi[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+  for (let i = period + 1; i < rows.length; i++) {
+    const d = rows[i].close - rows[i - 1].close
+    const g = d > 0 ? d : 0; const l = d < 0 ? -d : 0
+    avgGain = (avgGain * (period - 1) + g) / period
+    avgLoss = (avgLoss * (period - 1) + l) / period
+    rsi[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss)
+  }
+  return rsi
+}
+
+type SubChart = "vol" | "atr" | "rsi"
+
 function isoToday() {
   return new Date().toISOString().slice(0, 10)
 }
@@ -149,6 +185,7 @@ export default function NhciCandleChart({
   const [tableData,    setTableData]    = useState<ProductStat[] | null>(null)
   const [tableLoading, setTableLoading] = useState(false)
   const [tableError,   setTableError]   = useState<string | null>(null)
+  const [subChart,     setSubChart]     = useState<SubChart>("vol")
 
   // When account prop changes, auto-refresh table if visible; else clear stale cache
   useEffect(() => {
@@ -237,7 +274,10 @@ export default function NhciCandleChart({
     value: r.volume ?? 0,
     itemStyle: { color: r.close >= r.open ? "#ef4444" : "#22c55e" },
   }))
-  const hasVolume = volumes.some(v => (v.value ?? 0) > 0)
+  const hasVolume  = volumes.some(v => (v.value ?? 0) > 0)
+  const atrVals    = calcATR(data)
+  const rsiVals    = calcRSI(data)
+  const showLower  = subChart !== "vol" ? data.length > 0 : hasVolume
 
   // ── ECharts option ─────────────────────────────────────────────────────────
 
@@ -267,6 +307,19 @@ export default function NhciCandleChart({
         const ma20p = params.find((p: any) => p.seriesName === "MA20")
         if (ma5p?.data  != null) lines.push(`MA5&nbsp;&nbsp;${Number(ma5p.data).toFixed(2)}`)
         if (ma20p?.data != null) lines.push(`MA20&nbsp;${Number(ma20p.data).toFixed(2)}`)
+        const idx = candle.dataIndex as number
+        if (subChart === "vol" && hasVolume) {
+          const v = volumes[idx]?.value ?? 0
+          if (v > 0) lines.push(`\u6210\u4ea4\u91cf: ${v >= 10000 ? `${(v/10000).toFixed(1)}\u4e07\u624b` : `${v}\u624b`}`)
+        }
+        if (subChart === "atr") {
+          const atr = atrVals[idx]
+          if (!isNaN(atr)) lines.push(`ATR(14): ${atr.toFixed(2)}`)
+        }
+        if (subChart === "rsi") {
+          const rsi = rsiVals[idx]
+          if (!isNaN(rsi)) lines.push(`RSI(14): ${rsi.toFixed(1)}`)
+        }
         return lines.join("<br/>")
       },
     },
@@ -276,8 +329,8 @@ export default function NhciCandleChart({
       textStyle: { fontSize: 11 },
     },
     grid: [
-      { left: 64, right: 16, top: 36, bottom: hasVolume ? 130 : 56 },
-      ...(hasVolume ? [{ left: 64, right: 16, top: "73%", bottom: 56 }] : []),
+      { left: 64, right: 16, top: 36, bottom: showLower ? 130 : 56 },
+      ...(showLower ? [{ left: 64, right: 16, top: "73%", bottom: 56 }] : []),
     ],
     xAxis: [
       {
@@ -288,7 +341,7 @@ export default function NhciCandleChart({
         axisPointer: { label: { show: false } },
         boundaryGap: true,
       },
-      ...(hasVolume
+      ...(showLower
         ? [{
             type: "category",
             data: dates,
@@ -305,24 +358,26 @@ export default function NhciCandleChart({
         axisLabel: { fontSize: 10 },
         splitLine: { lineStyle: { opacity: 0.2 } },
       },
-      ...(hasVolume
-        ? [{
-            gridIndex: 1,
-            axisLabel: { show: false },
-            splitLine: { show: false },
-          }]
+      ...(showLower
+        ? [
+            subChart === "vol"
+              ? { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } }
+              : subChart === "rsi"
+              ? { gridIndex: 1, scale: false, min: 0, max: 100, axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { type: "dashed", color: "rgba(148,163,184,0.2)" } } }
+              : { gridIndex: 1, scale: true, axisLabel: { fontSize: 9 }, splitLine: { lineStyle: { type: "dashed", color: "rgba(148,163,184,0.2)" } } }
+          ]
         : []),
     ],
     dataZoom: [
       {
         type: "inside",
-        xAxisIndex: hasVolume ? [0, 1] : [0],
+        xAxisIndex: showLower ? [0, 1] : [0],
         start: 0,
         end: 100,
       },
       {
         type: "slider",
-        xAxisIndex: hasVolume ? [0, 1] : [0],
+        xAxisIndex: showLower ? [0, 1] : [0],
         bottom: 12,
         height: 28,
       },
@@ -363,15 +418,46 @@ export default function NhciCandleChart({
         symbol: "none",
         connectNulls: true,
       },
-      ...(hasVolume
-        ? [{
-            name: "成交量",
-            type: "bar",
-            xAxisIndex: 1,
-            yAxisIndex: 1,
-            data: volumes,
-            barMaxWidth: 8,
-          }]
+      ...(showLower
+        ? [
+            subChart === "vol"
+              ? {
+                  name: "成交量",
+                  type: "bar",
+                  xAxisIndex: 1, yAxisIndex: 1,
+                  data: volumes,
+                  barMaxWidth: 8,
+                }
+              : subChart === "atr"
+              ? {
+                  name: "ATR(14)",
+                  type: "line",
+                  xAxisIndex: 1, yAxisIndex: 1,
+                  data: atrVals,
+                  smooth: false,
+                  symbol: "none",
+                  lineStyle: { color: "#06b6d4", width: 1.5 },
+                  itemStyle: { color: "#06b6d4" },
+                }
+              : {
+                  name: "RSI(14)",
+                  type: "line",
+                  xAxisIndex: 1, yAxisIndex: 1,
+                  data: rsiVals,
+                  smooth: false,
+                  symbol: "none",
+                  lineStyle: { color: "#ec4899", width: 1.5 },
+                  itemStyle: { color: "#ec4899" },
+                  markLine: {
+                    silent: true,
+                    symbol: ["none", "none"],
+                    lineStyle: { type: "dashed", color: "rgba(148,163,184,0.5)", width: 1 },
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    data: [{ yAxis: 30 }, { yAxis: 70 }],
+                    label: { fontSize: 9, formatter: (p: any) => `${p.value}` },
+                  },
+                }
+          ]
         : []),
     ],
   }
@@ -541,11 +627,25 @@ export default function NhciCandleChart({
           </div>
         )}
         {!showTable && !error && !loading && data.length > 0 && (
-          <ReactECharts
-            option={option}
-            style={{ height: `${height}px` }}
-            notMerge={true}
-          />
+          <div style={{ position: "relative" }}>
+            <ReactECharts
+              option={option}
+              style={{ height: `${height}px` }}
+              notMerge={true}
+            />
+            {/* sub-chart toggle — floats inside the lower panel */}
+            <div style={{ position: "absolute", top: "73%", left: 68, zIndex: 10 }}
+              className="flex items-center gap-0 rounded border border-input bg-background/80 overflow-hidden text-xs backdrop-blur-sm shadow-sm">
+              {(["vol", "atr", "rsi"] as SubChart[]).map(s => (
+                <button key={s} onClick={() => setSubChart(s)}
+                  className={`px-2 py-0.5 font-medium transition-colors ${
+                    subChart === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
+                  }`}>
+                  {s === "vol" ? "成交量" : s === "atr" ? "ATR" : "RSI"}
+                </button>
+              ))}
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
