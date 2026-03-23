@@ -11,6 +11,7 @@ import {
   ChevronRight,
   FileSpreadsheet,
   FolderOpen,
+  Play,
   RefreshCw,
   RotateCcw,
   UploadCloud,
@@ -64,6 +65,7 @@ export default function DataImportPage() {
   } | null>(null)
   const [isLoadingEtl, setIsLoadingEtl] = useState(false)
   const [showEtlErrors, setShowEtlErrors] = useState(false)
+  const [isRunningEtl, setIsRunningEtl] = useState(false)
 
   const [isDragOver, setIsDragOver] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -106,6 +108,24 @@ export default function DataImportPage() {
       setIsLoadingEtl(false)
     }
   }, [])
+
+  const runEtl = useCallback(async () => {
+    setIsRunningEtl(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/data-import/run", { method: "POST" })
+      const data = await res.json()
+      if (!res.ok) {
+        toast({ title: "ETL 失败", description: readError(data, "运行失败"), variant: "destructive" })
+      } else {
+        toast({ title: "ETL 完成", description: "数据已成功写入数据库。" })
+      }
+    } catch (e) {
+      toast({ title: "ETL 失败", description: e instanceof Error ? e.message : "运行失败", variant: "destructive" })
+    } finally {
+      setIsRunningEtl(false)
+      await checkEtlStatus()
+    }
+  }, [toast, checkEtlStatus])
 
   const loadFolders = useCallback(async () => {
     setIsLoading(true)
@@ -179,6 +199,8 @@ export default function DataImportPage() {
     await checkDates()
     setIsUploading(false)
     if (zipInputRef.current) zipInputRef.current.value = ""
+    // Auto-trigger ETL whenever at least one file was successfully extracted
+    if (allExtracted.length > 0) void runEtl()
   }
 
   async function handleUpload(file: File) {
@@ -278,6 +300,18 @@ export default function DataImportPage() {
             <span className="tabular-nums">{renameProgress.current} / {renameProgress.total}</span>
           </div>
         )}
+
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isRunningEtl || isUploading}
+          onClick={() => void runEtl()}
+        >
+          {isRunningEtl
+            ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+            : <Play className="mr-2 h-4 w-4" />}
+          {isRunningEtl ? "运行中…" : "运行ETL"}
+        </Button>
 
         <Button variant="ghost" size="sm" disabled={isLoading} onClick={() => { setFolderFiles({}); setExpandedFolder(null); loadFolders(); checkDates() }}>
           <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
@@ -409,7 +443,9 @@ export default function DataImportPage() {
       <div className="rounded-lg border border-border/60 bg-card px-4 py-3">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-2 text-sm">
-            {isLoadingEtl ? (
+            {isRunningEtl ? (
+              <RefreshCw className="h-4 w-4 animate-spin text-blue-500" />
+            ) : isLoadingEtl ? (
               <RefreshCw className="h-4 w-4 animate-spin text-muted-foreground" />
             ) : etlStatus ? (
               etlStatus.notYetRun
@@ -419,6 +455,7 @@ export default function DataImportPage() {
                   : <CheckCircle2 className="h-4 w-4 text-emerald-500" />
             ) : null}
             <span className="font-medium">ETL 入库状态</span>
+            {isRunningEtl && <span className="text-xs text-blue-500">运行中…</span>}
           </div>
           <div className="flex items-center gap-3 text-sm">
             {etlStatus && !etlStatus.notYetRun ? (
