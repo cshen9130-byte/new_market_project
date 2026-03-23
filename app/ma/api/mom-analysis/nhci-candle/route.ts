@@ -14,7 +14,7 @@ export async function GET(req: Request) {
 
     const buildParams = (primaryCode: string) => {
       const params: unknown[] = [primaryCode]
-      const conditions = [`code = $1`]
+      const conditions = [`code = $1`, `CAST(close AS float8) > 0`]
       if (from) { params.push(from); conditions.push(`trade_date >= $${params.length}::date`) }
       if (to)   { params.push(to);   conditions.push(`trade_date <= $${params.length}::date`) }
       return { params, conditions }

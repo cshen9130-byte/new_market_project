@@ -57,7 +57,7 @@ export async function GET(req: Request) {
            AND trade_date BETWEEN $2 AND $3
        )
        SELECT date, open, high, low, close, volume
-       FROM ranked WHERE rn = 1
+       FROM ranked WHERE rn = 1 AND close > 0
        ORDER BY date`,
       [product, from, to],
     ).catch(() => [] as CandleRow[])
@@ -75,6 +75,7 @@ export async function GET(req: Request) {
                   CAST(COALESCE(volume, 0) AS float8) AS volume
            FROM raw_akshare_futures_daily
            WHERE code = $1 AND trade_date BETWEEN $2 AND $3
+             AND CAST(close AS float8) > 0
            ORDER BY trade_date`,
           [akCode, from, to],
         ).catch(() => [] as CandleRow[])

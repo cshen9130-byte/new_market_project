@@ -115,7 +115,7 @@ export async function GET(req: Request) {
            WHERE UPPER(contract) ~ ('^' || $1 || '[0-9]')
              AND trade_date BETWEEN $2 AND $3
          )
-         SELECT date, close, preclose FROM ranked WHERE rn = 1 ORDER BY date`,
+         SELECT date, close, preclose FROM ranked WHERE rn = 1 AND close > 0 ORDER BY date`,
         [product, from, to],
       ).then(async (rows) => {
         if (rows.length > 0) return rows
@@ -149,6 +149,7 @@ export async function GET(req: Request) {
                   ) AS preclose
            FROM raw_akshare_futures_daily
            WHERE code = $1 AND trade_date BETWEEN $2 AND $3
+             AND CAST(close AS float8) > 0
            ORDER BY trade_date`,
           [akCode, from, to],
         ).catch(() => [] as BmRow[])
