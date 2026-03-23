@@ -101,7 +101,7 @@ export async function GET(req: Request) {
          ORDER BY 1, 2`,
         [product, from, to],
       ),
-      // Dominant contract (highest OI) per day as benchmark — with akshare fallback
+      // Dominant contract (highest OI) per day as benchmark — with akshare supplement
       query<BmRow>(
         `WITH ranked AS (
            SELECT trade_date::text AS date,
@@ -118,9 +118,8 @@ export async function GET(req: Request) {
          SELECT date, close, preclose FROM ranked WHERE rn = 1 AND close > 0 ORDER BY date`,
         [product, from, to],
       ).then(async (rows) => {
-        if (rows.length > 0) return rows
-        // Fallback: akshare continuous contract (handles ZCE and other exchanges
-        // whose data may be absent from raw_futures_contracts_daily)
+        // Supplement with akshare for any dates missing from raw_futures_contracts_daily
+        // (handles both empty primary and recent dates filtered by close>0)
         const AKSHARE_CODE: Record<string, string> = {
           A:"A0.DCE",   AD:"AD0.SHF",  AG:"AG0.SHF",  AL:"AL0.SHF",  AO:"AO0.SHF",  AP:"AP0.CZC",
           AU:"AU0.SHF", B:"B0.DCE",    BB:"BB0.DCE",  BC:"BCM.INE",  BR:"BR0.SHF",  BU:"BU0.SHF",
@@ -139,8 +138,8 @@ export async function GET(req: Request) {
           WH:"WH0.CZC", WR:"WR0.SHF",  Y:"Y0.DCE",   ZC:"ZC0.CZC",  ZN:"ZN0.SHF",
         }
         const akCode = AKSHARE_CODE[product]
-        if (!akCode) return [] as BmRow[]
-        return query<BmRow>(
+        if (!akCode) return rows
+        const akRows = await query<BmRow>(
           `SELECT trade_date::text AS date,
                   CAST(close AS float8) AS close,
                   COALESCE(
@@ -153,6 +152,12 @@ export async function GET(req: Request) {
            ORDER BY trade_date`,
           [akCode, from, to],
         ).catch(() => [] as BmRow[])
+        if (akRows.length === 0) return rows
+        if (rows.length === 0) return akRows
+        const primaryDates = new Set(rows.map(r => r.date))
+        const supplement = akRows.filter(r => !primaryDates.has(r.date))
+        if (supplement.length === 0) return rows
+        return [...rows, ...supplement].sort((a, b) => a.date.localeCompare(b.date))
       }).catch(() => [] as BmRow[]),
     ])
 

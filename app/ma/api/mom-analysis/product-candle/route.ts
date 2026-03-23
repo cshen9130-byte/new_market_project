@@ -62,23 +62,35 @@ export async function GET(req: Request) {
       [product, from, to],
     ).catch(() => [] as CandleRow[])
 
-    // Fallback: akshare continuous contract
-    if (rows.length === 0) {
-      const akCode = AKSHARE_CODE[product]
-      if (akCode) {
-        rows = await query<CandleRow>(
-          `SELECT trade_date::text                    AS date,
-                  CAST(open   AS float8)              AS open,
-                  CAST(high   AS float8)              AS high,
-                  CAST(low    AS float8)              AS low,
-                  CAST(close  AS float8)              AS close,
-                  CAST(COALESCE(volume, 0) AS float8) AS volume
-           FROM raw_akshare_futures_daily
-           WHERE code = $1 AND trade_date BETWEEN $2 AND $3
-             AND CAST(close AS float8) > 0
-           ORDER BY trade_date`,
-          [akCode, from, to],
-        ).catch(() => [] as CandleRow[])
+    // Supplement / fallback: akshare continuous contract
+    // Always attempt AkShare so recent dates missing from raw_futures_contracts_daily
+    // (e.g. close=0 rows filtered by close>0) are filled in from AkShare.
+    const akCode = AKSHARE_CODE[product]
+    if (akCode) {
+      const akRows = await query<CandleRow>(
+        `SELECT trade_date::text                    AS date,
+                CAST(open   AS float8)              AS open,
+                CAST(high   AS float8)              AS high,
+                CAST(low    AS float8)              AS low,
+                CAST(close  AS float8)              AS close,
+                CAST(COALESCE(volume, 0) AS float8) AS volume
+         FROM raw_akshare_futures_daily
+         WHERE code = $1 AND trade_date BETWEEN $2 AND $3
+           AND CAST(close AS float8) > 0
+         ORDER BY trade_date`,
+        [akCode, from, to],
+      ).catch(() => [] as CandleRow[])
+
+      if (rows.length === 0) {
+        // Primary returned nothing — use AkShare entirely
+        rows = akRows
+      } else if (akRows.length > 0) {
+        // Primary has historical data but may be missing recent dates — supplement
+        const primaryDates = new Set(rows.map(r => r.date))
+        const supplement = akRows.filter(r => !primaryDates.has(r.date))
+        if (supplement.length > 0) {
+          rows = [...rows, ...supplement].sort((a, b) => a.date.localeCompare(b.date))
+        }
       }
     }
 

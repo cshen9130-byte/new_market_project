@@ -330,24 +330,31 @@ export async function GET(req: Request) {
         [product, from, to],
       ).catch(() => [] as BenchRow[])
 
-      // Fallback: use continuous contract from raw_akshare_futures_daily
-      if (benchmarkRows.length === 0) {
-        const akCode = AKSHARE_CODE[product]
-        if (akCode) {
-          benchmarkRows = await query<BenchRow>(
-            `SELECT trade_date::text                    AS date,
-                    CAST(open      AS float8)           AS open,
-                    CAST(high      AS float8)           AS high,
-                    CAST(low       AS float8)           AS low,
-                    CAST(close     AS float8)           AS close,
-                    CAST(COALESCE(volume, 0) AS float8) AS volume
-             FROM raw_akshare_futures_daily
-             WHERE code = $1
-               AND trade_date BETWEEN $2 AND $3
-               AND CAST(close AS float8) > 0
-             ORDER BY trade_date`,
-            [akCode, from, to],
-          ).catch(() => [] as BenchRow[])
+      // Fallback + supplement: use continuous contract from raw_akshare_futures_daily
+      const akCode = AKSHARE_CODE[product]
+      if (akCode) {
+        const akRows = await query<BenchRow>(
+          `SELECT trade_date::text                    AS date,
+                  CAST(open      AS float8)           AS open,
+                  CAST(high      AS float8)           AS high,
+                  CAST(low       AS float8)           AS low,
+                  CAST(close     AS float8)           AS close,
+                  CAST(COALESCE(volume, 0) AS float8) AS volume
+           FROM raw_akshare_futures_daily
+           WHERE code = $1
+             AND trade_date BETWEEN $2 AND $3
+             AND CAST(close AS float8) > 0
+           ORDER BY trade_date`,
+          [akCode, from, to],
+        ).catch(() => [] as BenchRow[])
+        if (benchmarkRows.length === 0) {
+          benchmarkRows = akRows
+        } else if (akRows.length > 0) {
+          const primaryDates = new Set(benchmarkRows.map(r => r.date))
+          const supplement = akRows.filter(r => !primaryDates.has(r.date))
+          if (supplement.length > 0) {
+            benchmarkRows = [...benchmarkRows, ...supplement].sort((a, b) => a.date.localeCompare(b.date))
+          }
         }
       }
     } else {

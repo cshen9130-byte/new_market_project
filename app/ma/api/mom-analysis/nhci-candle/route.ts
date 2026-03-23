@@ -38,11 +38,9 @@ export async function GET(req: Request) {
       date: string; open: number; high: number; low: number; close: number; volume: number
     }>(nhSql, params)
 
-    if (rows.length > 0) {
-      return NextResponse.json({ ok: true, data: rows, source: "nh" })
-    }
-
-    // ── Fallback: raw_akshare_futures_daily ───────────────────────────────────
+    // ── Supplement / fallback: raw_akshare_futures_daily ─────────────────────
+    // Always try AkShare when a fallbackCode is given so recent dates missing
+    // from raw_nanhua_indices_daily (e.g. close=0 filtered out) are filled in.
     if (fallbackCode) {
       const { params: fbParams, conditions: fbCond } = buildParams(fallbackCode)
       const akSql = `
@@ -59,11 +57,22 @@ export async function GET(req: Request) {
       `
       const fbRows = await query<{
         date: string; open: number; high: number; low: number; close: number; volume: number
-      }>(akSql, fbParams)
-      return NextResponse.json({ ok: true, data: fbRows, source: "akshare" })
+      }>(akSql, fbParams).catch(() => [] as typeof rows)
+
+      if (rows.length === 0) {
+        return NextResponse.json({ ok: true, data: fbRows, source: "akshare" })
+      } else if (fbRows.length > 0) {
+        // Supplement NH data with AkShare for any dates NH is missing
+        const nhDates = new Set(rows.map(r => r.date))
+        const supplement = fbRows.filter(r => !nhDates.has(r.date))
+        if (supplement.length > 0) {
+          const merged = [...rows, ...supplement].sort((a, b) => a.date.localeCompare(b.date))
+          return NextResponse.json({ ok: true, data: merged, source: "nh+akshare" })
+        }
+      }
     }
 
-    return NextResponse.json({ ok: true, data: [], source: "nh" })
+    return NextResponse.json({ ok: true, data: rows, source: rows.length > 0 ? "nh" : "empty" })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
