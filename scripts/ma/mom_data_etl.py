@@ -292,6 +292,18 @@ def _max_date(conn, table: str, col: str = "trade_date") -> date | None:
     return row[0] if (row and row[0]) else None
 
 
+def _max_valid_date(conn, table: str, col: str = "trade_date") -> date | None:
+    """Max date where close > 0 (skips placeholder rows stored before market close)."""
+    with conn.cursor() as cur:
+        try:
+            cur.execute(f"SELECT MAX({col}) FROM {table} WHERE CAST(close AS float8) > 0")  # noqa: S608
+            row = cur.fetchone()
+            return row[0] if (row and row[0]) else None
+        except Exception:
+            conn.rollback()
+            return _max_date(conn, table, col)
+
+
 def _run_script(
     script_name: str,
     extra_args: list | None = None,
@@ -367,8 +379,8 @@ def _step_nanhua_indices(conn) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = _max_date(conn, "raw_nanhua_indices_daily")
-    if cur_max and cur_max >= today - timedelta(days=1):
+    cur_max = _max_valid_date(conn, "raw_nanhua_indices_daily")
+    if cur_max and cur_max >= today:
         log.info("NH indices up-to-date (%s), skipping.", cur_max)
         return 0
 
@@ -454,8 +466,8 @@ def _step_nanhua_commodity_indices(conn) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = _max_date(conn, "raw_nanhua_commodity_indices_daily")
-    if cur_max and cur_max >= today - timedelta(days=1):
+    cur_max = _max_valid_date(conn, "raw_nanhua_commodity_indices_daily")
+    if cur_max and cur_max >= today:
         log.info("NH commodity indices up-to-date (%s), skipping.", cur_max)
         return 0
 
@@ -570,8 +582,8 @@ def _step_futures_contracts_ohlcv(conn) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = _max_date(conn, "raw_futures_contracts_daily")
-    if cur_max and cur_max >= today - timedelta(days=1):
+    cur_max = _max_valid_date(conn, "raw_futures_contracts_daily")
+    if cur_max and cur_max >= today:
         log.info("Futures contracts OHLCV up-to-date (%s), skipping.", cur_max)
         return 0
 
@@ -657,8 +669,8 @@ def _step_akshare_futures_daily(conn) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = _max_date(conn, "raw_akshare_futures_daily")
-    if cur_max and cur_max >= today - timedelta(days=1):
+    cur_max = _max_valid_date(conn, "raw_akshare_futures_daily")
+    if cur_max and cur_max >= today:
         log.info("AkShare futures daily up-to-date (%s), skipping.", cur_max)
         return 0
 
