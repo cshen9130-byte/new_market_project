@@ -24,15 +24,24 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import posixpath
 import re
+import subprocess
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 from xml.etree import ElementTree as ET
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("mom_etl")
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -246,6 +255,476 @@ def resolve_base_dir(override: str | None) -> Path:
     # default: project sibling folder ../mom_data/03.投顾逐日
     project_root = Path(__file__).resolve().parents[2]
     return project_root.parent / "mom_data" / "03.投顾逐日"
+
+
+# ── Market data helpers ───────────────────────────────────────────────────────
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
+def _safe_float(v) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_date(val) -> date | None:
+    if val is None:
+        return None
+    if isinstance(val, date):
+        return val
+    s = str(val).replace("-", "").strip()
+    try:
+        return datetime.strptime(s, "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def _iso(d: date) -> str:
+    return d.strftime("%Y-%m-%d")
+
+
+def _max_date(conn, table: str, col: str = "trade_date") -> date | None:
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT MAX({col}) FROM {table}")  # noqa: S608
+        row = cur.fetchone()
+    return row[0] if (row and row[0]) else None
+
+
+def _run_script(
+    script_name: str,
+    extra_args: list | None = None,
+    timeout: int = 600,
+) -> dict | None:
+    """Run a sibling script and return its JSON stdout, or None on failure."""
+    script_path = SCRIPT_DIR / script_name
+    python_exe = os.environ.get("PYTHON_EXE") or (
+        "py" if sys.platform == "win32" else "python3"
+    )
+    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
+    cmd = prefix + [str(script_path)] + (extra_args or [])
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout, env=os.environ
+        )
+        stderr = (result.stderr or "").strip()
+        if result.returncode != 0:
+            log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
+        elif stderr:
+            log.info("[%s] stderr:\n%s", script_name, stderr[:2000])
+        stdout = (result.stdout or "").strip()
+        if stdout:
+            first = stdout.find("{")
+            last = stdout.rfind("}")
+            if first != -1 and last > first:
+                try:
+                    return json.loads(stdout[first: last + 1])
+                except json.JSONDecodeError:
+                    pass
+        log.warning("[%s] no valid JSON in stdout", script_name)
+        return None
+    except subprocess.TimeoutExpired:
+        log.error("[%s] timed out after %ds", script_name, timeout)
+        return None
+    except Exception as exc:
+        log.error("[%s] exception: %s", script_name, exc)
+        return None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Market data steps (mirrors nightly_etl.py, called after trade-detail ETL)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_MARKET_BACKFILL_START = date(2025, 1, 1)
+
+
+def _step_nanhua_indices(conn) -> int:
+    """Incremental fetch of 17 南华综合指数 OHLCV → raw_nanhua_indices_daily."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_nanhua_indices_daily (
+                trade_date  DATE        NOT NULL,
+                code        TEXT        NOT NULL,
+                name        TEXT,
+                open        NUMERIC,
+                close       NUMERIC,
+                high        NUMERIC,
+                low         NUMERIC,
+                preclose    NUMERIC,
+                change      NUMERIC,
+                pct_change  NUMERIC,
+                volume      NUMERIC,
+                amount      NUMERIC,
+                turn        NUMERIC,
+                amplitude   NUMERIC,
+                source      TEXT        NOT NULL DEFAULT 'emquant',
+                fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, code)
+            )
+        """)
+        cur.execute("ALTER TABLE raw_nanhua_indices_daily ADD COLUMN IF NOT EXISTS name TEXT")
+    conn.commit()
+
+    today = date.today()
+    cur_max = _max_date(conn, "raw_nanhua_indices_daily")
+    if cur_max and cur_max >= today - timedelta(days=1):
+        log.info("NH indices up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    start = _MARKET_BACKFILL_START if cur_max is None else cur_max + timedelta(days=1)
+    log.info("NH indices: fetching %s → %s …", start, today)
+    out = _run_script("get_nanhua_indices_daily.py", extra_args=[_iso(start), _iso(today)], timeout=300)
+    if not out or out.get("error"):
+        log.warning("NH indices fetch failed: %s", out)
+        return 0
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        return 0
+
+    try:
+        from psycopg2.extras import execute_values  # type: ignore[import-untyped]
+    except ImportError:
+        log.warning("psycopg2 not available, skipping NH indices upsert")
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d = _to_date(str(r.get("date", "")).replace("-", ""))
+        code = r.get("code")
+        if not d or not code:
+            continue
+        records.append((
+            d, code, r.get("name") or "",
+            _safe_float(r.get("open")), _safe_float(r.get("close")),
+            _safe_float(r.get("high")), _safe_float(r.get("low")),
+            _safe_float(r.get("preclose")), _safe_float(r.get("change")),
+            _safe_float(r.get("pct_change")), _safe_float(r.get("volume")),
+            _safe_float(r.get("amount")), _safe_float(r.get("turn")),
+            _safe_float(r.get("amplitude")), "emquant",
+        ))
+    if not records:
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(cur, """
+            INSERT INTO raw_nanhua_indices_daily
+                (trade_date, code, name, open, close, high, low, preclose,
+                 change, pct_change, volume, amount, turn, amplitude, source)
+            VALUES %s
+            ON CONFLICT (trade_date, code) DO UPDATE
+                SET name=EXCLUDED.name, open=EXCLUDED.open, close=EXCLUDED.close,
+                    high=EXCLUDED.high, low=EXCLUDED.low, preclose=EXCLUDED.preclose,
+                    change=EXCLUDED.change, pct_change=EXCLUDED.pct_change,
+                    volume=EXCLUDED.volume, amount=EXCLUDED.amount,
+                    turn=EXCLUDED.turn, amplitude=EXCLUDED.amplitude,
+                    fetched_at=NOW()
+        """, records)
+    conn.commit()
+    log.info("NH indices: upserted %d rows.", len(records))
+    return len(records)
+
+
+def _step_nanhua_commodity_indices(conn) -> int:
+    """Incremental fetch of 80 南华单品种指数 OHLCV → raw_nanhua_commodity_indices_daily."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_nanhua_commodity_indices_daily (
+                trade_date  DATE        NOT NULL,
+                code        TEXT        NOT NULL,
+                name        TEXT,
+                open        NUMERIC,
+                close       NUMERIC,
+                high        NUMERIC,
+                low         NUMERIC,
+                preclose    NUMERIC,
+                change      NUMERIC,
+                pct_change  NUMERIC,
+                volume      NUMERIC,
+                amount      NUMERIC,
+                turn        NUMERIC,
+                amplitude   NUMERIC,
+                source      TEXT        NOT NULL DEFAULT 'emquant',
+                fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, code)
+            )
+        """)
+        cur.execute("ALTER TABLE raw_nanhua_commodity_indices_daily ADD COLUMN IF NOT EXISTS name TEXT")
+    conn.commit()
+
+    today = date.today()
+    cur_max = _max_date(conn, "raw_nanhua_commodity_indices_daily")
+    if cur_max and cur_max >= today - timedelta(days=1):
+        log.info("NH commodity indices up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    start = _MARKET_BACKFILL_START if cur_max is None else cur_max + timedelta(days=1)
+    log.info("NH commodity indices: fetching %s → %s …", start, today)
+    out = _run_script("get_nanhua_commodity_indices_daily.py", extra_args=[_iso(start), _iso(today)], timeout=600)
+    if not out or out.get("error"):
+        log.warning("NH commodity indices fetch failed: %s", out)
+        return 0
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        return 0
+
+    try:
+        from psycopg2.extras import execute_values  # type: ignore[import-untyped]
+    except ImportError:
+        log.warning("psycopg2 not available, skipping NH commodity indices upsert")
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d = _to_date(str(r.get("date", "")).replace("-", ""))
+        code = r.get("code")
+        if not d or not code:
+            continue
+        records.append((
+            d, code, r.get("name") or "",
+            _safe_float(r.get("open")), _safe_float(r.get("close")),
+            _safe_float(r.get("high")), _safe_float(r.get("low")),
+            _safe_float(r.get("preclose")), _safe_float(r.get("change")),
+            _safe_float(r.get("pct_change")), _safe_float(r.get("volume")),
+            _safe_float(r.get("amount")), _safe_float(r.get("turn")),
+            _safe_float(r.get("amplitude")), "emquant",
+        ))
+    if not records:
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(cur, """
+            INSERT INTO raw_nanhua_commodity_indices_daily
+                (trade_date, code, name, open, close, high, low, preclose,
+                 change, pct_change, volume, amount, turn, amplitude, source)
+            VALUES %s
+            ON CONFLICT (trade_date, code) DO UPDATE
+                SET name=EXCLUDED.name, open=EXCLUDED.open, close=EXCLUDED.close,
+                    high=EXCLUDED.high, low=EXCLUDED.low, preclose=EXCLUDED.preclose,
+                    change=EXCLUDED.change, pct_change=EXCLUDED.pct_change,
+                    volume=EXCLUDED.volume, amount=EXCLUDED.amount,
+                    turn=EXCLUDED.turn, amplitude=EXCLUDED.amplitude,
+                    fetched_at=NOW()
+        """, records)
+    conn.commit()
+    log.info("NH commodity indices: upserted %d rows.", len(records))
+    return len(records)
+
+
+_FC_FIELDS = (
+    "open", "close", "high", "low", "preclose", "average",
+    "change", "pct_change", "volume", "amount", "spread",
+    "clear", "preclear", "pct_change_clear", "change_clear",
+    "hqoi", "change_oi", "amplitude", "mainforce",
+    "uni_volume", "uni_amount", "uni_hqoi", "uni_change_oi",
+    "change_close", "pct_change_close",
+)
+
+
+def _step_futures_contracts_ohlcv(conn) -> int:
+    """Incremental fetch of per-contract daily OHLCV → raw_futures_contracts_daily.
+
+    Source of contract list: mom_futures_trade_details."合约"
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_futures_contracts_daily (
+                trade_date        DATE        NOT NULL,
+                contract          TEXT        NOT NULL,
+                open              NUMERIC,
+                close             NUMERIC,
+                high              NUMERIC,
+                low               NUMERIC,
+                preclose          NUMERIC,
+                average           NUMERIC,
+                change            NUMERIC,
+                pct_change        NUMERIC,
+                volume            NUMERIC,
+                amount            NUMERIC,
+                spread            NUMERIC,
+                clear             NUMERIC,
+                preclear          NUMERIC,
+                pct_change_clear  NUMERIC,
+                change_clear      NUMERIC,
+                hqoi              NUMERIC,
+                change_oi         NUMERIC,
+                amplitude         NUMERIC,
+                mainforce         TEXT,
+                uni_volume        NUMERIC,
+                uni_amount        NUMERIC,
+                uni_hqoi          NUMERIC,
+                uni_change_oi     NUMERIC,
+                change_close      NUMERIC,
+                pct_change_close  NUMERIC,
+                source            TEXT        NOT NULL DEFAULT 'emquant',
+                fetched_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, contract)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_raw_futures_contracts_daily_contract
+              ON raw_futures_contracts_daily (contract)
+        """)
+    conn.commit()
+
+    today = date.today()
+    cur_max = _max_date(conn, "raw_futures_contracts_daily")
+    if cur_max and cur_max >= today - timedelta(days=1):
+        log.info("Futures contracts OHLCV up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    # Verify source table exists
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_name = 'mom_futures_trade_details'
+            )
+        """)
+        if not cur.fetchone()[0]:
+            log.warning("mom_futures_trade_details not found — skipping futures OHLCV.")
+            return 0
+
+    start = _MARKET_BACKFILL_START if cur_max is None else cur_max + timedelta(days=1)
+    log.info("Futures contracts OHLCV: fetching %s → %s …", start, today)
+    out = _run_script("fetch_futures_contracts_daily.py", extra_args=[_iso(start), _iso(today)], timeout=900)
+    if not out or out.get("error"):
+        log.warning("Futures contracts OHLCV fetch failed: %s", out)
+        return 0
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        return 0
+
+    try:
+        from psycopg2.extras import execute_values  # type: ignore[import-untyped]
+    except ImportError:
+        log.warning("psycopg2 not available, skipping futures OHLCV upsert")
+        return 0
+
+    col_placeholders = ", ".join(["%s"] * (2 + len(_FC_FIELDS) + 1))
+    records = []
+    for r in rows_raw:
+        d = _to_date(str(r.get("date", "")).replace("-", ""))
+        contract = (r.get("contract") or "").strip()
+        if not d or not contract:
+            continue
+        row = [d, contract] + [_safe_float(r.get(f)) if f != "mainforce" else r.get(f) for f in _FC_FIELDS] + ["emquant"]
+        records.append(tuple(row))
+    if not records:
+        return 0
+
+    update_cols = [f for f in _FC_FIELDS]
+    update_set = ", ".join(f"{c}=EXCLUDED.{c}" for c in update_cols)
+    insert_cols = "trade_date, contract, " + ", ".join(_FC_FIELDS) + ", source"
+    with conn.cursor() as cur:
+        execute_values(cur, f"""
+            INSERT INTO raw_futures_contracts_daily ({insert_cols})
+            VALUES %s
+            ON CONFLICT (trade_date, contract) DO UPDATE
+                SET {update_set}, fetched_at=NOW()
+        """, records)
+    conn.commit()
+    log.info("Futures contracts OHLCV: upserted %d rows.", len(records))
+    return len(records)
+
+
+def _step_akshare_futures_daily(conn) -> int:
+    """Incremental fetch of 87 continuous futures contracts via AkShare → raw_akshare_futures_daily."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_akshare_futures_daily (
+                trade_date  DATE        NOT NULL,
+                code        TEXT        NOT NULL,
+                open        NUMERIC,
+                close       NUMERIC,
+                high        NUMERIC,
+                low         NUMERIC,
+                pct_change  NUMERIC,
+                volume      NUMERIC,
+                clear       NUMERIC,
+                source      TEXT        NOT NULL DEFAULT 'akshare',
+                fetched_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, code)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_raw_akshare_futures_daily_code
+              ON raw_akshare_futures_daily (code)
+        """)
+    conn.commit()
+
+    today = date.today()
+    cur_max = _max_date(conn, "raw_akshare_futures_daily")
+    if cur_max and cur_max >= today - timedelta(days=1):
+        log.info("AkShare futures daily up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    start = _MARKET_BACKFILL_START if cur_max is None else cur_max + timedelta(days=1)
+    log.info("AkShare futures daily: fetching %s → %s …", start, today)
+    out = _run_script("fetch_akshare_futures_daily.py", extra_args=[_iso(start), _iso(today)], timeout=900)
+    if not out or out.get("error"):
+        log.warning("AkShare futures daily fetch failed: %s", out)
+        return 0
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        return 0
+
+    try:
+        from psycopg2.extras import execute_values  # type: ignore[import-untyped]
+    except ImportError:
+        log.warning("psycopg2 not available, skipping AkShare futures upsert")
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d = _to_date(str(r.get("date", "")).replace("-", ""))
+        code = (r.get("code") or "").strip()
+        if not d or not code:
+            continue
+        records.append((
+            d, code,
+            _safe_float(r.get("open")), _safe_float(r.get("close")),
+            _safe_float(r.get("high")), _safe_float(r.get("low")),
+            _safe_float(r.get("pct_change")), _safe_float(r.get("volume")),
+            _safe_float(r.get("clear")), "akshare",
+        ))
+    if not records:
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(cur, """
+            INSERT INTO raw_akshare_futures_daily
+                (trade_date, code, open, close, high, low, pct_change, volume, clear, source)
+            VALUES %s
+            ON CONFLICT (trade_date, code) DO UPDATE
+                SET open=EXCLUDED.open, close=EXCLUDED.close,
+                    high=EXCLUDED.high, low=EXCLUDED.low,
+                    pct_change=EXCLUDED.pct_change, volume=EXCLUDED.volume,
+                    clear=EXCLUDED.clear, fetched_at=NOW()
+        """, records)
+    conn.commit()
+    log.info("AkShare futures daily: upserted %d rows.", len(records))
+    return len(records)
+
+
+def run_market_data_steps(conn) -> None:
+    """Run all 4 market data steps needed by 品种交易回顾 charts."""
+    market_steps = [
+        ("nanhua_indices",           _step_nanhua_indices),
+        ("nanhua_commodity_indices", _step_nanhua_commodity_indices),
+        ("futures_contracts_ohlcv",  _step_futures_contracts_ohlcv),
+        ("akshare_futures_daily",    _step_akshare_futures_daily),
+    ]
+    for name, fn in market_steps:
+        try:
+            n = fn(conn)
+            log.info("Market step %s: %d rows upserted.", name, n)
+        except Exception as exc:
+            log.error("Market step %s failed: %s", name, exc)
 
 
 def clean_cell(value):
@@ -1120,7 +1599,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         return False, f"error: {rel} {exc}"
 
 
-def run(base_dir: Path, reset: bool = False) -> int:
+def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False) -> int:
     files = collect_xlsx_files(base_dir)
     if not files:
         print(json.dumps({"job": JOB_NAME, "processed": 0, "changed": 0, "message": "No xlsx files found"}, ensure_ascii=False))
@@ -1226,6 +1705,12 @@ def run(base_dir: Path, reset: bool = False) -> int:
             out["sample"] = messages[:20]
 
         print(json.dumps(out, ensure_ascii=False))
+
+        # ── Market data for 品种交易回顾 charts ──────────────────────────────
+        if not skip_market_data:
+            log.info("Running market data steps for 品种交易回顾 charts …")
+            run_market_data_steps(conn)
+
         return 0 if err_count == 0 else 2
 
     finally:
@@ -1238,6 +1723,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Incremental ETL for MOM 成交明细 to PostgreSQL")
     parser.add_argument("--base-dir", default=None, help="MOM data directory, defaults to MOM_DATA_DIR")
     parser.add_argument("--reset", action="store_true", help="Drop and recreate tables before processing (full reload)")
+    parser.add_argument("--skip-market-data", action="store_true", help="Skip market data steps (nanhua indices, futures OHLCV, akshare)")
     args = parser.parse_args()
 
     base_dir = resolve_base_dir(args.base_dir)
@@ -1245,7 +1731,7 @@ def main() -> None:
         print(json.dumps({"job": JOB_NAME, "error": f"base dir not found: {base_dir}"}, ensure_ascii=False))
         sys.exit(1)
 
-    code = run(base_dir, reset=args.reset)
+    code = run(base_dir, reset=args.reset, skip_market_data=args.skip_market_data)
     sys.exit(code)
 
 
