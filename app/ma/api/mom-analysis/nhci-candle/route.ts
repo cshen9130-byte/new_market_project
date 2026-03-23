@@ -14,9 +14,11 @@ export async function GET(req: Request) {
 
     const buildParams = (primaryCode: string) => {
       const params: unknown[] = [primaryCode]
-      const conditions = [`code = $1`, `CAST(close AS float8) > 0`]
+      const conditions = [`code = $1`]
       if (from) { params.push(from); conditions.push(`trade_date >= $${params.length}::date`) }
       if (to)   { params.push(to);   conditions.push(`trade_date <= $${params.length}::date`) }
+      // Exclude fully-empty rows (placeholder before market opens) but keep partial rows
+      conditions.push(`(CAST(open AS float8) > 0 OR CAST(close AS float8) > 0 OR CAST(high AS float8) > 0)`)
       return { params, conditions }
     }
 
