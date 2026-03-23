@@ -292,11 +292,22 @@ def _max_date(conn, table: str, col: str = "trade_date") -> date | None:
     return row[0] if (row and row[0]) else None
 
 
-def _max_valid_date(conn, table: str, col: str = "trade_date") -> date | None:
-    """Max date where close > 0 (skips placeholder rows stored before market close)."""
+def _max_valid_date(conn, table: str, col: str = "trade_date", code: str | None = None) -> date | None:
+    """Max date where close > 0 for a specific code (or table-wide if code is None).
+
+    Using a specific representative code avoids the pitfall where other codes in
+    the same table have valid close>0 for today while the target code still has
+    close=0 (placeholder stored by a pre-close nightly ETL run).
+    """
     with conn.cursor() as cur:
         try:
-            cur.execute(f"SELECT MAX({col}) FROM {table} WHERE CAST(close AS float8) > 0")  # noqa: S608
+            if code:
+                cur.execute(
+                    f"SELECT MAX({col}) FROM {table} WHERE code = %s AND CAST(close AS float8) > 0",  # noqa: S608
+                    (code,),
+                )
+            else:
+                cur.execute(f"SELECT MAX({col}) FROM {table} WHERE CAST(close AS float8) > 0")  # noqa: S608
             row = cur.fetchone()
             return row[0] if (row and row[0]) else None
         except Exception:
@@ -379,9 +390,11 @@ def _step_nanhua_indices(conn) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = _max_valid_date(conn, "raw_nanhua_indices_daily")
+    # Check NHCI.NH specifically — other codes may have valid close>0 for today
+    # while NHCI.NH still has close=0 (pre-close placeholder from nightly ETL)
+    cur_max = _max_valid_date(conn, "raw_nanhua_indices_daily", code="NHCI.NH")
     if cur_max and cur_max >= today:
-        log.info("NH indices up-to-date (%s), skipping.", cur_max)
+        log.info("NH indices up-to-date (NHCI.NH %s), skipping.", cur_max)
         return 0
 
     start = _MARKET_BACKFILL_START if cur_max is None else cur_max + timedelta(days=1)
@@ -466,7 +479,12 @@ def _step_nanhua_commodity_indices(conn) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = _max_valid_date(conn, "raw_nanhua_commodity_indices_daily")
+    # Check NHAU.NH (gold) as representative — all commodity indices are fetched
+    # together, and if one has close=0 they all do
+    cur_max = _max_valid_date(conn, "raw_nanhua_commodity_indices_daily", code="NHAU.NH")
+    if cur_max is None:
+        # NHAU.NH may not exist yet — fall back to table-wide check
+        cur_max = _max_valid_date(conn, "raw_nanhua_commodity_indices_daily")
     if cur_max and cur_max >= today:
         log.info("NH commodity indices up-to-date (%s), skipping.", cur_max)
         return 0
