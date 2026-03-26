@@ -8,7 +8,7 @@ const INDEXES = [
   { code: "NHAI.NH", name: "南华农产品指数" },
   { code: "NHECI.NH", name: "南华能化指数" },
   { code: "NHFI.NH", name: "南华黑色指数" },
-  { code: "NHMI.NH", name: "南华金属指数" },
+  { code: "NHPMI.NH", name: "南华贵金属指数" },
   { code: "NHNEI.NH", name: "南华新能源指数" },
   { code: "NHNFI.NH", name: "南华有色金属指数" },
 ] as const

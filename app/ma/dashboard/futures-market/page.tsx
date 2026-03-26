@@ -475,7 +475,7 @@ export default function FuturesMarketPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>南华细分板块指数</CardTitle>
+                <CardTitle>南华板块指数</CardTitle>
                 <CardDescription>去年至今累计涨跌幅对比（同一起始点）</CardDescription>
               </div>
               {sectorIndices.length > 0 && (() => {
@@ -617,7 +617,7 @@ export default function FuturesMarketPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>南华细分板块指数 — 滚动波动率</CardTitle>
+                <CardTitle>南华板块指数 — 滚动波动率</CardTitle>
                 <CardDescription>20日滚动年化波动率（日收益率标准差 × √252）</CardDescription>
               </div>
             </div>
@@ -745,7 +745,7 @@ export default function FuturesMarketPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>板块截面波动率</CardTitle>
+                <CardTitle>南华板块截面波动率</CardTitle>
                 <CardDescription>每日各板块指数日收益率的截面标准差（衡量板块间分化程度）</CardDescription>
               </div>
             </div>
@@ -880,7 +880,7 @@ export default function FuturesMarketPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>南华细分板块指数 — 滚动相关性矩阵</CardTitle>
+                <CardTitle>南华板块指数 — 滚动相关性矩阵</CardTitle>
                 <CardDescription>基于所选区间内日收益率的 Pearson 相关系数</CardDescription>
               </div>
             </div>
@@ -1020,7 +1020,7 @@ export default function FuturesMarketPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>南华细分板块指数 — 滚动相关性走势</CardTitle>
+                <CardTitle>南华板块指数 — 滚动相关性走势</CardTitle>
                 <CardDescription>20日滚动 Pearson 相关系数（每对指数一条线）</CardDescription>
               </div>
             </div>
