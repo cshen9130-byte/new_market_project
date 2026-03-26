@@ -3,19 +3,33 @@
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
 import { useEffect, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { MoreVertical } from "lucide-react"
 
 // Removed placeholder commodity and futures charts
 
+type LinePoint = { date: string; close: number | null }
+type SectorIndexSeries = { code: string; name: string; data: LinePoint[] }
+
 export default function FuturesMarketPage() {
   const [nhci, setNhci] = useState<Array<{ date: string; close: number }>>([])
   const [loadingNhci, setLoadingNhci] = useState(true)
   const [errorNhci, setErrorNhci] = useState<string | null>(null)
-  const [nheci, setNheci] = useState<Array<{ date: string; close: number }>>([])
-  const [loadingNheci, setLoadingNheci] = useState(true)
-  const [errorNheci, setErrorNheci] = useState<string | null>(null)
+  const [sectorIndices, setSectorIndices] = useState<SectorIndexSeries[]>([])
+  const [loadingSectorIndices, setLoadingSectorIndices] = useState(true)
+  const [errorSectorIndices, setErrorSectorIndices] = useState<string | null>(null)
+
+  const [indexRange, setIndexRange] = useState<"1m" | "3m" | "6m" | "1y">("1y")
+  const getIndexCutoff = (range: "1m" | "3m" | "6m" | "1y"): string => {
+    const d = new Date()
+    if (range === "1m") d.setMonth(d.getMonth() - 1)
+    else if (range === "3m") d.setMonth(d.getMonth() - 3)
+    else if (range === "6m") d.setMonth(d.getMonth() - 6)
+    else d.setFullYear(d.getFullYear() - 1)
+    return d.toISOString().slice(0, 10)
+  }
 
   const [futLatest, setFutLatest] = useState<Record<string, {
     trade_date: string;
@@ -89,23 +103,23 @@ export default function FuturesMarketPage() {
     }
   }
 
-  const reloadNheci = async (force = false) => {
-    setLoadingNheci(true)
-    setErrorNheci(null)
+  const reloadSectorIndices = async (force = false) => {
+    setLoadingSectorIndices(true)
+    setErrorSectorIndices(null)
     try {
-      const res = await fetch(`/ma/api/nanhua-energy${q(force)}`, force ? { cache: "no-store" } : undefined)
+      const res = await fetch(`/ma/api/nanhua-sector-indices${q(force)}`, force ? { cache: "no-store" } : undefined)
       const json = await res.json()
       if (json?.error) throw new Error("api")
-      if (json?.data && Array.isArray(json.data) && json.data.length > 0) {
-        setNheci(json.data)
-        lsSave("nheci", json.data)
+      if (json?.series && Array.isArray(json.series) && json.series.length > 0) {
+        setSectorIndices(json.series)
+        lsSave("sectorIndices", json.series)
       } else throw new Error("empty")
     } catch {
-      const cached = lsLoad("nheci")
-      if (cached) setNheci(cached)
-      else setErrorNheci("数据不可用")
+      const cached = lsLoad("sectorIndices")
+      if (cached) setSectorIndices(cached)
+      else setErrorSectorIndices("数据不可用")
     } finally {
-      setLoadingNheci(false)
+      setLoadingSectorIndices(false)
     }
   }
 
@@ -295,7 +309,7 @@ export default function FuturesMarketPage() {
   }
 
   useEffect(() => { reloadNhci(true) }, [])
-  useEffect(() => { reloadNheci(true) }, [])
+  useEffect(() => { reloadSectorIndices(true) }, [])
 
   useEffect(() => { reloadBasisFar(true) }, [])
 
@@ -331,7 +345,22 @@ export default function FuturesMarketPage() {
         <TabsContent value="commodity" className="space-y-6 mt-0">
 
 
-      <div className="w-full">
+      <div className="flex items-center gap-1.5">
+        {(["1m", "3m", "6m", "1y"] as const).map((r) => (
+          <Button
+            key={r}
+            size="sm"
+            variant={indexRange === r ? "default" : "outline"}
+            className="h-7 px-3 text-xs"
+            onClick={() => setIndexRange(r)}
+          >
+            {r === "1m" ? "近一个月" : r === "3m" ? "近三个月" : r === "6m" ? "近六个月" : "近一年"}
+          </Button>
+        ))}
+      </div>
+
+      <div className="flex gap-4">
+      <div className="flex-1 min-w-0">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
@@ -364,7 +393,9 @@ export default function FuturesMarketPage() {
               <div className="text-sm text-destructive">{errorNhci}</div>
             ) : (
               (() => {
-                const values = nhci
+                const cutoff = getIndexCutoff(indexRange)
+                const nhciSlice = nhci.filter((d) => d.date >= cutoff)
+                const values = nhciSlice
                   .map((d) => d.close)
                   .filter((v) => typeof v === "number" && isFinite(v)) as number[]
                 const minVal = values.length ? Math.min(...values) : 2000
@@ -390,13 +421,13 @@ export default function FuturesMarketPage() {
                   },
                   xAxis: {
                     type: "category" as const,
-                    data: nhci.map((d) => d.date),
+                    data: nhciSlice.map((d) => d.date),
                     axisLine: { lineStyle: { color: "#334155" } },
                     axisTick: { show: false },
                     axisLabel: {
                       color: "#64748b",
                       fontSize: 11,
-                      interval: Math.max(1, Math.floor(nhci.length / 7)),
+                      interval: Math.max(1, Math.floor(nhciSlice.length / 7)),
                       formatter: (v: string) => v.slice(5),
                     },
                     splitLine: { show: false },
@@ -415,7 +446,7 @@ export default function FuturesMarketPage() {
                     {
                       type: "line",
                       name: "南华商品指数",
-                      data: nhci.map((d) => d.close),
+                      data: nhciSlice.map((d) => d.close),
                       smooth: 0.3,
                       symbol: "none",
                       lineStyle: { width: 2.5, color: "#38bdf8" },
@@ -439,26 +470,25 @@ export default function FuturesMarketPage() {
         </Card>
       </div>
 
-      <div className="w-full">
+      <div className="flex-1 min-w-0">
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>南华能化指数</CardTitle>
-                <CardDescription>去年至今每日收盘价</CardDescription>
+                <CardTitle>南华细分板块指数</CardTitle>
+                <CardDescription>去年至今累计涨跌幅对比（同一起始点）</CardDescription>
               </div>
-              {nheci.length > 0 && (() => {
-                const latest = nheci[nheci.length - 1]
-                const prev = nheci[nheci.length - 2]
-                const chg = prev ? latest.close - prev.close : null
-                const chgPct = prev ? (chg! / prev.close) * 100 : null
-                const up = chg === null ? null : chg >= 0
+              {sectorIndices.length > 0 && (() => {
+                const latestDate = sectorIndices
+                  .flatMap((item) => item.data.map((point) => point.date))
+                  .sort()
+                  .at(-1)
                 return (
                   <div className="text-right">
-                    <div className="text-2xl font-bold tabular-nums">{latest.close.toFixed(2)}</div>
-                    <div className={`text-xs font-medium ${up === null ? "text-muted-foreground" : up ? "text-emerald-500" : "text-red-500"}`}>
-                      {chg !== null ? `${up ? "▲" : "▼"} ${Math.abs(chg).toFixed(2)} (${Math.abs(chgPct!).toFixed(2)}%)` : ""}
-                      <span className="ml-1 text-muted-foreground font-normal">{latest.date}</span>
+                    <div className="text-2xl font-bold tabular-nums">{sectorIndices.length}</div>
+                    <div className="text-xs font-medium text-muted-foreground">
+                      条指数
+                      {latestDate ? <span className="ml-1 font-normal">最新 {latestDate}</span> : null}
                     </div>
                   </div>
                 )
@@ -466,45 +496,83 @@ export default function FuturesMarketPage() {
             </div>
           </CardHeader>
           <CardContent className="pt-0">
-            {loadingNheci ? (
+            {loadingSectorIndices ? (
               <div className="text-sm text-muted-foreground">正在加载…</div>
-            ) : errorNheci ? (
-              <div className="text-sm text-destructive">{errorNheci}</div>
+            ) : errorSectorIndices ? (
+              <div className="text-sm text-destructive">{errorSectorIndices}</div>
             ) : (
               (() => {
-                const values = nheci
-                  .map((d) => d.close)
-                  .filter((v) => typeof v === "number" && isFinite(v)) as number[]
-                const minVal = values.length ? Math.min(...values) : 0
-                const maxVal = values.length ? Math.max(...values) : 1000
-                const range = Math.max(1, maxVal - minVal)
-                const pad = Math.max(5, range * 0.05)
-                const yMin = Math.max(0, Math.floor(minVal - pad))
-                const yMax = Math.ceil(maxVal + pad)
+                const cutoff = getIndexCutoff(indexRange)
+                const sectorSlice = sectorIndices.map((item) => ({
+                  ...item,
+                  data: item.data.filter((point) => point.date >= cutoff),
+                }))
+                const dates = Array.from(
+                  new Set(sectorSlice.flatMap((item) => item.data.map((point) => point.date))),
+                ).sort()
+
+                // Compute cumulative return for each series relative to its own first valid close
+                const returnSeries = sectorSlice.map((item) => {
+                  const pointMap = new Map(item.data.map((point) => [point.date, point.close]))
+                  const firstClose = item.data.find((point) => point.close != null && point.close > 0)?.close ?? null
+                  return {
+                    name: item.name,
+                    data: dates.map((date) => {
+                      const close = pointMap.get(date) ?? null
+                      if (close == null || firstClose == null || firstClose === 0) return null
+                      return +((close / firstClose - 1) * 100).toFixed(4)
+                    }),
+                  }
+                })
+
+                const allReturnValues = returnSeries
+                  .flatMap((item) => item.data)
+                  .filter((v): v is number => v != null && isFinite(v))
+                const minRet = allReturnValues.length ? Math.min(...allReturnValues) : -20
+                const maxRet = allReturnValues.length ? Math.max(...allReturnValues) : 20
+                const retRange = Math.max(1, maxRet - minRet)
+                const retPad = Math.max(0.5, retRange * 0.04)
+                const yMin = Math.floor(minRet - retPad)
+                const yMax = Math.ceil(maxRet + retPad)
+                const lineColors = ["#f97316", "#22c55e", "#64748b", "#f59e0b", "#06b6d4", "#a855f7"]
 
                 const option = {
-                  grid: { top: 16, right: 16, bottom: 40, left: 56 },
+                  color: lineColors,
+                  grid: { top: 48, right: 24, bottom: 40, left: 64 },
+                  legend: {
+                    top: 8,
+                    left: 8,
+                    itemWidth: 14,
+                    itemHeight: 8,
+                    textStyle: { color: "#64748b", fontSize: 11 },
+                  },
                   tooltip: {
                     trigger: "axis",
                     backgroundColor: "rgba(15,23,42,0.85)",
                     borderColor: "transparent",
                     textStyle: { color: "#f8fafc", fontSize: 12 },
                     formatter: (params: any) => {
-                      const p = params[0]
-                      if (!p) return ""
-                      return `<span style="color:#94a3b8">${p.axisValue}</span><br/>${p.marker} <b>${typeof p.value === "number" ? p.value.toFixed(2) : "-"}</b>`
+                      if (!params?.length) return ""
+                      const lines = params
+                        .filter((item: any) => typeof item.value === "number")
+                        .sort((a: any, b: any) => b.value - a.value)
+                        .map((item: any) => {
+                          const sign = item.value >= 0 ? "+" : ""
+                          return `${item.marker} ${item.seriesName}: <b>${sign}${item.value.toFixed(2)}%</b>`
+                        })
+                      return [`<span style="color:#94a3b8">${params[0].axisValue}</span>`, ...lines].join("<br/>")
                     },
                     axisPointer: { lineStyle: { color: "#475569", type: "dashed" as const } },
                   },
                   xAxis: {
                     type: "category" as const,
-                    data: nheci.map((d) => d.date),
+                    data: dates,
                     axisLine: { lineStyle: { color: "#334155" } },
                     axisTick: { show: false },
                     axisLabel: {
                       color: "#64748b",
                       fontSize: 11,
-                      interval: Math.max(1, Math.floor(nheci.length / 7)),
+                      interval: Math.max(1, Math.floor(dates.length / 7)),
                       formatter: (v: string) => v.slice(5),
                     },
                     splitLine: { show: false },
@@ -513,30 +581,288 @@ export default function FuturesMarketPage() {
                     type: "value" as const,
                     min: yMin,
                     max: yMax,
-                    scale: true,
+                    scale: false,
                     axisLine: { show: false },
                     axisTick: { show: false },
-                    axisLabel: { color: "#64748b", fontSize: 11 },
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 11,
+                      formatter: (v: number) => `${v > 0 ? "+" : ""}${v.toFixed(0)}%`,
+                    },
+                    splitLine: { lineStyle: { color: "#1e293b", type: "dashed" as const } },
+                  },
+                  series: returnSeries.map((item, index) => ({
+                    type: "line",
+                    name: item.name,
+                    data: item.data,
+                    smooth: 0.25,
+                    symbol: "none",
+                    connectNulls: false,
+                    lineStyle: { width: 2 },
+                    emphasis: { focus: "series" as const },
+                    z: lineColors.length - index,
+                  })),
+                }
+                return <ReactECharts option={option} style={{ height: 320 }} notMerge lazyUpdate />
+              })()
+            )}
+          </CardContent>
+        </Card>
+      </div>
+      </div>
+
+      <div className="flex gap-4">
+      <div className="flex-1 min-w-0">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>南华细分板块指数 — 滚动波动率</CardTitle>
+                <CardDescription>20日滚动年化波动率（日收益率标准差 × √252）</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {loadingSectorIndices ? (
+              <div className="text-sm text-muted-foreground">正在加载…</div>
+            ) : errorSectorIndices ? (
+              <div className="text-sm text-destructive">{errorSectorIndices}</div>
+            ) : (
+              (() => {
+                const WINDOW = 20
+                const cutoff = getIndexCutoff(indexRange)
+
+                // Build volatility series — need a WINDOW-day look-back before cutoff
+                const volSeries = sectorIndices.map((item) => {
+                  // Sort all data (already sorted from API)
+                  const sorted = [...item.data].sort((a, b) => a.date.localeCompare(b.date))
+                  // Find the index of the first date >= cutoff
+                  const startIdx = sorted.findIndex((p) => p.date >= cutoff)
+                  // Include WINDOW extra bars before the cutoff for the rolling window burn-in
+                  const sliceFrom = Math.max(0, startIdx - WINDOW)
+                  const working = sliceFrom >= 0 ? sorted.slice(sliceFrom) : sorted
+
+                  const volPoints: Array<{ date: string; vol: number | null }> = []
+                  for (let i = 0; i < working.length; i++) {
+                    if (i < WINDOW) { volPoints.push({ date: working[i].date, vol: null }); continue }
+                    const window = working.slice(i - WINDOW, i + 1)
+                    const closes = window.map((p) => p.close).filter((c): c is number => c != null && c > 0)
+                    if (closes.length < 2) { volPoints.push({ date: working[i].date, vol: null }); continue }
+                    const logRets: number[] = []
+                    for (let j = 1; j < closes.length; j++) logRets.push(Math.log(closes[j] / closes[j - 1]))
+                    const mean = logRets.reduce((s, v) => s + v, 0) / logRets.length
+                    const variance = logRets.reduce((s, v) => s + (v - mean) ** 2, 0) / (logRets.length - 1)
+                    volPoints.push({ date: working[i].date, vol: +(Math.sqrt(variance * 252) * 100).toFixed(4) })
+                  }
+                  // Only keep dates within the cutoff range
+                  const visible = volPoints.filter((p) => p.date >= cutoff && p.vol != null)
+                  return { name: item.name, points: visible }
+                })
+
+                const allDates = Array.from(
+                  new Set(volSeries.flatMap((s) => s.points.map((p) => p.date))),
+                ).sort()
+
+                const allVols = volSeries.flatMap((s) => s.points.map((p) => p.vol)).filter((v): v is number => v != null)
+                const maxVol = allVols.length ? Math.ceil(Math.max(...allVols) * 1.08) : 100
+                const lineColors = ["#f97316", "#22c55e", "#64748b", "#f59e0b", "#06b6d4", "#a855f7"]
+
+                const option = {
+                  color: lineColors,
+                  grid: { top: 48, right: 24, bottom: 40, left: 64 },
+                  legend: {
+                    top: 8,
+                    left: 8,
+                    itemWidth: 14,
+                    itemHeight: 8,
+                    textStyle: { color: "#64748b", fontSize: 11 },
+                  },
+                  tooltip: {
+                    trigger: "axis",
+                    backgroundColor: "rgba(15,23,42,0.85)",
+                    borderColor: "transparent",
+                    textStyle: { color: "#f8fafc", fontSize: 12 },
+                    formatter: (params: any) => {
+                      if (!params?.length) return ""
+                      const lines = params
+                        .filter((item: any) => typeof item.value === "number")
+                        .sort((a: any, b: any) => b.value - a.value)
+                        .map((item: any) => `${item.marker} ${item.seriesName}: <b>${item.value.toFixed(2)}%</b>`)
+                      return [`<span style="color:#94a3b8">${params[0].axisValue}</span>`, ...lines].join("<br/>")
+                    },
+                    axisPointer: { lineStyle: { color: "#475569", type: "dashed" as const } },
+                  },
+                  xAxis: {
+                    type: "category" as const,
+                    data: allDates,
+                    axisLine: { lineStyle: { color: "#334155" } },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 11,
+                      interval: Math.max(1, Math.floor(allDates.length / 7)),
+                      formatter: (v: string) => v.slice(5),
+                    },
+                    splitLine: { show: false },
+                  },
+                  yAxis: {
+                    type: "value" as const,
+                    min: 0,
+                    max: maxVol,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 11,
+                      formatter: (v: number) => `${v.toFixed(0)}%`,
+                    },
+                    splitLine: { lineStyle: { color: "#1e293b", type: "dashed" as const } },
+                  },
+                  series: volSeries.map((s, index) => {
+                    const dateVolMap = new Map(s.points.map((p) => [p.date, p.vol]))
+                    return {
+                      type: "line",
+                      name: s.name,
+                      data: allDates.map((d) => dateVolMap.get(d) ?? null),
+                      smooth: 0.3,
+                      symbol: "none",
+                      connectNulls: false,
+                      lineStyle: { width: 2 },
+                      emphasis: { focus: "series" as const },
+                      z: lineColors.length - index,
+                    }
+                  }),
+                }
+                return <ReactECharts option={option} style={{ height: 320 }} notMerge lazyUpdate />
+              })()
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>板块截面波动率</CardTitle>
+                <CardDescription>每日各板块指数日收益率的截面标准差（衡量板块间分化程度）</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {loadingSectorIndices ? (
+              <div className="text-sm text-muted-foreground">正在加载…</div>
+            ) : errorSectorIndices ? (
+              <div className="text-sm text-destructive">{errorSectorIndices}</div>
+            ) : (
+              (() => {
+                const cutoff = getIndexCutoff(indexRange)
+
+                // Build per-index daily return maps (need one extra day before cutoff for first return)
+                const returnMaps = sectorIndices.map((item) => {
+                  const sorted = [...item.data].sort((a, b) => a.date.localeCompare(b.date))
+                  const map = new Map<string, number>()
+                  for (let i = 1; i < sorted.length; i++) {
+                    const prev = sorted[i - 1]
+                    const curr = sorted[i]
+                    if (prev.close != null && prev.close > 0 && curr.close != null && curr.close > 0) {
+                      map.set(curr.date, (curr.close / prev.close - 1) * 100)
+                    }
+                  }
+                  return map
+                })
+
+                // Collect all dates within range that have returns for at least 2 indices
+                const allDates = Array.from(
+                  new Set(sectorIndices.flatMap((item) => item.data.map((p) => p.date))),
+                ).sort().filter((d) => d >= cutoff)
+
+                const crossVolPoints = allDates.map((date) => {
+                  const rets = returnMaps.map((m) => m.get(date)).filter((v): v is number => v != null)
+                  if (rets.length < 2) return { date, vol: null }
+                  const mean = rets.reduce((s, v) => s + v, 0) / rets.length
+                  const variance = rets.reduce((s, v) => s + (v - mean) ** 2, 0) / (rets.length - 1)
+                  return { date, vol: +Math.sqrt(variance).toFixed(4) }
+                }).filter((p) => p.vol != null)
+
+                const dates = crossVolPoints.map((p) => p.date)
+                const vols = crossVolPoints.map((p) => p.vol as number)
+                const maxVol = vols.length ? Math.ceil(Math.max(...vols) * 1.1 * 10) / 10 : 5
+
+                // Simple 10-day moving average for trend reference
+                const maData = vols.map((_, i) => {
+                  if (i < 9) return null
+                  const slice = vols.slice(i - 9, i + 1)
+                  return +(slice.reduce((s, v) => s + v, 0) / slice.length).toFixed(4)
+                })
+
+                const option = {
+                  grid: { top: 40, right: 24, bottom: 40, left: 64 },
+                  legend: {
+                    top: 8,
+                    left: 8,
+                    itemWidth: 14,
+                    itemHeight: 8,
+                    textStyle: { color: "#64748b", fontSize: 11 },
+                  },
+                  tooltip: {
+                    trigger: "axis",
+                    backgroundColor: "rgba(15,23,42,0.85)",
+                    borderColor: "transparent",
+                    textStyle: { color: "#f8fafc", fontSize: 12 },
+                    formatter: (params: any) => {
+                      if (!params?.length) return ""
+                      const lines = params
+                        .filter((item: any) => typeof item.value === "number")
+                        .map((item: any) => `${item.marker} ${item.seriesName}: <b>${item.value.toFixed(2)}%</b>`)
+                      return [`<span style="color:#94a3b8">${params[0].axisValue}</span>`, ...lines].join("<br/>")
+                    },
+                    axisPointer: { lineStyle: { color: "#475569", type: "dashed" as const } },
+                  },
+                  xAxis: {
+                    type: "category" as const,
+                    data: dates,
+                    axisLine: { lineStyle: { color: "#334155" } },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 11,
+                      interval: Math.max(1, Math.floor(dates.length / 7)),
+                      formatter: (v: string) => v.slice(5),
+                    },
+                    splitLine: { show: false },
+                  },
+                  yAxis: {
+                    type: "value" as const,
+                    min: 0,
+                    max: maxVol,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 11,
+                      formatter: (v: number) => `${v.toFixed(1)}%`,
+                    },
                     splitLine: { lineStyle: { color: "#1e293b", type: "dashed" as const } },
                   },
                   series: [
                     {
+                      type: "bar",
+                      name: "截面波动率",
+                      data: vols,
+                      barMaxWidth: 6,
+                      itemStyle: { color: "#38bdf8", opacity: 0.55 },
+                      emphasis: { itemStyle: { opacity: 0.9 } },
+                    },
+                    {
                       type: "line",
-                      name: "南华能化指数",
-                      data: nheci.map((d) => d.close),
+                      name: "10日均线",
+                      data: maData,
                       smooth: 0.3,
                       symbol: "none",
-                      lineStyle: { width: 2.5, color: "#f97316" },
-                      areaStyle: {
-                        color: {
-                          type: "linear",
-                          x: 0, y: 0, x2: 0, y2: 1,
-                          colorStops: [
-                            { offset: 0, color: "rgba(249,115,22,0.28)" },
-                            { offset: 1, color: "rgba(249,115,22,0.02)" },
-                          ],
-                        },
-                      },
+                      connectNulls: false,
+                      lineStyle: { width: 2, color: "#f97316" },
                     },
                   ],
                 }
@@ -545,6 +871,305 @@ export default function FuturesMarketPage() {
             )}
           </CardContent>
         </Card>
+      </div>
+      </div>
+
+      <div className="flex gap-4 items-start">
+      <div className="flex-1 min-w-0">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>南华细分板块指数 — 滚动相关性矩阵</CardTitle>
+                <CardDescription>基于所选区间内日收益率的 Pearson 相关系数</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {loadingSectorIndices ? (
+              <div className="text-sm text-muted-foreground">正在加载…</div>
+            ) : errorSectorIndices ? (
+              <div className="text-sm text-destructive">{errorSectorIndices}</div>
+            ) : (
+              (() => {
+                const cutoff = getIndexCutoff(indexRange)
+
+                // Build daily return series per index within the range
+                const retSeriesList = sectorIndices.map((item) => {
+                  const sorted = [...item.data]
+                    .filter((p) => p.date >= cutoff)
+                    .sort((a, b) => a.date.localeCompare(b.date))
+                  const rets: number[] = []
+                  for (let i = 1; i < sorted.length; i++) {
+                    const prev = sorted[i - 1]
+                    const curr = sorted[i]
+                    if (prev.close != null && prev.close > 0 && curr.close != null && curr.close > 0) {
+                      rets.push(curr.close / prev.close - 1)
+                    } else {
+                      rets.push(NaN)
+                    }
+                  }
+                  return { name: item.name, rets }
+                })
+
+                const n = retSeriesList.length
+                // Pearson correlation between two arrays (ignoring NaN pairs)
+                const pearson = (a: number[], b: number[]): number => {
+                  const pairs = a
+                    .map((v, i) => [v, b[i]])
+                    .filter(([x, y]) => isFinite(x) && isFinite(y))
+                  if (pairs.length < 2) return NaN
+                  const meanA = pairs.reduce((s, [x]) => s + x, 0) / pairs.length
+                  const meanB = pairs.reduce((s, [, y]) => s + y, 0) / pairs.length
+                  const num = pairs.reduce((s, [x, y]) => s + (x - meanA) * (y - meanB), 0)
+                  const denA = Math.sqrt(pairs.reduce((s, [x]) => s + (x - meanA) ** 2, 0))
+                  const denB = Math.sqrt(pairs.reduce((s, [, y]) => s + (y - meanB) ** 2, 0))
+                  return denA === 0 || denB === 0 ? NaN : num / (denA * denB)
+                }
+
+                // Build correlation matrix as heatmap data [{x, y, value}]
+                // ECharts heatmap expects data as [xIdx, yIdx, value]
+                const names = retSeriesList.map((s) => s.name)
+                const heatData: [number, number, number][] = []
+                for (let i = 0; i < n; i++) {
+                  for (let j = 0; j < n; j++) {
+                    const r = i === j ? 1 : pearson(retSeriesList[i].rets, retSeriesList[j].rets)
+                    heatData.push([j, n - 1 - i, isFinite(r) ? +r.toFixed(3) : 0])
+                  }
+                }
+
+                const option = {
+                  grid: { top: 20, right: 120, bottom: 80, left: 120 },
+                  tooltip: {
+                    position: "top" as const,
+                    backgroundColor: "rgba(15,23,42,0.9)",
+                    borderColor: "transparent",
+                    textStyle: { color: "#f8fafc", fontSize: 12 },
+                    formatter: (params: any) => {
+                      const xi = params.data[0] as number
+                      const yi = (n - 1 - params.data[1]) as number
+                      const val = params.data[2] as number
+                      return `${names[yi]} × ${names[xi]}<br/><b>r = ${val.toFixed(3)}</b>`
+                    },
+                  },
+                  xAxis: {
+                    type: "category" as const,
+                    data: names,
+                    position: "bottom" as const,
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 10,
+                      interval: 0,
+                      rotate: 30,
+                    },
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    splitArea: { show: true, areaStyle: { color: ["rgba(30,41,59,0.3)", "rgba(15,23,42,0.3)"] } },
+                  },
+                  yAxis: {
+                    type: "category" as const,
+                    data: [...names].reverse(),
+                    axisLabel: {
+                      color: "#64748b",
+                      fontSize: 10,
+                      interval: 0,
+                    },
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    splitArea: { show: true, areaStyle: { color: ["rgba(30,41,59,0.3)", "rgba(15,23,42,0.3)"] } },
+                  },
+                  visualMap: {
+                    min: -1,
+                    max: 1,
+                    calculable: true,
+                    orient: "vertical" as const,
+                    right: 8,
+                    top: "center" as const,
+                    inRange: {
+                      color: ["#3b82f6", "#1e293b", "#ef4444"],
+                    },
+                    textStyle: { color: "#64748b", fontSize: 10 },
+                  },
+                  series: [
+                    {
+                      type: "heatmap",
+                      data: heatData,
+                      label: {
+                        show: true,
+                        fontSize: 10,
+                        color: "#f8fafc",
+                        formatter: (params: any) => (params.data[2] as number).toFixed(2),
+                      },
+                      emphasis: {
+                        itemStyle: { shadowBlur: 8, shadowColor: "rgba(0,0,0,0.5)" },
+                      },
+                    },
+                  ],
+                }
+                const cellSize = Math.min(72, Math.floor((typeof window !== "undefined" ? window.innerWidth * 0.4 : 480) / n))
+                const chartH = cellSize * n + 120
+                return <ReactECharts option={option} style={{ height: Math.max(360, chartH) }} notMerge lazyUpdate />
+              })()
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>南华细分板块指数 — 滚动相关性走势</CardTitle>
+                <CardDescription>20日滚动 Pearson 相关系数（每对指数一条线）</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {loadingSectorIndices ? (
+              <div className="text-sm text-muted-foreground">正在加载…</div>
+            ) : errorSectorIndices ? (
+              <div className="text-sm text-destructive">{errorSectorIndices}</div>
+            ) : (
+              (() => {
+                const ROLL = 20
+                const cutoff = getIndexCutoff(indexRange)
+
+                // Build per-index daily return arrays aligned to a union date axis
+                // Include ROLL extra days before cutoff for burn-in
+                const allSorted = Array.from(
+                  new Set(sectorIndices.flatMap((item) => item.data.map((p) => p.date))),
+                ).sort()
+                const burnStart = allSorted[Math.max(0, allSorted.findIndex((d) => d >= cutoff) - ROLL - 1)] ?? allSorted[0]
+
+                const retMaps = sectorIndices.map((item) => {
+                  const sorted = item.data
+                    .filter((p) => p.date >= burnStart)
+                    .sort((a, b) => a.date.localeCompare(b.date))
+                  const map = new Map<string, number>()
+                  for (let i = 1; i < sorted.length; i++) {
+                    const prev = sorted[i - 1]; const curr = sorted[i]
+                    if (prev.close != null && prev.close > 0 && curr.close != null && curr.close > 0)
+                      map.set(curr.date, curr.close / prev.close - 1)
+                  }
+                  return { name: item.name, map }
+                })
+
+                // Working date axis (those with at least one return value, from burnStart)
+                const workDates = allSorted.filter((d) => d >= burnStart && retMaps.some((r) => r.map.has(d)))
+
+                // Generate pair names + rolling correlation series
+                const pairs: Array<{ label: string; data: Array<number | null> }> = []
+                for (let i = 0; i < retMaps.length; i++) {
+                  for (let j = i + 1; j < retMaps.length; j++) {
+                    const a = retMaps[i]; const b = retMaps[j]
+                    // short label: first char of each index name word
+                    const shortA = a.name.replace("南华", "").replace("指数", "")
+                    const shortB = b.name.replace("南华", "").replace("指数", "")
+                    const label = `${shortA}×${shortB}`
+                    const series: Array<number | null> = workDates.map((_, idx) => {
+                      if (idx < ROLL) return null
+                      const window = workDates.slice(idx - ROLL, idx + 1)
+                      const ra = window.map((d) => a.map.get(d)).filter((v): v is number => v != null)
+                      const rb = window.map((d) => b.map.get(d)).filter((v): v is number => v != null)
+                      // align by date
+                      const paired: [number, number][] = []
+                      workDates.slice(idx - ROLL, idx + 1).forEach((d) => {
+                        const va = a.map.get(d); const vb = b.map.get(d)
+                        if (va != null && vb != null) paired.push([va, vb])
+                      })
+                      if (paired.length < 5) return null
+                      const meanA = paired.reduce((s, [x]) => s + x, 0) / paired.length
+                      const meanB = paired.reduce((s, [, y]) => s + y, 0) / paired.length
+                      const num = paired.reduce((s, [x, y]) => s + (x - meanA) * (y - meanB), 0)
+                      const denA = Math.sqrt(paired.reduce((s, [x]) => s + (x - meanA) ** 2, 0))
+                      const denB = Math.sqrt(paired.reduce((s, [, y]) => s + (y - meanB) ** 2, 0))
+                      const r = denA === 0 || denB === 0 ? null : num / (denA * denB)
+                      return r != null ? +r.toFixed(4) : null
+                    })
+                    pairs.push({ label, data: series })
+                  }
+                }
+
+                // Trim to visible range
+                const visibleDates = workDates.filter((d) => d >= cutoff)
+                const trimStart = workDates.indexOf(visibleDates[0])
+                const trimmedPairs = pairs.map((p) => ({ ...p, data: p.data.slice(trimStart) }))
+
+                const pairColors = [
+                  "#f97316","#22c55e","#64748b","#f59e0b","#06b6d4","#a855f7",
+                  "#ec4899","#84cc16","#0ea5e9","#d946ef","#14b8a6","#fb923c",
+                  "#4ade80","#60a5fa","#c084fc",
+                ]
+
+                const option = {
+                  color: pairColors,
+                  grid: { top: 48, right: 24, bottom: 40, left: 56 },
+                  legend: {
+                    top: 8,
+                    left: 8,
+                    itemWidth: 12,
+                    itemHeight: 8,
+                    textStyle: { color: "#64748b", fontSize: 10 },
+                  },
+                  tooltip: {
+                    trigger: "axis",
+                    backgroundColor: "rgba(15,23,42,0.88)",
+                    borderColor: "transparent",
+                    textStyle: { color: "#f8fafc", fontSize: 11 },
+                    formatter: (params: any) => {
+                      if (!params?.length) return ""
+                      const lines = params
+                        .filter((item: any) => typeof item.value === "number")
+                        .sort((a: any, b: any) => b.value - a.value)
+                        .map((item: any) => `${item.marker} ${item.seriesName}: <b>${item.value.toFixed(2)}</b>`)
+                      return [`<span style="color:#94a3b8">${params[0].axisValue}</span>`, ...lines].join("<br/>")
+                    },
+                    axisPointer: { lineStyle: { color: "#475569", type: "dashed" as const } },
+                  },
+                  xAxis: {
+                    type: "category" as const,
+                    data: visibleDates,
+                    axisLine: { lineStyle: { color: "#334155" } },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#64748b", fontSize: 11,
+                      interval: Math.max(1, Math.floor(visibleDates.length / 7)),
+                      formatter: (v: string) => v.slice(5),
+                    },
+                    splitLine: { show: false },
+                  },
+                  yAxis: {
+                    type: "value" as const,
+                    min: -1, max: 1,
+                    axisLine: { show: false },
+                    axisTick: { show: false },
+                    axisLabel: {
+                      color: "#64748b", fontSize: 11,
+                      formatter: (v: number) => v.toFixed(1),
+                    },
+                    splitLine: { lineStyle: { color: "#1e293b", type: "dashed" as const } },
+                  },
+                  series: trimmedPairs.map((p, idx) => ({
+                    type: "line",
+                    name: p.label,
+                    data: p.data,
+                    smooth: 0.25,
+                    symbol: "none",
+                    connectNulls: false,
+                    lineStyle: { width: 1.5, color: pairColors[idx % pairColors.length] },
+                    emphasis: { focus: "series" as const, lineStyle: { width: 3 } },
+                  })),
+                }
+                const n = sectorIndices.length
+                const cellSize = Math.min(72, Math.floor((typeof window !== "undefined" ? window.innerWidth * 0.4 : 480) / n))
+                const chartH = Math.max(360, cellSize * n + 120)
+                return <ReactECharts option={option} style={{ height: chartH }} notMerge lazyUpdate />
+              })()
+            )}
+          </CardContent>
+        </Card>
+      </div>
       </div>
 
       <div className="w-full">
