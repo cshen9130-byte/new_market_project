@@ -9,6 +9,7 @@ const NhciCandleChart      = dynamic(() => import("@/components/ma/nhci-candle-c
 const AuTradingChart       = dynamic(() => import("@/components/ma/au-trading-chart"),         { ssr: false })
 const CrossAccountChart    = dynamic(() => import("@/components/ma/cross-account-chart"),      { ssr: false })
 const ProductCandleChart   = dynamic(() => import("@/components/ma/product-candle-chart"),     { ssr: false })
+const EquityCurveChart     = dynamic(() => import("@/components/ma/equity-curve-chart"),       { ssr: false })
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -185,7 +186,14 @@ export default function TraderAnalysisPage() {
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>("periodPnl")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
-  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review">("pnl-rank")
+  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review" | "equity-curve">("pnl-rank")
+
+  // ── equity curve state ────────────────────────────────────────────────────
+  type EquityPoint = { date: string; cumPnl: number }
+  type EquitySeries = { account: string; data: EquityPoint[] }
+  const [equitySeries, setEquitySeries] = useState<EquitySeries[]>([])
+  const [loadingEquity, setLoadingEquity] = useState(false)
+  const [errorEquity, setErrorEquity] = useState<string | null>(null)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [isMultiFullscreen, setIsMultiFullscreen] = useState(false)
 
@@ -269,6 +277,24 @@ export default function TraderAnalysisPage() {
     }
   }
 
+  const loadEquityCurve = useCallback(async (from: string, to: string) => {
+    setLoadingEquity(true)
+    setErrorEquity(null)
+    try {
+      const params = new URLSearchParams()
+      if (from) params.set("from", from)
+      if (to) params.set("to", to)
+      const res = await fetch(`/ma/api/mom-analysis/equity-curve?${params}`)
+      const data: { ok: boolean; series?: EquitySeries[]; notYetRun?: boolean; error?: string } = await res.json()
+      if (!res.ok || !data.ok) throw new Error(data.error || "请求失败")
+      setEquitySeries(data.series ?? [])
+    } catch (e) {
+      setErrorEquity(e instanceof Error ? e.message : "加载失败")
+    } finally {
+      setLoadingEquity(false)
+    }
+  }, [])
+
   const load = useCallback(async (from: string, to: string) => {
     setIsLoading(true)
     setError(null)
@@ -292,6 +318,13 @@ export default function TraderAnalysisPage() {
     load(fromDate, toDate)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (activeTab === "equity-curve") {
+      loadEquityCurve(fromDate, toDate)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab])
 
   // ── derived stats ──────────────────────────────────────────────────────────
 
@@ -334,6 +367,7 @@ export default function TraderAnalysisPage() {
         {([
           { key: "pnl-rank",       label: "盈亏排名" },
           { key: "variety-review", label: "品种交易回顾" },
+          { key: "equity-curve",   label: "盘手收益曲线" },
         ] as const).map((tab) => (
           <button
             key={tab.key}
@@ -532,6 +566,74 @@ export default function TraderAnalysisPage() {
             </div>
           </section>
         </>
+      )}
+
+      {/* 盘手收益曲线 */}
+      {activeTab === "equity-curve" && (
+        <div className="space-y-4">
+          {/* date range controls */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              {QUICK_RANGES.map((r) => {
+                const active = fromDate === r.from() && toDate === r.to()
+                return (
+                  <button
+                    key={r.label}
+                    onClick={() => {
+                      const f = r.from()
+                      const t = r.to()
+                      setFromDate(f)
+                      setToDate(t)
+                      loadEquityCurve(f, t)
+                    }}
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+                      active
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
+                    }`}
+                  >
+                    {r.label}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">起始日期</span>
+              <input
+                type="date"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">截止日期</span>
+              <input
+                type="date"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <Button size="sm" onClick={() => loadEquityCurve(fromDate, toDate)} disabled={loadingEquity}>
+              <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loadingEquity ? "animate-spin" : ""}`} />
+              查询
+            </Button>
+          </div>
+
+          {errorEquity && (
+            <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
+              {errorEquity}
+            </div>
+          )}
+
+          <EquityCurveChart
+            series={equitySeries}
+            loading={loadingEquity}
+            error={errorEquity}
+            height={480}
+          />
+        </div>
       )}
 
       {/* 盈亏排名 */}
