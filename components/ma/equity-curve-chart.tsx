@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { RefreshCw } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -34,23 +34,24 @@ function fmtNum(v: number): string {
 export default function EquityCurveChart({ series, loading, error, height = 420 }: Props) {
   const [selectedAccount, setSelectedAccount] = useState<string>("")
 
-  useEffect(() => {
-    if (series.length > 0 && (!selectedAccount || !series.find((s) => s.account === selectedAccount))) {
-      setSelectedAccount(series[0].account)
-    }
-  }, [series, selectedAccount])
+  // Derive the active account: use selectedAccount if it's in the current series,
+  // otherwise fall back to the first account available
+  const resolvedAccount =
+    selectedAccount && series.find((s) => s.account === selectedAccount)
+      ? selectedAccount
+      : series[0]?.account ?? ""
 
-  const activeSeries = series.find((s) => s.account === selectedAccount) ?? null
+  const activeSeries = series.find((s) => s.account === resolvedAccount) ?? null
 
   const header = (
     <CardHeader className="pb-2 pt-4 px-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <CardTitle className="text-sm font-medium">
-          盘手收益曲线（{selectedAccount.toUpperCase()}）
+          盘手收益曲线（{resolvedAccount.toUpperCase()}）
         </CardTitle>
         {series.length > 0 && (
           <select
-            value={selectedAccount}
+            value={resolvedAccount}
             onChange={(e) => setSelectedAccount(e.target.value)}
             className="rounded border border-input bg-background px-2 py-0.5 text-xs w-28"
           >
@@ -115,7 +116,7 @@ export default function EquityCurveChart({ series, loading, error, height = 420 
         if (!p) return date
         const val = p.value?.[1] ?? 0
         const sign = val >= 0 ? "+" : ""
-        return `${date}<br/><span style="display:inline-block;margin-right:5px;border-radius:2px;width:10px;height:10px;background:${p.color}"></span>${selectedAccount}: <b>${sign}${fmtNum(val)}</b>`
+        return `${date}<br/><span style="display:inline-block;margin-right:5px;border-radius:2px;width:10px;height:10px;background:${p.color}"></span>${resolvedAccount}: <b>${sign}${fmtNum(val)}</b>`
       },
     },
     xAxis: {
@@ -139,7 +140,7 @@ export default function EquityCurveChart({ series, loading, error, height = 420 
       { type: "slider", bottom: 28, height: 18, start: 0, end: 100 },
     ],
     series: [{
-      name: selectedAccount,
+      name: resolvedAccount,
       type: "line",
       smooth: false,
       symbol: "none",
