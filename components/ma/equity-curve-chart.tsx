@@ -19,6 +19,7 @@ const QUICK_RANGES = [
   { label: "近一月",   from: () => isoMonthOffset(-1),  to: () => isoToday()          },
   { label: "近一季度", from: () => isoMonthOffset(-3),  to: () => isoToday()          },
   { label: "近一年",   from: () => isoMonthOffset(-12), to: () => isoToday()          },
+  { label: "全部",     from: () => "2020-01-01",         to: () => isoToday()          },
 ]
 
 const LINE_COLORS = [
