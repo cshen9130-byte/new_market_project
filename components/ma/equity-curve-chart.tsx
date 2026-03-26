@@ -28,9 +28,15 @@ const LINE_COLORS = [
   "#84cc16", "#0ea5e9", "#d946ef", "#fb923c", "#6366f1",
 ]
 const LINE_COLOR = "#3b82f6"
+const INITIAL_CAPITAL = 10_000_000 // 1000万
+
+type DisplayMode = "return" | "pnl"
 
 function fmtNum(v: number): string {
   return new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v)
+}
+function fmtReturn(v: number): string {
+  return (v >= 0 ? "+" : "") + v.toFixed(2) + "%"
 }
 
 interface Props {
@@ -48,6 +54,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const [error, setError]         = useState<string | null>(null)
 
   const [selectedAccount, setSelectedAccount] = useState("rx000")
+  const [mode, setMode] = useState<DisplayMode>("return")
 
   const load = useCallback(async (f: string, t: string) => {
     setLoading(true)
@@ -72,6 +79,9 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const showAll = selectedAccount === "全部"
   const visibleSeries = showAll ? allSeries : allSeries.filter(s => s.account === selectedAccount)
 
+  const toDisplayValue = (cumPnl: number) =>
+    mode === "return" ? (cumPnl / INITIAL_CAPITAL) * 100 : cumPnl
+
   const option = visibleSeries.length > 0 ? {
     animation: false,
     grid: { top: 16, right: 24, bottom: showAll ? 56 : 56, left: 80 },
@@ -84,8 +94,8 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
           .sort((a, b) => (b.value?.[1] ?? 0) - (a.value?.[1] ?? 0))
           .map(p => {
             const val = p.value?.[1] ?? 0
-            const sign = val >= 0 ? "+" : ""
-            return `<span style="display:inline-block;margin-right:5px;border-radius:2px;width:10px;height:10px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${sign}${fmtNum(val)}</b>`
+            const formatted = mode === "return" ? fmtReturn(val) : (val >= 0 ? "+" : "") + fmtNum(val)
+            return `<span style="display:inline-block;margin-right:5px;border-radius:2px;width:10px;height:10px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${formatted}</b>`
           })
         return `${date}<br/>${lines.join("<br/>")}`
       },
@@ -93,10 +103,14 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     xAxis: { type: "time", axisLabel: { fontSize: 11 }, splitLine: { show: false } },
     yAxis: {
       type: "value",
-      axisLabel: { fontSize: 11, formatter: (v: number) => Math.abs(v) >= 10000 ? (v / 10000).toFixed(0) + "万" : v.toString() },
+      axisLabel: {
+        fontSize: 11,
+        formatter: mode === "return"
+          ? (v: number) => v.toFixed(1) + "%"
+          : (v: number) => Math.abs(v) >= 10000 ? (v / 10000).toFixed(0) + "万" : v.toString(),
+      },
       splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } },
     },
-    ...(showAll ? {} : {}),
     legend: showAll ? { type: "scroll" as const, bottom: 4, textStyle: { fontSize: 10 } } : undefined,
     dataZoom: [
       { type: "inside", start: 0, end: 100 },
@@ -110,7 +124,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       lineStyle: { width: showAll ? 1.5 : 2, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
       itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
       ...(showAll ? {} : { areaStyle: { color: LINE_COLOR, opacity: 0.08 } }),
-      data: s.data.map(d => [d.date, d.cumPnl]),
+      data: s.data.map(d => [d.date, toDisplayValue(d.cumPnl)]),
     })),
   } : null
 
@@ -121,9 +135,28 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
           {/* Row 1: title + account selector + quick ranges + dates + refresh */}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle className="text-sm font-medium">
-              盘手收益曲线（{showAll ? "全部" : selectedAccount.toUpperCase()}）
+              盘手{mode === "return" ? "收益率" : "盈亏"}曲线（{showAll ? "全部" : selectedAccount.toUpperCase()}）
             </CardTitle>
             <div className="flex flex-wrap items-center gap-1.5">
+              {/* Mode toggle */}
+              <div className="flex rounded border border-input overflow-hidden text-xs">
+                <button
+                  onClick={() => setMode("return")}
+                  className={`px-2 py-0.5 transition-colors ${
+                    mode === "return" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  收益率
+                </button>
+                <button
+                  onClick={() => setMode("pnl")}
+                  className={`px-2 py-0.5 transition-colors ${
+                    mode === "pnl" ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  盈亏
+                </button>
+              </div>
               {/* Account selector */}
               <select
                 value={selectedAccount}
