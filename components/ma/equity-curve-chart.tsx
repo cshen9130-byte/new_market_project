@@ -40,7 +40,7 @@ interface Props {
 }
 
 export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo }: Props) {
-  const [from, setFrom] = useState(defaultFrom ?? isoMonthOffset(-3))
+  const [from, setFrom] = useState(defaultFrom ?? "2020-01-01")
   const [to, setTo]     = useState(defaultTo ?? isoToday())
 
   const [allSeries, setAllSeries] = useState<EquitySeries[]>([])
