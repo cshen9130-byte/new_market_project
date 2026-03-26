@@ -28,15 +28,50 @@ const LINE_COLORS = [
   "#84cc16", "#0ea5e9", "#d946ef", "#fb923c", "#6366f1",
 ]
 const LINE_COLOR = "#3b82f6"
+const BENCHMARK_COLOR = "#f97316"
 const INITIAL_CAPITAL = 10_000_000 // 1000万
 
 type DisplayMode = "return" | "pnl"
+
+const BENCHMARK_OPTIONS = [
+  { code: "none",     name: "无基准" },
+  { code: "NHCI.NH",  name: "南华商品指数" },
+  { code: "NHAI.NH",  name: "南华农产品指数" },
+  { code: "NHECI.NH", name: "南华能化指数" },
+  { code: "NHFI.NH",  name: "南华黑色指数" },
+  { code: "NHPMI.NH", name: "南华贵金属指数" },
+  { code: "NHNEI.NH", name: "南华新能源指数" },
+  { code: "NHNFI.NH", name: "南华有色金属指数" },
+]
 
 function fmtNum(v: number): string {
   return new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v)
 }
 function fmtReturn(v: number): string {
   return (v >= 0 ? "+" : "") + v.toFixed(2) + "%"
+}
+
+/** 20-day rolling annualised volatility (%) from cumPnl series */
+function computeVolatility(data: EquityPoint[], win = 20): Array<[string, number]> {
+  const result: Array<[string, number]> = []
+  for (let i = win; i < data.length; i++) {
+    const slice = data.slice(i - win, i + 1)
+    const rets = slice.slice(1).map((pt, j) => (pt.cumPnl - slice[j].cumPnl) / INITIAL_CAPITAL)
+    const mean = rets.reduce((a, b) => a + b, 0) / rets.length
+    const variance = rets.reduce((a, b) => a + (b - mean) ** 2, 0) / (rets.length - 1)
+    result.push([data[i].date, Math.sqrt(variance * 252) * 100])
+  }
+  return result
+}
+
+/** Drawdown (%) relative to INITIAL_CAPITAL + running peak cumPnl */
+function computeDrawdown(data: EquityPoint[]): Array<[string, number]> {
+  let peak = INITIAL_CAPITAL
+  return data.map(pt => {
+    const val = INITIAL_CAPITAL + pt.cumPnl
+    if (val > peak) peak = val
+    return [pt.date, ((val - peak) / peak) * 100] as [string, number]
+  })
 }
 
 interface Props {
@@ -55,6 +90,9 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
 
   const [selectedAccount, setSelectedAccount] = useState("rx000")
   const [mode, setMode] = useState<DisplayMode>("return")
+  const [selectedBenchmark, setSelectedBenchmark] = useState("none")
+  const [benchmarkData, setBenchmarkData] = useState<Array<{ date: string; close: number }>>([])  
+  const [loadingBenchmark, setLoadingBenchmark] = useState(false)
 
   const load = useCallback(async (f: string, t: string) => {
     setLoading(true)
@@ -76,11 +114,129 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
 
   useEffect(() => { load(from, to) }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const loadBenchmark = useCallback(async (code: string, f: string, t: string) => {
+    if (code === "none") { setBenchmarkData([]); return }
+    setLoadingBenchmark(true)
+    try {
+      const params = new URLSearchParams({ from: f, to: t, codes: code })
+      const res = await fetch(`/ma/api/mom-analysis/benchmark?${params}`)
+      const json = await res.json()
+      if (!res.ok || !json.ok) { setBenchmarkData([]); return }
+      const s = json.series?.[0]
+      setBenchmarkData(s?.data ?? [])
+    } catch {
+      setBenchmarkData([])
+    } finally {
+      setLoadingBenchmark(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (mode === "return") loadBenchmark(selectedBenchmark, from, to)
+    else setBenchmarkData([])
+  }, [selectedBenchmark, mode]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const showAll = selectedAccount === "全部"
   const visibleSeries = showAll ? allSeries : allSeries.filter(s => s.account === selectedAccount)
 
   const toDisplayValue = (cumPnl: number) =>
     mode === "return" ? (cumPnl / INITIAL_CAPITAL) * 100 : cumPnl
+
+  // Determine the first date of the visible account curve so the benchmark starts there
+  const accountStartDate: string | null = (() => {
+    if (showAll) {
+      // Start at the earliest date across all visible series
+      let earliest: string | null = null
+      for (const s of visibleSeries) {
+        if (s.data.length > 0) {
+          const d = s.data[0].date
+          if (earliest === null || d < earliest) earliest = d
+        }
+      }
+      return earliest
+    }
+    const s = visibleSeries[0]
+    return s?.data?.[0]?.date ?? null
+  })()
+
+  // Benchmark: rebase to 0 at the first benchmark point >= accountStartDate
+  const benchmarkReturnSeries: Array<[string, number]> = []
+  if (mode === "return" && selectedBenchmark !== "none" && benchmarkData.length > 0) {
+    const trimmed = accountStartDate
+      ? benchmarkData.filter(pt => pt.date >= accountStartDate)
+      : benchmarkData
+    if (trimmed.length > 0) {
+      const base = trimmed[0].close
+      for (const pt of trimmed) {
+        benchmarkReturnSeries.push([pt.date, ((pt.close - base) / base) * 100])
+      }
+    }
+  }
+  const benchmarkName = BENCHMARK_OPTIONS.find(b => b.code === selectedBenchmark)?.name ?? selectedBenchmark
+  const showLegend = showAll || benchmarkReturnSeries.length > 0
+
+  // Right-side charts — computed from visible series
+  const smallChartHeight = 220
+
+  const volSeries = visibleSeries.map((s, i) => ({
+    name: s.account,
+    type: "line" as const,
+    smooth: false,
+    symbol: "none",
+    lineStyle: { width: showAll ? 1.5 : 1.8, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
+    itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
+    data: computeVolatility(s.data),
+  }))
+
+  const ddSeries = visibleSeries.map((s, i) => ({
+    name: s.account,
+    type: "line" as const,
+    smooth: false,
+    symbol: "none",
+    lineStyle: { width: showAll ? 1.5 : 1.8, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : "#ef4444" },
+    itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : "#ef4444" },
+    ...(showAll ? {} : { areaStyle: { color: "#ef4444", opacity: 0.1 } }),
+    data: computeDrawdown(s.data),
+  }))
+
+  const smallGrid = { top: 8, right: 10, bottom: 32, left: 52 }
+  const smallDataZoom = [{ type: "inside" as const, start: 0, end: 100 }]
+
+  const volOption = volSeries.some(s => s.data.length > 0) ? {
+    animation: false,
+    grid: smallGrid,
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: Array<{ axisValue: string; seriesName: string; value: [string, number]; color: string }>) => {
+        if (!params.length) return ""
+        return params[0].axisValue + "<br/>" + params.map(p =>
+          `<span style="display:inline-block;margin-right:4px;border-radius:2px;width:8px;height:8px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${(p.value?.[1] ?? 0).toFixed(1)}%</b>`
+        ).join("<br/>")
+      },
+    },
+    xAxis: { type: "time" as const, axisLabel: { fontSize: 9 }, splitLine: { show: false } },
+    yAxis: { type: "value" as const, axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(0) + "%" }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } } },
+    dataZoom: smallDataZoom,
+    series: volSeries,
+  } : null
+
+  const ddOption = ddSeries.some(s => s.data.length > 0) ? {
+    animation: false,
+    grid: smallGrid,
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: Array<{ axisValue: string; seriesName: string; value: [string, number]; color: string }>) => {
+        if (!params.length) return ""
+        return params[0].axisValue + "<br/>" + params.map(p =>
+          `<span style="display:inline-block;margin-right:4px;border-radius:2px;width:8px;height:8px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${(p.value?.[1] ?? 0).toFixed(2)}%</b>`
+        ).join("<br/>")
+      },
+    },
+    xAxis: { type: "time" as const, axisLabel: { fontSize: 9 }, splitLine: { show: false } },
+    yAxis: { type: "value" as const, max: 0, axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(0) + "%" }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } } },
+    dataZoom: smallDataZoom,
+    series: ddSeries,
+  } : null
 
   const option = visibleSeries.length > 0 ? {
     animation: false,
@@ -111,28 +267,42 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
       },
       splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } },
     },
-    legend: showAll ? { type: "scroll" as const, bottom: 4, textStyle: { fontSize: 10 } } : undefined,
+    legend: showLegend ? { type: "scroll" as const, bottom: 4, textStyle: { fontSize: 10 } } : undefined,
     dataZoom: [
       { type: "inside", start: 0, end: 100 },
-      { type: "slider", bottom: showAll ? 28 : 28, height: 18, start: 0, end: 100 },
+      { type: "slider", bottom: showLegend ? 28 : 28, height: 18, start: 0, end: 100 },
     ],
-    series: visibleSeries.map((s, i) => ({
-      name: s.account,
-      type: "line",
-      smooth: false,
-      symbol: "none",
-      lineStyle: { width: showAll ? 1.5 : 2, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
-      itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
-      ...(showAll ? {} : { areaStyle: { color: LINE_COLOR, opacity: 0.08 } }),
-      data: s.data.map(d => [d.date, toDisplayValue(d.cumPnl)]),
-    })),
+    series: [
+      ...visibleSeries.map((s, i) => ({
+        name: s.account,
+        type: "line",
+        smooth: false,
+        symbol: "none",
+        lineStyle: { width: showAll ? 1.5 : 2, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
+        itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
+        ...(showAll ? {} : { areaStyle: { color: LINE_COLOR, opacity: 0.08 } }),
+        data: s.data.map(d => [d.date, toDisplayValue(d.cumPnl)]),
+      })),
+      ...(benchmarkReturnSeries.length > 0 ? [{
+        name: benchmarkName,
+        type: "line",
+        smooth: false,
+        symbol: "none",
+        lineStyle: { width: 1.5, color: BENCHMARK_COLOR, type: "dashed" as const },
+        itemStyle: { color: BENCHMARK_COLOR },
+        data: benchmarkReturnSeries,
+      }] : []),
+    ],
   } : null
 
   return (
+    <div className="flex gap-3 items-stretch">
+    {/* Left: main equity curve */}
+    <div className="w-1/2 min-w-0 flex flex-col">
     <Card className="flex flex-col h-full">
       <CardHeader className="pb-2 shrink-0">
         <div className="flex flex-col gap-1.5">
-          {/* Row 1: title + account selector + quick ranges + dates + refresh */}
+          {/* Row 1: title + mode toggle + account selector + quick ranges + dates + refresh */}
           <div className="flex flex-wrap items-center justify-between gap-2">
             <CardTitle className="text-sm font-medium">
               盘手{mode === "return" ? "收益率" : "盈亏"}曲线（{showAll ? "全部" : selectedAccount.toUpperCase()}）
@@ -174,7 +344,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
                 return (
                   <button
                     key={r.label}
-                    onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t) }}
+                    onClick={() => { const f = r.from(); const t = r.to(); setFrom(f); setTo(t); load(f, t); if (mode === "return") loadBenchmark(selectedBenchmark, f, t) }}
                     className={`rounded px-2 py-0.5 text-xs transition-colors ${
                       isActive
                         ? "bg-primary text-primary-foreground"
@@ -191,17 +361,34 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
               <input type="date" value={to} onChange={e => setTo(e.target.value)}
                 className="rounded border border-input bg-background px-2 py-0.5 text-xs" />
               {/* Refresh */}
-              <button onClick={() => load(from, to)}
+              <button onClick={() => { load(from, to); if (mode === "return") loadBenchmark(selectedBenchmark, from, to) }}
                 className="rounded border border-input bg-background p-0.5 hover:bg-muted transition-colors">
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
               </button>
             </div>
           </div>
+          {/* Row 2: benchmark selector (return mode only) */}
+          {mode === "return" && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">基准对比</span>
+              <select
+                value={selectedBenchmark}
+                onChange={e => setSelectedBenchmark(e.target.value)}
+                className={`rounded border border-input bg-background px-2 py-0.5 text-xs w-40 ${
+                  loadingBenchmark ? "opacity-60" : ""
+                }`}
+              >
+                {BENCHMARK_OPTIONS.map(b => (
+                  <option key={b.code} value={b.code}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
       </CardHeader>
-      <CardContent className="px-4 pb-4 flex-1">
+      <CardContent className="px-4 pb-4 flex-1 min-h-0">
         {loading && (
-          <div className="flex items-center justify-center text-muted-foreground" style={{ height }}>
+          <div className="flex items-center justify-center h-full text-muted-foreground">
             <RefreshCw className="h-5 w-5 animate-spin" />
           </div>
         )}
@@ -211,14 +398,42 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
           </div>
         )}
         {!loading && !error && !option && (
-          <div className="flex items-center justify-center text-sm text-muted-foreground" style={{ height }}>
+          <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
             所选日期范围内无数据。
           </div>
         )}
         {!loading && !error && option && (
-          <ReactECharts option={option} style={{ height }} notMerge />
+          <ReactECharts option={option} style={{ height: "100%" }} notMerge />
         )}
       </CardContent>
     </Card>
+    </div>
+
+    {/* Right: volatility + drawdown stacked */}
+    {visibleSeries.length > 0 && (
+      <div className="w-1/2 flex flex-col gap-3">
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-xs font-medium text-muted-foreground">滚动波动率（20日年化）</CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-2">
+            {volOption
+              ? <ReactECharts option={volOption} style={{ height: smallChartHeight }} notMerge />
+              : <div className="flex items-center justify-center text-xs text-muted-foreground" style={{ height: smallChartHeight }}>数据不足</div>}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-4">
+            <CardTitle className="text-xs font-medium text-muted-foreground">最大回撤曲线</CardTitle>
+          </CardHeader>
+          <CardContent className="px-2 pb-2">
+            {ddOption
+              ? <ReactECharts option={ddOption} style={{ height: smallChartHeight }} notMerge />
+              : <div className="flex items-center justify-center text-xs text-muted-foreground" style={{ height: smallChartHeight }}>数据不足</div>}
+          </CardContent>
+        </Card>
+      </div>
+    )}
+    </div>
   )
 }

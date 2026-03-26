@@ -570,7 +570,7 @@ export default function TraderAnalysisPage() {
 
       {/* 盘手收益曲线 */}
       {activeTab === "equity-curve" && (
-        <div className="w-1/2">
+        <div className="w-full">
           <EquityCurveChart
             series={equitySeries}
             loading={loadingEquity}
