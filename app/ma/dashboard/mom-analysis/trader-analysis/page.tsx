@@ -570,12 +570,14 @@ export default function TraderAnalysisPage() {
 
       {/* 盘手收益曲线 */}
       {activeTab === "equity-curve" && (
-        <EquityCurveChart
-          series={equitySeries}
-          loading={loadingEquity}
-          error={errorEquity}
-          height={480}
-        />
+        <div className="w-1/2">
+          <EquityCurveChart
+            series={equitySeries}
+            loading={loadingEquity}
+            error={errorEquity}
+            height={480}
+          />
+        </div>
       )}
 
       {/* 盈亏排名 */}
