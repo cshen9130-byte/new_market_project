@@ -570,70 +570,12 @@ export default function TraderAnalysisPage() {
 
       {/* 盘手收益曲线 */}
       {activeTab === "equity-curve" && (
-        <div className="space-y-4">
-          {/* date range controls */}
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              {QUICK_RANGES.map((r) => {
-                const active = fromDate === r.from() && toDate === r.to()
-                return (
-                  <button
-                    key={r.label}
-                    onClick={() => {
-                      const f = r.from()
-                      const t = r.to()
-                      setFromDate(f)
-                      setToDate(t)
-                      loadEquityCurve(f, t)
-                    }}
-                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
-                      active
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-input bg-background text-muted-foreground hover:bg-muted hover:text-foreground"
-                    }`}
-                  >
-                    {r.label}
-                  </button>
-                )
-              })}
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">起始日期</span>
-              <input
-                type="date"
-                value={fromDate}
-                onChange={(e) => setFromDate(e.target.value)}
-                className="rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">截止日期</span>
-              <input
-                type="date"
-                value={toDate}
-                onChange={(e) => setToDate(e.target.value)}
-                className="rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
-              />
-            </div>
-            <Button size="sm" onClick={() => loadEquityCurve(fromDate, toDate)} disabled={loadingEquity}>
-              <RefreshCw className={`h-3.5 w-3.5 mr-1.5 ${loadingEquity ? "animate-spin" : ""}`} />
-              查询
-            </Button>
-          </div>
-
-          {errorEquity && (
-            <div className="rounded-md bg-destructive/10 border border-destructive/30 px-4 py-3 text-sm text-destructive">
-              {errorEquity}
-            </div>
-          )}
-
-          <EquityCurveChart
-            series={equitySeries}
-            loading={loadingEquity}
-            error={errorEquity}
-            height={480}
-          />
-        </div>
+        <EquityCurveChart
+          series={equitySeries}
+          loading={loadingEquity}
+          error={errorEquity}
+          height={480}
+        />
       )}
 
       {/* 盈亏排名 */}
