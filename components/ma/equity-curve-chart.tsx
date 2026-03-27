@@ -28,6 +28,7 @@ const LINE_COLORS = [
   "#84cc16", "#0ea5e9", "#d946ef", "#fb923c", "#6366f1",
 ]
 const LINE_COLOR = "#3b82f6"
+const COMPARE_COLOR = "#8b5cf6"
 const BENCHMARK_COLOR = "#f97316"
 const INITIAL_CAPITAL = 10_000_000 // 1000万
 
@@ -49,6 +50,14 @@ function fmtNum(v: number): string {
 }
 function fmtReturn(v: number): string {
   return (v >= 0 ? "+" : "") + v.toFixed(2) + "%"
+}
+
+function fmtDateLabel(v: string | number): string {
+  const d = new Date(v)
+  if (!Number.isNaN(d.getTime())) {
+    return d.toISOString().slice(0, 10)
+  }
+  return String(v)
 }
 
 /** 20-day rolling annualised volatility (%) from cumPnl series */
@@ -89,8 +98,11 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   const [error, setError]         = useState<string | null>(null)
 
   const [selectedAccount, setSelectedAccount] = useState("rx000")
+  const [accountSearch, setAccountSearch] = useState("")
+  const [compareAccount, setCompareAccount] = useState("")
+  const [compareSearch, setCompareSearch] = useState("")
   const [mode, setMode] = useState<DisplayMode>("return")
-  const [selectedBenchmark, setSelectedBenchmark] = useState("none")
+  const [selectedBenchmark, setSelectedBenchmark] = useState("NHCI.NH")
   const [benchmarkData, setBenchmarkData] = useState<Array<{ date: string; close: number }>>([])  
   const [loadingBenchmark, setLoadingBenchmark] = useState(false)
 
@@ -136,8 +148,48 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     else setBenchmarkData([])
   }, [selectedBenchmark, mode]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  const sortedAccounts = [...allSeries].sort((a, b) => a.account.localeCompare(b.account))
+
+  const selectAccountBySearch = () => {
+    const q = accountSearch.trim().toLowerCase()
+    if (!q) return
+    if (q === "全部") {
+      setSelectedAccount("全部")
+      return
+    }
+    const exact = sortedAccounts.find(s => s.account.toLowerCase() === q)
+    if (exact) {
+      setSelectedAccount(exact.account)
+      return
+    }
+    const partial = sortedAccounts.find(s => s.account.toLowerCase().includes(q))
+    if (partial) setSelectedAccount(partial.account)
+  }
+
+  const selectCompareBySearch = () => {
+    const q = compareSearch.trim().toLowerCase()
+    if (!q) {
+      setCompareAccount("")
+      return
+    }
+    const exact = sortedAccounts.find(s => s.account.toLowerCase() === q)
+    if (exact) {
+      setCompareAccount(exact.account)
+      return
+    }
+    const partial = sortedAccounts.find(s => s.account.toLowerCase().includes(q))
+    if (partial) setCompareAccount(partial.account)
+  }
+
   const showAll = selectedAccount === "全部"
-  const visibleSeries = showAll ? allSeries : allSeries.filter(s => s.account === selectedAccount)
+  const primarySeries = allSeries.find(s => s.account === selectedAccount)
+  const compareSeries = allSeries.find(s => s.account === compareAccount)
+  const visibleSeries = showAll
+    ? allSeries
+    : [
+        ...(primarySeries ? [primarySeries] : []),
+        ...(compareSeries && compareSeries.account !== selectedAccount ? [compareSeries] : []),
+      ]
 
   const toDisplayValue = (cumPnl: number) =>
     mode === "return" ? (cumPnl / INITIAL_CAPITAL) * 100 : cumPnl
@@ -160,16 +212,24 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
   })()
 
   // Benchmark: rebase to 0 at the first benchmark point >= accountStartDate
+  const trimmedBenchmarkData = mode === "return" && selectedBenchmark !== "none"
+    ? (accountStartDate ? benchmarkData.filter(pt => pt.date >= accountStartDate) : benchmarkData)
+    : []
+
   const benchmarkReturnSeries: Array<[string, number]> = []
-  if (mode === "return" && selectedBenchmark !== "none" && benchmarkData.length > 0) {
-    const trimmed = accountStartDate
-      ? benchmarkData.filter(pt => pt.date >= accountStartDate)
-      : benchmarkData
-    if (trimmed.length > 0) {
-      const base = trimmed[0].close
-      for (const pt of trimmed) {
+  if (trimmedBenchmarkData.length > 0) {
+    const base = trimmedBenchmarkData[0].close
+    for (const pt of trimmedBenchmarkData) {
         benchmarkReturnSeries.push([pt.date, ((pt.close - base) / base) * 100])
-      }
+    }
+  }
+
+  const benchmarkDrawdownSeries: Array<[string, number]> = []
+  if (trimmedBenchmarkData.length > 0) {
+    let peak = trimmedBenchmarkData[0].close
+    for (const pt of trimmedBenchmarkData) {
+      if (pt.close > peak) peak = pt.close
+      benchmarkDrawdownSeries.push([pt.date, ((pt.close - peak) / peak) * 100])
     }
   }
   const benchmarkName = BENCHMARK_OPTIONS.find(b => b.code === selectedBenchmark)?.name ?? selectedBenchmark
@@ -183,8 +243,17 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     type: "line" as const,
     smooth: false,
     symbol: "none",
-    lineStyle: { width: showAll ? 1.5 : 1.8, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
-    itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
+    lineStyle: {
+      width: showAll ? 1.5 : 1.8,
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
+    },
+    itemStyle: {
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
+    },
     data: computeVolatility(s.data),
   }))
 
@@ -193,11 +262,35 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     type: "line" as const,
     smooth: false,
     symbol: "none",
-    lineStyle: { width: showAll ? 1.5 : 1.8, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : "#ef4444" },
-    itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : "#ef4444" },
-    ...(showAll ? {} : { areaStyle: { color: "#ef4444", opacity: 0.1 } }),
+    lineStyle: {
+      width: showAll ? 1.5 : 1.8,
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : "#ef4444"),
+    },
+    itemStyle: {
+      color: showAll
+        ? LINE_COLORS[i % LINE_COLORS.length]
+        : (s.account === compareAccount ? COMPARE_COLOR : "#ef4444"),
+    },
+    ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: "#ef4444", opacity: 0.1 } }),
     data: computeDrawdown(s.data),
   }))
+
+  const ddSeriesWithBenchmark = benchmarkDrawdownSeries.length > 0
+    ? [
+        ...ddSeries,
+        {
+          name: benchmarkName,
+          type: "line" as const,
+          smooth: false,
+          symbol: "none",
+          lineStyle: { width: 1.5, color: BENCHMARK_COLOR, type: "dashed" as const },
+          itemStyle: { color: BENCHMARK_COLOR },
+          data: benchmarkDrawdownSeries,
+        },
+      ]
+    : ddSeries
 
   const smallGrid = { top: 8, right: 10, bottom: 32, left: 52 }
   const smallDataZoom = [{ type: "inside" as const, start: 0, end: 100 }]
@@ -207,35 +300,47 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     grid: smallGrid,
     tooltip: {
       trigger: "axis" as const,
-      formatter: (params: Array<{ axisValue: string; seriesName: string; value: [string, number]; color: string }>) => {
+      formatter: (params: Array<{ axisValue: string | number; seriesName: string; value: [string | number, number]; color: string }>) => {
         if (!params.length) return ""
-        return params[0].axisValue + "<br/>" + params.map(p =>
+        const date = fmtDateLabel(params[0].value?.[0] ?? params[0].axisValue)
+        const uniq = new Map<string, { seriesName: string; value: [string | number, number]; color: string }>()
+        for (const p of params) {
+          const key = `${p.seriesName}__${fmtDateLabel(p.value?.[0] ?? p.axisValue)}`
+          if (!uniq.has(key)) uniq.set(key, p)
+        }
+        return date + "<br/>" + Array.from(uniq.values()).map(p =>
           `<span style="display:inline-block;margin-right:4px;border-radius:2px;width:8px;height:8px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${(p.value?.[1] ?? 0).toFixed(1)}%</b>`
         ).join("<br/>")
       },
     },
-    xAxis: { type: "time" as const, axisLabel: { fontSize: 9 }, splitLine: { show: false } },
+    xAxis: { type: "time" as const, axisLabel: { fontSize: 9, formatter: (v: string | number) => fmtDateLabel(v) }, splitLine: { show: false } },
     yAxis: { type: "value" as const, axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(0) + "%" }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } } },
     dataZoom: smallDataZoom,
     series: volSeries,
   } : null
 
-  const ddOption = ddSeries.some(s => s.data.length > 0) ? {
+  const ddOption = ddSeriesWithBenchmark.some(s => s.data.length > 0) ? {
     animation: false,
     grid: smallGrid,
     tooltip: {
       trigger: "axis" as const,
-      formatter: (params: Array<{ axisValue: string; seriesName: string; value: [string, number]; color: string }>) => {
+      formatter: (params: Array<{ axisValue: string | number; seriesName: string; value: [string | number, number]; color: string }>) => {
         if (!params.length) return ""
-        return params[0].axisValue + "<br/>" + params.map(p =>
+        const date = fmtDateLabel(params[0].value?.[0] ?? params[0].axisValue)
+        const uniq = new Map<string, { seriesName: string; value: [string | number, number]; color: string }>()
+        for (const p of params) {
+          const key = `${p.seriesName}__${fmtDateLabel(p.value?.[0] ?? p.axisValue)}`
+          if (!uniq.has(key)) uniq.set(key, p)
+        }
+        return date + "<br/>" + Array.from(uniq.values()).map(p =>
           `<span style="display:inline-block;margin-right:4px;border-radius:2px;width:8px;height:8px;background:${p.color}"></span>${p.seriesName.toUpperCase()}: <b>${(p.value?.[1] ?? 0).toFixed(2)}%</b>`
         ).join("<br/>")
       },
     },
-    xAxis: { type: "time" as const, axisLabel: { fontSize: 9 }, splitLine: { show: false } },
+    xAxis: { type: "time" as const, axisLabel: { fontSize: 9, formatter: (v: string | number) => fmtDateLabel(v) }, splitLine: { show: false } },
     yAxis: { type: "value" as const, max: 0, axisLabel: { fontSize: 9, formatter: (v: number) => v.toFixed(0) + "%" }, splitLine: { lineStyle: { type: "dashed" as const, opacity: 0.4 } } },
     dataZoom: smallDataZoom,
-    series: ddSeries,
+    series: ddSeriesWithBenchmark,
   } : null
 
   const option = visibleSeries.length > 0 ? {
@@ -243,10 +348,15 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
     grid: { top: 16, right: 24, bottom: showAll ? 56 : 56, left: 80 },
     tooltip: {
       trigger: "axis",
-      formatter: (params: Array<{ axisValue: string; seriesName: string; value: [string, number]; color: string }>) => {
+      formatter: (params: Array<{ axisValue: string | number; seriesName: string; value: [string | number, number]; color: string }>) => {
         if (!params.length) return ""
-        const date = params[0].axisValue
-        const lines = [...params]
+        const date = fmtDateLabel(params[0].value?.[0] ?? params[0].axisValue)
+        const uniq = new Map<string, { seriesName: string; value: [string | number, number]; color: string }>()
+        for (const p of params) {
+          const key = `${p.seriesName}__${fmtDateLabel(p.value?.[0] ?? p.axisValue)}`
+          if (!uniq.has(key)) uniq.set(key, p)
+        }
+        const lines = Array.from(uniq.values())
           .sort((a, b) => (b.value?.[1] ?? 0) - (a.value?.[1] ?? 0))
           .map(p => {
             const val = p.value?.[1] ?? 0
@@ -256,7 +366,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         return `${date}<br/>${lines.join("<br/>")}`
       },
     },
-    xAxis: { type: "time", axisLabel: { fontSize: 11 }, splitLine: { show: false } },
+    xAxis: { type: "time", axisLabel: { fontSize: 11, formatter: (v: string | number) => fmtDateLabel(v) }, splitLine: { show: false } },
     yAxis: {
       type: "value",
       axisLabel: {
@@ -278,9 +388,18 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
         type: "line",
         smooth: false,
         symbol: "none",
-        lineStyle: { width: showAll ? 1.5 : 2, color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
-        itemStyle: { color: showAll ? LINE_COLORS[i % LINE_COLORS.length] : LINE_COLOR },
-        ...(showAll ? {} : { areaStyle: { color: LINE_COLOR, opacity: 0.08 } }),
+        lineStyle: {
+          width: showAll ? 1.5 : 2,
+          color: showAll
+            ? LINE_COLORS[i % LINE_COLORS.length]
+            : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
+        },
+        itemStyle: {
+          color: showAll
+            ? LINE_COLORS[i % LINE_COLORS.length]
+            : (s.account === compareAccount ? COMPARE_COLOR : LINE_COLOR),
+        },
+        ...(showAll || s.account === compareAccount ? {} : { areaStyle: { color: LINE_COLOR, opacity: 0.08 } }),
         data: s.data.map(d => [d.date, toDisplayValue(d.cumPnl)]),
       })),
       ...(benchmarkReturnSeries.length > 0 ? [{
@@ -334,7 +453,7 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
                 className="rounded border border-input bg-background px-2 py-0.5 text-xs w-24"
               >
                 <option value="全部">全部</option>
-                {allSeries.map(s => (
+                {sortedAccounts.map(s => (
                   <option key={s.account} value={s.account}>{s.account.toUpperCase()}</option>
                 ))}
               </select>
@@ -367,23 +486,57 @@ export default function EquityCurveChart({ height = 480, defaultFrom, defaultTo 
               </button>
             </div>
           </div>
-          {/* Row 2: benchmark selector (return mode only) */}
-          {mode === "return" && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-muted-foreground">基准对比</span>
-              <select
-                value={selectedBenchmark}
-                onChange={e => setSelectedBenchmark(e.target.value)}
-                className={`rounded border border-input bg-background px-2 py-0.5 text-xs w-40 ${
-                  loadingBenchmark ? "opacity-60" : ""
-                }`}
-              >
-                {BENCHMARK_OPTIONS.map(b => (
-                  <option key={b.code} value={b.code}>{b.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
+          {/* Row 2: account search + compare account + benchmark selector (return mode only) */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-muted-foreground">搜索账户</span>
+            <input
+              type="text"
+              value={accountSearch}
+              onChange={e => setAccountSearch(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  selectAccountBySearch()
+                }
+              }}
+              placeholder="输入账户名后回车"
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-36"
+            />
+            <span className="text-xs text-muted-foreground ml-2">对比账户</span>
+            <input
+              type="text"
+              value={compareSearch}
+              onChange={e => {
+                const v = e.target.value
+                setCompareSearch(v)
+                if (!v.trim()) setCompareAccount("")
+              }}
+              onKeyDown={e => {
+                if (e.key === "Enter") {
+                  e.preventDefault()
+                  selectCompareBySearch()
+                }
+              }}
+              placeholder="输入对比账户后回车"
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs w-40"
+            />
+            {mode === "return" && (
+              <>
+                <span className="text-xs text-muted-foreground ml-2">基准对比</span>
+                <select
+                  value={selectedBenchmark}
+                  onChange={e => setSelectedBenchmark(e.target.value)}
+                  className={`rounded border border-input bg-background px-2 py-0.5 text-xs w-40 ${
+                    loadingBenchmark ? "opacity-60" : ""
+                  }`}
+                >
+                  {BENCHMARK_OPTIONS.map(b => (
+                    <option key={b.code} value={b.code}>{b.name}</option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="px-4 pb-4 flex-1 min-h-0">
