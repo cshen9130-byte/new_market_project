@@ -1460,7 +1460,8 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
 
         with conn.cursor() as cur:
             # ── 成交明细 ──────────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_trade_details WHERE source_file_rel = %s", (rel,))
+            # Delete by business key so renamed files don't leave orphan rows
+            cur.execute("DELETE FROM mom_trade_details WHERE account = %s AND trade_date = %s", (account, trade_date_iso))
             insert_cols = "account, trade_date, " + ", ".join(DETAIL_SQL_COLS) + ", source_file_rel, row_hash"
             values = []
             for rv in rows:
@@ -1475,7 +1476,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期货成交明细 ──────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_futures_trade_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_futures_trade_details WHERE "账户" = %s AND "交易日期" = %s', (futures_account, futures_date_iso))
             futures_insert_cols = ", ".join(FUTURES_SQL_COLS) + ", source_file_rel, row_hash"
             fvalues = []
             for rv in futures_rows:
@@ -1490,7 +1491,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期权成交明细 ──────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_options_trade_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_options_trade_details WHERE "账户" = %s AND "交易日期" = %s', (options_account, options_date_iso))
             options_insert_cols = ", ".join(OPTIONS_SQL_COLS) + ", source_file_rel, row_hash"
             ovalues = []
             for rv in options_rows:
@@ -1505,7 +1506,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 平仓明细 ──────────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_close_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_close_details WHERE "账户" = %s AND "交易日期" = %s', (close_account, close_date_iso))
             close_insert_cols = ", ".join(CLOSE_SQL_COLS) + ", source_file_rel, row_hash"
             cvalues = []
             for rv in close_rows:
@@ -1521,7 +1522,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 持仓明细 ──────────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_position_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_position_details WHERE "账户" = %s AND "交易日期" = %s', (position_account, position_date_iso))
             position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             pvalues = []
             for rv in position_rows:
@@ -1536,7 +1537,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期权持仓明细 ──────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_options_position_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_options_position_details WHERE "账户" = %s AND "交易日期" = %s', (options_position_account, options_position_date_iso))
             options_position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             opvalues = []
             for rv in options_position_rows:
@@ -1551,7 +1552,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期货持仓明细 ──────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_futures_position_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_futures_position_details WHERE "账户" = %s AND "交易日期" = %s', (futures_position_account, futures_position_date_iso))
             futures_position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             fpvalues = []
             for rv in futures_position_rows:
@@ -1566,7 +1567,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 委托明细 ──────────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_order_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_order_details WHERE "账户" = %s AND "交易日期" = %s', (order_account, order_date_iso))
             order_insert_cols = ", ".join(ORDER_SQL_COLS) + ", source_file_rel, row_hash"
             ordvalues = []
             for rv in order_rows:
@@ -1581,7 +1582,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 品种汇总 ──────────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_summary_details WHERE source_file_rel = %s", (rel,))
+            cur.execute('DELETE FROM mom_summary_details WHERE "账户" = %s AND "交易日期" = %s', (summary_detail_account, summary_detail_date_iso))
             summary_detail_insert_cols = ", ".join(SUMMARY_DETAIL_SQL_COLS) + ", source_file_rel, row_hash"
             sumvalues = []
             for rv in summary_detail_rows:
@@ -1596,7 +1597,8 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 客户交易核算日报 ────────────────────────────────────────────────
-            cur.execute("DELETE FROM mom_daily_reports WHERE source_file_rel = %s", (rel,))
+            # Delete by business key; one daily report per account per date
+            cur.execute('DELETE FROM mom_daily_reports WHERE "账户" = %s AND "交易日期" = %s', (dr_account, dr_date_iso))
             if daily_report_row is not None:
                 dr_vals: list = []
                 for ref, col in DAILY_REPORT_COL_ORDER:
@@ -1629,6 +1631,34 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         return False, f"error: {rel} {exc}"
 
 
+def _dedup_daily_reports(conn) -> int:
+    """Remove duplicate mom_daily_reports rows, keeping the highest-id row per (账户, 交易日期).
+
+    This fixes the rename-then-reimport bug: after 标准化命名 renames a file and the ETL
+    re-runs, both the old-name and new-name rows existed until the business-key DELETE fix
+    was applied.  Call this once at startup to repair existing data.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                DELETE FROM mom_daily_reports
+                WHERE id NOT IN (
+                    SELECT MAX(id)
+                    FROM mom_daily_reports
+                    GROUP BY "账户", "交易日期"
+                )
+            """)
+            deleted = cur.rowcount
+        conn.commit()
+        if deleted:
+            log.info("Cleaned up %d duplicate rows from mom_daily_reports.", deleted)
+        return deleted
+    except Exception as exc:
+        conn.rollback()
+        log.warning("_dedup_daily_reports failed (table may not exist yet): %s", exc)
+        return 0
+
+
 def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False) -> int:
     files = collect_xlsx_files(base_dir)
     if not files:
@@ -1655,6 +1685,7 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False) -> 
             # Auto-migrate: old JSONB schema detected, drop and recreate.
             drop_tables(conn)
         ensure_tables(conn)
+        _dedup_daily_reports(conn)  # one-time repair for rename-caused duplicates
 
         state = load_file_state(conn, files, base_dir)
 

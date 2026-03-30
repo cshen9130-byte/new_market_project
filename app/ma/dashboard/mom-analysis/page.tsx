@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { Download, FileText, Upload, Users } from "lucide-react"
+import { Download, FileText, Upload, Users, Calculator } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 
@@ -29,6 +29,14 @@ const functions = [
     href: "/ma/dashboard/mom-analysis/trader-analysis",
     downloadHref: null,
     icon: Users,
+    openInNewTab: false,
+  },
+  {
+    title: "业绩报酬测算",
+    description: "基于最新交易日累计盈亏，计算母层与子层业绩报酬及私募基金净业绩报酬。",
+    href: "/ma/dashboard/mom-analysis/carry-calc",
+    downloadHref: null,
+    icon: Calculator,
     openInNewTab: false,
   },
 ]
