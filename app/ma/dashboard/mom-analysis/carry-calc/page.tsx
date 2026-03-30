@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { ArrowLeft, Check, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
+import { ArrowLeft, Check, Download, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,7 +10,15 @@ import { Input } from "@/components/ui/input"
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
-interface Account { account: string; cumPnl: number; cumCommission: number; cumNetPnl: number; latestEquity: number | null }
+interface Account {
+  account: string
+  cumPnl: number
+  cumCommission: number
+  cumNetPnl: number
+  latestEquity: number | null
+  cumDeposit: number
+  cumWithdrawal: number
+}
 
 interface Payment {
   id: number
@@ -48,6 +56,10 @@ interface AccountDetail extends Account {
 interface CarryResult {
   accountDetails: AccountDetail[]
   totalAdjustedPnl: number
+  totalProfit: number
+  totalLoss: number
+  profitLossRatio: number | null
+  profitLossThreshold: number | null
   motherCarry: number
   totalPositiveAdjustedPnl: number
   childCarry: number
@@ -71,12 +83,18 @@ function computeCarry(
   })
 
   const totalAdjustedPnl        = accountDetails.reduce((s, a) => s + a.adjustedPnl, 0)
+  const totalProfit              = accountDetails.filter((a) => a.adjustedPnl > 0).reduce((s, a) => s + a.adjustedPnl, 0)
+  const totalLoss                = accountDetails.filter((a) => a.adjustedPnl < 0).reduce((s, a) => s + a.adjustedPnl, 0)
+  const profitLossRatio          = totalLoss !== 0 ? Math.abs(totalProfit / totalLoss) : null
+  // Threshold where netCarry = 0 (motherCarry = childCarry):
+  // totalAdjustedPnl * motherRate = totalProfit * childRate  →  R = motherRate / (motherRate - childRate)
+  const profitLossThreshold      = motherRate > childRate ? motherRate / (motherRate - childRate) : null
   const motherCarry              = Math.max(0, totalAdjustedPnl) * motherRate
-  const totalPositiveAdjustedPnl = accountDetails.filter((a) => a.adjustedPnl > 0).reduce((s, a) => s + a.adjustedPnl, 0)
+  const totalPositiveAdjustedPnl = totalProfit
   const childCarry               = totalPositiveAdjustedPnl * childRate
   const netCarry                 = motherCarry - childCarry
 
-  return { accountDetails, totalAdjustedPnl, motherCarry, totalPositiveAdjustedPnl, childCarry, netCarry }
+  return { accountDetails, totalAdjustedPnl, totalProfit, totalLoss, profitLossRatio, profitLossThreshold, motherCarry, totalPositiveAdjustedPnl, childCarry, netCarry }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -428,8 +446,34 @@ export default function CarryCalcPage() {
 
           {/* ── account breakdown ──────────────────────────────────────────── */}
           <Card>
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-sm font-semibold">各账户调整后盈亏</CardTitle>
+              <Button
+                variant="ghost" size="sm" className="h-7 gap-1 text-xs"
+                onClick={() => {
+                  const headers = ["账户","最新客户权益","累计盈亏","累计手续费","累计净盈亏","累计存入","累计取出","已计提盈","调整后盈亏","计入子层"]
+                  const rows = carry.accountDetails.map((a) => [
+                    a.account,
+                    a.latestEquity ?? "",
+                    a.cumPnl,
+                    a.cumCommission,
+                    a.cumNetPnl,
+                    a.cumDeposit || "",
+                    a.cumWithdrawal || "",
+                    a.settled > 0 ? -a.settled : "",
+                    a.adjustedPnl,
+                    a.adjustedPnl > 0 ? "✓" : "",
+                  ])
+                  const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n")
+                  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement("a")
+                  a.href = url; a.download = `各账户调整后盈亏_${latestDate ?? ""}.csv`; a.click()
+                  URL.revokeObjectURL(url)
+                }}
+              >
+                <Download className="h-3.5 w-3.5" />下载
+              </Button>
             </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-hidden rounded-b-lg">
@@ -441,6 +485,8 @@ export default function CarryCalcPage() {
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计盈亏</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计手续费</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计净盈亏</th>
+                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计存入</th>
+                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计取出</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">已计提盈</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">调整后盈亏</th>
                       <th className="px-4 py-2 text-center font-medium text-muted-foreground">计入子层</th>
@@ -454,6 +500,8 @@ export default function CarryCalcPage() {
                         <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(a.cumPnl)}`}>{fmt(a.cumPnl)}</td>
                         <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(a.cumCommission)}</td>
                         <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(a.cumNetPnl)}`}>{fmt(a.cumNetPnl)}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumDeposit ? fmt(a.cumDeposit) : "\u2014"}</td>
+                        <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumWithdrawal ? fmt(a.cumWithdrawal) : "\u2014"}</td>
                         <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">
                           {a.settled > 0 ? `−${fmt(a.settled)}` : "—"}
                         </td>
@@ -473,16 +521,53 @@ export default function CarryCalcPage() {
 
           {/* ── carry result ───────────────────────────────────────────────── */}
           <Card>
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-1 flex flex-row items-center justify-between">
               <CardTitle className="text-base font-semibold">计算结果</CardTitle>
+              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={load} disabled={loading}>
+                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />刷新
+              </Button>
             </CardHeader>
-            <CardContent>
-              <div className="flex items-center gap-2 mb-4 justify-end">
-                <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={load} disabled={loading}>
-                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />刷新
-                </Button>
-              </div>
+            <CardContent className="pt-2">
               <div className="divide-y divide-border text-sm">
+                {/* 盈亏统计 */}
+                <div className="pb-3 space-y-1">
+                  <p className="font-medium">盈亏统计（调整后盈亏）</p>
+                  <div className="grid grid-cols-3 gap-x-4 text-xs font-mono">
+                    <div>
+                      <span className="text-muted-foreground">总盈利&nbsp;</span>
+                      <span className="font-semibold text-red-600 dark:text-red-400">{fmt(carry.totalProfit)}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">总亏损&nbsp;</span>
+                      <span className="font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.totalLoss)}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">盈亏比&nbsp;</span>
+                      <span className={`font-semibold ${
+                        carry.profitLossRatio !== null && carry.profitLossThreshold !== null
+                          ? carry.profitLossRatio >= carry.profitLossThreshold
+                            ? "text-red-600 dark:text-red-400"
+                            : "text-emerald-600 dark:text-emerald-400"
+                          : ""
+                      }`}>
+                        {carry.profitLossRatio !== null ? carry.profitLossRatio.toFixed(2) : "—"}
+                      </span>
+                    </div>
+                  </div>
+                  {carry.profitLossThreshold !== null && (
+                    <p className="text-xs font-mono text-muted-foreground mt-1">
+                      盈亏比盈亏平衡阈值&nbsp;
+                      <span className="font-semibold text-foreground">{carry.profitLossThreshold.toFixed(2)}</span>
+                      &nbsp;（母层{(motherRate * 100).toFixed(1)}%&nbsp;÷&nbsp;净差{((motherRate - childRate) * 100).toFixed(1)}%）
+                      &nbsp;—&nbsp;
+                      {carry.profitLossRatio !== null
+                        ? carry.profitLossRatio >= carry.profitLossThreshold
+                          ? <span className="text-red-600 dark:text-red-400">当前高于阈值，净carry为正 ✓</span>
+                          : <span className="text-emerald-600 dark:text-emerald-400">当前低于阈值，净carry为负 ✗</span>
+                        : "暂无亏损账户"}
+                    </p>
+                  )}
+                </div>
                 {/* 母层 */}
                 <div className="pb-3 space-y-1">
                   <p className="font-medium">母层业绩报酬</p>

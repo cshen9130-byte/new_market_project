@@ -43,8 +43,8 @@ export async function GET() {
     // Rates from DB
     const rates = await readRates()
 
-    // Cumulative PnL, commission, and latest equity per account
-    const pnlRows = await query<{ account: string; cum_pnl: string | null; cum_commission: string | null; latest_equity: string | null }>(
+    // Cumulative PnL, commission, latest equity, deposits, and withdrawals per account
+    const pnlRows = await query<{ account: string; cum_pnl: string | null; cum_commission: string | null; latest_equity: string | null; cum_deposit: string | null; cum_withdrawal: string | null }>(
       `SELECT
          "账户" AS account,
          SUM(
@@ -56,7 +56,21 @@ export async function GET() {
          (array_agg(
            (NULLIF(REPLACE(REPLACE(COALESCE("客户权益", ''), ',', ''), ' ', ''), ''))::numeric
            ORDER BY "交易日期" DESC NULLS LAST
-         ))[1]::text AS latest_equity
+         ))[1]::text AS latest_equity,
+         SUM(
+           CASE WHEN
+             (NULLIF(REPLACE(REPLACE(COALESCE("当日存取合计", ''), ',', ''), ' ', ''), ''))::numeric > 0
+           THEN
+             (NULLIF(REPLACE(REPLACE(COALESCE("当日存取合计", ''), ',', ''), ' ', ''), ''))::numeric
+           ELSE 0 END
+         )::text AS cum_deposit,
+         SUM(
+           CASE WHEN
+             (NULLIF(REPLACE(REPLACE(COALESCE("当日存取合计", ''), ',', ''), ' ', ''), ''))::numeric < 0
+           THEN
+             (NULLIF(REPLACE(REPLACE(COALESCE("当日存取合计", ''), ',', ''), ' ', ''), ''))::numeric
+           ELSE 0 END
+         )::text AS cum_withdrawal
        FROM mom_daily_reports
        GROUP BY "账户"
        ORDER BY "账户"`
@@ -71,6 +85,8 @@ export async function GET() {
         cumCommission,
         cumNetPnl:     cumPnl - cumCommission,
         latestEquity:  parseNum(r.latest_equity) ?? null,
+        cumDeposit:    parseNum(r.cum_deposit)   ?? 0,
+        cumWithdrawal: parseNum(r.cum_withdrawal) ?? 0,
       }
     })
 
