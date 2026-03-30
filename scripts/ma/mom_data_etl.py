@@ -1631,32 +1631,85 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         return False, f"error: {rel} {exc}"
 
 
-def _dedup_daily_reports(conn) -> int:
-    """Remove duplicate mom_daily_reports rows, keeping the highest-id row per (账户, 交易日期).
+def _dedup_all_tables(conn) -> None:
+    """Remove duplicate rows from all mom_ tables caused by the rename-then-reimport bug.
 
-    This fixes the rename-then-reimport bug: after 标准化命名 renames a file and the ETL
-    re-runs, both the old-name and new-name rows existed until the business-key DELETE fix
-    was applied.  Call this once at startup to repair existing data.
+    When 标准化命名 renames a file the source_file_rel changes, so DELETEs keyed on
+    source_file_rel missed the old rows.  row_hash also included file_rel so ON CONFLICT
+    didn't catch them either.  For each (account, date) pair that has rows from multiple
+    source_file_rel values, keep only rows from the newest (highest-id) source file.
+
+    mom_daily_reports uses a simpler MAX(id) dedup since it has no row_hash.
     """
+
+    # ── mom_daily_reports ── simple: one row per (账户, 交易日期)
+    _dedup_table_simple(conn, "mom_daily_reports", '"账户"', '"交易日期"')
+
+    # ── detail tables with (account TEXT, trade_date DATE) ──
+    _dedup_detail_table(conn, "mom_trade_details", "account", "trade_date")
+
+    # ── detail tables with ("账户" TEXT, "交易日期" DATE) ──
+    for table in (
+        "mom_futures_trade_details",
+        "mom_options_trade_details",
+        "mom_close_details",
+        "mom_position_details",
+        "mom_options_position_details",
+        "mom_futures_position_details",
+        "mom_order_details",
+        "mom_summary_details",
+    ):
+        _dedup_detail_table(conn, table, '"账户"', '"交易日期"')
+
+
+def _dedup_table_simple(conn, table: str, acct_col: str, date_col: str) -> None:
+    """Keep only the MAX(id) row per (acct, date). Safe for tables without row_hash."""
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                DELETE FROM mom_daily_reports
+            cur.execute(f"""
+                DELETE FROM {table}
                 WHERE id NOT IN (
                     SELECT MAX(id)
-                    FROM mom_daily_reports
-                    GROUP BY "账户", "交易日期"
+                    FROM {table}
+                    GROUP BY {acct_col}, {date_col}
                 )
-            """)
+            """)  # noqa: S608
             deleted = cur.rowcount
         conn.commit()
         if deleted:
-            log.info("Cleaned up %d duplicate rows from mom_daily_reports.", deleted)
-        return deleted
+            log.info("Dedup %s: removed %d duplicate rows.", table, deleted)
     except Exception as exc:
         conn.rollback()
-        log.warning("_dedup_daily_reports failed (table may not exist yet): %s", exc)
-        return 0
+        log.warning("_dedup_table_simple(%s) skipped: %s", table, exc)
+
+
+def _dedup_detail_table(conn, table: str, acct_col: str, date_col: str) -> None:
+    """For each (acct, date) that has rows from >1 source_file_rel, delete all rows
+    whose source_file_rel is NOT the one that produced the highest-id row for that pair.
+    This keeps the most-recently-imported version and removes the pre-rename orphans.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                WITH latest_source AS (
+                    SELECT DISTINCT ON ({acct_col}, {date_col})
+                           {acct_col}, {date_col}, source_file_rel
+                    FROM {table}
+                    ORDER BY {acct_col}, {date_col}, id DESC
+                )
+                DELETE FROM {table} t
+                USING latest_source ls
+                WHERE ls.{acct_col} = t.{acct_col}
+                  AND ls.{date_col} = t.{date_col}
+                  AND ls.source_file_rel <> t.source_file_rel
+            """)  # noqa: S608
+            deleted = cur.rowcount
+        conn.commit()
+        if deleted:
+            log.info("Dedup %s: removed %d orphan rows from renamed files.", table, deleted)
+    except Exception as exc:
+        conn.rollback()
+        log.warning("_dedup_detail_table(%s) skipped: %s", table, exc)
 
 
 def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False) -> int:
@@ -1685,7 +1738,7 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False) -> 
             # Auto-migrate: old JSONB schema detected, drop and recreate.
             drop_tables(conn)
         ensure_tables(conn)
-        _dedup_daily_reports(conn)  # one-time repair for rename-caused duplicates
+        _dedup_all_tables(conn)  # repair rename-caused duplicates in all mom_ tables
 
         state = load_file_state(conn, files, base_dir)
 
