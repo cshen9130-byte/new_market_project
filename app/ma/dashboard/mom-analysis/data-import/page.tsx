@@ -24,6 +24,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Input } from "@/components/ui/input"
 
 type FolderEntry = { name: string; fileCount: number }
 
@@ -36,6 +38,15 @@ function readError(payload: unknown, fallback: string) {
 export default function DataImportPage() {
   const { toast } = useToast()
   const zipInputRef = useRef<HTMLInputElement | null>(null)
+  const xlsxInputRef = useRef<HTMLInputElement | null>(null)
+
+  // ── xlsx direct-upload state ───────────────────────────────────────────────
+  const [xlsxFolder, setXlsxFolder] = useState<string>("")
+  const [xlsxIsNewFolder, setXlsxIsNewFolder] = useState(false)
+  const [xlsxCustomFolder, setXlsxCustomFolder] = useState<string>("")
+  const [xlsxFiles, setXlsxFiles] = useState<File[]>([])
+  const [xlsxIsDragOver, setXlsxIsDragOver] = useState(false)
+  const [isUploadingXlsx, setIsUploadingXlsx] = useState(false)
 
   const [folders, setFolders] = useState<FolderEntry[]>([])
   const [totalFolders, setTotalFolders] = useState(0)
@@ -207,6 +218,57 @@ export default function DataImportPage() {
     await handleFiles([file])
   }
 
+  async function handleXlsxUpload() {
+    const folderName = xlsxIsNewFolder ? xlsxCustomFolder.trim() : xlsxFolder
+    if (!folderName) {
+      toast({ title: "请选择或输入目标文件夹", variant: "destructive" }); return
+    }
+    if (xlsxFiles.length === 0) {
+      toast({ title: "请选择至少一个 .xlsx 文件", variant: "destructive" }); return
+    }
+
+    setIsUploadingXlsx(true)
+    try {
+      // 1. Upload xlsx files to the target folder
+      const fd = new FormData()
+      fd.append("folder", folderName)
+      for (const f of xlsxFiles) fd.append("files", f)
+      const uploadRes = await fetch("/ma/api/mom-analysis/data-import/upload-xlsx", { method: "POST", body: fd })
+      const uploadData = await uploadRes.json()
+      if (!uploadRes.ok) throw new Error(uploadData.error ?? "上传失败")
+      if (xlsxInputRef.current) xlsxInputRef.current.value = ""
+      setXlsxFiles([])
+      await loadFolders()
+      toast({ title: "文件已上传", description: uploadData.message })
+
+      // 2. Rename files in the target folder
+      setIsRenaming(true)
+      setRenameResult(null)
+      try {
+        const renameRes = await fetch("/ma/api/mom-analysis/data-import/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folders: [folderName] }),
+        })
+        const renameData = await renameRes.json()
+        setRenameResult(renameData)
+        if (!renameData.nothingToDo) {
+          setFolderFiles({}); setExpandedFolder(null)
+          await loadFolders(); await checkDates()
+        }
+      } finally {
+        setIsRenaming(false)
+      }
+
+      // 3. Run ETL
+      await runEtl()
+    } catch (e) {
+      toast({ title: "上传失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
+    } finally {
+      setIsUploadingXlsx(false)
+    }
+  }
+
   async function handleRename() {
     if (pendingRenameFolders.length === 0) return
     setIsRenaming(true)
@@ -324,7 +386,7 @@ export default function DataImportPage() {
         </div>
       </div>
 
-      {/* Drop zone */}
+      {/* Drop zone (ZIP) */}
       <div
         className={`relative rounded-lg border-2 border-dashed transition-colors ${
           isDragOver ? "border-primary bg-primary/5" : "border-border/60 hover:border-border"
@@ -387,6 +449,118 @@ export default function DataImportPage() {
           ))}
         </div>
       )}
+
+      {/* ── XLSX direct upload ───────────────────────────────────────────── */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+            单日 XLSX 文件上传
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/* Folder selector */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-muted-foreground whitespace-nowrap">目标文件夹</span>
+            {!xlsxIsNewFolder ? (
+              <Select
+                value={xlsxFolder}
+                onValueChange={(v) => { if (v === "__new__") { setXlsxIsNewFolder(true); setXlsxFolder("") } else setXlsxFolder(v) }}
+              >
+                <SelectTrigger className="h-8 w-72 text-xs">
+                  <SelectValue placeholder="选择已有文件夹…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {folders.map((f) => (
+                    <SelectItem key={f.name} value={f.name} className="text-xs font-mono">{f.name}</SelectItem>
+                  ))}
+                  <SelectItem value="__new__" className="text-xs text-blue-600 dark:text-blue-400">＋ 新建文件夹…</SelectItem>
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Input
+                  className="h-8 w-72 text-xs font-mono"
+                  placeholder="输入新文件夹名称，例如 恒2 20260331核算单"
+                  value={xlsxCustomFolder}
+                  onChange={(e) => setXlsxCustomFolder(e.target.value)}
+                  autoFocus
+                />
+                <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => { setXlsxIsNewFolder(false); setXlsxCustomFolder("") }}>取消</Button>
+              </div>
+            )}
+          </div>
+
+          {/* Drop zone for xlsx */}
+          <div
+            className={`relative rounded-lg border-2 border-dashed transition-colors ${
+              xlsxIsDragOver ? "border-primary bg-primary/5" : "border-border/60 hover:border-border"
+            }`}
+            onDragOver={(e) => { e.preventDefault(); setXlsxIsDragOver(true) }}
+            onDragEnter={(e) => { e.preventDefault(); setXlsxIsDragOver(true) }}
+            onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setXlsxIsDragOver(false) }}
+            onDrop={(e) => {
+              e.preventDefault(); setXlsxIsDragOver(false)
+              const dropped = Array.from(e.dataTransfer.files).filter((f) => f.name.toLowerCase().endsWith(".xlsx"))
+              if (dropped.length > 0) setXlsxFiles((prev) => [...prev, ...dropped])
+            }}
+          >
+            <div className="flex flex-col items-center justify-center gap-2 py-5 text-center">
+              <FileSpreadsheet className={`h-7 w-7 ${xlsxIsDragOver ? "text-primary" : "text-muted-foreground"}`} />
+              <p className="text-sm font-medium">拖放 .xlsx 文件到此处</p>
+              <Button
+                variant="outline" size="sm" className="mt-1"
+                disabled={isUploadingXlsx}
+                onClick={() => xlsxInputRef.current?.click()}
+              >
+                选择文件
+              </Button>
+            </div>
+            <input
+              ref={xlsxInputRef}
+              type="file"
+              accept=".xlsx"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []).filter((f) => f.name.toLowerCase().endsWith(".xlsx"))
+                if (picked.length > 0) setXlsxFiles((prev) => [...prev, ...picked])
+              }}
+            />
+          </div>
+
+          {/* Selected files list */}
+          {xlsxFiles.length > 0 && (
+            <div className="rounded-lg border border-border/60 divide-y divide-border/40 bg-card">
+              <div className="flex items-center justify-between px-4 py-2 text-xs font-medium text-muted-foreground">
+                <span>已选 {xlsxFiles.length} 个文件</span>
+                <button onClick={() => setXlsxFiles([])} className="hover:text-foreground transition-colors">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              {xlsxFiles.map((f, i) => (
+                <div key={i} className="flex items-center gap-3 px-4 py-1.5 text-xs">
+                  <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                  <span className="flex-1 truncate font-mono">{f.name}</span>
+                  <button onClick={() => setXlsxFiles((prev) => prev.filter((_, j) => j !== i))} className="text-muted-foreground hover:text-destructive">
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <Button
+            size="sm"
+            disabled={isUploadingXlsx || xlsxFiles.length === 0 || (!xlsxIsNewFolder && !xlsxFolder) || (xlsxIsNewFolder && !xlsxCustomFolder.trim())}
+            onClick={() => void handleXlsxUpload()}
+          >
+            {isUploadingXlsx
+              ? <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />处理中…</>
+              : <><UploadCloud className="mr-2 h-3.5 w-3.5" />上传并入库</>}
+          </Button>
+        </CardContent>
+      </Card>
 
       {/* Date coverage status */}
       <div className="rounded-lg border border-border/60 bg-card px-4 py-3">

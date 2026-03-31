@@ -44,7 +44,7 @@ export async function GET() {
     const rates = await readRates()
 
     // Cumulative PnL, commission, latest equity, deposits, and withdrawals per account
-    const pnlRows = await query<{ account: string; cum_pnl: string | null; cum_commission: string | null; latest_equity: string | null; cum_deposit: string | null; cum_withdrawal: string | null }>(
+    const pnlRows = await query<{ account: string; cum_pnl: string | null; cum_commission: string | null; latest_equity: string | null; cum_deposit: string | null; cum_withdrawal: string | null; options_pnl: string | null }>(
       `SELECT
          "账户" AS account,
          SUM(
@@ -70,7 +70,11 @@ export async function GET() {
            THEN
              (NULLIF(REPLACE(REPLACE(COALESCE("当日存取合计", ''), ',', ''), ' ', ''), ''))::numeric
            ELSE 0 END
-         )::text AS cum_withdrawal
+         )::text AS cum_withdrawal,
+         (
+           COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE("权利金收入", ''), ',', ''), ' ', ''), ''))::numeric), 0)
+           - COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE("权利金支出", ''), ',', ''), ' ', ''), ''))::numeric), 0)
+         )::text AS options_pnl
        FROM mom_daily_reports
        GROUP BY "账户"
        ORDER BY "账户"`
@@ -79,11 +83,13 @@ export async function GET() {
     const accounts = pnlRows.map((r) => {
       const cumPnl        = parseNum(r.cum_pnl)        ?? 0
       const cumCommission = parseNum(r.cum_commission) ?? 0
+      const optionsPnl    = parseNum(r.options_pnl)   ?? 0
       return {
         account:       r.account,
         cumPnl,
         cumCommission,
-        cumNetPnl:     cumPnl - cumCommission,
+        optionsPnl,
+        cumNetPnl:     cumPnl - cumCommission - optionsPnl,
         latestEquity:  parseNum(r.latest_equity) ?? null,
         cumDeposit:    parseNum(r.cum_deposit)   ?? 0,
         cumWithdrawal: parseNum(r.cum_withdrawal) ?? 0,

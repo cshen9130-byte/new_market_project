@@ -18,6 +18,7 @@ interface Account {
   latestEquity: number | null
   cumDeposit: number
   cumWithdrawal: number
+  optionsPnl: number
 }
 
 interface Payment {
@@ -451,12 +452,13 @@ export default function CarryCalcPage() {
               <Button
                 variant="ghost" size="sm" className="h-7 gap-1 text-xs"
                 onClick={() => {
-                  const headers = ["账户","最新客户权益","累计盈亏","累计手续费","累计净盈亏","累计存入","累计取出","已计提盈","调整后盈亏","计入子层"]
+                  const headers = ["账户","最新客户权益","累计期货盈亏","累计手续费","累计期权盈亏","累计净盈亏","累计存入","累计取出","已计提盈","调整后盈亏","计入子层"]
                   const rows = carry.accountDetails.map((a) => [
                     a.account,
                     a.latestEquity ?? "",
                     a.cumPnl,
                     a.cumCommission,
+                    a.optionsPnl || "",
                     a.cumNetPnl,
                     a.cumDeposit || "",
                     a.cumWithdrawal || "",
@@ -482,8 +484,9 @@ export default function CarryCalcPage() {
                     <tr className="bg-muted/50 border-b">
                       <th className="px-4 py-2 text-left font-medium text-muted-foreground">账户</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">最新客户权益</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计盈亏</th>
+                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计期货盈亏</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计手续费</th>
+                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计期权盈亏</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计净盈亏</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计存入</th>
                       <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计取出</th>
@@ -499,6 +502,7 @@ export default function CarryCalcPage() {
                         <td className="px-4 py-2 text-right tabular-nums">{fmt(a.latestEquity)}</td>
                         <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(a.cumPnl)}`}>{fmt(a.cumPnl)}</td>
                         <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(a.cumCommission)}</td>
+                        <td className={`px-4 py-2 text-right tabular-nums text-xs ${a.optionsPnl ? pnlClass(a.optionsPnl) : "text-muted-foreground"}`}>{a.optionsPnl ? fmt(a.optionsPnl) : "\u2014"}</td>
                         <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(a.cumNetPnl)}`}>{fmt(a.cumNetPnl)}</td>
                         <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumDeposit ? fmt(a.cumDeposit) : "\u2014"}</td>
                         <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumWithdrawal ? fmt(a.cumWithdrawal) : "\u2014"}</td>
