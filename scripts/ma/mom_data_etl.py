@@ -1712,7 +1712,7 @@ def _dedup_detail_table(conn, table: str, acct_col: str, date_col: str) -> None:
         log.warning("_dedup_detail_table(%s) skipped: %s", table, exc)
 
 
-def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False) -> int:
+def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, skip_dedup: bool = False) -> int:
     files = collect_xlsx_files(base_dir)
     if not files:
         print(json.dumps({"job": JOB_NAME, "processed": 0, "changed": 0, "message": "No xlsx files found"}, ensure_ascii=False))
@@ -1738,7 +1738,8 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False) -> 
             # Auto-migrate: old JSONB schema detected, drop and recreate.
             drop_tables(conn)
         ensure_tables(conn)
-        _dedup_all_tables(conn)  # repair rename-caused duplicates in all mom_ tables
+        if not skip_dedup:
+            _dedup_all_tables(conn)  # repair rename-caused duplicates in all mom_ tables
 
         state = load_file_state(conn, files, base_dir)
 
@@ -1838,6 +1839,7 @@ def main() -> None:
     parser.add_argument("--base-dir", default=None, help="MOM data directory, defaults to MOM_DATA_DIR")
     parser.add_argument("--reset", action="store_true", help="Drop and recreate tables before processing (full reload)")
     parser.add_argument("--skip-market-data", action="store_true", help="Skip market data steps (nanhua indices, futures OHLCV, akshare)")
+    parser.add_argument("--skip-dedup", action="store_true", help="Skip _dedup_all_tables on startup (safe when no renames just occurred)")
     args = parser.parse_args()
 
     base_dir = resolve_base_dir(args.base_dir)
@@ -1845,7 +1847,7 @@ def main() -> None:
         print(json.dumps({"job": JOB_NAME, "error": f"base dir not found: {base_dir}"}, ensure_ascii=False))
         sys.exit(1)
 
-    code = run(base_dir, reset=args.reset, skip_market_data=args.skip_market_data)
+    code = run(base_dir, reset=args.reset, skip_market_data=args.skip_market_data, skip_dedup=args.skip_dedup)
     sys.exit(code)
 
 

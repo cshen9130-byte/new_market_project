@@ -16,7 +16,7 @@ function findPython(): string {
   return process.platform === "win32" ? "python" : "python3"
 }
 
-export async function POST() {
+export async function POST(request: Request) {
   const python = findPython()
   const script = path.join(process.cwd(), "scripts", "ma", "mom_data_etl.py")
 
@@ -24,8 +24,20 @@ export async function POST() {
     return NextResponse.json({ error: `脚本不存在: ${script}` }, { status: 500 })
   }
 
+  let skipDedup = false
+  let skipMarketData = false
+  try {
+    const body = await request.json()
+    if (body?.skipDedup) skipDedup = true
+    if (body?.skipMarketData) skipMarketData = true
+  } catch { /* no body or not JSON — use defaults */ }
+
+  const args = [script]
+  if (skipDedup) args.push("--skip-dedup")
+  if (skipMarketData) args.push("--skip-market-data")
+
   return new Promise<Response>((resolve) => {
-    const proc = spawn(python, [script], {
+    const proc = spawn(python, args, {
       env: { ...process.env },
       cwd: process.cwd(),
     })

@@ -120,10 +120,14 @@ export default function DataImportPage() {
     }
   }, [])
 
-  const runEtl = useCallback(async () => {
+  const runEtl = useCallback(async (opts?: { skipDedup?: boolean; skipMarketData?: boolean }) => {
     setIsRunningEtl(true)
     try {
-      const res = await fetch("/ma/api/mom-analysis/data-import/run", { method: "POST" })
+      const res = await fetch("/ma/api/mom-analysis/data-import/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ skipDedup: opts?.skipDedup ?? false, skipMarketData: opts?.skipMarketData ?? false }),
+      })
       const data = await res.json()
       if (!res.ok) {
         toast({ title: "ETL 失败", description: readError(data, "运行失败"), variant: "destructive" })
@@ -260,8 +264,8 @@ export default function DataImportPage() {
         setIsRenaming(false)
       }
 
-      // 3. Run ETL
-      await runEtl()
+      // 3. Run ETL (skip dedup + market data for single-file fast path)
+      await runEtl({ skipDedup: true, skipMarketData: true })
     } catch (e) {
       toast({ title: "上传失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
     } finally {
