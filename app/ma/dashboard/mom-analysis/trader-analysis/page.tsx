@@ -34,7 +34,7 @@ function fmtPct(raw: string | null): string {
 function downloadCsv(rows: Trader[], from: string, to: string) {
   const headers = [
     "账户", "交易天数", "起始日期", "截止日期",
-    "期间盈亏", "期间手续费", "净盈亏",
+    "净盈亏", "期间期货盈亏", "期间手续费", "期间期权盈亏",
     "累计平仓盈亏", "累计持仓盈亏",
     "最新客户权益", "最新结存", "风险度",
     "保证金占用", "可用资金",
@@ -50,7 +50,7 @@ function downloadCsv(rows: Trader[], from: string, to: string) {
     ...rows.map((t) =>
       [
         t.account, t.tradingDays, t.firstDate ?? "", t.lastDate ?? "",
-        t.periodPnl ?? "", t.periodFee ?? "", t.netPnl ?? "",
+        t.netPnl ?? "", t.periodFuturesPnl ?? "", t.periodFee ?? "", t.periodOptionsPnl ?? "",
         t.closePnl ?? "", t.positionPnl ?? "",
         t.latestEquity ?? "", t.latestBalance ?? "", t.latestRiskRatio ?? "",
         t.latestMargin ?? "", t.latestAvailable ?? "",
@@ -155,8 +155,9 @@ interface Trader {
   firstDate: string | null
   lastDate: string | null
   tradingDays: number
-  periodPnl: number | null
+  periodFuturesPnl: number | null
   periodFee: number | null
+  periodOptionsPnl: number | null
   netPnl: number | null
   closePnl: number | null
   positionPnl: number | null
@@ -184,7 +185,7 @@ export default function TraderAnalysisPage() {
   const [isLoading, setIsLoading] = useState(false)
   const [notYetRun, setNotYetRun] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sortKey, setSortKey] = useState<SortKey>("periodPnl")
+  const [sortKey, setSortKey] = useState<SortKey>("netPnl")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
   const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review" | "equity-curve">("pnl-rank")
 
@@ -339,11 +340,11 @@ export default function TraderAnalysisPage() {
       })
     : traders
 
-  const totalPnl = traders.reduce((s, t) => s + (t.periodPnl ?? 0), 0)
+  const totalPnl = traders.reduce((s, t) => s + (t.netPnl ?? 0), 0)
   const totalFee = traders.reduce((s, t) => s + (t.periodFee ?? 0), 0)
-  const bestTrader = traders.length > 0 ? traders[0] : null  // sorted desc by pnl
+  const bestTrader = traders.length > 0 ? traders[0] : null  // sorted desc by netPnl
   const worstTrader =
-    traders.length > 0 ? [...traders].sort((a, b) => (a.periodPnl ?? 0) - (b.periodPnl ?? 0))[0] : null
+    traders.length > 0 ? [...traders].sort((a, b) => (a.netPnl ?? 0) - (b.netPnl ?? 0))[0] : null
 
   return (
     <div className="space-y-6 pt-6">
@@ -638,7 +639,7 @@ export default function TraderAnalysisPage() {
             const r = defaultRange()
             setFromDate(r.from)
             setToDate(r.to)
-            setSortKey("periodPnl")
+            setSortKey("netPnl")
             setSortDir("desc")
             load(r.from, r.to)
           }}
@@ -695,7 +696,7 @@ export default function TraderAnalysisPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between pb-2 pt-4 px-4">
-              <CardTitle className="text-xs font-medium text-muted-foreground">期间总盈亏</CardTitle>
+              <CardTitle className="text-xs font-medium text-muted-foreground">期间总净盈亏</CardTitle>
               {totalPnl >= 0 ? (
                 <TrendingUp className="h-3.5 w-3.5 text-red-500" />
               ) : (
@@ -714,8 +715,8 @@ export default function TraderAnalysisPage() {
             </CardHeader>
             <CardContent className="px-4 pb-4">
               <p className="text-lg font-semibold leading-tight">{bestTrader?.account ?? "—"}</p>
-              <p className={`text-sm mt-0.5 ${pnlClass(bestTrader?.periodPnl ?? null)}`}>
-                {fmt(bestTrader?.periodPnl ?? null)}
+              <p className={`text-sm mt-0.5 ${pnlClass(bestTrader?.netPnl ?? null)}`}>
+                {fmt(bestTrader?.netPnl ?? null)}
               </p>
             </CardContent>
           </Card>
@@ -727,8 +728,8 @@ export default function TraderAnalysisPage() {
             </CardHeader>
             <CardContent className="px-4 pb-4">
               <p className="text-lg font-semibold leading-tight">{worstTrader?.account ?? "—"}</p>
-              <p className={`text-sm mt-0.5 ${pnlClass(worstTrader?.periodPnl ?? null)}`}>
-                {fmt(worstTrader?.periodPnl ?? null)}
+              <p className={`text-sm mt-0.5 ${pnlClass(worstTrader?.netPnl ?? null)}`}>
+                {fmt(worstTrader?.netPnl ?? null)}
               </p>
             </CardContent>
           </Card>
@@ -755,9 +756,10 @@ export default function TraderAnalysisPage() {
                 <SortableHead label="账户"      colKey="account"        sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="text-center" />
                 <SortableHead label="交易天数"  colKey="tradingDays"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} className="w-16 text-center" />
                 <th className="sticky top-0 z-10 bg-card whitespace-nowrap px-4 py-3 text-right text-xs font-medium text-muted-foreground">起止日期</th>
-                <SortableHead label="期间盈亏"  colKey="periodPnl"     sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
-                <SortableHead label="期间手续费" colKey="periodFee"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="净盈亏"    colKey="netPnl"        sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="期间期货盈亏"  colKey="periodFuturesPnl" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="期间手续费" colKey="periodFee"    sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
+                <SortableHead label="期间期权盈亏" colKey="periodOptionsPnl" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="累计平仓盈亏" colKey="closePnl"   sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="累计持仓盈亏" colKey="positionPnl" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
                 <SortableHead label="最新客户权益" colKey="latestEquity" sortKey={sortKey} sortDir={sortDir} onSort={handleSort} />
@@ -776,14 +778,17 @@ export default function TraderAnalysisPage() {
                   <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap text-xs text-muted-foreground">
                     {t.firstDate ?? "—"} ~ {t.lastDate ?? "—"}
                   </td>
-                  <td className={`px-4 py-3 text-right tabular-nums text-sm font-medium ${pnlClass(t.periodPnl)}`}>
-                    {fmt(t.periodPnl)}
+                  <td className={`px-4 py-3 text-right tabular-nums text-sm font-medium ${pnlClass(t.netPnl)}`}>
+                    {fmt(t.netPnl)}
+                  </td>
+                  <td className={`px-4 py-3 text-right tabular-nums text-sm font-medium ${pnlClass(t.periodFuturesPnl)}`}>
+                    {fmt(t.periodFuturesPnl)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-sm text-muted-foreground">
                     {fmt(t.periodFee)}
                   </td>
-                  <td className={`px-4 py-3 text-right tabular-nums text-sm font-medium ${pnlClass(t.netPnl)}`}>
-                    {fmt(t.netPnl)}
+                  <td className={`px-4 py-3 text-right tabular-nums text-sm ${pnlClass(t.periodOptionsPnl)}`}>
+                    {fmt(t.periodOptionsPnl)}
                   </td>
                   <td className={`px-4 py-3 text-right tabular-nums text-sm ${pnlClass(t.closePnl)}`}>
                     {fmt(t.closePnl)}

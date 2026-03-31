@@ -40,6 +40,10 @@ export async function GET(req: Request) {
         COUNT(*)::text                                                                       AS trading_days,
         SUM((NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏",    ''), ',', ''), ' ', ''), ''))::numeric)::text  AS period_pnl,
         SUM((NULLIF(REPLACE(REPLACE(COALESCE("当日手续费",  ''), ',', ''), ' ', ''), ''))::numeric)::text  AS period_fee,
+        (
+          COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE("权利金收入", ''), ',', ''), ' ', ''), ''))::numeric), 0)
+          - COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE("权利金支出", ''), ',', ''), ' ', ''), ''))::numeric), 0)
+        )::text                                                                              AS period_options_pnl,
         SUM((NULLIF(REPLACE(REPLACE(COALESCE("平仓盈亏",    ''), ',', ''), ' ', ''), ''))::numeric)::text  AS close_pnl,
         SUM((NULLIF(REPLACE(REPLACE(COALESCE("持仓盈亏",    ''), ',', ''), ' ', ''), ''))::numeric)::text  AS position_pnl,
         (array_agg("客户权益"   ORDER BY "交易日期" DESC NULLS LAST))[1]                   AS latest_equity,
@@ -61,6 +65,7 @@ export async function GET(req: Request) {
       trading_days: string
       period_pnl: string | null
       period_fee: string | null
+      period_options_pnl: string | null
       close_pnl: string | null
       position_pnl: string | null
       latest_equity: string | null
@@ -73,14 +78,19 @@ export async function GET(req: Request) {
     const traders = rows.map((r) => {
       const pnl = parseNum(r.period_pnl)
       const fee = parseNum(r.period_fee)
+      const optionsPnl = parseNum(r.period_options_pnl)
       return {
         account: r.account,
         firstDate: r.first_date,
         lastDate: r.last_date,
         tradingDays: parseInt(r.trading_days, 10),
-        periodPnl: pnl,
+        periodFuturesPnl: pnl,
         periodFee: fee,
-        netPnl: pnl !== null && fee !== null ? pnl - fee : pnl !== null ? pnl : null,
+        periodOptionsPnl: optionsPnl,
+        netPnl:
+          pnl !== null || fee !== null || optionsPnl !== null
+            ? (pnl ?? 0) - (fee ?? 0) + (optionsPnl ?? 0)
+            : null,
         closePnl: parseNum(r.close_pnl),
         positionPnl: parseNum(r.position_pnl),
         latestEquity: parseNum(r.latest_equity),
