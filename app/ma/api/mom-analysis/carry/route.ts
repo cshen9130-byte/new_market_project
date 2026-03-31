@@ -89,7 +89,7 @@ export async function GET() {
         cumPnl,
         cumCommission,
         optionsPnl,
-        cumNetPnl:     cumPnl - cumCommission - optionsPnl,
+          cumNetPnl:     cumPnl - cumCommission + optionsPnl,
         latestEquity:  parseNum(r.latest_equity) ?? null,
         cumDeposit:    parseNum(r.cum_deposit)   ?? 0,
         cumWithdrawal: parseNum(r.cum_withdrawal) ?? 0,
