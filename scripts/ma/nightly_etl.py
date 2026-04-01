@@ -1943,6 +1943,110 @@ def step_money_credit(conn) -> int:
     return 0
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP — Futures rollover dates (dominant-contract OI tracking via AkShare)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def step_futures_rollover_dates(conn, *, force: bool = False) -> int:
+    """Detect and store main-contract rollover dates for commodity futures.
+
+    Uses ak.get_futures_daily() to find the dominant contract (max open-interest)
+    per product per day across SHFE / DCE / CZCE / INE.  A rollover date is a
+    day when the dominant contract changes.  Stored results replace the 4σ
+    heuristic used by the vol-corr-scatter API endpoint.
+
+    Supported exchanges: SHFE, DCE, CZCE, INE
+    Not supported: GFEX (akshare does not yet provide get_futures_daily for GFEX);
+                   the API falls back to 4σ for GFEX products.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_futures_rollover_dates (
+                product         TEXT        NOT NULL,
+                rollover_date   DATE        NOT NULL,
+                from_contract   TEXT,
+                to_contract     TEXT,
+                source          TEXT        NOT NULL DEFAULT 'akshare',
+                fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (product, rollover_date)
+            )
+        """)
+    conn.commit()
+
+    today = date.today()
+    cur_max = max_date(conn, "raw_futures_rollover_dates", col="rollover_date")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("Futures rollover dates up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    # First run / force: backfill from 2023-01-01
+    # Incremental: re-fetch from 30 days before last known date (catches late OI updates)
+    if cur_max is None or force:
+        start = date(2023, 1, 1)
+        log.info(
+            "Futures rollover dates: %s, backfilling from %s …",
+            "forced" if force else "first run",
+            start,
+        )
+    else:
+        start = cur_max - timedelta(days=30)
+        log.info("Futures rollover dates: incremental %s → %s …", start, today)
+
+    out = run_script(
+        "fetch_futures_rollover_dates.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=1200,
+        log_stderr=True,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"Futures rollover dates fetch failed: {out}")
+
+    rows_raw = out.get("data") or []
+    if not rows_raw:
+        log.warning(
+            "Futures rollover dates: no rollovers detected for %s → %s.", start, today
+        )
+        return 0
+
+    records = []
+    for r in rows_raw:
+        d = to_date(r.get("rollover_date", "").replace("-", ""))
+        product = (r.get("product") or "").strip().upper()
+        if not d or not product:
+            continue
+        records.append((
+            product,
+            d,
+            r.get("from_contract") or None,
+            r.get("to_contract") or None,
+            "akshare",
+        ))
+
+    if not records:
+        log.warning("Futures rollover dates: no valid rows parsed.")
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_futures_rollover_dates
+                (product, rollover_date, from_contract, to_contract, source)
+            VALUES %s
+            ON CONFLICT (product, rollover_date) DO UPDATE
+                SET from_contract = EXCLUDED.from_contract,
+                    to_contract   = EXCLUDED.to_contract,
+                    fetched_at    = NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("Futures rollover dates: upserted %d rows.", len(records))
+    return len(records)
+
+
 ORDERED_STEPS = [
     "nhci",
     "nheci",
@@ -1951,6 +2055,7 @@ ORDERED_STEPS = [
     "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded
     "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
     "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
+    "futures_rollover_dates",       # rollover dates from OI-dominant-contract tracking
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
@@ -2058,6 +2163,7 @@ def main():
         "futures_contracts_ohlcv":    lambda: step_futures_contracts_ohlcv(conn, force=force),
         "options_contracts_ohlcv":    lambda: step_options_contracts_ohlcv(conn, force=force),
         "akshare_futures_daily":      lambda: step_akshare_futures_daily(conn, force=force),
+        "futures_rollover_dates":     lambda: step_futures_rollover_dates(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
