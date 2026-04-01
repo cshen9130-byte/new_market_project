@@ -60,25 +60,39 @@ function buildReturnSeries(rows: Array<{ date: string; close: number }>) {
 }
 
 /**
- * Fallback rollover detector using 4σ statistics — used only for products
- * not covered by raw_futures_rollover_dates (e.g. GFEX contracts).
+ * Fallback rollover detector using rolling 40-day MAD statistics.
+ * Used for products not in raw_futures_rollover_dates (DCE, GFEX).
  *
- * When the main contract switches the close-to-close return spans two
- * different contracts, producing a structural gap. We flag |return| >
- * max(4σ, 4%) as a suspected rollover.
+ * Superior to global 4σ because:
+ *  - Threshold adapts to local volatility (high-vol periods raise the bar)
+ *  - Minimum 6% floor is above Chinese futures circuit breaker (4–5%),
+ *    so genuine extreme market moves are never mistakenly flagged
+ *  - K=12 × MAD is far more selective than 4σ for isolated spike detection
  */
 function detectRolloverDatesFallback(
   returns: Array<{ date: string; value: number }>,
 ): Set<string> {
-  if (returns.length < 10) return new Set()
+  if (returns.length < 20) return new Set()
   const values = returns.map((r) => r.value)
-  const mean = values.reduce((s, v) => s + v, 0) / values.length
-  const variance = values.reduce((s, v) => s + (v - mean) ** 2, 0) / (values.length - 1)
-  const std = Math.sqrt(variance)
-  const threshold = Math.max(4 * std, 0.04)
-  return new Set(
-    returns.filter((r) => Math.abs(r.value - mean) > threshold).map((r) => r.date),
-  )
+  const MIN_THRESHOLD = 0.06   // 6% floor — above circuit breaker limits
+  const K = 12                 // MAD multiplier (very selective)
+  const LOOKBACK = 40          // rolling window length
+  const flagged = new Set<string>()
+
+  for (let i = LOOKBACK; i < values.length; i++) {
+    const window = values.slice(i - LOOKBACK, i)
+    // MAD of absolute returns in the rolling window
+    const absWindow = window.map(Math.abs).sort((a, b) => a - b)
+    const medianAbs = absWindow[Math.floor(absWindow.length / 2)]
+    const deviations = absWindow.map((v) => Math.abs(v - medianAbs)).sort((a, b) => a - b)
+    const mad = deviations[Math.floor(deviations.length / 2)]
+    // 1.4826 makes MAD consistent with σ under normality
+    const threshold = Math.max(MIN_THRESHOLD, medianAbs + K * mad * 1.4826)
+    if (Math.abs(values[i]) > threshold) {
+      flagged.add(returns[i].date)
+    }
+  }
+  return flagged
 }
 
 export async function GET(request: NextRequest) {
