@@ -59,8 +59,8 @@ except ImportError:
     sys.exit(1)
 
 
-# Exchanges supported by ak.get_futures_daily
-MARKETS = ["SHFE", "DCE", "CZCE", "INE"]
+# Exchanges supported by ak.get_futures_daily  (DCE uses a separate per-day API)
+MARKETS = ["SHFE", "CZCE", "INE"]
 
 # Regex for extracting the product root from a specific contract symbol.
 # Handles:
@@ -177,6 +177,64 @@ def parse_chunk_rows(df: pd.DataFrame) -> list[dict]:
     return rows
 
 
+def fetch_dce_day(trade_date: date_cls) -> list[dict]:
+    """
+    Fetch DCE contract data for a single day using ak.futures_dce_daily().
+
+    DCE's website blocks the bulk ak.get_futures_daily(market="DCE") call,
+    so we use the per-day endpoint instead.  Column names returned by
+    ak.futures_dce_daily() are Chinese; we normalise them here.
+    """
+    date_str = ymd(trade_date)
+    try:
+        df = ak.futures_dce_daily(trade_date=date_str)
+        if df is None or df.empty:
+            return []
+        df = df.rename(columns={c: c.strip() for c in df.columns})
+        # Possible column name variants
+        col_map = {
+            # contract code
+            "合约代码": "contract",
+            "商品代码": "contract",
+            # open interest
+            "持仓量": "open_interest",
+            "持仓量(手)": "open_interest",
+        }
+        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+        if "contract" not in df.columns or "open_interest" not in df.columns:
+            print(f"[Warn] DCE {date_str}: unexpected columns {list(df.columns)}", file=sys.stderr)
+            return []
+        rows: list[dict] = []
+        for _, row in df.iterrows():
+            symbol = str(row["contract"]).strip().upper()
+            product = extract_product(symbol)
+            if not product:
+                continue
+            try:
+                oi = float(row["open_interest"])
+            except (TypeError, ValueError):
+                oi = 0.0
+            rows.append({
+                "trade_date": trade_date,
+                "product": product,
+                "contract": symbol,
+                "open_interest": oi,
+            })
+        return rows
+    except Exception as exc:
+        print(f"[Warn] DCE {date_str}: {exc}", file=sys.stderr)
+        return []
+
+
+def iter_trading_days(start: date_cls, end: date_cls):
+    """Yield Mon–Fri dates in [start, end] (simple weekday filter)."""
+    d = start
+    while d <= end:
+        if d.weekday() < 5:          # 0=Mon … 4=Fri
+            yield d
+        d += timedelta(days=1)
+
+
 def detect_rollovers(rows: list[dict]) -> list[dict]:
     """Find dates when the dominant contract (max OI) changed per product."""
     if not rows:
@@ -239,7 +297,7 @@ def main() -> None:
 
     all_rows: list[dict] = []
 
-    # Fetch in monthly chunks to stay within API rate limits
+    # ── SHFE / CZCE / INE: bulk monthly fetch ──────────────────────────────
     current = start_date
     while current <= end_date:
         # Compute end of this month
@@ -259,6 +317,15 @@ def main() -> None:
             all_rows.extend(rows)
 
         current = next_month_start
+
+    # ── DCE: per-day fetch using ak.futures_dce_daily() ────────────────────
+    dce_days = list(iter_trading_days(start_date, end_date))
+    total_dce = len(dce_days)
+    for i, day in enumerate(dce_days, 1):
+        if i % 20 == 0 or i == 1 or i == total_dce:
+            print(f"[Info] Fetching DCE {ymd(day)} ({i}/{total_dce}) …", file=sys.stderr)
+        rows = fetch_dce_day(day)
+        all_rows.extend(rows)
 
     rollovers = detect_rollovers(all_rows)
 
