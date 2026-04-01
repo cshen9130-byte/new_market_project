@@ -179,34 +179,26 @@ def parse_chunk_rows(df: pd.DataFrame) -> list[dict]:
 
 def fetch_dce_day(trade_date: date_cls) -> list[dict]:
     """
-    Fetch DCE contract data for a single day using ak.futures_dce_daily().
+    Fetch DCE contract data for a single day using ak.get_dce_daily().
 
-    DCE's website blocks the bulk ak.get_futures_daily(market="DCE") call,
-    so we use the per-day endpoint instead.  Column names returned by
-    ak.futures_dce_daily() are Chinese; we normalise them here.
+    ak.get_dce_daily() uses the DCE REST API (POST /dayQuotes) and returns
+    English column names: symbol, date, open, high, low, close, volume,
+    open_interest, turnover, settle, pre_settle, variety.
     """
     date_str = ymd(trade_date)
     try:
-        df = ak.futures_dce_daily(trade_date=date_str)
+        df = ak.get_dce_daily(date=date_str)
         if df is None or df.empty:
             return []
-        df = df.rename(columns={c: c.strip() for c in df.columns})
-        # Possible column name variants
-        col_map = {
-            # contract code
-            "合约代码": "contract",
-            "商品代码": "contract",
-            # open interest
-            "持仓量": "open_interest",
-            "持仓量(手)": "open_interest",
-        }
-        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-        if "contract" not in df.columns or "open_interest" not in df.columns:
-            print(f"[Warn] DCE {date_str}: unexpected columns {list(df.columns)}", file=sys.stderr)
+        if "symbol" not in df.columns or "open_interest" not in df.columns:
+            print(
+                f"[Warn] DCE {date_str}: unexpected columns {list(df.columns)}",
+                file=sys.stderr,
+            )
             return []
         rows: list[dict] = []
         for _, row in df.iterrows():
-            symbol = str(row["contract"]).strip().upper()
+            symbol = str(row["symbol"]).strip().upper()
             product = extract_product(symbol)
             if not product:
                 continue

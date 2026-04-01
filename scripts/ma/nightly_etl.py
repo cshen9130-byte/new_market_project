@@ -115,7 +115,7 @@ def run_script(
         if result.returncode != 0:
             log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
         elif log_stderr and stderr:
-            log.info("[%s] stderr:\n%s", script_name, stderr[:2000])
+            log.info("[%s] stderr:\n%s", script_name, stderr[:10000])
         if stdout:
             first = stdout.find("{")
             last = stdout.rfind("}")
