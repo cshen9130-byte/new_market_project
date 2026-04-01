@@ -111,7 +111,14 @@ export async function GET(request: NextRequest) {
     const maxWin = Math.max(volWin, corrWin)
     const lookbackDays = Math.ceil(maxWin * 2) + 60
 
-    const since = new Date()
+    // asOf: optional YYYY-MM-DD, defaults to today
+    const asOfParam = searchParams.get("asOf")
+    const asOfDate = asOfParam && /^\d{4}-\d{2}-\d{2}$/.test(asOfParam)
+      ? new Date(asOfParam)
+      : new Date()
+    const asOfIso = asOfDate.toISOString().slice(0, 10)
+
+    const since = new Date(asOfDate)
     since.setDate(since.getDate() - lookbackDays)
     const sinceIso = since.toISOString().slice(0, 10)
 
@@ -120,18 +127,18 @@ export async function GET(request: NextRequest) {
       query<NhciRow>(
         `SELECT trade_date, close
          FROM raw_nhci_daily
-         WHERE trade_date >= $1
+         WHERE trade_date >= $1 AND trade_date <= $2
            AND close IS NOT NULL AND close > 0
          ORDER BY trade_date ASC`,
-        [sinceIso],
+        [sinceIso, asOfIso],
       ),
       query<FuturesRow>(
         `SELECT trade_date, code, close
          FROM raw_akshare_futures_daily
-         WHERE trade_date >= $1
+         WHERE trade_date >= $1 AND trade_date <= $2
            AND close IS NOT NULL AND close > 0
          ORDER BY code ASC, trade_date ASC`,
-        [sinceIso],
+        [sinceIso, asOfIso],
       ),
       // Load rollover dates from the nightly-ETL table.
       // raw_futures_rollover_dates is populated by fetch_futures_rollover_dates.py
@@ -140,9 +147,9 @@ export async function GET(request: NextRequest) {
       query<RolloverRow>(
         `SELECT product, rollover_date
          FROM raw_futures_rollover_dates
-         WHERE rollover_date >= $1
+         WHERE rollover_date >= $1 AND rollover_date <= $2
          ORDER BY product, rollover_date ASC`,
-        [sinceIso],
+        [sinceIso, asOfIso],
       ).catch(() => [] as RolloverRow[]), // graceful: table may not exist yet on first deploy
     ])
 
@@ -246,6 +253,7 @@ export async function GET(request: NextRequest) {
           point.latest_date > latest ? point.latest_date : latest,
         points[0].latest_date,
       ),
+      as_of_filter: asOfIso,
       volWindow: volKey,
       corrWindow: corrKey,
       benchmark: "南华商品指数",

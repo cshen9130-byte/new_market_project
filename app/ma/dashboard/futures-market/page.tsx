@@ -4,7 +4,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { Button } from "@/components/ui/button"
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { MoreVertical } from "lucide-react"
 
@@ -20,6 +20,218 @@ type FuturesVolCorrScatterPoint = {
   observations: number
   latest_date: string
 }
+
+// ─── Scatter chart helpers (outside component so closures can call them) ────
+const _SCATTER_PRODUCT_CN: Record<string, string> = {
+  A:"黄大豆1号", AD:"铝合金",   AG:"白银",      AL:"沪铝",     AO:"氧化铝",   AP:"苹果",
+  AU:"黄金",     B:"黄大豆2号", BB:"胶合板",    BC:"国际铜",   BR:"丁二烯橡胶",BU:"沥青",
+  BZ:"纯苯",     C:"玉米",      CF:"棉花",      CJ:"红枣",     CS:"玉米淀粉", CU:"沪铜",
+  CY:"棉纱",     EB:"苯乙烯",   EC:"航运",      EG:"乙二醇",   FB:"纤维板",   FG:"玻璃",
+  FU:"燃料油",   HC:"热卷",     I:"铁矿石",     IC:"中证500",  IF:"沪深300",
+  IH:"上证50",   IM:"中证1000", J:"焦炭",       JD:"鸡蛋",     JM:"焦煤",
+  JR:"粳稻",     L:"塑料",      LC:"碳酸锂",    LG:"原木",     LH:"生猪",     LR:"晚籼稻",
+  LU:"低硫燃油", M:"豆粕",      MA:"甲醇",      NI:"沪镍",     NR:"20号胶",   OI:"菜籽油",
+  OP:"双胶纸",   P:"棕榈油",    PB:"沪铅",      PD:"钯",       PF:"短纤",     PG:"液化气",
+  PK:"花生",     PL:"丙烯",     PM:"普麦",      PP:"聚丙烯",   PR:"瓶片",     PS:"多晶硅",
+  PT:"铂",       PX:"对二甲苯", RB:"螺纹钢",    RI:"早籼稻",   RM:"菜籽粕",   RR:"粳米",
+  RS:"油菜籽",   RU:"天然橡胶", SA:"纯碱",      SC:"原油",     SF:"硅铁",     SH:"烧碱",
+  SI:"工业硅",   SM:"锰硅",     SN:"沪锡",      SP:"纸浆",     SR:"白糖",     SS:"不锈钢",
+  T:"10年期国债",TA:"PTA",      TF:"5年期国债", TL:"30年期国债",TS:"2年期国债",
+  UR:"尿素",     V:"PVC",       WH:"强麦",      WR:"线材",     Y:"豆油",      ZC:"动力煤",
+  ZN:"沪锌",
+}
+const _SCATTER_SECTOR_RULES: Record<string, Set<string>> = {
+  "农产":    new Set(["C","CS","WH","PM","RR","RI","JR","LR","A","B","M","Y","RM","OI","RS","PK","P","SR","CF","CY","AP","CJ","LH","JD","LG","SP","OP"]),
+  "贵金属":  new Set(["AU","AG","PT","PD"]),
+  "有色":    new Set(["CU","BC","AL","AO","AD","ZN","PB","NI","SN"]),
+  "新能源":  new Set(["LC","PS","SI"]),
+  "黑色":    new Set(["I","SF","SM","RB","HC","SS","WR","JM","J","ZC","FG","BB","FB"]),
+  "能源化工":new Set(["SC","FU","LU","PG","BU","TA","EG","PF","PR","PL","PP","L","BZ","PX","EB","RU","BR","NR","SA","SH","V","UR","MA"]),
+  "航运":    new Set(["EC"]),
+  "股指":    new Set(["IH","IF","IC","IM","MO"]),
+  "国债":    new Set(["TS","TF","T","TL"]),
+}
+const _SCATTER_SECTOR_COLORS: Record<string, string> = {
+  "农产":    "#10b981", "贵金属": "#f59e0b", "有色":    "#3b82f6", "新能源":  "#22c55e",
+  "黑色":    "#6b7280", "能源化工":"#ef4444", "航运":    "#8b5cf6", "股指":    "#0ea5e9",
+  "国债":    "#14b8a6", "其他":    "#9ca3af",
+}
+const _SCATTER_SECTOR_ORDER = ["农产","贵金属","有色","新能源","黑色","能源化工","航运","股指","国债","其他"]
+function _getScatterSector(code: string): string {
+  const c = code.toUpperCase()
+  for (const [sector, codes] of Object.entries(_SCATTER_SECTOR_RULES)) { if (codes.has(c)) return sector }
+  return "其他"
+}
+function buildScatterEChartsOption(
+  points: FuturesVolCorrScatterPoint[],
+  volWindow: string, corrWindow: string, benchmark: string,
+): object {
+  const maxVol = points.reduce((m, p) => Math.max(m, p.volatility), 0)
+  const groups: Record<string, FuturesVolCorrScatterPoint[]> = {}
+  for (const pt of points) { const s = _getScatterSector(pt.label); if (!groups[s]) groups[s] = []; groups[s].push(pt) }
+  const active = _SCATTER_SECTOR_ORDER.filter((s) => groups[s]?.length)
+  const series = active.map((sector, idx) => ({
+    name: sector, type: "scatter",
+    data: groups[sector].map((pt) => ({ name: pt.label, value: [pt.correlation, pt.volatility, pt.label, pt.observations, pt.latest_date] })),
+    symbolSize: 12,
+    itemStyle: { color: _SCATTER_SECTOR_COLORS[sector] ?? "#9ca3af", opacity: 0.85 },
+    label: { show: true, position: "top", color: "#94a3b8", fontSize: 9, formatter: (p: any) => p.data.value[2] },
+    labelLayout: { hideOverlap: true },
+    emphasis: { focus: "self", label: { color: "#f8fafc", fontWeight: 600 }, itemStyle: { borderColor: "#f8fafc", borderWidth: 1.5, opacity: 1 } },
+    ...(idx === 0 ? { markLine: { silent: true, symbol: "none", lineStyle: { color: "#475569", type: "dashed" }, data: [{ xAxis: 0 }] } } : {}),
+  }))
+  return {
+    animation: false,
+    grid: { top: 28, right: 28, bottom: 100, left: 64 },
+    legend: { data: active, bottom: 8, orient: "horizontal", textStyle: { color: "#64748b", fontSize: 10 }, itemWidth: 10, itemHeight: 10 },
+    tooltip: {
+      trigger: "item", backgroundColor: "rgba(15,23,42,0.9)", borderColor: "transparent",
+      textStyle: { color: "#f8fafc", fontSize: 12 },
+      formatter: (params: any) => {
+        const [corr, vol, code, obs, date] = params.data.value
+        const cn = _SCATTER_PRODUCT_CN[code]; const sector = _getScatterSector(code)
+        return [`<b>${cn ? `${cn}（${code}）` : code}</b>`,
+          `<span style="color:#94a3b8">板块: ${sector} | 日期: ${date}</span>`,
+          `相关性（${corrWindow}）: <b>${(+corr).toFixed(3)}</b>`,
+          `波动率（${volWindow}）: <b>${(+vol).toFixed(2)}%</b>`,
+          `样本点: <b>${obs}</b>`].join("<br/>")
+      },
+    },
+    xAxis: { type: "value", min: -1, max: 1, name: `相关性 ${corrWindow}（对${benchmark}）`, nameLocation: "middle", nameGap: 20,
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 11, formatter: (v: number) => v.toFixed(1) },
+      splitLine: { lineStyle: { color: "#1e293b", type: "dashed" } } },
+    yAxis: { type: "value", min: 0, max: +(maxVol * 1.1).toFixed(2), name: `波动率 ${volWindow}`, nameLocation: "middle", nameGap: 48,
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 11, formatter: (v: number) => `${v.toFixed(1)}%` },
+      splitLine: { lineStyle: { color: "#1e293b", type: "dashed" } } },
+    series,
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+function buildCorrDistOption(
+  points: FuturesVolCorrScatterPoint[],
+  corrWindow: string,
+  benchmark: string,
+): object {
+  // Build histogram: 20 bins from -1 to 1
+  const BINS = 20
+  const counts = Array(BINS).fill(0)
+  const labels: string[][] = Array.from({ length: BINS }, () => [])
+  points.forEach((p) => {
+    const idx = Math.min(Math.floor((p.correlation + 1) / 2 * BINS), BINS - 1)
+    counts[idx]++
+    labels[idx].push(_SCATTER_PRODUCT_CN[p.label] ? `${_SCATTER_PRODUCT_CN[p.label]}(${p.label})` : p.label)
+  })
+  const binEdges = Array.from({ length: BINS }, (_, i) => +((-1 + i * (2 / BINS)).toFixed(2)))
+  return {
+    animation: false,
+    grid: { top: 16, right: 16, bottom: 52, left: 36 },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      backgroundColor: "rgba(15,23,42,0.9)", borderColor: "transparent",
+      textStyle: { color: "#f8fafc", fontSize: 12 },
+      formatter: (params: any) => {
+        const i = params[0]?.dataIndex ?? 0
+        const lo = binEdges[i].toFixed(2)
+        const hi = (binEdges[i] + 2 / BINS).toFixed(2)
+        const names = labels[i].join("、") || "—"
+        return `相关性区间 [${lo}, ${hi})<br/>品种数: <b>${counts[i]}</b><br/><span style="color:#94a3b8;font-size:11px">${names}</span>`
+      },
+    },
+    xAxis: {
+      type: "category",
+      data: binEdges.map((v) => v.toFixed(1)),
+      name: `相关性 ${corrWindow}（对${benchmark}）`, nameLocation: "middle", nameGap: 28,
+      axisLine: { lineStyle: { color: "#334155" } }, axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 10, interval: 3 },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      name: "品种数", nameTextStyle: { color: "#64748b", fontSize: 10 },
+      minInterval: 1,
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 10 },
+      splitLine: { lineStyle: { color: "#1e293b", type: "dashed" } },
+    },
+    series: [{
+      type: "bar",
+      data: counts.map((c, i) => ({
+        value: c,
+        itemStyle: {
+          color: binEdges[i] >= 0.5 ? "#ef4444" : binEdges[i] >= 0 ? "#f97316" : binEdges[i] >= -0.5 ? "#6b7280" : "#3b82f6",
+          opacity: 0.85,
+        },
+      })),
+      barCategoryGap: "2%",
+    }],
+  }
+}
+
+function buildVolDistOption(
+  points: FuturesVolCorrScatterPoint[],
+  volWindow: string,
+): object {
+  const BINS = 20
+  const rawMax = Math.max(...points.map((p) => p.volatility), 0.01)
+  const maxVol = Math.ceil(rawMax / 0.01) * 0.01
+  const binSize = maxVol / BINS
+  const counts = Array(BINS).fill(0)
+  const labels: string[][] = Array.from({ length: BINS }, () => [])
+  points.forEach((p) => {
+    const idx = Math.min(Math.floor(p.volatility / binSize), BINS - 1)
+    counts[idx]++
+    labels[idx].push(_SCATTER_PRODUCT_CN[p.label] ? `${_SCATTER_PRODUCT_CN[p.label]}(${p.label})` : p.label)
+  })
+  const binEdges = Array.from({ length: BINS }, (_, i) => i * binSize)
+  return {
+    animation: false,
+    grid: { top: 16, right: 16, bottom: 52, left: 36 },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      backgroundColor: "rgba(15,23,42,0.9)", borderColor: "transparent",
+      textStyle: { color: "#f8fafc", fontSize: 12 },
+      formatter: (params: any) => {
+        const i = params[0]?.dataIndex ?? 0
+        const lo = binEdges[i].toFixed(1)
+        const hi = (binEdges[i] + binSize).toFixed(1)
+        const names = labels[i].join("、") || "—"
+        return `波动率区间 [${lo}%, ${hi}%)<br/>品种数: <b>${counts[i]}</b><br/><span style="color:#94a3b8;font-size:11px">${names}</span>`
+      },
+    },
+    xAxis: {
+      type: "category",
+      data: binEdges.map((v) => `${v.toFixed(1)}%`),
+      name: `波动率 ${volWindow}`, nameLocation: "middle", nameGap: 28,
+      axisLine: { lineStyle: { color: "#334155" } }, axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 10, interval: 3 },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      name: "品种数", nameTextStyle: { color: "#64748b", fontSize: 10 },
+      minInterval: 1,
+      axisLine: { show: false }, axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 10 },
+      splitLine: { lineStyle: { color: "#1e293b", type: "dashed" } },
+    },
+    series: [{
+      type: "bar",
+      data: counts.map((c, i) => ({
+        value: c,
+        itemStyle: {
+          color: binEdges[i] >= maxVol * 0.75 ? "#ef4444" : binEdges[i] >= maxVol * 0.5 ? "#f97316" : binEdges[i] >= maxVol * 0.25 ? "#f59e0b" : "#3b82f6",
+          opacity: 0.85,
+        },
+      })),
+      barCategoryGap: "2%",
+    }],
+  }
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function FuturesMarketPage() {
   const [nhci, setNhci] = useState<Array<{ date: string; close: number }>>([])
@@ -39,6 +251,47 @@ export default function FuturesMarketPage() {
   const [errorFuturesVolCorrScatter, setErrorFuturesVolCorrScatter] = useState<string | null>(null)
   const [volWindowOpt, setVolWindowOpt] = useState("20d")
   const [corrWindowOpt, setCorrWindowOpt] = useState("20d")
+  const [scatterAsOf, setScatterAsOf] = useState("")
+  const [scatterFullscreen, setScatterFullscreen] = useState(false)
+  const [scatterPlaying, setScatterPlaying] = useState(false)
+  const playTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scatterEchartsRef = useRef<any>(null)
+  const corrDistEchartsRef = useRef<any>(null)
+  const playbackDateRef = useRef("")
+  const playbackDateDomRef = useRef<HTMLSpanElement>(null)
+  const [rightChartTab, setRightChartTab] = useState<"corr" | "vol">("corr")
+  const rightChartTabRef = useRef<"corr" | "vol">("corr")
+
+  const fmtLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  const nextTradingDay = (dateStr: string): string | null => {
+    const d = new Date(dateStr + "T00:00:00")
+    d.setDate(d.getDate() + 1)
+    while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1)
+    const today = new Date(); today.setHours(0, 0, 0, 0)
+    return d <= today ? fmtLocal(d) : null
+  }
+
+  const [corrMatrixWindow, setCorrMatrixWindow] = useState<"5d" | "10d" | "20d" | "1m" | "6m" | "1y">("20d")
+  const getCorrMatrixCutoff = (w: "5d" | "10d" | "20d" | "1m" | "6m" | "1y"): string => {
+    const d = new Date()
+    if (w === "5d") d.setDate(d.getDate() - 7)
+    else if (w === "10d") d.setDate(d.getDate() - 14)
+    else if (w === "20d") d.setDate(d.getDate() - 28)
+    else if (w === "1m") d.setMonth(d.getMonth() - 1)
+    else if (w === "6m") d.setMonth(d.getMonth() - 6)
+    else d.setFullYear(d.getFullYear() - 1)
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`
+  }
+
+  const [corrTrendWindow, setCorrTrendWindow] = useState<"5d"|"10d"|"20d"|"1m"|"6m"|"1y">("20d")
+  const getCorrTrendDays = (w: "5d"|"10d"|"20d"|"1m"|"6m"|"1y"): number => {
+    if (w === "5d") return 5
+    if (w === "10d") return 10
+    if (w === "20d") return 20
+    if (w === "1m") return 21
+    if (w === "6m") return 126
+    return 252
+  }
 
   const [indexRange, setIndexRange] = useState<"1m" | "3m" | "6m" | "1y">("1y")
   const getIndexCutoff = (range: "1m" | "3m" | "6m" | "1y"): string => {
@@ -48,6 +301,19 @@ export default function FuturesMarketPage() {
     else if (range === "6m") d.setMonth(d.getMonth() - 6)
     else d.setFullYear(d.getFullYear() - 1)
     return d.toISOString().slice(0, 10)
+  }
+
+  const [corrTrendRange, setCorrTrendRange] = useState<"1m"|"3m"|"6m"|"1y"|"3y"|"5y">("1m")
+  const [corrTrendSector, setCorrTrendSector] = useState<string>("农产品")
+  const getCorrTrendCutoff = (range: "1m"|"3m"|"6m"|"1y"|"3y"|"5y"): string => {
+    const d = new Date()
+    if (range === "1m") d.setMonth(d.getMonth() - 1)
+    else if (range === "3m") d.setMonth(d.getMonth() - 3)
+    else if (range === "6m") d.setMonth(d.getMonth() - 6)
+    else if (range === "1y") d.setFullYear(d.getFullYear() - 1)
+    else if (range === "3y") d.setFullYear(d.getFullYear() - 3)
+    else d.setFullYear(d.getFullYear() - 5)
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`
   }
 
   const [futLatest, setFutLatest] = useState<Record<string, {
@@ -142,13 +408,14 @@ export default function FuturesMarketPage() {
     }
   }
 
-  const reloadFuturesVolCorrScatter = async (force = false, vw = volWindowOpt, cw = corrWindowOpt) => {
+  const reloadFuturesVolCorrScatter = async (force = false, vw = volWindowOpt, cw = corrWindowOpt, ao = scatterAsOf) => {
     setLoadingFuturesVolCorrScatter(true)
     setErrorFuturesVolCorrScatter(null)
     try {
       const sep = force ? "?force=1&" : "?"
+      const asOfParam = ao ? `&asOf=${ao}` : ""
       const res = await fetch(
-        `/ma/api/futures/vol-corr-scatter${sep}volWindow=${vw}&corrWindow=${cw}`,
+        `/ma/api/futures/vol-corr-scatter${sep}volWindow=${vw}&corrWindow=${cw}${asOfParam}`,
         force ? { cache: "no-store" } : undefined,
       )
       const json = await res.json()
@@ -162,7 +429,7 @@ export default function FuturesMarketPage() {
           points: json.points,
         }
         setFuturesVolCorrScatter(value)
-        lsSave(`futuresVolCorrScatter_${vw}_${cw}`, value)
+        lsSave(`futuresVolCorrScatter_${vw}_${cw}_${ao || "latest"}`, value)
       } else throw new Error("empty")
     } catch {
       const cached = lsLoad(`futuresVolCorrScatter_${vw}_${cw}`)
@@ -361,7 +628,54 @@ export default function FuturesMarketPage() {
   useEffect(() => { reloadNhci(true) }, [])
   useEffect(() => { reloadSectorIndices(true) }, [])
   useEffect(() => { reloadFuturesVolCorrScatter(true) }, [])
-  useEffect(() => { reloadFuturesVolCorrScatter(true, volWindowOpt, corrWindowOpt) }, [volWindowOpt, corrWindowOpt])
+  useEffect(() => { reloadFuturesVolCorrScatter(true, volWindowOpt, corrWindowOpt, scatterAsOf) }, [volWindowOpt, corrWindowOpt, scatterAsOf])
+
+  useEffect(() => {
+    if (playTimerRef.current) { clearTimeout(playTimerRef.current); playTimerRef.current = null }
+    if (!scatterPlaying) {
+      // Sync date picker to final playback position when stopped
+      if (playbackDateRef.current) { setScatterAsOf(playbackDateRef.current) }
+      playbackDateRef.current = ""
+      if (playbackDateDomRef.current) { playbackDateDomRef.current.textContent = ""; playbackDateDomRef.current.style.display = "none" }
+      return
+    }
+    const startDate = scatterAsOf || fmtLocal(new Date(Date.now() - 90 * 86400000))
+    playbackDateRef.current = startDate
+    const vw = volWindowOpt
+    const cw = corrWindowOpt
+    let cancelled = false
+    const scheduleNext = () => {
+      playTimerRef.current = setTimeout(runFrame, 900)
+    }
+    const runFrame = async () => {
+      if (cancelled) return
+      const ao = playbackDateRef.current
+      try {
+        const res = await fetch(`/ma/api/futures/vol-corr-scatter?volWindow=${vw}&corrWindow=${cw}&asOf=${ao}`)
+        const json = await res.json()
+        if (!cancelled && json?.points?.length) {
+          const inst = scatterEchartsRef.current?.getEchartsInstance?.()
+          if (inst) inst.setOption(buildScatterEChartsOption(json.points, json.volWindow ?? vw, json.corrWindow ?? cw, json.benchmark ?? "南华商品指数"), { notMerge: false, replaceMerge: ["series"] })
+          const distInst = corrDistEchartsRef.current?.getEchartsInstance?.()
+          if (distInst) {
+            const opt = rightChartTabRef.current === "vol"
+              ? buildVolDistOption(json.points, json.volWindow ?? vw)
+              : buildCorrDistOption(json.points, json.corrWindow ?? cw, json.benchmark ?? "南华商品指数")
+            distInst.setOption(opt, { notMerge: false, replaceMerge: ["series"] })
+          }
+          if (playbackDateDomRef.current) { playbackDateDomRef.current.textContent = ao; playbackDateDomRef.current.style.display = "" }
+        }
+      } catch {}
+      if (cancelled) return
+      const next = nextTradingDay(ao)
+      if (!next) { setScatterPlaying(false); return }
+      playbackDateRef.current = next
+      scheduleNext()
+    }
+    runFrame()
+    return () => { cancelled = true; if (playTimerRef.current) { clearTimeout(playTimerRef.current); playTimerRef.current = null } }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scatterPlaying])
 
   useEffect(() => { reloadBasisFar(true) }, [])
 
@@ -935,6 +1249,21 @@ export default function FuturesMarketPage() {
                 <CardTitle>南华板块指数 — 滚动相关性矩阵</CardTitle>
                 <CardDescription>基于所选区间内日收益率的 Pearson 相关系数</CardDescription>
               </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">相关性窗口</span>
+                <select
+                  value={corrMatrixWindow}
+                  onChange={e => setCorrMatrixWindow(e.target.value as "5d"|"10d"|"20d"|"1m"|"6m"|"1y")}
+                  className="text-xs border border-border bg-background text-foreground rounded px-2 py-1"
+                >
+                  <option value="5d">5日</option>
+                  <option value="10d">10日</option>
+                  <option value="20d">20日</option>
+                  <option value="1m">1月</option>
+                  <option value="6m">6月</option>
+                  <option value="1y">1年</option>
+                </select>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="pt-0">
@@ -944,7 +1273,7 @@ export default function FuturesMarketPage() {
               <div className="text-sm text-destructive">{errorSectorIndices}</div>
             ) : (
               (() => {
-                const cutoff = getIndexCutoff(indexRange)
+                const cutoff = getCorrMatrixCutoff(corrMatrixWindow)
 
                 // Build daily return series per index within the range
                 const retSeriesList = sectorIndices.map((item) => {
@@ -1073,7 +1402,55 @@ export default function FuturesMarketPage() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle>南华板块指数 — 滚动相关性走势</CardTitle>
-                <CardDescription>20日滚动 Pearson 相关系数（每对指数一条线）</CardDescription>
+                <CardDescription>{corrTrendWindow === "1m" ? "21" : corrTrendWindow === "6m" ? "126" : corrTrendWindow === "1y" ? "252" : corrTrendWindow.replace("d","")}日滚动 Pearson 相关系数（每对指数一条线）</CardDescription>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-muted-foreground">板块</span>
+                  <select
+                    className="text-xs border border-border rounded px-2 py-1 bg-background text-foreground"
+                    value={corrTrendSector}
+                    onChange={e => setCorrTrendSector(e.target.value)}
+                  >
+                    <option value="__all__">全部</option>
+                    <option value="农产品">农产品</option>
+                    <option value="能化">能化</option>
+                    <option value="黑色">黑色</option>
+                    <option value="贵金属">贵金属</option>
+                    <option value="新能源">新能源</option>
+                    <option value="有色金属">有色金属</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-muted-foreground">时间范围</span>
+                  <select
+                    className="text-xs border border-border rounded px-2 py-1 bg-background text-foreground"
+                    value={corrTrendRange}
+                    onChange={e => setCorrTrendRange(e.target.value as "1m"|"3m"|"6m"|"1y"|"3y"|"5y")}
+                  >
+                    <option value="1m">近1个月</option>
+                    <option value="3m">近3个月</option>
+                    <option value="6m">近6个月</option>
+                    <option value="1y">近1年</option>
+                    <option value="3y">近3年</option>
+                    <option value="5y">近5年</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-xs text-muted-foreground">相关性窗口</span>
+                  <select
+                    className="text-xs border border-border rounded px-2 py-1 bg-background text-foreground"
+                    value={corrTrendWindow}
+                    onChange={e => setCorrTrendWindow(e.target.value as "5d"|"10d"|"20d"|"1m"|"6m"|"1y")}
+                  >
+                    <option value="5d">5日</option>
+                    <option value="10d">10日</option>
+                    <option value="20d">20日</option>
+                    <option value="1m">1月</option>
+                    <option value="6m">6月</option>
+                    <option value="1y">1年</option>
+                  </select>
+                </div>
               </div>
             </div>
           </CardHeader>
@@ -1084,8 +1461,8 @@ export default function FuturesMarketPage() {
               <div className="text-sm text-destructive">{errorSectorIndices}</div>
             ) : (
               (() => {
-                const ROLL = 20
-                const cutoff = getIndexCutoff(indexRange)
+                const ROLL = getCorrTrendDays(corrTrendWindow)
+                const cutoff = getCorrTrendCutoff(corrTrendRange)
 
                 // Build per-index daily return arrays aligned to a union date axis
                 // Include ROLL extra days before cutoff for burn-in
@@ -1111,7 +1488,7 @@ export default function FuturesMarketPage() {
                 const workDates = allSorted.filter((d) => d >= burnStart && retMaps.some((r) => r.map.has(d)))
 
                 // Generate pair names + rolling correlation series
-                const pairs: Array<{ label: string; data: Array<number | null> }> = []
+                const pairs: Array<{ label: string; sectors: [string, string]; data: Array<number | null> }> = []
                 for (let i = 0; i < retMaps.length; i++) {
                   for (let j = i + 1; j < retMaps.length; j++) {
                     const a = retMaps[i]; const b = retMaps[j]
@@ -1139,14 +1516,21 @@ export default function FuturesMarketPage() {
                       const r = denA === 0 || denB === 0 ? null : num / (denA * denB)
                       return r != null ? +r.toFixed(4) : null
                     })
-                    pairs.push({ label, data: series })
+                    pairs.push({ label, sectors: [shortA, shortB], data: series })
                   }
                 }
 
                 // Trim to visible range
                 const visibleDates = workDates.filter((d) => d >= cutoff)
                 const trimStart = workDates.indexOf(visibleDates[0])
-                const trimmedPairs = pairs.map((p) => ({ ...p, data: p.data.slice(trimStart) }))
+                const trimmedPairs = corrTrendSector === "__all__"
+                  ? pairs.map((p) => ({ ...p, data: p.data.slice(trimStart) }))
+                  : pairs.filter(p => p.sectors[0] === corrTrendSector || p.sectors[1] === corrTrendSector).map((p) => {
+                      // Always put selected sector first in label
+                      const needSwap = p.sectors[1] === corrTrendSector
+                      const label = needSwap ? `${p.sectors[1]}×${p.sectors[0]}` : p.label
+                      return { ...p, label, data: p.data.slice(trimStart) }
+                    })
 
                 const pairColors = [
                   "#f97316","#22c55e","#64748b","#f59e0b","#06b6d4","#a855f7",
@@ -1224,8 +1608,9 @@ export default function FuturesMarketPage() {
       </div>
       </div>
 
-      <div className="w-1/2">
-        <Card>
+      <div className="flex gap-4 items-stretch">
+      <div className={scatterFullscreen ? "fixed inset-0 z-50 bg-background p-4 overflow-auto" : "flex-1 min-w-0"}>
+        <Card className={scatterFullscreen ? "h-full flex flex-col" : "h-full flex flex-col"}>
           <CardHeader>
             <div className="flex items-center justify-between gap-4">
               <div>
@@ -1235,8 +1620,58 @@ export default function FuturesMarketPage() {
                   {futuresVolCorrScatter?.as_of ? ` | 截至 ${futuresVolCorrScatter.as_of}` : ""}
                 </CardDescription>
               </div>
+              <button
+                onClick={() => setScatterFullscreen((f) => !f)}
+                className="ml-auto shrink-0 rounded p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                title={scatterFullscreen ? "退出全屏" : "全屏"}
+              >
+                {scatterFullscreen ? (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
+                ) : (
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 8V5a2 2 0 0 1 2-2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2h-3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/></svg>
+                )}
+              </button>
             </div>
             <div className="flex flex-wrap gap-4 pt-1">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-muted-foreground shrink-0">截至日期</span>
+                <input
+                  type="date"
+                  value={scatterAsOf}
+                  onChange={(e) => { setScatterPlaying(false); setScatterAsOf(e.target.value) }}
+                  className="h-7 rounded border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+                {scatterAsOf && (
+                  <button
+                    onClick={() => { setScatterPlaying(false); setScatterAsOf("") }}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >✕</button>
+                )}
+                <span ref={playbackDateDomRef} style={{ display: "none" }} className="text-xs font-mono font-semibold text-foreground bg-accent/60 px-2 py-0.5 rounded" />
+                <button
+                  onClick={() => {
+                    if (scatterPlaying) {
+                      setScatterPlaying(false)
+                    } else {
+                      if (!scatterAsOf) {
+                        const d = new Date()
+                        d.setMonth(d.getMonth() - 3)
+                        while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1)
+                        setScatterAsOf(fmtLocal(d))
+                      }
+                      setScatterPlaying(true)
+                    }
+                  }}
+                  title={scatterPlaying ? "停止播放" : "播放（从当前截至日期逐日推进至今）"}
+                  className="flex items-center justify-center h-7 w-7 rounded border border-border bg-background text-foreground hover:bg-accent"
+                >
+                  {scatterPlaying ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                  )}
+                </button>
+              </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-muted-foreground shrink-0">波动率窗口</span>
                 <select
@@ -1267,135 +1702,78 @@ export default function FuturesMarketPage() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="pt-0">
+          <CardContent className="flex-1 overflow-hidden pt-0">
             {loadingFuturesVolCorrScatter ? (
               <div className="text-sm text-muted-foreground">正在加载…</div>
             ) : errorFuturesVolCorrScatter ? (
               <div className="text-sm text-destructive">{errorFuturesVolCorrScatter}</div>
             ) : futuresVolCorrScatter ? (
               (() => {
-                const PRODUCT_CN: Record<string, string> = {
-                  A:"黄大豆1号", AD:"铝合金",   AG:"白银",      AL:"沪铝",     AO:"氧化铝",   AP:"苹果",
-                  AU:"黄金",     B:"黄大豆2号", BB:"胶合板",    BC:"国际铜",   BR:"丁二烯橡胶",BU:"沥青",
-                  BZ:"纯苯",     C:"玉米",      CF:"棉花",      CJ:"红枣",     CS:"玉米淀粉", CU:"沪铜",
-                  CY:"棉纱",     EB:"苯乙烯",   EC:"航运",      EG:"乙二醇",   FB:"纤维板",   FG:"玻璃",
-                  FU:"燃料油",   HC:"热卷",     I:"铁矿石",     IC:"中证500",  IF:"沪深300",
-                  IH:"上证50",   IM:"中证1000", J:"焦炭",       JD:"鸡蛋",     JM:"焦煤",
-                  JR:"粳稻",     L:"塑料",      LC:"碳酸锂",    LG:"原木",     LH:"生猪",     LR:"晚籼稻",
-                  LU:"低硫燃油", M:"豆粕",      MA:"甲醇",      NI:"沪镍",     NR:"20号胶",   OI:"菜籽油",
-                  OP:"双胶纸",   P:"棕榈油",    PB:"沪铅",      PD:"钯",       PF:"短纤",     PG:"液化气",
-                  PK:"花生",     PL:"丙烯",     PM:"普麦",      PP:"聚丙烯",   PR:"瓶片",     PS:"多晶硅",
-                  PT:"铂",       PX:"对二甲苯", RB:"螺纹钢",    RI:"早籼稻",   RM:"菜籽粕",   RR:"粳米",
-                  RS:"油菜籽",   RU:"天然橡胶", SA:"纯碱",      SC:"原油",     SF:"硅铁",     SH:"烧碱",
-                  SI:"工业硅",   SM:"锰硅",     SN:"沪锡",      SP:"纸浆",     SR:"白糖",     SS:"不锈钢",
-                  T:"10年期国债",TA:"PTA",      TF:"5年期国债", TL:"30年期国债",TS:"2年期国债",
-                  UR:"尿素",     V:"PVC",       WH:"强麦",      WR:"线材",     Y:"豆油",      ZC:"动力煤",
-                  ZN:"沪锌",
-                }
-                const values = futuresVolCorrScatter.points.map((point) => point.volatility)
-                const maxVol = values.length ? Math.max(...values) : 1
-                const scatterData = futuresVolCorrScatter.points.map((point) => ({
-                  name: point.label,
-                  value: [point.correlation, point.volatility, point.label, point.observations, point.latest_date],
-                }))
-
-                const option = {
-                  animation: false,
-                  grid: { top: 28, right: 28, bottom: 100, left: 64 },
-                  tooltip: {
-                    trigger: "item" as const,
-                    backgroundColor: "rgba(15,23,42,0.9)",
-                    borderColor: "transparent",
-                    textStyle: { color: "#f8fafc", fontSize: 12 },
-                    formatter: (params: any) => {
-                      const [corr, vol, code, obs, date] = params.data.value
-                      const cnName = PRODUCT_CN[code]
-                      const title = cnName ? `<b>${cnName}（${code}）</b>` : `<b>${code}</b>`
-                      return [
-                        title,
-                        `<span style="color:#94a3b8">日期: ${date}</span>`,
-                        `相关性（${futuresVolCorrScatter.corrWindow}）: <b>${(+corr).toFixed(3)}</b>`,
-                        `波动率（${futuresVolCorrScatter.volWindow}）: <b>${(+vol).toFixed(2)}%</b>`,
-                        `样本点: <b>${obs}</b>`,
-                      ].join("<br/>")
-                    },
-                  },
-                  xAxis: {
-                    type: "value" as const,
-                    min: -1,
-                    max: 1,
-                    name: `相关性 ${futuresVolCorrScatter.corrWindow}（对${futuresVolCorrScatter.benchmark}）`,
-                    nameLocation: "middle" as const,
-                    nameGap: 20,
-                    axisLine: { show: false },
-                    axisTick: { show: false },
-                    axisLabel: {
-                      color: "#64748b",
-                      fontSize: 11,
-                      formatter: (value: number) => value.toFixed(1),
-                    },
-                    splitLine: { lineStyle: { color: "#1e293b", type: "dashed" as const } },
-                  },
-                  yAxis: {
-                    type: "value" as const,
-                    min: 0,
-                    max: +(maxVol * 1.1).toFixed(2),
-                    name: `波动率 ${futuresVolCorrScatter.volWindow}`,
-                    nameLocation: "middle" as const,
-                    nameGap: 48,
-                    axisLine: { show: false },
-                    axisTick: { show: false },
-                    axisLabel: {
-                      color: "#64748b",
-                      fontSize: 11,
-                      formatter: (value: number) => `${value.toFixed(1)}%`,
-                    },
-                    splitLine: { lineStyle: { color: "#1e293b", type: "dashed" as const } },
-                  },
-                  visualMap: {
-                    min: -1,
-                    max: 1,
-                    dimension: 0,
-                    orient: "horizontal" as const,
-                    left: "center" as const,
-                    bottom: 8,
-                    inRange: { color: ["#2563eb", "#94a3b8", "#dc2626"] },
-                    textStyle: { color: "#64748b", fontSize: 10 },
-                  },
-                  series: [
-                    {
-                      type: "scatter" as const,
-                      data: scatterData,
-                      symbolSize: 12,
-                      itemStyle: { opacity: 0.82 },
-                      label: {
-                        show: true,
-                        position: "top" as const,
-                        color: "#94a3b8",
-                        fontSize: 9,
-                        formatter: (params: any) => params.data.value[2],
-                      },
-                      labelLayout: { hideOverlap: true },
-                      emphasis: {
-                        focus: "self" as const,
-                        label: { color: "#f8fafc", fontWeight: 600 },
-                        itemStyle: { borderColor: "#f8fafc", borderWidth: 1.5, opacity: 1 },
-                      },
-                      markLine: {
-                        silent: true,
-                        symbol: "none",
-                        lineStyle: { color: "#475569", type: "dashed" as const },
-                        data: [{ xAxis: 0 }],
-                      },
-                    },
-                  ],
-                }
-
-                return <ReactECharts option={option} style={{ height: 420 }} notMerge lazyUpdate />
+                const option = buildScatterEChartsOption(
+                  futuresVolCorrScatter.points,
+                  futuresVolCorrScatter.volWindow,
+                  futuresVolCorrScatter.corrWindow,
+                  futuresVolCorrScatter.benchmark,
+                )
+                return <ReactECharts ref={scatterEchartsRef} option={option} style={{ height: scatterFullscreen ? "calc(100vh - 220px)" : 420 }} notMerge={false} lazyUpdate />
               })()
             ) : null}
           </CardContent>
         </Card>
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <Card className="h-full flex flex-col">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle>
+                  {rightChartTab === "corr" ? "品种相关性分布" : "品种波动率分布"}
+                </CardTitle>
+                <CardDescription>
+                  {rightChartTab === "corr"
+                    ? <>各品种收益率与{futuresVolCorrScatter?.benchmark ?? "南华商品指数"}相关系数（{corrWindowOpt}）{futuresVolCorrScatter?.as_of ? ` | 截至 ${futuresVolCorrScatter.as_of}` : ""}</>
+                    : <>各品种{volWindowOpt}收益率波动率分布{futuresVolCorrScatter?.as_of ? ` | 截至 ${futuresVolCorrScatter.as_of}` : ""}</>}
+                </CardDescription>
+              </div>
+              <div className="flex rounded border border-border overflow-hidden text-xs">
+                {(["corr", "vol"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => { setRightChartTab(tab); rightChartTabRef.current = tab }}
+                    className={`px-3 py-1 transition-colors ${
+                      rightChartTab === tab
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground hover:bg-accent"
+                    }`}
+                  >
+                    {tab === "corr" ? "相关性" : "波动率"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="flex-1 overflow-hidden pt-0">
+            {loadingFuturesVolCorrScatter ? (
+              <div className="text-sm text-muted-foreground">正在加载…</div>
+            ) : errorFuturesVolCorrScatter ? (
+              <div className="text-sm text-destructive">{errorFuturesVolCorrScatter}</div>
+            ) : futuresVolCorrScatter ? (
+              <ReactECharts
+                ref={corrDistEchartsRef}
+                option={
+                  rightChartTab === "vol"
+                    ? buildVolDistOption(futuresVolCorrScatter.points, futuresVolCorrScatter.volWindow)
+                    : buildCorrDistOption(futuresVolCorrScatter.points, futuresVolCorrScatter.corrWindow, futuresVolCorrScatter.benchmark)
+                }
+                style={{ height: scatterFullscreen ? "calc(100vh - 220px)" : "100%" }}
+                notMerge={false}
+                lazyUpdate
+              />
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
       </div>
 
       <div className="w-full">
