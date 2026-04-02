@@ -59,6 +59,21 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 
+// ─── SMTP Presets ────────────────────────────────────────────────────────────
+
+const SMTP_PRESETS = [
+  { label: "腾讯企业邮箱",  host: "smtp.exmail.qq.com", port: "465", secure: true,  authNote: "使用邮箱登录密码。如需 SMTP 需在企业邮后台开启：管理员后台 → 邮箱设置 → 开启 SMTP 服务。" },
+  { label: "QQ 邮箱",      host: "smtp.qq.com",        port: "465", secure: true,  authNote: "需要授权码，不能用登录密码。获取方式：QQ邮箱 → 设置 → 账户 → 开启 POP3/SMTP 服务 → 生成授权码。" },
+  { label: "网易 163 邮箱", host: "smtp.163.com",       port: "465", secure: true,  authNote: "需要授权码。获取方式：163邮箱 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 新建授权码。" },
+  { label: "网易 126 邮箱", host: "smtp.126.com",       port: "465", secure: true,  authNote: "需要授权码。获取方式：126邮箱 → 设置 → POP3/SMTP/IMAP → 开启 SMTP 服务 → 新建授权码。" },
+  { label: "阿里企业邮箱", host: "smtp.mxhichina.com", port: "465", secure: true,  authNote: "使用邮箱登录密码。需在阿里企业邮管理后台开启 SMTP。" },
+  { label: "Gmail",        host: "smtp.gmail.com",     port: "465", secure: true,  authNote: "需要应用专用密码（App Password），不能用 Google 账号密码。获取方式：Google 账号 → 安全性 → 两步验证（开启后）→ 应用专用密码。" },
+  { label: "Outlook / Hotmail", host: "smtp.office365.com", port: "587", secure: false, authNote: "使用 Microsoft 账号密码（需开启两步验证时可生成应用密码）。" },
+  { label: "自定义",       host: "", port: "465", secure: true, authNote: "" },
+] as const
+
+type SmtpPresetLabel = (typeof SMTP_PRESETS)[number]["label"]
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type SenderAccount = {
@@ -100,7 +115,6 @@ type DispatchForm = {
   senderId: string
   traderCode: string
   toInput: string
-  to: string[]
   subject: string
   content: string
   scheduleHour: string
@@ -113,7 +127,6 @@ const DEFAULT_DISPATCH_FORM: DispatchForm = {
   senderId: "",
   traderCode: "",
   toInput: "",
-  to: [],
   subject: "[投顾代码] 核算单 [日期]",
   content: "您好，\n\n请查收附件中 [日期] 的逐日核算单，文件名：[文件名]。\n\n此邮件由系统自动发送，请勿回复。",
   scheduleHour: "17",
@@ -354,8 +367,7 @@ export default function SendEmailToolPage() {
       name: setup.name,
       senderId: setup.senderId ?? "",
       traderCode: setup.traderCode,
-      toInput: "",
-      to: setup.to,
+      toInput: setup.to.join("; "),
       subject: setup.subject,
       content: setup.content,
       scheduleHour: h,
@@ -365,24 +377,15 @@ export default function SendEmailToolPage() {
     setDispatchDialogOpen(true)
   }
 
-  function addRecipient() {
-    const trimmed = dispatchForm.toInput.trim()
-    if (!trimmed) return
-    const parts = trimmed.split(/[,;，；]/).map((s) => s.trim()).filter(Boolean)
-    const invalid = parts.filter((p) => !EMAIL_RE.test(p))
-    if (invalid.length) { toast({ title: "格式有误", description: `地址格式不正确：${invalid.join(", ")}`, variant: "destructive" }); return }
-    const unique = parts.filter((p) => !dispatchForm.to.includes(p))
-    setDispatchForm((f) => ({ ...f, to: [...f.to, ...unique], toInput: "" }))
-  }
 
-  function removeRecipient(addr: string) {
-    setDispatchForm((f) => ({ ...f, to: f.to.filter((r) => r !== addr) }))
-  }
 
   async function handleSaveSetup() {
     if (!dispatchForm.name.trim()) { toast({ title: "请填写配置名称", variant: "destructive" }); return }
     if (!dispatchForm.traderCode.trim()) { toast({ title: "请选择或填写投顾代码", variant: "destructive" }); return }
-    if (dispatchForm.to.length === 0) { toast({ title: "至少添加一个收件人", variant: "destructive" }); return }
+    const toList = dispatchForm.toInput.split(/[;；]/).map((s) => s.trim()).filter(Boolean)
+    const invalidTo = toList.filter((p) => !EMAIL_RE.test(p))
+    if (toList.length === 0) { toast({ title: "至少填写一个收件人", variant: "destructive" }); return }
+    if (invalidTo.length) { toast({ title: "收件人格式有误", description: `地址格式不正确：${invalidTo.join(", ")}`, variant: "destructive" }); return }
     if (!dispatchForm.subject.trim()) { toast({ title: "请填写邮件主题", variant: "destructive" }); return }
 
     const scheduleTime = `${dispatchForm.scheduleHour.padStart(2, "0")}:${dispatchForm.scheduleMinute.padStart(2, "0")}`
@@ -390,7 +393,7 @@ export default function SendEmailToolPage() {
       name: dispatchForm.name.trim(),
       senderId: dispatchForm.senderId || null,
       traderCode: dispatchForm.traderCode.trim(),
-      to: dispatchForm.to,
+      to: toList,
       subject: dispatchForm.subject.trim(),
       content: dispatchForm.content.trim(),
       scheduleTime,
@@ -787,31 +790,12 @@ export default function SendEmailToolPage() {
             {/* Recipients */}
             <div className="space-y-2">
               <Label>收件人 <span className="text-destructive">*</span></Label>
-              <div className="flex gap-2">
-                <Input
-                  type="email"
-                  placeholder="example@domain.com"
-                  value={dispatchForm.toInput}
-                  onChange={(e) => setDispatchForm((f) => ({ ...f, toInput: e.target.value }))}
-                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addRecipient() } }}
-                  className="flex-1"
-                />
-                <Button type="button" variant="secondary" size="sm" onClick={addRecipient} disabled={!dispatchForm.toInput.trim()}>
-                  添加
-                </Button>
-              </div>
-              {dispatchForm.to.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {dispatchForm.to.map((addr) => (
-                    <Badge key={addr} variant="secondary" className="gap-1 py-0.5 pl-2.5 pr-1.5 text-xs">
-                      {addr}
-                      <button onClick={() => removeRecipient(addr)} className="rounded-sm opacity-70 hover:opacity-100" aria-label={`移除 ${addr}`}>
-                        <X className="h-3 w-3" />
-                      </button>
-                    </Badge>
-                  ))}
-                </div>
-              )}
+              <Input
+                placeholder="example@domain.com; another@domain.com"
+                value={dispatchForm.toInput}
+                onChange={(e) => setDispatchForm((f) => ({ ...f, toInput: e.target.value }))}
+              />
+              <p className="text-xs text-muted-foreground">多个收件人用 ; 分隔</p>
             </div>
 
             {/* Subject */}
@@ -882,19 +866,40 @@ export default function SendEmailToolPage() {
 
       {/* ══ Sender account dialog ════════════════════════════════════════════════ */}
       <Dialog open={senderDialogOpen} onOpenChange={setSenderDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>{editingSenderId ? "编辑发件账号" : "添加发件账号"}</DialogTitle>
             <DialogDescription>
-              填写 SMTP 信息后保存，密码仅存储在服务器本地。
+              密码 / 授权码仅存储在服务器本地，不会上传。
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
+            {/* Quick preset */}
+            <div className="space-y-2">
+              <Label>邮件服务商 <span className="text-xs text-muted-foreground">（选择后自动填入服务器地址）</span></Label>
+              <Select
+                onValueChange={(val) => {
+                  const preset = SMTP_PRESETS.find((p) => p.label === (val as SmtpPresetLabel))
+                  if (preset) setSenderForm((f) => ({ ...f, host: preset.host, port: preset.port, secure: preset.secure }))
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择常用邮箱类型…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SMTP_PRESETS.map((p) => (
+                    <SelectItem key={p.label} value={p.label}>{p.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="s-name">账号名称 <span className="text-destructive">*</span></Label>
               <Input id="s-name" placeholder="例：市场监控邮箱" value={senderForm.name} onChange={(e) => setSenderForm((f) => ({ ...f, name: e.target.value }))} />
             </div>
+
             <div className="grid grid-cols-3 gap-3">
               <div className="col-span-2 space-y-2">
                 <Label htmlFor="s-host">SMTP 服务器 <span className="text-destructive">*</span></Label>
@@ -905,10 +910,12 @@ export default function SendEmailToolPage() {
                 <Input id="s-port" type="number" placeholder="465" value={senderForm.port} onChange={(e) => setSenderForm((f) => ({ ...f, port: e.target.value }))} />
               </div>
             </div>
+
             <div className="space-y-2">
-              <Label htmlFor="s-user">用户名 / 邮箱 <span className="text-destructive">*</span></Label>
+              <Label htmlFor="s-user">登录邮箱 <span className="text-destructive">*</span></Label>
               <Input id="s-user" placeholder="user@example.com" value={senderForm.user} onChange={(e) => setSenderForm((f) => ({ ...f, user: e.target.value }))} />
             </div>
+
             <div className="space-y-2">
               <Label htmlFor="s-pass">
                 密码 / 授权码{" "}
@@ -916,7 +923,17 @@ export default function SendEmailToolPage() {
                 {!editingSenderId && <span className="text-destructive">*</span>}
               </Label>
               <Input id="s-pass" type="password" placeholder="••••••••" value={senderForm.pass} onChange={(e) => setSenderForm((f) => ({ ...f, pass: e.target.value }))} />
+              {/* Per-provider auth code hint */}
+              {(() => {
+                const preset = SMTP_PRESETS.find((p) => p.host === senderForm.host && p.host !== "")
+                return preset?.authNote ? (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                    <span className="font-semibold">如何获取密码？</span>&nbsp;{preset.authNote}
+                  </p>
+                ) : null
+              })()}
             </div>
+
             <div className="flex items-center gap-3">
               <Switch id="s-secure" checked={senderForm.secure} onCheckedChange={(v) => setSenderForm((f) => ({ ...f, secure: v }))} />
               <Label htmlFor="s-secure">使用 SSL/TLS（推荐，端口 465）</Label>
