@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { FileSpreadsheet, Wrench } from "lucide-react"
+import { FileSpreadsheet, Mail, Wrench } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -10,6 +10,13 @@ const toolCards = [
     description: "上传 xlsx/csv 等净值文件，自动识别列名与日期格式，并转换到上传净值模版。",
     href: "/ma/dashboard/tools/nav-cleaner",
     icon: FileSpreadsheet,
+    actionLabel: "打开小工具",
+  },
+  {
+    title: "自动发邮件",
+    description: "为每位投顾配置定时发送任务，每天自动将最新逐日核算单 xlsx 附件发送至指定邮箱，支持多配置管理与手动立即发送。",
+    href: "/ma/dashboard/tools/send-email",
+    icon: Mail,
     actionLabel: "打开小工具",
   },
 ]
