@@ -65,6 +65,7 @@
     "expo-asset": "latest",
     "expo-file-system": "latest",
     "expo-gl": "latest",
+    "html-to-image": "^1.11.13",
     "input-otp": "1.4.1",
     "langchain": "^1.2.30",
     "lucide-react": "^0.454.0",

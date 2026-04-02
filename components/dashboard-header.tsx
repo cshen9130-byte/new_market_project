@@ -1,7 +1,7 @@
 "use client"
 
 import { LogoutButton } from "@/components/logout-button"
-import { Moon, Sun } from "lucide-react"
+import { Bot, Moon, Sun } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 
@@ -10,9 +10,10 @@ interface DashboardHeaderProps {
     email: string | null
     full_name: string | null
   }
+  onChatToggle?: () => void
 }
 
-export function DashboardHeader({ user }: DashboardHeaderProps) {
+export function DashboardHeader({ user, onChatToggle }: DashboardHeaderProps) {
   const { theme, setTheme } = useTheme()
 
   return (
@@ -25,6 +26,18 @@ export function DashboardHeader({ user }: DashboardHeaderProps) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {onChatToggle && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onChatToggle}
+              className="h-9 w-9"
+              title="AI 助手"
+            >
+              <Bot className="h-4 w-4" />
+              <span className="sr-only">AI 助手</span>
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon"
