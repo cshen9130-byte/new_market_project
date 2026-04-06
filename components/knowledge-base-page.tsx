@@ -36,11 +36,14 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  RotateCcw,
   Send,
   Settings2,
   Square,
   Trash2,
   Upload,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react"
 import { authService, type User } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
@@ -479,6 +482,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [graphVizLLMLoading, setGraphVizLLMLoading] = useState(false)
   const [graphVizLLMError, setGraphVizLLMError] = useState<string | null>(null)
   const [graphMode, setGraphMode] = useState<"regex" | "llm">("regex")
+  const graphRegexChartRef = useRef<ReactECharts>(null)
+  const graphLLMChartRef = useRef<ReactECharts>(null)
   const [syncServerFolder, setSyncServerFolder] = useState<string | null>(null)
   const [syncLocalDirHandle, setSyncLocalDirHandle] = useState<FileSystemDirectoryHandle | null>(null)
   const [syncLocalDirName, setSyncLocalDirName] = useState<string>("")
@@ -2650,16 +2655,58 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                       {((graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0) ||
                         (graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0)) && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-                          onClick={() => setGraphVizFullscreen(true)}
-                          title="全屏显示"
-                        >
-                          <Maximize2 className="h-3.5 w-3.5" />
-                          全屏
-                        </Button>
+                        <>
+                          <div className="flex items-center rounded-md border overflow-hidden">
+                            <button
+                              className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors border-r"
+                              title="缩小"
+                              onClick={() => {
+                                const ref = graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef
+                                const chart = ref.current?.getEchartsInstance()
+                                if (!chart) return
+                                const cur = (chart.getOption().series as any[])?.[0]?.zoom ?? 1
+                                chart.setOption({ series: [{ zoom: cur * 0.75 }] }, false)
+                              }}
+                            >
+                              <ZoomOut className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors border-r"
+                              title="重置缩放"
+                              onClick={() => {
+                                const ref = graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef
+                                const chart = ref.current?.getEchartsInstance()
+                                if (!chart) return
+                                chart.setOption({ series: [{ zoom: 1, center: undefined }] }, false)
+                              }}
+                            >
+                              <RotateCcw className="h-3 w-3" />
+                            </button>
+                            <button
+                              className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                              title="放大"
+                              onClick={() => {
+                                const ref = graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef
+                                const chart = ref.current?.getEchartsInstance()
+                                if (!chart) return
+                                const cur = (chart.getOption().series as any[])?.[0]?.zoom ?? 1
+                                chart.setOption({ series: [{ zoom: cur * 1.33 }] }, false)
+                              }}
+                            >
+                              <ZoomIn className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                            onClick={() => setGraphVizFullscreen(true)}
+                            title="全屏显示"
+                          >
+                            <Maximize2 className="h-3.5 w-3.5" />
+                            全屏
+                          </Button>
+                        </>
                       )}
                     </div>
 
@@ -2695,6 +2742,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     {/* Regex graph */}
                     {graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0 && (
                       <ReactECharts
+                        ref={graphRegexChartRef}
                         style={{ height: "560px", width: "100%" }}
                         notMerge
                         option={{
@@ -2759,6 +2807,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     {/* LLM-enhanced graph */}
                     {graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0 && (
                       <ReactECharts
+                        ref={graphLLMChartRef}
                         style={{ height: "560px", width: "100%" }}
                         notMerge
                         option={{

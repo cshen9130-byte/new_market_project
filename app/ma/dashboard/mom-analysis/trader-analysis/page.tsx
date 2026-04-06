@@ -573,9 +573,6 @@ export default function TraderAnalysisPage() {
       {activeTab === "equity-curve" && (
         <div className="w-full">
           <EquityCurveChart
-            series={equitySeries}
-            loading={loadingEquity}
-            error={errorEquity}
             height={480}
           />
         </div>
