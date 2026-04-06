@@ -14,6 +14,20 @@ type KnowledgeBaseIndexCacheEntry = {
   indexedDocuments: number
   indexedChunks: number
   bm25Index: Bm25PreIndex
+  graphIndex: GraphIndex
+}
+
+// ── Knowledge Graph types ─────────────────────────────────────────────────────
+
+type GraphIndex = {
+  version: 1
+  signature: string
+  /** term → list of chunk indices that contain it */
+  termChunks: Record<string, number[]>
+  /** chunk index → relevant terms for graph linking (IDF-filtered) */
+  chunkTerms: string[][]
+  numChunks: number
+  updatedAt: string
 }
 
 // ── Disk persistence for vector index ────────────────────────────────────────
@@ -43,6 +57,222 @@ type DiskIndexEntry = {
   memoryVectors: MemoryVectorRow[]
   bm25Index?: Bm25PreIndex
   updatedAt: string
+}
+
+// ── Graph index disk helpers ──────────────────────────────────────────────────
+
+function getGraphCacheDir() {
+  return getServerStoragePath("kb_graph_index")
+}
+
+function graphCacheFilePath(cacheKey: string) {
+  const hash = createHash("sha256").update(cacheKey + "_graph").digest("hex").slice(0, 24)
+  return path.join(getGraphCacheDir(), `${hash}.json`)
+}
+
+function loadGraphIndexFromDisk(cacheKey: string): GraphIndex | null {
+  try {
+    const file = graphCacheFilePath(cacheKey)
+    if (!existsSync(file)) return null
+    const data = JSON.parse(readFileSync(file, "utf-8"))
+    if (data?.version !== 1 || !data.termChunks || !Array.isArray(data.chunkTerms)) return null
+    return data as GraphIndex
+  } catch {
+    return null
+  }
+}
+
+function saveGraphIndexToDisk(cacheKey: string, entry: GraphIndex) {
+  try {
+    mkdirSync(getGraphCacheDir(), { recursive: true })
+    writeFileSync(graphCacheFilePath(cacheKey), JSON.stringify(entry))
+  } catch {}
+}
+
+// ── Graph term extraction ─────────────────────────────────────────────────────
+
+// Common Chinese surnames for person-name detection heuristic
+const ZH_SURNAMES = new Set([
+  "王","李","张","刘","陈","杨","黄","赵","吴","周","徐","孙","马","朱","胡","郭","何","高","林","罗",
+  "郑","梁","谢","宋","唐","许","韩","冯","邓","曹","彭","曾","肖","田","董","袁","潘","于","蒋","蔡",
+  "余","杜","叶","程","魏","苏","吕","丁","任","沈","姚","卢","傅","钟","姜","崔","谭","廖","范","汪",
+  "陆","金","石","戴","贾","韦","夏","邱","方","侯","邹","熊","孟","秦","白","江","阎","薛","尹","段",
+  "雷","黎","史","龙","陶","贺","顾","毛","郝","龚","邵","万","钱","严","覃","武","戚","莫","孔","向",
+])
+
+// Filler words / particles that are never meaningful entities
+const ZH_GRAPH_STOP = new Set([
+  "我们","你们","他们","她们","它们","自己","大家","各位","这个","那个","这些","那些","一个","哪个","哪些",
+  "这里","那里","这样","那样","什么","怎么","为什么","这么","那么","如此","其他","别的","其余",
+  "因此","所以","但是","然而","不过","虽然","尽管","而且","并且","另外","此外","同时","其次","首先",
+  "然后","接下来","最后","总之","综上","换言之","也就是","就是说","也就是说","的话",
+  "可以","需要","应该","必须","能够","可能","已经","将会","会有","有所","有些","有的","有着",
+  "进行","通过","使用","利用","借助","基于","依据","按照","结合","围绕",
+  "问题","情况","方面","方式","方法","内容","方向","目标","结果","过程","作用","意义","价值","体系",
+  "工作","管理","服务","模式","机制","系统","平台","项目","计划","方案","措施","策略",
+  "发展","变化","影响","效果","进展","现状","趋势","特点","特征","优势","不足","挑战",
+  "分析","研究","探讨","探索","讨论","说明","介绍","阐述","描述","解释","提出","提到",
+  "表示","认为","指出","显示","表明","体现","反映","发现","看到","了解","知道","认识",
+  "实现","获得","取得","达到","完成","建立","形成","产生","带来","促进","推动","加强",
+  "提高","增加","减少","降低","扩大","缩小","调整","优化","改善","改变","完善",
+  "整体","总体","主要","基本","整个","整合","全面","全部","全体","一般","普通",
+  "相关","相应","对应","配套","涉及","包括","包含","涵盖","覆盖","适用","针对",
+  "根据","对于","关于","由于","出于","为了","以便","以期","旨在",
+  "目前","当前","现在","当下","近期","近年","今年","去年","明年","最近","此前","此后",
+  "国家","全球","中国","国内","国际","境内","境外","各地","各类","各种",
+  "企业","公司","机构","单位","部门","组织","协会","委员会","管理层",
+  "经济","政策","市场","行业","领域","板块","指数","数据","报告","信息",
+  "没有","不是","不能","不会","不到","不了","不得","不再","不仅","不过",
+  "一下","一点","一些","一定","一般","一直","一起","一共","一样","一致",
+  "应当","比较","相比","对比","高于","低于","多于","少于","大于","小于",
+  "其中","之中","之间","之前","之后","以上","以下","以内","以外","以及",
+  "开始","结束","继续","停止","保持","维持","坚持","确保","保证","避免",
+  "如果","假设","即使","除非","只要","只有","一旦","万一","不管","无论",
+  "具体","实际","真实","正式","明确","清楚","重要","关键","核心","基础",
+  "今天","昨天","明天","本月","上月","下月","本季","季度","上半年","下半年",
+  "您好","谢谢","感谢","请问","麻烦","注意","当然","确实","显然","明显",
+])
+
+// Company/org suffixes that signal a named entity worth keeping
+const COMPANY_SUFFIXES = [
+  "有限公司","股份公司","责任公司","合伙企业","投资公司","管理公司","基金公司","资产管理",
+  "投资管理","基金管理","证券公司","期货公司","信托公司","资产公司","咨询公司","顾问公司",
+  "科技公司","集团有限","有限合伙","私募基金","证券投资","股权投资","基金服务","托管银行",
+]
+
+// Fund product name: e.g. 某某某私募基金X期, 某FOF组合一号
+const FUND_PRODUCT_PATTERN = /[\u4e00-\u9fff\uFF00-\uFFEF\w]{4,20}(?:基金|私募|FOF|产品|组合|计划|专项|定增|套利)[\u4e00-\u9fff\uFF00-\uFFEF\w]{0,8}(?:第?[一二三四五六七八九十百\d]+期)?/g
+const FUND_SERIAL_PATTERN = /[\u4e00-\u9fff\uFF00-\uFFEF\w]{4,18}(?:第?[一二三四五六七八九十百\d]+(?:期|号|季))/g
+
+// Person name heuristics: title precedes or follows a 2-3-char Chinese name
+const PERSON_TITLE_BEFORE = /(?:总经理|副总经理|董事长|执行董事|独立董事|基金经理|投资经理|研究员|首席分析师|分析师|合伙人|联合创始人|创始人|CEO|CIO|CFO|总裁|主席|监事|督察长|风控总监)\s*([\u4e00-\u9fff]{2,4})/g
+const PERSON_TITLE_AFTER = /([\u4e00-\u9fff]{2,4})\s*(?:总经理|副总经理|董事长|执行董事|独立董事|基金经理|投资经理|研究员|首席分析师|分析师|合伙人|联合创始人|创始人|总裁|主席|先生|女士|博士|教授|监事)/g
+
+/** Extract named entities from text: fund companies, fund products, and people. */
+function extractGraphTerms(text: string): string[] {
+  const terms = new Set<string>()
+
+  // ── 1. Company / org names (longest-match on suffix list) ─────────────────
+  for (const suffix of COMPANY_SUFFIXES) {
+    const re = new RegExp(`[\\u4e00-\\u9fff\\uFF00-\\uFFEF\\w]{2,15}${suffix}`, "g")
+    for (const m of text.matchAll(re)) {
+      const t = m[0].trim()
+      if (t.length >= 5 && t.length <= 35) terms.add(t)
+    }
+  }
+
+  // ── 2. Fund product names ────────────────────────────────────────────────
+  for (const m of text.matchAll(FUND_PRODUCT_PATTERN)) {
+    const t = m[0].trim()
+    if (t.length >= 4) terms.add(t)
+  }
+  for (const m of text.matchAll(FUND_SERIAL_PATTERN)) {
+    const t = m[0].trim()
+    if (t.length >= 4) terms.add(t)
+  }
+
+  // ── 3. Person names (title-anchored, surname-validated) ──────────────────
+  for (const m of text.matchAll(PERSON_TITLE_BEFORE)) {
+    const name = m[1]?.trim()
+    if (name && ZH_SURNAMES.has(name[0])) terms.add(name)
+  }
+  for (const m of text.matchAll(PERSON_TITLE_AFTER)) {
+    const name = m[1]?.trim()
+    if (name && ZH_SURNAMES.has(name[0])) terms.add(name)
+  }
+
+  // ── 4. English acronyms / proper nouns ───────────────────────────────────
+  const en = text.match(/\b(?:[A-Z]{2,}|[A-Z][a-z]{2,}(?:[A-Z][a-zA-Z0-9]*)+)\b/g) || []
+  for (const t of en) terms.add(t)
+
+  return Array.from(terms)
+}
+
+/** Build a lightweight co-occurrence graph index from vector rows. */
+function buildGraphIndex(rows: MemoryVectorRow[], signature: string): GraphIndex {
+  const N = rows.length
+  if (N === 0) {
+    return { version: 1, signature, termChunks: {}, chunkTerms: [], numChunks: 0, updatedAt: new Date().toISOString() }
+  }
+
+  const rawChunkTerms: string[][] = new Array(N)
+  const termDocFreq: Record<string, number> = {}
+
+  // Pass 1: extract terms per chunk, measure document frequency
+  for (let i = 0; i < N; i++) {
+    const terms = extractGraphTerms(String(rows[i].content || ""))
+    const unique = Array.from(new Set(terms))
+    rawChunkTerms[i] = unique
+    for (const t of unique) termDocFreq[t] = (termDocFreq[t] || 0) + 1
+  }
+
+  // Keep terms that appear in 1..50% of chunks.
+  // minDf=1 so rare but specific named entities (fund products, people) are retained.
+  // maxDf caps truly ubiquitous terms that would create unhelpfully dense edges.
+  const minDf = 1
+  const maxDf = Math.max(2, Math.floor(N * 0.50))
+
+  const termChunks: Record<string, number[]> = {}
+  const chunkTerms: string[][] = new Array(N)
+
+  for (let i = 0; i < N; i++) {
+    const filtered: string[] = []
+    for (const t of rawChunkTerms[i]) {
+      const df = termDocFreq[t] || 0
+      if (df >= minDf && df <= maxDf) {
+        filtered.push(t)
+        if (!termChunks[t]) termChunks[t] = []
+        termChunks[t].push(i)
+      }
+    }
+    chunkTerms[i] = filtered
+  }
+
+  return { version: 1, signature, termChunks, chunkTerms, numChunks: N, updatedAt: new Date().toISOString() }
+}
+
+/** Expand seed chunk indices via the graph, returning additional relevant Documents. */
+function graphExpandContext(
+  question: string,
+  allRows: MemoryVectorRow[],
+  seedIndices: number[],
+  graph: GraphIndex,
+  topK = 4,
+): Document[] {
+  const seedSet = new Set(seedIndices)
+  const candidateScore: Map<number, number> = new Map()
+
+  // 1. Expand via question terms hitting the graph
+  const qTerms = extractGraphTerms(question)
+  for (const term of qTerms) {
+    const linked = graph.termChunks[term] || []
+    for (const idx of linked) {
+      if (!seedSet.has(idx)) candidateScore.set(idx, (candidateScore.get(idx) || 0) + 2)
+    }
+  }
+
+  // 2. 1-hop expansion: terms from seed chunks → connected chunks
+  for (const sIdx of seedIndices) {
+    const sTerms = graph.chunkTerms[sIdx] || []
+    for (const term of sTerms) {
+      const linked = graph.termChunks[term] || []
+      for (const idx of linked) {
+        if (!seedSet.has(idx)) candidateScore.set(idx, (candidateScore.get(idx) || 0) + 1)
+      }
+    }
+  }
+
+  if (!candidateScore.size) return []
+
+  return Array.from(candidateScore.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topK)
+    .map(([idx]) =>
+      new Document({
+        pageContent: String(allRows[idx]?.content || ""),
+        metadata: { ...(allRows[idx]?.metadata || {}), graphExpanded: true },
+      }),
+    )
 }
 
 // ── BM25 pre-computed inverted index ─────────────────────────────────────────
@@ -130,12 +360,27 @@ export function invalidateVectorStoreCache(folderPath?: string | null) {
       const dir = getIndexCacheDir()
       if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
     } catch {}
+    try {
+      const gdir = getGraphCacheDir()
+      if (existsSync(gdir)) rmSync(gdir, { recursive: true, force: true })
+    } catch {}
+    try {
+      const ldir = getLLMEntityCacheDir()
+      if (existsSync(ldir)) rmSync(ldir, { recursive: true, force: true })
+    } catch {}
     return
   }
 
   const cacheKey = normalized || "__root__"
   cache.delete(cacheKey)
   deleteDiskIndex(cacheKey)
+  // Also remove graph index so it rebuilds on next request
+  try {
+    const gfile = graphCacheFilePath(cacheKey)
+    if (existsSync(gfile)) rmSync(gfile)
+  } catch {}
+  // Also invalidate LLM entity cache
+  deleteLLMEntityCache(cacheKey)
 }
 
 const DASHSCOPE_EMBEDDING_BATCH_SIZE = 5
@@ -357,12 +602,22 @@ async function getOrBuildVectorStore(
       ? disk.bm25Index
       : buildBm25Index(mergedRows)
 
+    // Build or load graph index (IDF-filtered term co-occurrence for Graph RAG).
+    const diskGraph = loadGraphIndexFromDisk(cacheKey)
+    const graphIndex = (diskGraph?.signature === nextSignature)
+      ? diskGraph
+      : buildGraphIndex(mergedRows, nextSignature)
+    if (diskGraph?.signature !== nextSignature) {
+      saveGraphIndexToDisk(cacheKey, graphIndex)
+    }
+
     const nextValue: KnowledgeBaseIndexCacheEntry = {
       signature: nextSignature,
       vectorStore,
       indexedDocuments: sourceDocuments.length,
       indexedChunks: mergedRows.length,
       bm25Index,
+      graphIndex,
     }
     cache.set(cacheKey, nextValue)
 
@@ -393,7 +648,326 @@ export async function syncVectorStoreForScope(folderPath?: string | null) {
   }
 }
 
-// ── Embed job tracking ────────────────────────────────────────────────────────
+// ── Graph visualization data export ──────────────────────────────────────────
+
+export type GraphVizNode = { id: string; name: string; category: "document" | "company" | "fund" | "person" | "other"; value: number }
+export type GraphVizLink = { source: string; target: string; value: number }
+export type GraphVizData = { nodes: GraphVizNode[]; links: GraphVizLink[] }
+
+function classifyEntityCategory(term: string): GraphVizNode["category"] {
+  if (/(?:有限公司|股份公司|责任公司|合伙企业|集团有限|管理公司|基金公司|咨询公司|顾问公司|科技公司|证券公司|期货公司|信托公司|银行|券商)/.test(term)) return "company"
+  if (/(?:基金|私募|FOF|产品|组合|计划|专项|定增|套利|第?[一二三四五六七八九十百\d]+(?:期|号|季))/.test(term)) return "fund"
+  if (term.length <= 4 && ZH_SURNAMES.has(term[0])) return "person"
+  return "other"
+}
+
+/**
+ * Returns nodes and edges suitable for an ECharts graph (force-directed).
+ * Entity categories: document (file), company (管理人/GP), fund (产品), person (基金经理 etc.), other.
+ */
+export async function getGraphVizData(folderPath?: string | null, maxTerms = 200): Promise<GraphVizData> {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const index = await getOrBuildVectorStore(normalized)
+  const graph = index.graphIndex
+  const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
+
+  // Sort terms by document frequency (how many chunks reference them), take top maxTerms
+  const termsByFreq = Object.entries(graph.termChunks)
+    .map(([term, indices]) => ({ term, df: indices.length }))
+    .sort((a, b) => b.df - a.df)
+    .slice(0, maxTerms)
+
+  // Build unique document list from row metadata
+  const docSet = new Set<string>()
+  for (const row of rows) {
+    const src = String(row.metadata?.source || "")
+    if (src) docSet.add(src)
+  }
+
+  const nodes: GraphVizNode[] = []
+
+  for (const doc of docSet) {
+    const shortName = doc.split("/").pop() || doc
+    nodes.push({ id: `doc:${doc}`, name: shortName, category: "document", value: 3 })
+  }
+
+  for (const { term, df } of termsByFreq) {
+    nodes.push({ id: `term:${term}`, name: term, category: classifyEntityCategory(term), value: Math.min(df, 12) })
+  }
+
+  // Links: term → each document containing it
+  const edgeKey = new Set<string>()
+  const links: GraphVizLink[] = []
+
+  for (const { term } of termsByFreq) {
+    const chunkIndices = graph.termChunks[term] || []
+    const docsSeen = new Set<string>()
+    for (const idx of chunkIndices) {
+      const src = String(rows[idx]?.metadata?.source || "")
+      if (!src || docsSeen.has(src)) continue
+      docsSeen.add(src)
+      const key = `term:${term}||doc:${src}`
+      if (!edgeKey.has(key)) {
+        edgeKey.add(key)
+        links.push({ source: `term:${term}`, target: `doc:${src}`, value: 1 })
+      }
+    }
+  }
+
+  return { nodes, links }
+}
+
+// ── LLM-based structured entity extraction (for AI-enhanced graph) ────────────
+
+export type FundDocumentEntities = {
+  company: string | null
+  products: string[]
+  strategies: string[]
+  team: Array<{ name: string; role: string }>
+}
+
+type LLMEntityCacheEntry = {
+  version: 1
+  scope: string
+  files: Record<string, { size: number; updatedAt: string; entities: FundDocumentEntities }>
+  updatedAt: string
+}
+
+function getLLMEntityCacheDir() {
+  return getServerStoragePath("kb_llm_entities")
+}
+
+function llmEntityCacheFilePath(cacheKey: string) {
+  const hash = createHash("sha256").update(cacheKey + "_llm").digest("hex").slice(0, 24)
+  return path.join(getLLMEntityCacheDir(), `${hash}.json`)
+}
+
+function loadLLMEntityCache(cacheKey: string): LLMEntityCacheEntry | null {
+  try {
+    const file = llmEntityCacheFilePath(cacheKey)
+    if (!existsSync(file)) return null
+    const data = JSON.parse(readFileSync(file, "utf-8"))
+    if (data?.version !== 1 || typeof data.files !== "object") return null
+    return data as LLMEntityCacheEntry
+  } catch {
+    return null
+  }
+}
+
+function saveLLMEntityCache(cacheKey: string, entry: LLMEntityCacheEntry) {
+  try {
+    mkdirSync(getLLMEntityCacheDir(), { recursive: true })
+    writeFileSync(llmEntityCacheFilePath(cacheKey), JSON.stringify(entry))
+  } catch {}
+}
+
+function deleteLLMEntityCache(cacheKey: string) {
+  try {
+    const file = llmEntityCacheFilePath(cacheKey)
+    if (existsSync(file)) rmSync(file)
+  } catch {}
+}
+
+const ENTITY_EXTRACTION_PROMPT = `你是一个私募基金信息提取引擎，专门处理中文私募基金路演/介绍材料。
+
+从以下材料中提取下列信息，以纯JSON格式输出，不要任何说明、代码块标记或额外内容：
+
+{
+  "company": "基金管理公司全称（如：XX资产管理有限公司）。若无法确定填null",
+  "products": ["基金产品名称1", "基金产品名称2"],
+  "strategies": ["策略标签"],
+  "team": [{"name": "人名", "role": "职位"}]
+}
+
+策略标签须简短（4-8字），从材料中归纳，例如：量化多头、趋势CTA、主观多空、市场中性、股票对冲、债券套利、宏观对冲、FOF组合、高频量化、基本面量化、商品CTA、期权策略、转债策略、多策略混合等。
+
+材料内容（前4000字）：
+`
+
+async function extractFundEntitiesFromDoc(
+  text: string,
+  relativePath: string,
+): Promise<FundDocumentEntities> {
+  const truncated = text.slice(0, 4000)
+  const model = new ChatOpenAI({
+    apiKey: getDashScopeApiKey(),
+    model: MODEL_IDS.plus,
+    temperature: 0,
+    streaming: false,
+    configuration: { baseURL: getDashScopeBaseUrl() },
+  })
+
+  let raw = ""
+  try {
+    const resp = await model.invoke([
+      { role: "user", content: ENTITY_EXTRACTION_PROMPT + truncated },
+    ])
+    raw = stringifyModelContent(resp.content).trim()
+  } catch {
+    return { company: null, products: [], strategies: [], team: [] }
+  }
+
+  // Strip markdown code fences if present
+  const jsonStr = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "").trim()
+  try {
+    const parsed = JSON.parse(jsonStr)
+    return {
+      company: typeof parsed.company === "string" && parsed.company ? parsed.company : null,
+      products: Array.isArray(parsed.products) ? parsed.products.filter((p: unknown) => typeof p === "string" && p) : [],
+      strategies: Array.isArray(parsed.strategies) ? parsed.strategies.filter((s: unknown) => typeof s === "string" && s) : [],
+      team: Array.isArray(parsed.team)
+        ? parsed.team
+            .filter((m: unknown) => m && typeof (m as any).name === "string")
+            .map((m: any) => ({ name: String(m.name || "").trim(), role: String(m.role || "").trim() }))
+            .filter((m: { name: string; role: string }) => m.name.length >= 2)
+        : [],
+    }
+  } catch {
+    return { company: null, products: [], strategies: [], team: [] }
+  }
+}
+
+export type LLMGraphVizNode = {
+  id: string
+  name: string
+  category: "document" | "company" | "product" | "strategy" | "person"
+  value: number
+  detail?: string
+}
+export type LLMGraphVizLink = { source: string; target: string; relation: string }
+export type LLMGraphVizData = {
+  nodes: LLMGraphVizNode[]
+  links: LLMGraphVizLink[]
+  docResults: Array<{ relativePath: string; entities: FundDocumentEntities }>
+}
+
+/**
+ * LLM-enhanced graph: calls the LLM on each document to extract fund company,
+ * products, strategies, and team members, then builds a rich knowledge graph.
+ * Results are disk-cached per file fingerprint; only changed files are re-extracted.
+ */
+export async function getGraphVizDataLLM(
+  folderPath?: string | null,
+  onProgress?: (done: number, total: number, file: string) => void,
+): Promise<LLMGraphVizData> {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const cacheKey = normalized || "__root__"
+
+  // Load all documents in scope
+  const sourceDocs = await collectKnowledgeBaseDocuments(normalized)
+  if (!sourceDocs.length) {
+    return { nodes: [], links: [], docResults: [] }
+  }
+
+  const diskCache = loadLLMEntityCache(cacheKey)
+  const cachedFiles = diskCache?.files ?? {}
+
+  const updatedCache: LLMEntityCacheEntry["files"] = {}
+  const docResults: Array<{ relativePath: string; entities: FundDocumentEntities }> = []
+
+  for (let i = 0; i < sourceDocs.length; i++) {
+    const doc = sourceDocs[i]
+    const prev = cachedFiles[doc.relativePath]
+    const unchanged = prev && prev.size === doc.size && prev.updatedAt === doc.updatedAt
+
+    let entities: FundDocumentEntities
+    if (unchanged) {
+      entities = prev.entities
+    } else {
+      onProgress?.(i, sourceDocs.length, doc.relativePath)
+      entities = await extractFundEntitiesFromDoc(doc.text, doc.relativePath)
+      // Small delay to respect rate limits
+      await new Promise((r) => setTimeout(r, 200))
+    }
+
+    updatedCache[doc.relativePath] = { size: doc.size, updatedAt: doc.updatedAt, entities }
+    docResults.push({ relativePath: doc.relativePath, entities })
+  }
+
+  onProgress?.(sourceDocs.length, sourceDocs.length, "")
+
+  // Persist updated cache
+  saveLLMEntityCache(cacheKey, {
+    version: 1,
+    scope: normalized || "",
+    files: updatedCache,
+    updatedAt: new Date().toISOString(),
+  })
+
+  // ── Build graph ─────────────────────────────────────────────────────────────
+  const nodes: LLMGraphVizNode[] = []
+  const links: LLMGraphVizLink[] = []
+  const nodeSet = new Set<string>()
+
+  function addNode(node: LLMGraphVizNode) {
+    if (!nodeSet.has(node.id)) {
+      nodeSet.add(node.id)
+      nodes.push(node)
+    } else {
+      // Increment value for repeated occurrences (e.g. same strategy in many docs)
+      const existing = nodes.find((n) => n.id === node.id)
+      if (existing) existing.value = Math.min((existing.value || 1) + 1, 20)
+    }
+  }
+
+  function addLink(source: string, target: string, relation: string) {
+    // Avoid duplicate edges
+    const key = `${source}→${target}:${relation}`
+    if (!nodeSet.has(key)) {
+      nodeSet.add(key)
+      links.push({ source, target, relation })
+    }
+  }
+
+  for (const { relativePath, entities } of docResults) {
+    const shortName = relativePath.split("/").pop() || relativePath
+    const docId = `doc:${relativePath}`
+    addNode({ id: docId, name: shortName, category: "document", value: 2 })
+
+    const companyId = entities.company ? `company:${entities.company}` : null
+    if (entities.company && companyId) {
+      addNode({ id: companyId, name: entities.company, category: "company", value: 3 })
+      addLink(docId, companyId, "管理人")
+    }
+
+    for (const product of entities.products) {
+      const pid = `product:${product}`
+      addNode({ id: pid, name: product, category: "product", value: 2 })
+      if (companyId) addLink(companyId, pid, "旗下产品")
+      else addLink(docId, pid, "产品")
+    }
+
+    for (const strategy of entities.strategies) {
+      const sid = `strategy:${strategy}`
+      addNode({ id: sid, name: strategy, category: "strategy", value: 2 })
+      // Connect strategy to company (if available) or document
+      const anchor = companyId ?? docId
+      addLink(anchor, sid, "投资策略")
+    }
+
+    for (const member of entities.team) {
+      const personId = `person:${member.name}`
+      addNode({ id: personId, name: member.name, category: "person", value: 2, detail: member.role })
+      const anchor = companyId ?? docId
+      addLink(anchor, personId, member.role || "团队成员")
+    }
+  }
+
+  return { nodes, links, docResults }
+}
+
+/** Invalidate LLM entity cache for a scope (called from invalidateVectorStoreCache). */
+export function invalidateLLMEntityCache(folderPath?: string | null) {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  if (!normalized) {
+    try {
+      const dir = getLLMEntityCacheDir()
+      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
+    } catch {}
+    return
+  }
+  deleteLLMEntityCache(normalized || "__root__")
+}
 
 export type EmbedJobStatus = {
   scope: string
@@ -614,9 +1188,11 @@ async function buildRetrievalContext(input: {
   folderPath?: string | null
   filePath?: string | null
   useBm25?: boolean
+  useGraphRag?: boolean
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
   const enableBm25 = input.useBm25 !== false
+  const enableGraphRag = input.useGraphRag === true
 
   // ── Single-file mode ──
   if (input.filePath) {
@@ -654,7 +1230,26 @@ async function buildRetrievalContext(input: {
     const denseMatches = await index.vectorStore.similaritySearch(question, 4)
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
     const bm25Matches = enableBm25 ? bm25RankChunks(question, rows, index.bm25Index, 4) : []
-    const merged = [...denseMatches, ...bm25Matches]
+    const seedDocs = [...denseMatches, ...bm25Matches]
+
+    // Collect seed chunk indices (positions in the rows array) for graph expansion
+    const seedIndices: number[] = []
+    if (enableGraphRag) {
+      for (const doc of seedDocs) {
+        const idx = rows.findIndex(
+          (r) => String(r.content || "") === doc.pageContent && String(r.metadata?.source || "") === String(doc.metadata?.source || ""),
+        )
+        if (idx !== -1) seedIndices.push(idx)
+      }
+    }
+
+    const merged = [...seedDocs]
+    // Graph RAG expansion: 1-hop traversal via shared entities
+    if (enableGraphRag && seedIndices.length > 0) {
+      const graphExpanded = graphExpandContext(question, rows, seedIndices, index.graphIndex, 4)
+      merged.push(...graphExpanded)
+    }
+
     const seen = new Set<string>()
     for (const m of merged) {
       const source = String(m.metadata?.source || "")
@@ -662,20 +1257,28 @@ async function buildRetrievalContext(input: {
       if (seen.has(key)) continue
       seen.add(key)
       matches.push(m)
-      if (matches.length >= 6) break
+      if (matches.length >= 8) break
     }
   } catch (error: any) {
     const msg = String(error?.message || error)
     if (!msg.includes("没有可用于问答的文档")) throw classifyApiError(error)
   }
 
+  const hasGraphExpanded = matches.some((m) => m.metadata?.graphExpanded)
   const context = matches
-    .map((m, i) => `资料 ${i + 1} (${String(m.metadata?.source || "未知来源")})\n${m.pageContent}`)
+    .map((m, i) => {
+      const tag = m.metadata?.graphExpanded ? "[图谱扩展]" : ""
+      return `资料 ${i + 1}${tag} (${String(m.metadata?.source || "未知来源")})\n${m.pageContent}`
+    })
     .join("\n\n")
 
   const sources = Array.from(
     new Set(matches.map((m) => String(m.metadata?.source || "")).filter(Boolean)),
   )
+
+  const systemNote = enableGraphRag && hasGraphExpanded
+    ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。部分资料来自知识图谱关联扩展（标注[图谱扩展]），请综合利用。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
+    : "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
 
   return {
     messages: [
@@ -683,7 +1286,7 @@ async function buildRetrievalContext(input: {
         role: "system",
         content:
           matches.length > 0
-            ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件路径。"
+            ? systemNote
             : "你是市场研究助手。当前本地知识库为空，因此本轮回答不引用本地资料。你可以直接回答用户的问题，但需要明确说明当前没有本地文档可供检索。回答使用中文。",
       },
       {
@@ -705,6 +1308,7 @@ export async function askKnowledgeBaseQuestion(input: {
   folderPath?: string | null
   filePath?: string | null
   useBm25?: boolean
+  useGraphRag?: boolean
   modelMode?: KbModelMode
 }) {
   const question = input.question.trim()
@@ -734,6 +1338,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
   folderPath?: string | null
   filePath?: string | null
   useBm25?: boolean
+  useGraphRag?: boolean
   modelMode?: KbModelMode
 }): AsyncGenerator<
   | { type: "text"; delta: string; modelId?: string }

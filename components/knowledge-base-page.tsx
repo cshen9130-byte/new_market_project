@@ -30,6 +30,9 @@ import {
   AlertCircle,
   MessageSquare,
   MoreHorizontal,
+  Maximize2,
+  Minimize2,
+  Network,
   Pencil,
   Plus,
   RefreshCw,
@@ -52,6 +55,7 @@ import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import ReactECharts from "echarts-for-react"
 
 type DocumentNode = {
   name: string
@@ -463,7 +467,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const userScrolledRef = useRef(false)
   const [previewScrollToken, setPreviewScrollToken] = useState(0)
   const [selectedExplorerEntry, setSelectedExplorerEntry] = useState<{ kind: "folder" | "file"; relativePath: string } | null>(null)
-  const [traditionalPanel, setTraditionalPanel] = useState<"library" | "preview" | "upload" | "folder" | "sync">("library")
+  const [traditionalPanel, setTraditionalPanel] = useState<"library" | "preview" | "upload" | "folder" | "sync" | "graph">("library")
+  const [graphVizData, setGraphVizData] = useState<{ nodes: Array<{ id: string; name: string; category: "document" | "term"; value: number }>; links: Array<{ source: string; target: string; value: number }> } | null>(null)
+  const [graphVizLoading, setGraphVizLoading] = useState(false)
+  const [graphVizError, setGraphVizError] = useState<string | null>(null)
+  const [graphVizFullscreen, setGraphVizFullscreen] = useState(false)
+  const [graphVizLLMData, setGraphVizLLMData] = useState<{
+    nodes: Array<{ id: string; name: string; category: "document" | "company" | "product" | "strategy" | "person"; value: number; detail?: string }>
+    links: Array<{ source: string; target: string; relation: string }>
+  } | null>(null)
+  const [graphVizLLMLoading, setGraphVizLLMLoading] = useState(false)
+  const [graphVizLLMError, setGraphVizLLMError] = useState<string | null>(null)
+  const [graphMode, setGraphMode] = useState<"regex" | "llm">("regex")
   const [syncServerFolder, setSyncServerFolder] = useState<string | null>(null)
   const [syncLocalDirHandle, setSyncLocalDirHandle] = useState<FileSystemDirectoryHandle | null>(null)
   const [syncLocalDirName, setSyncLocalDirName] = useState<string>("")
@@ -530,6 +545,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [showConvSidebar, setShowConvSidebar] = useState(false)
   const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
   const [useBm25, setUseBm25] = useState(true)
+  const [useGraphRag, setUseGraphRag] = useState(false)
   const [modelMode, setModelMode] = useState<"auto" | "plus" | "turbo">("auto")
   const abortControllerRef = useRef<AbortController | null>(null)
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null)
@@ -1674,6 +1690,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           folderPath: selectedFolder,
           filePath: selectedDocument?.relativePath ?? null,
           useBm25,
+          useGraphRag,
           stream: true,
           modelMode,
           conversationId: convId,
@@ -2170,6 +2187,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         description: "与本地目录对比并同步文件。",
         icon: RefreshCw,
       },
+      {
+        key: "graph" as const,
+        title: "知识图谱",
+        description: "可视化文档与实体的关联网络。",
+        icon: Network,
+      },
     ]
 
     return (
@@ -2535,6 +2558,444 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     )}
                   </div>
                 )}
+
+                {traditionalPanel === "graph" && (
+                  <div className="space-y-3">
+                    {/* Toolbar: mode tabs + action buttons */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex rounded-md border text-xs overflow-hidden">
+                        <button
+                          className={cn("px-2.5 py-1 transition-colors", graphMode === "regex" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
+                          onClick={() => setGraphMode("regex")}
+                        >
+                          快速图谱
+                        </button>
+                        <button
+                          className={cn("px-2.5 py-1 border-l transition-colors", graphMode === "llm" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
+                          onClick={() => setGraphMode("llm")}
+                        >
+                          AI精准图谱
+                        </button>
+                      </div>
+
+                      {graphMode === "regex" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={graphVizLoading}
+                          onClick={async () => {
+                            setGraphVizLoading(true)
+                            setGraphVizError(null)
+                            try {
+                              const params = new URLSearchParams()
+                              if (selectedFolder) params.set("folderPath", selectedFolder)
+                              const res = await fetch(`/api/knowledge-base/graph?${params}`, { headers: getKnowledgeBaseAuthHeaders() ?? {} })
+                              const data = await res.json()
+                              if (!res.ok || !data.ok) throw new Error(data.error || "加载失败")
+                              setGraphVizData({ nodes: data.nodes, links: data.links })
+                            } catch (e: any) {
+                              setGraphVizError(e?.message || "加载失败")
+                            } finally {
+                              setGraphVizLoading(false)
+                            }
+                          }}
+                        >
+                          <Network className={cn("mr-1.5 h-3.5 w-3.5", graphVizLoading && "animate-spin")} />
+                          {graphVizLoading ? "生成中..." : "生成图谱"}
+                        </Button>
+                      )}
+
+                      {graphMode === "llm" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={graphVizLLMLoading}
+                          onClick={async () => {
+                            setGraphVizLLMLoading(true)
+                            setGraphVizLLMError(null)
+                            try {
+                              const res = await fetch("/api/knowledge-base/graph-llm", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+                                body: JSON.stringify({ folderPath: selectedFolder ?? null }),
+                              })
+                              const data = await res.json()
+                              if (!res.ok || !data.ok) throw new Error(data.error || "加载失败")
+                              setGraphVizLLMData({ nodes: data.nodes, links: data.links })
+                            } catch (e: any) {
+                              setGraphVizLLMError(e?.message || "加载失败")
+                            } finally {
+                              setGraphVizLLMLoading(false)
+                            }
+                          }}
+                        >
+                          {graphVizLLMLoading ? (
+                            <><Network className="mr-1.5 h-3.5 w-3.5 animate-spin" />AI提取中…</>
+                          ) : (
+                            <><span className="mr-1.5">🤖</span>AI精准提取</>
+                          )}
+                        </Button>
+                      )}
+
+                      {graphMode === "regex" && graphVizData && (
+                        <span className="text-xs text-muted-foreground">
+                          {graphVizData.nodes.length} 节点 · {graphVizData.links.length} 关系
+                        </span>
+                      )}
+                      {graphMode === "llm" && graphVizLLMData && (
+                        <span className="text-xs text-muted-foreground">
+                          {graphVizLLMData.nodes.length} 节点 · {graphVizLLMData.links.length} 关系
+                        </span>
+                      )}
+
+                      {((graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0) ||
+                        (graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0)) && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                          onClick={() => setGraphVizFullscreen(true)}
+                          title="全屏显示"
+                        >
+                          <Maximize2 className="h-3.5 w-3.5" />
+                          全屏
+                        </Button>
+                      )}
+                    </div>
+
+                    {graphMode === "regex" && (
+                      <p className="text-[11px] text-muted-foreground">
+                        快速模式：用文本模式匹配提取实体，速度快；适合快速预览关联关系。
+                      </p>
+                    )}
+                    {graphMode === "llm" && (
+                      <p className="text-[11px] text-muted-foreground">
+                        AI精准模式：用大模型逐文档提取私募基金公司/产品/策略/管理团队，准确率高。首次较慢；结果已缓存，再次点击只处理新增/修改文档。
+                      </p>
+                    )}
+
+                    {graphMode === "regex" && graphVizError && (
+                      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{graphVizError}</div>
+                    )}
+                    {graphMode === "llm" && graphVizLLMError && (
+                      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">{graphVizLLMError}</div>
+                    )}
+
+                    {graphMode === "regex" && !graphVizData && !graphVizLoading && !graphVizError && (
+                      <div className="flex h-48 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
+                        点击「生成图谱」后可视化文档与实体关联
+                      </div>
+                    )}
+                    {graphMode === "llm" && !graphVizLLMData && !graphVizLLMLoading && !graphVizLLMError && (
+                      <div className="flex h-48 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
+                        点击「AI精准提取」，大模型分析每份文档，提取基金公司/产品/策略/团队成员
+                      </div>
+                    )}
+
+                    {/* Regex graph */}
+                    {graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0 && (
+                      <ReactECharts
+                        style={{ height: "560px", width: "100%" }}
+                        notMerge
+                        option={{
+                          backgroundColor: "transparent",
+                          tooltip: {
+                            trigger: "item",
+                            formatter: (params: any) => {
+                              if (params.dataType === "node") {
+                                const labels: Record<string, string> = { document: "文档", company: "公司/机构", fund: "基金产品", person: "人员", other: "其他" }
+                                return `<b>${params.data.name}</b><br/>类型：${labels[params.data.rawCategory] ?? "实体"}`
+                              }
+                              return ""
+                            },
+                          },
+                          legend: [{ data: ["文档", "公司/机构", "基金产品", "人员", "其他"], top: 0, textStyle: { fontSize: 11 } }],
+                          series: [{
+                            type: "graph",
+                            layout: "force",
+                            animation: true,
+                            roam: true,
+                            draggable: true,
+                            label: {
+                              show: true,
+                              position: "right",
+                              fontSize: 10,
+                              formatter: (p: any) => p.data.name.length > 16 ? p.data.name.slice(0, 15) + "…" : p.data.name,
+                            },
+                            edgeSymbol: ["none", "none"],
+                            edgeLabel: { fontSize: 10 },
+                            force: { repulsion: 200, gravity: 0.06, edgeLength: [70, 180], layoutAnimation: true },
+                            categories: [
+                              { name: "文档", itemStyle: { color: "#3b82f6" } },
+                              { name: "公司/机构", itemStyle: { color: "#10b981" } },
+                              { name: "基金产品", itemStyle: { color: "#f97316" } },
+                              { name: "人员", itemStyle: { color: "#a855f7" } },
+                              { name: "其他", itemStyle: { color: "#94a3b8" } },
+                            ],
+                            data: graphVizData.nodes.map((n) => {
+                              const catIndex = { document: 0, company: 1, fund: 2, person: 3, other: 4 }[n.category] ?? 4
+                              return {
+                                id: n.id,
+                                name: n.name,
+                                rawCategory: n.category,
+                                category: catIndex,
+                                symbolSize: n.category === "document" ? 18 : n.category === "company" ? Math.max(10, Math.min(n.value * 2.5, 24)) : n.category === "fund" ? Math.max(10, Math.min(n.value * 2.5, 22)) : n.category === "person" ? 14 : Math.max(8, Math.min(n.value * 2, 14)),
+                                value: n.value,
+                              }
+                            }),
+                            links: graphVizData.links.map((l) => ({ source: l.source, target: l.target, lineStyle: { color: "#94a3b8", opacity: 0.4, width: 1 } })),
+                            lineStyle: { color: "source", curveness: 0.1 },
+                            emphasis: { focus: "adjacency", lineStyle: { width: 2 } },
+                          }],
+                        }}
+                      />
+                    )}
+                    {graphMode === "regex" && graphVizData && graphVizData.nodes.length === 0 && (
+                      <div className="flex h-32 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
+                        当前范围没有可显示的图谱数据（请先上传并嵌入文档）
+                      </div>
+                    )}
+
+                    {/* LLM-enhanced graph */}
+                    {graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0 && (
+                      <ReactECharts
+                        style={{ height: "560px", width: "100%" }}
+                        notMerge
+                        option={{
+                          backgroundColor: "transparent",
+                          tooltip: {
+                            trigger: "item",
+                            formatter: (params: any) => {
+                              if (params.dataType === "node") {
+                                const labels: Record<string, string> = { document: "文档", company: "基金公司", product: "基金产品", strategy: "投资策略", person: "团队成员" }
+                                let tip = `<b>${params.data.name}</b><br/>类型：${labels[params.data.rawCategory] ?? "实体"}`
+                                if (params.data.detail) tip += `<br/>职位：${params.data.detail}`
+                                return tip
+                              }
+                              if (params.dataType === "edge") return `<span style="opacity:.7">${params.data.relation || ""}</span>`
+                              return ""
+                            },
+                          },
+                          legend: [{ data: ["文档", "基金公司", "基金产品", "投资策略", "团队成员"], top: 0, textStyle: { fontSize: 11 } }],
+                          series: [{
+                            type: "graph",
+                            layout: "force",
+                            animation: true,
+                            roam: true,
+                            draggable: true,
+                            label: {
+                              show: true,
+                              position: "right",
+                              fontSize: 10,
+                              formatter: (p: any) => p.data.name.length > 16 ? p.data.name.slice(0, 15) + "…" : p.data.name,
+                            },
+                            edgeSymbol: ["none", "arrow"],
+                            edgeSymbolSize: [4, 6],
+                            edgeLabel: {
+                              show: true,
+                              fontSize: 9,
+                              color: "#94a3b8",
+                              formatter: (p: any) => p.data.relation || "",
+                            },
+                            force: { repulsion: 250, gravity: 0.05, edgeLength: [80, 200], layoutAnimation: true },
+                            categories: [
+                              { name: "文档", itemStyle: { color: "#3b82f6" } },
+                              { name: "基金公司", itemStyle: { color: "#10b981" } },
+                              { name: "基金产品", itemStyle: { color: "#f97316" } },
+                              { name: "投资策略", itemStyle: { color: "#06b6d4" } },
+                              { name: "团队成员", itemStyle: { color: "#a855f7" } },
+                            ],
+                            data: graphVizLLMData.nodes.map((n) => {
+                              const catIndex = { document: 0, company: 1, product: 2, strategy: 3, person: 4 }[n.category] ?? 0
+                              const sz = n.category === "document" ? 18
+                                : n.category === "company" ? Math.max(12, Math.min(n.value * 3, 32))
+                                : n.category === "product" ? Math.max(10, Math.min(n.value * 2.5, 26))
+                                : n.category === "strategy" ? Math.max(10, Math.min(n.value * 2.5, 24))
+                                : Math.max(10, Math.min(n.value * 2, 20))
+                              return {
+                                id: n.id,
+                                name: n.name,
+                                rawCategory: n.category,
+                                detail: (n as any).detail,
+                                category: catIndex,
+                                symbolSize: sz,
+                                symbol: n.category === "strategy" ? "diamond" : "circle",
+                                value: n.value,
+                              }
+                            }),
+                            links: graphVizLLMData.links.map((l) => ({
+                              source: l.source,
+                              target: l.target,
+                              relation: l.relation,
+                              lineStyle: { opacity: 0.45, width: 1 },
+                            })),
+                            lineStyle: { color: "source", curveness: 0.1 },
+                            emphasis: { focus: "adjacency", lineStyle: { width: 2 } },
+                          }],
+                        }}
+                      />
+                    )}
+                    {graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length === 0 && (
+                      <div className="flex h-32 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
+                        文档中未识别到有效的基金实体（请确认文档为私募基金路演/介绍材料）
+                      </div>
+                    )}
+
+                    {/* Fullscreen overlay */}
+                    {graphVizFullscreen && (
+                      <div className="fixed inset-0 z-50 flex flex-col bg-background">
+                        <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
+                          <span className="text-sm font-medium">知识图谱{graphMode === "llm" ? "（AI精准）" : ""}</span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-7 gap-1 px-2 text-xs"
+                            onClick={() => setGraphVizFullscreen(false)}
+                          >
+                            <Minimize2 className="h-3.5 w-3.5" />
+                            退出全屏
+                          </Button>
+                        </div>
+                        <div className="min-h-0 flex-1">
+                          {graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0 && (
+                            <ReactECharts
+                              style={{ height: "100%", width: "100%" }}
+                              notMerge
+                              option={{
+                                backgroundColor: "transparent",
+                                tooltip: {
+                                  trigger: "item",
+                                  formatter: (params: any) => {
+                                    if (params.dataType === "node") {
+                                      const labels: Record<string, string> = { document: "文档", company: "公司/机构", fund: "基金产品", person: "人员", other: "其他" }
+                                      return `<b>${params.data.name}</b><br/>类型：${labels[params.data.rawCategory] ?? "实体"}`
+                                    }
+                                    return ""
+                                  },
+                                },
+                                legend: [{ data: ["文档", "公司/机构", "基金产品", "人员", "其他"], top: 0, textStyle: { fontSize: 12 } }],
+                                series: [{
+                                  type: "graph",
+                                  layout: "force",
+                                  animation: true,
+                                  roam: true,
+                                  draggable: true,
+                                  label: {
+                                    show: true,
+                                    position: "right",
+                                    fontSize: 11,
+                                    formatter: (p: any) => p.data.name.length > 18 ? p.data.name.slice(0, 17) + "…" : p.data.name,
+                                  },
+                                  edgeSymbol: ["none", "none"],
+                                  force: { repulsion: 260, gravity: 0.05, edgeLength: [90, 220], layoutAnimation: true },
+                                  categories: [
+                                    { name: "文档", itemStyle: { color: "#3b82f6" } },
+                                    { name: "公司/机构", itemStyle: { color: "#10b981" } },
+                                    { name: "基金产品", itemStyle: { color: "#f97316" } },
+                                    { name: "人员", itemStyle: { color: "#a855f7" } },
+                                    { name: "其他", itemStyle: { color: "#94a3b8" } },
+                                  ],
+                                  data: graphVizData.nodes.map((n) => {
+                                    const catIndex = { document: 0, company: 1, fund: 2, person: 3, other: 4 }[n.category] ?? 4
+                                    return {
+                                      id: n.id,
+                                      name: n.name,
+                                      rawCategory: n.category,
+                                      category: catIndex,
+                                      symbolSize: n.category === "document" ? 22 : n.category === "company" ? Math.max(12, Math.min(n.value * 3, 30)) : n.category === "fund" ? Math.max(12, Math.min(n.value * 3, 28)) : n.category === "person" ? 18 : Math.max(10, Math.min(n.value * 2.5, 18)),
+                                      value: n.value,
+                                    }
+                                  }),
+                                  links: graphVizData.links.map((l) => ({ source: l.source, target: l.target, lineStyle: { color: "#94a3b8", opacity: 0.4, width: 1 } })),
+                                  lineStyle: { color: "source", curveness: 0.1 },
+                                  emphasis: { focus: "adjacency", lineStyle: { width: 2 } },
+                                }],
+                              }}
+                            />
+                          )}
+                          {graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0 && (
+                            <ReactECharts
+                              style={{ height: "100%", width: "100%" }}
+                              notMerge
+                              option={{
+                                backgroundColor: "transparent",
+                                tooltip: {
+                                  trigger: "item",
+                                  formatter: (params: any) => {
+                                    if (params.dataType === "node") {
+                                      const labels: Record<string, string> = { document: "文档", company: "基金公司", product: "基金产品", strategy: "投资策略", person: "团队成员" }
+                                      let tip = `<b>${params.data.name}</b><br/>类型：${labels[params.data.rawCategory] ?? "实体"}`
+                                      if (params.data.detail) tip += `<br/>职位：${params.data.detail}`
+                                      return tip
+                                    }
+                                    if (params.dataType === "edge") return `<span style="opacity:.7">${params.data.relation || ""}</span>`
+                                    return ""
+                                  },
+                                },
+                                legend: [{ data: ["文档", "基金公司", "基金产品", "投资策略", "团队成员"], top: 0, textStyle: { fontSize: 12 } }],
+                                series: [{
+                                  type: "graph",
+                                  layout: "force",
+                                  animation: true,
+                                  roam: true,
+                                  draggable: true,
+                                  label: {
+                                    show: true,
+                                    position: "right",
+                                    fontSize: 11,
+                                    formatter: (p: any) => p.data.name.length > 18 ? p.data.name.slice(0, 17) + "…" : p.data.name,
+                                  },
+                                  edgeSymbol: ["none", "arrow"],
+                                  edgeSymbolSize: [4, 7],
+                                  edgeLabel: {
+                                    show: true,
+                                    fontSize: 10,
+                                    color: "#94a3b8",
+                                    formatter: (p: any) => p.data.relation || "",
+                                  },
+                                  force: { repulsion: 300, gravity: 0.04, edgeLength: [100, 250], layoutAnimation: true },
+                                  categories: [
+                                    { name: "文档", itemStyle: { color: "#3b82f6" } },
+                                    { name: "基金公司", itemStyle: { color: "#10b981" } },
+                                    { name: "基金产品", itemStyle: { color: "#f97316" } },
+                                    { name: "投资策略", itemStyle: { color: "#06b6d4" } },
+                                    { name: "团队成员", itemStyle: { color: "#a855f7" } },
+                                  ],
+                                  data: graphVizLLMData.nodes.map((n) => {
+                                    const catIndex = { document: 0, company: 1, product: 2, strategy: 3, person: 4 }[n.category] ?? 0
+                                    const sz = n.category === "document" ? 22
+                                      : n.category === "company" ? Math.max(14, Math.min(n.value * 3.5, 36))
+                                      : n.category === "product" ? Math.max(12, Math.min(n.value * 3, 30))
+                                      : n.category === "strategy" ? Math.max(12, Math.min(n.value * 3, 28))
+                                      : Math.max(12, Math.min(n.value * 2.5, 24))
+                                    return {
+                                      id: n.id,
+                                      name: n.name,
+                                      rawCategory: n.category,
+                                      detail: (n as any).detail,
+                                      category: catIndex,
+                                      symbolSize: sz,
+                                      symbol: n.category === "strategy" ? "diamond" : "circle",
+                                      value: n.value,
+                                    }
+                                  }),
+                                  links: graphVizLLMData.links.map((l) => ({
+                                    source: l.source,
+                                    target: l.target,
+                                    relation: l.relation,
+                                    lineStyle: { opacity: 0.45, width: 1 },
+                                  })),
+                                  lineStyle: { color: "source", curveness: 0.1 },
+                                  emphasis: { focus: "adjacency", lineStyle: { width: 2 } },
+                                }],
+                              }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -2743,6 +3204,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <Switch checked={useBm25} onCheckedChange={setUseBm25} />
                     </div>
                     <p className="mt-2 text-[11px] text-muted-foreground">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <span className="text-xs">Graph RAG</span>
+                      <Switch checked={useGraphRag} onCheckedChange={setUseGraphRag} />
+                    </div>
+                    <p className="mt-2 text-[11px] text-muted-foreground">开启后通过知识图谱实体关联扩展检索上下文，适合跨文档关联查询。</p>
                   </div>
                   <div className="rounded-md border p-3">
                     <div className="mb-2 text-xs font-medium text-muted-foreground">模型选择</div>
@@ -3158,6 +3624,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <Switch checked={useBm25} onCheckedChange={setUseBm25} />
                     </div>
                     <p className="text-[11px] text-cyan-300/60">开启后使用 向量 + BM25 混合检索；关闭后仅向量检索。</p>
+                    <div className="flex items-center justify-between gap-2 rounded-lg border border-cyan-500/20 bg-black/20 px-2 py-2 text-xs">
+                      <span>Graph RAG</span>
+                      <Switch checked={useGraphRag} onCheckedChange={setUseGraphRag} />
+                    </div>
+                    <p className="text-[11px] text-cyan-300/60">开启后通过知识图谱实体关联扩展检索上下文，适合跨文档关联查询。</p>
                     <div className="mt-1 text-xs font-medium text-cyan-300/80">模型选择</div>
                     <div className="grid grid-cols-2 gap-1">
                       <button type="button" onClick={() => setModelMode("auto")} className={cn("col-span-2 rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "auto" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🤖 自动（推荐）</button>

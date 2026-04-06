@@ -40,6 +40,7 @@ export async function POST(req: Request) {
               folderPath: body?.folderPath,
               filePath: body?.filePath ?? null,
               useBm25: body?.useBm25 !== false,
+              useGraphRag: body?.useGraphRag === true,
               modelMode,
             })
             for await (const event of gen) {
@@ -97,6 +98,7 @@ export async function POST(req: Request) {
       folderPath: body?.folderPath,
       filePath: body?.filePath ?? null,
       useBm25: body?.useBm25 !== false,
+      useGraphRag: body?.useGraphRag === true,
       modelMode,
     })
 
