@@ -134,12 +134,19 @@ def load_from_akshare() -> pd.DataFrame:
     if date_col is None:
         date_col = raw.columns[0]
 
-    # Find 3M rate column — try common variants
+    # Find 3M rate column — try exact names first, then prefix match
+    # akshare changed column format from "3M" to "3M-定价" at some point
     rate_col = None
-    for candidate in ['3个月', '3M', '3m', '三个月', '90天']:
+    for candidate in ['3个月', '3M', '3m', '三个月', '90天', '3M-定价']:
         if candidate in raw.columns:
             rate_col = candidate
             break
+    if rate_col is None:
+        # Fallback: find any column that starts with "3M" (e.g. "3M-定价", "3M-涨跌幅" → pick 定价)
+        for c in raw.columns:
+            if str(c).startswith('3M') and '涨跌' not in c:
+                rate_col = c
+                break
     if rate_col is None:
         raise ValueError(f"Cannot find 3M column in: {list(raw.columns)}")
 
