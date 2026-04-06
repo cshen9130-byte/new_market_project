@@ -42,6 +42,7 @@ import {
   Square,
   Trash2,
   Upload,
+  Hand,
   ZoomIn,
   ZoomOut,
 } from "lucide-react"
@@ -59,6 +60,56 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import ReactECharts from "echarts-for-react"
+
+function GraphToolbar({
+  onZoomOut, onReset, onZoomIn, panMode, onPanToggle,
+}: {
+  onZoomOut: () => void
+  onReset: () => void
+  onZoomIn: () => void
+  panMode: boolean
+  onPanToggle: () => void
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <div className="flex items-center rounded-md border overflow-hidden">
+        <button
+          className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors border-r"
+          title="缩小"
+          onClick={onZoomOut}
+        >
+          <ZoomOut className="h-3.5 w-3.5" />
+        </button>
+        <button
+          className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors border-r"
+          title="重置缩放"
+          onClick={onReset}
+        >
+          <RotateCcw className="h-3 w-3" />
+        </button>
+        <button
+          className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          title="放大"
+          onClick={onZoomIn}
+        >
+          <ZoomIn className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      <button
+        className={cn(
+          "flex items-center justify-center rounded-md border px-2 py-1 transition-colors",
+          panMode
+            ? "border-primary bg-primary/10 text-primary"
+            : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        )}
+        title={panMode ? "退出拖拽模式" : "拖拽平移模式"}
+        onClick={onPanToggle}
+      >
+        <Hand className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  )
+}
 
 type DocumentNode = {
   name: string
@@ -482,8 +533,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [graphVizLLMLoading, setGraphVizLLMLoading] = useState(false)
   const [graphVizLLMError, setGraphVizLLMError] = useState<string | null>(null)
   const [graphMode, setGraphMode] = useState<"regex" | "llm">("regex")
+  const [graphPanMode, setGraphPanMode] = useState(false)
   const graphRegexChartRef = useRef<ReactECharts>(null)
   const graphLLMChartRef = useRef<ReactECharts>(null)
+  const graphRegexFsChartRef = useRef<ReactECharts>(null)
+  const graphLLMFsChartRef = useRef<ReactECharts>(null)
   const [syncServerFolder, setSyncServerFolder] = useState<string | null>(null)
   const [syncLocalDirHandle, setSyncLocalDirHandle] = useState<FileSystemDirectoryHandle | null>(null)
   const [syncLocalDirName, setSyncLocalDirName] = useState<string>("")
@@ -2656,46 +2710,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       {((graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0) ||
                         (graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0)) && (
                         <>
-                          <div className="flex items-center rounded-md border overflow-hidden">
-                            <button
-                              className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors border-r"
-                              title="缩小"
-                              onClick={() => {
-                                const ref = graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef
-                                const chart = ref.current?.getEchartsInstance()
-                                if (!chart) return
-                                const cur = (chart.getOption().series as any[])?.[0]?.zoom ?? 1
-                                chart.setOption({ series: [{ zoom: cur * 0.75 }] }, false)
-                              }}
-                            >
-                              <ZoomOut className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors border-r"
-                              title="重置缩放"
-                              onClick={() => {
-                                const ref = graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef
-                                const chart = ref.current?.getEchartsInstance()
-                                if (!chart) return
-                                chart.setOption({ series: [{ zoom: 1, center: undefined }] }, false)
-                              }}
-                            >
-                              <RotateCcw className="h-3 w-3" />
-                            </button>
-                            <button
-                              className="px-2 py-1 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                              title="放大"
-                              onClick={() => {
-                                const ref = graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef
-                                const chart = ref.current?.getEchartsInstance()
-                                if (!chart) return
-                                const cur = (chart.getOption().series as any[])?.[0]?.zoom ?? 1
-                                chart.setOption({ series: [{ zoom: cur * 1.33 }] }, false)
-                              }}
-                            >
-                              <ZoomIn className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
+                          <GraphToolbar
+                            onZoomOut={() => { const c = (graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef).current?.getEchartsInstance(); if (!c) return; const z = (c.getOption().series as any[])?.[0]?.zoom ?? 1; c.setOption({ series: [{ zoom: z * 0.75 }] }, false) }}
+                            onReset={() => { const c = (graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef).current?.getEchartsInstance(); if (!c) return; c.setOption({ series: [{ zoom: 1 }] }, false) }}
+                            onZoomIn={() => { const c = (graphMode === "regex" ? graphRegexChartRef : graphLLMChartRef).current?.getEchartsInstance(); if (!c) return; const z = (c.getOption().series as any[])?.[0]?.zoom ?? 1; c.setOption({ series: [{ zoom: z * 1.33 }] }, false) }}
+                            panMode={graphPanMode}
+                            onPanToggle={() => setGraphPanMode((p) => !p)}
+                          />
                           <Button
                             size="sm"
                             variant="ghost"
@@ -2741,6 +2762,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                     {/* Regex graph */}
                     {graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0 && (
+                      <div className={cn("relative", graphPanMode && "cursor-grab active:cursor-grabbing")}>
                       <ReactECharts
                         ref={graphRegexChartRef}
                         style={{ height: "560px", width: "100%" }}
@@ -2797,6 +2819,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           }],
                         }}
                       />
+                      </div>
                     )}
                     {graphMode === "regex" && graphVizData && graphVizData.nodes.length === 0 && (
                       <div className="flex h-32 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
@@ -2806,6 +2829,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                     {/* LLM-enhanced graph */}
                     {graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0 && (
+                      <div className={cn("relative", graphPanMode && "cursor-grab active:cursor-grabbing")}>
                       <ReactECharts
                         ref={graphLLMChartRef}
                         style={{ height: "560px", width: "100%" }}
@@ -2883,6 +2907,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           }],
                         }}
                       />
+                      </div>
                     )}
                     {graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length === 0 && (
                       <div className="flex h-32 items-center justify-center rounded-md border border-dashed text-xs text-muted-foreground">
@@ -2893,8 +2918,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     {/* Fullscreen overlay */}
                     {graphVizFullscreen && (
                       <div className="fixed inset-0 z-50 flex flex-col bg-background">
-                        <div className="flex shrink-0 items-center justify-between border-b px-4 py-2">
-                          <span className="text-sm font-medium">知识图谱{graphMode === "llm" ? "（AI精准）" : ""}</span>
+                        <div className="flex shrink-0 items-center gap-3 border-b px-4 py-2">
+                          <span className="text-sm font-medium mr-auto">知识图谱{graphMode === "llm" ? "（AI精准）" : ""}</span>
+                          <GraphToolbar
+                            onZoomOut={() => { const c = (graphMode === "regex" ? graphRegexFsChartRef : graphLLMFsChartRef).current?.getEchartsInstance(); if (!c) return; const z = (c.getOption().series as any[])?.[0]?.zoom ?? 1; c.setOption({ series: [{ zoom: z * 0.75 }] }, false) }}
+                            onReset={() => { const c = (graphMode === "regex" ? graphRegexFsChartRef : graphLLMFsChartRef).current?.getEchartsInstance(); if (!c) return; c.setOption({ series: [{ zoom: 1 }] }, false) }}
+                            onZoomIn={() => { const c = (graphMode === "regex" ? graphRegexFsChartRef : graphLLMFsChartRef).current?.getEchartsInstance(); if (!c) return; const z = (c.getOption().series as any[])?.[0]?.zoom ?? 1; c.setOption({ series: [{ zoom: z * 1.33 }] }, false) }}
+                            panMode={graphPanMode}
+                            onPanToggle={() => setGraphPanMode((p) => !p)}
+                          />
                           <Button
                             size="sm"
                             variant="ghost"
@@ -2905,9 +2937,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                             退出全屏
                           </Button>
                         </div>
-                        <div className="min-h-0 flex-1">
+                        <div className={cn("min-h-0 flex-1", graphPanMode && "cursor-grab active:cursor-grabbing")}>
                           {graphMode === "regex" && graphVizData && graphVizData.nodes.length > 0 && (
                             <ReactECharts
+                              ref={graphRegexFsChartRef}
                               style={{ height: "100%", width: "100%" }}
                               notMerge
                               option={{
@@ -2964,6 +2997,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           )}
                           {graphMode === "llm" && graphVizLLMData && graphVizLLMData.nodes.length > 0 && (
                             <ReactECharts
+                              ref={graphLLMFsChartRef}
                               style={{ height: "100%", width: "100%" }}
                               notMerge
                               option={{
