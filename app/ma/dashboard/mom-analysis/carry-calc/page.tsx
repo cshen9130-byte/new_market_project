@@ -61,7 +61,10 @@ interface CarryResult {
   totalLoss: number
   profitLossRatio: number | null
   profitLossThreshold: number | null
-  motherCarry: number
+  motherCarry: number            // on remaining adjusted PnL
+  motherCarryOnExtracted: number // on past profitPortion extractions (child carry was paid but mother carry was not)
+  totalMotherCarry: number       // motherCarry + motherCarryOnExtracted
+  totalProfitPortion: number
   totalPositiveAdjustedPnl: number
   childCarry: number
   netCarry: number
@@ -91,11 +94,14 @@ function computeCarry(
   // totalAdjustedPnl * motherRate = totalProfit * childRate  →  R = motherRate / (motherRate - childRate)
   const profitLossThreshold      = motherRate > childRate ? motherRate / (motherRate - childRate) : null
   const motherCarry              = Math.max(0, totalAdjustedPnl) * motherRate
+  const totalProfitPortion       = payments.reduce((s, p) => s + p.profitPortion, 0)
+  const motherCarryOnExtracted   = totalProfitPortion * motherRate  // child carry was paid on these, but mother carry was not
+  const totalMotherCarry         = motherCarry + motherCarryOnExtracted
   const totalPositiveAdjustedPnl = totalProfit
   const childCarry               = totalPositiveAdjustedPnl * childRate
-  const netCarry                 = motherCarry - childCarry
+  const netCarry                 = totalMotherCarry - childCarry
 
-  return { accountDetails, totalAdjustedPnl, totalProfit, totalLoss, profitLossRatio, profitLossThreshold, motherCarry, totalPositiveAdjustedPnl, childCarry, netCarry }
+  return { accountDetails, totalAdjustedPnl, totalProfit, totalLoss, profitLossRatio, profitLossThreshold, motherCarry, motherCarryOnExtracted, totalMotherCarry, totalProfitPortion, totalPositiveAdjustedPnl, childCarry, netCarry }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -579,6 +585,18 @@ export default function CarryCalcPage() {
                     调整后总盈亏&nbsp;{fmt(carry.totalAdjustedPnl)}&nbsp;×&nbsp;{(motherRate * 100).toFixed(1)}%&nbsp;=&nbsp;
                     <span className={`font-semibold ${pnlClass(carry.motherCarry)}`}>{fmt(carry.motherCarry)}</span>
                   </p>
+                  {carry.totalProfitPortion > 0 && (
+                    <p className="text-xs text-muted-foreground font-mono">
+                      已提盈（实付carry未结母层）&nbsp;{fmt(carry.totalProfitPortion)}&nbsp;×&nbsp;{(motherRate * 100).toFixed(1)}%&nbsp;=&nbsp;
+                      <span className="font-semibold text-amber-600 dark:text-amber-400">{fmt(carry.motherCarryOnExtracted)}</span>
+                    </p>
+                  )}
+                  {carry.totalProfitPortion > 0 && (
+                    <p className="text-xs font-mono">
+                      <span className="text-muted-foreground">母层合计&nbsp;=&nbsp;</span>
+                      <span className={`font-semibold ${pnlClass(carry.totalMotherCarry)}`}>{fmt(carry.totalMotherCarry)}</span>
+                    </p>
+                  )}
                 </div>
                 {/* 子层 */}
                 <div className="py-3 space-y-1">
@@ -595,7 +613,7 @@ export default function CarryCalcPage() {
                   <p className="font-medium">净业绩报酬</p>
                   <p className="text-xs font-mono">
                     <span className="text-muted-foreground">
-                      母层&nbsp;{fmt(carry.motherCarry)}&nbsp;−&nbsp;子层&nbsp;{fmt(carry.childCarry)}&nbsp;=&nbsp;
+                      母层合计&nbsp;{fmt(carry.totalMotherCarry)}&nbsp;−&nbsp;子层&nbsp;{fmt(carry.childCarry)}&nbsp;=&nbsp;
                     </span>
                     <span className={`text-base font-bold ${pnlClass(carry.netCarry)}`}>{fmt(carry.netCarry)}</span>
                   </p>
