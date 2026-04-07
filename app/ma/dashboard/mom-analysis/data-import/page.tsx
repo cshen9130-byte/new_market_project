@@ -14,6 +14,7 @@ import {
   Play,
   RefreshCw,
   RotateCcw,
+  Terminal,
   UploadCloud,
   X,
 } from "lucide-react"
@@ -77,6 +78,10 @@ export default function DataImportPage() {
   const [isLoadingEtl, setIsLoadingEtl] = useState(false)
   const [showEtlErrors, setShowEtlErrors] = useState(false)
   const [isRunningEtl, setIsRunningEtl] = useState(false)
+  const [etlLog, setEtlLog] = useState<string[]>([])
+  const [showEtlLog, setShowEtlLog] = useState(false)
+  const [showXlsxUpload, setShowXlsxUpload] = useState(false)
+  const logEndRef = useRef<HTMLDivElement | null>(null)
 
   const [isDragOver, setIsDragOver] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -122,17 +127,49 @@ export default function DataImportPage() {
 
   const runEtl = useCallback(async (opts?: { skipDedup?: boolean; skipMarketData?: boolean }) => {
     setIsRunningEtl(true)
+    setEtlLog([])
+    setShowEtlLog(true)
     try {
       const res = await fetch("/ma/api/mom-analysis/data-import/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ skipDedup: opts?.skipDedup ?? false, skipMarketData: opts?.skipMarketData ?? false }),
       })
-      const data = await res.json()
-      if (!res.ok) {
-        toast({ title: "ETL 失败", description: readError(data, "运行失败"), variant: "destructive" })
-      } else {
+      if (!res.body) throw new Error("无响应流")
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ""
+      let exitCode: string | null = null
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const parts = buf.split("\n\n")
+        buf = parts.pop() ?? ""
+        for (const part of parts) {
+          for (const line of part.split("\n")) {
+            if (!line.startsWith("data: ")) continue
+            const payload = line.slice(6)
+            let msg: string
+            try { msg = JSON.parse(payload) } catch { msg = payload }
+            if (msg.startsWith("__EXIT__:")) {
+              exitCode = msg.slice(9)
+            } else {
+              setEtlLog((prev) => [...prev, msg])
+              setTimeout(() => logEndRef.current?.scrollIntoView({ behavior: "smooth" }), 30)
+            }
+          }
+        }
+      }
+
+      if (exitCode === "0") {
         toast({ title: "ETL 完成", description: "数据已成功写入数据库。" })
+      } else if (exitCode === "timeout") {
+        toast({ title: "ETL 超时", description: "运行超过 600 秒被终止。", variant: "destructive" })
+      } else {
+        toast({ title: "ETL 失败", description: `退出码 ${exitCode ?? "unknown"}`, variant: "destructive" })
       }
     } catch (e) {
       toast({ title: "ETL 失败", description: e instanceof Error ? e.message : "运行失败", variant: "destructive" })
@@ -456,13 +493,14 @@ export default function DataImportPage() {
 
       {/* ── XLSX direct upload ───────────────────────────────────────────── */}
       <Card className="border-border/60">
-        <CardHeader className="pb-3">
+        <CardHeader className="pb-3 cursor-pointer select-none" onClick={() => setShowXlsxUpload((v) => !v)}>
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
             单日 XLSX 文件上传
+            <ChevronDown className={`ml-auto h-4 w-4 text-muted-foreground transition-transform ${showXlsxUpload ? "rotate-180" : ""}`} />
           </CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3">
+        {showXlsxUpload && <CardContent className="space-y-3">
           {/* Folder selector */}
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-sm text-muted-foreground whitespace-nowrap">目标文件夹</span>
@@ -563,7 +601,7 @@ export default function DataImportPage() {
               ? <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />处理中…</>
               : <><UploadCloud className="mr-2 h-3.5 w-3.5" />上传并入库</>}
           </Button>
-        </CardContent>
+        </CardContent>}
       </Card>
 
       {/* Date coverage status */}
@@ -685,6 +723,44 @@ export default function DataImportPage() {
           </div>
         )}
       </div>
+
+      {/* ETL live log */}
+      {(showEtlLog && etlLog.length > 0) && (
+        <div className="rounded-lg border border-border/60 bg-card overflow-hidden">
+          <div className="flex items-center justify-between px-4 py-2 border-b border-border/50 bg-muted/40">
+            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+              <Terminal className="h-3.5 w-3.5" />
+              ETL 日志
+              {isRunningEtl && <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />}
+            </div>
+            <button
+              onClick={() => setShowEtlLog(false)}
+              className="text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="h-56 overflow-y-auto bg-zinc-950 p-3 font-mono text-xs leading-relaxed">
+            {etlLog.map((line, i) => (
+              <div
+                key={i}
+                className={
+                  line.includes("[stderr]") || line.includes("ERROR") || line.includes("error")
+                    ? "text-red-400"
+                    : line.includes("WARNING") || line.includes("warning")
+                    ? "text-amber-400"
+                    : line.includes("upserted") || line.includes("完成") || line.includes("成功")
+                    ? "text-emerald-400"
+                    : "text-zinc-300"
+                }
+              >
+                {line}
+              </div>
+            ))}
+            <div ref={logEndRef} />
+          </div>
+        </div>
+      )}
 
       {/* Rename result */}
       {renameResult && (

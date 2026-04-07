@@ -21,6 +21,8 @@ const MARKET_HOLIDAYS = new Set([
   "20260211", "20260212", "20260213",
   "20260216", "20260217", "20260218",
   "20260219", "20260220", "20260223",
+  // 清明节 2026 (Apr 6, Mon — Qingming falls on Sun Apr 5, observed Mon)
+  "20260406",
 ])
 
 // 补班 trading days (currently none in the scan range)
