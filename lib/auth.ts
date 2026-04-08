@@ -17,18 +17,33 @@ async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> 
   return data as T
 }
 
+function currentUserId(): string {
+  try {
+    const user = localStorage.getItem("currentUser")
+    return user ? (JSON.parse(user)?.id ?? "") : ""
+  } catch {
+    return ""
+  }
+}
+
 export const authService = {
   // Ensure server-side users store is initialized
   init: async (): Promise<void> => {
     try {
-      await jsonFetch<{ ok: true; users: User[] }>("/api/admin/users")
+      const uid = currentUserId()
+      await jsonFetch<{ ok: true; users: User[] }>("/api/admin/users", {
+        headers: uid ? { "x-market-user-id": uid } : {},
+      })
     } catch {
       // ignore
     }
   },
 
   listUsers: async (): Promise<User[]> => {
-    const data = await jsonFetch<{ ok: true; users: User[] }>("/api/admin/users")
+    const uid = currentUserId()
+    const data = await jsonFetch<{ ok: true; users: User[] }>("/api/admin/users", {
+      headers: uid ? { "x-market-user-id": uid } : {},
+    })
     return data.users
   },
 
@@ -39,9 +54,11 @@ export const authService = {
     role: "admin" | "user" = "user",
   ): Promise<{ success: boolean; error?: string }> => {
     try {
+      const uid = currentUserId()
       await jsonFetch<{ ok: true; user: User }>("/api/admin/users", {
         method: "POST",
         body: JSON.stringify({ email, password, name, role }),
+        headers: uid ? { "x-market-user-id": uid } : {},
       })
       return { success: true }
     } catch (e: any) {
@@ -51,7 +68,11 @@ export const authService = {
 
   deleteUser: async (id: string): Promise<{ success: boolean; error?: string }> => {
     try {
-      await jsonFetch<{ ok: true }>(`/api/admin/users/${id}`, { method: "DELETE" })
+      const uid = currentUserId()
+      await jsonFetch<{ ok: true }>(`/api/admin/users/${id}`, {
+        method: "DELETE",
+        headers: uid ? { "x-market-user-id": uid } : {},
+      })
       return { success: true }
     } catch (e: any) {
       return { success: false, error: e?.message || "删除失败" }
@@ -63,9 +84,11 @@ export const authService = {
     updates: Partial<{ email: string; name: string; password: string; role: "admin" | "user" }>,
   ): Promise<{ success: boolean; error?: string }> => {
     try {
+      const uid = currentUserId()
       await jsonFetch<{ ok: true; user: User }>(`/api/admin/users/${id}`, {
         method: "PUT",
         body: JSON.stringify(updates),
+        headers: uid ? { "x-market-user-id": uid } : {},
       })
       return { success: true }
     } catch (e: any) {

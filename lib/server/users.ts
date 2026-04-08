@@ -1,7 +1,5 @@
-import { promises as fs } from "fs"
-import path from "path"
 import bcrypt from "bcryptjs"
-import { getServerStoragePath } from "@/lib/server/storage"
+import { query } from "@/lib/db"
 
 export type StoredUser = {
   id: string
@@ -11,174 +9,185 @@ export type StoredUser = {
   passwordHash: string
 }
 
-const legacyDataDir = path.join(process.cwd(), "data")
-const legacyUsersFile = path.join(legacyDataDir, "users.json")
-
-function getUsersDir() {
-  return getServerStoragePath("auth")
+type DbRow = {
+  id: string
+  email: string
+  name: string
+  role: "admin" | "user"
+  password_hash: string
 }
 
-function getUsersFile() {
-  return path.join(getUsersDir(), "users.json")
+function rowToUser(row: DbRow): StoredUser {
+  return { id: row.id, email: row.email, name: row.name, role: row.role, passwordHash: row.password_hash }
 }
 
-async function ensureDir() {
-  try {
-    await fs.mkdir(getUsersDir(), { recursive: true })
-  } catch {}
+// Singleton init promise — safe against concurrent requests and hot reloads
+let initPromise: Promise<void> | null = null
+
+function ensureTable(): Promise<void> {
+  if (!initPromise) initPromise = _initTable().catch((e) => { initPromise = null; throw e })
+  return initPromise
 }
 
-async function migrateLegacyUsersIfNeeded(usersFile: string) {
-  try {
-    await fs.access(usersFile)
-    return
-  } catch {}
-
-  try {
-    await fs.access(legacyUsersFile)
-  } catch {
-    return
-  }
-
-  const raw = await fs.readFile(legacyUsersFile, "utf8")
-  const parsed = JSON.parse(raw)
-  if (!Array.isArray(parsed)) {
-    throw new Error("旧用户数据格式不合法")
-  }
-
-  await fs.writeFile(usersFile, JSON.stringify(parsed, null, 2), "utf8")
+async function _initTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS auth_users (
+      id            TEXT PRIMARY KEY,
+      email         TEXT UNIQUE NOT NULL,
+      name          TEXT NOT NULL,
+      role          TEXT NOT NULL DEFAULT 'user',
+      password_hash TEXT NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
+  await _seedIfEmpty()
 }
 
-async function seedIfMissing() {
-  await ensureDir()
-  const usersFile = getUsersFile()
-  await migrateLegacyUsersIfNeeded(usersFile)
+async function _seedIfEmpty() {
+  const rows = await query<{ count: string }>(`SELECT COUNT(*) AS count FROM auth_users`)
+  const count = parseInt(rows[0]?.count ?? "0", 10)
+  if (count > 0) return
+
+  // Attempt one-time migration from legacy JSON file
   try {
-    await fs.access(usersFile)
-  } catch {
-    const adminName = process.env.ADMIN_DEFAULT_NAME || "cshen"
-    const adminEmail = process.env.ADMIN_DEFAULT_EMAIL || "cshen@example.com"
-    const adminPwd = process.env.ADMIN_DEFAULT_PASSWORD || "wygmmlhhhh8"
-    const hash = await bcrypt.hash(adminPwd, 10)
-    const seed: StoredUser[] = [
-      {
-        id: Math.random().toString(36).slice(2, 11),
-        email: adminEmail,
-        name: adminName,
-        role: "admin",
-        passwordHash: hash,
-      },
+    const { promises: fs } = await import("fs")
+    const nodePath = await import("path")
+    const candidates = [
+      nodePath.join(process.cwd(), "data", "users.json"),
+      nodePath.join(process.cwd(), "..", "data", "users.json"),
     ]
-    // Optionally seed extra users from env (JSON array)
-    try {
-      if (process.env.SEED_EXTRA_USERS) {
-        const extra: Array<{ name: string; email: string; password: string; role?: "admin" | "user" }> = JSON.parse(
-          process.env.SEED_EXTRA_USERS,
-        )
-        for (const e of extra) {
-          if (!e?.email || !e?.name || !e?.password) continue
-          if (seed.some((u) => u.email === e.email)) continue
-          const h = await bcrypt.hash(e.password, 10)
-          seed.push({
-            id: Math.random().toString(36).slice(2, 11),
-            email: e.email,
-            name: e.name,
-            role: e.role ?? "user",
-            passwordHash: h,
-          })
+    for (const file of candidates) {
+      try {
+        const raw = await fs.readFile(file, "utf8")
+        const users: StoredUser[] = JSON.parse(raw)
+        if (Array.isArray(users) && users.length > 0) {
+          for (const u of users) {
+            await query(
+              `INSERT INTO auth_users (id, email, name, role, password_hash)
+               VALUES ($1, $2, $3, $4, $5) ON CONFLICT (email) DO NOTHING`,
+              [u.id, u.email, u.name, u.role, u.passwordHash],
+            )
+          }
+          return
         }
+      } catch {}
+    }
+  } catch {}
+
+  // Seed default admin from env
+  const adminName = process.env.ADMIN_DEFAULT_NAME || "cshen"
+  const adminEmail = process.env.ADMIN_DEFAULT_EMAIL || "cshen@example.com"
+  const adminPwd = process.env.ADMIN_DEFAULT_PASSWORD || "wygmmlhhhh8"
+  const hash = await bcrypt.hash(adminPwd, 10)
+  await query(
+    `INSERT INTO auth_users (id, email, name, role, password_hash) VALUES ($1, $2, $3, $4, $5)`,
+    [Math.random().toString(36).slice(2, 11), adminEmail, adminName, "admin", hash],
+  )
+
+  // Seed extra users from env (JSON array of { name, email, password, role? })
+  try {
+    if (process.env.SEED_EXTRA_USERS) {
+      const extra: Array<{ name: string; email: string; password: string; role?: "admin" | "user" }> = JSON.parse(
+        process.env.SEED_EXTRA_USERS,
+      )
+      for (const e of extra) {
+        if (!e?.email || !e?.name || !e?.password) continue
+        const h = await bcrypt.hash(e.password, 10)
+        await query(
+          `INSERT INTO auth_users (id, email, name, role, password_hash)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT (email) DO NOTHING`,
+          [Math.random().toString(36).slice(2, 11), e.email, e.name, e.role ?? "user", h],
+        )
       }
-    } catch {}
-    await fs.writeFile(usersFile, JSON.stringify(seed, null, 2), "utf8")
-  }
+    }
+  } catch {}
 }
 
 export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
-  await seedIfMissing()
-  const usersFile = getUsersFile()
-  const raw = await fs.readFile(usersFile, "utf8")
-  const parsed: StoredUser[] = JSON.parse(raw)
-  return parsed.map(({ passwordHash, ...rest }) => rest)
+  await ensureTable()
+  const rows = await query<DbRow>(`SELECT id, email, name, role FROM auth_users ORDER BY created_at`)
+  return rows.map((r) => ({ id: r.id, email: r.email, name: r.name, role: r.role }))
 }
 
 export async function getUserById(id: string): Promise<Omit<StoredUser, "passwordHash"> | null> {
   if (!id) return null
-  const users = await getAll()
-  const user = users.find((entry) => entry.id === id)
-  if (!user) return null
-  const { passwordHash, ...rest } = user
-  return rest
+  await ensureTable()
+  const rows = await query<DbRow>(`SELECT id, email, name, role FROM auth_users WHERE id = $1`, [id])
+  if (rows.length === 0) return null
+  const r = rows[0]
+  return { id: r.id, email: r.email, name: r.name, role: r.role }
 }
 
 export async function getAll(): Promise<StoredUser[]> {
-  await seedIfMissing()
-  const usersFile = getUsersFile()
-  const raw = await fs.readFile(usersFile, "utf8")
-  return JSON.parse(raw) as StoredUser[]
-}
-
-export async function writeAll(users: StoredUser[]) {
-  await ensureDir()
-  const usersFile = getUsersFile()
-  await fs.writeFile(usersFile, JSON.stringify(users, null, 2), "utf8")
+  await ensureTable()
+  const rows = await query<DbRow>(
+    `SELECT id, email, name, role, password_hash FROM auth_users ORDER BY created_at`,
+  )
+  return rows.map(rowToUser)
 }
 
 export async function addUser(input: { email: string; name: string; password: string; role?: "admin" | "user" }) {
+  await ensureTable()
   const role = input.role ?? "user"
-  const users = await getAll()
-  if (users.find((u) => u.email === input.email)) {
-    throw new Error("邮箱已存在")
-  }
+  const existing = await query<{ id: string }>(`SELECT id FROM auth_users WHERE email = $1`, [input.email])
+  if (existing.length > 0) throw new Error("邮箱已存在")
   const hash = await bcrypt.hash(input.password, 10)
-  const newUser: StoredUser = {
-    id: Math.random().toString(36).slice(2, 11),
-    email: input.email,
-    name: input.name,
-    role,
-    passwordHash: hash,
-  }
-  users.push(newUser)
-  await writeAll(users)
-  const { passwordHash, ...rest } = newUser
-  return rest
+  const id = Math.random().toString(36).slice(2, 11)
+  await query(
+    `INSERT INTO auth_users (id, email, name, role, password_hash) VALUES ($1, $2, $3, $4, $5)`,
+    [id, input.email, input.name, role, hash],
+  )
+  return { id, email: input.email, name: input.name, role }
 }
 
 export async function updateUser(
   id: string,
   updates: Partial<{ email: string; name: string; password: string; role: "admin" | "user" }>,
 ) {
-  const users = await getAll()
-  const idx = users.findIndex((u) => u.id === id)
-  if (idx === -1) throw new Error("用户不存在")
-  if (updates.email && users.some((u, i) => u.email === updates.email && i !== idx)) {
-    throw new Error("邮箱已存在")
+  await ensureTable()
+  const rows = await query<DbRow>(
+    `SELECT id FROM auth_users WHERE id = $1`,
+    [id],
+  )
+  if (rows.length === 0) throw new Error("用户不存在")
+
+  if ("email" in updates && updates.email) {
+    const dup = await query<{ id: string }>(
+      `SELECT id FROM auth_users WHERE email = $1 AND id != $2`,
+      [updates.email, id],
+    )
+    if (dup.length > 0) throw new Error("邮箱已存在")
+    await query(`UPDATE auth_users SET email = $1 WHERE id = $2`, [updates.email, id])
   }
-  const current = users[idx]
-  const next: StoredUser = {
-    ...current,
-    ...("email" in updates ? { email: updates.email! } : {}),
-    ...("name" in updates ? { name: updates.name! } : {}),
-    ...("role" in updates ? { role: updates.role! } : {}),
-    ...("password" in updates && updates.password
-      ? { passwordHash: await bcrypt.hash(updates.password, 10) }
-      : {}),
+  if ("name" in updates && updates.name) {
+    await query(`UPDATE auth_users SET name = $1 WHERE id = $2`, [updates.name, id])
   }
-  users[idx] = next
-  await writeAll(users)
-  const { passwordHash, ...rest } = next
-  return rest
+  if ("role" in updates && updates.role) {
+    await query(`UPDATE auth_users SET role = $1 WHERE id = $2`, [updates.role, id])
+  }
+  if ("password" in updates && updates.password) {
+    const hash = await bcrypt.hash(updates.password, 10)
+    await query(`UPDATE auth_users SET password_hash = $1 WHERE id = $2`, [hash, id])
+  }
+
+  const updated = await query<DbRow>(`SELECT id, email, name, role FROM auth_users WHERE id = $1`, [id])
+  const r = updated[0]
+  return { id: r.id, email: r.email, name: r.name, role: r.role }
 }
 
 export async function deleteUser(id: string) {
-  const users = await getAll()
-  const next = users.filter((u) => u.id !== id)
-  await writeAll(next)
+  await ensureTable()
+  await query(`DELETE FROM auth_users WHERE id = $1`, [id])
 }
 
 export async function verifyLogin(identifier: string, password: string) {
-  const users = await getAll()
-  const user = users.find((u) => u.email === identifier || u.name === identifier)
-  if (!user) return null
+  await ensureTable()
+  const rows = await query<DbRow>(
+    `SELECT id, email, name, role, password_hash FROM auth_users WHERE email = $1 OR name = $1`,
+    [identifier],
+  )
+  if (rows.length === 0) return null
+  const user = rowToUser(rows[0])
   const ok = await bcrypt.compare(password, user.passwordHash)
   if (!ok) return null
   const { passwordHash, ...rest } = user
