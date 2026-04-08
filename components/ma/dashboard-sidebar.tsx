@@ -2,8 +2,9 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
+import { useState, useEffect } from "react"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2 } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight } from "lucide-react"
 import type React from "react"
 
 const navigation = [
@@ -21,7 +22,15 @@ const navigation = [
 
 export function DashboardSidebar() {
   const pathname = usePathname()
-  const isCollapsed = pathname === "/ma/dashboard/ai-knowledge" || pathname.startsWith("/ma/dashboard/mom-analysis/trader-analysis")
+  const shouldAutoCollapse =
+    pathname === "/ma/dashboard/ai-knowledge" ||
+    pathname.startsWith("/ma/dashboard/mom-analysis/trader-analysis") ||
+    pathname.startsWith("/ma/dashboard/mom-analysis/risk-report")
+  const [isCollapsed, setIsCollapsed] = useState(shouldAutoCollapse)
+
+  useEffect(() => {
+    if (shouldAutoCollapse) setIsCollapsed(true)
+  }, [shouldAutoCollapse])
 
   return (
     <aside className={cn("border-r bg-card flex flex-col transition-all duration-200", isCollapsed ? "w-20" : "w-64")}>
@@ -77,6 +86,15 @@ export function DashboardSidebar() {
           )
         })}
       </nav>
+      <div className={cn("border-t p-2", isCollapsed ? "flex justify-center" : "flex justify-end")}>
+        <button
+          onClick={() => setIsCollapsed((v) => !v)}
+          title={isCollapsed ? "展开侧栏" : "收起侧栏"}
+          className="rounded-md p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+        >
+          {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+        </button>
+      </div>
     </aside>
   )
 }
