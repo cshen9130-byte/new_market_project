@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Database,
   FileSpreadsheet,
   FolderOpen,
   Play,
@@ -82,6 +83,16 @@ export default function DataImportPage() {
   const [showEtlLog, setShowEtlLog] = useState(false)
   const [autoFollowLog, setAutoFollowLog] = useState(true)
   const [showXlsxUpload, setShowXlsxUpload] = useState(false)
+
+  // ── Capital-flow import state ──────────────────────────────────────────────
+  const capitalFlowInputRef = useRef<HTMLInputElement | null>(null)
+  const [capitalFlowFile, setCapitalFlowFile] = useState<File | null>(null)
+  const [capitalFlowIsDragOver, setCapitalFlowIsDragOver] = useState(false)
+  const [isImportingCapitalFlow, setIsImportingCapitalFlow] = useState(false)
+  const [capitalFlowResult, setCapitalFlowResult] = useState<{
+    success: boolean
+    message: string
+  } | null>(null)
   const autoFollowLogRef = useRef(true)
   const logScrollRef = useRef<HTMLDivElement | null>(null)
   const logEndRef = useRef<HTMLDivElement | null>(null)
@@ -244,6 +255,29 @@ export default function DataImportPage() {
       toast({ title: "加载失败", description: e instanceof Error ? e.message : "加载文件列表失败", variant: "destructive" })
     } finally {
       setLoadingFolder(null)
+    }
+  }
+
+  async function handleCapitalFlowImport(file: File) {
+    setIsImportingCapitalFlow(true)
+    setCapitalFlowResult(null)
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      const res = await fetch("/ma/api/mom-analysis/capital-flow/import", {
+        method: "POST",
+        body: fd,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "导入失败")
+      setCapitalFlowResult({ success: true, message: data.message })
+      toast({ title: "导入成功", description: data.message })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "导入失败"
+      setCapitalFlowResult({ success: false, message: msg })
+      toast({ title: "导入失败", description: msg, variant: "destructive" })
+    } finally {
+      setIsImportingCapitalFlow(false)
     }
   }
 
@@ -880,6 +914,111 @@ export default function DataImportPage() {
               </div>
             )}
           </ScrollArea>
+        </CardContent>
+      </Card>
+
+      {/* ── Capital Flow Import ────────────────────────────────────────────── */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Database className="h-4 w-4 text-blue-500" />
+            资金进出导入
+            <span className="ml-1 text-xs font-normal text-muted-foreground">
+              历史交易确认明细（含当日已确认）
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            拖入从 TA 系统导出的 <span className="font-mono">历史交易确认明细*.xlsx</span>
+            文件，将申购/认购/赎回记录全量写入数据库（每次导入会替换全部历史数据）。
+          </p>
+
+          {/* Drop zone */}
+          <div
+            className={`relative rounded-lg border-2 border-dashed transition-colors ${
+              capitalFlowIsDragOver ? "border-blue-500 bg-blue-500/5" : "border-border/60 hover:border-border"
+            }`}
+            onDragOver={(e) => { e.preventDefault(); setCapitalFlowIsDragOver(true) }}
+            onDragEnter={(e) => { e.preventDefault(); setCapitalFlowIsDragOver(true) }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) setCapitalFlowIsDragOver(false)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              setCapitalFlowIsDragOver(false)
+              const dropped = Array.from(e.dataTransfer.files).find((f) =>
+                f.name.toLowerCase().endsWith(".xlsx"),
+              )
+              if (dropped) setCapitalFlowFile(dropped)
+            }}
+          >
+            <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
+              <Database className={`h-7 w-7 ${capitalFlowIsDragOver ? "text-blue-500" : "text-muted-foreground"}`} />
+              {capitalFlowFile ? (
+                <>
+                  <p className="text-sm font-medium text-foreground">{capitalFlowFile.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {(capitalFlowFile.size / 1024).toFixed(1)} KB
+                  </p>
+                  <button
+                    className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                    onClick={() => setCapitalFlowFile(null)}
+                  >
+                    重新选择
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium">拖放 .xlsx 文件到此处</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-1"
+                    disabled={isImportingCapitalFlow}
+                    onClick={() => capitalFlowInputRef.current?.click()}
+                  >
+                    选择文件
+                  </Button>
+                </>
+              )}
+            </div>
+            <input
+              ref={capitalFlowInputRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) setCapitalFlowFile(f)
+                if (capitalFlowInputRef.current) capitalFlowInputRef.current.value = ""
+              }}
+            />
+          </div>
+
+          {/* Import button & result */}
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              disabled={!capitalFlowFile || isImportingCapitalFlow}
+              onClick={() => capitalFlowFile && void handleCapitalFlowImport(capitalFlowFile)}
+            >
+              {isImportingCapitalFlow ? (
+                <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />导入中…</>
+              ) : (
+                <><UploadCloud className="mr-2 h-3.5 w-3.5" />导入数据库</>
+              )}
+            </Button>
+
+            {capitalFlowResult && (
+              <div className={`flex items-center gap-1.5 text-sm ${capitalFlowResult.success ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>
+                {capitalFlowResult.success
+                  ? <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  : <AlertCircle className="h-4 w-4 shrink-0" />}
+                {capitalFlowResult.message}
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>
