@@ -16,6 +16,14 @@ const functions = [
     openInNewTab: true,
   },
   {
+    title: "MOM 风控报告（新版）",
+    description: "查看新版 MOM 风控报告。",
+    href: "/ma/dashboard/mom-analysis/risk-report",
+    downloadHref: null,
+    icon: FileText,
+    openInNewTab: false,
+  },
+  {
     title: "数据导入",
     description: "上传逐日核算 ZIP 包，自动解压、标准化命名并检查交易日覆盖情况。",
     href: "/ma/dashboard/mom-analysis/data-import",

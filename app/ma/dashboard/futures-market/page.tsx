@@ -251,7 +251,10 @@ export default function FuturesMarketPage() {
   const [errorFuturesVolCorrScatter, setErrorFuturesVolCorrScatter] = useState<string | null>(null)
   const [volWindowOpt, setVolWindowOpt] = useState("20d")
   const [corrWindowOpt, setCorrWindowOpt] = useState("20d")
-  const [scatterAsOf, setScatterAsOf] = useState("")
+  const [scatterAsOf, setScatterAsOf] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+  })
   const [scatterFullscreen, setScatterFullscreen] = useState(false)
   const [scatterPlaying, setScatterPlaying] = useState(false)
   const playTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -1643,7 +1646,7 @@ export default function FuturesMarketPage() {
                 />
                 {scatterAsOf && (
                   <button
-                    onClick={() => { setScatterPlaying(false); setScatterAsOf("") }}
+                    onClick={() => { setScatterPlaying(false); setScatterAsOf(fmtLocal(new Date())) }}
                     className="text-xs text-muted-foreground hover:text-foreground"
                   >✕</button>
                 )}

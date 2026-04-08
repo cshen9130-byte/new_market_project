@@ -1268,7 +1268,11 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
     from psycopg2.extras import execute_values  # type: ignore[import-untyped]
 
     rel = str(file_path.relative_to(base_dir)).replace("\\", "/")
-    stat = file_path.stat()
+    try:
+        stat = file_path.stat()
+    except FileNotFoundError:
+        # File may be moved/deleted after changed-file list is built.
+        return False, f"missing file (skipped): {rel}"
     mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
     size = int(stat.st_size)
 
@@ -1746,7 +1750,12 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
         changed: List[Path] = []
         for p in files:
             rel = str(p.relative_to(base_dir)).replace("\\", "/")
-            stat = p.stat()
+            try:
+                stat = p.stat()
+            except FileNotFoundError:
+                # File may be renamed/deleted while ETL is scanning.
+                log.warning("File disappeared during scan, skip: %s", rel)
+                continue
             mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
             size = int(stat.st_size)
 

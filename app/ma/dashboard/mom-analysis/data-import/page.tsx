@@ -80,7 +80,10 @@ export default function DataImportPage() {
   const [isRunningEtl, setIsRunningEtl] = useState(false)
   const [etlLog, setEtlLog] = useState<string[]>([])
   const [showEtlLog, setShowEtlLog] = useState(false)
+  const [autoFollowLog, setAutoFollowLog] = useState(true)
   const [showXlsxUpload, setShowXlsxUpload] = useState(false)
+  const autoFollowLogRef = useRef(true)
+  const logScrollRef = useRef<HTMLDivElement | null>(null)
   const logEndRef = useRef<HTMLDivElement | null>(null)
 
   const [isDragOver, setIsDragOver] = useState(false)
@@ -129,6 +132,7 @@ export default function DataImportPage() {
     setIsRunningEtl(true)
     setEtlLog([])
     setShowEtlLog(true)
+    setAutoFollowLog(true)
     try {
       const res = await fetch("/ma/api/mom-analysis/data-import/run", {
         method: "POST",
@@ -158,7 +162,9 @@ export default function DataImportPage() {
               exitCode = msg.slice(9)
             } else {
               setEtlLog((prev) => [...prev, msg])
-              setTimeout(() => logEndRef.current?.scrollIntoView({ behavior: "smooth" }), 30)
+              if (autoFollowLogRef.current) {
+                setTimeout(() => logEndRef.current?.scrollIntoView({ behavior: "auto" }), 0)
+              }
             }
           }
         }
@@ -178,6 +184,31 @@ export default function DataImportPage() {
       await checkEtlStatus()
     }
   }, [toast, checkEtlStatus])
+
+  useEffect(() => {
+    autoFollowLogRef.current = autoFollowLog
+  }, [autoFollowLog])
+
+  const classifyLogLine = useCallback((line: string) => {
+    const s = line.toLowerCase()
+    if (
+      s.includes("traceback") ||
+      s.includes("exception") ||
+      s.includes("runtimeerror") ||
+      s.includes("filenotfound") ||
+      s.includes("failed") ||
+      s.includes("etl 失败")
+    ) {
+      return "text-red-400"
+    }
+    if (s.includes("[warn") || s.includes(" warning") || s.startsWith("warning")) {
+      return "text-amber-400"
+    }
+    if (s.includes("upserted") || s.includes("完成") || s.includes("成功")) {
+      return "text-emerald-400"
+    }
+    return "text-zinc-300"
+  }, [])
 
   const loadFolders = useCallback(async () => {
     setIsLoading(true)
@@ -733,27 +764,32 @@ export default function DataImportPage() {
               ETL 日志
               {isRunningEtl && <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500 animate-pulse" />}
             </div>
-            <button
-              onClick={() => setShowEtlLog(false)}
-              className="text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-          <div className="h-56 overflow-y-auto bg-zinc-950 p-3 font-mono text-xs leading-relaxed">
-            {etlLog.map((line, i) => (
-              <div
-                key={i}
-                className={
-                  line.includes("[stderr]") || line.includes("ERROR") || line.includes("error")
-                    ? "text-red-400"
-                    : line.includes("WARNING") || line.includes("warning")
-                    ? "text-amber-400"
-                    : line.includes("upserted") || line.includes("完成") || line.includes("成功")
-                    ? "text-emerald-400"
-                    : "text-zinc-300"
-                }
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setAutoFollowLog((v) => !v)}
+                className="text-xs text-muted-foreground hover:text-foreground transition-colors"
               >
+                {autoFollowLog ? "暂停跟随" : "恢复跟随"}
+              </button>
+              <button
+                onClick={() => setShowEtlLog(false)}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+          <div
+            ref={logScrollRef}
+            className="h-56 overflow-y-auto bg-zinc-950 p-3 font-mono text-xs leading-relaxed"
+            onScroll={(e) => {
+              const el = e.currentTarget
+              const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+              setAutoFollowLog(nearBottom)
+            }}
+          >
+            {etlLog.map((line, i) => (
+              <div key={i} className={classifyLogLine(line)}>
                 {line}
               </div>
             ))}
