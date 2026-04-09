@@ -28,7 +28,7 @@ function PlaceholderContent({ title }: { title: string }) {
 function OverviewContent() {
   return (
     <div className="space-y-4">
-      <div className="w-1/2">
+      <div className="w-full">
         <ProductNavChart height={380} />
       </div>
     </div>
@@ -70,8 +70,37 @@ export default function RiskReportNewPage() {
       </aside>
 
       {/* Content area */}
-      <div className="flex-1 overflow-y-auto p-6">
-        <h1 className="text-2xl font-semibold tracking-tight mb-4">{activeItem.name}</h1>
+      <div className="flex-1 overflow-y-auto px-6 pb-6">
+        {activeTab === "overview" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-product")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              产品要素 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              业绩指标 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-volatility")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              波动分析 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              ↑ 回到顶部
+            </button>
+          </div>
+        )}
+        <h1 id="section-top" className="text-2xl font-semibold tracking-tight pt-6 mb-4">{activeItem.name}</h1>
         {activeTab === "overview" ? (
           <OverviewContent />
         ) : (

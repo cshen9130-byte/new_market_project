@@ -20,10 +20,22 @@ export interface NavPoint {
   pnl: number
 }
 
+interface TurnoverPoint {
+  date: string
+  turnoverPct: number
+}
+
+interface HoldingPoint {
+  date: string
+  avgHoldingDays: number
+  closeCount: number
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const productCode = searchParams.get("product_code") || null
+    const normalizedProductCode = productCode?.trim().toUpperCase() || null
 
     // ── 1. Capital flows from mom_fund_transactions ──────────────────────
     // Use 认购确认, 申购确认 (inflows) and 赎回确认 (outflows).
@@ -64,7 +76,7 @@ export async function GET(req: Request) {
     const numExpr = (col: string) =>
       `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}", ''), ',', ''), ' ', ''), '')::numeric, 0)`
 
-    const pnlRows = await query<{ date: string; daily_pnl: string }>(
+    const pnlRows = await query<{ date: string; daily_pnl: string; daily_equity: string }>(
       `SELECT
          "交易日期"::text AS date,
          SUM(
@@ -72,11 +84,63 @@ export async function GET(req: Request) {
            - ${numExpr("当日手续费")}
            + ${numExpr("权利金收入")}
            - ${numExpr("权利金支出")}
-         )::text AS daily_pnl
+         )::text AS daily_pnl,
+         SUM(${numExpr("客户权益")})::text AS daily_equity
        FROM mom_daily_reports
        GROUP BY "交易日期"
        ORDER BY "交易日期"`,
     )
+
+    let turnoverRows: Array<{ date: string; turnover_amount: string }> = []
+    try {
+      const turnoverParams: unknown[] = []
+      const turnoverFilter = normalizedProductCode
+        ? `WHERE UPPER(TRIM("品种"::text)) = $1`
+        : ""
+      if (normalizedProductCode) {
+        turnoverParams.push(normalizedProductCode)
+      }
+
+      turnoverRows = await query<{ date: string; turnover_amount: string }>(
+        `SELECT
+           "交易日期"::text AS date,
+           SUM(${numExpr("成交额")})::text AS turnover_amount
+         FROM mom_summary_details
+         ${turnoverFilter}
+         GROUP BY "交易日期"
+         ORDER BY "交易日期"`,
+        turnoverParams.length > 0 ? turnoverParams : undefined,
+      )
+    } catch {
+      turnoverRows = []
+    }
+
+    let holdingRows: Array<{ date: string; avg_holding_days: string; close_count: string }> = []
+    try {
+      const holdingParams: unknown[] = []
+      const holdingFilter = normalizedProductCode
+        ? `AND UPPER(TRIM("合约"::text)) ~ ('^' || $1 || '[0-9]')`
+        : ""
+      if (normalizedProductCode) {
+        holdingParams.push(normalizedProductCode)
+      }
+
+      holdingRows = await query<{ date: string; avg_holding_days: string; close_count: string }>(
+        `SELECT
+           "交易日期"::text AS date,
+           AVG(GREATEST(("交易日期"::date - "开仓日期"::date), 0))::text AS avg_holding_days,
+           COUNT(*)::text AS close_count
+         FROM mom_close_details
+         WHERE "交易日期" IS NOT NULL
+           AND "开仓日期" IS NOT NULL
+           ${holdingFilter}
+         GROUP BY "交易日期"
+         ORDER BY "交易日期"`,
+        holdingParams.length > 0 ? holdingParams : undefined,
+      )
+    } catch {
+      holdingRows = []
+    }
 
     // ── 3. Merge & compute NAV curve ─────────────────────────────────────
     const flowMap = new Map<string, number>()
@@ -84,8 +148,14 @@ export async function GET(req: Request) {
       flowMap.set(row.date, parseNum(row.net_flow))
     }
     const pnlMap = new Map<string, number>()
+    const equityMap = new Map<string, number>()
     for (const row of pnlRows) {
       pnlMap.set(row.date, parseNum(row.daily_pnl))
+      equityMap.set(row.date, parseNum(row.daily_equity))
+    }
+    const turnoverMap = new Map<string, number>()
+    for (const row of turnoverRows) {
+      turnoverMap.set(row.date, parseNum(row.turnover_amount))
     }
 
     const allDates = Array.from(new Set([...flowMap.keys(), ...pnlMap.keys()])).sort()
@@ -93,10 +163,13 @@ export async function GET(req: Request) {
     let cumulativeCapital = 0
     let nav = 1.0
     const data: NavPoint[] = []
+    const turnoverSeries: TurnoverPoint[] = []
 
     for (const date of allDates) {
       const netFlow = flowMap.get(date) ?? 0
       const pnl = pnlMap.get(date) ?? 0
+      const equity = equityMap.get(date) ?? 0
+      const turnoverAmount = turnoverMap.get(date) ?? 0
 
       // Daily return = pnl / previous capital (as specified by user)
       // Capital flows on the same day don't contribute to that day's return base.
@@ -113,9 +186,24 @@ export async function GET(req: Request) {
         netFlow: Math.round(netFlow),
         pnl: Math.round(pnl),
       })
+
+      if (equity > 0 && turnoverAmount > 0) {
+        turnoverSeries.push({
+          date,
+          turnoverPct: Math.round((turnoverAmount / equity) * 1e6) / 1e6,
+        })
+      }
     }
 
-    return NextResponse.json({ ok: true, data })
+    const holdingSeries: HoldingPoint[] = holdingRows
+      .map((row) => ({
+        date: row.date,
+        avgHoldingDays: parseNum(row.avg_holding_days),
+        closeCount: Math.round(parseNum(row.close_count)),
+      }))
+      .filter((row) => row.avgHoldingDays > 0 && row.closeCount > 0)
+
+    return NextResponse.json({ ok: true, data, turnoverSeries, holdingSeries })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (

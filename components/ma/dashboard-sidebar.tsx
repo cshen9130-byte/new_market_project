@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { useState, useEffect } from "react"
+import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight } from "lucide-react"
 import type React from "react"
@@ -27,9 +27,21 @@ export function DashboardSidebar() {
     pathname.startsWith("/ma/dashboard/mom-analysis/trader-analysis") ||
     pathname.startsWith("/ma/dashboard/mom-analysis/risk-report")
   const [isCollapsed, setIsCollapsed] = useState(shouldAutoCollapse)
+  const previousManualCollapsedRef = useRef<boolean | null>(shouldAutoCollapse ? false : null)
+  const previousAutoCollapseRef = useRef(shouldAutoCollapse)
 
   useEffect(() => {
-    if (shouldAutoCollapse) setIsCollapsed(true)
+    if (shouldAutoCollapse) {
+      if (!previousAutoCollapseRef.current) {
+        previousManualCollapsedRef.current = isCollapsed
+      }
+      setIsCollapsed(true)
+    } else if (previousAutoCollapseRef.current) {
+      setIsCollapsed(previousManualCollapsedRef.current ?? false)
+      previousManualCollapsedRef.current = null
+    }
+
+    previousAutoCollapseRef.current = shouldAutoCollapse
   }, [shouldAutoCollapse])
 
   return (
