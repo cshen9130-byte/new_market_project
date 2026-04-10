@@ -93,6 +93,12 @@ export default function RiskReportNewPage() {
               波动分析 ↓
             </button>
             <button
+              onClick={() => document.getElementById("section-pnl")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              分类盈亏 ↓
+            </button>
+            <button
               onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
               className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >

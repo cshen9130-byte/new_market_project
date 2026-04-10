@@ -108,6 +108,8 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
   const [volWindow, setVolWindow] = useState<5 | 10 | 20>(20)
   const [sharpeWindow, setSharpeWindow] = useState<20 | 60 | 120>(60)
   const [wSharpeSpan, setWSharpeSpan] = useState<10 | 20 | 60>(20)
+  const [categoryPnlData, setCategoryPnlData] = useState<Record<string, { date: string; pnl: number; cumPnl: number }[]>>({})
+  const [loadingCategoryPnl, setLoadingCategoryPnl] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -149,7 +151,24 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
     }
   }, [])
 
+  const loadCategoryPnl = useCallback(async () => {
+    setLoadingCategoryPnl(true)
+    try {
+      const params = new URLSearchParams()
+      if (productCode) params.set("product_code", productCode)
+      const res = await fetch(`/ma/api/mom-analysis/category-pnl?${params}`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || "请求失败")
+      setCategoryPnlData(json.data ?? {})
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoadingCategoryPnl(false)
+    }
+  }, [productCode])
+
   useEffect(() => { load() }, [load])
+  useEffect(() => { loadCategoryPnl() }, [loadCategoryPnl])
 
   useEffect(() => {
     if (allData.length === 0) {
@@ -1620,6 +1639,65 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       )}
       </div>
     )}
+
+    {/* ══ 分类盈亏 ═══════════════════════════════════════════════════ */}
+    <div id="section-pnl" className="mt-5 flex items-center gap-2 mb-3" style={{ scrollMarginTop: "3rem" }}>
+      <h2 className="text-sm font-semibold whitespace-nowrap">分类盈亏</h2>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+    {loadingCategoryPnl && <p className="text-sm text-muted-foreground">加载中...</p>}
+    {!loadingCategoryPnl && Object.keys(categoryPnlData).length > 0 && (() => {
+      const CATS = [
+        { key: "股指", color: "#ef4444" },
+        { key: "国债", color: "#3b82f6" },
+        { key: "商品", color: "#22c55e" },
+        { key: "合计", color: "#f59e0b", lineType: "dashed" as const },
+      ]
+      const catOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+            const date = params[0]?.value[0] ?? ""
+            const lines = params.map((p) =>
+              `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`
+            )
+            return [date, ...lines].join("<br/>")
+          },
+        },
+        legend: { data: CATS.map((c) => c.key), right: 10 },
+        grid: { left: 60, right: 20, top: 40, bottom: 50 },
+        xAxis: { type: "time", boundaryGap: false },
+        yAxis: {
+          type: "value",
+          name: "累计盈亏（元）",
+          nameTextStyle: { color: "#888", fontSize: 11 },
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        dataZoom: [
+          { type: "inside", start: 0, end: 100 },
+          { type: "slider", height: 20, bottom: 10 },
+        ],
+        series: CATS.map((cat) => ({
+          name: cat.key,
+          type: "line",
+          smooth: false,
+          symbol: "none",
+          lineStyle: { color: cat.color, width: cat.key === "合计" ? 2 : 1.5, type: cat.lineType ?? "solid" },
+          itemStyle: { color: cat.color },
+          data: (categoryPnlData[cat.key] ?? []).map((r) => [r.date, r.cumPnl]),
+        })),
+      }
+      return (
+        <Card className="mt-3">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">大类资产累计盈亏曲线</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            <ReactECharts option={catOption} style={{ height: 300 }} notMerge lazyUpdate />
+          </CardContent>
+        </Card>
+      )
+    })()}
   </>
   )
 }

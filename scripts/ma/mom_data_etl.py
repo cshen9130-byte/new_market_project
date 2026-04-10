@@ -950,8 +950,8 @@ def normalize_trade_date(raw: str) -> str:
     return s
 
 
-def row_hash(file_rel: str, account: str, trade_date: str, values: Iterable[str]) -> str:
-    payload = "|".join([file_rel, account, trade_date, *[str(v) for v in values]])
+def row_hash(file_rel: str, account: str, trade_date: str, values: Iterable[str], row_index: int = -1) -> str:
+    payload = "|".join([file_rel, account, trade_date, str(row_index), *[str(v) for v in values]])
     return hashlib.sha1(payload.encode("utf-8", errors="ignore")).hexdigest()
 
 
@@ -1468,9 +1468,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute("DELETE FROM mom_trade_details WHERE account = %s AND trade_date = %s", (account, trade_date_iso))
             insert_cols = "account, trade_date, " + ", ".join(DETAIL_SQL_COLS) + ", source_file_rel, row_hash"
             values = []
-            for rv in rows:
+            for ri, rv in enumerate(rows):
                 detail_vals = [rv[pos] if pos is not None and pos < len(rv) else "" for pos in col_positions]
-                rh = row_hash(rel, account, trade_date, rv)
+                rh = row_hash(rel, account, trade_date, rv, ri)
                 values.append(tuple([account, trade_date_iso] + detail_vals + [rel, rh]))
             if values:
                 execute_values(
@@ -1483,9 +1483,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_futures_trade_details WHERE "账户" = %s AND "交易日期" = %s', (futures_account, futures_date_iso))
             futures_insert_cols = ", ".join(FUTURES_SQL_COLS) + ", source_file_rel, row_hash"
             fvalues = []
-            for rv in futures_rows:
+            for ri, rv in enumerate(futures_rows):
                 detail_vals = [rv[pos] if pos is not None and pos < len(rv) else "" for pos in col_positions]
-                rh = row_hash(rel + "#futures", futures_account, futures_date, rv)
+                rh = row_hash(rel + "#futures", futures_account, futures_date, rv, ri)
                 fvalues.append(tuple([futures_account, futures_date_iso] + detail_vals + [rel, rh]))
             if fvalues:
                 execute_values(
@@ -1498,9 +1498,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_options_trade_details WHERE "账户" = %s AND "交易日期" = %s', (options_account, options_date_iso))
             options_insert_cols = ", ".join(OPTIONS_SQL_COLS) + ", source_file_rel, row_hash"
             ovalues = []
-            for rv in options_rows:
+            for ri, rv in enumerate(options_rows):
                 detail_vals = [rv[pos] if pos is not None and pos < len(rv) else "" for pos in col_positions]
-                rh = row_hash(rel + "#options", options_account, options_date, rv)
+                rh = row_hash(rel + "#options", options_account, options_date, rv, ri)
                 ovalues.append(tuple([options_account, options_date_iso] + detail_vals + [rel, rh]))
             if ovalues:
                 execute_values(
@@ -1513,10 +1513,10 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_close_details WHERE "账户" = %s AND "交易日期" = %s', (close_account, close_date_iso))
             close_insert_cols = ", ".join(CLOSE_SQL_COLS) + ", source_file_rel, row_hash"
             cvalues = []
-            for rv in close_rows:
+            for ri, rv in enumerate(close_rows):
                 # Positional extraction — avoids duplicate "开仓价" header at E11/L11.
                 detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(CLOSE_COLUMNS))]
-                rh = row_hash(rel + "#close", close_account, close_date, rv)
+                rh = row_hash(rel + "#close", close_account, close_date, rv, ri)
                 cvalues.append(tuple([close_account, close_date_iso] + detail_vals + [rel, rh]))
             if cvalues:
                 execute_values(
@@ -1529,9 +1529,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_position_details WHERE "账户" = %s AND "交易日期" = %s', (position_account, position_date_iso))
             position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             pvalues = []
-            for rv in position_rows:
+            for ri, rv in enumerate(position_rows):
                 detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(POSITION_COLUMNS))]
-                rh = row_hash(rel + "#position", position_account, position_date, rv)
+                rh = row_hash(rel + "#position", position_account, position_date, rv, ri)
                 pvalues.append(tuple([position_account, position_date_iso] + detail_vals + [rel, rh]))
             if pvalues:
                 execute_values(
@@ -1544,9 +1544,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_options_position_details WHERE "账户" = %s AND "交易日期" = %s', (options_position_account, options_position_date_iso))
             options_position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             opvalues = []
-            for rv in options_position_rows:
+            for ri, rv in enumerate(options_position_rows):
                 detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(POSITION_COLUMNS))]
-                rh = row_hash(rel + "#optpos", options_position_account, options_position_date, rv)
+                rh = row_hash(rel + "#optpos", options_position_account, options_position_date, rv, ri)
                 opvalues.append(tuple([options_position_account, options_position_date_iso] + detail_vals + [rel, rh]))
             if opvalues:
                 execute_values(
@@ -1559,9 +1559,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_futures_position_details WHERE "账户" = %s AND "交易日期" = %s', (futures_position_account, futures_position_date_iso))
             futures_position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             fpvalues = []
-            for rv in futures_position_rows:
+            for ri, rv in enumerate(futures_position_rows):
                 detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(POSITION_COLUMNS))]
-                rh = row_hash(rel + "#futpos", futures_position_account, futures_position_date, rv)
+                rh = row_hash(rel + "#futpos", futures_position_account, futures_position_date, rv, ri)
                 fpvalues.append(tuple([futures_position_account, futures_position_date_iso] + detail_vals + [rel, rh]))
             if fpvalues:
                 execute_values(
@@ -1574,9 +1574,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_order_details WHERE "账户" = %s AND "交易日期" = %s', (order_account, order_date_iso))
             order_insert_cols = ", ".join(ORDER_SQL_COLS) + ", source_file_rel, row_hash"
             ordvalues = []
-            for rv in order_rows:
+            for ri, rv in enumerate(order_rows):
                 detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(ORDER_COLUMNS))]
-                rh = row_hash(rel + "#order", order_account, order_date, rv)
+                rh = row_hash(rel + "#order", order_account, order_date, rv, ri)
                 ordvalues.append(tuple([order_account, order_date_iso] + detail_vals + [rel, rh]))
             if ordvalues:
                 execute_values(
@@ -1589,9 +1589,9 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             cur.execute('DELETE FROM mom_summary_details WHERE "账户" = %s AND "交易日期" = %s', (summary_detail_account, summary_detail_date_iso))
             summary_detail_insert_cols = ", ".join(SUMMARY_DETAIL_SQL_COLS) + ", source_file_rel, row_hash"
             sumvalues = []
-            for rv in summary_detail_rows:
+            for ri, rv in enumerate(summary_detail_rows):
                 detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(SUMMARY_DETAIL_COLUMNS))]
-                rh = row_hash(rel + "#summary", summary_detail_account, summary_detail_date, rv)
+                rh = row_hash(rel + "#summary", summary_detail_account, summary_detail_date, rv, ri)
                 sumvalues.append(tuple([summary_detail_account, summary_detail_date_iso] + detail_vals + [rel, rh]))
             if sumvalues:
                 execute_values(
