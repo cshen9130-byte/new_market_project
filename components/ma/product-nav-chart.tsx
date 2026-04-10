@@ -109,6 +109,9 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
   const [sharpeWindow, setSharpeWindow] = useState<20 | 60 | 120>(60)
   const [wSharpeSpan, setWSharpeSpan] = useState<10 | 20 | 60>(20)
   const [categoryPnlData, setCategoryPnlData] = useState<Record<string, { date: string; pnl: number; cumPnl: number }[]>>({})
+  const [sectorPnlData, setSectorPnlData] = useState<Record<string, { date: string; pnl: number; cumPnl: number }[]>>({})
+  const [subSectorPnlData, setSubSectorPnlData] = useState<Record<string, { date: string; pnl: number; cumPnl: number }[]>>({})
+  const [productPnlData, setProductPnlData] = useState<Record<string, { date: string; pnl: number; cumPnl: number }[]>>({})
   const [loadingCategoryPnl, setLoadingCategoryPnl] = useState(false)
 
   const load = useCallback(async () => {
@@ -160,6 +163,9 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || "请求失败")
       setCategoryPnlData(json.data ?? {})
+      setSectorPnlData(json.sectorData ?? {})
+      setSubSectorPnlData(json.subSectorData ?? {})
+      setProductPnlData(json.productData ?? {})
     } catch (e) {
       console.error(e)
     } finally {
@@ -1664,8 +1670,8 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
             return [date, ...lines].join("<br/>")
           },
         },
-        legend: { data: CATS.map((c) => c.key), right: 10 },
-        grid: { left: 60, right: 20, top: 40, bottom: 50 },
+        legend: { data: CATS.map((c) => c.key), top: 5, right: 10 },
+        grid: { left: 60, right: 20, top: 30, bottom: 50 },
         xAxis: { type: "time", boundaryGap: false },
         yAxis: {
           type: "value",
@@ -1687,8 +1693,48 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
           data: (categoryPnlData[cat.key] ?? []).map((r) => [r.date, r.cumPnl]),
         })),
       }
+      const barOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { seriesName: string; value: number; name: string }[]) =>
+            params.map((p) => `${p.name}: ${Number(p.value).toLocaleString("zh-CN")} 元`).join("<br/>"),
+        },
+        grid: { left: 70, right: 20, top: 30, bottom: 30 },
+        xAxis: {
+          type: "category",
+          data: CATS.map((c) => c.key),
+          axisLabel: { fontSize: 12 },
+        },
+        yAxis: {
+          type: "value",
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        series: [
+          {
+            type: "bar",
+            data: CATS.map((cat) => {
+              const rows = categoryPnlData[cat.key] ?? []
+              const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
+              return {
+                value: total,
+                itemStyle: {
+                  color: cat.color,
+                  opacity: cat.key === "合计" ? 0.5 : 1,
+                },
+              }
+            }),
+            label: {
+              show: true,
+              position: "top",
+              formatter: (p: { value: number }) => (p.value / 10000).toFixed(1) + "万",
+              fontSize: 11,
+            },
+          },
+        ],
+      }
       return (
-        <Card className="mt-3">
+        <div className="grid grid-cols-2 gap-3 mt-3">
+        <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm">大类资产累计盈亏曲线</CardTitle>
           </CardHeader>
@@ -1696,6 +1742,324 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
             <ReactECharts option={catOption} style={{ height: 300 }} notMerge lazyUpdate />
           </CardContent>
         </Card>
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">大类资产总盈亏</CardTitle>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            <ReactECharts option={barOption} style={{ height: 300 }} notMerge lazyUpdate />
+          </CardContent>
+        </Card>
+        </div>
+      )
+    })()}
+    {!loadingCategoryPnl && Object.keys(sectorPnlData).length > 0 && (() => {
+      const SECTORS = [
+        { key: "农产",    color: "#84cc16" },
+        { key: "生鲜",    color: "#f97316" },
+        { key: "贵金属",  color: "#eab308" },
+        { key: "有色",    color: "#a855f7" },
+        { key: "新能源",  color: "#10b981" },
+        { key: "黑色",    color: "#78716c" },
+        { key: "能源化工", color: "#06b6d4" },
+        { key: "航运",    color: "#0ea5e9" },
+        { key: "股指",    color: "#ef4444" },
+        { key: "国债",    color: "#3b82f6" },
+      ].filter((s) => (sectorPnlData[s.key] ?? []).length > 0)
+
+      const sectorLineOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+            const date = params[0]?.value[0] ?? ""
+            const lines = params.map((p) =>
+              `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`
+            )
+            return [date, ...lines].join("<br/>")
+          },
+        },
+        legend: { data: SECTORS.map((s) => s.key), top: 5, right: 10, type: "scroll" },
+        grid: { left: 60, right: 20, top: 40, bottom: 30 },
+        xAxis: { type: "time", boundaryGap: false },
+        yAxis: {
+          type: "value",
+          name: "累计盈亏（元）",
+          nameTextStyle: { color: "#888", fontSize: 11 },
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        dataZoom: [{ type: "inside", start: 0, end: 100 }],
+        series: SECTORS.map((s) => ({
+          name: s.key,
+          type: "line",
+          smooth: false,
+          symbol: "none",
+          lineStyle: { color: s.color, width: 1.5 },
+          itemStyle: { color: s.color },
+          data: (sectorPnlData[s.key] ?? []).map((r) => [r.date, r.cumPnl]),
+        })),
+      }
+
+      const sectorBarOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { name: string; value: number }[]) =>
+            params.map((p) => `${p.name}: ${Number(p.value).toLocaleString("zh-CN")} 元`).join("<br/>"),
+        },
+        grid: { left: 70, right: 20, top: 30, bottom: 60 },
+        xAxis: {
+          type: "category",
+          data: SECTORS.map((s) => s.key),
+          axisLabel: { fontSize: 11, rotate: 30 },
+        },
+        yAxis: {
+          type: "value",
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        series: [
+          {
+            type: "bar",
+            data: SECTORS.map((s) => {
+              const rows = sectorPnlData[s.key] ?? []
+              const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
+              return { value: total, itemStyle: { color: s.color } }
+            }),
+            label: {
+              show: true,
+              position: "top",
+              formatter: (p: { value: number }) => (p.value / 10000).toFixed(1) + "万",
+              fontSize: 10,
+            },
+          },
+        ],
+      }
+
+      return (
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">板块累计盈亏曲线</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              <ReactECharts option={sectorLineOption} style={{ height: 300 }} notMerge lazyUpdate />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">板块总盈亏</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              <ReactECharts option={sectorBarOption} style={{ height: 300 }} notMerge lazyUpdate />
+            </CardContent>
+          </Card>
+        </div>
+      )
+    })()}
+    {!loadingCategoryPnl && Object.keys(subSectorPnlData).length > 0 && (() => {
+      const SUB_SECTOR_ORDER = [
+        "谷物","油脂油料","软商品","林业","生鲜",
+        "贵金属","有色","新能源",
+        "原材","成材","煤炭","建材",
+        "油品","聚酯","烯烃","芳烃","橡胶","盐化工","煤化工",
+        "航运","股指","国债",
+      ]
+      const SUB_SECTOR_COLORS: Record<string, string> = {
+        谷物: "#84cc16", 油脂油料: "#a3e635", 软商品: "#fbbf24", 林业: "#6ee7b7",
+        生鲜: "#f97316", 贵金属: "#eab308", 有色: "#a855f7", 新能源: "#10b981",
+        原材: "#78716c", 成材: "#a8a29e", 煤炭: "#57534e", 建材: "#d6d3d1",
+        油品: "#06b6d4", 聚酯: "#0891b2", 烯烃: "#0e7490", 芳烃: "#155e75",
+        橡胶: "#22d3ee", 盐化工: "#818cf8", 煤化工: "#6366f1",
+        航运: "#0ea5e9", 股指: "#ef4444", 国债: "#3b82f6",
+      }
+      const SUBS = SUB_SECTOR_ORDER
+        .filter((s) => (subSectorPnlData[s] ?? []).length > 0)
+        .map((s) => ({ key: s, color: SUB_SECTOR_COLORS[s] ?? "#94a3b8" }))
+
+      const subLineOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+            const date = params[0]?.value[0] ?? ""
+            const lines = params.map((p) =>
+              `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`
+            )
+            return [date, ...lines].join("<br/>")
+          },
+        },
+        legend: { data: SUBS.map((s) => s.key), top: 5, right: 10, type: "scroll" },
+        grid: { left: 60, right: 20, top: 40, bottom: 30 },
+        xAxis: { type: "time", boundaryGap: false },
+        yAxis: {
+          type: "value",
+          name: "累计盈亏（元）",
+          nameTextStyle: { color: "#888", fontSize: 11 },
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        dataZoom: [{ type: "inside", start: 0, end: 100 }],
+        series: SUBS.map((s) => ({
+          name: s.key,
+          type: "line",
+          smooth: false,
+          symbol: "none",
+          lineStyle: { color: s.color, width: 1.5 },
+          itemStyle: { color: s.color },
+          data: (subSectorPnlData[s.key] ?? []).map((r) => [r.date, r.cumPnl]),
+        })),
+      }
+
+      const subBarOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { name: string; value: number }[]) =>
+            params.map((p) => `${p.name}: ${Number(p.value).toLocaleString("zh-CN")} 元`).join("<br/>"),
+        },
+        grid: { left: 70, right: 20, top: 30, bottom: 70 },
+        xAxis: {
+          type: "category",
+          data: SUBS.map((s) => s.key),
+          axisLabel: { fontSize: 10, rotate: 45 },
+        },
+        yAxis: {
+          type: "value",
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        series: [
+          {
+            type: "bar",
+            data: SUBS.map((s) => {
+              const rows = subSectorPnlData[s.key] ?? []
+              const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
+              return { value: total, itemStyle: { color: s.color } }
+            }),
+            label: {
+              show: true,
+              position: "top",
+              formatter: (p: { value: number }) => (p.value / 10000).toFixed(1) + "万",
+              fontSize: 9,
+            },
+          },
+        ],
+      }
+
+      return (
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">细分板块累计盈亏曲线</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              <ReactECharts option={subLineOption} style={{ height: 300 }} notMerge lazyUpdate />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">细分板块总盈亏</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              <ReactECharts option={subBarOption} style={{ height: 300 }} notMerge lazyUpdate />
+            </CardContent>
+          </Card>
+        </div>
+      )
+    })()}
+    {!loadingCategoryPnl && Object.keys(productPnlData).length > 0 && (() => {
+      // Sort products by absolute total PnL descending so the most impactful are first
+      const PRODS = Object.keys(productPnlData)
+        .map((key) => {
+          const rows = productPnlData[key]
+          const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
+          return { key, total }
+        })
+        .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
+
+      // Generate a color palette by evenly spacing hues
+      const prodColors = PRODS.map((_, i) => `hsl(${Math.round((i / PRODS.length) * 360)}, 65%, 50%)`)
+
+      const prodLineOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+            const date = params[0]?.value[0] ?? ""
+            const lines = params
+              .filter((p) => p.value[1] !== 0)
+              .sort((a, b) => Math.abs(Number(b.value[1])) - Math.abs(Number(a.value[1])))
+              .slice(0, 10)
+              .map((p) => `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`)
+            return [date, ...lines].join("<br/>")
+          },
+        },
+        legend: { data: PRODS.map((p) => p.key), top: 5, right: 10, type: "scroll" },
+        grid: { left: 60, right: 20, top: 40, bottom: 30 },
+        xAxis: { type: "time", boundaryGap: false },
+        yAxis: {
+          type: "value",
+          name: "累计盈亏（元）",
+          nameTextStyle: { color: "#888", fontSize: 11 },
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        dataZoom: [{ type: "inside", start: 0, end: 100 }],
+        series: PRODS.map((p, i) => ({
+          name: p.key,
+          type: "line",
+          smooth: false,
+          symbol: "none",
+          lineStyle: { color: prodColors[i], width: 1.5 },
+          itemStyle: { color: prodColors[i] },
+          data: (productPnlData[p.key] ?? []).map((r) => [r.date, r.cumPnl]),
+        })),
+      }
+
+      const prodBarOption = {
+        tooltip: {
+          trigger: "axis",
+          formatter: (params: { name: string; value: number }[]) =>
+            params.map((p) => `${p.name}: ${Number(p.value).toLocaleString("zh-CN")} 元`).join("<br/>"),
+        },
+        grid: { left: 60, right: 20, top: 30, bottom: 70 },
+        xAxis: {
+          type: "category",
+          data: PRODS.map((p) => p.key),
+          axisLabel: { fontSize: 10, rotate: 45 },
+        },
+        yAxis: {
+          type: "value",
+          axisLabel: { formatter: (v: number) => (v / 10000).toFixed(0) + "万" },
+        },
+        series: [
+          {
+            type: "bar",
+            data: PRODS.map((p, i) => ({
+              value: p.total,
+              itemStyle: { color: prodColors[i] },
+            })),
+            label: {
+              show: true,
+              position: "top",
+              formatter: (p: { value: number }) => (p.value / 10000).toFixed(1) + "万",
+              fontSize: 9,
+            },
+          },
+        ],
+      }
+
+      return (
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">品种累计盈亏曲线</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              <ReactECharts option={prodLineOption} style={{ height: 300 }} notMerge lazyUpdate />
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm">品种总盈亏</CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 pb-2">
+              <ReactECharts option={prodBarOption} style={{ height: 300 }} notMerge lazyUpdate />
+            </CardContent>
+          </Card>
+        </div>
       )
     })()}
   </>
