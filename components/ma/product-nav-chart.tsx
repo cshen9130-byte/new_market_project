@@ -105,6 +105,9 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
   const [editingProduct, setEditingProduct] = useState(false)
   const [distFit, setDistFit] = useState<"normal" | "t" | "laplace" | "logistic" | "kde">("normal")
   const [showDistStats, setShowDistStats] = useState(false)
+  const [volWindow, setVolWindow] = useState<5 | 10 | 20>(20)
+  const [sharpeWindow, setSharpeWindow] = useState<20 | 60 | 120>(60)
+  const [wSharpeSpan, setWSharpeSpan] = useState<10 | 20 | 60>(20)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1298,6 +1301,323 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
           )}
         </CardContent>
         </Card>
+      </div>
+    )}
+
+    {/* ── 滚动波动率 + 滚动夏普 ────────────────────────── */}
+    {normalizedData.length > volWindow && (
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        {/* 滚动波动率 */}
+        <Card>
+          <CardHeader className="pb-2 pt-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">{volWindow}日滚动波动率（年化）</CardTitle>
+              <div className="flex gap-1">
+                {([5, 10, 20] as const).map((w) => (
+                  <button key={w} onClick={() => setVolWindow(w)}
+                    className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                      volWindow === w ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground hover:bg-muted"
+                    }`}>{w}日</button>
+                ))}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <ReactECharts
+              option={(() => {
+                const WINDOW = volWindow
+                const ANN = Math.sqrt(252)
+                const fundVol: [string, number][] = []
+                for (let i = WINDOW; i < normalizedData.length; i++) {
+                  const slice = normalizedData.slice(i - WINDOW, i).map((p) => p.dailyReturn)
+                  const mu = slice.reduce((s, r) => s + r, 0) / WINDOW
+                  const vol = Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (WINDOW - 1)) * ANN
+                  fundVol.push([normalizedData[i].date, parseFloat((vol * 100).toFixed(4))])
+                }
+                const bmVol: [string, number][] = []
+                if (normalizedBenchmarkData.length > WINDOW) {
+                  for (let i = WINDOW; i < normalizedBenchmarkData.length; i++) {
+                    const slice = normalizedBenchmarkData.slice(i - WINDOW, i + 1)
+                    const bmRets = slice.slice(1).map((p, j) => (p.close - slice[j].close) / slice[j].close)
+                    const mu = bmRets.reduce((s, r) => s + r, 0) / bmRets.length
+                    const vol = Math.sqrt(bmRets.reduce((s, r) => s + (r - mu) ** 2, 0) / (bmRets.length - 1)) * ANN
+                    bmVol.push([normalizedBenchmarkData[i].date, parseFloat((vol * 100).toFixed(4))])
+                  }
+                }
+                return {
+                  animation: false,
+                  backgroundColor: "transparent",
+                  legend: { top: 4, right: 72, icon: "roundRect", itemWidth: 10, itemHeight: 4, textStyle: { fontSize: 10 } },
+                  tooltip: {
+                    trigger: "axis",
+                    formatter: (params: unknown[]) => {
+                      const ps = params as Array<{ seriesName: string; value: [string, number]; marker: string }>
+                      if (!ps.length) return ""
+                      return [ps[0].value[0], ...ps.map((p) =>
+                        p.seriesName === "波动比率" ? `${p.marker}${p.seriesName}: ${p.value[1].toFixed(3)}x` : `${p.marker}${p.seriesName}: ${p.value[1].toFixed(2)}%`
+                      )].join("<br/>")
+                    },
+                  },
+                  xAxis: { type: "time", axisLabel: { fontSize: 11 }, splitLine: { show: false } },
+                  yAxis: [
+                    { type: "value", name: "波动率", nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 11, formatter: (v: number) => `${v.toFixed(0)}%` }, splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } } },
+                    { type: "value", name: "比率", nameTextStyle: { fontSize: 10 }, position: "right", axisLabel: { fontSize: 11, formatter: (v: number) => `${v.toFixed(1)}x` }, splitLine: { show: false } },
+                  ],
+                  series: [
+                    { name: "产品", type: "line", yAxisIndex: 0, data: fundVol, smooth: false, symbol: "none", lineStyle: { color: "#ef4444", width: 1.5 }, itemStyle: { color: "#ef4444" }, areaStyle: { color: "#ef444422" } },
+                    ...(bmVol.length > 0 ? [
+                      { name: "南华商品", type: "line", yAxisIndex: 0, data: bmVol, smooth: false, symbol: "none", lineStyle: { color: "#60a5fa", width: 1.5 }, itemStyle: { color: "#60a5fa" }, areaStyle: { color: "#60a5fa22" } },
+                      { name: "波动比率", type: "line", yAxisIndex: 1,
+                        data: (() => { const m = new Map(bmVol.map(([d,v]) => [d,v])); return fundVol.filter(([d]) => m.has(d) && m.get(d)! > 0).map(([d,fv]) => [d, parseFloat((fv / m.get(d)!).toFixed(4))] as [string,number]) })(),
+                        smooth: true, symbol: "none", lineStyle: { color: "#a78bfa", width: 1.5, type: "dashed" }, itemStyle: { color: "#a78bfa" } },
+                    ] : []),
+                  ],
+                  dataZoom: [{ type: "inside", start: 0, end: 100 }, { type: "slider", height: 20, bottom: 0, start: 0, end: 100 }],
+                  grid: { top: 28, right: 52, bottom: 48, left: 56 },
+                }
+              })()}
+              style={{ height: 260 }} notMerge lazyUpdate
+            />
+          </CardContent>
+        </Card>
+
+        {/* 滚动夏普比率 */}
+        {normalizedData.length > sharpeWindow && (
+          <Card>
+            <CardHeader className="pb-2 pt-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm">{sharpeWindow}日滚动夏普比率</CardTitle>
+                <div className="flex gap-1">
+                  {([20, 60, 120] as const).map((w) => (
+                    <button key={w} onClick={() => setSharpeWindow(w)}
+                      className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                        sharpeWindow === w ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground hover:bg-muted"
+                      }`}>{w}日</button>
+                  ))}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <ReactECharts
+                option={(() => {
+                  const W = sharpeWindow
+                  const ANN = Math.sqrt(252)
+                  const sharpeData: [string, number][] = []
+                  for (let i = W; i < normalizedData.length; i++) {
+                    const slice = normalizedData.slice(i - W, i).map((p) => p.dailyReturn)
+                    const mu = slice.reduce((s, r) => s + r, 0) / W
+                    const std = Math.sqrt(slice.reduce((s, r) => s + (r - mu) ** 2, 0) / (W - 1))
+                    const sharpe = std > 0 ? (mu / std) * ANN : 0
+                    sharpeData.push([normalizedData[i].date, parseFloat(sharpe.toFixed(4))])
+                  }
+                  const maxAbs = sharpeData.reduce((m, [, v]) => Math.max(m, Math.abs(v)), 0)
+                  const yMax = Math.ceil(maxAbs * 1.1 * 10) / 10
+                  return {
+                    animation: false,
+                    backgroundColor: "transparent",
+                    tooltip: {
+                      trigger: "axis",
+                      formatter: (params: unknown[]) => {
+                        const ps = params as Array<{ value: [string, number]; marker: string }>
+                        if (!ps.length) return ""
+                        return `${ps[0].value[0]}<br/>${ps[0].marker}夏普比率: ${ps[0].value[1].toFixed(3)}`
+                      },
+                    },
+                    xAxis: { type: "time", axisLabel: { fontSize: 11 }, splitLine: { show: false } },
+                    yAxis: { type: "value", min: -yMax, max: yMax, axisLabel: { fontSize: 11, formatter: (v: number) => v.toFixed(1) }, splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } } },
+                    series: [{ name: "夏普比率", type: "line", data: sharpeData, smooth: false, symbol: "none", lineStyle: { color: "#f59e0b", width: 1.5 }, itemStyle: { color: "#f59e0b" } }],
+                    dataZoom: [{ type: "inside", start: 0, end: 100 }, { type: "slider", height: 20, bottom: 0, start: 0, end: 100 }],
+                    grid: { top: 12, right: 16, bottom: 48, left: 52 },
+                  }
+                })()}
+                style={{ height: 260 }} notMerge lazyUpdate
+              />
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    )}
+
+    {/* ── EWMA 加权夏普比率（抄底信号） ── */}
+    {normalizedData.length > wSharpeSpan * 2 && (
+      <div className="mt-3 grid grid-cols-2 gap-3">
+      <Card>
+        <CardHeader className="pb-2 pt-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-sm">EWMA 加权夏普比率</CardTitle>
+              <p className="text-[11px] text-muted-foreground mt-0.5">绿色三角为 Sharpe 从下方穿越 −1.0 向上的反转信号（潜在抄底点）</p>
+            </div>
+            <div className="flex gap-1">
+              {([10, 20, 60] as const).map((w) => (
+                <button key={w} onClick={() => setWSharpeSpan(w)}
+                  className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                    wSharpeSpan === w ? "bg-primary text-primary-foreground" : "border border-border text-muted-foreground hover:bg-muted"
+                  }`}>span {w}</button>
+              ))}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <ReactECharts
+            option={(() => {
+              const alpha = 2 / (wSharpeSpan + 1)
+              const ANN = Math.sqrt(252)
+              const SIGNAL_THRESH = -1.0
+              const wSharpeData: [string, number][] = []
+              let ewMu = 0, ewVar = 0
+              for (let i = 0; i < normalizedData.length; i++) {
+                const r = normalizedData[i].dailyReturn
+                const prevMu = ewMu
+                ewMu = alpha * r + (1 - alpha) * ewMu
+                ewVar = (1 - alpha) * ewVar + alpha * (r - prevMu) ** 2
+                if (i >= wSharpeSpan) {
+                  const s = ewVar > 0 ? (ewMu / Math.sqrt(ewVar)) * ANN : 0
+                  wSharpeData.push([normalizedData[i].date, parseFloat(s.toFixed(4))])
+                }
+              }
+              const signals: [string, number][] = []
+              for (let i = 1; i < wSharpeData.length; i++) {
+                if (wSharpeData[i - 1][1] < SIGNAL_THRESH && wSharpeData[i][1] >= SIGNAL_THRESH)
+                  signals.push([wSharpeData[i][0], wSharpeData[i][1]])
+              }
+              const maxAbs = wSharpeData.reduce((m, [, v]) => Math.max(m, Math.abs(v)), 0)
+              const yMax = Math.ceil(maxAbs * 1.1 * 10) / 10
+              return {
+                animation: false,
+                backgroundColor: "transparent",
+                legend: { top: 4, left: "center", icon: "roundRect", itemWidth: 10, itemHeight: 4, textStyle: { fontSize: 10 }, data: ["EWMA 夏普", "抄底信号"] },
+                tooltip: {
+                  trigger: "axis",
+                  formatter: (params: unknown[]) => {
+                    const ps = params as Array<{ seriesName: string; value: [string, number]; marker: string }>
+                    const main = ps.find((p) => p.seriesName === "EWMA 夏普")
+                    if (!main) return ""
+                    const sig = ps.find((p) => p.seriesName === "抄底信号")
+                    const lines = [`${main.value[0]}`, `${main.marker}EWMA 夏普: ${main.value[1].toFixed(3)}`]
+                    if (sig) lines.push(`${sig.marker}抄底信号 ↑`)
+                    return lines.join("<br/>")
+                  },
+                },
+                xAxis: { type: "time", axisLabel: { fontSize: 11 }, splitLine: { show: false } },
+                yAxis: { type: "value", min: -yMax, max: yMax, axisLabel: { fontSize: 11, formatter: (v: number) => v.toFixed(1) }, splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } } },
+                series: [
+                  {
+                    name: "EWMA 夏普",
+                    type: "line",
+                    data: wSharpeData,
+                    smooth: false,
+                    symbol: "none",
+                    lineStyle: { color: "#f59e0b", width: 1.5 },
+                    itemStyle: { color: "#f59e0b" },
+                    markLine: {
+                      silent: true, symbol: "none", label: { fontSize: 10 },
+                      data: [
+                        { yAxis: 0,    lineStyle: { color: "#888",    type: "solid",  width: 1   }, label: { formatter: "0",  position: "end" } },
+                        { yAxis: 1.0,  lineStyle: { color: "#ef4444", type: "dashed", width: 0.8 }, label: { formatter: "+1", position: "end" } },
+                        { yAxis: -1.0, lineStyle: { color: "#22c55e", type: "dashed", width: 0.8 }, label: { formatter: "-1", position: "end" } },
+                      ],
+                    },
+                  },
+                  {
+                    name: "抄底信号",
+                    type: "scatter",
+                    data: signals.map(([d, v]) => ({ value: [d, v] })),
+                    symbol: "triangle",
+                    symbolSize: 10,
+                    itemStyle: { color: "#22c55e" },
+                  },
+                ],
+                dataZoom: [{ type: "inside", start: 0, end: 100 }, { type: "slider", height: 20, bottom: 0, start: 0, end: 100 }],
+                grid: { top: 28, right: 56, bottom: 48, left: 52 },
+              }
+            })()}
+            style={{ height: 260 }} notMerge lazyUpdate
+          />
+        </CardContent>
+      </Card>
+
+      {/* 持有窗口最大回撤 */}
+      {normalizedData.length > 10 && (
+        <Card>
+          <CardHeader className="pb-2 pt-3">
+            <CardTitle className="text-sm">持有N日最大回撤分布</CardTitle>
+            <p className="text-[11px] text-muted-foreground mt-0.5">任意时点买入、持有 1–10 个交易日，历史最差回撤</p>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <ReactECharts
+              option={(() => {
+                const navs = normalizedData.map((p) => p.navNorm)
+                const MAX_WINDOW = 10
+                // For each window length w, scan all entry points and find worst drawdown
+                const barData = Array.from({ length: MAX_WINDOW }, (_, w) => {
+                  const days = w + 1
+                  let worst = 0
+                  for (let start = 0; start + days <= navs.length; start++) {
+                    const entry = navs[start]
+                    for (let k = 1; k < days; k++) {
+                      const dd = (entry - navs[start + k]) / entry
+                      if (dd > worst) worst = dd
+                    }
+                    // also check final day vs entry
+                    const ddFinal = (entry - navs[start + days - 1]) / entry
+                    if (ddFinal > worst) worst = ddFinal
+                  }
+                  return parseFloat((worst * 100).toFixed(3))
+                })
+
+                return {
+                  animation: false,
+                  backgroundColor: "transparent",
+                  tooltip: {
+                    trigger: "axis",
+                    formatter: (params: unknown[]) => {
+                      const ps = params as Array<{ value: number; dataIndex: number; marker: string }>
+                      if (!ps.length) return ""
+                      return `持有 ${ps[0].dataIndex + 1} 日<br/>${ps[0].marker}最大回撤: -${ps[0].value.toFixed(3)}%`
+                    },
+                  },
+                  xAxis: {
+                    type: "category",
+                    data: Array.from({ length: MAX_WINDOW }, (_, i) => `${i + 1}日`),
+                    axisLabel: { fontSize: 11 },
+                    axisTick: { alignWithLabel: true },
+                  },
+                  yAxis: {
+                    type: "value",
+                    name: "最大回撤",
+                    nameTextStyle: { fontSize: 10 },
+                    axisLabel: { fontSize: 11, formatter: (v: number) => `-${v.toFixed(1)}%` },
+                    splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } },
+                    inverse: false,
+                  },
+                  series: [
+                    {
+                      name: "最大回撤",
+                      type: "bar",
+                      data: barData.map((v) => ({
+                        value: v,
+                        itemStyle: { color: v > 3 ? "#ef4444" : v > 1.5 ? "#f97316" : "#22c55e" },
+                      })),
+                      label: {
+                        show: true,
+                        position: "top",
+                        fontSize: 10,
+                        formatter: (p: { value: number }) => `-${p.value.toFixed(2)}%`,
+                      },
+                      barMaxWidth: 36,
+                    },
+                  ],
+                  grid: { top: 32, right: 16, bottom: 28, left: 60 },
+                }
+              })()}
+              style={{ height: 260 }}
+              notMerge
+              lazyUpdate
+            />
+          </CardContent>
+        </Card>
+      )}
       </div>
     )}
   </>
