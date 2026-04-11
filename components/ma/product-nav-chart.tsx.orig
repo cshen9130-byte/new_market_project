@@ -1,0 +1,1304 @@
+﻿"use client"
+
+import { useCallback, useEffect, useMemo, useState } from "react"
+import ReactECharts from "echarts-for-react"
+import { RefreshCw } from "lucide-react"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+
+interface NavPoint {
+  date: string
+  nav: number
+  cumCapital: number
+  dailyReturn: number
+  netFlow: number
+  pnl: number
+}
+
+interface BenchmarkPoint {
+  date: string
+  close: number
+}
+
+interface TurnoverPoint {
+  date: string
+  turnoverPct: number
+}
+
+interface HoldingPoint {
+  date: string
+  avgHoldingDays: number
+  closeCount: number
+}
+
+interface ProductNavResponse {
+  ok: boolean
+  data?: NavPoint[]
+  turnoverSeries?: TurnoverPoint[]
+  holdingSeries?: HoldingPoint[]
+  error?: string
+}
+
+function fmtPct(v: number): string {
+  return (v >= 0 ? "+" : "") + (v * 100).toFixed(3) + "%"
+}
+function fmtNav(v: number): string {
+  return v.toFixed(4)
+}
+function fmtMoney(v: number): string {
+  return new Intl.NumberFormat("zh-CN", { minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(v)
+}
+
+function fmtPctPoints(v: number): string {
+  return `${(v * 100).toFixed(2)}%`
+}
+
+function fmtDays(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return "-"
+  return `${v.toFixed(1)}澶ー
+}
+
+function getChinaMarketColor(value: number): string {
+  return value >= 0 ? "#ef4444" : "#22c55e"
+}
+
+function getChinaMarketTextClass(value: number): string {
+  return value >= 0 ? "text-red-500" : "text-green-500"
+}
+
+function isoToday() {
+  return new Date().toISOString().slice(0, 10)
+}
+function isoMonthOffset(m: number) {
+  const d = new Date()
+  d.setMonth(d.getMonth() + m)
+  return d.toISOString().slice(0, 10)
+}
+
+const QUICK_RANGES = [
+  { label: "杩戜竴鏈?,   from: () => isoMonthOffset(-1)  },
+  { label: "杩戜笁鏈?,   from: () => isoMonthOffset(-3)  },
+  { label: "杩戝叚鏈?,   from: () => isoMonthOffset(-6)  },
+  { label: "杩戜竴骞?,   from: () => isoMonthOffset(-12) },
+  { label: "鍏ㄩ儴",     from: () => "2020-01-01"        },
+]
+
+interface Props {
+  productCode?: string
+  height?: number
+}
+
+export default function ProductNavChart({ productCode, height = 360 }: Props) {
+  const [allData, setAllData] = useState<NavPoint[]>([])
+  const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
+  const [turnoverSeries, setTurnoverSeries] = useState<TurnoverPoint[]>([])
+  const [holdingSeries, setHoldingSeries] = useState<HoldingPoint[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadingBenchmark, setLoadingBenchmark] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [rangeFrom, setRangeFrom] = useState("2020-01-01")
+  const [showBenchmark, setShowBenchmark] = useState(true)
+  const [productName, setProductName] = useState("")
+  const [openDate, setOpenDate] = useState("")
+  const [shareClass, setShareClass] = useState("")
+  const [feeStructure, setFeeStructure] = useState("")
+  const [redemptionFee, setRedemptionFee] = useState("")
+  const [editingProduct, setEditingProduct] = useState(false)
+  const [distFit, setDistFit] = useState<"normal" | "t" | "laplace" | "logistic" | "kde">("normal")
+  const [showDistStats, setShowDistStats] = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const params = new URLSearchParams()
+      if (productCode) params.set("product_code", productCode)
+      const res = await fetch(`/ma/api/mom-analysis/product-nav?${params}`)
+      const json = (await res.json()) as ProductNavResponse
+      if (!res.ok || !json.ok) throw new Error(json.error || "璇锋眰澶辫触")
+      setAllData(json.data ?? [])
+      setTurnoverSeries(json.turnoverSeries ?? [])
+      setHoldingSeries(json.holdingSeries ?? [])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "鍔犺浇澶辫触")
+      setTurnoverSeries([])
+      setHoldingSeries([])
+    } finally {
+      setLoading(false)
+    }
+  }, [productCode])
+
+  const loadBenchmark = useCallback(async (from: string, to: string) => {
+    setLoadingBenchmark(true)
+    try {
+      const params = new URLSearchParams({ from, to, codes: "NHCI.NH" })
+      const res = await fetch(`/ma/api/mom-analysis/benchmark?${params}`)
+      const json = await res.json()
+      if (!res.ok || !json.ok) {
+        setBenchmarkData([])
+        return
+      }
+      const series = json.series?.[0]
+      setBenchmarkData(series?.data ?? [])
+    } catch {
+      setBenchmarkData([])
+    } finally {
+      setLoadingBenchmark(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  useEffect(() => {
+    if (allData.length === 0) {
+      setBenchmarkData([])
+      return
+    }
+
+    const firstDate = allData[0]?.date
+    const lastDate = allData[allData.length - 1]?.date
+    if (!firstDate || !lastDate) {
+      setBenchmarkData([])
+      return
+    }
+
+    loadBenchmark(firstDate, lastDate)
+  }, [allData, loadBenchmark])
+
+  // Filter by rangeFrom
+  const displayData = allData.filter((p) => p.date >= rangeFrom)
+  const displayBenchmarkData = benchmarkData.filter((point) => point.date >= rangeFrom)
+  const displayTurnoverSeries = turnoverSeries.filter((point) => point.date >= rangeFrom)
+  const displayHoldingSeries = holdingSeries.filter((point) => point.date >= rangeFrom)
+
+  // Fix NAV to start at 1.0 for the selected range
+  const startNav = displayData.length > 0 ? displayData[0].nav : 1
+  const normalizedData = displayData.map((p) => ({
+    ...p,
+    navNorm: p.nav / startNav,
+  }))
+  const benchmarkBase = displayBenchmarkData.length > 0 ? displayBenchmarkData[0].close : 1
+  const normalizedBenchmarkData = displayBenchmarkData.map((point) => ({
+    ...point,
+    returnPct: Math.round((((point.close / benchmarkBase) - 1) * 100) * 100) / 100,
+  }))
+
+  // Summary stats
+  const lastPoint = normalizedData[normalizedData.length - 1]
+  const totalReturn = lastPoint ? lastPoint.navNorm - 1 : 0
+  const maxDrawdown = (() => {
+    let peak = 1, maxDd = 0
+    for (const p of normalizedData) {
+      if (p.navNorm > peak) peak = p.navNorm
+      const dd = (peak - p.navNorm) / peak
+      if (dd > maxDd) maxDd = dd
+    }
+    return maxDd
+  })()
+  const annReturn = (() => {
+    if (normalizedData.length < 2) return null
+    const days = normalizedData.length
+    const years = days / 252
+    return Math.pow(lastPoint!.navNorm, 1 / years) - 1
+  })()
+  const tradingDays = normalizedData.length
+  const profitDays = normalizedData.filter((point) => point.pnl > 0).length
+  const lossDays = normalizedData.filter((point) => point.pnl < 0).length
+  const decisionDays = profitDays + lossDays
+  const winRate = decisionDays > 0 ? profitDays / decisionDays : tradingDays > 0 ? profitDays / tradingDays : 0
+  const grossProfit = normalizedData.reduce((sum, point) => sum + (point.pnl > 0 ? point.pnl : 0), 0)
+  const grossLoss = Math.abs(normalizedData.reduce((sum, point) => sum + (point.pnl < 0 ? point.pnl : 0), 0))
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : null
+  const avgTurnover = displayTurnoverSeries.length > 0
+    ? displayTurnoverSeries.reduce((sum, point) => sum + point.turnoverPct, 0) / displayTurnoverSeries.length
+    : null
+  const avgHoldingPeriod = displayHoldingSeries.length > 0
+    ? displayHoldingSeries.reduce((sum, point) => sum + point.avgHoldingDays * point.closeCount, 0)
+      / displayHoldingSeries.reduce((sum, point) => sum + point.closeCount, 0)
+    : null
+  const capitalMaxDrawdown = (() => {
+    let peak = Number.NEGATIVE_INFINITY
+    let maxDd = 0
+    for (const point of displayData) {
+      if (point.cumCapital > peak) peak = point.cumCapital
+      if (peak > 0) {
+        const dd = (peak - point.cumCapital) / peak
+        if (dd > maxDd) maxDd = dd
+      }
+    }
+    return maxDd
+  })()
+  const performanceColor = getChinaMarketColor(totalReturn)
+  const benchmarkLastPoint = normalizedBenchmarkData[normalizedBenchmarkData.length - 1]
+  const showBenchmarkSeries = showBenchmark && normalizedBenchmarkData.length > 0
+
+  const option = {
+    animation: false,
+    backgroundColor: "transparent",
+    legend: showBenchmarkSeries
+      ? {
+          top: 0,
+          right: 0,
+          icon: "roundRect",
+          itemWidth: 10,
+          itemHeight: 6,
+          textStyle: { fontSize: 11 },
+          data: ["鏀剁泭鐜?, "鍗楀崕鍟嗗搧鎸囨暟"],
+        }
+      : undefined,
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      formatter: (params: unknown[]) => {
+        const entries = params as Array<{ seriesName: string; value: [string, number] }>
+        const primary = entries.find((entry) => entry.seriesName === "鏀剁泭鐜?) ?? entries[0]
+        if (!primary) return ""
+        const date = primary.value[0]
+        const retPct = primary.value[1]
+        const pt = normalizedData.find((d) => d.date === date)
+        const benchmarkPoint = normalizedBenchmarkData.find((d) => d.date === date)
+        const dailyRet = pt ? fmtPct(pt.dailyReturn) : "鈥?
+        const capital = pt ? fmtMoney(pt.cumCapital) : "鈥?
+        const pnl = pt ? fmtMoney(pt.pnl) : "鈥?
+        const flow = pt && pt.netFlow !== 0 ? `<br/>璧勯噾娴佸叆 ${fmtMoney(pt.netFlow)}` : ""
+        const returnColor = getChinaMarketColor(retPct)
+        const dailyReturnColor = pt ? getChinaMarketColor(pt.dailyReturn) : "#64748b"
+        const benchmarkLine = benchmarkPoint && showBenchmarkSeries
+          ? `<br/>鍗楀崕鍟嗗搧鎸囨暟 <span style="color:#f59e0b">${benchmarkPoint.returnPct >= 0 ? "+" : ""}${benchmarkPoint.returnPct.toFixed(2)}%</span>`
+          : ""
+        return `<b>${date}</b><br/>鏀剁泭鐜?<span style="color:${returnColor}">${retPct >= 0 ? "+" : ""}${retPct.toFixed(2)}%</span>${benchmarkLine}<br/>褰撴棩鏀剁泭 <span style="color:${dailyReturnColor}">${dailyRet}</span><br/>褰撴棩鐩堜簭 ${pnl}<br/>绱瑙勬ā ${capital}${flow}`
+      },
+    },
+    grid: { left: 60, right: 20, top: showBenchmarkSeries ? 48 : 30, bottom: 50 },
+    xAxis: {
+      type: "category",
+      data: normalizedData.map((p) => p.date),
+      boundaryGap: false,
+      axisLabel: {
+        rotate: 30,
+        fontSize: 11,
+        formatter: (v: string) => v.slice(0, 10),
+      },
+    },
+    yAxis: {
+      type: "value",
+      name: "鏀剁泭鐜?%)",
+      nameTextStyle: { fontSize: 11, padding: [0, 0, 0, 40] },
+      axisLabel: {
+        fontSize: 11,
+        formatter: (v: number) => (v >= 0 ? "+" : "") + v.toFixed(0) + "%",
+      },
+      splitLine: { lineStyle: { opacity: 0.3 } },
+    },
+    dataZoom: [
+      { type: "slider", bottom: 4, height: 20 },
+      { type: "inside" },
+    ],
+    series: [
+      {
+        name: "鏀剁泭鐜?,
+        type: "line",
+        data: normalizedData.map((p) => [p.date, Math.round((p.navNorm - 1) * 10000) / 100]),
+        symbol: "none",
+        lineStyle: { color: performanceColor, width: 2 },
+        itemStyle: { color: performanceColor },
+        areaStyle: {
+          color: {
+            type: "linear",
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: totalReturn >= 0 ? "rgba(239,68,68,0.25)" : "rgba(34,197,94,0.25)" },
+              { offset: 1, color: totalReturn >= 0 ? "rgba(239,68,68,0.02)" : "rgba(34,197,94,0.02)" },
+            ],
+          },
+        },
+        markLine: {
+          silent: true,
+          symbol: "none",
+          data: [{ yAxis: 0, lineStyle: { color: "#888", type: "dashed", width: 1 }, label: { show: false } }],
+        },
+      },
+      ...(showBenchmarkSeries
+        ? [
+            {
+              name: "鍗楀崕鍟嗗搧鎸囨暟",
+              type: "line",
+              data: normalizedBenchmarkData.map((point) => [point.date, point.returnPct]),
+              symbol: "none",
+              lineStyle: { color: "#f59e0b", width: 1.5, type: "dashed" },
+              itemStyle: { color: "#f59e0b" },
+            },
+          ]
+        : []),
+    ],
+  }
+
+  const reversedData = useMemo(() => [...normalizedData].reverse(), [normalizedData])
+
+  // 鈹€鈹€ Monthly returns (from allData, rebased to annual start) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  const monthlyReturns = useMemo(() => {
+    if (allData.length === 0) return {}
+    // Group all nav points by year-month
+    const byMonth: Record<string, NavPoint[]> = {}
+    for (const p of allData) {
+      const ym = p.date.slice(0, 7)
+      ;(byMonth[ym] ??= []).push(p)
+    }
+    // For each month compute return relative to first nav of that month
+    const result: Record<string, Record<number, number | null>> = {}
+    for (const [ym, points] of Object.entries(byMonth)) {
+      const year = parseInt(ym.slice(0, 4))
+      const month = parseInt(ym.slice(5, 7))
+      const first = points[0].nav
+      const last = points[points.length - 1].nav
+      const ret = first > 0 ? (last / first - 1) : null
+      ;(result[year] ??= {})[month] = ret
+    }
+    // Annual return = last nav of year / first nav of year
+    for (const year of Object.keys(result)) {
+      const yPoints = allData.filter((p) => p.date.startsWith(year))
+      if (yPoints.length > 0) {
+        const first = yPoints[0].nav
+        const last = yPoints[yPoints.length - 1].nav
+        result[parseInt(year)][0] = first > 0 ? (last / first - 1) : null
+      }
+    }
+    return result
+  }, [allData])
+
+  const monthlyYears = useMemo(() => Object.keys(monthlyReturns).map(Number).sort((a, b) => b - a), [monthlyReturns])
+  const MONTH_LABELS = ["涓€鏈?,"浜屾湀","涓夋湀","鍥涙湀","浜旀湀","鍏湀","涓冩湀","鍏湀","涔濇湀","鍗佹湀","鍗佷竴鏈?,"鍗佷簩鏈?]
+
+  // 鈹€鈹€ Comparison / risk stats (computed from normalizedData & normalizedBenchmarkData) 鈹€鈹€
+  const comparisonStats = useMemo(() => {
+    const n = normalizedData.length
+    if (n < 2) return null
+
+    const dailyRets = normalizedData.map((p) => p.dailyReturn)
+    const mean = dailyRets.reduce((s, r) => s + r, 0) / n
+    const variance = dailyRets.reduce((s, r) => s + (r - mean) ** 2, 0) / n
+    const stdDev = Math.sqrt(variance)
+    const annVol = stdDev * Math.sqrt(252)
+
+    const years = n / 252
+    const annRet = annReturn ?? 0
+    const rf = 0 // assume 0 risk-free rate for simplicity
+
+    const sharpe = annVol > 0 ? (annRet - rf) / annVol : null
+
+    // Downside deviation
+    const downside = dailyRets.filter((r) => r < 0)
+    const downVar = downside.length > 0 ? downside.reduce((s, r) => s + r ** 2, 0) / downside.length : 0
+    const downStd = Math.sqrt(downVar) * Math.sqrt(252)
+    const sortino = downStd > 0 ? (annRet - rf) / downStd : null
+
+    // Calmar
+    const calmar = maxDrawdown > 0 ? annRet / maxDrawdown : null
+
+    // Max drawdown recovery period
+    let maxDdEnd = 0, maxDdPeak = 0, maxDdDays = 0
+    {
+      let peak = 1, peakIdx = 0
+      let curDd = 0
+      for (let i = 0; i < normalizedData.length; i++) {
+        if (normalizedData[i].navNorm > peak) { peak = normalizedData[i].navNorm; peakIdx = i }
+        const dd = (peak - normalizedData[i].navNorm) / peak
+        if (dd > curDd) { curDd = dd; maxDdPeak = peakIdx; maxDdEnd = i }
+      }
+      // recovery = next time nav >= peak after maxDdEnd
+      let recovered = normalizedData.length - maxDdEnd  // still in drawdown = days remaining
+      for (let i = maxDdEnd + 1; i < normalizedData.length; i++) {
+        if (normalizedData[i].navNorm >= normalizedData[maxDdPeak].navNorm) {
+          recovered = i - maxDdEnd
+          break
+        }
+      }
+      maxDdDays = recovered
+    }
+
+    // Max consecutive days not making new high
+    let maxConsec = 0, curConsec = 0
+    let runningPeak = 0
+    for (const p of normalizedData) {
+      if (p.navNorm > runningPeak) { runningPeak = p.navNorm; curConsec = 0 }
+      else { curConsec++; if (curConsec > maxConsec) maxConsec = curConsec }
+    }
+
+    // VaR 95%
+    const sorted = [...dailyRets].sort((a, b) => a - b)
+    const varIdx = Math.floor(sorted.length * 0.05)
+    const var95 = sorted[varIdx] ?? 0
+
+    // Skewness & Kurtosis
+    const skew = stdDev > 0
+      ? dailyRets.reduce((s, r) => s + ((r - mean) / stdDev) ** 3, 0) / n
+      : null
+    const kurt = stdDev > 0
+      ? dailyRets.reduce((s, r) => s + ((r - mean) / stdDev) ** 4, 0) / n - 3
+      : null
+
+    // Benchmark stats
+    let correlation: number | null = null
+    let infoRatio: number | null = null
+    let trackingError: number | null = null
+    let alpha: number | null = null
+    let beta: number | null = null
+
+    // align dates
+    const bmDates = new Set(normalizedBenchmarkData.map((p) => p.date))
+    const aligned = normalizedData.filter((p) => bmDates.has(p.date))
+    const bmAligned = aligned.map((p) => {
+      const b = normalizedBenchmarkData.find((bm) => bm.date === p.date)!
+      return b
+    })
+
+    if (aligned.length > 2) {
+      const pRets = aligned.map((p) => p.dailyReturn)
+      const bRets: number[] = []
+      for (let i = 1; i < bmAligned.length; i++) {
+        bRets.push(bmAligned[i - 1].close > 0 ? (bmAligned[i].close / bmAligned[i - 1].close - 1) : 0)
+      }
+      const pRets2 = pRets.slice(1)
+      const na = pRets2.length
+      const pMean = pRets2.reduce((s, r) => s + r, 0) / na
+      const bMean = bRets.reduce((s, r) => s + r, 0) / na
+      const cov = pRets2.reduce((s, r, i) => s + (r - pMean) * (bRets[i] - bMean), 0) / na
+      const bVar = bRets.reduce((s, r) => s + (r - bMean) ** 2, 0) / na
+      const pVar = pRets2.reduce((s, r) => s + (r - pMean) ** 2, 0) / na
+      beta = bVar > 0 ? cov / bVar : null
+      alpha = annRet - (beta ?? 0) * (bMean * 252)
+      const diffRets = pRets2.map((r, i) => r - bRets[i])
+      const diffMean = diffRets.reduce((s, r) => s + r, 0) / na
+      const diffStd = Math.sqrt(diffRets.reduce((s, r) => s + (r - diffMean) ** 2, 0) / na) * Math.sqrt(252)
+      trackingError = diffStd
+      infoRatio = diffStd > 0 ? (diffMean * 252) / diffStd : null
+      const denom = Math.sqrt(pVar * bVar)
+      correlation = denom > 0 ? cov / denom : null
+    }
+
+    return { annRet, annVol, sharpe, sortino, calmar, downStd, maxDrawdown, maxDdDays, maxConsec, var95, skew, kurt, correlation, infoRatio, trackingError, alpha, beta }
+  }, [normalizedData, normalizedBenchmarkData, annReturn, maxDrawdown])
+
+  // Benchmark-side stats
+  const benchmarkStats = useMemo(() => {
+    const pts = normalizedBenchmarkData
+    if (pts.length < 2) return null
+    // daily returns from close prices
+    const bRets: number[] = []
+    for (let i = 1; i < pts.length; i++) {
+      bRets.push(pts[i - 1].close > 0 ? pts[i].close / pts[i - 1].close - 1 : 0)
+    }
+    const n = bRets.length
+    const first = pts[0].close, last = pts[pts.length - 1].close
+    const years = pts.length / 252
+    const annRet = Math.pow(last / first, 1 / years) - 1
+    const mean = bRets.reduce((s, r) => s + r, 0) / n
+    const variance = bRets.reduce((s, r) => s + (r - mean) ** 2, 0) / n
+    const stdDev = Math.sqrt(variance)
+    const annVol = stdDev * Math.sqrt(252)
+    const sharpe = annVol > 0 ? annRet / annVol : null
+    const downside = bRets.filter((r) => r < 0)
+    const downStd = downside.length > 0
+      ? Math.sqrt(downside.reduce((s, r) => s + r ** 2, 0) / downside.length) * Math.sqrt(252)
+      : 0
+    const sortino = downStd > 0 ? annRet / downStd : null
+    // max drawdown
+    let peak = 1, maxDd = 0, maxDdEnd = 0, maxDdPeak = 0
+    const navs = pts.map((p) => p.close / first)
+    for (let i = 0; i < navs.length; i++) {
+      if (navs[i] > peak) { peak = navs[i]; maxDdPeak = i }
+      const dd = (peak - navs[i]) / peak
+      if (dd > maxDd) { maxDd = dd; maxDdEnd = i }
+    }
+    const calmar = maxDd > 0 ? annRet / maxDd : null
+    // drawdown recovery
+    let maxDdDays = navs.length - maxDdEnd
+    for (let i = maxDdEnd + 1; i < navs.length; i++) {
+      if (navs[i] >= navs[maxDdPeak]) { maxDdDays = i - maxDdEnd; break }
+    }
+    // max consec days not making new high
+    let maxConsec = 0, curConsec = 0, runPeak = 0
+    for (const v of navs) {
+      if (v > runPeak) { runPeak = v; curConsec = 0 } else { curConsec++; if (curConsec > maxConsec) maxConsec = curConsec }
+    }
+    // skew / kurt
+    const skew = stdDev > 0 ? bRets.reduce((s, r) => s + ((r - mean) / stdDev) ** 3, 0) / n : null
+    const kurt = stdDev > 0 ? bRets.reduce((s, r) => s + ((r - mean) / stdDev) ** 4, 0) / n - 3 : null
+    return { annRet, annVol, sharpe, sortino, calmar, downStd, maxDd, maxDdDays, maxConsec, skew, kurt }
+  }, [normalizedBenchmarkData])
+
+  const benchmarkAnnRet = benchmarkStats?.annRet ?? null
+
+  const summaryItems = [
+    { label: "鍖洪棿鏀剁泭",   value: `${(totalReturn * 100).toFixed(2)}%`,                                                        valueClassName: getChinaMarketTextClass(totalReturn) },
+    { label: "骞村寲鏀剁泭",   value: comparisonStats?.annRet != null ? `${(comparisonStats.annRet * 100).toFixed(2)}%` : "鈥?,     valueClassName: comparisonStats?.annRet != null ? getChinaMarketTextClass(comparisonStats.annRet) : "" },
+    { label: "骞村寲娉㈠姩鐜?, value: comparisonStats ? `${(comparisonStats.annVol * 100).toFixed(2)}%` : "鈥? },
+    { label: "澶忔櫘姣旂巼",   value: comparisonStats?.sharpe?.toFixed(3) ?? "鈥? },
+    { label: "鏈€澶у洖鎾?,   value: `-${(maxDrawdown * 100).toFixed(2)}%`,                                                        valueClassName: "text-green-500" },
+    { label: "浜ゆ槗澶╂暟",   value: `${tradingDays}` },
+    { label: "鐩堝埄澶╂暟",   value: `${profitDays}`,                                                                              valueClassName: "text-red-500" },
+    { label: "浜忔崯澶╂暟",   value: `${lossDays}`,                                                                                valueClassName: "text-green-500" },
+    { label: "鑳滅巼",       value: fmtPctPoints(winRate),                                                                        valueClassName: getChinaMarketTextClass(winRate) },
+    { label: "鐩堜簭鎸囨暟",   value: profitFactor !== null ? profitFactor.toFixed(2) : "鈥? },
+    { label: "鏃ュ潎鎹㈡墜鐜?, value: avgTurnover !== null ? fmtPctPoints(avgTurnover) : "鈥? },
+    { label: "绱㈡彁璇烘瘮鐜?, value: comparisonStats?.sortino?.toFixed(3) ?? "鈥? },
+  ]
+
+  // 鈹€鈹€ Drawdown series 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+  const fundDrawdownSeries = useMemo(() => {
+    let peak = 1
+    return normalizedData.map((p) => {
+      if (p.navNorm > peak) peak = p.navNorm
+      const dd = peak > 0 ? ((p.navNorm - peak) / peak) * 100 : 0
+      return [p.date, Math.round(dd * 10000) / 10000] as [string, number]
+    })
+  }, [normalizedData])
+
+  const benchmarkDrawdownSeries = useMemo(() => {
+    if (normalizedBenchmarkData.length === 0) return []
+    const base = normalizedBenchmarkData[0].close
+    let peak = base
+    return normalizedBenchmarkData.map((p) => {
+      if (p.close > peak) peak = p.close
+      const dd = peak > 0 ? ((p.close - peak) / peak) * 100 : 0
+      return [p.date, Math.round(dd * 10000) / 10000] as [string, number]
+    })
+  }, [normalizedBenchmarkData])
+
+  const drawdownOption = {
+    animation: false,
+    backgroundColor: "transparent",
+    legend: {
+      top: 4,
+      right: 0,
+      icon: "roundRect",
+      itemWidth: 10,
+      itemHeight: 6,
+      textStyle: { fontSize: 11 },
+      data: ["鍩洪噾鍥炴挙", "鍗楀崕鍟嗗搧鎸囨暟鍥炴挙"],
+    },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "cross" },
+      formatter: (params: unknown[]) => {
+        const entries = params as Array<{ seriesName: string; value: [string, number] }>
+        if (!entries[0]) return ""
+        const date = entries[0].value[0]
+        return entries.map((e) => {
+          const color = e.seriesName === "鍩洪噾鍥炴挙" ? getChinaMarketColor(-1) : "#f59e0b"
+          return `<b>${date}</b><br/><span style="color:${color}">${e.seriesName}</span> ${e.value[1].toFixed(2)}%`
+        }).join("<br/>")
+      },
+    },
+    grid: { left: 60, right: 20, top: 40, bottom: 50 },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: fundDrawdownSeries.map((p) => p[0]),
+      axisLabel: { rotate: 30, fontSize: 11, formatter: (v: string) => v.slice(0, 10) },
+    },
+    yAxis: {
+      type: "value",
+      name: "鍥炴挙(%)",
+      nameTextStyle: { fontSize: 11, padding: [0, 0, 0, 40] },
+      axisLabel: { fontSize: 11, formatter: (v: number) => v.toFixed(0) + "%" },
+      splitLine: { lineStyle: { opacity: 0.3 } },
+    },
+    dataZoom: [
+      { type: "slider", bottom: 4, height: 20 },
+      { type: "inside" },
+    ],
+    series: [
+      {
+        name: "鍩洪噾鍥炴挙",
+        type: "line",
+        data: fundDrawdownSeries,
+        symbol: "none",
+        lineStyle: { color: "#22c55e", width: 1.5 },
+        itemStyle: { color: "#22c55e" },
+        areaStyle: {
+          color: { type: "linear", x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [{ offset: 0, color: "rgba(34,197,94,0.05)" }, { offset: 1, color: "rgba(34,197,94,0.25)" }] },
+        },
+      },
+      ...(showBenchmarkSeries && benchmarkDrawdownSeries.length > 0 ? [{
+        name: "鍗楀崕鍟嗗搧鎸囨暟鍥炴挙",
+        type: "line",
+        data: benchmarkDrawdownSeries,
+        symbol: "none",
+        lineStyle: { color: "#f59e0b", width: 1.5, type: "dashed" as const },
+        itemStyle: { color: "#f59e0b" },
+      }] : []),
+    ],
+  }
+
+  return (
+  <>
+    {/* 鈺愨晲 浜у搧瑕佺礌 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */}
+    <div id="section-product" className="flex items-center gap-2 mb-3" style={{ scrollMarginTop: "3rem" }}>
+      <h2 className="text-sm font-semibold whitespace-nowrap">浜у搧瑕佺礌</h2>
+      <div className="h-px flex-1 bg-border" />
+      <button
+        onClick={() => setEditingProduct((v) => !v)}
+        className="rounded border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted transition-colors"
+      >
+        {editingProduct ? "瀹屾垚" : "缂栬緫"}
+      </button>
+    </div>
+    <Card>
+      <CardContent className="px-4 py-4">
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-x-6 gap-y-4 text-xs">
+          {/* 浜у搧鍚嶇О */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">浜у搧鍚嶇О</span>
+            {editingProduct ? (
+              <input
+                value={productName}
+                onChange={(e) => setProductName(e.target.value)}
+                placeholder="璇疯緭鍏?
+                className="rounded border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            ) : (
+              <span className="px-2 py-1 font-medium">{productName || "鈥?}</span>
+            )}
+          </div>
+          {/* 褰撳墠瑙勬ā 鈥?auto */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">褰撳墠瑙勬ā(涓?</span>
+            <span className="px-2 py-1 font-medium tabular-nums">
+              {lastPoint && lastPoint.cumCapital > 0 ? (lastPoint.cumCapital / 10000).toFixed(2) : "鈥?}
+            </span>
+          </div>
+          {/* 寮€鏀炬棩 */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">寮€鏀炬棩</span>
+            {editingProduct ? (
+              <input
+                value={openDate}
+                onChange={(e) => setOpenDate(e.target.value)}
+                placeholder="濡傦細姣忔湀鏈€鍚庝竴涓伐浣滄棩"
+                className="rounded border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            ) : (
+              <span className="px-2 py-1 font-medium">{openDate || "鈥?}</span>
+            )}
+          </div>
+          {/* 浠介鍒嗙被 */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">浠介鍒嗙被</span>
+            {editingProduct ? (
+              <input
+                value={shareClass}
+                onChange={(e) => setShareClass(e.target.value)}
+                placeholder="濡傦細A绫?
+                className="rounded border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            ) : (
+              <span className="px-2 py-1 font-medium">{shareClass || "鈥?}</span>
+            )}
+          </div>
+          {/* 璐圭巼缁撴瀯 */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">璐圭巼缁撴瀯</span>
+            {editingProduct ? (
+              <input
+                value={feeStructure}
+                onChange={(e) => setFeeStructure(e.target.value)}
+                placeholder="濡傦細绠＄悊璐?%+涓氱哗鎶ラ叕20%"
+                className="rounded border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            ) : (
+              <span className="px-2 py-1 font-medium">{feeStructure || "鈥?}</span>
+            )}
+          </div>
+          {/* 璧庡洖璐?*/}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">璧庡洖璐?/span>
+            {editingProduct ? (
+              <input
+                value={redemptionFee}
+                onChange={(e) => setRedemptionFee(e.target.value)}
+                placeholder="濡傦細鎸佹湁1骞翠互涓婂厤璧庡洖璐?
+                className="rounded border border-input bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            ) : (
+              <span className="px-2 py-1 font-medium">{redemptionFee || "鈥?}</span>
+            )}
+          </div>
+          {/* 鎶ュ憡鍛ㄦ湡 鈥?auto */}
+          <div className="flex flex-col gap-1">
+            <span className="text-muted-foreground">鎶ュ憡鍛ㄦ湡</span>
+            <span className="px-2 py-1 font-medium tabular-nums">
+              {allData.length > 0 && lastPoint ? `${allData[0].date} ~ ${lastPoint.date}` : "鈥?}
+            </span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+
+    {/* 鈺愨晲 涓氱哗鎸囨爣 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */}
+    <div id="section-performance" className="mt-5 flex items-center gap-2 mb-3" style={{ scrollMarginTop: "3rem" }}>
+      <h2 className="text-sm font-semibold whitespace-nowrap">涓氱哗鎸囨爣</h2>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+
+    <div className="grid grid-cols-2 gap-3">
+      {/* 宸︼細鍑€鍊兼洸绾?*/}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-base">鍑€鍊兼洸绾?/CardTitle>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">鍩哄噯</span>
+                <select
+                  value={showBenchmark ? "show" : "hide"}
+                  onChange={(event) => setShowBenchmark(event.target.value === "show")}
+                  className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+                >
+                  <option value="show">鏄剧ず NHCI</option>
+                  <option value="hide">闅愯棌 NHCI</option>
+                </select>
+              </div>
+              <button
+                onClick={load}
+                disabled={loading}
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted"
+                title="鍒锋柊"
+              >
+                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-1 flex flex-wrap gap-1">
+            {QUICK_RANGES.map((r) => (
+              <button
+                key={r.label}
+                onClick={() => setRangeFrom(r.from())}
+                className={`rounded border px-2 py-0.5 text-xs transition-colors ${
+                  rangeFrom === r.from()
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-border text-muted-foreground hover:bg-muted"
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+
+          {normalizedData.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+              <span>
+                <span className="text-muted-foreground">绱鏀剁泭 </span>
+                <span className={getChinaMarketTextClass(totalReturn)}>{fmtPct(totalReturn)}</span>
+              </span>
+              {annReturn !== null && (
+                <span>
+                  <span className="text-muted-foreground">骞村寲鏀剁泭 </span>
+                  <span className={getChinaMarketTextClass(annReturn)}>{fmtPct(annReturn)}</span>
+                </span>
+              )}
+              <span>
+                <span className="text-muted-foreground">鏈€澶у洖鎾?</span>
+                <span className="text-green-500">-{(maxDrawdown * 100).toFixed(2)}%</span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">鏈€鏂板噣鍊?</span>
+                <span>{fmtNav(lastPoint?.navNorm ?? 1)}</span>
+              </span>
+              {showBenchmarkSeries && benchmarkLastPoint && (
+                <span>
+                  <span className="text-muted-foreground">NHCI绱 </span>
+                  <span className="text-amber-500">
+                    {benchmarkLastPoint.returnPct >= 0 ? "+" : ""}
+                    {benchmarkLastPoint.returnPct.toFixed(2)}%
+                  </span>
+                </span>
+              )}
+            </div>
+          )}
+        </CardHeader>
+
+        <CardContent className="pt-0">
+          {error && <div className="py-4 text-center text-sm text-red-500">{error}</div>}
+          {!error && allData.length === 0 && !loading && (
+            <div className="py-4 text-center text-sm text-muted-foreground">
+              鏆傛棤鏁版嵁 鈥?璇峰厛瀵煎叆鍩洪噾浜ゆ槗璁板綍鍙婃棩鎶ユ暟鎹?            </div>
+          )}
+          {(allData.length > 0 || loading || loadingBenchmark) && (
+            <ReactECharts option={option} style={{ height }} notMerge lazyUpdate />
+          )}
+        </CardContent>
+      </Card>
+
+      {/* 鍙筹細缁熻姒傝 + 鍑€鍊兼槑缁?骞舵帓鍦ㄥ悓涓€涓崱鐗囧唴 */}
+      <Card>
+        <CardHeader className="pb-2 pt-3">
+          <CardTitle className="text-base">鏁版嵁鏄庣粏</CardTitle>
+        </CardHeader>
+        <CardContent className="px-3 pb-3 pt-0">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3">
+            {/* 缁熻姒傝 */}
+            <div>
+              <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">缁熻姒傝</h4>
+              <div className="overflow-hidden rounded-lg border">
+                <table className="text-xs">
+                  <tbody>
+                    {summaryItems.map((item) => (
+                      <tr key={item.label} className="border-b last:border-b-0">
+                        <td className="whitespace-nowrap bg-muted/30 px-2 py-1.5 text-muted-foreground">{item.label}</td>
+                        <td className={`whitespace-nowrap px-2 py-1.5 text-right font-medium ${item.valueClassName ?? ""}`}>{item.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* 鍑€鍊兼槑缁?*/}
+            <div className="min-w-0">
+              <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">鍑€鍊兼槑缁?/h4>
+              {normalizedData.length === 0 ? (
+                <div className="py-4 text-center text-xs text-muted-foreground">鏆傛棤鏁版嵁</div>
+              ) : (
+                <div className="overflow-auto rounded-lg border" style={{ maxHeight: `${summaryItems.length * 28 + (summaryItems.length - 1)}px` }}>
+                  <table className="w-full text-xs">
+                    <thead className="sticky top-0 bg-card shadow-sm">
+                      <tr className="border-b text-left">
+                        <th className="px-2 py-1.5 text-center font-medium">鏃ユ湡</th>
+                        <th className="px-2 py-1.5 text-right font-medium">鍗曚綅鍑€鍊?/th>
+                        <th className="px-2 py-1.5 text-right font-medium">绱鍑€鍊?/th>
+                        <th className="px-2 py-1.5 text-right font-medium">澶嶆潈鍑€鍊?/th>
+                        <th className="px-2 py-1.5 text-right font-medium">娑ㄨ穼骞?/th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reversedData.map((point) => (
+                        <tr key={point.date} className="border-b last:border-b-0">
+                          <td className="whitespace-nowrap px-2 py-1 text-center">{point.date}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{fmtNav(point.navNorm)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{fmtNav(point.navNorm)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{fmtNav(point.navNorm)}</td>
+                          <td className={`px-2 py-1 text-right tabular-nums ${getChinaMarketTextClass(point.dailyReturn)}`}>
+                            {fmtPct(point.dailyReturn)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+
+    {/* 鈹€鈹€ 鍥炴挙瀵规瘮 / 瀵规瘮缁熻 / 鏈堝害鏀剁泭 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */}
+    {/* Row 1: 鍥炴挙瀵规瘮 (left) + 瀵规瘮缁熻 (right) 鈥?same height */}
+    <div className="mt-3 grid grid-cols-2 items-stretch gap-3">
+      {fundDrawdownSeries.length > 0 && (
+        <Card className="flex flex-col">
+          <CardHeader className="pb-2 pt-3">
+            <CardTitle className="text-sm">鍥炴挙瀵规瘮</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-1 flex-col pt-0">
+            <ReactECharts option={drawdownOption} style={{ flex: 1, minHeight: 260 }} notMerge lazyUpdate />
+          </CardContent>
+        </Card>
+      )}
+
+      {comparisonStats && (
+        <Card>
+          <CardHeader className="pb-2 pt-3">
+            <CardTitle className="text-sm">瀵规瘮缁熻</CardTitle>
+          </CardHeader>
+          <CardContent className="px-3 pb-3 pt-0">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b">
+                <th className="w-[150px] px-2 py-1 text-left font-medium text-muted-foreground">鎸囨爣</th>
+                <th className="px-2 py-1 text-right font-medium">鍩洪噾</th>
+                <th className="px-2 py-1 text-right font-medium text-amber-500">鍗楀崕鍟嗗搧鎸囨暟</th>
+                <th className="w-6" />
+                <th className="w-[150px] px-2 py-1 text-left font-medium text-muted-foreground">鎸囨爣</th>
+                <th className="px-2 py-1 text-right font-medium">鍩洪噾</th>
+                <th className="px-2 py-1 text-right font-medium text-amber-500">鍗楀崕鍟嗗搧鎸囨暟</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                [
+                  { label: "鍖洪棿鏀剁泭",          fund: `${(totalReturn * 100).toFixed(2)}%`,                          bench: benchmarkLastPoint ? `${benchmarkLastPoint.returnPct.toFixed(2)}%` : "鈥? },
+                  { label: "绱㈡彁璇烘瘮鐜?,         fund: comparisonStats.sortino?.toFixed(3) ?? "鈥?,                    bench: benchmarkStats?.sortino?.toFixed(3) ?? "鈥? },
+                ],
+                [
+                  { label: "骞村寲鏀剁泭",           fund: comparisonStats.annRet != null ? `${(comparisonStats.annRet * 100).toFixed(2)}%` : "鈥?, bench: benchmarkAnnRet != null ? `${(benchmarkAnnRet * 100).toFixed(2)}%` : "鈥? },
+                  { label: "鐩稿叧绯绘暟",           fund: comparisonStats.correlation?.toFixed(4) ?? "鈥?,                bench: "鈥? },
+                ],
+                [
+                  { label: "骞村寲娉㈠姩鐜?,         fund: `${(comparisonStats.annVol * 100).toFixed(2)}%`,               bench: benchmarkStats ? `${(benchmarkStats.annVol * 100).toFixed(2)}%` : "鈥? },
+                  { label: "淇℃伅姣旂巼",           fund: comparisonStats.infoRatio?.toFixed(3) ?? "鈥?,                  bench: "鈥? },
+                ],
+                [
+                  { label: "澶忔櫘姣旂巼",           fund: comparisonStats.sharpe?.toFixed(3) ?? "鈥?,                     bench: benchmarkStats?.sharpe?.toFixed(3) ?? "鈥? },
+                  { label: "璺熻釜璇樊",           fund: comparisonStats.trackingError != null ? `${(comparisonStats.trackingError * 100).toFixed(2)}%` : "鈥?, bench: "鈥? },
+                ],
+                [
+                  { label: "鍗＄帥姣旂巼",           fund: comparisonStats.calmar?.toFixed(3) ?? "鈥?,                     bench: benchmarkStats?.calmar?.toFixed(3) ?? "鈥? },
+                  { label: "Alpha",              fund: comparisonStats.alpha != null ? `${(comparisonStats.alpha * 100).toFixed(2)}%` : "鈥?,   bench: "鈥? },
+                ],
+                [
+                  { label: "涓嬭椋庨櫓",           fund: `${(comparisonStats.downStd * 100).toFixed(2)}%`,              bench: benchmarkStats ? `${(benchmarkStats.downStd * 100).toFixed(2)}%` : "鈥? },
+                  { label: "Beta",               fund: comparisonStats.beta?.toFixed(4) ?? "鈥?,                       bench: "鈥? },
+                ],
+                [
+                  { label: "鏈€澶у洖鎾?,           fund: `-${(comparisonStats.maxDrawdown * 100).toFixed(2)}%`,         bench: benchmarkStats ? `-${(benchmarkStats.maxDd * 100).toFixed(2)}%` : "鈥? },
+                  { label: "鍋忓害",               fund: comparisonStats.skew?.toFixed(4) ?? "鈥?,                       bench: benchmarkStats?.skew?.toFixed(4) ?? "鈥? },
+                ],
+                [
+                  { label: "鏈€澶у洖鎾ゅ洖琛ユ湡(澶?",  fund: `${comparisonStats.maxDdDays}`,                               bench: benchmarkStats ? `${benchmarkStats.maxDdDays}` : "鈥? },
+                  { label: "宄板害",               fund: comparisonStats.kurt?.toFixed(4) ?? "鈥?,                       bench: benchmarkStats?.kurt?.toFixed(4) ?? "鈥? },
+                ],
+                [
+                  { label: "鏈€闀胯繛缁笉鍒涙柊楂?澶?", fund: `${comparisonStats.maxConsec}`,                              bench: benchmarkStats ? `${benchmarkStats.maxConsec}` : "鈥? },
+                  { label: "鍗＄帥姣旂巼(NHCI)",      fund: "鈥?,                                                          bench: benchmarkStats?.calmar?.toFixed(3) ?? "鈥? },
+                ],
+              ].map((pair, i) => (
+                <tr key={i} className="border-b last:border-b-0">
+                  <td className="bg-muted/30 px-2 py-1 text-muted-foreground">{pair[0].label}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{pair[0].fund}</td>
+                  <td className="px-2 py-1 text-right tabular-nums text-amber-500">{pair[0].bench}</td>
+                  <td />
+                  <td className="bg-muted/30 px-2 py-1 text-muted-foreground">{pair[1].label}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{pair[1].fund}</td>
+                  <td className="px-2 py-1 text-right tabular-nums text-amber-500">{pair[1].bench}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+        </Card>
+      )}
+    </div>
+
+    {/* Row 2: 鏈堝害鏀剁泭 鈥?full width */}
+    {monthlyYears.length > 0 && (
+      <Card className="mt-3">
+        <CardHeader className="pb-2 pt-3">
+          <CardTitle className="text-sm">鏈堝害鏀剁泭</CardTitle>
+        </CardHeader>
+        <CardContent className="overflow-auto px-3 pb-3 pt-0">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="border-b">
+                <th className="whitespace-nowrap px-2 py-1.5 text-left font-medium text-muted-foreground">骞翠唤</th>
+                {MONTH_LABELS.map((m) => (
+                  <th key={m} className="whitespace-nowrap px-2 py-1.5 text-right font-medium text-muted-foreground">{m}</th>
+                ))}
+                <th className="whitespace-nowrap px-2 py-1.5 text-right font-medium text-muted-foreground">鍏ㄥ勾</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthlyYears.map((year) => {
+                const row = monthlyReturns[year] ?? {}
+                return (
+                  <tr key={year} className="border-b last:border-b-0">
+                    <td className="whitespace-nowrap px-2 py-1.5 font-medium">{year}</td>
+                    {[1,2,3,4,5,6,7,8,9,10,11,12].map((m) => {
+                      const v = row[m]
+                      return (
+                        <td key={m} className={`whitespace-nowrap px-2 py-1.5 text-right tabular-nums ${v == null ? "text-muted-foreground" : getChinaMarketTextClass(v)}`}>
+                          {v == null ? "鈥? : `${v >= 0 ? "+" : ""}${(v * 100).toFixed(2)}%`}
+                        </td>
+                      )
+                    })}
+                    <td className={`whitespace-nowrap px-2 py-1.5 text-right font-medium tabular-nums ${row[0] == null ? "text-muted-foreground" : getChinaMarketTextClass(row[0]!)}`}>
+                      {row[0] == null ? "鈥? : `${row[0] >= 0 ? "+" : ""}${(row[0] * 100).toFixed(2)}%`}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    )}
+
+    {/* 鈺愨晲 娉㈠姩鍒嗘瀽 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲 */}
+    <div id="section-volatility" className="mt-5 flex items-center gap-2 mb-3" style={{ scrollMarginTop: "3rem" }}>
+      <h2 className="text-sm font-semibold whitespace-nowrap">娉㈠姩鍒嗘瀽</h2>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+    {normalizedData.length > 0 && (
+      <div className="grid grid-cols-2 gap-3">
+        <Card>
+        <CardHeader className="pb-2 pt-3">
+          <CardTitle className="text-sm">姣忔棩鏀剁泭鐜?/CardTitle>
+        </CardHeader>
+        <CardContent className="pt-0">
+          <ReactECharts
+            option={{
+              animation: false,
+              backgroundColor: "transparent",
+              tooltip: {
+                trigger: "axis",
+                formatter: (params: unknown[]) => {
+                  const p = (params as Array<{ value: [string, number] }>)[0]
+                  if (!p) return ""
+                  const pct = p.value[1]
+                  return `${p.value[0]}<br/>${pct >= 0 ? "+" : ""}${(pct * 100).toFixed(3)}%`
+                },
+              },
+              xAxis: {
+                type: "time",
+                axisLabel: { fontSize: 11 },
+                splitLine: { show: false },
+              },
+              yAxis: {
+                type: "value",
+                axisLabel: {
+                  fontSize: 11,
+                  formatter: (v: number) => `${(v * 100).toFixed(1)}%`,
+                },
+                splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } },
+              },
+              series: [
+                {
+                  name: "鏃ユ敹鐩婄巼",
+                  type: "bar",
+                  data: normalizedData.map((p) => [p.date, p.dailyReturn]),
+                  itemStyle: {
+                    color: (params: { value: [string, number] }) =>
+                      params.value[1] >= 0 ? "#ef4444" : "#22c55e",
+                  },
+                  barMaxWidth: 6,
+                },
+              ],
+              dataZoom: [
+                { type: "inside", start: 0, end: 100 },
+                { type: "slider", height: 20, bottom: 0, start: 0, end: 100 },
+              ],
+              grid: { top: 12, right: 16, bottom: 48, left: 60 },
+            }}
+            style={{ height: 280 }}
+            notMerge
+            lazyUpdate
+          />
+        </CardContent>
+        </Card>
+
+        <Card>
+        <CardHeader className="pb-2 pt-3">
+          <CardTitle className="text-sm">姣忔棩鏀剁泭鐜囧垎甯?/CardTitle>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={() => setShowDistStats((v) => !v)}
+              className="rounded border border-input bg-background px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted transition-colors"
+            >
+              {showDistStats ? "鍥捐〃" : "缁熻"}
+            </button>
+            {!showDistStats && (
+              <select
+                value={distFit}
+                onChange={(e) => setDistFit(e.target.value as typeof distFit)}
+                className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+              >
+                <option value="normal">姝ｆ€佸垎甯?/option>
+                <option value="t">t 鍒嗗竷</option>
+                <option value="laplace">鎷夋櫘鎷夋柉鍒嗗竷</option>
+                <option value="logistic">Logistic 鍒嗗竷</option>
+                <option value="kde">鏍稿瘑搴︿及璁?(KDE)</option>
+              </select>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="pt-0">
+          {showDistStats ? (() => {
+            const rets = normalizedData.map((p) => p.dailyReturn)
+            const n = rets.length
+            const mean = rets.reduce((s, r) => s + r, 0) / n
+            const sorted = [...rets].sort((a, b) => a - b)
+            const variance = rets.reduce((s, r) => s + (r - mean) ** 2, 0) / n
+            const std = Math.sqrt(variance)
+            const skew = std > 0 ? rets.reduce((s, r) => s + ((r - mean) / std) ** 3, 0) / n : 0
+            const kurt = std > 0 ? rets.reduce((s, r) => s + ((r - mean) / std) ** 4, 0) / n - 3 : 0
+            const median = n % 2 === 0 ? (sorted[n / 2 - 1] + sorted[n / 2]) / 2 : sorted[Math.floor(n / 2)]
+            const pct = (q: number) => sorted[Math.min(Math.floor(q * n), n - 1)]
+            const rows = [
+              { label: "鏍锋湰鏁?,       value: `${n}` },
+              { label: "鍧囧€?,         value: `${mean >= 0 ? "+" : ""}${(mean * 100).toFixed(4)}%` },
+              { label: "涓綅鏁?,       value: `${median >= 0 ? "+" : ""}${(median * 100).toFixed(4)}%` },
+              { label: "鏍囧噯宸?,       value: `${(std * 100).toFixed(4)}%` },
+              { label: "骞村寲娉㈠姩鐜?,   value: `${(std * Math.sqrt(252) * 100).toFixed(2)}%` },
+              { label: "鍋忓害",         value: skew.toFixed(4) },
+              { label: "宄板害(瓒呴)",   value: kurt.toFixed(4) },
+              { label: "鏈€灏忓€?,       value: `${(sorted[0] * 100).toFixed(4)}%` },
+              { label: "1% 鍒嗕綅鏁?,    value: `${(pct(0.01) * 100).toFixed(4)}%` },
+              { label: "5% 鍒嗕綅鏁?,    value: `${(pct(0.05) * 100).toFixed(4)}%` },
+              { label: "25% 鍒嗕綅鏁?,   value: `${(pct(0.25) * 100).toFixed(4)}%` },
+              { label: "75% 鍒嗕綅鏁?,   value: `${(pct(0.75) * 100).toFixed(4)}%` },
+              { label: "95% 鍒嗕綅鏁?,   value: `${(pct(0.95) * 100).toFixed(4)}%` },
+              { label: "99% 鍒嗕綅鏁?,   value: `${(pct(0.99) * 100).toFixed(4)}%` },
+              { label: "鏈€澶у€?,       value: `${(sorted[n - 1] * 100).toFixed(4)}%` },
+            ]
+            return (
+              <div className="overflow-auto rounded-lg border text-xs" style={{ height: 280 }}>
+                <table className="w-full">
+                  <tbody>
+                    {rows.map((row) => (
+                      <tr key={row.label} className="border-b last:border-b-0">
+                        <td className="bg-muted/30 px-3 py-1.5 text-muted-foreground whitespace-nowrap">{row.label}</td>
+                        <td className="px-3 py-1.5 text-right font-medium tabular-nums">{row.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          })() : (
+          <ReactECharts
+            option={(() => {
+              const rets = normalizedData.map((p) => p.dailyReturn)
+              const n = rets.length
+              const mean = rets.reduce((s, r) => s + r, 0) / n
+              const std = Math.sqrt(rets.reduce((s, r) => s + (r - mean) ** 2, 0) / n)
+              const min = Math.min(...rets)
+              const max = Math.max(...rets)
+              const binCount = 40
+              const binWidth = (max - min) / binCount
+              const bins: number[] = Array(binCount).fill(0)
+              for (const r of rets) {
+                const idx = Math.min(Math.floor((r - min) / binWidth), binCount - 1)
+                bins[idx]++
+              }
+              const binData = bins.map((count, i) => {
+                const center = min + (i + 0.5) * binWidth
+                return { value: [center, count] as [number, number], center }
+              })
+
+              // Lanczos log-gamma for t-distribution
+              function logGamma(z: number): number {
+                const g = 7
+                const c = [0.99999999999980993,676.5203681218851,-1259.1392167224028,771.32342877765313,-176.61502916214059,12.507343278686905,-0.13857109526572012,9.9843695780195716e-6,1.5056327351493116e-7]
+                if (z < 0.5) return Math.log(Math.PI) - Math.log(Math.abs(Math.sin(Math.PI * z))) - logGamma(1 - z)
+                let zz = z - 1, x = c[0]
+                for (let i = 1; i < g + 2; i++) x += c[i] / (zz + i)
+                const t = zz + g + 0.5
+                return 0.5 * Math.log(2 * Math.PI) + (zz + 0.5) * Math.log(t) - t + Math.log(x)
+              }
+
+              const excessKurt = std > 0
+                ? rets.reduce((s, r) => s + ((r - mean) / std) ** 4, 0) / n - 3
+                : 0
+
+              const curvePoints = 300
+              const pad = (max - min) * 0.05
+              const x0 = min - pad, x1 = max + pad
+              const step = (x1 - x0) / curvePoints
+
+              let fitLabel = "姝ｆ€佹嫙鍚?
+              const curveData = Array.from({ length: curvePoints + 1 }, (_, i) => {
+                const x = x0 + i * step
+                let pdf = 0
+                if (distFit === "normal") {
+                  fitLabel = "姝ｆ€佹嫙鍚?
+                  pdf = (1 / (std * Math.sqrt(2 * Math.PI))) * Math.exp(-0.5 * ((x - mean) / std) ** 2)
+                } else if (distFit === "t") {
+                  fitLabel = "t 鍒嗗竷鎷熷悎"
+                  const nu = Math.max(4.01, excessKurt > 0 ? 6 / excessKurt + 4 : 30)
+                  const s = std * Math.sqrt((nu - 2) / nu)
+                  const zt = (x - mean) / s
+                  const logC = logGamma((nu + 1) / 2) - 0.5 * Math.log(nu * Math.PI) - logGamma(nu / 2)
+                  pdf = Math.exp(logC - (nu + 1) / 2 * Math.log(1 + zt * zt / nu)) / s
+                } else if (distFit === "laplace") {
+                  fitLabel = "鎷夋櫘鎷夋柉鎷熷悎"
+                  const b = rets.reduce((s, r) => s + Math.abs(r - mean), 0) / n
+                  pdf = (1 / (2 * b)) * Math.exp(-Math.abs(x - mean) / b)
+                } else if (distFit === "logistic") {
+                  fitLabel = "Logistic 鎷熷悎"
+                  const s = std * Math.sqrt(3) / Math.PI
+                  const e = Math.exp(-(x - mean) / s)
+                  pdf = e / (s * (1 + e) * (1 + e))
+                } else if (distFit === "kde") {
+                  fitLabel = "KDE"
+                  const h = 1.06 * std * Math.pow(n, -0.2)
+                  pdf = rets.reduce((s, r) => s + Math.exp(-0.5 * ((x - r) / h) ** 2), 0)
+                       / (n * h * Math.sqrt(2 * Math.PI))
+                }
+                return [x, pdf * n * binWidth] as [number, number]
+              })
+
+              return {
+                animation: false,
+                backgroundColor: "transparent",
+                legend: {
+                  top: 4, right: 0,
+                  icon: "roundRect",
+                  itemWidth: 10, itemHeight: 6,
+                  textStyle: { fontSize: 10 },
+                  data: ["鍒嗗竷", fitLabel],
+                },
+                tooltip: {
+                  trigger: "axis",
+                  formatter: (params: unknown[]) => {
+                    const entries = params as Array<{ seriesName: string; data: { value: [number, number] } | [number, number] }>
+                    const bar = entries.find((e) => e.seriesName === "鍒嗗竷")
+                    const line = entries.find((e) => e.seriesName === fitLabel)
+                    const x = bar
+                      ? (bar.data as { value: [number, number] }).value[0]
+                      : (line?.data as [number, number])?.[0]
+                    const xStr = x != null ? `${x >= 0 ? "+" : ""}${(x * 100).toFixed(2)}%` : ""
+                    const countStr = bar ? `棰戞: ${(bar.data as { value: [number, number] }).value[1]}` : ""
+                    const fitStr = line ? `${fitLabel}: ${((line.data as [number, number])[1]).toFixed(2)}` : ""
+                    return [xStr, countStr, fitStr].filter(Boolean).join("<br/>")
+                  },
+                },
+                xAxis: {
+                  type: "value",
+                  axisLabel: { fontSize: 11, formatter: (v: number) => `${(v * 100).toFixed(1)}%` },
+                  splitLine: { show: false },
+                },
+                yAxis: {
+                  type: "value",
+                  name: "棰戞",
+                  nameTextStyle: { fontSize: 10 },
+                  axisLabel: { fontSize: 11 },
+                  splitLine: { lineStyle: { type: "dashed", opacity: 0.4 } },
+                },
+                series: [
+                  {
+                    name: "鍒嗗竷",
+                    type: "bar",
+                    data: binData.map((d) => ({
+                      value: d.value,
+                      itemStyle: { color: d.center >= 0 ? "#ef444466" : "#22c55e66" },
+                    })),
+                    barWidth: "98%",
+                  },
+                  {
+                    name: fitLabel,
+                    type: "line",
+                    data: curveData,
+                    smooth: true,
+                    symbol: "none",
+                    lineStyle: { color: "#f59e0b", width: 2 },
+                    itemStyle: { color: "#f59e0b" },
+                    z: 10,
+                  },
+                ],
+                grid: { top: 28, right: 16, bottom: 36, left: 52 },
+              }
+            })()}
+            style={{ height: 280 }}
+            notMerge
+            lazyUpdate
+          />
+          )}
+        </CardContent>
+        </Card>
+      </div>
+    )}
+  </>
+  )
+}

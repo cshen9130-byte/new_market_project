@@ -97,11 +97,11 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [rangeFrom, setRangeFrom] = useState("2020-01-01")
   const [showBenchmark, setShowBenchmark] = useState(true)
-  const [productName, setProductName] = useState("")
-  const [openDate, setOpenDate] = useState("")
-  const [shareClass, setShareClass] = useState("")
-  const [feeStructure, setFeeStructure] = useState("")
-  const [redemptionFee, setRedemptionFee] = useState("")
+  const [productName, setProductName] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_productName") ?? "" : "")
+  const [openDate, setOpenDate] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_openDate") ?? "" : "")
+  const [shareClass, setShareClass] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_shareClass") ?? "" : "")
+  const [feeStructure, setFeeStructure] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_feeStructure") ?? "" : "")
+  const [redemptionFee, setRedemptionFee] = useState(() => typeof window !== "undefined" ? localStorage.getItem("pf_redemptionFee") ?? "" : "")
   const [editingProduct, setEditingProduct] = useState(false)
   const [distFit, setDistFit] = useState<"normal" | "t" | "laplace" | "logistic" | "kde">("normal")
   const [showDistStats, setShowDistStats] = useState(false)
@@ -185,6 +185,13 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
 
   useEffect(() => { load() }, [load])
   useEffect(() => { loadCategoryPnl() }, [loadCategoryPnl])
+
+  // Persist product element fields to localStorage
+  useEffect(() => { localStorage.setItem("pf_productName", productName) }, [productName])
+  useEffect(() => { localStorage.setItem("pf_openDate", openDate) }, [openDate])
+  useEffect(() => { localStorage.setItem("pf_shareClass", shareClass) }, [shareClass])
+  useEffect(() => { localStorage.setItem("pf_feeStructure", feeStructure) }, [feeStructure])
+  useEffect(() => { localStorage.setItem("pf_redemptionFee", redemptionFee) }, [redemptionFee])
 
   useEffect(() => {
     if (allData.length === 0) {
