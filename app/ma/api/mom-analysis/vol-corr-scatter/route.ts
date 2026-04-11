@@ -78,7 +78,7 @@ export async function GET(req: Request) {
   const WINDOW = Math.max(5, Math.min(120, parseInt(searchParams.get("window") ?? "20", 10)))
 
   try {
-    // 1. Get MV per product (to find which products are actively held)
+    // 1. Get MV per product on latest date (to find active products)
     const mvRows = await query<{ contract: string; mv: string }>(
       `SELECT UPPER(TRIM("合约")) AS contract,
               SUM(
@@ -105,7 +105,56 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: true, points: [], window: WINDOW })
     }
 
-    // 2. Fetch market returns for all active products
+    // 2. Fetch actual PnL per product per date (close PnL + position PnL + fees)
+    const [closeRows, posRows] = await Promise.all([
+      query<{ date: string; contract: string; pnl: string }>(
+        `SELECT "交易日期"::text AS date, UPPER(TRIM("合约")) AS contract,
+                SUM(${numExpr("平仓盈亏")})::text AS pnl
+         FROM mom_futures_trade_details
+         WHERE "交易日期" IS NOT NULL AND "合约" IS NOT NULL
+         GROUP BY "交易日期", UPPER(TRIM("合约")) ORDER BY 1`,
+      ),
+      query<{ date: string; contract: string; pnl: string }>(
+        `SELECT "交易日期"::text AS date, UPPER(TRIM("合约")) AS contract,
+                SUM(${numExpr("持仓盈亏")})::text AS pnl
+         FROM mom_position_details
+         WHERE "交易日期" IS NOT NULL AND "合约" IS NOT NULL
+         GROUP BY "交易日期", UPPER(TRIM("合约")) ORDER BY 1`,
+      ),
+    ])
+    let feeRows: { date: string; contract: string; fee: string; premium: string }[] = []
+    try {
+      feeRows = await query<{ date: string; contract: string; fee: string; premium: string }>(
+        `SELECT trade_date::text AS date, UPPER(TRIM("合约")) AS contract,
+                SUM(${numExpr("手续费")})::text AS fee,
+                SUM(${numExpr("权利金收支")})::text AS premium
+         FROM mom_trade_details
+         WHERE trade_date IS NOT NULL AND "合约" IS NOT NULL
+         GROUP BY trade_date, UPPER(TRIM("合约")) ORDER BY 1`,
+      )
+    } catch { /* optional */ }
+
+    // prod → date → pnl
+    const prodPnlMap = new Map<string, Map<string, number>>()
+    const totalPnlMap = new Map<string, number>()
+    const addPnl = (contract: string, date: string, pnl: number) => {
+      const prod = getPrefix(contract)
+      if (!prodPnlMap.has(prod)) prodPnlMap.set(prod, new Map())
+      prodPnlMap.get(prod)!.set(date, (prodPnlMap.get(prod)!.get(date) ?? 0) + pnl)
+      totalPnlMap.set(date, (totalPnlMap.get(date) ?? 0) + pnl)
+    }
+    for (const r of closeRows) addPnl(r.contract, r.date, toNum(r.pnl))
+    for (const r of posRows)   addPnl(r.contract, r.date, toNum(r.pnl))
+    for (const r of feeRows)   addPnl(r.contract, r.date, -toNum(r.fee) + toNum(r.premium))
+
+    // All trading dates sorted, take last WINDOW
+    const allTradingDates = [...totalPnlMap.keys()].sort()
+    const lastDates = allTradingDates.slice(-WINDOW)
+
+    // Portfolio PnL series
+    const portPnl = lastDates.map((dt) => totalPnlMap.get(dt) ?? 0)
+
+    // 3. Fetch market pct_change for volatility (still market-based)
     const akCodes = [...new Set(activeProds.map((p) => AKSHARE_CODE[p]).filter(Boolean))]
     const pctRows = await query<{ date: string; code: string; pct: string }>(
       `SELECT trade_date::text AS date, code, pct_change::text AS pct
@@ -114,60 +163,35 @@ export async function GET(req: Request) {
        ORDER BY trade_date`,
       [akCodes],
     )
-
-    // code → sorted array of returns
-    const pctByCode = new Map<string, { date: string; ret: number }[]>()
+    const pctByCode = new Map<string, Map<string, number>>()
     for (const r of pctRows) {
-      if (!pctByCode.has(r.code)) pctByCode.set(r.code, [])
-      pctByCode.get(r.code)!.push({ date: r.date, ret: toNum(r.pct) / 100 })
+      if (!pctByCode.has(r.code)) pctByCode.set(r.code, new Map())
+      pctByCode.get(r.code)!.set(r.date, toNum(r.pct) / 100)
     }
+    const allMktDates = [...new Set(pctRows.map((r) => r.date))].sort()
+    const lastMktDates = allMktDates.slice(-WINDOW)
 
-    // All market dates sorted
-    const allDates = [...new Set(pctRows.map((r) => r.date))].sort()
-    const last20Dates = allDates.slice(-WINDOW)
-
-    // 3. Build portfolio return series over last WINDOW days
-    //    Portfolio daily return = weighted average of product returns by net MV
-    const totalMV = activeProds.reduce((s, p) => s + Math.abs(prodMV.get(p)!), 0)
-
-    const portRets: number[] = last20Dates.map((dt) => {
-      let r = 0
-      for (const prod of activeProds) {
-        const code = AKSHARE_CODE[prod]
-        if (!code) continue
-        const entry = pctByCode.get(code)?.find((e) => e.date === dt)
-        const weight = (prodMV.get(prod) ?? 0) / totalMV  // signed weight
-        r += (entry?.ret ?? 0) * weight
-      }
-      return r
-    })
-
-    // 4. Per product: vol + corr to portfolio
-    type Point = {
-      prod: string; sector: string; vol: number; corr: number; mv: number
-    }
+    // 4. Per product: vol (from pct_change) + corr (from actual PnL)
+    type Point = { prod: string; sector: string; vol: number; corr: number; mv: number }
     const points: Point[] = []
 
     for (const prod of activeProds) {
+      // Volatility: market pct_change std-dev
       const code = AKSHARE_CODE[prod]
-      if (!code) continue
-      const codeMap = new Map(pctByCode.get(code)?.map((e) => [e.date, e.ret]) ?? [])
-      const rets = last20Dates.map((dt) => codeMap.get(dt) ?? 0)
+      const mktRets = code
+        ? lastMktDates.map((dt) => pctByCode.get(code)?.get(dt) ?? 0)
+        : []
+      const nonZeroRets = mktRets.filter((r) => r !== 0)
+      if (nonZeroRets.length < 3) continue
+      const vol = Math.round(stdDev(nonZeroRets) * 10000) / 100  // daily vol as %
 
-      const nonZero = rets.filter((r) => r !== 0)
-      if (nonZero.length < 3) continue
+      // Correlation: actual product PnL vs portfolio PnL
+      const prodPnl = lastDates.map((dt) => prodPnlMap.get(prod)?.get(dt) ?? 0)
+      const corr = Math.round(pearsonCorr(prodPnl, portPnl) * 1000) / 1000
 
-      const vol  = Math.round(stdDev(nonZero) * 10000) / 100          // as % annualized-like, stored as decimal×100
-      const corr = Math.round(pearsonCorr(rets, portRets) * 1000) / 1000
-      const mv   = Math.round(Math.abs(prodMV.get(prod) ?? 0) / 10000) / 100  // 万
+      const mv = Math.round(Math.abs(prodMV.get(prod) ?? 0) / 10000) / 100  // 万
 
-      points.push({
-        prod,
-        sector: SECTOR_MAP[prod] ?? "其他",
-        vol,
-        corr,
-        mv,
-      })
+      points.push({ prod, sector: SECTOR_MAP[prod] ?? "其他", vol, corr, mv })
     }
 
     return NextResponse.json({ ok: true, points, window: WINDOW })
