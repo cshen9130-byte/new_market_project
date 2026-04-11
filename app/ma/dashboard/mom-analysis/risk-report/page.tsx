@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
 import { cn } from "@/lib/utils"
 import { BarChart2, ShieldAlert, PieChart, Users } from "lucide-react"
@@ -119,6 +119,516 @@ const PROD_NAMES: Record<string, string> = {
   TS:"2年期国债",TF:"5年期国债",T:"10年期国债",TL:"30年期国债",
 }
 
+// ── VaR Sandbox ──────────────────────────────────────────────────────────────
+function VarSandboxContent() {
+  type SbProd = { prod: string; mv: number; lots: number; sigma: number; lotMv: number }
+
+  const [sbDate, setSbDate]           = useState("")
+  const [sbProds, setSbProds]         = useState<SbProd[]>([])
+  const [sbOrigProds, setSbOrigProds] = useState<SbProd[]>([])
+  const [sbCorrMatrix, setSbCorrMatrix] = useState<number[][]>([])
+  const [sbZScore, setSbZScore]       = useState(1.6449)
+  const [sbConfidence, setSbConfidence] = useState("95")
+  const [sbNetCapital, setSbNetCapital] = useState(0)
+  const [sbLoading, setSbLoading]     = useState(true)
+  const [sbSearchInput, setSbSearchInput] = useState("")
+  const [sbSearch, setSbSearch]       = useState("")
+  const [sbSort, setSbSort]           = useState("mv_abs")
+  const [sbCatFilter, setSbCatFilter] = useState("全部")
+  const [sbSectorFilter, setSbSectorFilter] = useState("全部")
+  const [sbDirFilter, setSbDirFilter] = useState("全部")
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/ma/api/mom-analysis/var-sandbox").then(r => r.json()),
+      fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()),
+    ]).then(([j, navJ]) => {
+      if (j.ok && j.products?.length > 0) {
+        setSbDate(j.date ?? "")
+        setSbProds(j.products)
+        setSbOrigProds(j.products.map((p: SbProd) => ({ ...p })))
+        setSbCorrMatrix(j.corrMatrix ?? [])
+        setSbZScore(j.zScore ?? 1.6449)
+        setSbConfidence(j.confidence ?? "95")
+      }
+      const navData: { cumCapital?: number }[] = navJ.data ?? []
+      if (navData.length > 0) {
+        setSbNetCapital(navData[navData.length - 1].cumCapital ?? 0)
+      }
+    })
+    .catch(() => {})
+    .finally(() => setSbLoading(false))
+  }, [])
+
+  const updateMv = useCallback((prod: string, newMv: number) => {
+    setSbProds(prev => prev.map(p => {
+      if (p.prod !== prod) return p
+      const lots = p.lotMv > 0 ? Math.round(newMv / p.lotMv) : p.lots
+      return { ...p, mv: newMv, lots }
+    }))
+  }, [])
+
+  const updateLots = (prod: string, newLots: number) => {
+    setSbProds(prev => prev.map(p => {
+      if (p.prod !== prod) return p
+      return { ...p, lots: newLots, mv: Math.round(newLots * p.lotMv) }
+    }))
+  }
+
+  // stable scale from original positions — never changes during drag so other bars stay fixed
+  const origMaxAbsMv = useMemo(() => Math.max(...sbOrigProds.map(p => Math.abs(p.mv)), 1), [sbOrigProds])
+
+  const sbListRef = useRef<HTMLDivElement>(null)
+  const fsRef = useRef<HTMLDivElement>(null)
+  const [isFs, setIsFs] = useState(false)
+  const barDragRef = useRef<{ prod: string; startX: number; startMv: number; lotMv: number; halfW: number } | null>(null)
+
+  useEffect(() => {
+    const onFsChange = () => setIsFs(!!document.fullscreenElement)
+    document.addEventListener("fullscreenchange", onFsChange)
+    return () => document.removeEventListener("fullscreenchange", onFsChange)
+  }, [])
+
+  const toggleFs = () => {
+    if (!isFs) fsRef.current?.requestFullscreen()
+    else document.exitFullscreen()
+  }
+
+  // Stable display order from original positions — never changes during drag
+  const displayOrder = useMemo(() => {
+    const filtered = sbOrigProds.filter(p => {
+      if (sbCatFilter !== "全部" && PROD_CAT[p.prod] !== sbCatFilter) return false
+      if (sbSectorFilter !== "全部" && PROD_SECTOR[p.prod] !== sbSectorFilter) return false
+      if (sbDirFilter === "多" && p.mv <= 0) return false
+      if (sbDirFilter === "空" && p.mv >= 0) return false
+      return true
+    })
+    const sorted = [...filtered]
+    if      (sbSort === "mv_abs") sorted.sort((a, b) => Math.abs(b.mv) - Math.abs(a.mv))
+    else if (sbSort === "mv")     sorted.sort((a, b) => b.mv - a.mv)
+    else if (sbSort === "sigma")  sorted.sort((a, b) => b.sigma - a.sigma)
+    else if (sbSort === "prod")   sorted.sort((a, b) => a.prod.localeCompare(b.prod))
+    else if (sbSort === "marginal") {
+      // Marginal vol contribution: |dv_i * Σ_j(dv_j * corr_ij)|
+      const origIdx = new Map(sbOrigProds.map((p, i) => [p.prod, i]))
+      const allDv = sbOrigProds.map(p => p.sigma * p.mv)
+      const mcrMap = new Map<string, number>()
+      for (const p of sorted) {
+        const i = origIdx.get(p.prod)!
+        let covSum = 0
+        for (let j = 0; j < allDv.length; j++) covSum += allDv[j] * (sbCorrMatrix[i]?.[j] ?? 0)
+        mcrMap.set(p.prod, Math.abs(allDv[i] * covSum))
+      }
+      sorted.sort((a, b) => (mcrMap.get(b.prod) ?? 0) - (mcrMap.get(a.prod) ?? 0))
+    }
+    return sorted.map(p => p.prod)
+  }, [sbOrigProds, sbCorrMatrix, sbCatFilter, sbSectorFilter, sbDirFilter, sbSort])
+
+  // Map stable order to current (possibly dragged) values
+  const displayProds = useMemo(() => {
+    const prodMap = new Map(sbProds.map(p => [p.prod, p]))
+    return displayOrder.map(code => prodMap.get(code)!).filter(Boolean)
+  }, [sbProds, displayOrder])
+
+  const sandboxVaR = useMemo(() => {
+    if (displayProds.length === 0 || sbCorrMatrix.length < sbProds.length) return 0
+    const fullIdx = new Map(sbProds.map((p, i) => [p.prod, i]))
+    const indices = displayProds.map(p => fullIdx.get(p.prod)!)
+    const dv = displayProds.map(p => p.sigma * p.mv)
+    const M = indices.length
+    let portVar = 0
+    for (let a = 0; a < M; a++) {
+      if (dv[a] === 0) continue
+      for (let b = 0; b < M; b++) {
+        if (dv[b] === 0) continue
+        portVar += dv[a] * dv[b] * (sbCorrMatrix[indices[a]]?.[indices[b]] ?? 0)
+      }
+    }
+    return portVar > 0 ? Math.round(sbZScore * Math.sqrt(portVar)) : 0
+  }, [sbProds, displayProds, sbCorrMatrix, sbZScore])
+
+  const totalNetMv = useMemo(() => displayProds.reduce((s, p) => s + p.mv, 0), [displayProds])
+
+  // Marginal vol contribution per product: |dv_i * Σ_j(dv_j * corr_ij)|
+  // Uses displayProds so it responds to 类别/板块/方向 filters
+  const prodMcrData = useMemo(() => {
+    if (displayProds.length === 0 || sbCorrMatrix.length < sbProds.length) return []
+    const fullIdx = new Map(sbProds.map((p, i) => [p.prod, i]))
+    const dv = sbProds.map(p => p.sigma * p.mv)
+    return displayProds.map(p => {
+      const i = fullIdx.get(p.prod)!
+      let covSum = 0
+      for (let j = 0; j < dv.length; j++) covSum += dv[j] * (sbCorrMatrix[i]?.[j] ?? 0)
+      return { name: p.prod, value: Math.abs(dv[i] * covSum) }
+    }).filter(d => d.value > 0).sort((a, b) => b.value - a.value)
+  }, [sbProds, displayProds, sbCorrMatrix])
+
+  // Marginal vol contribution per sector
+  const sectorMcrData = useMemo(() => {
+    const sectorMap = new Map<string, number>()
+    for (const { name, value } of prodMcrData) {
+      const sector = PROD_SECTOR[name] ?? "其他"
+      sectorMap.set(sector, (sectorMap.get(sector) ?? 0) + value)
+    }
+    return Array.from(sectorMap.entries())
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+  }, [prodMcrData])
+
+  const handleDragMove = useCallback((e: PointerEvent) => {
+    const drag = barDragRef.current
+    if (!drag) return
+    e.preventDefault()
+    const deltaMv = ((e.clientX - drag.startX) / drag.halfW) * origMaxAbsMv
+    const raw     = drag.startMv + deltaMv
+    const snapped = drag.lotMv > 0 ? Math.round(raw / drag.lotMv) * drag.lotMv : Math.round(raw)
+    updateMv(drag.prod, snapped)
+  }, [origMaxAbsMv, updateMv])
+
+  const handleDragEnd = useCallback(() => {
+    barDragRef.current = null
+    document.body.style.cursor = ""
+    window.removeEventListener("pointermove", handleDragMove)
+    window.removeEventListener("pointerup", handleDragEnd)
+  }, [handleDragMove])
+
+  const onBarPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>, prod: string, mv: number, lotMv: number) => {
+    e.preventDefault()
+    // The circle is inside the bar container; walk up to get bar width
+    const barEl = e.currentTarget.parentElement!
+    const rect = barEl.getBoundingClientRect()
+    const halfW = rect.width * 0.47
+    if (halfW < 1) return
+    barDragRef.current = { prod, startX: e.clientX, startMv: mv, lotMv, halfW }
+    document.body.style.cursor = "grabbing"
+    window.addEventListener("pointermove", handleDragMove)
+    window.addEventListener("pointerup", handleDragEnd)
+  }, [handleDragMove, handleDragEnd])
+
+  // Cleanup drag listeners on unmount
+  useEffect(() => () => {
+    window.removeEventListener("pointermove", handleDragMove)
+    window.removeEventListener("pointerup", handleDragEnd)
+  }, [handleDragMove, handleDragEnd])
+
+  const doSearch = (code: string) => {
+    setSbSearch(code)
+    if (!code) return
+    // find matching element inside the scrollable list and scroll to it
+    const el = sbListRef.current?.querySelector<HTMLElement>(`[data-prod="${code}"]`)
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" })
+  }
+
+  const sbAvailSectors = useMemo(() =>
+    ["全部", ...Array.from(new Set(sbProds.map(p => PROD_SECTOR[p.prod]).filter(Boolean)))],
+    [sbProds]
+  )
+
+  if (sbLoading) {
+    return (
+      <section>
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          VaR 沙盒
+          <span className="h-px flex-1 bg-border" />
+        </h2>
+        <p className="text-sm text-muted-foreground">加载中...</p>
+      </section>
+    )
+  }
+  if (sbProds.length === 0) {
+    return (
+      <section>
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          VaR 沙盒
+          <span className="h-px flex-1 bg-border" />
+        </h2>
+        <p className="text-sm text-muted-foreground">暂无持仓数据</p>
+      </section>
+    )
+  }
+
+  return (
+    <div ref={fsRef} className={`flex gap-4 items-stretch${isFs ? " bg-background p-4 overflow-auto" : ""}`}>
+      {/* Left: sandbox card */}
+      <div className="flex-1 min-w-0">
+      <Card className="h-full">
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm">VaR沙盒 &mdash; {sbDate}</CardTitle>
+          <button
+            onClick={toggleFs}
+            className="text-xs px-2 py-1 rounded border border-border hover:bg-muted transition-colors shrink-0"
+            title={isFs ? "退出全屏" : "全屏"}
+          >{isFs ? "✕ 退出全屏" : "⛶ 全屏"}</button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          搜索定位品种使用滑块或数值输入调整持仓，VaR实时更新。
+        </p>
+      </CardHeader>
+      <CardContent>
+
+      {/* Toolbar */}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <input
+          className="text-xs border rounded px-2 py-1 bg-background w-44"
+          placeholder="输入品种代码（如 CU）"
+          value={sbSearchInput}
+          onChange={e => setSbSearchInput(e.target.value.toUpperCase())}
+          onKeyDown={e => { if (e.key === "Enter") doSearch(sbSearchInput) }}
+        />
+        <button
+          className="text-xs px-2.5 py-1 rounded border border-border hover:bg-muted transition-colors"
+          onClick={() => doSearch(sbSearchInput)}
+        >搜索</button>
+        <button
+          className="text-xs px-2.5 py-1 rounded border border-border hover:bg-muted transition-colors"
+          onClick={() => {
+            setSbProds(sbOrigProds.map(p => ({ ...p })))
+            setSbSearch("")
+            setSbSearchInput("")
+            setSbCatFilter("全部")
+            setSbSectorFilter("全部")
+            setSbDirFilter("全部")
+          }}
+        >重置为默认</button>
+        <span className="text-xs text-muted-foreground ml-1">排序：</span>
+        <select
+          className="text-xs border rounded px-1 py-0.5 bg-background"
+          value={sbSort}
+          onChange={e => setSbSort(e.target.value)}
+        >
+          <option value="mv_abs">按持仓净市值</option>
+          <option value="mv">按市值（多先）</option>
+          <option value="sigma">按波动率</option>
+          <option value="prod">按品种代码</option>
+          <option value="marginal">按边际波动贡献</option>
+        </select>
+        <span className="text-xs text-muted-foreground">类别：</span>
+        <select
+          className="text-xs border rounded px-1 py-0.5 bg-background"
+          value={sbCatFilter}
+          onChange={e => { setSbCatFilter(e.target.value); setSbSectorFilter("全部") }}
+        >
+          <option value="全部">全部</option>
+          {["商品", "股指", "国债"].map(c => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <span className="text-xs text-muted-foreground">板块：</span>
+        <select
+          className="text-xs border rounded px-1 py-0.5 bg-background"
+          value={sbSectorFilter}
+          onChange={e => setSbSectorFilter(e.target.value)}
+        >
+          {sbAvailSectors.map(s => <option key={s} value={s}>{s}</option>)}
+        </select>
+        <span className="text-xs text-muted-foreground">方向：</span>
+        <select
+          className="text-xs border rounded px-1 py-0.5 bg-background"
+          value={sbDirFilter}
+          onChange={e => setSbDirFilter(e.target.value)}
+        >
+          <option value="全部">全部</option>
+          <option value="多">多</option>
+          <option value="空">空</option>
+        </select>
+      </div>
+
+      {/* Product list */}
+      <div ref={sbListRef} className="border rounded-lg bg-card overflow-y-auto" style={{ maxHeight: 520 }}>
+        {displayProds.map((p, vi) => {
+          // Always use origMaxAbsMv for scale — stable, never changes during drag
+          const pct    = Math.min(Math.abs(p.mv) / origMaxAbsMv, 1)
+          const isLong = p.mv >= 0
+          const cn     = PROD_NAMES[p.prod] ?? ""
+          const step   = Math.max(p.lotMv, 1)
+          return (
+            <div
+              key={p.prod}
+              data-prod={p.prod}
+              className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-b-0 transition-colors ${
+                sbSearch && p.prod === sbSearch
+                  ? "bg-primary/10 ring-1 ring-inset ring-primary/40"
+                  : vi % 2 === 0 ? "" : "bg-muted/20"
+              }`}
+            >
+              {/* Label */}
+              <div className="w-52 shrink-0 text-xs leading-tight">
+                <span className="text-muted-foreground text-[10px]">{String(vi + 1).padStart(2, "0")}品种：</span>
+                <span className="font-semibold">{p.prod}</span>
+                {cn && <span className="text-muted-foreground">（{cn}）</span>}
+              </div>
+
+              {/* Bar visualization — draggable */}
+              <div
+                className="flex-1 relative h-6 min-w-0 select-none"
+                style={{ touchAction: "none" }}
+              >
+                {/* Center line */}
+                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-border/60 z-10" />
+                {/* Long bar */}
+                {p.mv > 0 && (
+                  <div
+                    className="absolute rounded-r pointer-events-none"
+                    style={{ left: "50%", width: `${pct * 47}%`, top: "30%", bottom: "30%", backgroundColor: "#60a5fa" }}
+                  />
+                )}
+                {/* Short bar */}
+                {p.mv < 0 && (
+                  <div
+                    className="absolute rounded-l pointer-events-none"
+                    style={{ right: "50%", width: `${pct * 47}%`, top: "30%", bottom: "30%", backgroundColor: "#f87171" }}
+                  />
+                )}
+                {/* Circle at bar end */}
+                {p.mv !== 0 && (
+                  <div
+                    className="absolute w-3 h-3 rounded-full border-2 bg-card z-20"
+                    style={{
+                      cursor: "grab",
+                      borderColor: isLong ? "#60a5fa" : "#f87171",
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      ...(isLong
+                        ? { left:  `calc(50% + ${pct * 47}% - 6px)` }
+                        : { right: `calc(50% + ${pct * 47}% - 6px)` }
+                      ),
+                    }}
+                    onPointerDown={e => onBarPointerDown(e, p.prod, p.mv, p.lotMv)}
+                  />
+                )}
+              </div>
+
+              {/* MV input + ─ / + */}
+              <input
+                type="text"
+                inputMode="numeric"
+                className="text-xs border rounded px-1 py-0.5 w-28 text-right bg-background font-mono shrink-0"
+                value={p.mv.toLocaleString("zh-CN")}
+                onChange={e => updateMv(p.prod, parseInt(e.target.value.replace(/,/g, ""), 10) || 0)}
+              />
+              <button
+                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                onClick={() => updateMv(p.prod, p.mv - step)}
+              >−</button>
+              <button
+                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                onClick={() => updateMv(p.prod, p.mv + step)}
+              >+</button>
+
+              {/* Lots input + ─ / + */}
+              <span className="text-xs text-muted-foreground shrink-0">手数：</span>
+              <input
+                type="number"
+                className="text-xs border rounded px-1 py-0.5 w-16 text-right bg-background font-mono shrink-0"
+                value={p.lots}
+                onChange={e => updateLots(p.prod, parseInt(e.target.value, 10) || 0)}
+              />
+              <button
+                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                onClick={() => updateLots(p.prod, p.lots - 1)}
+              >−</button>
+              <button
+                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                onClick={() => updateLots(p.prod, p.lots + 1)}
+              >+</button>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Summary footer */}
+      <div className="mt-3 text-sm space-y-1">
+        <div className="text-muted-foreground text-xs">
+          组合净市值：<span className="font-mono font-medium text-foreground">{totalNetMv.toLocaleString("zh-CN")}</span>
+        </div>
+        <div className="text-muted-foreground text-xs">
+          1日VaR（置信度=0.{sbConfidence}，z={sbZScore.toFixed(4)}）：
+          <span className="font-mono font-semibold text-orange-500 ml-1">
+            {sandboxVaR.toLocaleString("zh-CN")}
+          </span>
+        </div>
+        {sbNetCapital > 0 && (
+          <div className="text-muted-foreground text-xs">
+            VaR占组合累计净资本比例（累计净资本：{sbNetCapital.toLocaleString("zh-CN")}）：
+            <span className="font-mono font-medium text-foreground ml-1">
+              {(sandboxVaR / sbNetCapital * 100).toFixed(2)}%
+            </span>
+          </div>
+        )}
+      </div>
+      </CardContent>
+    </Card>
+    </div>{/* end left */}
+
+      {/* Right: two pie charts stacked */}
+      <div className="w-[460px] shrink-0 flex flex-col gap-4">
+        <Card className="flex-1">
+          <CardContent className="p-3 pb-2">
+            <ReactECharts
+              option={{
+                color: ['#5470c6','#91cc75','#fac858','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b0f1','#70d9a2','#f7a35c','#a0d8ef','#c9b4d4','#7cb5ec','#f4a460','#e4d354','#2b908f','#b0c4de','#7798bf','#aaeeee','#d4e157','#ffb74d','#80cbc4','#ce93d8','#80deea'],
+                title: { text: "品种边际波动贡献占比(%)（沙盒持仓）", textStyle: { fontSize: 12, fontWeight: "bold" }, top: 0, left: 0 },
+                tooltip: { trigger: "item", formatter: (p: { name: string; percent: number }) => {
+                    const cn = PROD_NAMES[p.name]
+                    return `${p.name}${cn ? `（${cn}）` : ""}: ${p.percent.toFixed(2)}%`
+                  }
+                },
+                legend: {
+                  type: "scroll", orient: "vertical", right: 0, top: 30, bottom: 10,
+                  textStyle: { fontSize: 11 },
+                  formatter: (name: string) => {
+                    const total = prodMcrData.reduce((s, d) => s + d.value, 0)
+                    const item = prodMcrData.find(d => d.name === name)
+                    const pct = total > 0 && item ? (item.value / total * 100).toFixed(2) : "0.00"
+                    const cn = PROD_NAMES[name]
+                    return `${name}${cn ? `（${cn}）` : ""}, ${pct}%`
+                  },
+                },
+                series: [{
+                  type: "pie", radius: "60%", center: ["30%", "55%"],
+                  label: { show: false },
+                  labelLine: { show: false },
+                  data: prodMcrData.map(d => d.name === "IM" ? { ...d, itemStyle: { color: "#ef4444" } } : d),
+                }],
+              }}
+              style={{ height: 300 }}
+              notMerge
+            />
+          </CardContent>
+        </Card>
+        <Card className="flex-1">
+          <CardContent className="p-3 pb-2">
+            <ReactECharts
+              option={{
+                color: ['#5470c6','#91cc75','#fac858','#ef4444','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc'],
+                title: { text: "板块边际波动贡献占比(%)（沙盒持仓）", textStyle: { fontSize: 12, fontWeight: "bold" }, top: 0, left: 0 },
+                tooltip: { trigger: "item", formatter: (p: { name: string; percent: number }) => `${p.name}: ${p.percent.toFixed(2)}%` },
+                legend: {
+                  type: "scroll", orient: "vertical", right: 0, top: 30, bottom: 10,
+                  textStyle: { fontSize: 11 },
+                  formatter: (name: string) => {
+                    const total = sectorMcrData.reduce((s, d) => s + d.value, 0)
+                    const item = sectorMcrData.find(d => d.name === name)
+                    const pct = total > 0 && item ? (item.value / total * 100).toFixed(2) : "0.00"
+                    return `${name}, ${pct}%`
+                  },
+                },
+                series: [{
+                  type: "pie", radius: "60%", center: ["30%", "55%"],
+                  label: { show: false },
+                  labelLine: { show: false },
+                  data: sectorMcrData.map(d => d.name === "股指" ? { ...d, itemStyle: { color: "#ef4444" } } : d),
+                }],
+              }}
+              style={{ height: 300 }}
+              notMerge
+            />
+          </CardContent>
+        </Card>
+      </div>{/* end right */}
+    </div>
+  )
+}
+
 function IntradayContent() {
   const [pnlData, setPnlData] = useState<{ date: string; pnl: number }[]>([])
   const [sectorLatest, setSectorLatest] = useState<{ sector: string; pnl: number }[]>([])
@@ -128,8 +638,13 @@ function IntradayContent() {
   const [sectorLS, setSectorLS] = useState<{ sector: string; long: number; short: number }[]>([])
   const [prodView, setProdView] = useState<"total" | "ls">("total")
   const [prodLS, setProdLS] = useState<{ prod: string; long: number; short: number }[]>([])
-  const [scatterPoints, setScatterPoints] = useState<{ prod: string; sector: string; vol: number; corr: number; mv: number }[]>([])
-  const [scatterWindow, setScatterWindow] = useState("20")
+  const [volBarData, setVolBarData] = useState<{ prod: string; sector: string; vol: number }[]>([])
+  const [mvcData, setMvcData] = useState<{ prod: string; sector: string; mvc: number }[]>([])
+  const [corrMatrixData, setCorrMatrixData] = useState<{ prods: string[]; data: [number, number, number][] } | null>(null)
+  const [volWindow, setVolWindow] = useState("20")
+  const [corrWindow, setCorrWindow] = useState("20")
+  const [corrLookupA, setCorrLookupA] = useState("")
+  const [corrLookupB, setCorrLookupB] = useState("")
   const [varData, setVarData] = useState<{ date: string; var: number; actual: number }[]>([])
   const [varBreachRate, setVarBreachRate] = useState<number | null>(null)
   const [varLoading, setVarLoading] = useState(false)
@@ -153,6 +668,25 @@ function IntradayContent() {
   const [prodSectorFilter, setProdSectorFilter] = useState("全部")
   const [prodSubSectorFilter, setProdSubSectorFilter] = useState("全部")
 
+  const fetchVolBar = (window: string) => {
+    fetch(`/ma/api/mom-analysis/vol-corr-scatter?window=${window}&corrWindow=${corrWindow}`)
+      .then((r) => r.json())
+      .then((j) => {
+        const pts: { prod: string; sector: string; vol: number; mvc: number }[] = j.points ?? []
+        setVolBarData([...pts].sort((a, b) => b.vol - a.vol))
+        setMvcData([...pts].sort((a, b) => b.mvc - a.mvc))
+        setCorrMatrixData(j.corrMatrix ?? null)
+      })
+      .catch(() => {})
+  }
+
+  const fetchCorrMatrix = (cw: string) => {
+    fetch(`/ma/api/mom-analysis/vol-corr-scatter?window=${volWindow}&corrWindow=${cw}`)
+      .then((r) => r.json())
+      .then((j) => setCorrMatrixData(j.corrMatrix ?? null))
+      .catch(() => {})
+  }
+
   const fetchVar = (confidence: string, volDays: string, corrDays: string, distModel: string) => {
     setVarLoading(true)
     const params = new URLSearchParams({ confidence, volDays, corrDays, distModel })
@@ -173,7 +707,7 @@ function IntradayContent() {
       fetch("/ma/api/mom-analysis/account-daily-pnl").then((r) => r.json()),
       fetch("/ma/api/mom-analysis/sector-ls-pnl").then((r) => r.json()),
       fetch(`/ma/api/mom-analysis/var-prediction?confidence=${varConfidence}&volDays=${varVolDays}&corrDays=${varCorrDays}&distModel=${varDistModel}`).then((r) => r.json()),
-      fetch("/ma/api/mom-analysis/vol-corr-scatter?window=20").then((r) => r.json()),
+      fetch("/ma/api/mom-analysis/vol-corr-scatter?window=20&corrWindow=20").then((r) => r.json()),
     ]).then(([navJson, catJson, acctJson, lsJson, varJson, scatterJson]) => {
       const rows: { date: string; pnl: number }[] = (navJson.data ?? []).map(
         (r: { date: string; pnl: number }) => ({ date: r.date, pnl: r.pnl })
@@ -209,7 +743,10 @@ function IntradayContent() {
 
       setVarData(varJson.data ?? [])
       if (varJson.breachRate != null) setVarBreachRate(varJson.breachRate)
-      setScatterPoints(scatterJson.points ?? [])
+      const pts: { prod: string; sector: string; vol: number; mvc: number }[] = scatterJson.points ?? []
+      setVolBarData([...pts].sort((a, b) => b.vol - a.vol))
+      setMvcData([...pts].sort((a, b) => b.mvc - a.mvc))
+      setCorrMatrixData(scatterJson.corrMatrix ?? null)
     }).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
@@ -570,99 +1107,6 @@ function IntradayContent() {
       </section>
       <section>
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
-          品种波动率 &amp; 组合相关性
-          <span className="h-px flex-1 bg-border" />
-          <label className="text-xs text-muted-foreground font-normal">窗口</label>
-          <select
-            className="text-xs border rounded px-1 py-0.5 bg-background font-normal"
-            value={scatterWindow}
-            onChange={(e) => {
-              setScatterWindow(e.target.value)
-              fetch(`/ma/api/mom-analysis/vol-corr-scatter?window=${e.target.value}`)
-                .then((r) => r.json())
-                .then((j) => setScatterPoints(j.points ?? []))
-                .catch(() => {})
-            }}
-          >
-            {["5","10","20","30","60"].map((d) => <option key={d} value={d}>{d} 天</option>)}
-          </select>
-        </h2>
-        {!loading && scatterPoints.length > 0 && (() => {
-          const SECTOR_COLORS: Record<string, string> = {
-            "农产": "#22c55e", "生鲜": "#84cc16", "贵金属": "#eab308",
-            "有色": "#f97316", "新能源": "#06b6d4", "黑色": "#6b7280",
-            "能源化工": "#8b5cf6", "航运": "#0ea5e9", "股指": "#ef4444",
-            "国债": "#3b82f6", "其他": "#a3a3a3",
-          }
-          const sectors = [...new Set(scatterPoints.map((p) => p.sector))].sort()
-          const seriesBySector = sectors.map((sector) => ({
-            name: sector,
-            type: "scatter" as const,
-            data: scatterPoints
-              .filter((p) => p.sector === sector)
-              .map((p) => ({ value: [p.corr, p.vol, p.mv, p.prod], name: p.prod })),
-            symbolSize: (d: [number, number, number, string]) => Math.max(6, Math.min(32, Math.sqrt(d[2]) * 1.4)),
-            itemStyle: { color: SECTOR_COLORS[sector] ?? "#a3a3a3", opacity: 0.82 },
-            label: {
-              show: true,
-              formatter: (p: { data: { name: string } }) => p.data.name,
-              fontSize: 9,
-              position: "top" as const,
-              color: "#6b7280",
-            },
-          }))
-          return (
-            <Card>
-              <CardContent className="p-0 pb-2">
-                <ReactECharts
-                  option={{
-                    tooltip: {
-                      formatter: (p: { data: { value: [number, number, number, string]; name: string } }) => {
-                        const [corr, vol, mv, prod] = p.data.value
-                        return `<b>${prod}</b><br/>相关系数: ${corr}<br/>波动率: ${vol}%<br/>净敞口: ${mv}万`
-                      },
-                    },
-                    legend: {
-                      data: sectors,
-                      top: 8,
-                      itemWidth: 10,
-                      itemGap: 8,
-                      textStyle: { fontSize: 11 },
-                    },
-                    grid: { left: 55, right: 20, top: 48, bottom: 50 },
-                    xAxis: {
-                      type: "value",
-                      name: `${scatterWindow}日相关系数（vs 组合）`,
-                      nameLocation: "center",
-                      nameGap: 28,
-                      nameTextStyle: { fontSize: 11 },
-                      axisLabel: { fontSize: 10 },
-                      splitLine: { lineStyle: { type: "dashed" } },
-                      min: -1, max: 1,
-                    },
-                    yAxis: {
-                      type: "value",
-                      name: `${scatterWindow}日波动率 (日%)`,
-                      nameLocation: "center",
-                      nameGap: 42,
-                      nameTextStyle: { fontSize: 11 },
-                      axisLabel: { fontSize: 10, formatter: (v: number) => v + "%" },
-                      splitLine: { lineStyle: { type: "dashed" } },
-                      min: 0,
-                    },
-                    series: seriesBySector,
-                  }}
-                  style={{ height: 340 }}
-                  notMerge
-                />
-              </CardContent>
-            </Card>
-          )
-        })()}
-      </section>
-
-      <section>
-        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           次日预测
           <span className="h-px flex-1 bg-border" />
           {varBreachRate != null && (
@@ -1014,6 +1458,155 @@ function IntradayContent() {
           <p className="text-sm text-muted-foreground">数据不足（需至少 22 个交易日）</p>
         )}
 
+        {!loading && (volBarData.length > 0 || (corrMatrixData && corrMatrixData.prods.length > 1)) && (
+          <div className="flex gap-3 mt-3">
+            {/* Left: vol + mvc stacked */}
+            <div className="flex flex-col gap-3 w-1/2">
+              {volBarData.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-sm">品种市场收益率波动率（日，%）</CardTitle>
+                      <select
+                        className="text-xs border rounded px-1 py-0.5 bg-background font-normal"
+                        value={volWindow}
+                        onChange={(e) => { setVolWindow(e.target.value); fetchVolBar(e.target.value) }}
+                      >
+                        {["5", "10", "20"].map((d) => <option key={d} value={d}>{d} 天</option>)}
+                      </select>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0 pb-2">
+                    <ReactECharts
+                      option={{
+                        tooltip: {
+                          trigger: "axis",
+                          formatter: (params: { name: string; value: number; marker: string }[]) =>
+                            params.map((p) => `${p.marker}${p.name} ${PROD_NAMES[p.name] ? `(${PROD_NAMES[p.name]})` : ""}: ${p.value}%`).join("<br/>"),
+                        },
+                        grid: { left: 50, right: 20, top: 10, bottom: 60 },
+                        xAxis: { type: "category", data: volBarData.map((d) => d.prod), axisLabel: { fontSize: 9, rotate: 45 } },
+                        yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v: number) => v + "%" }, splitLine: { lineStyle: { type: "dashed" } } },
+                        series: [{ type: "bar", data: volBarData.map((d) => ({ value: d.vol })), barMaxWidth: 20, itemStyle: { color: "#60a5fa" }, label: { show: false } }],
+                      }}
+                      style={{ height: 200 }}
+                      notMerge
+                    />
+                  </CardContent>
+                </Card>
+              )}
+              {mvcData.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-sm">品种边际波动率贡献（占组合波动率 %）</CardTitle>
+                      <span className="text-xs text-muted-foreground font-normal">{volWindow} 天窗口</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="p-0 pb-2">
+                    <ReactECharts
+                      option={{
+                        tooltip: {
+                          trigger: "axis",
+                          formatter: (params: { name: string; value: number; marker: string }[]) =>
+                            params.map((p) => `${p.marker}${p.name}${PROD_NAMES[p.name] ? ` (${PROD_NAMES[p.name]})` : ""}: ${p.value}%`).join("<br/>"),
+                        },
+                        grid: { left: 50, right: 20, top: 10, bottom: 60 },
+                        xAxis: { type: "category", data: mvcData.map((d) => d.prod), axisLabel: { fontSize: 9, rotate: 45 } },
+                        yAxis: { type: "value", axisLabel: { fontSize: 10, formatter: (v: number) => v + "%" }, splitLine: { lineStyle: { type: "dashed" } } },
+                        series: [{ type: "bar", data: mvcData.map((d) => ({ value: d.mvc, itemStyle: { color: d.mvc >= 0 ? "#f97316" : "#22c55e" } })), barMaxWidth: 20, label: { show: false } }],
+                      }}
+                      style={{ height: 200 }}
+                      notMerge
+                    />
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+
+            {/* Right: correlation heatmap */}
+            {corrMatrixData && corrMatrixData.prods.length > 1 && (() => {
+              const { prods, data } = corrMatrixData
+              return (
+                <div className="flex-1 min-w-0">
+                  <Card className="h-full">
+                    <CardHeader className="pb-2">
+                      <div className="flex items-center justify-between">
+                        <CardTitle className="text-sm">品种相关性矩阵（市场收益率）</CardTitle>
+                        <select
+                          className="text-xs border rounded px-1 py-0.5 bg-background font-normal"
+                          value={corrWindow}
+                          onChange={(e) => { setCorrWindow(e.target.value); fetchCorrMatrix(e.target.value) }}
+                        >
+                          {["5","10","20","30","60","120"].map((d) => <option key={d} value={d}>{d} 天</option>)}
+                        </select>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="p-0 pb-2 overflow-y-auto" style={{ maxHeight: 460 }}>
+                      <ReactECharts
+                        option={{
+                          tooltip: {
+                            formatter: (p: { data: [number, number, number] }) =>
+                              `${prods[p.data[1]]} \u2194 ${prods[p.data[0]]}: ${p.data[2]}`,
+                          },
+                          grid: { left: 40, right: 80, top: 10, bottom: 40 },
+                          xAxis: { type: "category", data: prods, axisLabel: { fontSize: 8, rotate: 45, interval: 0 }, splitArea: { show: true } },
+                          yAxis: { type: "category", data: prods, inverse: true, axisLabel: { fontSize: 8, interval: 0 }, splitArea: { show: true } },
+                          visualMap: {
+                            min: -1, max: 1,
+                            calculable: false,
+                            orient: "vertical",
+                            right: 5, top: "center",
+                            itemHeight: 160,
+                            textStyle: { fontSize: 9 },
+                            inRange: { color: ["#3b82f6", "#f8fafc", "#ef4444"] },
+                          },
+                          series: [{
+                            type: "heatmap",
+                            data,
+                            emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "rgba(0,0,0,0.2)" } },
+                          }],
+                        }}
+                        style={{ height: prods.length * 13 + 60 }}
+                        notMerge
+                      />
+                    </CardContent>
+                    {/* Pairwise lookup */}
+                    <div className="flex items-center gap-2 px-3 py-2 border-t">
+                      <span className="text-xs text-muted-foreground whitespace-nowrap">查询相关性</span>
+                      <input
+                        className="text-xs border rounded px-2 py-0.5 w-16 bg-background uppercase"
+                        placeholder="LH"
+                        value={corrLookupA}
+                        onChange={(e) => setCorrLookupA(e.target.value.toUpperCase())}
+                      />
+                      <span className="text-xs text-muted-foreground">↔</span>
+                      <input
+                        className="text-xs border rounded px-2 py-0.5 w-16 bg-background uppercase"
+                        placeholder="AU"
+                        value={corrLookupB}
+                        onChange={(e) => setCorrLookupB(e.target.value.toUpperCase())}
+                      />
+                      {(() => {
+                        if (!corrLookupA || !corrLookupB || !corrMatrixData) return null
+                        const { prods, data } = corrMatrixData
+                        const xi = prods.indexOf(corrLookupA)
+                        const yi = prods.indexOf(corrLookupB)
+                        if (xi === -1 || yi === -1) return <span className="text-xs text-muted-foreground">产品不在持仓</span>
+                        const entry = data.find(([x, y]) => x === xi && y === yi)
+                        const val = entry ? entry[2] : (xi === yi ? 1 : null)
+                        if (val == null) return null
+                        const color = val > 0.6 ? "text-red-500" : val < -0.3 ? "text-blue-500" : "text-foreground"
+                        return <span className={`text-sm font-mono font-semibold ${color}`}>{val}</span>
+                      })()}
+                    </div>
+                  </Card>
+                </div>
+              )
+            })()}
+          </div>
+        )}
+
         {/* Optimization results panel */}
         {varOptOpen && (
           <div className="mt-3 border rounded-lg bg-card">
@@ -1140,6 +1733,7 @@ function IntradayContent() {
           </div>
         )}
       </section>
+      <VarSandboxContent />
     </div>
   )
 }

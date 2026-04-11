@@ -73,9 +73,18 @@ function pearsonCorr(x: number[], y: number[]): number {
   return denom < 1e-10 ? 0 : num / denom
 }
 
+function cumulativeSeries(xs: number[]): number[] {
+  let acc = 0
+  return xs.map((x) => {
+    acc += x
+    return acc
+  })
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const WINDOW = Math.max(5, Math.min(120, parseInt(searchParams.get("window") ?? "20", 10)))
+  const CORR_WINDOW = Math.max(5, Math.min(504, parseInt(searchParams.get("corrWindow") ?? String(WINDOW), 10)))
 
   try {
     // 1. Get MV per product on latest date (to find active products)
@@ -153,8 +162,9 @@ export async function GET(req: Request) {
 
     // Portfolio PnL series
     const portPnl = lastDates.map((dt) => totalPnlMap.get(dt) ?? 0)
+    const portCumPnl = cumulativeSeries(portPnl)
 
-    // 3. Fetch market pct_change for volatility (still market-based)
+    // 3. Fetch market pct_change for volatility
     const akCodes = [...new Set(activeProds.map((p) => AKSHARE_CODE[p]).filter(Boolean))]
     const pctRows = await query<{ date: string; code: string; pct: string }>(
       `SELECT trade_date::text AS date, code, pct_change::text AS pct
@@ -171,12 +181,32 @@ export async function GET(req: Request) {
     const allMktDates = [...new Set(pctRows.map((r) => r.date))].sort()
     const lastMktDates = allMktDates.slice(-WINDOW)
 
-    // 4. Per product: vol (from pct_change) + corr (from actual PnL)
-    type Point = { prod: string; sector: string; vol: number; corr: number; mv: number }
+    // 4. Build signed-weight portfolio market return series for MVC
+    // w_i = signedNetMV_i / totalAbsMV  (positive = net long, negative = net short)
+    const totalAbsMV = [...prodMV.values()].reduce((s, v) => s + Math.abs(v), 0)
+    // portfolio market return on each mkt date = sum of w_i * r_i_t
+    const portMktRet = lastMktDates.map((dt) => {
+      let ret = 0
+      for (const prod of activeProds) {
+        const code = AKSHARE_CODE[prod]
+        if (!code) continue
+        const w = (prodMV.get(prod) ?? 0) / totalAbsMV   // signed weight
+        ret += w * (pctByCode.get(code)?.get(dt) ?? 0)
+      }
+      return ret
+    })
+    const portMktVol = stdDev(portMktRet)  // portfolio vol from market returns
+
+    // 5. Per product: vol, corr, mvc
+    type Point = { prod: string; sector: string; vol: number; corr: number; mv: number; mvc: number }
     const points: Point[] = []
 
     for (const prod of activeProds) {
-      // Volatility: market pct_change std-dev
+      const signedMV = prodMV.get(prod) ?? 0
+      const netMV = Math.abs(signedMV)
+      if (netMV < 1000) continue
+
+      // Volatility: market return std dev over window
       const code = AKSHARE_CODE[prod]
       const mktRets = code
         ? lastMktDates.map((dt) => pctByCode.get(code)?.get(dt) ?? 0)
@@ -185,16 +215,40 @@ export async function GET(req: Request) {
       if (nonZeroRets.length < 3) continue
       const vol = Math.round(stdDev(nonZeroRets) * 10000) / 100  // daily vol as %
 
-      // Correlation: actual product PnL vs portfolio PnL
+      // Correlation: cumulative PnL path vs portfolio cumulative PnL path
       const prodPnl = lastDates.map((dt) => prodPnlMap.get(prod)?.get(dt) ?? 0)
-      const corr = Math.round(pearsonCorr(prodPnl, portPnl) * 1000) / 1000
+      const prodCumPnl = cumulativeSeries(prodPnl)
+      const corr = Math.round(pearsonCorr(prodCumPnl, portCumPnl) * 1000) / 1000
 
-      const mv = Math.round(Math.abs(prodMV.get(prod) ?? 0) / 10000) / 100  // 万
+      // Marginal Volatility Contribution: mvc_i = w_i * σ_i * ρ(r_i, r_portfolio)
+      // expressed as % of portfolio vol so all products sum to 100%
+      const w = signedMV / totalAbsMV
+      const mktCorrWithPort = portMktVol > 0 ? pearsonCorr(mktRets, portMktRet) : 0
+      const mktSigma = stdDev(mktRets)
+      const mvcRaw = w * mktSigma * mktCorrWithPort      // contribution to portMktVol
+      const mvc = portMktVol > 0 ? Math.round(mvcRaw / portMktVol * 10000) / 100 : 0  // %
 
-      points.push({ prod, sector: SECTOR_MAP[prod] ?? "其他", vol, corr, mv })
+      const mv = Math.round(netMV / 10000) / 100  // 万
+
+      points.push({ prod, sector: SECTOR_MAP[prod] ?? "其他", vol, corr, mv, mvc })
     }
 
-    return NextResponse.json({ ok: true, points, window: WINDOW })
+    // 6. Pairwise correlation matrix — uses CORR_WINDOW (may differ from WINDOW)
+    const corrMktDates = allMktDates.slice(-CORR_WINDOW)
+    const matrixProds = points.map((p) => p.prod)
+    const matrixRets = matrixProds.map((prod) => {
+      const code = AKSHARE_CODE[prod]
+      return code ? corrMktDates.map((dt) => pctByCode.get(code)?.get(dt) ?? 0) : []
+    })
+    const corrMatrixData: [number, number, number][] = []
+    for (let i = 0; i < matrixProds.length; i++) {
+      for (let j = 0; j < matrixProds.length; j++) {
+        const c = i === j ? 1 : Math.round(pearsonCorr(matrixRets[i], matrixRets[j]) * 100) / 100
+        corrMatrixData.push([j, i, c])  // [xIdx, yIdx, value] — yIdx=i so first prod is top row
+      }
+    }
+
+    return NextResponse.json({ ok: true, points, corrMatrix: { prods: matrixProds, data: corrMatrixData }, window: WINDOW, corrWindow: CORR_WINDOW })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error("[vol-corr-scatter]", msg)
