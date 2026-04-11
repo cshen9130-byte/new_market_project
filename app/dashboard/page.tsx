@@ -50,23 +50,25 @@ export default function DashboardPage() {
     <div className="relative min-h-screen bg-black">
       <div className="absolute top-4 left-4 z-10 text-cyan-400 text-lg font-mono">欢迎，{user.name}</div>
 
-      <Button
-        onClick={handleLogout}
-        variant="outline"
-        className="absolute top-4 right-4 z-10 border-cyan-500/30 bg-black/80 text-cyan-400 hover:bg-cyan-500/20"
-      >
-        <LogOut className="w-4 h-4 mr-2" />
-        退出登录
-      </Button>
+      <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
+        <Button
+          onClick={() => router.push("/dashboard/ai-knowledge")}
+          variant="outline"
+          className="border-cyan-500/30 bg-black/80 text-cyan-400 hover:bg-cyan-500/20"
+        >
+          <BrainCircuit className="w-4 h-4 sm:mr-2" />
+          <span className="hidden sm:inline">AI知识库</span>
+        </Button>
 
-      <Button
-        onClick={() => router.push("/dashboard/ai-knowledge")}
-        variant="outline"
-        className="absolute top-4 right-36 z-10 border-cyan-500/30 bg-black/80 text-cyan-400 hover:bg-cyan-500/20"
-      >
-        <BrainCircuit className="w-4 h-4 mr-2" />
-        AI知识库
-      </Button>
+        <Button
+          onClick={handleLogout}
+          variant="outline"
+          className="border-cyan-500/30 bg-black/80 text-cyan-400 hover:bg-cyan-500/20"
+        >
+          <LogOut className="w-4 h-4 sm:mr-2" />
+          <span className="hidden sm:inline">退出登录</span>
+        </Button>
+      </div>
 
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-0 text-center">
           <h1 className="text-4xl font-bold text-cyan-400 mb-2 font-mono">市场环境监测系统</h1>

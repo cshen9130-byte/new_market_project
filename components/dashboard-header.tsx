@@ -1,7 +1,7 @@
 "use client"
 
 import { LogoutButton } from "@/components/logout-button"
-import { Bot, Moon, Sun } from "lucide-react"
+import { Bot, Moon, Sun, Menu } from "lucide-react"
 import { useTheme } from "next-themes"
 import { Button } from "@/components/ui/button"
 
@@ -11,18 +11,31 @@ interface DashboardHeaderProps {
     full_name: string | null
   }
   onChatToggle?: () => void
+  onMenuToggle?: () => void
 }
 
-export function DashboardHeader({ user, onChatToggle }: DashboardHeaderProps) {
+export function DashboardHeader({ user, onChatToggle, onMenuToggle }: DashboardHeaderProps) {
   const { theme, setTheme } = useTheme()
 
   return (
     <header className="border-b bg-card">
-      <div className="flex h-16 items-center justify-between px-6">
-        <div className="flex items-center gap-4">
+      <div className="flex h-16 items-center justify-between px-4 md:px-6">
+        <div className="flex items-center gap-3">
+          {onMenuToggle && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onMenuToggle}
+              className="h-9 w-9 md:hidden"
+              title="菜单"
+            >
+              <Menu className="h-5 w-5" />
+              <span className="sr-only">菜单</span>
+            </Button>
+          )}
           <div className="flex flex-col">
             <span className="text-sm font-medium">{user.full_name || "分析师"}</span>
-            <span className="text-xs text-muted-foreground">{user.email}</span>
+            <span className="hidden sm:block text-xs text-muted-foreground">{user.email}</span>
           </div>
         </div>
         <div className="flex items-center gap-2">

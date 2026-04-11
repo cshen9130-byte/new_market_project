@@ -12,6 +12,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const router = useRouter()
   const [user, setUser] = useState<User | null>(null)
   const [chatVisible, setChatVisible] = useState(false)
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   useEffect(() => {
     const current = authService.getCurrentUser()
@@ -28,10 +29,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">
-      <DashboardSidebar />
+      <DashboardSidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
       <div className="flex flex-col flex-1 overflow-hidden">
-        <DashboardHeader user={headerUser} onChatToggle={() => setChatVisible((v) => !v)} />
-        <main className="flex-1 overflow-y-auto px-6 pb-6">{children}</main>
+        <DashboardHeader user={headerUser} onChatToggle={() => setChatVisible((v) => !v)} onMenuToggle={() => setMobileSidebarOpen((v) => !v)} />
+        <main className="flex-1 overflow-y-auto px-4 md:px-6 pb-6">{children}</main>
       </div>
       <ChatBotWidget visible={chatVisible} onClose={() => setChatVisible(false)} />
     </div>
