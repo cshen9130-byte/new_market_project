@@ -128,6 +128,8 @@ function IntradayContent() {
   const [sectorLS, setSectorLS] = useState<{ sector: string; long: number; short: number }[]>([])
   const [prodView, setProdView] = useState<"total" | "ls">("total")
   const [prodLS, setProdLS] = useState<{ prod: string; long: number; short: number }[]>([])
+  const [scatterPoints, setScatterPoints] = useState<{ prod: string; sector: string; vol: number; corr: number; mv: number }[]>([])
+  const [scatterWindow, setScatterWindow] = useState("20")
   const [varData, setVarData] = useState<{ date: string; var: number; actual: number }[]>([])
   const [varBreachRate, setVarBreachRate] = useState<number | null>(null)
   const [varLoading, setVarLoading] = useState(false)
@@ -171,7 +173,8 @@ function IntradayContent() {
       fetch("/ma/api/mom-analysis/account-daily-pnl").then((r) => r.json()),
       fetch("/ma/api/mom-analysis/sector-ls-pnl").then((r) => r.json()),
       fetch(`/ma/api/mom-analysis/var-prediction?confidence=${varConfidence}&volDays=${varVolDays}&corrDays=${varCorrDays}&distModel=${varDistModel}`).then((r) => r.json()),
-    ]).then(([navJson, catJson, acctJson, lsJson, varJson]) => {
+      fetch("/ma/api/mom-analysis/vol-corr-scatter?window=20").then((r) => r.json()),
+    ]).then(([navJson, catJson, acctJson, lsJson, varJson, scatterJson]) => {
       const rows: { date: string; pnl: number }[] = (navJson.data ?? []).map(
         (r: { date: string; pnl: number }) => ({ date: r.date, pnl: r.pnl })
       )
@@ -206,6 +209,7 @@ function IntradayContent() {
 
       setVarData(varJson.data ?? [])
       if (varJson.breachRate != null) setVarBreachRate(varJson.breachRate)
+      setScatterPoints(scatterJson.points ?? [])
     }).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
@@ -564,6 +568,99 @@ function IntradayContent() {
           </div>
         )}
       </section>
+      <section>
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          品种波动率 &amp; 组合相关性
+          <span className="h-px flex-1 bg-border" />
+          <label className="text-xs text-muted-foreground font-normal">窗口</label>
+          <select
+            className="text-xs border rounded px-1 py-0.5 bg-background font-normal"
+            value={scatterWindow}
+            onChange={(e) => {
+              setScatterWindow(e.target.value)
+              fetch(`/ma/api/mom-analysis/vol-corr-scatter?window=${e.target.value}`)
+                .then((r) => r.json())
+                .then((j) => setScatterPoints(j.points ?? []))
+                .catch(() => {})
+            }}
+          >
+            {["5","10","20","30","60"].map((d) => <option key={d} value={d}>{d} 天</option>)}
+          </select>
+        </h2>
+        {!loading && scatterPoints.length > 0 && (() => {
+          const SECTOR_COLORS: Record<string, string> = {
+            "农产": "#22c55e", "生鲜": "#84cc16", "贵金属": "#eab308",
+            "有色": "#f97316", "新能源": "#06b6d4", "黑色": "#6b7280",
+            "能源化工": "#8b5cf6", "航运": "#0ea5e9", "股指": "#ef4444",
+            "国债": "#3b82f6", "其他": "#a3a3a3",
+          }
+          const sectors = [...new Set(scatterPoints.map((p) => p.sector))].sort()
+          const seriesBySector = sectors.map((sector) => ({
+            name: sector,
+            type: "scatter" as const,
+            data: scatterPoints
+              .filter((p) => p.sector === sector)
+              .map((p) => ({ value: [p.corr, p.vol, p.mv, p.prod], name: p.prod })),
+            symbolSize: (d: [number, number, number, string]) => Math.max(6, Math.min(32, Math.sqrt(d[2]) * 1.4)),
+            itemStyle: { color: SECTOR_COLORS[sector] ?? "#a3a3a3", opacity: 0.82 },
+            label: {
+              show: true,
+              formatter: (p: { data: { name: string } }) => p.data.name,
+              fontSize: 9,
+              position: "top" as const,
+              color: "#6b7280",
+            },
+          }))
+          return (
+            <Card>
+              <CardContent className="p-0 pb-2">
+                <ReactECharts
+                  option={{
+                    tooltip: {
+                      formatter: (p: { data: { value: [number, number, number, string]; name: string } }) => {
+                        const [corr, vol, mv, prod] = p.data.value
+                        return `<b>${prod}</b><br/>相关系数: ${corr}<br/>波动率: ${vol}%<br/>净敞口: ${mv}万`
+                      },
+                    },
+                    legend: {
+                      data: sectors,
+                      top: 8,
+                      itemWidth: 10,
+                      itemGap: 8,
+                      textStyle: { fontSize: 11 },
+                    },
+                    grid: { left: 55, right: 20, top: 48, bottom: 50 },
+                    xAxis: {
+                      type: "value",
+                      name: `${scatterWindow}日相关系数（vs 组合）`,
+                      nameLocation: "center",
+                      nameGap: 28,
+                      nameTextStyle: { fontSize: 11 },
+                      axisLabel: { fontSize: 10 },
+                      splitLine: { lineStyle: { type: "dashed" } },
+                      min: -1, max: 1,
+                    },
+                    yAxis: {
+                      type: "value",
+                      name: `${scatterWindow}日波动率 (日%)`,
+                      nameLocation: "center",
+                      nameGap: 42,
+                      nameTextStyle: { fontSize: 11 },
+                      axisLabel: { fontSize: 10, formatter: (v: number) => v + "%" },
+                      splitLine: { lineStyle: { type: "dashed" } },
+                      min: 0,
+                    },
+                    series: seriesBySector,
+                  }}
+                  style={{ height: 340 }}
+                  notMerge
+                />
+              </CardContent>
+            </Card>
+          )
+        })()}
+      </section>
+
       <section>
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           次日预测
