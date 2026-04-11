@@ -113,6 +113,16 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
   const [subSectorPnlData, setSubSectorPnlData] = useState<Record<string, { date: string; pnl: number; cumPnl: number }[]>>({})
   const [productPnlData, setProductPnlData] = useState<Record<string, { date: string; pnl: number; cumPnl: number }[]>>({})
   const [loadingCategoryPnl, setLoadingCategoryPnl] = useState(false)
+  const [catLineShowAll, setCatLineShowAll] = useState(true)
+  const [sectorLineShowAll, setSectorLineShowAll] = useState(true)
+  const [sectorCatFilter, setSectorCatFilter] = useState<"全部" | "商品" | "股指" | "国债">("全部")
+  const [subLineShowAll, setSubLineShowAll] = useState(true)
+  const [subCatFilter, setSubCatFilter] = useState<"全部" | "商品" | "股指" | "国债">("全部")
+  const [subSectorFilter, setSubSectorFilter] = useState<string>("全部")
+  const [prodLineShowAll, setProdLineShowAll] = useState(true)
+  const [prodCatFilter, setProdCatFilter] = useState<string>("全部")
+  const [prodSectorFilter, setProdSectorFilter] = useState<string>("全部")
+  const [prodSubSectorFilter, setProdSubSectorFilter] = useState<string>("全部")
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1662,15 +1672,15 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       const catOption = {
         tooltip: {
           trigger: "axis",
-          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+          formatter: (params: { seriesName: string; value: [string, number]; marker: string }[]) => {
             const date = params[0]?.value[0] ?? ""
-            const lines = params.map((p) =>
-              `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`
-            )
+            const lines = [...params]
+              .sort((a, b) => Number(b.value[1]) - Number(a.value[1]))
+              .map((p) => `${p.marker}${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`)
             return [date, ...lines].join("<br/>")
           },
         },
-        legend: { data: CATS.map((c) => c.key), top: 5, right: 10 },
+        legend: { data: CATS.map((c) => c.key), top: 5, right: 10, selected: Object.fromEntries(CATS.map((c) => [c.key, catLineShowAll])) },
         grid: { left: 60, right: 20, top: 30, bottom: 50 },
         xAxis: { type: "time", boundaryGap: false },
         yAxis: {
@@ -1693,6 +1703,10 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
           data: (categoryPnlData[cat.key] ?? []).map((r) => [r.date, r.cumPnl]),
         })),
       }
+      const barCatsSorted = [...CATS]
+        .filter((cat) => cat.key !== "合计")
+        .map((cat) => { const rows = categoryPnlData[cat.key] ?? []; return { key: cat.key, total: rows.length > 0 ? rows[rows.length - 1].cumPnl : 0 } })
+        .sort((a, b) => b.total - a.total)
       const barOption = {
         tooltip: {
           trigger: "axis",
@@ -1702,7 +1716,7 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         grid: { left: 70, right: 20, top: 30, bottom: 30 },
         xAxis: {
           type: "category",
-          data: CATS.map((c) => c.key),
+          data: barCatsSorted.map((c) => c.key),
           axisLabel: { fontSize: 12 },
         },
         yAxis: {
@@ -1712,22 +1726,15 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         series: [
           {
             type: "bar",
-            data: CATS.map((cat) => {
-              const rows = categoryPnlData[cat.key] ?? []
-              const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
-              return {
-                value: total,
-                itemStyle: {
-                  color: cat.color,
-                  opacity: cat.key === "合计" ? 0.5 : 1,
-                },
-              }
-            }),
+            data: barCatsSorted.map((item) => ({
+              value: item.total,
+              itemStyle: { color: item.total >= 0 ? "#ef4444" : "#22c55e" },
+            })),
             label: {
               show: true,
               position: "top",
               formatter: (p: { value: number }) => (p.value / 10000).toFixed(1) + "万",
-              fontSize: 11,
+              fontSize: 10,
             },
           },
         ],
@@ -1735,8 +1742,9 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       return (
         <div className="grid grid-cols-2 gap-3 mt-3">
         <Card>
-          <CardHeader className="pb-2">
+          <CardHeader className="pb-2 flex flex-row items-center justify-between">
             <CardTitle className="text-sm">大类资产累计盈亏曲线</CardTitle>
+            <button onClick={() => setCatLineShowAll((v) => !v)} className="text-xs px-2 py-0.5 rounded border border-border hover:bg-muted">{catLineShowAll ? "隐藏全部" : "显示全部"}</button>
           </CardHeader>
           <CardContent className="p-0 pb-2">
             <ReactECharts option={catOption} style={{ height: 300 }} notMerge lazyUpdate />
@@ -1754,7 +1762,12 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       )
     })()}
     {!loadingCategoryPnl && Object.keys(sectorPnlData).length > 0 && (() => {
-      const SECTORS = [
+      const SECTOR_CAT: Record<string, "商品" | "股指" | "国债"> = {
+        农产: "商品", 生鲜: "商品", 贵金属: "商品", 有色: "商品",
+        新能源: "商品", 黑色: "商品", 能源化工: "商品", 航运: "商品",
+        股指: "股指", 国债: "国债",
+      }
+      const ALL_SECTORS = [
         { key: "农产",    color: "#84cc16" },
         { key: "生鲜",    color: "#f97316" },
         { key: "贵金属",  color: "#eab308" },
@@ -1766,19 +1779,22 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         { key: "股指",    color: "#ef4444" },
         { key: "国债",    color: "#3b82f6" },
       ].filter((s) => (sectorPnlData[s.key] ?? []).length > 0)
+      const SECTORS = sectorCatFilter === "全部"
+        ? ALL_SECTORS
+        : ALL_SECTORS.filter((s) => SECTOR_CAT[s.key] === sectorCatFilter)
 
       const sectorLineOption = {
         tooltip: {
           trigger: "axis",
-          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+          formatter: (params: { seriesName: string; value: [string, number]; marker: string }[]) => {
             const date = params[0]?.value[0] ?? ""
-            const lines = params.map((p) =>
-              `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`
-            )
+            const lines = [...params]
+              .sort((a, b) => Number(b.value[1]) - Number(a.value[1]))
+              .map((p) => `${p.marker}${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`)
             return [date, ...lines].join("<br/>")
           },
         },
-        legend: { data: SECTORS.map((s) => s.key), top: 5, right: 10, type: "scroll" },
+        legend: { data: SECTORS.map((s) => s.key), top: 5, right: 10, type: "scroll", selected: Object.fromEntries(SECTORS.map((s) => [s.key, sectorLineShowAll])) },
         grid: { left: 60, right: 20, top: 40, bottom: 30 },
         xAxis: { type: "time", boundaryGap: false },
         yAxis: {
@@ -1799,6 +1815,9 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         })),
       }
 
+      const sectorBarSorted = [...SECTORS]
+        .map((s) => { const rows = sectorPnlData[s.key] ?? []; return { key: s.key, total: rows.length > 0 ? rows[rows.length - 1].cumPnl : 0 } })
+        .sort((a, b) => b.total - a.total)
       const sectorBarOption = {
         tooltip: {
           trigger: "axis",
@@ -1808,7 +1827,7 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         grid: { left: 70, right: 20, top: 30, bottom: 60 },
         xAxis: {
           type: "category",
-          data: SECTORS.map((s) => s.key),
+          data: sectorBarSorted.map((s) => s.key),
           axisLabel: { fontSize: 11, rotate: 30 },
         },
         yAxis: {
@@ -1818,11 +1837,7 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         series: [
           {
             type: "bar",
-            data: SECTORS.map((s) => {
-              const rows = sectorPnlData[s.key] ?? []
-              const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
-              return { value: total, itemStyle: { color: s.color } }
-            }),
+            data: sectorBarSorted.map((item) => ({ value: item.total, itemStyle: { color: item.total >= 0 ? "#ef4444" : "#22c55e" } })),
             label: {
               show: true,
               position: "top",
@@ -1836,8 +1851,15 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       return (
         <div className="grid grid-cols-2 gap-3 mt-3">
           <Card>
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-sm">板块累计盈亏曲线</CardTitle>
+              <div className="flex items-center gap-1">
+                <select value={sectorCatFilter} onChange={(e) => setSectorCatFilter(e.target.value as typeof sectorCatFilter)} className="text-xs px-2 py-0.5 rounded border border-border bg-background hover:bg-muted">
+                  <option value="全部">大类资产</option>
+                  {(["商品", "股指", "国债"] as const).map((cat) => <option key={cat} value={cat}>{cat}</option>)}
+                </select>
+                <button onClick={() => setSectorLineShowAll((v) => !v)} className="text-xs px-2 py-0.5 rounded border border-border hover:bg-muted ml-1">{sectorLineShowAll ? "隐藏全部" : "显示全部"}</button>
+              </div>
             </CardHeader>
             <CardContent className="p-0 pb-2">
               <ReactECharts option={sectorLineOption} style={{ height: 300 }} notMerge lazyUpdate />
@@ -1862,6 +1884,30 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         "油品","聚酯","烯烃","芳烃","橡胶","盐化工","煤化工",
         "航运","股指","国债",
       ]
+      // sub-sector → 板块
+      const SUB_TO_SECTOR: Record<string, string> = {
+        谷物: "农产", 油脂油料: "农产", 软商品: "农产", 林业: "农产",
+        生鲜: "生鲜",
+        贵金属: "贵金属",
+        有色: "有色",
+        新能源: "新能源",
+        原材: "黑色", 成材: "黑色", 煤炭: "黑色", 建材: "黑色",
+        油品: "能源化工", 聚酯: "能源化工", 烯烃: "能源化工", 芳烃: "能源化工",
+        橡胶: "能源化工", 盐化工: "能源化工", 煤化工: "能源化工",
+        航运: "航运",
+        股指: "股指",
+        国债: "国债",
+      }
+      // sub-sector → 大类资产
+      const SUB_TO_CAT: Record<string, "商品" | "股指" | "国债"> = {
+        谷物: "商品", 油脂油料: "商品", 软商品: "商品", 林业: "商品",
+        生鲜: "商品", 贵金属: "商品", 有色: "商品", 新能源: "商品",
+        原材: "商品", 成材: "商品", 煤炭: "商品", 建材: "商品",
+        油品: "商品", 聚酯: "商品", 烯烃: "商品", 芳烃: "商品",
+        橡胶: "商品", 盐化工: "商品", 煤化工: "商品",
+        航运: "商品", 股指: "股指", 国债: "国债",
+      }
+      const SECTOR_OPTIONS = ["全部", "农产", "生鲜", "贵金属", "有色", "新能源", "黑色", "能源化工", "航运", "股指", "国债"]
       const SUB_SECTOR_COLORS: Record<string, string> = {
         谷物: "#84cc16", 油脂油料: "#a3e635", 软商品: "#fbbf24", 林业: "#6ee7b7",
         生鲜: "#f97316", 贵金属: "#eab308", 有色: "#a855f7", 新能源: "#10b981",
@@ -1872,21 +1918,23 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       }
       const SUBS = SUB_SECTOR_ORDER
         .filter((s) => (subSectorPnlData[s] ?? []).length > 0)
+        .filter((s) => subCatFilter === "全部" || SUB_TO_CAT[s] === subCatFilter)
+        .filter((s) => subSectorFilter === "全部" || SUB_TO_SECTOR[s] === subSectorFilter)
         .map((s) => ({ key: s, color: SUB_SECTOR_COLORS[s] ?? "#94a3b8" }))
 
       const subLineOption = {
         tooltip: {
           trigger: "axis",
-          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+          formatter: (params: { seriesName: string; value: [string, number]; marker: string }[]) => {
             const date = params[0]?.value[0] ?? ""
-            const lines = params.map((p) =>
-              `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`
-            )
+            const lines = [...params]
+              .sort((a, b) => Number(b.value[1]) - Number(a.value[1]))
+              .map((p) => `${p.marker}${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`)
             return [date, ...lines].join("<br/>")
           },
         },
-        legend: { data: SUBS.map((s) => s.key), top: 5, right: 10, type: "scroll" },
-        grid: { left: 60, right: 20, top: 40, bottom: 30 },
+        legend: { data: SUBS.map((s) => s.key), top: 5, left: 70, right: 30, type: "scroll", itemWidth: 12, itemHeight: 8, itemGap: 8, textStyle: { fontSize: 10 }, selected: Object.fromEntries(SUBS.map((s) => [s.key, subLineShowAll])) },
+        grid: { left: 60, right: 20, top: 65, bottom: 30 },
         xAxis: { type: "time", boundaryGap: false },
         yAxis: {
           type: "value",
@@ -1906,6 +1954,9 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         })),
       }
 
+      const subBarSorted = [...SUBS]
+        .map((s) => { const rows = subSectorPnlData[s.key] ?? []; return { key: s.key, total: rows.length > 0 ? rows[rows.length - 1].cumPnl : 0 } })
+        .sort((a, b) => b.total - a.total)
       const subBarOption = {
         tooltip: {
           trigger: "axis",
@@ -1915,7 +1966,7 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         grid: { left: 70, right: 20, top: 30, bottom: 70 },
         xAxis: {
           type: "category",
-          data: SUBS.map((s) => s.key),
+          data: subBarSorted.map((s) => s.key),
           axisLabel: { fontSize: 10, rotate: 45 },
         },
         yAxis: {
@@ -1925,16 +1976,13 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         series: [
           {
             type: "bar",
-            data: SUBS.map((s) => {
-              const rows = subSectorPnlData[s.key] ?? []
-              const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
-              return { value: total, itemStyle: { color: s.color } }
-            }),
+            data: subBarSorted.map((item) => ({ value: item.total, itemStyle: { color: item.total >= 0 ? "#ef4444" : "#22c55e" } })),
             label: {
               show: true,
               position: "top",
+              rotate: 45,
               formatter: (p: { value: number }) => (p.value / 10000).toFixed(1) + "万",
-              fontSize: 9,
+              fontSize: 10,
             },
           },
         ],
@@ -1943,8 +1991,18 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       return (
         <div className="grid grid-cols-2 gap-3 mt-3">
           <Card>
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-sm">细分板块累计盈亏曲线</CardTitle>
+              <div className="flex items-center gap-1">
+                <select value={subCatFilter} onChange={(e) => { setSubCatFilter(e.target.value as typeof subCatFilter); setSubSectorFilter("全部") }} className="text-xs px-2 py-0.5 rounded border border-border bg-background hover:bg-muted">
+                  <option value="全部">大类资产</option>
+                  {(["商品", "股指", "国债"] as const).map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select value={subSectorFilter} onChange={(e) => setSubSectorFilter(e.target.value)} className="text-xs px-2 py-0.5 rounded border border-border bg-background hover:bg-muted">
+                  {SECTOR_OPTIONS.filter((s) => s === "全部" || subCatFilter === "全部" || (s !== "股指" && s !== "国债" ? subCatFilter === "商品" : subCatFilter === s)).map((s) => <option key={s} value={s}>{s === "全部" ? "板块" : s}</option>)}
+                </select>
+                <button onClick={() => setSubLineShowAll((v) => !v)} className="text-xs px-2 py-0.5 rounded border border-border hover:bg-muted ml-1">{subLineShowAll ? "隐藏全部" : "显示全部"}</button>
+              </div>
             </CardHeader>
             <CardContent className="p-0 pb-2">
               <ReactECharts option={subLineOption} style={{ height: 300 }} notMerge lazyUpdate />
@@ -1962,13 +2020,110 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       )
     })()}
     {!loadingCategoryPnl && Object.keys(productPnlData).length > 0 && (() => {
+      const PROD_NAMES: Record<string, string> = {
+        C:"玉米",CS:"淀粉",WH:"强麦",PM:"普麦",RR:"粳米",RI:"早籼稻",JR:"粳稻",LR:"晚籼稻",
+        A:"黄大豆1号",B:"黄大豆2号",M:"豆粕",Y:"豆油",RM:"菜籽粕",OI:"菜籽油",RS:"油菜籽",PK:"花生",P:"棕榈油",
+        SR:"白糖",CF:"棉花",CY:"棉纱",LG:"原木",SP:"纸浆",OP:"双胶纸",
+        AP:"苹果",CJ:"红枣",LH:"生猪",JD:"鸡蛋",
+        AU:"黄金",AG:"白银",PT:"铂",PD:"钯",
+        CU:"沪铜",BC:"国际铜",AL:"沪铝",AO:"氧化铝",AD:"铝合金",ZN:"沪锌",PB:"沪铅",NI:"沪镍",SN:"沪锡",
+        LC:"碳酸锂",PS:"多晶硅",SI:"工业硅",
+        I:"铁矿石",SF:"硅铁",SM:"锰硅",RB:"螺纹钢",HC:"热卷",SS:"不锈钢",WR:"线材",
+        JM:"焦煤",J:"煤炭",ZC:"动力煤",FG:"玻璃",BB:"胶合板",FB:"纤维板",
+        SC:"原油",FU:"燃料油",LU:"低硫燃料油",PG:"液化石油气",BU:"沥青",
+        TA:"PTA",EG:"乙二醇",PF:"短纤",PR:"瓶片",PL:"丙烯",PP:"聚丙烯",L:"塑料",
+        BZ:"纯苯",PX:"对二甲苯",EB:"苯乙烯",
+        RU:"天然橡胶",BR:"丁二烯橡胶",NR:"20号胶",
+        SA:"纯碱",SH:"烧碱",V:"PVC",UR:"尿素",MA:"甲醇",
+        EC:"航运指数",
+        IH:"上证50",IF:"沪深300",IC:"中证500",IM:"中证1000",MO:"中证1000期权",
+        TS:"2年期国债",TF:"5年期国债",T:"10年期国债",TL:"30年期国债",
+      }
       // Sort products by absolute total PnL descending so the most impactful are first
+      // Prod → category / sector / sub-sector lookup
+      const PROD_CAT: Record<string, string> = {
+        C:"商品",CS:"商品",WH:"商品",PM:"商品",RR:"商品",RI:"商品",JR:"商品",LR:"商品",
+        A:"商品",B:"商品",M:"商品",Y:"商品",RM:"商品",OI:"商品",RS:"商品",PK:"商品",P:"商品",
+        SR:"商品",CF:"商品",CY:"商品",LG:"商品",SP:"商品",OP:"商品",
+        AP:"商品",CJ:"商品",LH:"商品",JD:"商品",
+        AU:"商品",AG:"商品",PT:"商品",PD:"商品",
+        CU:"商品",BC:"商品",AL:"商品",AO:"商品",AD:"商品",ZN:"商品",PB:"商品",NI:"商品",SN:"商品",
+        LC:"商品",PS:"商品",SI:"商品",
+        I:"商品",SF:"商品",SM:"商品",RB:"商品",HC:"商品",SS:"商品",WR:"商品",
+        JM:"商品",J:"商品",ZC:"商品",FG:"商品",BB:"商品",FB:"商品",
+        SC:"商品",FU:"商品",LU:"商品",PG:"商品",BU:"商品",
+        TA:"商品",EG:"商品",PF:"商品",PR:"商品",PL:"商品",PP:"商品",L:"商品",
+        BZ:"商品",PX:"商品",EB:"商品",
+        RU:"商品",BR:"商品",NR:"商品",
+        SA:"商品",SH:"商品",V:"商品",UR:"商品",MA:"商品",
+        EC:"商品",
+        IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
+        TS:"国债",TF:"国债",T:"国债",TL:"国债",
+      }
+      const PROD_SECTOR: Record<string, string> = {
+        C:"农产",CS:"农产",WH:"农产",PM:"农产",RR:"农产",RI:"农产",JR:"农产",LR:"农产",
+        A:"农产",B:"农产",M:"农产",Y:"农产",RM:"农产",OI:"农产",RS:"农产",PK:"农产",P:"农产",
+        SR:"农产",CF:"农产",CY:"农产",LG:"农产",SP:"农产",OP:"农产",
+        AP:"生鲜",CJ:"生鲜",LH:"生鲜",JD:"生鲜",
+        AU:"贵金属",AG:"贵金属",PT:"贵金属",PD:"贵金属",
+        CU:"有色",BC:"有色",AL:"有色",AO:"有色",AD:"有色",ZN:"有色",PB:"有色",NI:"有色",SN:"有色",
+        LC:"新能源",PS:"新能源",SI:"新能源",
+        I:"黑色",SF:"黑色",SM:"黑色",RB:"黑色",HC:"黑色",SS:"黑色",WR:"黑色",
+        JM:"黑色",J:"黑色",ZC:"黑色",FG:"黑色",BB:"黑色",FB:"黑色",
+        SC:"能源化工",FU:"能源化工",LU:"能源化工",PG:"能源化工",BU:"能源化工",
+        TA:"能源化工",EG:"能源化工",PF:"能源化工",PR:"能源化工",PL:"能源化工",PP:"能源化工",L:"能源化工",
+        BZ:"能源化工",PX:"能源化工",EB:"能源化工",
+        RU:"能源化工",BR:"能源化工",NR:"能源化工",
+        SA:"能源化工",SH:"能源化工",V:"能源化工",UR:"能源化工",MA:"能源化工",
+        EC:"航运",
+        IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
+        TS:"国债",TF:"国债",T:"国债",TL:"国债",
+      }
+      const PROD_SUB_SECTOR: Record<string, string> = {
+        C:"谷物",CS:"谷物",WH:"谷物",PM:"谷物",RR:"谷物",RI:"谷物",JR:"谷物",LR:"谷物",
+        A:"油脂油料",B:"油脂油料",M:"油脂油料",Y:"油脂油料",RM:"油脂油料",OI:"油脂油料",RS:"油脂油料",PK:"油脂油料",P:"油脂油料",
+        SR:"软商品",CF:"软商品",CY:"软商品",
+        LG:"林业",SP:"林业",OP:"林业",
+        AP:"生鲜",CJ:"生鲜",LH:"生鲜",JD:"生鲜",
+        AU:"贵金属",AG:"贵金属",PT:"贵金属",PD:"贵金属",
+        CU:"有色",BC:"有色",AL:"有色",AO:"有色",AD:"有色",ZN:"有色",PB:"有色",NI:"有色",SN:"有色",
+        LC:"新能源",PS:"新能源",SI:"新能源",
+        I:"原材",SF:"原材",SM:"原材",
+        RB:"成材",HC:"成材",SS:"成材",WR:"成材",
+        JM:"煤炭",J:"煤炭",ZC:"煤炭",
+        FG:"建材",BB:"建材",FB:"建材",
+        SC:"油品",FU:"油品",LU:"油品",PG:"油品",BU:"油品",
+        TA:"聚酯",EG:"聚酯",PF:"聚酯",PR:"聚酯",
+        PL:"烯烃",PP:"烯烃",L:"烯烃",
+        BZ:"芳烃",PX:"芳烃",EB:"芳烃",
+        RU:"橡胶",BR:"橡胶",NR:"橡胶",
+        SA:"盐化工",SH:"盐化工",V:"盐化工",
+        UR:"煤化工",MA:"煤化工",
+        EC:"航运",
+        IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
+        TS:"国债",TF:"国债",T:"国债",TL:"国债",
+      }
+      // Build available sector/sub-sector options based on current filters
+      const availableSectors = ["全部", ...Array.from(new Set(Object.values(PROD_SECTOR))).filter(
+        (s) => prodCatFilter === "全部" || Object.entries(PROD_SECTOR).some(([k, v]) => v === s && PROD_CAT[k] === prodCatFilter)
+      )]
+      const availableSubSectors = ["全部", ...Array.from(new Set(Object.values(PROD_SUB_SECTOR))).filter(
+        (ss) => {
+          return Object.entries(PROD_SUB_SECTOR).some(([k, v]) => v === ss &&
+            (prodCatFilter === "全部" || PROD_CAT[k] === prodCatFilter) &&
+            (prodSectorFilter === "全部" || PROD_SECTOR[k] === prodSectorFilter)
+          )
+        }
+      )]
       const PRODS = Object.keys(productPnlData)
         .map((key) => {
           const rows = productPnlData[key]
           const total = rows.length > 0 ? rows[rows.length - 1].cumPnl : 0
           return { key, total }
         })
+        .filter((p) => prodCatFilter === "全部" || PROD_CAT[p.key] === prodCatFilter)
+        .filter((p) => prodSectorFilter === "全部" || PROD_SECTOR[p.key] === prodSectorFilter)
+        .filter((p) => prodSubSectorFilter === "全部" || PROD_SUB_SECTOR[p.key] === prodSubSectorFilter)
         .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
 
       // Generate a color palette by evenly spacing hues
@@ -1977,18 +2132,18 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       const prodLineOption = {
         tooltip: {
           trigger: "axis",
-          formatter: (params: { seriesName: string; value: [string, number] }[]) => {
+          formatter: (params: { seriesName: string; value: [string, number]; marker: string }[]) => {
             const date = params[0]?.value[0] ?? ""
             const lines = params
               .filter((p) => p.value[1] !== 0)
-              .sort((a, b) => Math.abs(Number(b.value[1])) - Math.abs(Number(a.value[1])))
+              .sort((a, b) => Number(b.value[1]) - Number(a.value[1]))
               .slice(0, 10)
-              .map((p) => `${p.seriesName}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元`)
+              .map((p) => { const cn = PROD_NAMES[p.seriesName]; const label = cn ? `${p.seriesName}（${cn}）` : p.seriesName; return `${p.marker}${label}: ${Number(p.value[1]).toLocaleString("zh-CN")} 元` })
             return [date, ...lines].join("<br/>")
           },
         },
-        legend: { data: PRODS.map((p) => p.key), top: 5, right: 10, type: "scroll" },
-        grid: { left: 60, right: 20, top: 40, bottom: 30 },
+        legend: { data: PRODS.map((p) => p.key), top: 5, left: 70, right: 30, type: "scroll", itemWidth: 12, itemHeight: 8, itemGap: 8, textStyle: { fontSize: 10 }, selected: Object.fromEntries(PRODS.map((p) => [p.key, prodLineShowAll])) },
+        grid: { left: 60, right: 20, top: 65, bottom: 30 },
         xAxis: { type: "time", boundaryGap: false },
         yAxis: {
           type: "value",
@@ -2012,12 +2167,16 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         tooltip: {
           trigger: "axis",
           formatter: (params: { name: string; value: number }[]) =>
-            params.map((p) => `${p.name}: ${Number(p.value).toLocaleString("zh-CN")} 元`).join("<br/>"),
+            params.map((p) => {
+              const cn = PROD_NAMES[p.name]
+              const label = cn ? `${p.name}（${cn}）` : p.name
+              return `${label}: ${Number(p.value).toLocaleString("zh-CN")} 元`
+            }).join("<br/>"),
         },
-        grid: { left: 60, right: 20, top: 30, bottom: 70 },
+        grid: { left: 55, right: 10, top: 10, bottom: 50 },
         xAxis: {
           type: "category",
-          data: PRODS.map((p) => p.key),
+          data: [...PRODS].sort((a, b) => b.total - a.total).map((p) => p.key),
           axisLabel: { fontSize: 10, rotate: 45 },
         },
         yAxis: {
@@ -2027,16 +2186,11 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         series: [
           {
             type: "bar",
-            data: PRODS.map((p, i) => ({
+            data: [...PRODS].sort((a, b) => b.total - a.total).map((p) => ({
               value: p.total,
-              itemStyle: { color: prodColors[i] },
+              itemStyle: { color: p.total >= 0 ? "#ef4444" : "#22c55e" },
             })),
-            label: {
-              show: true,
-              position: "top",
-              formatter: (p: { value: number }) => (p.value / 10000).toFixed(1) + "万",
-              fontSize: 9,
-            },
+            label: { show: false },
           },
         ],
       }
@@ -2044,11 +2198,24 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
       return (
         <div className="grid grid-cols-2 gap-3 mt-3">
           <Card>
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
               <CardTitle className="text-sm">品种累计盈亏曲线</CardTitle>
+              <div className="flex items-center gap-1">
+                <select value={prodCatFilter} onChange={(e) => { setProdCatFilter(e.target.value); setProdSectorFilter("全部"); setProdSubSectorFilter("全部") }} className="text-xs px-2 py-0.5 rounded border border-border bg-background hover:bg-muted">
+                  <option value="全部">大类资产</option>
+                  {["商品","股指","国债"].map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select value={prodSectorFilter} onChange={(e) => { setProdSectorFilter(e.target.value); setProdSubSectorFilter("全部") }} className="text-xs px-2 py-0.5 rounded border border-border bg-background hover:bg-muted">
+                  {availableSectors.map((s) => <option key={s} value={s}>{s === "全部" ? "板块" : s}</option>)}
+                </select>
+                <select value={prodSubSectorFilter} onChange={(e) => setProdSubSectorFilter(e.target.value)} className="text-xs px-2 py-0.5 rounded border border-border bg-background hover:bg-muted">
+                  {availableSubSectors.map((s) => <option key={s} value={s}>{s === "全部" ? "细分板块" : s}</option>)}
+                </select>
+                <button onClick={() => setProdLineShowAll((v) => !v)} className="text-xs px-2 py-0.5 rounded border border-border hover:bg-muted ml-1">{prodLineShowAll ? "隐藏全部" : "显示全部"}</button>
+              </div>
             </CardHeader>
             <CardContent className="p-0 pb-2">
-              <ReactECharts option={prodLineOption} style={{ height: 300 }} notMerge lazyUpdate />
+              <ReactECharts option={prodLineOption} style={{ height: 420 }} notMerge lazyUpdate />
             </CardContent>
           </Card>
           <Card>
@@ -2056,7 +2223,7 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
               <CardTitle className="text-sm">品种总盈亏</CardTitle>
             </CardHeader>
             <CardContent className="p-0 pb-2">
-              <ReactECharts option={prodBarOption} style={{ height: 300 }} notMerge lazyUpdate />
+              <ReactECharts option={prodBarOption} style={{ height: 420 }} notMerge lazyUpdate />
             </CardContent>
           </Card>
         </div>

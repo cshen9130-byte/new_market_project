@@ -4,13 +4,17 @@ import { query } from "@/lib/db"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-// Category classification by product code prefix (strip trailing digits from 合约)
+// Category classification by product code prefix
+// Extract LEADING letters only so options (e.g. AP610C2501) correctly map to their underlying (AP)
 const STOCK_INDEX = new Set(["IH", "IF", "IC", "IM", "MO"])
 const BOND = new Set(["TS", "TF", "T", "TL"])
 
+function getPrefix(contract: string): string {
+  return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
+}
+
 function getCategory(contract: string): "股指" | "国债" | "商品" {
-  // Strip trailing digits to get product prefix, e.g. "IF2412" -> "IF"
-  const prefix = contract.replace(/\d+$/, "").toUpperCase()
+  const prefix = getPrefix(contract)
   if (STOCK_INDEX.has(prefix)) return "股指"
   if (BOND.has(prefix)) return "国债"
   return "商品"
@@ -49,7 +53,7 @@ const SECTOR_MAP: Record<string, string> = {
 }
 
 function getSector(contract: string): string {
-  const prefix = contract.replace(/\d+$/, "").toUpperCase()
+  const prefix = getPrefix(contract)
   return SECTOR_MAP[prefix] ?? "其他"
 }
 
@@ -101,7 +105,7 @@ const SUB_SECTOR_MAP: Record<string, string> = {
 }
 
 function getSubSector(contract: string): string {
-  const prefix = contract.replace(/\d+$/, "").toUpperCase()
+  const prefix = getPrefix(contract)
   return SUB_SECTOR_MAP[prefix] ?? "其他"
 }
 
@@ -189,7 +193,7 @@ export async function GET(req: Request) {
       sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) + toNum(row.pnl))
       const sub = getSubSector(row.contract)
       subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) + toNum(row.pnl))
-      const prod = row.contract.replace(/\d+$/, "").toUpperCase()
+      const prod = getPrefix(row.contract)
       productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) + toNum(row.pnl))
     }
     for (const row of positionRows) {
@@ -200,7 +204,7 @@ export async function GET(req: Request) {
       sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) + toNum(row.pnl))
       const sub = getSubSector(row.contract)
       subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) + toNum(row.pnl))
-      const prod = row.contract.replace(/\d+$/, "").toUpperCase()
+      const prod = getPrefix(row.contract)
       productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) + toNum(row.pnl))
     }
     for (const row of tradeRows) {
@@ -212,7 +216,7 @@ export async function GET(req: Request) {
       sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) - toNum(row.fee) + toNum(row.premium))
       const sub = getSubSector(row.contract)
       subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) - toNum(row.fee) + toNum(row.premium))
-      const prod = row.contract.replace(/\d+$/, "").toUpperCase()
+      const prod = getPrefix(row.contract)
       productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) - toNum(row.fee) + toNum(row.premium))
     }
 
