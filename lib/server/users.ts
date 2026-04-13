@@ -205,7 +205,7 @@ export async function deleteUser(id: string) {
 export async function verifyLogin(identifier: string, password: string) {
   await ensureTable()
   const rows = await query<DbRow>(
-    `SELECT id, email, name, role, password_hash FROM auth_users WHERE email = $1 OR name = $1`,
+    `SELECT id, email, name, role, permissions, password_hash FROM auth_users WHERE email = $1 OR name = $1`,
     [identifier],
   )
   if (rows.length === 0) return null

@@ -43,10 +43,14 @@ export default function LoginPage() {
         title: "登录成功",
         description: `欢迎回来，${user.name}!`,
       })
+      const canMa = user.role === "admin" || !!user.permissions?.ma
+      const canClassic = user.role === "admin" || !!user.permissions?.classic
       if (styleChoice === "cyber") {
         router.push("/dashboard")
-      } else {
+      } else if (canMa || canClassic) {
         router.push("/ma/dashboard")
+      } else {
+        router.push("/dashboard")
       }
     } else {
       toast({
