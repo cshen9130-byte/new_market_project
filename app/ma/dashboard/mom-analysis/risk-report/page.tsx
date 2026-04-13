@@ -668,6 +668,14 @@ function IntradayContent() {
   const [prodSectorFilter, setProdSectorFilter] = useState("全部")
   const [prodSubSectorFilter, setProdSubSectorFilter] = useState("全部")
 
+  type MarginTs = { date: string; margin: number; equity: number; available: number; fundNav: number | null; riskRatio: number | null; longMarginRatio: number | null; shortMarginRatio: number | null }
+  type MarginAcct = { account: string; series: MarginTs[] }
+  type MarginLatest = { account: string; date: string; riskRatio: number | null; margin: number; equity: number; available: number }
+  const [marginTs, setMarginTs] = useState<MarginTs[]>([])
+  const [marginAccts, setMarginAccts] = useState<MarginAcct[]>([])
+  const [marginLatest, setMarginLatest] = useState<MarginLatest[]>([])
+  const [marginLoading, setMarginLoading] = useState(true)
+
   const fetchVolBar = (window: string) => {
     fetch(`/ma/api/mom-analysis/vol-corr-scatter?window=${window}&corrWindow=${corrWindow}`)
       .then((r) => r.json())
@@ -699,6 +707,18 @@ function IntradayContent() {
       .catch(() => {})
       .finally(() => setVarLoading(false))
   }
+
+  useEffect(() => {
+    fetch("/ma/api/mom-analysis/margin-risk")
+      .then(r => r.json())
+      .then(j => {
+        setMarginTs(j.timeseries ?? [])
+        setMarginAccts(j.accounts ?? [])
+        setMarginLatest(j.latest ?? [])
+      })
+      .catch(() => {})
+      .finally(() => setMarginLoading(false))
+  }, [])
 
   useEffect(() => {
     Promise.all([
@@ -838,7 +858,7 @@ function IntradayContent() {
   return (
     <div className="space-y-6">
       <section>
-        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+        <h2 id="section-intraday-pnl" className="text-sm font-semibold mb-3 flex items-center gap-2">
           当日盈亏
           <span className="h-px flex-1 bg-border" />
         </h2>
@@ -1106,7 +1126,7 @@ function IntradayContent() {
         )}
       </section>
       <section>
-        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+        <h2 id="section-intraday-var" className="text-sm font-semibold mb-3 flex items-center gap-2">
           次日预测
           <span className="h-px flex-1 bg-border" />
           {varBreachRate != null && (
@@ -1733,7 +1753,139 @@ function IntradayContent() {
           </div>
         )}
       </section>
-      <VarSandboxContent />
+      <div id="section-intraday-sandbox">
+        <VarSandboxContent />
+      </div>
+
+      <section id="section-intraday-margin">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          风险水平（保证金）
+          <span className="h-px flex-1 bg-border" />
+        </h2>
+        {marginLoading ? (
+          <p className="text-sm text-muted-foreground">加载中...</p>
+        ) : marginTs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">暂无数据</p>
+        ) : (
+          <div className="space-y-4">
+            {/* Latest snapshot table */}
+            <Card>
+              <CardHeader className="pb-2"><CardTitle className="text-sm">账户最新风险度快照</CardTitle></CardHeader>
+              <CardContent className="p-0 pb-2 overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b bg-muted/40">
+                      <th className="text-left px-3 py-1.5 font-medium">账户</th>
+                      <th className="text-right px-3 py-1.5 font-medium">日期</th>
+                      <th className="text-right px-3 py-1.5 font-medium">保证金占用</th>
+                      <th className="text-right px-3 py-1.5 font-medium">客户权益</th>
+                      <th className="text-right px-3 py-1.5 font-medium">可用资金</th>
+                      <th className="text-right px-3 py-1.5 font-medium">风险度</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {marginLatest.map((r, i) => {
+                      const ratio = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
+                      const danger = ratio != null && ratio > 80
+                      const warning = ratio != null && ratio > 60 && ratio <= 80
+                      return (
+                        <tr key={r.account} className={`border-b last:border-b-0 ${i % 2 === 0 ? "" : "bg-muted/20"}`}>
+                          <td className="px-3 py-1.5 font-medium">{r.account}</td>
+                          <td className="px-3 py-1.5 text-right text-muted-foreground">{r.date}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{r.margin.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{r.equity.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{r.available.toLocaleString("zh-CN")}</td>
+                          <td className={`px-3 py-1.5 text-right font-mono font-semibold ${danger ? "text-red-500" : warning ? "text-orange-500" : "text-green-600"}`}>
+                            {ratio != null ? ratio.toFixed(2) + "%" : "—"}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {/* Portfolio total */}
+                    {(() => {
+                      const last = marginTs[marginTs.length - 1]
+                      if (!last) return null
+                      return (
+                        <tr className="border-t bg-muted/50 font-semibold">
+                          <td className="px-3 py-1.5">合计</td>
+                          <td className="px-3 py-1.5 text-right text-muted-foreground">{last.date}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{last.margin.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{last.equity.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{last.available.toLocaleString("zh-CN")}</td>
+                          <td className={`px-3 py-1.5 text-right font-mono ${last.riskRatio != null && last.riskRatio > 80 ? "text-red-500" : last.riskRatio != null && last.riskRatio > 60 ? "text-orange-500" : "text-green-600"}`}>
+                            {last.riskRatio != null ? last.riskRatio.toFixed(2) + "%" : "—"}
+                          </td>
+                        </tr>
+                      )
+                    })()}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+
+            {/* Portfolio risk ratio time-series chart */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-3">
+                  组合历史风险度
+                  {marginTs.length > 0 && (() => {
+                    const last = marginTs[marginTs.length - 1]
+                    const r = last?.riskRatio
+                    return r != null ? (
+                      <span className={`text-base font-bold tabular-nums ${r > 80 ? "text-red-500" : r > 60 ? "text-orange-500" : "text-green-600"}`}>
+                        {r.toFixed(2)}%
+                      </span>
+                    ) : null
+                  })()}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0 pb-2">
+                <ReactECharts
+                  option={{
+                    tooltip: {
+                      trigger: "axis",
+                      formatter: (params: { seriesName: string; value: number; marker: string; dataIndex: number }[]) => {
+                        const idx = params[0]?.dataIndex ?? 0
+                        const date = marginTs[idx]?.date ?? ""
+                        const total = marginTs[idx]?.riskRatio
+                        const totalLine = total != null ? `<br/><b>合计: ${total.toFixed(2)}%</b>` : ""
+                        return [
+                          `<b>${date}</b>`,
+                          ...params.filter(p => p.value != null).map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}%`),
+                        ].join("<br/>") + totalLine
+                      },
+                    },
+                    legend: { top: 2, textStyle: { fontSize: 11 }, data: ["多头保证金/权益", "空头保证金/权益"] },
+                    grid: { left: 55, right: 20, top: 35, bottom: 50 },
+                    xAxis: { type: "category", data: marginTs.map(r => r.date), axisLabel: { fontSize: 10, rotate: 30 } },
+                    yAxis: { type: "value", axisLabel: { formatter: (v: number) => v.toFixed(1) + "%" } },
+                    dataZoom: [{ type: "inside", start: 60, end: 100 }, { type: "slider", height: 20, bottom: 5 }],
+                    series: [
+                      {
+                        name: "多头保证金/权益",
+                        type: "bar",
+                        stack: "margin",
+                        itemStyle: { color: "#3b82f6" },
+                        data: marginTs.map(r => r.longMarginRatio ?? (r.shortMarginRatio == null ? r.riskRatio : null)),
+                        label: { show: false },
+                      },
+                      {
+                        name: "空头保证金/权益",
+                        type: "bar",
+                        stack: "margin",
+                        itemStyle: { color: "#f59e0b" },
+                        data: marginTs.map(r => r.shortMarginRatio),
+                      },
+                    ],
+                  }}
+                  style={{ height: 280 }}
+                  notMerge
+                />
+              </CardContent>
+            </Card>
+          </div>
+        )}
+      </section>
     </div>
   )
 }
@@ -1774,6 +1926,31 @@ export default function RiskReportNewPage() {
 
       {/* Content area */}
       <div className="flex-1 overflow-y-auto px-6 pb-6">
+        {activeTab === "intraday" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-intraday-pnl")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >当日盈亏 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-intraday-var")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >次日预测 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >VaR沙盒 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >风险水平 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >↑ 回到顶部</button>
+          </div>
+        )}
         {activeTab === "overview" && (
           <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
             <span className="text-xs text-muted-foreground">快捷导航：</span>
