@@ -1,7 +1,7 @@
 "use client"
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { authService, User } from "@/lib/auth"
+import { authService, User, PagePermissions } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -9,6 +9,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import { Label } from "@/components/ui/label"
+import { Checkbox } from "@/components/ui/checkbox"
 
 type UserTokenStats = {
   userId: string
@@ -94,6 +95,7 @@ export default function AdminAccountsPage() {
     setLoading(true)
     const list = await authService.listUsers()
     setUsers(list)
+    syncPermMap(list)
     setLoading(false)
   }
 
@@ -156,6 +158,39 @@ export default function AdminAccountsPage() {
     }
     cancelEdit()
     refreshUsers()
+  }
+
+  // Page permissions management
+  const [permMap, setPermMap] = useState<Record<string, PagePermissions>>({})
+  const [permSaving, setPermSaving] = useState<Record<string, boolean>>({})
+  const [permMsg, setPermMsg] = useState<Record<string, string>>({})
+
+  // Initialize permMap when users are loaded
+  function syncPermMap(list: User[]) {
+    setPermMap((prev) => {
+      const next = { ...prev }
+      for (const u of list) {
+        if (!(u.id in next)) {
+          next[u.id] = u.permissions ?? {}
+        }
+      }
+      return next
+    })
+  }
+
+  function togglePerm(userId: string, key: keyof PagePermissions) {
+    setPermMap((prev) => ({
+      ...prev,
+      [userId]: { ...prev[userId], [key]: !prev[userId]?.[key] },
+    }))
+  }
+
+  async function savePerms(userId: string) {
+    setPermSaving((s) => ({ ...s, [userId]: true }))
+    setPermMsg((m) => ({ ...m, [userId]: "" }))
+    const res = await authService.updatePermissions(userId, permMap[userId] ?? {})
+    setPermSaving((s) => ({ ...s, [userId]: false }))
+    setPermMsg((m) => ({ ...m, [userId]: res.success ? "已保存" : res.error || "保存失败" }))
   }
 
   // Upload MOM report
@@ -348,6 +383,86 @@ export default function AdminAccountsPage() {
                 </div>
               )}
             </>
+          )}
+        </Card>
+
+        <Card className="bg-black/60 border border-cyan-500/30 backdrop-blur-md p-6">
+          <div className="text-lg font-medium">页面访问权限管理</div>
+          <Separator className="my-4 bg-cyan-500/30" />
+          <div className="text-xs text-cyan-500/70 mb-4">管理员账号默认拥有全部权限，以下设置仅对普通用户生效。</div>
+          {loading ? (
+            <div className="text-cyan-500">加载中...</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-cyan-400">用户</TableHead>
+                    <TableHead className="text-cyan-400 text-center">MA 市场监控</TableHead>
+                    <TableHead className="text-cyan-400 text-center">分析看板（传统风格）</TableHead>
+                    <TableHead className="text-cyan-400 text-center">MOM 分析</TableHead>
+                    <TableHead className="text-cyan-400">操作</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {users.map((u) => {
+                    const perms = permMap[u.id] ?? {}
+                    const isAdmin = u.role === "admin"
+                    return (
+                      <TableRow key={u.id}>
+                        <TableCell className="text-cyan-200 font-medium">
+                          {u.name}
+                          {isAdmin && <span className="ml-2 text-xs text-cyan-500">（管理员）</span>}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Checkbox
+                            disabled={isAdmin}
+                            checked={isAdmin || !!perms.ma}
+                            onCheckedChange={() => togglePerm(u.id, "ma")}
+                            className="border-cyan-500/50 data-[state=checked]:bg-cyan-600"
+                          />
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Checkbox
+                            disabled={isAdmin}
+                            checked={isAdmin || !!perms.classic}
+                            onCheckedChange={() => togglePerm(u.id, "classic")}
+                            className="border-cyan-500/50 data-[state=checked]:bg-cyan-600"
+                          />
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Checkbox
+                            disabled={isAdmin}
+                            checked={isAdmin || !!perms.mom}
+                            onCheckedChange={() => togglePerm(u.id, "mom")}
+                            className="border-cyan-500/50 data-[state=checked]:bg-cyan-600"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {!isAdmin && (
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                className="bg-cyan-600 hover:bg-cyan-500"
+                                disabled={!!permSaving[u.id]}
+                                onClick={() => savePerms(u.id)}
+                              >
+                                {permSaving[u.id] ? "保存中..." : "保存"}
+                              </Button>
+                              {permMsg[u.id] && (
+                                <span className={cn("text-xs", permMsg[u.id] === "已保存" ? "text-green-400" : "text-red-400")}>
+                                  {permMsg[u.id]}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </Card>
 

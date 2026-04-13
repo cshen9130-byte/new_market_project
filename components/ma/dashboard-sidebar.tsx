@@ -6,15 +6,16 @@ import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
 import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X } from "lucide-react"
 import type React from "react"
+import { authService } from "@/lib/auth"
 
-const navigation = [
+const baseNavigation = [
   { name: "总览", href: "/ma/dashboard", icon: LayoutDashboard },
   { name: "宏观市场", href: "/ma/dashboard/macro-market", icon: TrendingUp },
   { name: "股票市场", href: "/ma/dashboard/stock-market", icon: LineChart },
   { name: "期货市场", href: "/ma/dashboard/futures-market", icon: Rocket },
   { name: "期权市场", href: "/ma/dashboard/options-market", icon: Target },
   { name: "私募基金", href: "/ma/dashboard/private-funds", icon: Briefcase },
-  { name: "MOM分析", href: "/ma/dashboard/mom-analysis", icon: BarChart2 },
+  { name: "MOM分析", href: "/ma/dashboard/mom-analysis", icon: BarChart2, permKey: "mom" as const },
   { name: "小工具", href: "/ma/dashboard/tools", icon: Wrench },
   { name: "__home__", href: "/ma/dashboard", icon: Home },
   { name: "AI知识库", href: "/ma/dashboard/ai-knowledge", icon: BrainCircuit },
@@ -27,6 +28,12 @@ interface DashboardSidebarProps {
 
 export function DashboardSidebar({ mobileOpen = false, onMobileClose }: DashboardSidebarProps) {
   const pathname = usePathname()
+  const currentUser = authService.getCurrentUser()
+  const navigation = baseNavigation.filter((item) => {
+    if (!item.permKey) return true
+    if (currentUser?.role === "admin") return true
+    return !!currentUser?.permissions?.[item.permKey]
+  })
   const shouldAutoCollapse =
     pathname === "/ma/dashboard/ai-knowledge" ||
     pathname.startsWith("/ma/dashboard/mom-analysis/trader-analysis") ||

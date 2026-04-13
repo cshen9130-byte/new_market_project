@@ -1,10 +1,17 @@
 "use client"
 
+export type PagePermissions = {
+  ma?: boolean
+  classic?: boolean
+  mom?: boolean
+}
+
 export interface User {
   id: string
   email: string
   name: string
   role?: "admin" | "user"
+  permissions?: PagePermissions
 }
 
 async function jsonFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -95,9 +102,24 @@ export const authService = {
       return { success: false, error: e?.message || "更新失败" }
     }
   },
+  updatePermissions: async (
+    id: string,
+    permissions: PagePermissions,
+  ): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const uid = currentUserId()
+      await jsonFetch<{ ok: true; user: User }>(`/api/admin/users/${id}`, {
+        method: "PUT",
+        body: JSON.stringify({ permissions }),
+        headers: uid ? { "x-market-user-id": uid } : {},
+      })
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e?.message || "更新失败" }
+    }
+  },
 
-  isAdmin: (): boolean => {
-    const current = JSON.parse(localStorage.getItem("currentUser") || "null")
+  isAdmin: (): boolean => {    const current = JSON.parse(localStorage.getItem("currentUser") || "null")
     if (!current) return false
     return current.role === "admin"
   },

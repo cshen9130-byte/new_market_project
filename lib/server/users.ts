@@ -1,11 +1,18 @@
 import bcrypt from "bcryptjs"
 import { query } from "@/lib/db"
 
+export type PagePermissions = {
+  ma?: boolean
+  classic?: boolean
+  mom?: boolean
+}
+
 export type StoredUser = {
   id: string
   email: string
   name: string
   role: "admin" | "user"
+  permissions: PagePermissions
   passwordHash: string
 }
 
@@ -14,11 +21,20 @@ type DbRow = {
   email: string
   name: string
   role: "admin" | "user"
+  permissions: PagePermissions | string | null
   password_hash: string
 }
 
+function parsePermissions(raw: PagePermissions | string | null | undefined): PagePermissions {
+  if (!raw) return {}
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw) } catch { return {} }
+  }
+  return raw
+}
+
 function rowToUser(row: DbRow): StoredUser {
-  return { id: row.id, email: row.email, name: row.name, role: row.role, passwordHash: row.password_hash }
+  return { id: row.id, email: row.email, name: row.name, role: row.role, permissions: parsePermissions(row.permissions), passwordHash: row.password_hash }
 }
 
 // Singleton init promise — safe against concurrent requests and hot reloads
@@ -36,10 +52,13 @@ async function _initTable() {
       email         TEXT UNIQUE NOT NULL,
       name          TEXT NOT NULL,
       role          TEXT NOT NULL DEFAULT 'user',
+      permissions   JSONB NOT NULL DEFAULT '{}',
       password_hash TEXT NOT NULL,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `)
+  // Add column if upgrading from older schema
+  await query(`ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}'`)
   await _seedIfEmpty()
 }
 
@@ -105,17 +124,17 @@ async function _seedIfEmpty() {
 
 export async function listUsers(): Promise<Omit<StoredUser, "passwordHash">[]> {
   await ensureTable()
-  const rows = await query<DbRow>(`SELECT id, email, name, role FROM auth_users ORDER BY created_at`)
-  return rows.map((r) => ({ id: r.id, email: r.email, name: r.name, role: r.role }))
+  const rows = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users ORDER BY created_at`)
+  return rows.map((r) => ({ id: r.id, email: r.email, name: r.name, role: r.role, permissions: parsePermissions(r.permissions) }))
 }
 
 export async function getUserById(id: string): Promise<Omit<StoredUser, "passwordHash"> | null> {
   if (!id) return null
   await ensureTable()
-  const rows = await query<DbRow>(`SELECT id, email, name, role FROM auth_users WHERE id = $1`, [id])
+  const rows = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users WHERE id = $1`, [id])
   if (rows.length === 0) return null
   const r = rows[0]
-  return { id: r.id, email: r.email, name: r.name, role: r.role }
+  return { id: r.id, email: r.email, name: r.name, role: r.role, permissions: parsePermissions(r.permissions) }
 }
 
 export async function getAll(): Promise<StoredUser[]> {
@@ -142,7 +161,7 @@ export async function addUser(input: { email: string; name: string; password: st
 
 export async function updateUser(
   id: string,
-  updates: Partial<{ email: string; name: string; password: string; role: "admin" | "user" }>,
+  updates: Partial<{ email: string; name: string; password: string; role: "admin" | "user"; permissions: PagePermissions }>,
 ) {
   await ensureTable()
   const rows = await query<DbRow>(
@@ -169,10 +188,13 @@ export async function updateUser(
     const hash = await bcrypt.hash(updates.password, 10)
     await query(`UPDATE auth_users SET password_hash = $1 WHERE id = $2`, [hash, id])
   }
+  if ("permissions" in updates && updates.permissions !== undefined) {
+    await query(`UPDATE auth_users SET permissions = $1 WHERE id = $2`, [JSON.stringify(updates.permissions), id])
+  }
 
-  const updated = await query<DbRow>(`SELECT id, email, name, role FROM auth_users WHERE id = $1`, [id])
+  const updated = await query<DbRow>(`SELECT id, email, name, role, permissions FROM auth_users WHERE id = $1`, [id])
   const r = updated[0]
-  return { id: r.id, email: r.email, name: r.name, role: r.role }
+  return { id: r.id, email: r.email, name: r.name, role: r.role, permissions: parsePermissions(r.permissions) }
 }
 
 export async function deleteUser(id: string) {
@@ -190,6 +212,6 @@ export async function verifyLogin(identifier: string, password: string) {
   const user = rowToUser(rows[0])
   const ok = await bcrypt.compare(password, user.passwordHash)
   if (!ok) return null
-  const { passwordHash, ...rest } = user
+  const { passwordHash: _ph, ...rest } = user
   return rest
 }

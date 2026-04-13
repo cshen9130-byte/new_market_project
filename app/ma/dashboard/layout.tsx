@@ -18,6 +18,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const current = authService.getCurrentUser()
     if (!current) {
       router.replace("/login")
+    } else if (current.role !== "admin" && !current.permissions?.ma) {
+      router.replace("/dashboard")
     } else {
       setUser(current)
     }
