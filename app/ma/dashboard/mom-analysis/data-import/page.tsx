@@ -93,6 +93,17 @@ export default function DataImportPage() {
     success: boolean
     message: string
   } | null>(null)
+
+  // ── Advisor info import state ──────────────────────────────────────────────
+  const advisorInfoInputRef = useRef<HTMLInputElement | null>(null)
+  const [advisorInfoFile, setAdvisorInfoFile] = useState<File | null>(null)
+  const [advisorInfoIsDragOver, setAdvisorInfoIsDragOver] = useState(false)
+  const [isImportingAdvisorInfo, setIsImportingAdvisorInfo] = useState(false)
+  const [advisorInfoResult, setAdvisorInfoResult] = useState<{
+    success: boolean
+    message: string
+  } | null>(null)
+
   const autoFollowLogRef = useRef(true)
   const logScrollRef = useRef<HTMLDivElement | null>(null)
   const logEndRef = useRef<HTMLDivElement | null>(null)
@@ -278,6 +289,29 @@ export default function DataImportPage() {
       toast({ title: "导入失败", description: msg, variant: "destructive" })
     } finally {
       setIsImportingCapitalFlow(false)
+    }
+  }
+
+  async function handleAdvisorInfoImport(file: File) {
+    setIsImportingAdvisorInfo(true)
+    setAdvisorInfoResult(null)
+    try {
+      const fd = new FormData()
+      fd.append("file", file)
+      const res = await fetch("/ma/api/mom-analysis/advisor-info/import", {
+        method: "POST",
+        body: fd,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "导入失败")
+      setAdvisorInfoResult({ success: true, message: data.message })
+      toast({ title: "导入成功", description: data.message })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "导入失败"
+      setAdvisorInfoResult({ success: false, message: msg })
+      toast({ title: "导入失败", description: msg, variant: "destructive" })
+    } finally {
+      setIsImportingAdvisorInfo(false)
     }
   }
 
@@ -1016,6 +1050,108 @@ export default function DataImportPage() {
                   ? <CheckCircle2 className="h-4 w-4 shrink-0" />
                   : <AlertCircle className="h-4 w-4 shrink-0" />}
                 {capitalFlowResult.message}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Database className="h-4 w-4 text-violet-500" />
+            投顾信息导入
+            <span className="ml-1 text-xs font-normal text-muted-foreground">
+              投顾信息.xlsx
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            拖入 <span className="font-mono">投顾信息.xlsx</span> 或同结构文件，将工作表中的投顾名录全量写入数据库。
+            板块列若为空会自动沿用上一行板块，每次导入会替换整张表。
+          </p>
+
+          <div
+            className={`relative rounded-lg border-2 border-dashed transition-colors ${
+              advisorInfoIsDragOver ? "border-violet-500 bg-violet-500/5" : "border-border/60 hover:border-border"
+            }`}
+            onDragOver={(e) => { e.preventDefault(); setAdvisorInfoIsDragOver(true) }}
+            onDragEnter={(e) => { e.preventDefault(); setAdvisorInfoIsDragOver(true) }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) setAdvisorInfoIsDragOver(false)
+            }}
+            onDrop={(e) => {
+              e.preventDefault()
+              setAdvisorInfoIsDragOver(false)
+              const dropped = Array.from(e.dataTransfer.files).find((f) =>
+                f.name.toLowerCase().endsWith(".xlsx"),
+              )
+              if (dropped) setAdvisorInfoFile(dropped)
+            }}
+          >
+            <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
+              <Database className={`h-7 w-7 ${advisorInfoIsDragOver ? "text-violet-500" : "text-muted-foreground"}`} />
+              {advisorInfoFile ? (
+                <>
+                  <p className="text-sm font-medium text-foreground">{advisorInfoFile.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {(advisorInfoFile.size / 1024).toFixed(1)} KB
+                  </p>
+                  <button
+                    className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground transition-colors"
+                    onClick={() => setAdvisorInfoFile(null)}
+                  >
+                    重新选择
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-medium">拖放 .xlsx 文件到此处</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-1"
+                    disabled={isImportingAdvisorInfo}
+                    onClick={() => advisorInfoInputRef.current?.click()}
+                  >
+                    选择文件
+                  </Button>
+                </>
+              )}
+            </div>
+            <input
+              ref={advisorInfoInputRef}
+              type="file"
+              accept=".xlsx"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0]
+                if (f) setAdvisorInfoFile(f)
+                if (advisorInfoInputRef.current) advisorInfoInputRef.current.value = ""
+              }}
+            />
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              disabled={!advisorInfoFile || isImportingAdvisorInfo}
+              onClick={() => advisorInfoFile && void handleAdvisorInfoImport(advisorInfoFile)}
+            >
+              {isImportingAdvisorInfo ? (
+                <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />导入中…</>
+              ) : (
+                <><UploadCloud className="mr-2 h-3.5 w-3.5" />导入数据库</>
+              )}
+            </Button>
+
+            {advisorInfoResult && (
+              <div className={`flex items-center gap-1.5 text-sm ${advisorInfoResult.success ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>
+                {advisorInfoResult.success
+                  ? <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  : <AlertCircle className="h-4 w-4 shrink-0" />}
+                {advisorInfoResult.message}
               </div>
             )}
           </div>
