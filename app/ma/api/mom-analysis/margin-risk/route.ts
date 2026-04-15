@@ -99,11 +99,39 @@ export async function GET() {
       ORDER BY "交易日期" ASC
     `
 
+    // Sector-level daily margin grouped by mom_advisor_info.sector
+    // Falls back to per-account grouping if mom_advisor_info table doesn't exist yet
+    const sectorSqlWithAdvisor = `
+      SELECT
+        d."交易日期"::date::text                                                                            AS date,
+        COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')                                                     AS sector,
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE(d."保证金占用", ''), ',', ''), ' ', ''), ''))::numeric)       AS sector_margin
+      FROM mom_daily_reports d
+      LEFT JOIN mom_advisor_info a ON a.account_code = d."账户"
+      GROUP BY d."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')
+      ORDER BY d."交易日期"::date ASC
+    `
+    const sectorSqlByAccount = `
+      SELECT
+        "交易日期"::date::text                                                                              AS date,
+        "账户"                                                                                              AS sector,
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE("保证金占用", ''), ',', ''), ' ', ''), ''))::numeric)         AS sector_margin
+      FROM mom_daily_reports
+      GROUP BY "交易日期"::date, "账户"
+      ORDER BY "交易日期"::date ASC
+    `
+
     const [tsRows, acctRows, lsRows] = await Promise.all([
       query<{ date: string; margin: string | null; equity: string | null; available: string | null; fund_nav: string | null }>(tsSql),
       query<{ account: string; date: string; risk_ratio: string | null; margin: string | null; equity: string | null; available: string | null }>(acctSql),
       query<{ date: string; long_margin: string | null; short_margin: string | null }>(lsSql).catch(() => [] as { date: string; long_margin: string | null; short_margin: string | null }[]),
     ])
+
+    type SectorRow = { date: string; sector: string; sector_margin: string | null }
+    const sectorRows: SectorRow[] = await query<SectorRow>(sectorSqlWithAdvisor).catch(async () => {
+      console.warn("[margin-risk] mom_advisor_info unavailable, falling back to per-account grouping")
+      return query<SectorRow>(sectorSqlByAccount).catch(() => [] as SectorRow[])
+    })
 
     // Build portfolio timeseries with riskRatio = margin / fund_nav * 100
     const lsMap = new Map(lsRows.map(r => [r.date, r]))
@@ -169,7 +197,21 @@ export async function GET() {
       return { account: a.account, ...last }
     }).sort((a, b) => (b.margin ?? 0) - (a.margin ?? 0))
 
-    return NextResponse.json({ ok: true, timeseries, accounts, latest })
+    // Per-sector time-series: sector margin / portfolio fund_nav
+    const fundNavMap = new Map(timeseries.map(r => [r.date, r.fundNav]))
+    const sectorMap = new Map<string, { date: string; riskRatio: number | null }[]>()
+    for (const r of sectorRows) {
+      if (!sectorMap.has(r.sector)) sectorMap.set(r.sector, [])
+      const sm = parseNum(r.sector_margin) ?? 0
+      const fundNav = fundNavMap.get(r.date) ?? null
+      sectorMap.get(r.sector)!.push({
+        date: r.date,
+        riskRatio: fundNav != null && fundNav > 0 ? sm / fundNav * 100 : null,
+      })
+    }
+    const sectorSeries = Array.from(sectorMap.entries()).map(([sector, series]) => ({ sector, series }))
+
+    return NextResponse.json({ ok: true, timeseries, accounts, latest, sectorSeries })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {

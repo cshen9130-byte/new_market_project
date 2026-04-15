@@ -671,9 +671,12 @@ function IntradayContent() {
   type MarginTs = { date: string; margin: number; equity: number; available: number; fundNav: number | null; riskRatio: number | null; longMarginRatio: number | null; shortMarginRatio: number | null }
   type MarginAcct = { account: string; series: MarginTs[] }
   type MarginLatest = { account: string; date: string; riskRatio: number | null; margin: number; equity: number; available: number }
+  type SectorTs = { sector: string; series: { date: string; riskRatio: number | null }[] }
   const [marginTs, setMarginTs] = useState<MarginTs[]>([])
   const [marginAccts, setMarginAccts] = useState<MarginAcct[]>([])
   const [marginLatest, setMarginLatest] = useState<MarginLatest[]>([])
+  const [sectorSeries, setSectorSeries] = useState<SectorTs[]>([])
+  const [sectorFilter, setSectorFilter] = useState<string>("全部")
   const [marginLoading, setMarginLoading] = useState(true)
 
   const fetchVolBar = (window: string) => {
@@ -715,6 +718,7 @@ function IntradayContent() {
         setMarginTs(j.timeseries ?? [])
         setMarginAccts(j.accounts ?? [])
         setMarginLatest(j.latest ?? [])
+        setSectorSeries(j.sectorSeries ?? [])
       })
       .catch(() => {})
       .finally(() => setMarginLoading(false))
@@ -1767,11 +1771,12 @@ function IntradayContent() {
         ) : marginTs.length === 0 ? (
           <p className="text-sm text-muted-foreground">暂无数据</p>
         ) : (
-          <div className="space-y-4">
+          <>
+          <div className="grid grid-cols-2 gap-4 items-stretch">
             {/* Latest snapshot table */}
             <Card>
               <CardHeader className="pb-2"><CardTitle className="text-sm">账户最新风险度快照</CardTitle></CardHeader>
-              <CardContent className="p-0 pb-2 overflow-x-auto">
+              <CardContent className="p-0 pb-2 overflow-x-auto overflow-y-auto" style={{ maxHeight: 320 }}>
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b bg-muted/40">
@@ -1784,7 +1789,7 @@ function IntradayContent() {
                     </tr>
                   </thead>
                   <tbody>
-                    {marginLatest.map((r, i) => {
+                    {[...marginLatest].sort((a, b) => a.account.localeCompare(b.account)).map((r, i) => {
                       const ratio = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
                       const danger = ratio != null && ratio > 80
                       const warning = ratio != null && ratio > 60 && ratio <= 80
@@ -1884,6 +1889,72 @@ function IntradayContent() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Sector risk ratio chart */}
+          {(() => {
+            const SECTOR_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#6366f1","#ec4899","#14b8a6"]
+            const allSectors = [...sectorSeries].sort((a, b) => a.sector.localeCompare(b.sector, "zh"))
+            const visibleSectors = sectorFilter === "全部" ? allSectors : allSectors.filter(s => s.sector === sectorFilter)
+            const allDates = marginTs.map(r => r.date)
+            const legendData = visibleSectors.map(s => s.sector)
+            return (
+              <Card className="mt-4">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-3">
+                    分类投顾历史风险度
+                    <div className="ml-auto">
+                      <select
+                        className="h-7 rounded border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                        value={sectorFilter}
+                        onChange={e => setSectorFilter(e.target.value)}
+                      >
+                        <option value="全部">全部板块</option>
+                        {allSectors.map(s => (
+                          <option key={s.sector} value={s.sector}>{s.sector}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="p-0 pb-2">
+                  <ReactECharts
+                    option={{
+                      tooltip: {
+                        trigger: "axis",
+                        formatter: (params: { seriesName: string; value: number | null; marker: string; axisValueLabel: string }[]) => {
+                          const total = params.reduce((sum, p) => sum + (p.value != null ? Number(p.value) : 0), 0)
+                          return [
+                            `<b>${params[0]?.axisValueLabel ?? ""}</b>`,
+                            ...params.filter(p => p.value != null && Number(p.value) > 0).map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}%`),
+                            visibleSectors.length > 1 ? `<b>合计: ${total.toFixed(2)}%</b>` : "",
+                          ].filter(Boolean).join("<br/>")
+                        },
+                      },
+                      legend: { top: 2, textStyle: { fontSize: 11 }, data: legendData },
+                      grid: { left: 55, right: 20, top: 35, bottom: 50 },
+                      xAxis: { type: "category", data: allDates, axisLabel: { fontSize: 10, rotate: 30 } },
+                      yAxis: { type: "value", axisLabel: { formatter: (v: number) => v.toFixed(1) + "%" } },
+                      dataZoom: [{ type: "inside", start: 60, end: 100 }, { type: "slider", height: 20, bottom: 5 }],
+                      series: visibleSectors.map((s, i) => {
+                        const dateToRatio = new Map(s.series.map(r => [r.date, r.riskRatio]))
+                        return {
+                          name: s.sector,
+                          type: "bar",
+                          stack: "sector",
+                          itemStyle: { color: SECTOR_COLORS[i % SECTOR_COLORS.length] },
+                          data: allDates.map(d => dateToRatio.get(d) ?? null),
+                          label: { show: false },
+                        }
+                      }),
+                    }}
+                    style={{ height: 300 }}
+                    notMerge
+                  />
+                </CardContent>
+              </Card>
+            )
+          })()}
+          </>
         )}
       </section>
     </div>
