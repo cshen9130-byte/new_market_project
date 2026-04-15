@@ -670,13 +670,16 @@ function IntradayContent() {
 
   type MarginTs = { date: string; margin: number; equity: number; available: number; fundNav: number | null; riskRatio: number | null; longMarginRatio: number | null; shortMarginRatio: number | null }
   type MarginAcct = { account: string; series: MarginTs[] }
-  type MarginLatest = { account: string; date: string; riskRatio: number | null; margin: number; equity: number; available: number }
+  type MarginLatest = { account: string; date: string; riskRatio: number | null; margin: number; equity: number; available: number; sector: string; longMarginRatio: number | null; shortMarginRatio: number | null }
   type SectorTs = { sector: string; series: { date: string; riskRatio: number | null }[] }
+  type SectorLsTs = { sector: string; series: { date: string; longMarginRatio: number | null; shortMarginRatio: number | null }[] }
   const [marginTs, setMarginTs] = useState<MarginTs[]>([])
   const [marginAccts, setMarginAccts] = useState<MarginAcct[]>([])
   const [marginLatest, setMarginLatest] = useState<MarginLatest[]>([])
   const [sectorSeries, setSectorSeries] = useState<SectorTs[]>([])
+  const [sectorLsSeries, setSectorLsSeries] = useState<SectorLsTs[]>([])
   const [sectorFilter, setSectorFilter] = useState<string>("全部")
+  const [acctRankFilter, setAcctRankFilter] = useState<string>("全部")
   const [marginLoading, setMarginLoading] = useState(true)
 
   const fetchVolBar = (window: string) => {
@@ -719,6 +722,7 @@ function IntradayContent() {
         setMarginAccts(j.accounts ?? [])
         setMarginLatest(j.latest ?? [])
         setSectorSeries(j.sectorSeries ?? [])
+        setSectorLsSeries(j.sectorLsSeries ?? [])
       })
       .catch(() => {})
       .finally(() => setMarginLoading(false))
@@ -1773,61 +1777,6 @@ function IntradayContent() {
         ) : (
           <>
           <div className="grid grid-cols-2 gap-4 items-stretch">
-            {/* Latest snapshot table */}
-            <Card>
-              <CardHeader className="pb-2"><CardTitle className="text-sm">账户最新风险度快照</CardTitle></CardHeader>
-              <CardContent className="p-0 pb-2 overflow-x-auto overflow-y-auto" style={{ maxHeight: 320 }}>
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b bg-muted/40">
-                      <th className="text-left px-3 py-1.5 font-medium">账户</th>
-                      <th className="text-right px-3 py-1.5 font-medium">日期</th>
-                      <th className="text-right px-3 py-1.5 font-medium">保证金占用</th>
-                      <th className="text-right px-3 py-1.5 font-medium">客户权益</th>
-                      <th className="text-right px-3 py-1.5 font-medium">可用资金</th>
-                      <th className="text-right px-3 py-1.5 font-medium">风险度</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...marginLatest].sort((a, b) => a.account.localeCompare(b.account)).map((r, i) => {
-                      const ratio = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
-                      const danger = ratio != null && ratio > 80
-                      const warning = ratio != null && ratio > 60 && ratio <= 80
-                      return (
-                        <tr key={r.account} className={`border-b last:border-b-0 ${i % 2 === 0 ? "" : "bg-muted/20"}`}>
-                          <td className="px-3 py-1.5 font-medium">{r.account}</td>
-                          <td className="px-3 py-1.5 text-right text-muted-foreground">{r.date}</td>
-                          <td className="px-3 py-1.5 text-right font-mono">{r.margin.toLocaleString("zh-CN")}</td>
-                          <td className="px-3 py-1.5 text-right font-mono">{r.equity.toLocaleString("zh-CN")}</td>
-                          <td className="px-3 py-1.5 text-right font-mono">{r.available.toLocaleString("zh-CN")}</td>
-                          <td className={`px-3 py-1.5 text-right font-mono font-semibold ${danger ? "text-red-500" : warning ? "text-orange-500" : "text-green-600"}`}>
-                            {ratio != null ? ratio.toFixed(2) + "%" : "—"}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                    {/* Portfolio total */}
-                    {(() => {
-                      const last = marginTs[marginTs.length - 1]
-                      if (!last) return null
-                      return (
-                        <tr className="border-t bg-muted/50 font-semibold">
-                          <td className="px-3 py-1.5">合计</td>
-                          <td className="px-3 py-1.5 text-right text-muted-foreground">{last.date}</td>
-                          <td className="px-3 py-1.5 text-right font-mono">{last.margin.toLocaleString("zh-CN")}</td>
-                          <td className="px-3 py-1.5 text-right font-mono">{last.equity.toLocaleString("zh-CN")}</td>
-                          <td className="px-3 py-1.5 text-right font-mono">{last.available.toLocaleString("zh-CN")}</td>
-                          <td className={`px-3 py-1.5 text-right font-mono ${last.riskRatio != null && last.riskRatio > 80 ? "text-red-500" : last.riskRatio != null && last.riskRatio > 60 ? "text-orange-500" : "text-green-600"}`}>
-                            {last.riskRatio != null ? last.riskRatio.toFixed(2) + "%" : "—"}
-                          </td>
-                        </tr>
-                      )
-                    })()}
-                  </tbody>
-                </table>
-              </CardContent>
-            </Card>
-
             {/* Portfolio risk ratio time-series chart */}
             <Card>
               <CardHeader className="pb-2">
@@ -1888,72 +1837,259 @@ function IntradayContent() {
                 />
               </CardContent>
             </Card>
+
+            {/* Sector risk ratio chart */}
+            {(() => {
+              const SECTOR_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#6366f1","#ec4899","#14b8a6"]
+              const allSectors = [...sectorSeries].sort((a, b) => a.sector.localeCompare(b.sector, "zh"))
+              const allDates = marginTs.map(r => r.date)
+              const isSingleSector = sectorFilter !== "全部"
+
+              // Single sector: show long/short bars like 组合历史风险度
+              const selectedLs = isSingleSector
+                ? sectorLsSeries.find(s => s.sector === sectorFilter)
+                : null
+
+              const sectorOption = isSingleSector && selectedLs
+                ? {
+                    tooltip: {
+                      trigger: "axis" as const,
+                      formatter: (params: { seriesName: string; value: number | null; marker: string; axisValueLabel: string }[]) => {
+                        const total = params.reduce((sum, p) => sum + (p.value != null ? Number(p.value) : 0), 0)
+                        return [
+                          `<b>${params[0]?.axisValueLabel ?? ""}</b>`,
+                          ...params.filter(p => p.value != null).map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}%`),
+                          `<b>合计: ${total.toFixed(2)}%</b>`,
+                        ].join("<br/>")
+                      },
+                    },
+                    legend: { top: 2, textStyle: { fontSize: 11 }, data: ["多头保证金/权益", "空头保证金/权益"] },
+                    grid: { left: 55, right: 20, top: 35, bottom: 50 },
+                    xAxis: { type: "category" as const, data: allDates, axisLabel: { fontSize: 10, rotate: 30 } },
+                    yAxis: { type: "value" as const, axisLabel: { formatter: (v: number) => v.toFixed(1) + "%" } },
+                    dataZoom: [{ type: "inside", start: 60, end: 100 }, { type: "slider", height: 20, bottom: 5 }],
+                    series: (() => {
+                      const lsMap = new Map(selectedLs.series.map(r => [r.date, r]))
+                      return [
+                        {
+                          name: "多头保证金/权益",
+                          type: "bar" as const,
+                          stack: "sector",
+                          itemStyle: { color: "#3b82f6" },
+                          data: allDates.map(d => lsMap.get(d)?.longMarginRatio ?? null),
+                          label: { show: false },
+                        },
+                        {
+                          name: "空头保证金/权益",
+                          type: "bar" as const,
+                          stack: "sector",
+                          itemStyle: { color: "#f59e0b" },
+                          data: allDates.map(d => lsMap.get(d)?.shortMarginRatio ?? null),
+                        },
+                      ]
+                    })(),
+                  }
+                : {
+                    // All sectors: stacked by sector
+                    tooltip: {
+                      trigger: "axis" as const,
+                      formatter: (params: { seriesName: string; value: number | null; marker: string; axisValueLabel: string }[]) => {
+                        const total = params.reduce((sum, p) => sum + (p.value != null ? Number(p.value) : 0), 0)
+                        return [
+                          `<b>${params[0]?.axisValueLabel ?? ""}</b>`,
+                          ...params.filter(p => p.value != null && Number(p.value) > 0).map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}%`),
+                          `<b>合计: ${total.toFixed(2)}%</b>`,
+                        ].filter(Boolean).join("<br/>")
+                      },
+                    },
+                    legend: { top: 2, textStyle: { fontSize: 11 }, data: allSectors.map(s => s.sector) },
+                    grid: { left: 55, right: 20, top: 35, bottom: 50 },
+                    xAxis: { type: "category" as const, data: allDates, axisLabel: { fontSize: 10, rotate: 30 } },
+                    yAxis: { type: "value" as const, axisLabel: { formatter: (v: number) => v.toFixed(1) + "%" } },
+                    dataZoom: [{ type: "inside", start: 60, end: 100 }, { type: "slider", height: 20, bottom: 5 }],
+                    series: allSectors.map((s, i) => {
+                      const dateToRatio = new Map(s.series.map(r => [r.date, r.riskRatio]))
+                      return {
+                        name: s.sector,
+                        type: "bar" as const,
+                        stack: "sector",
+                        itemStyle: { color: SECTOR_COLORS[i % SECTOR_COLORS.length] },
+                        data: allDates.map(d => dateToRatio.get(d) ?? null),
+                        label: { show: false },
+                      }
+                    }),
+                  }
+
+              return (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-3">
+                      分类投顾历史风险度
+                      <div className="ml-auto">
+                        <select
+                          className="h-7 rounded border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                          value={sectorFilter}
+                          onChange={e => setSectorFilter(e.target.value)}
+                        >
+                          <option value="全部">全部板块</option>
+                          {allSectors.map(s => (
+                            <option key={s.sector} value={s.sector}>{s.sector}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="p-0 pb-2">
+                    <ReactECharts
+                      option={sectorOption}
+                      style={{ height: 280 }}
+                      notMerge
+                    />
+                  </CardContent>
+                </Card>
+              )
+            })()}
           </div>
 
-          {/* Sector risk ratio chart */}
-          {(() => {
-            const SECTOR_COLORS = ["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#f97316","#6366f1","#ec4899","#14b8a6"]
-            const allSectors = [...sectorSeries].sort((a, b) => a.sector.localeCompare(b.sector, "zh"))
-            const visibleSectors = sectorFilter === "全部" ? allSectors : allSectors.filter(s => s.sector === sectorFilter)
-            const allDates = marginTs.map(r => r.date)
-            const legendData = visibleSectors.map(s => s.sector)
-            return (
-              <Card className="mt-4">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center gap-3">
-                    分类投顾历史风险度
-                    <div className="ml-auto">
-                      <select
-                        className="h-7 rounded border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-                        value={sectorFilter}
-                        onChange={e => setSectorFilter(e.target.value)}
-                      >
-                        <option value="全部">全部板块</option>
-                        {allSectors.map(s => (
-                          <option key={s.sector} value={s.sector}>{s.sector}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-0 pb-2">
-                  <ReactECharts
-                    option={{
-                      tooltip: {
-                        trigger: "axis",
-                        formatter: (params: { seriesName: string; value: number | null; marker: string; axisValueLabel: string }[]) => {
-                          const total = params.reduce((sum, p) => sum + (p.value != null ? Number(p.value) : 0), 0)
-                          return [
-                            `<b>${params[0]?.axisValueLabel ?? ""}</b>`,
-                            ...params.filter(p => p.value != null && Number(p.value) > 0).map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}%`),
-                            visibleSectors.length > 1 ? `<b>合计: ${total.toFixed(2)}%</b>` : "",
-                          ].filter(Boolean).join("<br/>")
+          {/* Latest snapshot table */}
+          <div className="mt-4 grid grid-cols-2 gap-4">
+            <Card>
+              <CardHeader className="pb-2"><CardTitle className="text-sm">账户最新风险度快照</CardTitle></CardHeader>
+              <CardContent className="p-0 pb-2 overflow-x-auto overflow-y-auto" style={{ maxHeight: 320 }}>
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b bg-muted/40">
+                      <th className="text-left px-3 py-1.5 font-medium">账户</th>
+                      <th className="text-right px-3 py-1.5 font-medium">日期</th>
+                      <th className="text-right px-3 py-1.5 font-medium">保证金占用</th>
+                      <th className="text-right px-3 py-1.5 font-medium">客户权益</th>
+                      <th className="text-right px-3 py-1.5 font-medium">可用资金</th>
+                      <th className="text-right px-3 py-1.5 font-medium">风险度</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...marginLatest].sort((a, b) => a.account.localeCompare(b.account)).map((r, i) => {
+                      const ratio = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
+                      const danger = ratio != null && ratio > 80
+                      const warning = ratio != null && ratio > 60 && ratio <= 80
+                      return (
+                        <tr key={r.account} className={`border-b last:border-b-0 ${i % 2 === 0 ? "" : "bg-muted/20"}`}>
+                          <td className="px-3 py-1.5 font-medium">{r.account}</td>
+                          <td className="px-3 py-1.5 text-right text-muted-foreground">{r.date}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{r.margin.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{r.equity.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{r.available.toLocaleString("zh-CN")}</td>
+                          <td className={`px-3 py-1.5 text-right font-mono font-semibold ${danger ? "text-red-500" : warning ? "text-orange-500" : "text-green-600"}`}>
+                            {ratio != null ? ratio.toFixed(2) + "%" : "—"}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {/* Portfolio total */}
+                    {(() => {
+                      const last = marginTs[marginTs.length - 1]
+                      if (!last) return null
+                      return (
+                        <tr className="border-t bg-muted/50 font-semibold">
+                          <td className="px-3 py-1.5">合计</td>
+                          <td className="px-3 py-1.5 text-right text-muted-foreground">{last.date}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{last.margin.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{last.equity.toLocaleString("zh-CN")}</td>
+                          <td className="px-3 py-1.5 text-right font-mono">{last.available.toLocaleString("zh-CN")}</td>
+                          <td className={`px-3 py-1.5 text-right font-mono ${last.riskRatio != null && last.riskRatio > 80 ? "text-red-500" : last.riskRatio != null && last.riskRatio > 60 ? "text-orange-500" : "text-green-600"}`}>
+                            {last.riskRatio != null ? last.riskRatio.toFixed(2) + "%" : "—"}
+                          </td>
+                        </tr>
+                      )
+                    })()}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+
+            {/* 投顾当日风险排序 bar chart */}
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm flex items-center gap-3">
+                  投顾当日风险排序
+                  <div className="ml-auto">
+                    <select
+                      className="h-7 rounded border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                      value={acctRankFilter}
+                      onChange={e => setAcctRankFilter(e.target.value)}
+                    >
+                      <option value="全部">全部板块</option>
+                      {[...new Set(marginLatest.map(r => r.sector).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh")).map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0 pb-2">
+                {(() => {
+                  const ranked = [...marginLatest]
+                    .filter(r => acctRankFilter === "全部" || r.sector === acctRankFilter)
+                    .map(r => {
+                      const total = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
+                      const lp = r.longMarginRatio   // proportion 0–1
+                      const sp = r.shortMarginRatio  // proportion 0–1
+                      const hasLs = lp != null && sp != null
+                      return {
+                        account: r.account,
+                        longRatio:  hasLs && total != null ? total * lp! : null,
+                        shortRatio: hasLs && total != null ? total * sp! : null,
+                        totalRatio: total,
+                      }
+                    })
+                    .filter(r => r.totalRatio != null)
+                    .sort((a, b) => (b.totalRatio ?? 0) - (a.totalRatio ?? 0))
+                  const accounts = ranked.map(r => r.account)
+                  return (
+                    <ReactECharts
+                      option={{
+                        tooltip: {
+                          trigger: "axis",
+                          formatter: (params: { seriesName: string; value: number | null; marker: string; axisValue: string }[]) => {
+                            const total = params.reduce((s, p) => s + (p.value != null ? Number(p.value) : 0), 0)
+                            return [
+                              `<b>${params[0]?.axisValue ?? ""}</b>`,
+                              ...params.filter(p => p.value != null).map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toFixed(2)}%`),
+                              `<b>合计: ${total.toFixed(2)}%</b>`,
+                            ].join("<br/>")
+                          },
                         },
-                      },
-                      legend: { top: 2, textStyle: { fontSize: 11 }, data: legendData },
-                      grid: { left: 55, right: 20, top: 35, bottom: 50 },
-                      xAxis: { type: "category", data: allDates, axisLabel: { fontSize: 10, rotate: 30 } },
-                      yAxis: { type: "value", axisLabel: { formatter: (v: number) => v.toFixed(1) + "%" } },
-                      dataZoom: [{ type: "inside", start: 60, end: 100 }, { type: "slider", height: 20, bottom: 5 }],
-                      series: visibleSectors.map((s, i) => {
-                        const dateToRatio = new Map(s.series.map(r => [r.date, r.riskRatio]))
-                        return {
-                          name: s.sector,
-                          type: "bar",
-                          stack: "sector",
-                          itemStyle: { color: SECTOR_COLORS[i % SECTOR_COLORS.length] },
-                          data: allDates.map(d => dateToRatio.get(d) ?? null),
-                          label: { show: false },
-                        }
-                      }),
-                    }}
-                    style={{ height: 300 }}
-                    notMerge
-                  />
-                </CardContent>
-              </Card>
-            )
-          })()}
+                        legend: { top: 2, textStyle: { fontSize: 11 }, data: ["多头保证金/权益", "空头保证金/权益"] },
+                        grid: { left: 40, right: 20, top: 30, bottom: 60 },
+                        xAxis: { type: "category", data: accounts, axisLabel: { fontSize: 10, rotate: 45 } },
+                        yAxis: { type: "value", axisLabel: { formatter: (v: number) => v.toFixed(0) + "%" }, splitLine: { lineStyle: { type: "dashed" } } },
+                        series: [
+                          {
+                            name: "多头保证金/权益",
+                            type: "bar",
+                            stack: "ls",
+                            itemStyle: { color: "#3b82f6" },
+                            data: ranked.map(r => r.longRatio ?? (r.shortRatio == null ? r.totalRatio : null)),
+                            barMaxWidth: 24,
+                          },
+                          {
+                            name: "空头保证金/权益",
+                            type: "bar",
+                            stack: "ls",
+                            itemStyle: { color: "#f59e0b" },
+                            data: ranked.map(r => r.shortRatio),
+                            barMaxWidth: 24,
+                          },
+                        ],
+                      }}
+                      style={{ height: 280 }}
+                      notMerge
+                    />
+                  )
+                })()}
+              </CardContent>
+            </Card>
+          </div>
           </>
         )}
       </section>
@@ -2009,7 +2145,7 @@ export default function RiskReportNewPage() {
               className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >次日预测 ↓</button>
             <button
-              onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })}
+              onClick={() => document.getElementById("section-intraday-sandbox")?.scrollIntoView({ behavior: "smooth" })}
               className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
             >VaR沙盒 ↓</button>
             <button

@@ -121,6 +121,21 @@ export async function GET() {
       ORDER BY "交易日期"::date ASC
     `
 
+    // Per-sector long/short margin from position details joined with mom_advisor_info
+    const sectorLsSql = `
+      SELECT
+        fp."交易日期"::date::text                                                                           AS date,
+        COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')                                                     AS sector,
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."买持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END)      AS long_margin,
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."卖持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END)      AS short_margin
+      FROM mom_futures_position_details fp
+      LEFT JOIN mom_advisor_info a ON a.account_code = fp."账户"
+      GROUP BY fp."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')
+      ORDER BY fp."交易日期"::date ASC
+    `
+
     const [tsRows, acctRows, lsRows] = await Promise.all([
       query<{ date: string; margin: string | null; equity: string | null; available: string | null; fund_nav: string | null }>(tsSql),
       query<{ account: string; date: string; risk_ratio: string | null; margin: string | null; equity: string | null; available: string | null }>(acctSql),
@@ -132,6 +147,9 @@ export async function GET() {
       console.warn("[margin-risk] mom_advisor_info unavailable, falling back to per-account grouping")
       return query<SectorRow>(sectorSqlByAccount).catch(() => [] as SectorRow[])
     })
+
+    type SectorLsRow = { date: string; sector: string; long_margin: string | null; short_margin: string | null }
+    const sectorLsRows: SectorLsRow[] = await query<SectorLsRow>(sectorLsSql).catch(() => [] as SectorLsRow[])
 
     // Build portfolio timeseries with riskRatio = margin / fund_nav * 100
     const lsMap = new Map(lsRows.map(r => [r.date, r]))
@@ -211,7 +229,70 @@ export async function GET() {
     }
     const sectorSeries = Array.from(sectorMap.entries()).map(([sector, series]) => ({ sector, series }))
 
-    return NextResponse.json({ ok: true, timeseries, accounts, latest, sectorSeries })
+    // Per-sector long/short timeseries (scaled proportionally like portfolio LS)
+    const sectorLsMap = new Map<string, { date: string; longMarginRatio: number | null; shortMarginRatio: number | null }[]>()
+    for (const r of sectorLsRows) {
+      if (!sectorLsMap.has(r.sector)) sectorLsMap.set(r.sector, [])
+      const lm = parseNum(r.long_margin) ?? 0
+      const sm = parseNum(r.short_margin) ?? 0
+      const fundNav = fundNavMap.get(r.date) ?? null
+      sectorLsMap.get(r.sector)!.push({
+        date: r.date,
+        longMarginRatio: fundNav != null && fundNav > 0 ? lm / fundNav * 100 : null,
+        shortMarginRatio: fundNav != null && fundNav > 0 ? sm / fundNav * 100 : null,
+      })
+    }
+    const sectorLsSeries = Array.from(sectorLsMap.entries()).map(([sector, series]) => ({ sector, series }))
+
+    // Per-account latest-date long/short from position details
+    const acctLsSql = `
+      SELECT
+        fp."账户"                AS account,
+        fp."交易日期"::date::text AS date,
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."买持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END) AS long_margin,
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."卖持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END) AS short_margin
+      FROM mom_futures_position_details fp
+      GROUP BY fp."账户", fp."交易日期"::date
+      ORDER BY fp."交易日期"::date ASC
+    `
+
+    type AcctLsRow = { account: string; date: string; long_margin: string | null; short_margin: string | null }
+    const acctLsRows: AcctLsRow[] = await query<AcctLsRow>(acctLsSql).catch(() => [] as AcctLsRow[])
+
+    // Latest LS per account: pick the most recent date row for each account
+    const acctLsLatestMap = new Map<string, { longMarginRatio: number | null; shortMarginRatio: number | null }>()
+    // Group by account, take last row (already ordered ASC so last = latest)
+    const acctLsGrouped = new Map<string, AcctLsRow[]>()
+    for (const r of acctLsRows) {
+      if (!acctLsGrouped.has(r.account)) acctLsGrouped.set(r.account, [])
+      acctLsGrouped.get(r.account)!.push(r)
+    }
+    for (const [account, rows] of acctLsGrouped) {
+      const last = rows[rows.length - 1]
+      const lm = parseNum(last.long_margin) ?? 0
+      const sm = parseNum(last.short_margin) ?? 0
+      const total = lm + sm
+      // Store proportions (0–1); chart will multiply by account's own riskRatio
+      acctLsLatestMap.set(account, {
+        longMarginRatio: total > 0 ? lm / total : null,
+        shortMarginRatio: total > 0 ? sm / total : null,
+      })
+    }
+    // Merge into latest snapshot (with sector from mom_advisor_info)
+    const acctSectorRows: { account_code: string; sector: string }[] = await query<{ account_code: string; sector: string }>(
+      `SELECT account_code, COALESCE(NULLIF(TRIM(sector),''),'未分类') AS sector FROM mom_advisor_info`
+    ).catch(() => [] as { account_code: string; sector: string }[])
+    const acctSectorMap = new Map(acctSectorRows.map(r => [r.account_code, r.sector]))
+
+    const latestWithLs = latest.map(a => ({
+      ...a,
+      sector: acctSectorMap.get(a.account) ?? '未分类',
+      ...(acctLsLatestMap.get(a.account) ?? { longMarginRatio: null, shortMarginRatio: null }),
+    }))
+
+    return NextResponse.json({ ok: true, timeseries, accounts, latest: latestWithLs, sectorSeries, sectorLsSeries })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {
