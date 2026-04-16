@@ -1,7 +1,9 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
+import { RefreshCw } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 
@@ -82,21 +84,65 @@ export default function RegimeSimilarityChart() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<"similarity" | "timeline">("similarity")
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null)
+
+  const loadData = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true)
+    setError(null)
+
+    try {
+      const res = await fetch(`/ma/api/macro/regime-similarity?ts=${Date.now()}`, {
+        cache: "no-store",
+      })
+      const json = await res.json()
+
+      if (!res.ok) {
+        throw new Error(json?.error || "加载失败")
+      }
+
+      const payload = json as ApiResponse
+      if (!payload.run_date && !payload.top20?.length) {
+        setData(null)
+        setError("暂无计算结果，请先运行 calc_regime_similarity.py")
+        return
+      }
+
+      setData(payload)
+      setLastUpdated(new Date().toLocaleString("zh-CN", { hour12: false }))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "加载失败")
+    } finally {
+      if (showLoading) setLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    setLoading(true)
-    fetch("/ma/api/macro/regime-similarity", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((json: ApiResponse) => {
-        if (!json.run_date && !json.top20?.length) {
-          setError("暂无计算结果，请先运行 calc_regime_similarity.py")
-        } else {
-          setData(json)
-        }
-      })
-      .catch((e) => setError(e.message || "加载失败"))
-      .finally(() => setLoading(false))
-  }, [])
+    void loadData(true)
+  }, [loadData])
+
+  useEffect(() => {
+    const handleFocus = () => { void loadData(false) }
+    const handleVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void loadData(false)
+      }
+    }
+
+    window.addEventListener("focus", handleFocus)
+    document.addEventListener("visibilitychange", handleVisibility)
+
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void loadData(false)
+      }
+    }, 60_000)
+
+    return () => {
+      window.removeEventListener("focus", handleFocus)
+      document.removeEventListener("visibilitychange", handleVisibility)
+      window.clearInterval(timer)
+    }
+  }, [loadData])
 
   // ── Chart 1: Top-20 similarity (horizontal bar) ──────────────────────────
   const similarityOption = useMemo(() => {
@@ -310,11 +356,28 @@ export default function RegimeSimilarityChart() {
   return (
     <div className="flex flex-col gap-6">
       {/* Header + tabs */}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-muted-foreground">
-          最新计算：{runDate} · 当期参考月份：{currentMonth}
-        </p>
-        <div className="flex gap-1">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm text-muted-foreground">
+            最新计算：{runDate} · 当期参考月份：{currentMonth}
+          </p>
+          {lastUpdated && (
+            <p className="text-xs text-muted-foreground">最近刷新：{lastUpdated}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => void loadData(true)}
+            disabled={loading}
+            className="h-8 gap-2"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            刷新
+          </Button>
+          <div className="flex gap-1">
           {(["similarity", "timeline"] as const).map((tab) => (
             <button
               key={tab}
@@ -329,6 +392,7 @@ export default function RegimeSimilarityChart() {
               {tab === "similarity" ? "相似性分析" : "历史时序"}
             </button>
           ))}
+          </div>
         </div>
       </div>
 

@@ -70,18 +70,34 @@ export async function GET(req: Request) {
 
     // ── Discover tables ────────────────────────────────────────────────────
     const tablesRes = await rawQuery(
-      `SELECT tablename FROM pg_tables WHERE schemaname = 'public'
-       AND (tablename ILIKE '%mom%trade%' OR tablename ILIKE '%mom%position%'
-         OR tablename ILIKE '%trade%detail%' OR tablename ILIKE '%position%detail%')`
+      `SELECT schemaname, tablename FROM pg_tables
+       WHERE tablename ILIKE '%mom%trade%' OR tablename ILIKE '%mom%position%'
+          OR tablename ILIKE '%trade%detail%' OR tablename ILIKE '%position%detail%'
+       ORDER BY tablename`
     )
-    const names = tablesRes.rows.map((r: { tablename: string }) => r.tablename)
-    const findTable = (keys: string[]) =>
-      names.find((n: string) => keys.every(k => n.toLowerCase().includes(k.toLowerCase()))) ?? null
+    const allTables = tablesRes.rows as Array<{ schemaname: string; tablename: string }>
+    const findTable = (keys: string[]) => {
+      const table = allTables.find(({ tablename }) => {
+        const lower = tablename.toLowerCase()
+        return !lower.includes("file_state") && keys.every((key) => lower.includes(key.toLowerCase()))
+      })
+      if (!table) return null
+      return `${table.schemaname === "public" ? "" : `"${table.schemaname}".`}"${table.tablename}"`
+    }
 
-    const tradeTable    = findTable(["trade"])
-    const positionTable = findTable(["position"])
+    const tradeTable =
+      findTable(["futures", "trade", "details"]) ??
+      findTable(["trade", "details"]) ??
+      findTable(["options", "trade", "details"]) ??
+      findTable(["trade"])
+    const positionTable =
+      findTable(["futures", "position", "details"]) ??
+      findTable(["position", "details"]) ??
+      findTable(["options", "position", "details"]) ??
+      findTable(["position"])
     if (!tradeTable || !positionTable) {
-      throw new Error("Cannot find trade/position tables")
+      const names = allTables.map(({ schemaname, tablename }) => `${schemaname}.${tablename}`).join(", ")
+      throw new Error(`Cannot find trade/position tables. Found: ${names}`)
     }
 
     // ── Schema introspection ───────────────────────────────────────────────
@@ -92,19 +108,23 @@ export async function GET(req: Request) {
     const tradeCols    = new Set(tSchema.fields.map((f: { name: string }) => f.name))
     const positionCols = new Set(pSchema.fields.map((f: { name: string }) => f.name))
 
-    const td = pickColumn(tradeCols,    ["交易日期", "日期", "结算日期", "trade_date", "date"])
+    const td = pickColumn(tradeCols,    ["交易日期", "成交日期", "日期", "结算日期", "trade_date", "date"])
     const ta = pickColumn(tradeCols,    ["账户", "期货账户", "账号", "客户号", "account"])
     const tp = pickColumn(tradeCols,    ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
     const rp = pickColumn(tradeCols,    ["平仓盈亏", "realized_pnl", "close_pnl"])
     const ac = pickColumn(tradeCols,    ["开/平", "action", "开平"])
 
-    const pd = pickColumn(positionCols, ["交易日期", "日期", "结算日期", "trade_date", "date"])
+    const pd = pickColumn(positionCols, ["交易日期", "实际成交日期", "日期", "结算日期", "trade_date", "date"])
     const pa = pickColumn(positionCols, ["账户", "期货账户", "账号", "客户号", "account"])
     const pp = pickColumn(positionCols, ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
     const hp = pickColumn(positionCols, ["持仓盈亏", "holding_pnl", "position_pnl"])
 
-    if (!td || !ta || !tp || !rp) throw new Error("Trade table missing required columns")
-    if (!pd || !pa || !pp || !hp) throw new Error("Position table missing required columns")
+    if (!td || !ta || !tp || !rp) {
+      throw new Error(`Trade table missing required columns. Found: ${JSON.stringify([...tradeCols])}`)
+    }
+    if (!pd || !pa || !pp || !hp) {
+      throw new Error(`Position table missing required columns. Found: ${JSON.stringify([...positionCols])}`)
+    }
 
     // When column is a full contract code (e.g. "AU2501"), strip trailing digits to get product
     const isContractCol    = ["品种代码", "合约", "合约代码", "contract", "symbol"].includes(tp)

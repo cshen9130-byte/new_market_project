@@ -153,21 +153,23 @@ def load_from_csvs() -> pd.DataFrame:
 # ── AKSHARE FETCHERS ──────────────────────────────────────────────────────────
 def fetch_pmi_akshare() -> pd.DataFrame:
     import akshare as ak
-    df = ak.macro_china_pmi_manufacturing()
+    df = ak.macro_china_pmi()
     date_col = '月份' if '月份' in df.columns else df.columns[0]
+    # Prefer '制造业-指数' (NBS manufacturing PMI level); fall back to first numeric column
     val_col = next(
-        (c for c in df.columns if 'pmi' in c.lower() or 'PMI' in c),
-        df.columns[1],
+        (c for c in df.columns if '制造业' in c and '指数' in c),
+        next((c for c in df.columns if 'pmi' in c.lower() or 'PMI' in c), df.columns[1]),
     )
     out = df[[date_col, val_col]].rename(columns={date_col: 'date', val_col: 'pmi'})
     out['pmi'] = pd.to_numeric(out['pmi'], errors='coerce')
-    out['date'] = pd.to_datetime(out['date'], errors='coerce') + pd.offsets.MonthEnd(0)
+    # Date format is '2026年03月份' — must specify format explicitly
+    out['date'] = pd.to_datetime(out['date'], format='%Y年%m月份', errors='coerce') + pd.offsets.MonthEnd(0)
     return out.dropna(subset=['date', 'pmi'])[['date', 'pmi']]
 
 
 def fetch_m1_akshare() -> pd.DataFrame:
     import akshare as ak
-    df = ak.macro_china_money_supply_bal()
+    df = ak.macro_china_money_supply()
     date_col = '月份' if '月份' in df.columns else df.columns[0]
     val_col = next(
         (c for c in df.columns if 'M1' in c and ('同比' in c or '增长' in c or 'yoy' in c.lower())),
@@ -177,30 +179,70 @@ def fetch_m1_akshare() -> pd.DataFrame:
         return pd.DataFrame(columns=['date', 'm1'])
     out = df[[date_col, val_col]].rename(columns={date_col: 'date', val_col: 'm1'})
     out['m1'] = pd.to_numeric(out['m1'], errors='coerce')
-    out['date'] = pd.to_datetime(out['date'], errors='coerce') + pd.offsets.MonthEnd(0)
+    # Date format is '2026年03月份' — must specify format explicitly
+    out['date'] = pd.to_datetime(out['date'], format='%Y年%m月份', errors='coerce') + pd.offsets.MonthEnd(0)
     return out.dropna(subset=['date', 'm1'])[['date', 'm1']]
 
 
 def fetch_cpi_akshare() -> pd.DataFrame:
     import akshare as ak
-    df = ak.macro_china_cpi_monthly()
+    # macro_china_cpi is fast; macro_china_cpi_monthly can be very slow — try fast one first
+    for fn_name in ['macro_china_cpi', 'macro_china_cpi_monthly']:
+        try:
+            df = getattr(ak, fn_name)()
+            log.info('CPI: used akshare.%s', fn_name)
+            break
+        except (AttributeError, Exception) as e:
+            log.debug('CPI %s failed: %s', fn_name, e)
+            continue
+    else:
+        log.warning('CPI: no working akshare function found')
+        return pd.DataFrame(columns=['date', 'cpi'])
     date_col = '月份' if '月份' in df.columns else df.columns[0]
+    # 全国-同比增长 (macro_china_cpi) or 同比 + 全国/居民 (macro_china_cpi_monthly)
     val_col = next(
-        (c for c in df.columns if '同比' in c and ('全国' in c or '居民' in c)),
-        next((c for c in df.columns if '当月' in c), None),
+        (c for c in df.columns if '全国' in c and '同比' in c),
+        next((c for c in df.columns if '同比' in c and ('全国' in c or '居民' in c)), None),
     )
+    if val_col is None:
+        val_col = next((c for c in df.columns if '当月' in c), None)
     if val_col is None and len(df.columns) > 1:
         val_col = df.columns[1]
     if val_col is None:
         return pd.DataFrame(columns=['date', 'cpi'])
     out = df[[date_col, val_col]].rename(columns={date_col: 'date', val_col: 'cpi'})
     out['cpi'] = pd.to_numeric(out['cpi'], errors='coerce')
-    out['date'] = pd.to_datetime(out['date'], errors='coerce') + pd.offsets.MonthEnd(0)
+    # Date format is '2026年03月份' — specify format explicitly
+    out['date'] = pd.to_datetime(out['date'], format='%Y年%m月份', errors='coerce') + pd.offsets.MonthEnd(0)
     return out.dropna(subset=['date', 'cpi'])[['date', 'cpi']]
 
 
 def fetch_afre_akshare() -> pd.DataFrame:
-    """Social financing stock YoY %."""
+    """Social financing stock YoY % (社融存量同比).
+
+    Primary: EmQuantAPI CSV files updated by fetch_china_afre_stock_yoy_monthly.py.
+    Fallback: akshare (currently broken — mofcom.gov.cn SSL error).
+    """
+    # Try reading updated local CSVs first (faster and more reliable than akshare)
+    for csv_path in [
+        Path(__file__).resolve().parent.parent.parent / 'similar_regime' / 'data' / 'china_afre_stock_yoy_monthly.csv',
+        Path(__file__).resolve().parent.parent.parent / 'money_credit' / 'data' / 'china_afre_stock_yoy_monthly.csv',
+    ]:
+        if csv_path.exists():
+            try:
+                df = pd.read_csv(csv_path)
+                val_col = 'value' if 'value' in df.columns else df.columns[-1]
+                out = df[['date', val_col]].rename(columns={val_col: 'afre'})
+                out['afre'] = pd.to_numeric(out['afre'], errors='coerce')
+                out['date'] = pd.to_datetime(out['date'], errors='coerce') + pd.offsets.MonthEnd(0)
+                out = out.dropna(subset=['date', 'afre'])[['date', 'afre']]
+                if not out.empty:
+                    log.info('AFRE: loaded %d rows from %s', len(out), csv_path.name)
+                    return out
+            except Exception as e:
+                log.debug('AFRE CSV load failed: %s', e)
+
+    # Fallback: try akshare (may be broken due to SSL on mofcom.gov.cn)
     import akshare as ak
     for fn_name in ['macro_china_shrzgm_change_rate', 'macro_china_sf_month',
                     'macro_china_shrzgm']:
@@ -211,7 +253,7 @@ def fetch_afre_akshare() -> pd.DataFrame:
         except (AttributeError, Exception):
             continue
     else:
-        log.warning('AFRE: no matching akshare function found')
+        log.warning('AFRE: all sources failed — run similar_regime/fetch_china_afre_stock_yoy_monthly.py to update CSV')
         return pd.DataFrame(columns=['date', 'afre'])
 
     date_col = df.columns[0]

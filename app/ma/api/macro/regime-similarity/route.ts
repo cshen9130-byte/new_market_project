@@ -4,6 +4,12 @@ import { query, fmtIso, n } from "@/lib/db"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0",
+  Pragma: "no-cache",
+  Expires: "0",
+}
+
 type CurrentRow = {
   run_date: Date | string
   current_month: Date | string
@@ -48,7 +54,7 @@ export async function GET() {
         current_zscores: null,
         top20: [],
         all_distances: [],
-      })
+      }, { headers: NO_STORE_HEADERS })
     }
 
     const runDate = fmtIso(latestRun[0].run_date)
@@ -108,8 +114,11 @@ export async function GET() {
         distance: n(r.distance),
         in_top20: top20Set.has(fmtIso(r.hist_month).slice(0, 7)),
       })),
-    })
+    }, { headers: NO_STORE_HEADERS })
   } catch (e: any) {
-    return NextResponse.json({ error: e.message || "unknown error" }, { status: 500 })
+    return NextResponse.json(
+      { error: e.message || "unknown error" },
+      { status: 500, headers: NO_STORE_HEADERS }
+    )
   }
 }

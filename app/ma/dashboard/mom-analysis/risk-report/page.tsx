@@ -2097,6 +2097,259 @@ function IntradayContent() {
   )
 }
 
+type ExposureRow = {
+  date: string
+  long商品: number; long股指: number; long国债: number
+  short商品: number; short股指: number; short国债: number
+  net: number
+}
+
+const EXPOSURE_CATS = ["全部", "商品", "股指", "国债"] as const
+type ExposureCat = (typeof EXPOSURE_CATS)[number]
+
+const EXPOSURE_SERIES_CFG = [
+  { key: "long商品",  name: "多-商品", stack: "long",  cat: "商品", color: "#f97316" },
+  { key: "long股指",  name: "多-股指", stack: "long",  cat: "股指", color: "#ef4444" },
+  { key: "long国债",  name: "多-国债", stack: "long",  cat: "国债", color: "#a78bfa" },
+  { key: "short商品", name: "空-商品", stack: "short", cat: "商品", color: "#34d399" },
+  { key: "short股指", name: "空-股指", stack: "short", cat: "股指", color: "#22c55e" },
+  { key: "short国债", name: "空-国债", stack: "short", cat: "国债", color: "#60a5fa" },
+] as const
+
+function PositionContent() {
+  const [series, setSeries] = useState<ExposureRow[]>([])
+  const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
+  const [loading, setLoading] = useState(true)
+  const [catFilter, setCatFilter] = useState<ExposureCat>("全部")
+  const [catFilter2, setCatFilter2] = useState<ExposureCat>("全部")
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/ma/api/mom-analysis/category-exposure").then(r => r.json()),
+      fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()),
+    ]).then(([expJ, navJ]) => {
+      if (expJ.ok) setSeries(expJ.series ?? [])
+      const navData: { date: string; cumCapital: number }[] = navJ.data ?? []
+      const map = new Map<string, number>()
+      for (const d of navData) if (d.cumCapital > 0) map.set(d.date, d.cumCapital)
+      setCapitalMap(map)
+    }).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  const dates = series.map(r => r.date)
+
+  const visibleCfg  = EXPOSURE_SERIES_CFG.filter(c => catFilter  === "全部" || c.cat === catFilter)
+  const visibleCfg2 = EXPOSURE_SERIES_CFG.filter(c => catFilter2 === "全部" || c.cat === catFilter2)
+
+  const filteredNet = useMemo(() => {
+    if (catFilter === "全部") return series.map(r => r.net)
+    return series.map(r => {
+      const longKey  = `long${catFilter}`  as keyof ExposureRow
+      const shortKey = `short${catFilter}` as keyof ExposureRow
+      return (r[longKey] as number) + (r[shortKey] as number)
+    })
+  }, [series, catFilter])
+
+  const filteredNet2 = useMemo(() => {
+    if (catFilter2 === "全部") return series.map(r => r.net)
+    return series.map(r => {
+      const longKey  = `long${catFilter2}`  as keyof ExposureRow
+      const shortKey = `short${catFilter2}` as keyof ExposureRow
+      return (r[longKey] as number) + (r[shortKey] as number)
+    })
+  }, [series, catFilter2])
+
+  // Divide a raw MV value by the capital for that date (returns multiplier, e.g. 1.96)
+  const toRatio = useCallback((mv: number, date: string) => {
+    const cap = capitalMap.get(date)
+    if (!cap || cap === 0) return 0
+    return Math.round(mv / cap * 10000) / 10000
+  }, [capitalMap])
+
+  const exposureOption = useMemo(() => ({
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: { seriesName: string; value: number; marker: string; color: string }[]) => {
+        const date = (params[0] as unknown as { axisValue: string }).axisValue
+        const fmt = (v: number) => `${Math.round(Math.abs(v) / 1e8 * 100) / 100}亿`
+        if (catFilter === "全部") {
+          const longTotal  = params.filter(p => p.seriesName.startsWith("多-")).reduce((s, p) => s + p.value, 0)
+          const shortTotal = params.filter(p => p.seriesName.startsWith("空-")).reduce((s, p) => s + Math.abs(p.value), 0)
+          const net        = params.find(p => p.seriesName === "净持仓")?.value ?? (longTotal - shortTotal)
+          const dot = (color: string) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:4px"></span>`
+          return [
+            date,
+            `${dot("#60a5fa")}多头合计: ${fmt(longTotal)}`,
+            `${dot("#34d399")}空头合计: ${fmt(shortTotal)}`,
+            `${dot("#facc15")}净持仓: ${fmt(net)}`,
+          ].join("<br/>")
+        }
+        const rows = params
+          .filter(p => p.value !== 0)
+          .map(p => `${p.marker}${p.seriesName}: ${fmt(p.value)}`)
+        return [date, ...rows].join("<br/>")
+      },
+    },
+    legend: { top: 5, itemWidth: 12, itemGap: 8, textStyle: { fontSize: 11 } },
+    grid: { left: 65, right: 20, top: 40, bottom: 50 },
+    dataZoom: [
+      { type: "inside" as const, start: 0, end: 100 },
+      { type: "slider" as const, height: 18, bottom: 5 },
+    ],
+    xAxis: {
+      type: "category" as const,
+      data: dates,
+      axisLabel: { fontSize: 10, rotate: 30 },
+    },
+    yAxis: {
+      type: "value" as const,
+      axisLabel: { formatter: (v: number) => (v / 1e8).toFixed(1) + "亿" },
+      splitLine: { lineStyle: { type: "dashed" as const } },
+    },
+    series: [
+      ...visibleCfg.map(c => ({
+        name: c.name,
+        type: "bar" as const,
+        stack: c.stack,
+        data: series.map(r => r[c.key as keyof ExposureRow] as number),
+        itemStyle: { color: c.color },
+      })),
+      {
+        name: "净持仓",
+        type: "line" as const,
+        data: filteredNet,
+        symbol: "none",
+        lineStyle: { color: "#facc15", width: 2 },
+        itemStyle: { color: "#facc15" },
+        z: 10,
+      },
+    ],
+  }), [series, dates, visibleCfg, filteredNet, catFilter])
+
+  const ratioOption = useMemo(() => ({
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: { seriesName: string; value: number; marker: string; color: string }[]) => {
+        const date = (params[0] as unknown as { axisValue: string }).axisValue
+        const fmt = (v: number) => Math.abs(v).toFixed(2)
+        if (catFilter2 === "全部") {
+          const longTotal  = params.filter(p => p.seriesName.startsWith("多-")).reduce((s, p) => s + p.value, 0)
+          const shortTotal = params.filter(p => p.seriesName.startsWith("空-")).reduce((s, p) => s + Math.abs(p.value), 0)
+          const net        = params.find(p => p.seriesName === "净持仓")?.value ?? (longTotal - shortTotal)
+          const dot = (color: string) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:4px"></span>`
+          return [
+            date,
+            `${dot("#60a5fa")}多头市值/净资本: ${fmt(longTotal)}`,
+            `${dot("#34d399")}空头市值/净资本: ${fmt(shortTotal)}`,
+            `${dot("#facc15")}净市值/净资本: ${fmt(net)}`,
+          ].join("<br/>")
+        }
+        const rows = params
+          .filter(p => p.value !== 0)
+          .map(p => `${p.marker}${p.seriesName}: ${fmt(p.value)}`)
+        return [date, ...rows].join("<br/>")
+      },
+    },
+    legend: { top: 5, itemWidth: 12, itemGap: 8, textStyle: { fontSize: 11 } },
+    grid: { left: 60, right: 20, top: 40, bottom: 50 },
+    dataZoom: [
+      { type: "inside" as const, start: 0, end: 100 },
+      { type: "slider" as const, height: 18, bottom: 5 },
+    ],
+    xAxis: {
+      type: "category" as const,
+      data: dates,
+      axisLabel: { fontSize: 10, rotate: 30 },
+    },
+    yAxis: {
+      type: "value" as const,
+      axisLabel: { formatter: (v: number) => v.toFixed(2) },
+      splitLine: { lineStyle: { type: "dashed" as const } },
+    },
+    series: [
+      ...visibleCfg2.map(c => ({
+        name: c.name,
+        type: "bar" as const,
+        stack: c.stack,
+        data: series.map(r => toRatio(r[c.key as keyof ExposureRow] as number, r.date)),
+        itemStyle: { color: c.color },
+      })),
+      {
+        name: "净持仓",
+        type: "line" as const,
+        data: filteredNet2.map((v, i) => toRatio(v, series[i]?.date ?? "")),
+        symbol: "none",
+        lineStyle: { color: "#facc15", width: 2 },
+        itemStyle: { color: "#facc15" },
+        z: 10,
+      },
+    ],
+  }), [series, dates, visibleCfg2, filteredNet2, catFilter2, toRatio])
+
+  return (
+    <div className="space-y-6">
+      <section>
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          分类分析
+          <span className="h-px flex-1 bg-border" />
+        </h2>
+        <div className="flex gap-4">
+        <div className="w-1/2">
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-3">
+              <CardTitle className="text-sm">大类资产多空敞口</CardTitle>
+              <select
+                className="text-xs border rounded px-2 py-0.5 bg-background"
+                value={catFilter}
+                onChange={e => setCatFilter(e.target.value as ExposureCat)}
+              >
+                {EXPOSURE_CATS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            {loading ? (
+              <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
+            ) : series.length === 0 ? (
+              <p className="text-sm text-muted-foreground px-4 py-6">暂无持仓数据</p>
+            ) : (
+              <ReactECharts option={exposureOption} style={{ height: 380 }} notMerge />
+            )}
+          </CardContent>
+        </Card>
+        </div>
+        <div className="w-1/2">
+        <Card>
+          <CardHeader className="pb-2">
+            <div className="flex items-center gap-3">
+              <CardTitle className="text-sm">大类资产多空敞口/净资本</CardTitle>
+              <select
+                className="text-xs border rounded px-2 py-0.5 bg-background"
+                value={catFilter2}
+                onChange={e => setCatFilter2(e.target.value as ExposureCat)}
+              >
+                {EXPOSURE_CATS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+          </CardHeader>
+          <CardContent className="p-0 pb-2">
+            {loading ? (
+              <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
+            ) : series.length === 0 ? (
+              <p className="text-sm text-muted-foreground px-4 py-6">暂无持仓数据</p>
+            ) : (
+              <ReactECharts option={ratioOption} style={{ height: 380 }} notMerge />
+            )}
+          </CardContent>
+        </Card>
+        </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
@@ -2198,6 +2451,8 @@ export default function RiskReportNewPage() {
           <OverviewContent />
         ) : activeTab === "intraday" ? (
           <IntradayContent />
+        ) : activeTab === "position" ? (
+          <PositionContent />
         ) : (
           <PlaceholderContent title={activeItem.name} />
         )}

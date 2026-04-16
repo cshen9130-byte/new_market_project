@@ -36,13 +36,25 @@ export async function GET(req: Request) {
     )
     const findTable = (keywords: string[]): string | null => {
       const t = allTables.find((r) =>
+        !r.tablename.toLowerCase().includes("file_state") &&
         keywords.every((kw) => r.tablename.toLowerCase().includes(kw.toLowerCase()))
       )
       return t ? `${t.schemaname === "public" ? "" : `"${t.schemaname}".`}"${t.tablename}"` : null
     }
-    const tradeTable    = findTable(["trade"])    ?? findTable(["mom"])
-    const positionTable = findTable(["position"])
-    if (!tradeTable || !positionTable) throw new Error("Cannot find trade/position tables")
+    const tradeTable =
+      findTable(["futures", "trade", "details"]) ??
+      findTable(["trade", "details"]) ??
+      findTable(["options", "trade", "details"]) ??
+      findTable(["trade"])
+    const positionTable =
+      findTable(["futures", "position", "details"]) ??
+      findTable(["position", "details"]) ??
+      findTable(["options", "position", "details"]) ??
+      findTable(["position"])
+    if (!tradeTable || !positionTable) {
+      const names = allTables.map((r) => `${r.schemaname}.${r.tablename}`).join(", ")
+      throw new Error(`Cannot find trade/position tables. Found: ${names}`)
+    }
 
     // ── Discover columns ─────────────────────────────────────────────────────
     const [tradeSch, positionSch] = await Promise.all([
@@ -52,17 +64,19 @@ export async function GET(req: Request) {
     const tradeCols    = new Set(tradeSch.fields.map((f) => f.name))
     const positionCols = new Set(positionSch.fields.map((f) => f.name))
 
-    const td = pickColumn(tradeCols,    ["交易日期","日期","结算日期","trade_date","date"])
+    const td = pickColumn(tradeCols,    ["交易日期","成交日期","日期","结算日期","trade_date","date"])
     const ta = pickColumn(tradeCols,    ["账户","期货账户","账号","客户号","account"])
     const tp = pickColumn(tradeCols,    ["品种","品种代码","合约","合约代码","contract","symbol"])
     const rp = pickColumn(tradeCols,    ["平仓盈亏","realized_pnl","close_pnl"])
-    const pd = pickColumn(positionCols, ["交易日期","日期","结算日期","trade_date","date"])
+    const pd = pickColumn(positionCols, ["交易日期","实际成交日期","日期","结算日期","trade_date","date"])
     const pa = pickColumn(positionCols, ["账户","期货账户","账号","客户号","account"])
     const pp = pickColumn(positionCols, ["品种","品种代码","合约","合约代码","contract","symbol"])
     const hp = pickColumn(positionCols, ["持仓盈亏","holding_pnl","position_pnl"])
 
     if (!td || !ta || !tp || !rp || !pd || !pa || !pp || !hp) {
-      throw new Error("Missing required columns")
+      throw new Error(
+        `Missing required columns. trade=${JSON.stringify([...tradeCols])}; position=${JSON.stringify([...positionCols])}`
+      )
     }
 
     const tradeProductExpr =

@@ -51,7 +51,9 @@ def main():
         return
 
     try:
-        data = c.edb("EMM00191807", "IsLatest=0,StartDate=2000-01-01,EndDate=2026-03-14")
+        from datetime import date as _date
+        today_str = _date.today().strftime('%Y-%m-%d')
+        data = c.edb("EMM00191807", f"IsLatest=0,StartDate=2000-01-01,EndDate={today_str}")
         if data.ErrorCode != 0:
             print(f"Fetch failed: {data.ErrorMsg}")
             return
