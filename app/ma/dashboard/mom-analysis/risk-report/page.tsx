@@ -2171,6 +2171,7 @@ function PositionContent() {
   const [weightMode, setWeightMode] = useState<"大类" | "板块" | "细分">("板块")
   const [sectorBarSort, setSectorBarSort] = useState<{ col: "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv"; dir: "asc" | "desc" } | null>({ col: "longMv", dir: "desc" })
   const [sectorBarMode, setSectorBarMode] = useState<"大类" | "板块" | "细分">("板块")
+  const [sectorBarDate, setSectorBarDate] = useState<string>("")
   const barLeftRef = useRef<HTMLDivElement>(null)
   const [barLeftHeight, setBarLeftHeight] = useState<number | undefined>()
   useEffect(() => {
@@ -2382,10 +2383,15 @@ function PositionContent() {
   }), [series, dates, visibleCfg2, filteredNet2, catFilter, sectorFilter, subSectorFilter, toRatio])
 
   const sectorBarRows = useMemo(() => {
-    const latest = series[series.length - 1]
-    if (!latest) return []
+    let row: ExposureRow | undefined
+    if (sectorBarDate) {
+      row = series.find(r => r.date === sectorBarDate)
+    }
+    if (!row) row = series[series.length - 1]
+    if (!row) return []
     let capital = 0
-    for (let i = series.length - 1; i >= 0; i--) {
+    const rowIdx = series.indexOf(row)
+    for (let i = rowIdx; i >= 0; i--) {
       const c = capitalMap.get(series[i].date)
       if (c && c > 0) { capital = c; break }
     }
@@ -2396,14 +2402,14 @@ function PositionContent() {
     return groups.map(g => {
       let lv: number, sv: number
       if (sectorBarMode === "大类") {
-        lv = (latest as Record<string, number>)[`long${g}`] ?? 0
-        sv = (latest as Record<string, number>)[`short${g}`] ?? 0
+        lv = (row as Record<string, number>)[`long${g}`] ?? 0
+        sv = (row as Record<string, number>)[`short${g}`] ?? 0
       } else if (sectorBarMode === "板块") {
-        lv = (latest as Record<string, number>)[`long_s_${g}`] ?? 0
-        sv = (latest as Record<string, number>)[`short_s_${g}`] ?? 0
+        lv = (row as Record<string, number>)[`long_s_${g}`] ?? 0
+        sv = (row as Record<string, number>)[`short_s_${g}`] ?? 0
       } else {
-        lv = (latest as Record<string, number>)[`long_ss_${g}`] ?? 0
-        sv = (latest as Record<string, number>)[`short_ss_${g}`] ?? 0
+        lv = (row as Record<string, number>)[`long_ss_${g}`] ?? 0
+        sv = (row as Record<string, number>)[`short_ss_${g}`] ?? 0
       }
       const absShort = Math.abs(sv)
       const net = lv + sv  // sv is negative
@@ -2416,7 +2422,7 @@ function PositionContent() {
         netMv: net,
       }
     })
-  }, [series, capitalMap, sectorBarMode])
+  }, [series, capitalMap, sectorBarMode, sectorBarDate])
 
   const sectorBarOption = useMemo(() => {
     if (sectorBarRows.length === 0) return {}
@@ -2688,6 +2694,40 @@ function PositionContent() {
           <CardHeader className="pb-2">
             <div className="flex items-center gap-3">
               <CardTitle className="text-sm">期货市值占比（市值/净资本）</CardTitle>
+              <div className="flex items-center gap-1">
+                <button
+                  className="text-xs border rounded px-1.5 py-0.5 bg-background hover:bg-muted disabled:opacity-30"
+                  disabled={(() => { const cur = sectorBarDate || (series[series.length - 1]?.date ?? ""); return !cur || cur <= (series[0]?.date ?? "") })()}
+                  onClick={() => {
+                    const cur = sectorBarDate || (series[series.length - 1]?.date ?? "")
+                    const idx = series.findIndex(r => r.date === cur)
+                    if (idx > 0) setSectorBarDate(series[idx - 1].date)
+                  }}
+                >◀</button>
+                <input
+                  type="date"
+                  className="text-xs border rounded px-2 py-0.5 bg-background"
+                  value={sectorBarDate || (series[series.length - 1]?.date ?? "")}
+                  min={series[0]?.date ?? ""}
+                  max={series[series.length - 1]?.date ?? ""}
+                  onChange={e => setSectorBarDate(e.target.value)}
+                />
+                <button
+                  className="text-xs border rounded px-1.5 py-0.5 bg-background hover:bg-muted disabled:opacity-30"
+                  disabled={(() => { const cur = sectorBarDate || (series[series.length - 1]?.date ?? ""); return !cur || cur >= (series[series.length - 1]?.date ?? "") })()}
+                  onClick={() => {
+                    const cur = sectorBarDate || (series[series.length - 1]?.date ?? "")
+                    const idx = series.findIndex(r => r.date === cur)
+                    if (idx >= 0 && idx < series.length - 1) setSectorBarDate(series[idx + 1].date)
+                  }}
+                >▶</button>
+                {sectorBarDate && sectorBarDate !== series[series.length - 1]?.date && (
+                  <button
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setSectorBarDate("")}
+                  >最新</button>
+                )}
+              </div>
               <div className="flex text-xs border rounded overflow-hidden">
                 {([["大类", "大类资产"], ["板块", "板块"], ["细分", "细分板块"]] as const).map(([val, label]) => (
                   <button
