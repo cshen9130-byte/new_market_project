@@ -74,3 +74,12 @@ public/mom_report/report.backup.*.html
 
 # MOM data - stored outside project folder
 mom_data/
+
+# Sensitive credential files
+emailpass.txt
+
+# Downloaded settlement xlsx files — only at repo root (one-off download scripts)
+/*.xlsx
+
+# Settlement email config (contains credentials)
+data/settlement_email_config.json

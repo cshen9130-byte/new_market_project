@@ -10,11 +10,14 @@ import {
   ChevronDown,
   ChevronRight,
   Database,
+  Download,
   FileSpreadsheet,
   FolderOpen,
+  Mail,
   Play,
   RefreshCw,
   RotateCcw,
+  Save,
   Terminal,
   UploadCloud,
   X,
@@ -103,6 +106,32 @@ export default function DataImportPage() {
     success: boolean
     message: string
   } | null>(null)
+
+  // ── Settlement email config state ──────────────────────────────────────────
+  const [showSettlementSetup, setShowSettlementSetup] = useState(false)
+  const [settlementCfg, setSettlementCfg] = useState({
+    email: "",
+    pass: "",
+    imapHost: "imap.163.com",
+    imapPort: 993,
+    enabled: false,
+    scheduleTime: "19:00",
+  })
+  const [isSavingSettlementCfg, setIsSavingSettlementCfg] = useState(false)
+  const [isFetchingSettlement, setIsFetchingSettlement] = useState(false)
+  const [settlementFetchResult, setSettlementFetchResult] = useState<{
+    downloaded: string[]
+    skipped: string[]
+    errors: string[]
+  } | null>(null)
+  const [settlementFiles, setSettlementFiles] = useState<{
+    name: string
+    size: number
+    mtime: string
+  }[]>([])
+  const [settlementFolder, setSettlementFolder] = useState("")
+  const [settlementLastFetch, setSettlementLastFetch] = useState<string | null>(null)
+  const [isLoadingSettlementFiles, setIsLoadingSettlementFiles] = useState(false)
 
   const autoFollowLogRef = useRef(true)
   const logScrollRef = useRef<HTMLDivElement | null>(null)
@@ -247,7 +276,75 @@ export default function DataImportPage() {
     }
   }, [toast])
 
-  useEffect(() => { loadFolders(); checkDates(); checkEtlStatus() }, [loadFolders, checkDates, checkEtlStatus])
+  const loadSettlementConfig = useCallback(async () => {
+    try {
+      const res = await fetch("/ma/api/mom-analysis/settlement-email/config")
+      const data = await res.json()
+      if (!res.ok) return
+      setSettlementCfg({
+        email: data.email ?? "",
+        pass: data.pass ?? "",
+        imapHost: data.imapHost ?? "imap.163.com",
+        imapPort: data.imapPort ?? 993,
+        enabled: data.enabled ?? false,
+        scheduleTime: data.scheduleTime ?? "19:00",
+      })
+    } catch { /* non-critical */ }
+  }, [])
+
+  const loadSettlementFiles = useCallback(async () => {
+    setIsLoadingSettlementFiles(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/settlement-email/files")
+      const data = await res.json()
+      if (!res.ok) return
+      setSettlementFiles(data.files ?? [])
+      setSettlementFolder(data.folder ?? "")
+      setSettlementLastFetch(data.lastFetchAt ?? null)
+    } catch { /* non-critical */ }
+    finally { setIsLoadingSettlementFiles(false) }
+  }, [])
+
+  const saveSettlementConfig = useCallback(async () => {
+    setIsSavingSettlementCfg(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/settlement-email/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(settlementCfg),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "保存失败")
+      toast({ title: "配置已保存" })
+    } catch (e) {
+      toast({ title: "保存失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
+    } finally {
+      setIsSavingSettlementCfg(false)
+    }
+  }, [settlementCfg, toast])
+
+  const fetchSettlementNow = useCallback(async () => {
+    setIsFetchingSettlement(true)
+    setSettlementFetchResult(null)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/settlement-email/fetch-now", { method: "POST" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "获取失败")
+      setSettlementFetchResult(data)
+      await loadSettlementFiles()
+      if (data.downloaded?.length > 0) {
+        toast({ title: `已下载 ${data.downloaded.length} 个文件` })
+      } else {
+        toast({ title: "未找到新的交易结算单(盯市)文件", description: "邮件中没有匹配的附件，或今日邮件尚未到达" })
+      }
+    } catch (e) {
+      toast({ title: "获取失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
+    } finally {
+      setIsFetchingSettlement(false)
+    }
+  }, [loadSettlementFiles, toast])
+
+  useEffect(() => { loadFolders(); checkDates(); checkEtlStatus(); loadSettlementConfig(); loadSettlementFiles() }, [loadFolders, checkDates, checkEtlStatus, loadSettlementConfig, loadSettlementFiles])
 
   async function toggleFolder(name: string) {
     if (expandedFolder === name) {
@@ -1155,6 +1252,278 @@ export default function DataImportPage() {
               </div>
             )}
           </div>
+        </CardContent>
+      </Card>
+
+      {/* ── Settlement Email Auto-Download ─────────────────────────────────── */}
+      <Card className="border-border/60">
+        <CardHeader
+          className="pb-3 cursor-pointer select-none"
+          onClick={() => setShowSettlementSetup((v) => !v)}
+        >
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Mail className="h-4 w-4 text-sky-500" />
+            交易结算单 自动下载
+            <span className="ml-1 text-xs font-normal text-muted-foreground">
+              每日自动从邮箱获取盯市结算单 .xlsx
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <span
+                className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                  settlementCfg.enabled
+                    ? "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400"
+                    : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {settlementCfg.enabled ? "已启用" : "已停用"}
+              </span>
+              <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${showSettlementSetup ? "rotate-180" : ""}`} />
+            </div>
+          </CardTitle>
+        </CardHeader>
+
+        {showSettlementSetup && (
+          <CardContent className="space-y-4">
+            <p className="text-xs text-muted-foreground">
+              配置 IMAP 邮箱，系统每天到达设定时间后自动连接收件箱，搜索主题含
+              <span className="font-mono mx-1">YYYYMMDD_××××_交易结算单</span>的邮件，
+              逐一读取 .xlsx 附件的 A3 单元格，仅保存值为
+              <span className="font-mono mx-1">交易结算单(盯市)</span>的文件到服务器指定目录。
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Email provider preset */}
+              <div className="space-y-1 sm:col-span-2">
+                <label className="text-xs text-muted-foreground">邮件服务商（选择后自动填入服务器地址）</label>
+                <Select
+                  value=""
+                  onValueChange={(v) => {
+                    const presets: Record<string, { imapHost: string; imapPort: number }> = {
+                      "163":       { imapHost: "imap.163.com",         imapPort: 993 },
+                      "126":       { imapHost: "imap.126.com",         imapPort: 993 },
+                      "qq":        { imapHost: "imap.qq.com",          imapPort: 993 },
+                      "exmail_qq": { imapHost: "imap.exmail.qq.com",   imapPort: 993 },
+                      "ali":       { imapHost: "imap.mxhichina.com",   imapPort: 993 },
+                      "gmail":     { imapHost: "imap.gmail.com",       imapPort: 993 },
+                      "outlook":   { imapHost: "outlook.office365.com",imapPort: 993 },
+                      "sina":      { imapHost: "imap.sina.com",        imapPort: 993 },
+                    }
+                    const p = presets[v]
+                    if (p) setSettlementCfg((c) => ({ ...c, ...p }))
+                  }}
+                >
+                  <SelectTrigger className="h-8 w-56 text-xs">
+                    <SelectValue placeholder="选择常用邮箱类型…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="163" className="text-xs">163 邮箱</SelectItem>
+                    <SelectItem value="126" className="text-xs">126 邮箱</SelectItem>
+                    <SelectItem value="qq" className="text-xs">QQ 邮箱</SelectItem>
+                    <SelectItem value="exmail_qq" className="text-xs">腾讯企业邮箱</SelectItem>
+                    <SelectItem value="ali" className="text-xs">阿里企业邮箱</SelectItem>
+                    <SelectItem value="gmail" className="text-xs">Gmail</SelectItem>
+                    <SelectItem value="outlook" className="text-xs">Outlook / Office 365</SelectItem>
+                    <SelectItem value="sina" className="text-xs">新浪邮箱</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {/* Email */}
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">邮箱地址</label>
+                <Input
+                  className="h-8 text-xs"
+                  placeholder="ch_c7h8@163.com"
+                  value={settlementCfg.email}
+                  onChange={(e) => setSettlementCfg((c) => ({ ...c, email: e.target.value }))}
+                />
+              </div>
+
+              {/* Password / IMAP token */}
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">授权码 / 密码</label>
+                <Input
+                  className="h-8 text-xs"
+                  type="password"
+                  placeholder="163 IMAP 授权码"
+                  value={settlementCfg.pass}
+                  onChange={(e) => setSettlementCfg((c) => ({ ...c, pass: e.target.value }))}
+                />
+                <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 rounded px-2 py-1.5 leading-relaxed">
+                  <span className="font-medium">如何获取密码？</span> 需要授权码。获取方式：163邮箱 → 设置 → POP3/SMTP/IMAP → 开启 IMAP 服务 → 新建授权码。
+                </p>
+              </div>
+
+              {/* IMAP host */}
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">IMAP 服务器</label>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="imap.163.com"
+                  value={settlementCfg.imapHost}
+                  onChange={(e) => setSettlementCfg((c) => ({ ...c, imapHost: e.target.value }))}
+                />
+              </div>
+
+              {/* IMAP port */}
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">端口（SSL 993）</label>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  type="number"
+                  placeholder="993"
+                  value={settlementCfg.imapPort}
+                  onChange={(e) => setSettlementCfg((c) => ({ ...c, imapPort: Number(e.target.value) }))}
+                />
+              </div>
+
+              {/* Schedule time */}
+              <div className="space-y-1">
+                <label className="text-xs text-muted-foreground">每日触发时间（24h）</label>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="19:00"
+                  value={settlementCfg.scheduleTime}
+                  onChange={(e) => setSettlementCfg((c) => ({ ...c, scheduleTime: e.target.value }))}
+                />
+              </div>
+
+              {/* Enable toggle */}
+              <div className="space-y-1 flex items-end">
+                <button
+                  type="button"
+                  onClick={() => setSettlementCfg((c) => ({ ...c, enabled: !c.enabled }))}
+                  className={`h-8 px-3 rounded-md text-xs font-medium border transition-colors ${
+                    settlementCfg.enabled
+                      ? "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600"
+                      : "border-border bg-muted text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {settlementCfg.enabled ? "✓ 自动下载已开启" : "自动下载已关闭"}
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                size="sm"
+                disabled={isSavingSettlementCfg}
+                onClick={() => void saveSettlementConfig()}
+              >
+                {isSavingSettlementCfg
+                  ? <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />保存中…</>
+                  : <><Save className="mr-2 h-3.5 w-3.5" />保存配置</>}
+              </Button>
+
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={isFetchingSettlement}
+                onClick={() => void fetchSettlementNow()}
+              >
+                {isFetchingSettlement
+                  ? <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />获取中…</>
+                  : <><Download className="mr-2 h-3.5 w-3.5" />立即获取</>}
+              </Button>
+
+              {settlementLastFetch && (
+                <span className="text-xs text-muted-foreground">
+                  上次获取：{new Date(settlementLastFetch).toLocaleString("zh-CN")}
+                </span>
+              )}
+            </div>
+
+            {/* Fetch result */}
+            {settlementFetchResult && (
+              <div className="rounded-lg border border-border/60 divide-y divide-border/40 bg-card text-xs">
+                {settlementFetchResult.downloaded.length > 0 && (
+                  <div className="px-4 py-2 space-y-0.5">
+                    <p className="font-medium text-emerald-600 dark:text-emerald-400 mb-1">
+                      已下载 {settlementFetchResult.downloaded.length} 个文件
+                    </p>
+                    {settlementFetchResult.downloaded.map((f, i) => (
+                      <div key={i} className="flex items-center gap-2 font-mono text-emerald-700 dark:text-emerald-400">
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> {f}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {settlementFetchResult.skipped.length > 0 && (
+                  <div className="px-4 py-2 space-y-0.5">
+                    <p className="font-medium text-muted-foreground mb-1">
+                      已跳过 {settlementFetchResult.skipped.length} 个（A3 不符）
+                    </p>
+                    {settlementFetchResult.skipped.map((f, i) => (
+                      <div key={i} className="font-mono text-muted-foreground">↷ {f}</div>
+                    ))}
+                  </div>
+                )}
+                {settlementFetchResult.errors.length > 0 && (
+                  <div className="px-4 py-2 space-y-0.5">
+                    {settlementFetchResult.errors.map((f, i) => (
+                      <div key={i} className="flex items-center gap-2 font-mono text-destructive">
+                        <AlertCircle className="h-3.5 w-3.5 shrink-0" /> {f}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {settlementFetchResult.downloaded.length === 0 &&
+                  settlementFetchResult.skipped.length === 0 &&
+                  settlementFetchResult.errors.length === 0 && (
+                  <div className="px-4 py-2 text-muted-foreground">未找到匹配邮件</div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        )}
+      </Card>
+
+      {/* ── Downloaded settlement files ─────────────────────────────────────── */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <FileSpreadsheet className="h-4 w-4 text-sky-500" />
+            已下载结算单
+            {settlementFolder && (
+              <span className="ml-1 font-mono text-xs font-normal text-muted-foreground truncate max-w-xs">
+                {settlementFolder}
+              </span>
+            )}
+            <button
+              className="ml-auto text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              disabled={isLoadingSettlementFiles}
+              onClick={() => void loadSettlementFiles()}
+              title="刷新"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isLoadingSettlementFiles ? "animate-spin" : ""}`} />
+            </button>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {isLoadingSettlementFiles ? (
+            <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+              <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> 加载中…
+            </div>
+          ) : settlementFiles.length === 0 ? (
+            <div className="py-8 text-center text-sm text-muted-foreground">
+              暂无文件，点击「立即获取」或等待每日自动下载
+            </div>
+          ) : (
+            <div className="divide-y divide-border/40">
+              {settlementFiles.map((f) => (
+                <div key={f.name} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                  <FileSpreadsheet className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <span className="flex-1 font-mono text-xs truncate">{f.name}</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {(f.size / 1024).toFixed(1)} KB
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(f.mtime).toLocaleDateString("zh-CN")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
