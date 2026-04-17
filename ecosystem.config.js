@@ -44,9 +44,6 @@ module.exports = {
         // PostgreSQL connection string (set by setup_db.sh → .env)
         DATABASE_URL: process.env.DATABASE_URL || "",
 
-        // External mom_data directory (sibling of project root on server)
-        MOM_DATA_DIR: process.env.MOM_DATA_DIR || "/root/mom_data/03.\u6295\u987e\u9010\u65e5",
-
       },
     },
   ],
