@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function GET() {
+async function _GET() {
   try {
     const numExpr = (col: string) =>
       `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}", ''), ',', ''), ' ', ''), '')::numeric, 0)`
@@ -16,15 +17,15 @@ export async function GET() {
          "交易日期"::text AS date,
          (
            ${numExpr("当日盈亏")}
-           - ${numExpr("当日手续费")}
-           + ${numExpr("权利金收入")}
-           - ${numExpr("权利金支出")}
+           - ${numExpr("当日手续�?)}
+           + ${numExpr("权利金收�?)}
+           - ${numExpr("权利金支�?)}
          )::text AS daily_pnl
        FROM mom_daily_reports
        ORDER BY "交易日期", "账户"`,
     )
 
-    // Group by account → array of {date, pnl, cumPnl}
+    // Group by account �?array of {date, pnl, cumPnl}
     const accountMap: Record<string, { date: string; pnl: number; cumPnl: number }[]> = {}
     for (const row of rows) {
       const pnl = parseFloat(row.daily_pnl) || 0
@@ -44,3 +45,5 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("account-daily-pnl", _GET)

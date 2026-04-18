@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -19,7 +20,7 @@ const numExpr = (col: string) =>
 
 const CAT_MAP: Record<string, string> = {
   IH: "股指", IF: "股指", IC: "股指", IM: "股指", MO: "股指",
-  TS: "国债", TF: "国债", T: "国债", TL: "国债",
+  TS: "国�?, TF: "国�?, T: "国�?, TL: "国�?,
 }
 function getCat(prefix: string): string {
   return CAT_MAP[prefix] ?? "商品"
@@ -32,12 +33,12 @@ const SECTOR_MAP: Record<string, string> = {
   SR: "农产", CF: "农产", CY: "农产", LG: "农产", SP: "农产", OP: "农产",
   // 生鲜
   AP: "生鲜", CJ: "生鲜", LH: "生鲜", JD: "生鲜",
-  // 贵金属
-  AU: "贵金属", AG: "贵金属", PT: "贵金属", PD: "贵金属",
+  // 贵金�?
+  AU: "贵金�?, AG: "贵金�?, PT: "贵金�?, PD: "贵金�?,
   // 有色
   CU: "有色", BC: "有色", AL: "有色", AO: "有色", AD: "有色", ZN: "有色", PB: "有色", NI: "有色", SN: "有色",
-  // 新能源
-  LC: "新能源", PS: "新能源", SI: "新能源",
+  // 新能�?
+  LC: "新能�?, PS: "新能�?, SI: "新能�?,
   // 黑色
   I: "黑色", SF: "黑色", SM: "黑色", RB: "黑色", HC: "黑色", SS: "黑色", WR: "黑色",
   JM: "黑色", J: "黑色", ZC: "黑色", FG: "黑色", BB: "黑色", FB: "黑色",
@@ -53,10 +54,10 @@ const SECTOR_MAP: Record<string, string> = {
   EC: "航运",
   // 股指
   IH: "股指", IF: "股指", IC: "股指", IM: "股指", MO: "股指",
-  // 国债
-  TS: "国债", TF: "国债", T: "国债", TL: "国债",
+  // 国�?
+  TS: "国�?, TF: "国�?, T: "国�?, TL: "国�?,
 }
-const SECTORS = ["农产", "生鲜", "贵金属", "有色", "新能源", "黑色", "能源化工", "航运", "股指", "国债", "其他"]
+const SECTORS = ["农产", "生鲜", "贵金�?, "有色", "新能�?, "黑色", "能源化工", "航运", "股指", "国�?, "其他"]
 function getSector(prefix: string): string {
   return SECTOR_MAP[prefix] ?? "其他"
 }
@@ -66,18 +67,18 @@ const SUB_SECTOR_MAP: Record<string, string> = {
   C: "谷物", CS: "谷物", WH: "谷物", PM: "谷物", RR: "谷物", RI: "谷物", JR: "谷物", LR: "谷物",
   // 油脂油料
   A: "油脂油料", B: "油脂油料", M: "油脂油料", Y: "油脂油料", RM: "油脂油料", OI: "油脂油料", RS: "油脂油料", PK: "油脂油料", P: "油脂油料",
-  // 软商品
-  SR: "软商品", CF: "软商品", CY: "软商品",
+  // 软商�?
+  SR: "软商�?, CF: "软商�?, CY: "软商�?,
   // 林业
   LG: "林业", SP: "林业", OP: "林业",
   // 生鲜
   AP: "生鲜", CJ: "生鲜", LH: "生鲜", JD: "生鲜",
-  // 贵金属
-  AU: "贵金属", AG: "贵金属", PT: "贵金属", PD: "贵金属",
+  // 贵金�?
+  AU: "贵金�?, AG: "贵金�?, PT: "贵金�?, PD: "贵金�?,
   // 有色
   CU: "有色", BC: "有色", AL: "有色", AO: "有色", AD: "有色", ZN: "有色", PB: "有色", NI: "有色", SN: "有色",
-  // 新能源
-  LC: "新能源", PS: "新能源", SI: "新能源",
+  // 新能�?
+  LC: "新能�?, PS: "新能�?, SI: "新能�?,
   // 原材
   I: "原材", SF: "原材", SM: "原材",
   // 成材
@@ -96,18 +97,18 @@ const SUB_SECTOR_MAP: Record<string, string> = {
   BZ: "芳烃", PX: "芳烃", EB: "芳烃",
   // 橡胶
   RU: "橡胶", BR: "橡胶", NR: "橡胶",
-  // 盐化工
-  SA: "盐化工", SH: "盐化工", V: "盐化工",
-  // 煤化工
-  UR: "煤化工", MA: "煤化工",
+  // 盐化�?
+  SA: "盐化�?, SH: "盐化�?, V: "盐化�?,
+  // 煤化�?
+  UR: "煤化�?, MA: "煤化�?,
   // 航运
   EC: "航运",
   // 股指
   IH: "股指", IF: "股指", IC: "股指", IM: "股指", MO: "股指",
-  // 国债
-  TS: "国债", TF: "国债", T: "国债", TL: "国债",
+  // 国�?
+  TS: "国�?, TF: "国�?, T: "国�?, TL: "国�?,
 }
-const SUB_SECTORS = ["谷物","油脂油料","软商品","林业","生鲜","贵金属","有色","新能源","原材","成材","煤炭","建材","油品","聚酯","烯烃","芳烃","橡胶","盐化工","煤化工","航运","股指","国债","其他"]
+const SUB_SECTORS = ["谷物","油脂油料","软商�?,"林业","生鲜","贵金�?,"有色","新能�?,"原材","成材","煤炭","建材","油品","聚酯","烯烃","芳烃","橡胶","盐化�?,"煤化�?,"航运","股指","国�?,"其他"]
 function getSubSector(prefix: string): string {
   return SUB_SECTOR_MAP[prefix] ?? "其他"
 }
@@ -130,7 +131,7 @@ const ALL_PRODS = [
   "TS","TF","T","TL",
 ]
 
-export async function GET() {
+async function _GET() {
   try {
     const rows = await query<{
       date: string
@@ -142,14 +143,14 @@ export async function GET() {
          "交易日期"::date::text AS date,
          UPPER(TRIM("合约"))    AS contract,
          SUM(
-           CASE WHEN ${numExpr("买持仓")} > 0
-                THEN ${numExpr("持仓市値")}
+           CASE WHEN ${numExpr("买持�?)} > 0
+                THEN ${numExpr("持仓市�?)}
                 ELSE 0
            END
          )::text AS long_mv,
          SUM(
-           CASE WHEN ${numExpr("卖持仓")} > 0
-                THEN ${numExpr("持仓市値")}
+           CASE WHEN ${numExpr("卖持�?)} > 0
+                THEN ${numExpr("持仓市�?)}
                 ELSE 0
            END
          )::text AS short_mv
@@ -160,7 +161,7 @@ export async function GET() {
        ORDER BY "交易日期"::date`,
     )
 
-    // Daily account equity (客户权益) from mom_daily_reports — the true 净资本
+    // Daily account equity (客户权益) from mom_daily_reports �?the true 净资本
     const equityRows = await query<{ date: string; equity: string }>(
       `SELECT
          "交易日期"::date::text AS date,
@@ -212,7 +213,7 @@ export async function GET() {
       entry.pshort[prefix] = (entry.pshort[prefix] ?? 0) + shortMv
     }
 
-    const cats = ["商品", "股指", "国债"]
+    const cats = ["商品", "股指", "国�?]
     const series = Array.from(dateMap.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
       .map(([date, entry]) => {
@@ -238,11 +239,11 @@ export async function GET() {
           // long per category (positive)
           long商品: Math.round(entry.long["商品"] ?? 0),
           long股指: Math.round(entry.long["股指"] ?? 0),
-          long国债: Math.round(entry.long["国债"] ?? 0),
-          // short per category (negative — below axis)
+          long国�? Math.round(entry.long["国�?] ?? 0),
+          // short per category (negative �?below axis)
           short商品: -Math.round(entry.short["商品"] ?? 0),
           short股指: -Math.round(entry.short["股指"] ?? 0),
-          short国债: -Math.round(entry.short["国债"] ?? 0),
+          short国�? -Math.round(entry.short["国�?] ?? 0),
           // net
           net: Math.round(longTotal - shortTotal),
           // daily account equity as denominator for ratio chart
@@ -259,3 +260,5 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("category-exposure", _GET)

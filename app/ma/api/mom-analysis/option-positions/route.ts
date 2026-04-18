@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -25,7 +26,7 @@ function getOptionType(contract: string): string {
   return "?"
 }
 
-export async function GET() {
+async function _GET() {
   try {
     // Get the latest trading date
     const latestRow = await query<{ date: string }>(
@@ -39,19 +40,19 @@ export async function GET() {
          "账户"            AS account,
          "合约"            AS contract,
          "成交序号"        AS trade_seq,
-         "买持仓"          AS long_lots,
-         "买入价"          AS buy_price,
-         "卖持仓"          AS short_lots,
-         "卖出价"          AS sell_price,
+         "买持�?          AS long_lots,
+         "买入�?          AS buy_price,
+         "卖持�?          AS short_lots,
+         "卖出�?          AS sell_price,
          "昨结算价"        AS prev_settle,
          "今结算价"        AS today_settle,
          "投机/套保"       AS hedge_type,
          "实际成交日期"    AS trade_date_raw,
-         "保证金"          AS margin,
+         "保证�?          AS margin,
          "交易所"          AS exchange,
-         "持仓市値"        AS position_mv,
-         "多头期权市値"    AS long_mv,
-         "空头期权市値"    AS short_mv
+         "持仓市�?        AS position_mv,
+         "多头期权市�?    AS long_mv,
+         "空头期权市�?    AS short_mv
        FROM mom_options_position_details
        WHERE "交易日期"::date = $1
        ORDER BY "账户", "合约", "成交序号"`,
@@ -110,3 +111,5 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("option-positions", _GET)

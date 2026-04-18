@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
@@ -2189,6 +2189,428 @@ type OptionRow = {
   cost: number; marketValue: number; floatingPnl: number; optionType: string
 }
 
+type PcRow = {
+  prod: string; todayMv: number; yesterdayMv: number; deltaMv: number
+  todayLots: number; yesterdayLots: number; deltaLots: number
+}
+
+type PcDetailRow = {
+  prod: string; account: string; isOpt: boolean
+  todayLots: number; yesterdayLots: number; deltaLots: number
+  todayMv: number; yesterdayMv: number; deltaMv: number
+}
+
+function PositionChangeDetailTable({ prodFilter, setProdFilter, catFilter2, setCatFilter2, sectorFilter2, setSectorFilter2, subSectorFilter2, setSubSectorFilter2, onTodayDetail, onYesterdayDetail }: {
+  prodFilter: string; setProdFilter: (v: string) => void
+  catFilter2: ExposureCat; setCatFilter2: (v: ExposureCat) => void
+  sectorFilter2: ExposureSector; setSectorFilter2: (v: ExposureSector) => void
+  subSectorFilter2: ExposureSubSector; setSubSectorFilter2: (v: ExposureSubSector) => void
+  onTodayDetail: () => void
+  onYesterdayDetail: () => void
+}) {
+  const [rows, setRows]           = useState<PcDetailRow[]>([])
+  const [today, setToday]         = useState("")
+  const [yesterday, setYesterday] = useState("")
+  const [loading, setLoading]     = useState(true)
+  const [accountFilter, setAccountFilter] = useState("全部")
+  const [optFilter2, setOptFilter2] = useState("仅期货")
+
+  useEffect(() => {
+    fetch("/ma/api/mom-analysis/position-change-detail")
+      .then(r => r.json())
+      .then(j => { if (j.ok) { setRows(j.rows ?? []); setToday(j.today ?? ""); setYesterday(j.yesterday ?? "") } })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  const prods    = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.prod))).sort()], [rows])
+  const accounts = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.account))).sort()], [rows])
+
+  // Auto-cascade filters when prodFilter changes from parent (bar click)
+  useEffect(() => {
+    if (prodFilter === "全部") return
+    const cat       = PROD_CAT[prodFilter]       as ExposureCat       | undefined
+    const sector    = PROD_SECTOR[prodFilter]    as ExposureSector    | undefined
+    const subSector = PROD_SUB_SECTOR[prodFilter] as ExposureSubSector | undefined
+    if (cat)       setCatFilter2(cat)
+    if (sector)    setSectorFilter2(sector)
+    if (subSector) setSubSectorFilter2(subSector)
+  }, [prodFilter])
+
+  const availableProds2 = useMemo(() => {
+    const allProds = Array.from(new Set(rows.map(r => r.prod)))
+    if (subSectorFilter2 !== "全部") return allProds.filter(p => PROD_SUB_SECTOR[p] === subSectorFilter2)
+    if (sectorFilter2    !== "全部") return allProds.filter(p => PROD_SECTOR[p]     === sectorFilter2)
+    if (catFilter2       !== "全部") return allProds.filter(p => PROD_CAT[p]        === catFilter2)
+    return allProds
+  }, [rows, catFilter2, sectorFilter2, subSectorFilter2])
+
+  const filtered = useMemo(() => {
+    let f = rows
+    if (prodFilter    !== "全部") f = f.filter(r => r.prod    === prodFilter)
+    if (accountFilter !== "全部") f = f.filter(r => r.account === accountFilter)
+    if (subSectorFilter2 !== "全部") f = f.filter(r => PROD_SUB_SECTOR[r.prod] === subSectorFilter2)
+    else if (sectorFilter2 !== "全部") f = f.filter(r => PROD_SECTOR[r.prod] === sectorFilter2)
+    else if (catFilter2    !== "全部") f = f.filter(r => PROD_CAT[r.prod]     === catFilter2)
+    f = f.filter(r => {
+      if (optFilter2 === "仅期货" && r.isOpt) return false
+      if (optFilter2 === "仅期权" && !r.isOpt) return false
+      return true
+    })
+    return f.slice(0, 500)
+  }, [rows, prodFilter, accountFilter, optFilter2, catFilter2, sectorFilter2, subSectorFilter2])
+
+  const totalAbsDelta = useMemo(() => filtered.reduce((s, r) => s + Math.abs(r.deltaLots), 0), [filtered])
+  const totals = useMemo(() => ({
+    deltaLots:     filtered.reduce((s, r) => s + r.deltaLots, 0),
+    todayLots:     filtered.reduce((s, r) => s + r.todayLots, 0),
+    yesterdayLots: filtered.reduce((s, r) => s + r.yesterdayLots, 0),
+    todayMv:       filtered.reduce((s, r) => s + r.todayMv, 0),
+    yesterdayMv:   filtered.reduce((s, r) => s + r.yesterdayMv, 0),
+    deltaMv:       filtered.reduce((s, r) => s + r.deltaMv, 0),
+  }), [filtered])
+
+  const fmt      = (v: number) => v.toLocaleString("zh-CN")
+  const fmtSign  = (v: number) => v === 0 ? "0" : `${v > 0 ? "+" : ""}${v.toLocaleString("zh-CN")}`
+  const clr      = (v: number) => v > 0 ? "text-orange-500" : v < 0 ? "text-teal-400" : ""
+
+  return (
+    <Card id="section-pos-change" className="flex-1 min-w-0 h-full flex flex-col">
+      <CardHeader className="pb-2">
+        <div className="flex items-center gap-3 flex-wrap">
+          <CardTitle className="text-sm shrink-0">子账户-品种净持仓日变化汇总</CardTitle>
+          <span className="text-[11px] text-muted-foreground">数据日期：今日 {today}；昨日 {yesterday}</span>
+          <button
+            onClick={onTodayDetail}
+            className="ml-auto text-[11px] px-2.5 py-0.5 rounded border border-primary text-primary font-medium hover:bg-primary hover:text-primary-foreground transition-colors shrink-0"
+          >今日详情 ↓</button>
+          <button
+            onClick={onYesterdayDetail}
+            className="text-[11px] px-2.5 py-0.5 rounded border border-primary text-primary font-medium hover:bg-primary hover:text-primary-foreground transition-colors shrink-0"
+          >昨日详情 ↓</button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">账户名称：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
+              {accounts.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">品种类型：</span>
+              <select className="border rounded px-2 py-0.5 bg-background text-xs" value={optFilter2} onChange={e => setOptFilter2(e.target.value)}>
+                <option value="全部">全部</option>
+                <option value="仅期货">仅期货</option>
+                <option value="仅期权">仅期权</option>
+              </select>
+            </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">大类：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={catFilter2}
+              onChange={e => { setCatFilter2(e.target.value as ExposureCat); setSectorFilter2("全部"); setSubSectorFilter2("全部"); setProdFilter("全部") }}>
+              {EXPOSURE_CATS.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">板块：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={sectorFilter2}
+              onChange={e => { setSectorFilter2(e.target.value as ExposureSector); setSubSectorFilter2("全部"); setProdFilter("全部") }}>
+              <option value="全部">全部</option>
+              {(catFilter2 !== "全部" ? (CAT_TO_SECTORS[catFilter2] ?? []) : EXPOSURE_SECTORS.slice(1)).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">细分：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={subSectorFilter2}
+              onChange={e => { setSubSectorFilter2(e.target.value as ExposureSubSector); setProdFilter("全部") }}>
+              <option value="全部">全部</option>
+              {(sectorFilter2 !== "全部"
+                ? (SECTOR_TO_SUB_SECTORS[sectorFilter2] ?? [])
+                : catFilter2 !== "全部"
+                ? (CAT_TO_SECTORS[catFilter2] ?? []).flatMap(s => SECTOR_TO_SUB_SECTORS[s] ?? [])
+                : EXPOSURE_SUB_SECTORS.slice(1)
+              ).map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">品种代码：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={prodFilter} onChange={e => setProdFilter(e.target.value)}>
+              <option value="全部">全部</option>
+              {availableProds2.sort().map(p => <option key={p} value={p}>{p === "全部" ? "全部" : `${p} ${PROD_NAMES[p] ?? ""}`}</option>)}
+            </select>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="p-0 overflow-x-auto overflow-y-auto flex-1" style={{ minHeight: 0, maxHeight: '100%' }}>
+        {loading ? (
+          <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
+        ) : (
+          <table className="w-full text-xs whitespace-nowrap">
+            <thead className="sticky top-0 bg-card z-10">
+              <tr className="border-b bg-muted/30">
+                <td className="px-3 py-1.5 font-semibold">合计</td>
+                <td className="px-3 py-1.5">-</td>
+                <td className="px-3 py-1.5">-</td>
+                <td className={`px-3 py-1.5 text-right font-semibold ${clr(totals.deltaLots)}`}>{fmtSign(totals.deltaLots)}</td>
+                <td className="px-3 py-1.5 text-right">100.00%</td>
+                <td className="px-3 py-1.5 text-right">{totals.todayLots}</td>
+                <td className="px-3 py-1.5 text-right">{totals.yesterdayLots}</td>
+                <td className="px-3 py-1.5 text-right">{fmt(totals.todayMv)}</td>
+                <td className="px-3 py-1.5 text-right">{fmt(totals.yesterdayMv)}</td>
+                <td className={`px-3 py-1.5 text-right font-semibold ${clr(totals.deltaMv)}`}>{fmtSign(totals.deltaMv)}</td>
+              </tr>
+              <tr className="border-b bg-muted/50 text-muted-foreground">
+                {["品种代码","品种名称","账户名称","手数变化","手数变化占比","今日净持仓手数","昨日净持仓手数","今日净持仓市值","昨日净持仓市值","市值变化"].map(h => (
+                  <th key={h} className="px-3 py-2 text-left font-medium">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r, i) => {
+                const pct = totalAbsDelta > 0 ? (Math.abs(r.deltaLots) / totalAbsDelta * 100).toFixed(2) : "0.00"
+                return (
+                  <tr key={i} className="border-b hover:bg-muted/20 transition-colors">
+                    <td className="px-3 py-1.5 font-mono">{r.prod}</td>
+                    <td className="px-3 py-1.5 text-muted-foreground">{PROD_NAMES[r.prod] ?? ""}</td>
+                    <td className="px-3 py-1.5">{r.account}</td>
+                    <td className={`px-3 py-1.5 text-right ${clr(r.deltaLots)}`}>{fmtSign(r.deltaLots)}</td>
+                    <td className="px-3 py-1.5 text-right">{pct}%</td>
+                    <td className="px-3 py-1.5 text-right">{r.todayLots}</td>
+                    <td className="px-3 py-1.5 text-right">{r.yesterdayLots}</td>
+                    <td className="px-3 py-1.5 text-right">{fmt(r.todayMv)}</td>
+                    <td className="px-3 py-1.5 text-right">{fmt(r.yesterdayMv)}</td>
+                    <td className={`px-3 py-1.5 text-right ${clr(r.deltaMv)}`}>{fmtSign(r.deltaMv)}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { onProdClick: (prod: string) => void; sectorFilter: string; subSectorFilter: string }) {
+  const [posDataRaw, setPosDataRaw]   = useState<PcRow[]>([])
+  const [varProds, setVarProds] = useState<{ prod: string; sigma: number; mv: number }[]>([])
+  const [corrMatrix, setCorrMatrix] = useState<number[][]>([])
+  const [today, setToday]           = useState("")
+  const [yesterday, setYesterday]   = useState("")
+  const [loading, setLoading]       = useState(true)
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/ma/api/mom-analysis/position-change").then(r => r.json()),
+      fetch("/ma/api/mom-analysis/var-sandbox").then(r => r.json()),
+    ]).then(([pcJ, varJ]) => {
+      if (pcJ.ok) { setPosDataRaw(pcJ.products ?? []); setToday(pcJ.today ?? ""); setYesterday(pcJ.yesterday ?? "") }
+      if (varJ.ok) { setVarProds(varJ.products ?? []); setCorrMatrix(varJ.corrMatrix ?? []) }
+    }).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  // Apply sector / sub-sector filter
+  const posData = useMemo(() => posDataRaw.filter(d => {
+    if (sectorFilter !== "全部" && (PROD_SECTOR[d.prod] ?? "其他") !== sectorFilter) return false
+    if (subSectorFilter !== "全部" && (PROD_SUB_SECTOR[d.prod] ?? "其他") !== subSectorFilter) return false
+    return true
+  }), [posDataRaw, sectorFilter, subSectorFilter])
+
+  // Marginal risk coefficients (mrc_i) — used for both ΔVaR and ordering
+  const deltaVarMap = useMemo(() => {
+    if (!varProds.length || !corrMatrix.length) return new Map<string, number>()
+    const Z = 2.326 // 99% confidence
+    const n = varProds.length
+    const dv = varProds.map(p => p.sigma * p.mv) // σ_i × mv_i
+    let varPort = 0
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < n; j++)
+        varPort += dv[i] * (corrMatrix[i]?.[j] ?? 0) * dv[j]
+    const sigmaPort = Math.sqrt(varPort)
+    if (sigmaPort === 0) return new Map<string, number>()
+    const prodToIdx = new Map(varProds.map((p, i) => [p.prod, i]))
+    const mrc = varProds.map((p, i) => {
+      let sum = 0
+      for (let j = 0; j < n; j++) sum += (corrMatrix[i]?.[j] ?? 0) * dv[j]
+      return p.sigma * sum / sigmaPort
+    })
+    const map = new Map<string, number>()
+    for (const d of posData) {
+      const idx = prodToIdx.get(d.prod)
+      if (idx !== undefined) map.set(d.prod, Math.round(Z * mrc[idx] * d.deltaMv))
+    }
+    return map
+  }, [varProds, corrMatrix, posData])
+
+  // Sort changed products by |ΔVaR| descending, append any with no VaR data at end
+  const chartData = useMemo(() => {
+    return [...posData].sort((a, b) => {
+      const da = Math.abs(deltaVarMap.get(a.prod) ?? 0)
+      const db = Math.abs(deltaVarMap.get(b.prod) ?? 0)
+      if (db !== da) return db - da
+      return Math.abs(b.deltaMv) - Math.abs(a.deltaMv)
+    })
+  }, [posData, deltaVarMap])
+
+  // Marginal VaR contribution order from var-sandbox data (kept for reference, no longer used for sort)
+  const marginalOrder = useMemo(() => {
+    if (!varProds.length || !corrMatrix.length) return []
+    const dv = varProds.map(p => p.sigma * p.mv)
+    return varProds
+      .map((p, i) => {
+        let covSum = 0
+        for (let j = 0; j < dv.length; j++) covSum += dv[j] * (corrMatrix[i]?.[j] ?? 0)
+        return { prod: p.prod, mcr: Math.abs(dv[i] * covSum) }
+      })
+      .sort((a, b) => b.mcr - a.mcr)
+      .map(x => x.prod)
+  }, [varProds, corrMatrix])
+
+  const option = useMemo(() => {
+    if (!chartData.length) return {}
+    // Reverse for ECharts (bottom-to-top axis with inverse:true shows first item at top)
+    const data = [...chartData].reverse()
+    const categories = data.map(d => `${d.prod} (${PROD_NAMES[d.prod] ?? d.prod})`)
+    const sign = (n: number) => `${n > 0 ? "+" : ""}${n}`
+    const fmtWan = (v: number) => `${v > 0 ? "+" : ""}${(v / 10000).toFixed(1)}万`
+
+    const fmtVarWan = (v: number) => `${v > 0 ? "+" : ""}${(v / 10000).toFixed(2)}万`
+
+    return {
+      title: {
+        text: `持仓变化与颠个風险贡献（${today} vs ${yesterday}）`,
+        textStyle: { fontSize: 12, fontWeight: "normal" },
+        show: false,
+      },
+      legend: {
+        data: ["市值变化", "ΔVaR贡献(99%)"],
+        bottom: 4,
+        textStyle: { fontSize: 11 },
+        itemWidth: 14, itemHeight: 10,
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: { dataIndex: number; name: string }[]) => {
+          const p = params[0]
+          const d = data[p.dataIndex]
+          if (!d) return ""
+          const dvar = deltaVarMap.get(d.prod) ?? 0
+          const dvarStr = dvar > 0
+            ? `<span style="color:#f97316">+${(dvar/10000).toFixed(2)}万 ▲风险增加</span>`
+            : dvar < 0
+            ? `<span style="color:#60a5fa">${(dvar/10000).toFixed(2)}万 ▼风险降低</span>`
+            : "—"
+          return [
+            `<b>${p.name}</b>`,
+            `手数变化：<b>${sign(d.deltaLots)}手</b>`,
+            `市值变化：<b>${fmtWan(d.deltaMv)}</b>`,
+            `ΔVaR贡献：<b>${dvarStr}</b>`,
+            `今日仓位：${sign(d.todayLots)}手 / ${fmtWan(d.todayMv)}`,
+            `昨日仓位：${sign(d.yesterdayLots)}手 / ${fmtWan(d.yesterdayMv)}`,
+          ].join("<br/>")
+        },
+      },
+      grid: { left: 4, right: 24, top: 24, bottom: 30, containLabel: true },
+      xAxis: [
+        {
+          type: "value",
+          axisLabel: { formatter: (v: number) => `${(v / 10000).toFixed(0)}万`, fontSize: 10 },
+          splitLine: { lineStyle: { type: "dashed" } },
+        },
+        {
+          type: "value",
+          position: "top",
+          axisLabel: { formatter: (v: number) => `${(v / 10000).toFixed(1)}万`, fontSize: 10 },
+          splitLine: { show: false },
+          axisLine: { show: true, lineStyle: { color: "#f97316", opacity: 0.6 } },
+          axisTick: { show: true },
+        },
+      ],
+      yAxis: {
+        type: "category",
+        data: categories,
+        axisLabel: { fontSize: 11 },
+      },
+      dataZoom: [
+        {
+          type: "slider",
+          yAxisIndex: 0,
+          orient: "vertical",
+          right: 0,
+          startValue: data.length - 1 - 0,       // top item (highest |ΔVaR|)
+          endValue: data.length - 1 - Math.min(11, data.length - 1), // show ~12
+          width: 14,
+          handleSize: "80%",
+          brushSelect: false,
+          fillerColor: "rgba(100,100,100,0.15)",
+          borderColor: "transparent",
+        },
+        { type: "inside", yAxisIndex: 0, zoomOnMouseWheel: false, moveOnMouseWheel: true, moveOnMouseMove: false },
+      ],
+      series: [
+        {
+          name: "市值变化",
+          type: "bar",
+          xAxisIndex: 0,
+          barMaxWidth: 20,
+          data: data.map(d => ({
+            value: d.deltaMv,
+            itemStyle: { color: d.deltaMv >= 0 ? "#10b981" : "#f87171" },
+          })),
+          label: {
+            show: true,
+            formatter: (params: { dataIndex: number }) => {
+              const d = data[params.dataIndex]
+              return `${sign(d.deltaLots)}手`
+            },
+            position: (params: { value: number }) => params.value >= 0 ? "right" : "left",
+            color: "#888",
+            fontSize: 11,
+          },
+        },
+        {
+          name: "ΔVaR贡献(99%)",
+          type: "bar",
+          xAxisIndex: 1,
+          barMaxWidth: 14,
+          barGap: "20%",
+          data: data.map(d => {
+            const dv = deltaVarMap.get(d.prod) ?? 0
+            return {
+              value: dv,
+              itemStyle: { color: dv > 0 ? "rgba(249,115,22,0.75)" : "rgba(96,165,250,0.75)" },
+            }
+          }),
+          label: {
+            show: true,
+            formatter: (params: { value: unknown }) => {
+              const v = typeof params.value === "number" ? params.value : 0
+              return v !== 0 ? fmtVarWan(v) : ""
+            },
+            position: (params: { value: unknown }) => (typeof params.value === "number" ? params.value : 0) >= 0 ? "right" : "left",
+            color: "#888",
+            fontSize: 10,
+          },
+        },
+      ],
+    }
+  }, [chartData, today, yesterday, deltaVarMap])
+
+  if (loading) return <p className="text-sm text-muted-foreground py-4">加载中...</p>
+  if (!chartData.length) return <p className="text-sm text-muted-foreground py-4">暂无持仓变化数据</p>
+
+  const onEvents = {
+    click: (params: { dataIndex: number; componentType: string }) => {
+      if (params.componentType !== "series") return
+      const d = [...chartData].reverse()[params.dataIndex]
+      if (d) onProdClick(d.prod)
+    },
+  }
+
+  return <ReactECharts option={option} style={{ height: "100%", width: "100%" }} notMerge onEvents={onEvents} />
+}
+
 function OptionHoldingContent() {
   const [rows, setRows] = useState<OptionRow[]>([])
   const [date, setDate] = useState<string>("")
@@ -2196,6 +2618,7 @@ function OptionHoldingContent() {
   const [contractSearch, setContractSearch] = useState("")
   const [accountFilter, setAccountFilter] = useState("全部")
   const [tradeDateFilter, setTradeDateFilter] = useState("全部")
+  const [prodFilter2, setProdFilter2] = useState("全部")
   const [dirFilter, setDirFilter] = useState("全部")
   const [optTypeFilter, setOptTypeFilter] = useState("全部")
   const [pnlFilter, setPnlFilter] = useState("全部")
@@ -2210,9 +2633,14 @@ function OptionHoldingContent() {
 
   const accounts   = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.account))).sort()], [rows])
   const tradeDates = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.tradeDate).filter(Boolean))).sort().reverse()], [rows])
+  const prodCodes  = useMemo(() => {
+    const codes = Array.from(new Set(rows.map(r => r.contract.match(/^[A-Za-z]+/)?.[0]?.toUpperCase() ?? "").filter(Boolean))).sort()
+    return ["全部", ...codes]
+  }, [rows])
 
   const filtered = useMemo(() => rows.filter(r => {
     if (contractSearch && !r.contract.toLowerCase().includes(contractSearch.toLowerCase())) return false
+    if (prodFilter2 !== "全部" && (r.contract.match(/^[A-Za-z]+/)?.[0]?.toUpperCase() ?? "") !== prodFilter2) return false
     if (accountFilter !== "全部" && r.account !== accountFilter) return false
     if (tradeDateFilter !== "全部" && r.tradeDate !== tradeDateFilter) return false
     if (dirFilter !== "全部") {
@@ -2225,7 +2653,7 @@ function OptionHoldingContent() {
       if (pnlFilter === "亏损" && r.floatingPnl >= 0) return false
     }
     return true
-  }), [rows, contractSearch, accountFilter, tradeDateFilter, dirFilter, optTypeFilter, pnlFilter])
+  }), [rows, contractSearch, prodFilter2, accountFilter, tradeDateFilter, dirFilter, optTypeFilter, pnlFilter])
 
   const totalMargin    = filtered.reduce((s, r) => s + r.margin, 0)
   const totalCost      = filtered.reduce((s, r) => s + r.cost, 0)
@@ -2238,7 +2666,7 @@ function OptionHoldingContent() {
   const fmtP = (v: number) => <span className={v > 0 ? "text-orange-500" : v < 0 ? "text-teal-400" : ""}>{fmt(v)}</span>
 
   const resetFilters = () => {
-    setContractSearch(""); setAccountFilter("全部"); setTradeDateFilter("全部")
+    setContractSearch(""); setProdFilter2("全部"); setAccountFilter("全部"); setTradeDateFilter("全部")
     setDirFilter("全部"); setOptTypeFilter("全部"); setPnlFilter("全部")
   }
 
@@ -2256,6 +2684,12 @@ function OptionHoldingContent() {
               value={contractSearch}
               onChange={e => setContractSearch(e.target.value)}
             />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">品种：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={prodFilter2} onChange={e => setProdFilter2(e.target.value)}>
+              {prodCodes.map(p => <option key={p} value={p}>{p === "全部" ? "全部" : `${p} ${PROD_NAMES[p] ?? ""}`}</option>)}
+            </select>
           </div>
           <div className="flex items-center gap-1">
             <span className="text-muted-foreground">账户：</span>
@@ -2347,6 +2781,514 @@ function OptionHoldingContent() {
   )
 }
 
+// ── Today Position Detail ─────────────────────────────────────────────────────
+type TodayPosRow = {
+  account: string; contract: string
+  longLots: number; buyPrice: number
+  shortLots: number; sellPrice: number
+  prevSettle: number; positionPnl: number
+  hedgeType: string; tradeDateRaw: string
+  positionMv: number; margin: number; exchange: string
+}
+
+function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRank, sectionId, dayLabel }: {
+  prodOverride?: string
+  onScrollBack?: () => void
+  dateOverride?: string
+  dayRank?: number
+  sectionId?: string
+  dayLabel?: string
+}) {
+  const [rows, setRows]       = useState<TodayPosRow[]>([])
+  const [date, setDate]       = useState("")
+  const [loading, setLoading] = useState(true)
+
+  // filters
+  const [contractInput, setContractInput] = useState("")
+  const [prodSelect, setProdSelect]       = useState("全部")
+
+  // Sync with external product override
+  useEffect(() => {
+    if (prodOverride != null) setProdSelect(prodOverride)
+  }, [prodOverride])
+  const [accountFilter, setAccountFilter] = useState("全部")
+  const [catFilter, setCatFilter]         = useState("全部")
+  const [sectorFilter, setSectorFilter]   = useState("全部")
+  const [dirFilter, setDirFilter]         = useState("全部")   // 全部 / 买 / 卖
+  const [optFilter, setOptFilter]         = useState("仅期货")   // 全部 / 仅期货 / 仅期权
+
+  useEffect(() => {
+    const url = dateOverride
+      ? `/ma/api/mom-analysis/today-position-detail?date=${dateOverride}`
+      : dayRank === 2
+      ? "/ma/api/mom-analysis/today-position-detail?rank=2"
+      : "/ma/api/mom-analysis/today-position-detail"
+    fetch(url)
+      .then(r => r.json())
+      .then(j => { if (j.ok) { setRows(j.rows ?? []); setDate(j.date ?? "") } })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  const getProd = (contract: string) => contract.match(/^[A-Z]+/)?.[0] ?? ""
+
+  // unique filter options
+  const prods    = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => getProd(r.contract)))).filter(Boolean).sort()], [rows])
+  const accounts = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.account))).filter(Boolean).sort()], [rows])
+  const cats     = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => PROD_CAT[getProd(r.contract)] ?? "其他"))).sort()], [rows])
+  const sectors  = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => PROD_SECTOR[getProd(r.contract)] ?? "其他"))).sort()], [rows])
+
+  const filtered = useMemo(() => {
+    return rows.filter(r => {
+      const prod = getProd(r.contract)
+      if (contractInput && !r.contract.includes(contractInput.toUpperCase())) return false
+      if (prodSelect !== "全部" && prod !== prodSelect) return false
+      if (accountFilter !== "全部" && r.account !== accountFilter) return false
+      if (catFilter !== "全部" && (PROD_CAT[prod] ?? "其他") !== catFilter) return false
+      if (sectorFilter !== "全部" && (PROD_SECTOR[prod] ?? "其他") !== sectorFilter) return false
+      if (dirFilter === "买" && r.longLots <= 0) return false
+      if (dirFilter === "卖" && r.shortLots <= 0) return false
+      const isOpt = /^[A-Z]+\d+-?[CP]-?\d+$/.test(r.contract)
+      if (optFilter === "仅期货" && isOpt) return false
+      if (optFilter === "仅期权" && !isOpt) return false
+      return true
+    })
+  }, [rows, contractInput, prodSelect, accountFilter, catFilter, sectorFilter, dirFilter, optFilter])
+
+  const [pieDim, setPieDim] = useState<"account" | "product" | "contract">("account")
+  const [mergeMode, setMergeMode] = useState<"none" | "byAccount" | "allAccount">("none")
+  const [barStack, setBarStack] = useState(false)
+
+  // Auto-switch pie dimension based on table filters / merge mode
+  useEffect(() => {
+    if (mergeMode !== "none") setPieDim("contract")
+    else if (prodSelect !== "全部") setPieDim("account")
+    else if (accountFilter !== "全部") setPieDim("product")
+  }, [mergeMode, prodSelect, accountFilter])
+
+  // Pie source rows: apply table filters (all except dirFilter, since pies already split by long/short)
+  const pieSourceRows = useMemo(() => rows.filter(r => {
+    const prod = getProd(r.contract)
+    if (contractInput && !r.contract.includes(contractInput.toUpperCase())) return false
+    if (prodSelect !== "全部" && prod !== prodSelect) return false
+    if (accountFilter !== "全部" && r.account !== accountFilter) return false
+    if (catFilter !== "全部" && (PROD_CAT[prod] ?? "其他") !== catFilter) return false
+    if (sectorFilter !== "全部" && (PROD_SECTOR[prod] ?? "其他") !== sectorFilter) return false
+    const isOpt = /^[A-Z]+\d+-?[CP]-?\d+$/.test(r.contract)
+    if (optFilter === "仅期货" && isOpt) return false
+    if (optFilter === "仅期权" && !isOpt) return false
+    return true
+  }), [rows, contractInput, prodSelect, accountFilter, catFilter, sectorFilter, optFilter])
+
+  // Pie chart data: aggregate by selected dimension from filtered source
+  const buildPieData = (dimKey: "account" | "product" | "contract", dir: "long" | "short") => {
+    const map = new Map<string, number>()
+    for (const r of pieSourceRows) {
+      if (dir === "long"  && r.longLots  <= 0) continue
+      if (dir === "short" && r.shortLots <= 0) continue
+      const key = dimKey === "account" ? r.account
+                : dimKey === "product" ? getProd(r.contract)
+                : r.contract
+      map.set(key, (map.get(key) ?? 0) + r.positionMv)
+    }
+    return [...map.entries()].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value)
+  }
+
+  const longPieData  = useMemo(() => buildPieData(pieDim, "long"),  [pieSourceRows, pieDim])
+  const shortPieData = useMemo(() => buildPieData(pieDim, "short"), [pieSourceRows, pieDim])
+
+  const totalLongMv  = useMemo(() => longPieData.reduce((s, d) => s + d.value, 0), [longPieData])
+  const totalShortMv = useMemo(() => shortPieData.reduce((s, d) => s + d.value, 0), [shortPieData])
+
+  const barData = useMemo(() => {
+    const longMap  = new Map(longPieData.map(d => [d.name, d.value]))
+    const shortMap = new Map(shortPieData.map(d => [d.name, d.value]))
+    const keys = [...new Set([...longPieData.map(d => d.name), ...shortPieData.map(d => d.name)])]
+    return keys
+      .map(k => ({ name: k, long: longMap.get(k) ?? 0, short: shortMap.get(k) ?? 0 }))
+      .sort((a, b) => (b.long + b.short) - (a.long + a.short))
+  }, [longPieData, shortPieData])
+
+  const PIE_COLORS = [
+    "#4E9FD4","#5CB87A","#F5A623","#E8605A","#9B72CF","#F07E3B","#3ABFB1","#E05C8A",
+    "#2E86AB","#D4A017","#6A5ACD","#2EAF7D","#D45A3A","#5B8DD9","#C97B2C","#8E6BB0",
+  ]
+  const pieOption = (title: string, data: { name: string; value: number }[], total: number) => ({
+    color: PIE_COLORS,
+    title: title ? { text: title, textStyle: { fontSize: 12, fontWeight: "normal" as const }, left: "center", top: 4 } : undefined,
+    tooltip: {
+      trigger: "item" as const,
+      formatter: (p: { name: string; value: number; percent: number }) => {
+        let label = p.name
+        if (pieDim === "product") {
+          const cn = PROD_NAMES[p.name] ?? ""
+          if (cn) label = `${p.name} ${cn}`
+        } else if (pieDim === "contract") {
+          const prefix = p.name.match(/^[A-Z]+/)?.[0] ?? ""
+          const cn = PROD_NAMES[prefix] ?? ""
+          if (cn) label = `${p.name} ${cn}`
+        }
+        return `${label}<br/>市值：${Math.round(p.value / 1e4)}万<br/>占比：${p.percent.toFixed(2)}%`
+      },
+    },
+    legend: {
+      type: "scroll" as const,
+      orient: "vertical" as const,
+      right: 4,
+      top: 30,
+      bottom: 4,
+      textStyle: { fontSize: 10 },
+      pageTextStyle: { fontSize: 10 },
+      formatter: (name: string) => {
+        const d = data.find(x => x.name === name)
+        if (!d || total === 0) return name
+        const pct = (d.value / total * 100).toFixed(2)
+        if (pieDim === "product") {
+          const cn = PROD_NAMES[name] ?? ""
+          return cn ? `${name} ${cn} ${pct}%` : `${name} ${pct}%`
+        }
+        if (pieDim === "contract") {
+          const prefix = name.match(/^[A-Z]+/)?.[0] ?? ""
+          const cn = PROD_NAMES[prefix] ?? ""
+          return cn ? `${name} ${cn} ${pct}%` : `${name} ${pct}%`
+        }
+        return `${name} ${pct}%`
+      },
+    },
+    series: [{
+      type: "pie" as const,
+      radius: "70%",
+      center: ["30%", "55%"],
+      data: data.length > 0 ? data : [{ name: "暂无数据", value: 1, itemStyle: { color: "#ccc" } }],
+      label: { show: false },
+      labelLine: { show: false },
+      emphasis: { label: { show: false } },
+    }],
+  })
+
+  const barDimLabel = (name: string) => {
+    if (pieDim === "product") { const cn = PROD_NAMES[name] ?? ""; return cn ? `${name} ${cn}` : name }
+    if (pieDim === "contract") { const prefix = name.match(/^[A-Z]+/)?.[0] ?? ""; const cn = PROD_NAMES[prefix] ?? ""; return cn ? `${name} ${cn}` : name }
+    return name
+  }
+  const label = dayLabel ?? "今日"
+  const barTitle = pieDim === "account" ? `${label}账户持仓市值` : pieDim === "product" ? "品种持仓市值" : "合约持仓市值"
+  const barOption = () => {
+    if (barStack) {
+      // Stacked mode: 2 categories (买持仓 / 卖持仓), each key is a series segment
+      const stackSeries = barData.map((d, i) => ({
+        name: barDimLabel(d.name),
+        type: "bar" as const,
+        stack: "total",
+        data: [d.long, d.short],
+        itemStyle: { color: PIE_COLORS[i % PIE_COLORS.length] },
+        barMaxWidth: 60,
+      }))
+      return {
+        tooltip: {
+          trigger: "axis" as const,
+          axisPointer: { type: "shadow" as const },
+          formatter: (params: { seriesName: string; value: number }[]) => {
+            const total = params.reduce((s, p) => s + (p.value || 0), 0)
+            const lines = params
+              .filter(p => p.value > 0)
+              .sort((a, b) => b.value - a.value)
+              .map(p => `${p.seriesName}：${Math.round(p.value / 1e4)}万`)
+            return `合计：${Math.round(total / 1e4)}万<br/>` + lines.join("<br/>")
+          },
+        },
+        legend: { show: false },
+        grid: { left: 8, right: 8, top: 16, bottom: 4, containLabel: true },
+        xAxis: { type: "category" as const, data: ["买持仓", "卖持仓"], axisLabel: { fontSize: 11 } },
+        yAxis: { type: "value" as const, axisLabel: { fontSize: 9, formatter: (v: number) => `${(v / 1e4).toFixed(0)}万` } },
+        series: stackSeries,
+      }
+    }
+    return {
+      color: ["#4E9FD4", "#E8605A"],
+      tooltip: {
+        trigger: "axis" as const,
+        axisPointer: { type: "shadow" as const },
+        formatter: (params: { seriesName: string; name: string; value: number }[]) =>
+          `${barDimLabel(params[0].name)}<br/>` +
+          params.map(p => `${p.seriesName}：${Math.round(p.value / 1e4)}万`).join("<br/>")
+      },
+      legend: { data: ["买持仓", "卖持仓"], top: 4, textStyle: { fontSize: 10 } },
+      grid: { left: 8, right: 8, top: 36, bottom: 4, containLabel: true },
+      xAxis: {
+        type: "category" as const,
+        data: barData.map(d => d.name),
+        axisLabel: { fontSize: 9, rotate: 45, formatter: (name: string) => barDimLabel(name) },
+      },
+      yAxis: { type: "value" as const, axisLabel: { fontSize: 9, formatter: (v: number) => `${(v / 1e4).toFixed(0)}万` } },
+      series: [
+        { name: "买持仓", type: "bar" as const, data: barData.map(d => d.long),  barMaxWidth: 16 },
+        { name: "卖持仓", type: "bar" as const, data: barData.map(d => d.short), barMaxWidth: 16 },
+      ],
+    }
+  }
+
+  const fmt      = (v: number) => v.toLocaleString("zh-CN")
+  const fmtSign  = (v: number) => v === 0 ? "0" : `${v > 0 ? "+" : ""}${v.toLocaleString("zh-CN")}`
+  const pnlColor = (v: number) => v > 0 ? "text-orange-500" : v < 0 ? "text-teal-400" : ""
+
+  const displayRows = useMemo(() => {
+    if (mergeMode === "none") return filtered
+    const map = new Map<string, TodayPosRow & { _count: number; _netMv: number }>()
+    for (const r of filtered) {
+      const key = mergeMode === "byAccount" ? `${r.contract}||${r.account}` : r.contract
+      const ex = map.get(key)
+      const rNetMv = r.longLots > 0 ? r.positionMv : -r.positionMv
+      if (!ex) {
+        map.set(key, { ...r, _count: 1, _netMv: rNetMv })
+      } else {
+        const totalLong  = ex.longLots  + r.longLots
+        const totalShort = ex.shortLots + r.shortLots
+        ex.buyPrice    = totalLong  > 0 ? (ex.buyPrice  * ex.longLots  + r.buyPrice  * r.longLots)  / totalLong  : 0
+        ex.sellPrice   = totalShort > 0 ? (ex.sellPrice * ex.shortLots + r.sellPrice * r.shortLots) / totalShort : 0
+        ex.prevSettle  = (ex.prevSettle * ex._count + r.prevSettle) / (ex._count + 1)
+        ex.longLots    = totalLong
+        ex.shortLots   = totalShort
+        ex.positionPnl += r.positionPnl
+        ex.positionMv  += r.positionMv
+        ex.margin      += r.margin
+        ex._netMv      += rNetMv
+        ex.account     = mergeMode === "allAccount" ? "全部账户" : ex.account
+        ex.tradeDateRaw = "-"
+        ex.hedgeType   = ex.hedgeType === r.hedgeType ? ex.hedgeType : "混合"
+        ex._count++
+      }
+    }
+    return [...map.values()]
+  }, [filtered, mergeMode])
+
+  const uniqueAccounts = useMemo(() => new Set(filtered.map(r => r.account)).size, [filtered])
+
+  // totals for summary row
+  const totals = useMemo(() => ({
+    netMv:  displayRows.reduce((s, r) => s + ((r as any)._netMv ?? (r.longLots > 0 ? r.positionMv : -r.positionMv)), 0),
+    netLots: displayRows.reduce((s, r) => s + r.longLots - r.shortLots, 0),
+    longLots: displayRows.reduce((s, r) => s + r.longLots, 0),
+    shortLots: displayRows.reduce((s, r) => s + r.shortLots, 0),
+    pnl: displayRows.reduce((s, r) => s + r.positionPnl, 0),
+    positionMv: displayRows.reduce((s, r) => s + r.positionMv, 0),
+    margin: displayRows.reduce((s, r) => s + r.margin, 0),
+  }), [displayRows])
+
+  return (
+    <div id={sectionId ?? "section-today-position"} className="mt-6">
+
+      {/* Pie charts row */}
+      <div className="grid grid-cols-3 gap-4 mb-4">
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-3">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-xs font-medium">{label}买持仓市值</CardTitle>
+              <div className="flex border rounded overflow-hidden text-[11px]">
+                {([["account", "账户"], ["product", "品种"], ["contract", "合约"]] as const).map(([val, label]) => (
+                  <button key={val} onClick={() => setPieDim(val)}
+                    className={`px-2 py-0.5 transition-colors ${pieDim === val ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-2 pt-0">
+            {loading
+              ? <div className="h-48 flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
+              : <ReactECharts option={pieOption("", longPieData, totalLongMv)} style={{ height: 280 }} notMerge />
+            }
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-3">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-xs font-medium">{label}卖持仓市值</CardTitle>
+              <div className="flex border rounded overflow-hidden text-[11px]">
+                {([["account", "账户"], ["product", "品种"], ["contract", "合约"]] as const).map(([val, label]) => (
+                  <button key={val} onClick={() => setPieDim(val)}
+                    className={`px-2 py-0.5 transition-colors ${pieDim === val ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="p-2 pt-0">
+            {loading
+              ? <div className="h-48 flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
+              : <ReactECharts option={pieOption("", shortPieData, totalShortMv)} style={{ height: 280 }} notMerge />
+            }
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="pb-1 pt-3 px-3">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-xs font-medium">{barTitle}</CardTitle>
+              <button onClick={() => setBarStack(v => !v)}
+                className={`text-[11px] border rounded px-2 py-0.5 transition-colors ${barStack ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}>
+                合并
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent className="p-2 pt-0">
+            {loading
+              ? <div className="h-48 flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
+              : <ReactECharts option={barOption()} style={{ height: 280 }} notMerge />
+            }
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Detail table */}
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <CardTitle className="text-sm shrink-0">子账户{label}持仓明细</CardTitle>
+            <span className="text-[11px] text-muted-foreground">
+              最新日期：{date}，展示行数：{displayRows.length}（过滤后：{filtered.length}，总行数：{rows.length}），账户数：{uniqueAccounts}
+            </span>
+            <button
+              onClick={onScrollBack}
+              className="ml-auto text-[11px] px-2.5 py-0.5 rounded border border-primary text-primary font-medium hover:bg-primary hover:text-primary-foreground transition-colors shrink-0"
+            >↑ 返回持仓变化</button>
+            <div className="flex border rounded overflow-hidden text-[11px]">
+              {([["none", "明细"] , ["byAccount", "合并(按账户)"], ["allAccount", "合并(全账户)"]] as const).map(([val, label]) => (
+                <button key={val} onClick={() => setMergeMode(val)}
+                  className={`px-2 py-0.5 transition-colors ${mergeMode === val ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:bg-muted"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">品种代码：</span>
+              <input
+                className="border rounded px-2 py-0.5 bg-background text-xs w-24"
+                placeholder="输入品种代码"
+                value={contractInput}
+                onChange={e => setContractInput(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">品种选择：</span>
+              <select className="border rounded px-2 py-0.5 bg-background text-xs" value={prodSelect} onChange={e => setProdSelect(e.target.value)}>
+                {prods.map(p => <option key={p} value={p}>{p === "全部" ? "全部" : `${p} ${PROD_NAMES[p] ?? ""}`}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">账户名称：</span>
+              <select className="border rounded px-2 py-0.5 bg-background text-xs" value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
+                {accounts.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">合约分类：</span>
+              <select className="border rounded px-2 py-0.5 bg-background text-xs" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
+                {cats.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">板块分类：</span>
+              <select className="border rounded px-2 py-0.5 bg-background text-xs" value={sectorFilter} onChange={e => setSectorFilter(e.target.value)}>
+                {sectors.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">方向：</span>
+              <select className="border rounded px-2 py-0.5 bg-background text-xs" value={dirFilter} onChange={e => setDirFilter(e.target.value)}>
+                <option value="全部">全部</option>
+                <option value="买">买持仓</option>
+                <option value="卖">卖持仓</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1">
+              <span className="text-muted-foreground">品种类型：</span>
+              <select className="border rounded px-2 py-0.5 bg-background text-xs" value={optFilter} onChange={e => setOptFilter(e.target.value)}>
+                <option value="全部">全部</option>
+                <option value="仅期货">仅期货</option>
+                <option value="仅期权">仅期权</option>
+              </select>
+            </div>
+            <button className="text-xs border rounded px-2 py-0.5 bg-background hover:bg-muted"
+              onClick={() => { setContractInput(""); setProdSelect("全部"); setAccountFilter("全部"); setCatFilter("全部"); setSectorFilter("全部"); setDirFilter("全部"); setOptFilter("全部") }}>
+              重置
+            </button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 overflow-x-auto overflow-y-auto" style={{ maxHeight: 480 }}>
+          {loading ? (
+            <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
+          ) : (
+            <table className="w-full text-xs whitespace-nowrap">
+              <thead className="sticky top-0 bg-card z-10">
+                {/* Summary row */}
+                <tr className="border-b bg-muted/30 text-xs">
+                  <td className="px-3 py-1.5 font-semibold">合计</td>
+                  <td className="px-3 py-1.5 text-muted-foreground">账户数：{uniqueAccounts}</td>
+                  <td className="px-3 py-1.5">品种数：{new Set(displayRows.map(r => getProd(r.contract))).size}</td>
+                  <td className={`px-3 py-1.5 text-right font-semibold ${pnlColor(totals.netMv)}`}>{fmtSign(totals.netMv)}</td>
+                  <td className={`px-3 py-1.5 text-right font-semibold ${pnlColor(totals.netLots)}`}>{fmtSign(totals.netLots)}</td>
+                  <td className="px-3 py-1.5 text-right">{totals.longLots}</td>
+                  <td className="px-3 py-1.5 text-right">{totals.shortLots}</td>
+                  <td className="px-3 py-1.5">-</td>
+                  <td className="px-3 py-1.5">-</td>
+                  <td className="px-3 py-1.5">-</td>
+                  <td className={`px-3 py-1.5 text-right font-semibold ${pnlColor(totals.pnl)}`}>{fmtSign(totals.pnl)}</td>
+                  <td className="px-3 py-1.5">-</td>
+                  <td className="px-3 py-1.5 text-right">{fmt(totals.positionMv)}</td>
+                  <td className="px-3 py-1.5 text-right">{fmt(totals.margin)}</td>
+                  <td className="px-3 py-1.5">-</td>
+                  <td className="px-3 py-1.5">-</td>
+                  <td className="px-3 py-1.5">-</td>
+                  <td className="px-3 py-1.5">-</td>
+                </tr>
+                {/* Header row */}
+                <tr className="border-b bg-muted/50 text-muted-foreground">
+                  {["合约","账户名称","品种代码","净持仓市值","净持仓","买持仓","卖持仓","买入价","卖出价","昨结算价","持仓盈亏","实际成交日期","持仓市值","保证金","交易所","持仓日期","合约分类","板块分类"].map(h => (
+                    <th key={h} className="px-3 py-2 text-left font-medium">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {displayRows.map((r, i) => {
+                  const prod    = getProd(r.contract)
+                  const netLots = r.longLots - r.shortLots
+                  const netMv   = (r as any)._netMv ?? (r.longLots > 0 ? r.positionMv : -r.positionMv)
+                  return (
+                    <tr key={i} className="border-b hover:bg-muted/20 transition-colors">
+                      <td className="px-3 py-1.5 font-mono">{r.contract}</td>
+                      <td className="px-3 py-1.5">{r.account}</td>
+                      <td className="px-3 py-1.5 font-mono">{prod}</td>
+                      <td className={`px-3 py-1.5 text-right ${pnlColor(netMv)}`}>{fmtSign(netMv)}</td>
+                      <td className={`px-3 py-1.5 text-right ${pnlColor(netLots)}`}>{fmtSign(netLots)}</td>
+                      <td className="px-3 py-1.5 text-right">{r.longLots || "-"}</td>
+                      <td className="px-3 py-1.5 text-right">{r.shortLots || "-"}</td>
+                      <td className="px-3 py-1.5 text-right">{r.buyPrice > 0 ? r.buyPrice.toLocaleString("zh-CN") : "-"}</td>
+                      <td className="px-3 py-1.5 text-right">{r.sellPrice > 0 ? r.sellPrice.toLocaleString("zh-CN") : "-"}</td>
+                      <td className="px-3 py-1.5 text-right">{r.prevSettle > 0 ? r.prevSettle.toLocaleString("zh-CN") : "-"}</td>
+                      <td className={`px-3 py-1.5 text-right ${pnlColor(r.positionPnl)}`}>{fmtSign(r.positionPnl)}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{r.tradeDateRaw || "-"}</td>
+                      <td className="px-3 py-1.5 text-right">{fmt(r.positionMv)}</td>
+                      <td className="px-3 py-1.5 text-right">{fmt(r.margin)}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{r.exchange}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{date}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{PROD_CAT[prod] ?? "-"}</td>
+                      <td className="px-3 py-1.5 text-muted-foreground">{PROD_SECTOR[prod] ?? "-"}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 function PositionContent() {
   const [series, setSeries] = useState<ExposureRow[]>([])
   const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
@@ -2355,11 +3297,44 @@ function PositionContent() {
   const [sectorFilter, setSectorFilter] = useState<ExposureSector>("全部")
   const [subSectorFilter, setSubSectorFilter] = useState<ExposureSubSector>("全部")
   const [prodFilter, setProdFilter] = useState<string>("全部")
+  const [pcChartSector, setPcChartSector] = useState<string>("全部")
+  const [pcChartSubSector, setPcChartSubSector] = useState<string>("全部")
+  const [pcProdFilter, setPcProdFilter] = useState<string>("全部")
+  const [pcCatFilter, setPcCatFilter]           = useState<ExposureCat>("全部")
+  const [todayDetailProd, setTodayDetailProd] = useState<string>("全部")
+  const [yesterdayDetailProd, setYesterdayDetailProd] = useState<string>("全部")
+  const [pcYesterday, setPcYesterday] = useState<string>("")
+  const [pcSectorFilter, setPcSectorFilter]     = useState<ExposureSector>("全部")
+  const [pcSubSectorFilter, setPcSubSectorFilter] = useState<ExposureSubSector>("全部")
   const [weightMode, setWeightMode] = useState<"大类" | "板块" | "细分">("大类")
   const [weightCalcMode, setWeightCalcMode] = useState<"gross" | "net">("net")
   const [sectorBarSort, setSectorBarSort] = useState<{ col: "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"; dir: "asc" | "desc" } | null>({ col: "longMv", dir: "desc" })
   const [sectorBarMode, setSectorBarMode] = useState<"大类" | "板块" | "细分">("大类")
   const [sectorBarDate, setSectorBarDate] = useState<string>("")
+  const [scatterDim, setScatterDim] = useState<"大类" | "板块" | "细分">("大类")
+
+  // Sync scatter dim with pc filter selection
+  useEffect(() => {
+    if (pcProdFilter !== "全部" || pcSubSectorFilter !== "全部") setScatterDim("细分")
+    else if (pcSectorFilter !== "全部") setScatterDim("板块")
+    else setScatterDim("大类")
+  }, [pcProdFilter, pcSubSectorFilter, pcSectorFilter, pcCatFilter])
+
+  const [varGroupData, setVarGroupData] = useState<{ date: string; var: number; actual: number }[]>([])
+  const [varGroupLoading, setVarGroupLoading] = useState(true)
+  const [varGroupConf, setVarGroupConf] = useState<"90" | "95" | "99">("99")
+  const [varGroupNextDayVar, setVarGroupNextDayVar] = useState<number | null>(null)
+  const [card3View, setCard3View] = useState<"timeseries" | "breakdown">("breakdown")
+  const [breakdownDim, setBreakdownDim] = useState<"大类" | "板块" | "细分板块">("大类")
+  const [varBreakdownProds, setVarBreakdownProds] = useState<{ prod: string; sigma: number; mv: number }[]>([])
+  const [varBreakdownCorr, setVarBreakdownCorr] = useState<number[][]>([])
+  const [varBDeltaMvMap, setVarBDeltaMvMap] = useState<Map<string, number>>(new Map())
+
+  useEffect(() => {
+    if (pcSubSectorFilter !== "全部" || pcProdFilter !== "全部") setBreakdownDim("细分板块")
+    else if (pcSectorFilter !== "全部") setBreakdownDim("板块")
+    else setBreakdownDim("大类")
+  }, [pcCatFilter, pcSectorFilter, pcSubSectorFilter, pcProdFilter])
   const barLeftRef = useRef<HTMLDivElement>(null)
   const [barLeftHeight, setBarLeftHeight] = useState<number | undefined>()
   useEffect(() => {
@@ -2374,16 +3349,407 @@ function PositionContent() {
     Promise.all([
       fetch("/ma/api/mom-analysis/category-exposure").then(r => r.json()),
       fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()),
-    ]).then(([expJ, navJ]) => {
+      fetch("/ma/api/mom-analysis/position-change").then(r => r.json()),
+    ]).then(([expJ, navJ, pcJ]) => {
       if (expJ.ok) setSeries(expJ.series ?? [])
       const navData: { date: string; cumCapital: number }[] = navJ.data ?? []
       const map = new Map<string, number>()
       for (const d of navData) if (d.cumCapital > 0) map.set(d.date, d.cumCapital)
       setCapitalMap(map)
+      if (pcJ.ok && pcJ.yesterday) setPcYesterday(pcJ.yesterday)
     }).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
+  // Derive VaR group from current filters (one level up)
+  const varGroupProds = useMemo<string[] | null>(() => {
+    if (pcProdFilter !== "全部") {
+      const ss = PROD_SUB_SECTOR[pcProdFilter]
+      if (!ss) return null
+      return Object.keys(PROD_SUB_SECTOR).filter(p => PROD_SUB_SECTOR[p] === ss)
+    }
+    if (pcSubSectorFilter !== "全部") {
+      // find the 板块 for this 细分
+      const sec = Object.keys(PROD_SUB_SECTOR).find(p => PROD_SUB_SECTOR[p] === pcSubSectorFilter)
+      const sect = sec ? PROD_SECTOR[sec] : undefined
+      if (!sect) return null
+      return Object.keys(PROD_SECTOR).filter(p => PROD_SECTOR[p] === sect)
+    }
+    if (pcSectorFilter !== "全部") {
+      // find the 大类 for this 板块
+      const pc = Object.keys(PROD_SECTOR).find(p => PROD_SECTOR[p] === pcSectorFilter)
+      const cat = pc ? PROD_CAT[pc] : undefined
+      if (!cat) return null
+      return Object.keys(PROD_CAT).filter(p => PROD_CAT[p] === cat)
+    }
+    if (pcCatFilter !== "全部") {
+      return Object.keys(PROD_CAT).filter(p => PROD_CAT[p] === pcCatFilter)
+    }
+    return null // total
+  }, [pcProdFilter, pcSubSectorFilter, pcSectorFilter, pcCatFilter])
+
+  const varGroupLabel = useMemo<string>(() => {
+    if (pcProdFilter !== "全部") return PROD_SUB_SECTOR[pcProdFilter] ?? pcProdFilter
+    if (pcSubSectorFilter !== "全部") {
+      const sec = Object.keys(PROD_SUB_SECTOR).find(p => PROD_SUB_SECTOR[p] === pcSubSectorFilter)
+      return (sec ? PROD_SECTOR[sec] : undefined) ?? pcSubSectorFilter
+    }
+    if (pcSectorFilter !== "全部") {
+      const pc = Object.keys(PROD_SECTOR).find(p => PROD_SECTOR[p] === pcSectorFilter)
+      return (pc ? PROD_CAT[pc] : undefined) ?? pcSectorFilter
+    }
+    if (pcCatFilter !== "全部") return pcCatFilter
+    return "全部"
+  }, [pcProdFilter, pcSubSectorFilter, pcSectorFilter, pcCatFilter])
+
+  useEffect(() => {
+    setVarGroupLoading(true)
+    const params = new URLSearchParams({ confidence: varGroupConf, volDays: "20", corrDays: "252", distModel: "normal" })
+    if (varGroupProds) params.set("prods", varGroupProds.join(","))
+    fetch(`/ma/api/mom-analysis/var-prediction?${params}`)
+      .then(r => r.json())
+      .then(j => { setVarGroupData(j.data ?? []); setVarGroupNextDayVar(j.nextDayVar ?? null) })
+      .catch(() => { setVarGroupData([]); setVarGroupNextDayVar(null) })
+      .finally(() => setVarGroupLoading(false))
+  }, [varGroupProds, varGroupConf])
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/ma/api/mom-analysis/var-sandbox?volDays=20&corrDays=252").then(r => r.json()),
+      fetch("/ma/api/mom-analysis/position-change").then(r => r.json()),
+    ]).then(([varJ, pcJ]) => {
+      if (varJ.ok) { setVarBreakdownProds(varJ.products ?? []); setVarBreakdownCorr(varJ.corrMatrix ?? []) }
+      if (pcJ.ok) {
+        const m = new Map<string, number>()
+        for (const p of (pcJ.products ?? [])) m.set(p.prod, p.deltaMv)
+        setVarBDeltaMvMap(m)
+      }
+    }).catch(() => {})
+  }, [])
+
+  const varBreakdownOption = useMemo(() => {
+    if (!varBreakdownProds.length || !varBreakdownCorr.length || !varBDeltaMvMap.size) return null
+    const Z = varGroupConf === "99" ? 2.326 : varGroupConf === "95" ? 1.6449 : 1.282
+    const n = varBreakdownProds.length
+    // dv = σ_i × mv_i (TODAY's positions) — used to compute mrc
+    const dv = varBreakdownProds.map(p => p.sigma * p.mv)
+    let varPort = 0
+    for (let i = 0; i < n; i++)
+      for (let j = 0; j < n; j++)
+        varPort += dv[i] * (varBreakdownCorr[i]?.[j] ?? 0) * dv[j]
+    const sigmaPort = Math.sqrt(varPort)
+    if (sigmaPort === 0) return null
+    // mrc_i = σ_i × Σ_j(ρ_ij × dv_j) / σ_port
+    const mrc = varBreakdownProds.map((p, i) => {
+      let sum = 0
+      for (let j = 0; j < n; j++) sum += (varBreakdownCorr[i]?.[j] ?? 0) * dv[j]
+      return p.sigma * sum / sigmaPort
+    })
+    // ΔVaR_i = Z × mrc_i × deltaMv_i  (same formula as Chart 1)
+    const groupMap = new Map<string, number>()
+    varBreakdownProds.forEach((p, i) => {
+      const deltaMv = varBDeltaMvMap.get(p.prod) ?? 0
+      if (deltaMv === 0) return
+      const dvar = Z * mrc[i] * deltaMv
+      const grp = breakdownDim === "大类" ? (PROD_CAT[p.prod] ?? "其他")
+                : breakdownDim === "板块" ? (PROD_SECTOR[p.prod] ?? "其他")
+                : (PROD_SUB_SECTOR[p.prod] ?? "其他")
+      groupMap.set(grp, (groupMap.get(grp) ?? 0) + dvar)
+    })
+    if (!groupMap.size) return null
+    const groups = [...groupMap.entries()].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    const fmtWan = (v: number) => `${v > 0 ? "+" : ""}${(v / 10000).toFixed(1)}万`
+    const totalDVar = [...groupMap.values()].reduce((s, v) => s + v, 0)
+    return {
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: { dataIndex: number; name: string; value: number }[]) => {
+          const p = params[0]
+          const pct = totalDVar !== 0 ? Math.abs(p.value / totalDVar * 100).toFixed(1) : "0"
+          return `<b>${p.name}</b><br/>ΔVaR：<b>${fmtWan(p.value)}</b><br/>占比：${pct}%<br/>${p.value > 0 ? '<span style="color:#f97316">▲风险增加</span>' : '<span style="color:#60a5fa">▼风险降低</span>'}`
+        },
+      },
+      grid: { left: 4, right: 4, top: 8, bottom: 30, containLabel: true },
+      xAxis: {
+        type: "value",
+        axisLabel: { formatter: (v: number) => `${(v / 10000).toFixed(0)}万`, fontSize: 10 },
+        splitLine: { lineStyle: { type: "dashed" } },
+      },
+      yAxis: {
+        type: "category",
+        data: [...groups].reverse().map(([g]) => g),
+        axisLabel: { fontSize: 11 },
+      },
+      series: [{
+        type: "bar",
+        barMaxWidth: 24,
+        data: [...groups].reverse().map(([, v]) => ({
+          value: Math.round(v),
+          itemStyle: { color: v > 0 ? "#f97316" : "#60a5fa" },
+        })),
+        label: {
+          show: true,
+          formatter: (params: { value: unknown }) => fmtWan(typeof params.value === "number" ? params.value : 0),
+          position: (params: { value: unknown }) => (typeof params.value === "number" ? params.value : 0) >= 0 ? "right" : "left",
+          fontSize: 10, color: "#888",
+        },
+      }],
+    }
+  }, [varBreakdownProds, varBreakdownCorr, varBDeltaMvMap, breakdownDim, varGroupConf])
+
   const dates = series.map(r => r.date)
+
+  const scatterDimData = useMemo(() => {
+    const today = series[series.length - 1]
+    const yest  = series[series.length - 2]
+    if (!today || !yest) return null
+
+    let items: string[]
+    let longKey: (item: string) => string
+    let shortKey: (item: string) => string
+
+    if (scatterDim === "大类") {
+      items = ["商品", "股指", "国债"]
+      longKey  = (c) => `long${c}`
+      shortKey = (c) => `short${c}`
+    } else if (scatterDim === "板块") {
+      items = [...EXPOSURE_SECTORS.slice(1)]
+      longKey  = (s) => `long_s_${s}`
+      shortKey = (s) => `short_s_${s}`
+    } else {
+      items = [...EXPOSURE_SUB_SECTORS.slice(1)]
+      longKey  = (ss) => `long_ss_${ss}`
+      shortKey = (ss) => `short_ss_${ss}`
+    }
+
+    const cats = items.map(item => {
+      const longToday  = (today[longKey(item)]  as number) ?? 0
+      const longYest   = (yest[longKey(item)]   as number) ?? 0
+      const shortToday = Math.abs((today[shortKey(item)] as number) ?? 0)
+      const shortYest  = Math.abs((yest[shortKey(item)]  as number) ?? 0)
+      const deltaLong  = longToday  - longYest
+      const deltaShort = shortToday - shortYest
+      const netToday   = longToday  - shortToday
+      const netYest    = longYest   - shortYest
+      return { cat: item, longToday, longYest, deltaLong, shortToday, shortYest, deltaShort, netToday, netYest, deltaNet: netToday - netYest }
+    }).filter(d => d.longToday !== 0 || d.shortToday !== 0 || d.longYest !== 0 || d.shortYest !== 0)
+
+    return { todayDate: today.date, yesterdayDate: yest.date, cats }
+  }, [series, scatterDim])
+
+  const catScatterOption = useMemo(() => {
+    if (!scatterDimData) return null
+    const FIXED: Record<string, string> = { "商品": "#F5A623", "股指": "#4E9FD4", "国债": "#5CB87A" }
+    const PALETTE = ["#F5A623","#4E9FD4","#5CB87A","#E8684A","#9B59B6","#1ABC9C","#E74C3C","#3498DB","#F39C12","#8E44AD","#D35400","#2980B9","#16A085","#C0392B","#7F8C8D","#E67E22","#1E8BC3","#26A65B","#96281B","#4B77BE","#6C5CE7","#00CEC9","#FDCB6E"]
+    const colorOf = (name: string, idx: number) => FIXED[name] ?? PALETTE[idx % PALETTE.length]
+    const allDeltas = scatterDimData.cats.flatMap(d => [Math.abs(d.deltaLong), Math.abs(d.deltaShort)])
+    const maxDelta  = Math.max(...allDeltas, 1)
+    const fmtB = (v: number) => `${(v / 1e8).toFixed(2)}亿`
+    const pad  = maxDelta * 0.35
+    return {
+      tooltip: {
+        trigger: "item" as const,
+        formatter: (p: { seriesName: string; data: [number, number, string, number] }) => {
+          const [x, y, cat, netMv] = p.data
+          const deltaNet = scatterDimData.cats.find(d => d.cat === cat)?.deltaNet ?? 0
+          const borderCol = Math.abs(deltaNet) < 1e5 ? "#888" : deltaNet > 0 ? "#4ade80" : "#f87171"
+          const sign = deltaNet >= 0 ? "▲" : "▼"
+          return [
+            `<b>${cat}</b>  (${scatterDimData.yesterdayDate} → ${scatterDimData.todayDate})`,
+            `多头变化：${x >= 0 ? "+" : ""}${fmtB(x)}`,
+            `空头变化：${y >= 0 ? "+" : ""}${fmtB(y)}`,
+            `净持仓：${fmtB(netMv)}`,
+            `<span style="color:${borderCol}">${sign}净变化：${fmtB(Math.abs(deltaNet))}</span>`,
+          ].join("<br/>")
+        }
+      },
+      legend: {
+        type: "scroll" as const,
+        bottom: 2,
+        itemWidth: 8,
+        itemHeight: 8,
+        textStyle: { fontSize: 9 },
+        pageTextStyle: { fontSize: 9 },
+      },
+      grid: { left: "14%", right: "4%", top: "8%", bottom: "28%", containLabel: false },
+      xAxis: {
+        type: "value" as const,
+        name: "多头变化",
+        nameLocation: "middle" as const,
+        nameGap: 28,
+        min: -maxDelta - pad, max: maxDelta + pad,
+        axisLabel: { fontSize: 9, formatter: (v: number) => `${(v / 1e8).toFixed(1)}亿` },
+        splitLine: { show: false },
+        axisLine: { onZero: true },
+      },
+      yAxis: {
+        type: "value" as const,
+        name: "空头变化",
+        nameLocation: "middle" as const,
+        nameGap: 52,
+        min: -maxDelta - pad, max: maxDelta + pad,
+        axisLabel: { fontSize: 9, formatter: (v: number) => `${(v / 1e8).toFixed(1)}亿` },
+        splitLine: { show: false },
+        axisLine: { onZero: true },
+      },
+      graphic: [
+        { type: "text", left: "60%", top: "10%", style: { text: "多空同增", fill: "#ccc", fontSize: 9 } },
+        { type: "text", left: "18%", top: "10%", style: { text: "多减空增", fill: "#ccc", fontSize: 9 } },
+        { type: "text", left: "60%", top: "72%", style: { text: "多增空减", fill: "#ccc", fontSize: 9 } },
+        { type: "text", left: "18%", top: "72%", style: { text: "多空同减", fill: "#ccc", fontSize: 9 } },
+      ],
+      series: scatterDimData.cats.map((d, idx) => {
+        return {
+          name: d.cat,
+          type: "scatter" as const,
+          symbolSize: 8,
+          data: [[d.deltaLong, d.deltaShort, d.cat, d.netToday]],
+          itemStyle: { color: colorOf(d.cat, idx) },
+          label: { show: false },
+        }
+      }),
+    }
+  }, [scatterDimData])
+
+  // Mini exposure chart — driven by PositionChangeDetailTable filters
+  const miniVisibleCfg = useMemo(() => {
+    if (pcProdFilter !== "全部") {
+      return [
+        { key: `long_p_${pcProdFilter}`,  name: "多", stack: "long",  color: "#38bdf8" },
+        { key: `short_p_${pcProdFilter}`, name: "空", stack: "short", color: "#fb923c" },
+      ]
+    }
+    if (pcSubSectorFilter !== "全部") return [
+      { key: `long_ss_${pcSubSectorFilter}`,  name: "多", stack: "long",  color: "#38bdf8" },
+      { key: `short_ss_${pcSubSectorFilter}`, name: "空", stack: "short", color: "#fb923c" },
+    ]
+    if (pcSectorFilter !== "全部") return [
+      { key: `long_s_${pcSectorFilter}`,  name: "多", stack: "long",  color: "#38bdf8" },
+      { key: `short_s_${pcSectorFilter}`, name: "空", stack: "short", color: "#fb923c" },
+    ]
+    return EXPOSURE_SERIES_CFG.filter(c => pcCatFilter === "全部" || c.cat === pcCatFilter) as { key: string; name: string; stack: string; color: string }[]
+  }, [pcProdFilter, pcCatFilter, pcSectorFilter, pcSubSectorFilter])
+
+  const miniFilteredNet = useMemo(() => {
+    if (pcProdFilter !== "全部") return series.map(r => ((r as Record<string,number>)[`long_p_${pcProdFilter}`] ?? 0) + ((r as Record<string,number>)[`short_p_${pcProdFilter}`] ?? 0))
+    if (pcSubSectorFilter !== "全部") return series.map(r => ((r as Record<string,number>)[`long_ss_${pcSubSectorFilter}`] ?? 0) + ((r as Record<string,number>)[`short_ss_${pcSubSectorFilter}`] ?? 0))
+    if (pcSectorFilter !== "全部") return series.map(r => ((r as Record<string,number>)[`long_s_${pcSectorFilter}`] ?? 0) + ((r as Record<string,number>)[`short_s_${pcSectorFilter}`] ?? 0))
+    if (pcCatFilter === "全部") return series.map(r => r.net)
+    return series.map(r => ((r as Record<string,number>)[`long${pcCatFilter}`] ?? 0) + ((r as Record<string,number>)[`short${pcCatFilter}`] ?? 0))
+  }, [series, pcProdFilter, pcCatFilter, pcSectorFilter, pcSubSectorFilter])
+
+  // Zoom to last 90 trading days (~last 15% of a 600-day window)
+  const miniZoomStart = series.length > 0 ? Math.max(0, Math.round((1 - 90 / series.length) * 100)) : 80
+
+  const miniExposureOption = useMemo(() => ({
+    tooltip: {
+      trigger: "axis" as const,
+      formatter: (params: { seriesName: string; value: number; marker: string }[]) => {
+        const date = (params[0] as unknown as { axisValue: string }).axisValue
+        const fmt = (v: number) => `${(Math.abs(v) / 1e8).toFixed(2)}亿`
+        const fmtNet = (v: number) => `${v < 0 ? "-" : ""}${(Math.abs(v) / 1e8).toFixed(2)}亿`
+        const longTotal  = params.filter(p => p.seriesName === "多" || p.seriesName.startsWith("多-")).reduce((s, p) => s + p.value, 0)
+        const shortTotal = params.filter(p => p.seriesName === "空" || p.seriesName.startsWith("空-")).reduce((s, p) => s + Math.abs(p.value), 0)
+        const net        = params.find(p => p.seriesName === "净持仓")?.value ?? (longTotal - shortTotal)
+        const dot = (c: string) => `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${c};margin-right:3px"></span>`
+        return [date, `${dot("#38bdf8")}多: ${fmt(longTotal)}`, `${dot("#fb923c")}空: ${fmt(shortTotal)}`, `${dot("#dc2626")}净: ${fmtNet(net)}`].join("<br/>")
+      },
+    },
+    grid: { left: 52, right: 16, top: 8, bottom: 36 },
+    dataZoom: [
+      { type: "inside" as const, start: miniZoomStart, end: 100 },
+      { type: "slider" as const, height: 14, bottom: 2, textStyle: { fontSize: 8 } },
+    ],
+    xAxis: { type: "category" as const, data: dates, axisLabel: { fontSize: 8, rotate: 30, interval: "auto" as const } },
+    yAxis: { type: "value" as const, axisLabel: { fontSize: 8, formatter: (v: number) => (v / 1e8).toFixed(1) + "亿" }, splitLine: { lineStyle: { type: "dashed" as const } } },
+    series: [
+      ...miniVisibleCfg.map(c => ({
+        name: c.name,
+        type: "bar" as const,
+        stack: c.stack,
+        data: series.map(r => (r as Record<string, number>)[c.key] ?? 0),
+        itemStyle: { color: c.color },
+      })),
+      {
+        name: "净持仓",
+        type: "line" as const,
+        data: miniFilteredNet,
+        symbol: "none",
+        lineStyle: { color: "#dc2626", width: 2 },
+        itemStyle: { color: "#dc2626" },
+        z: 10,
+      },
+    ],
+  }), [series, dates, miniVisibleCfg, miniFilteredNet, miniZoomStart])
+
+  const varGroupOption = useMemo(() => {
+    if (!varGroupData.length) return null
+    const lastRow    = varGroupData[varGroupData.length - 1]
+    const nextVar    = varGroupNextDayVar ?? lastRow.var   // true next-day prediction from API
+    const nextLabel  = "次日预测"
+    // Append a synthetic "next day" point using the real next-day VaR
+    const varDates   = [...varGroupData.map(r => r.date), nextLabel]
+    const confLabel  = `VaR(${varGroupConf}%)`
+    const zoomStart  = Math.max(0, Math.round((1 - 90 / varDates.length) * 100))
+    return {
+      tooltip: {
+        trigger: "axis" as const,
+        formatter: (params: { seriesName: string; name: string; value: number | null; marker: string }[]) => {
+          const lines = params
+            .filter(p => p.value != null)
+            .map(p => `${p.marker}${p.seriesName}: ${Number(p.value).toLocaleString("zh-CN")} 元`)
+          return [params[0]?.name, ...lines].join("<br/>")
+        },
+      },
+      legend: { data: ["实际|盈亏|", confLabel], top: 5, itemWidth: 12, itemGap: 8, textStyle: { fontSize: 9 } },
+      grid: { left: 60, right: 16, top: 30, bottom: 42 },
+      dataZoom: [
+        { type: "inside" as const, start: zoomStart, end: 100 },
+        { type: "slider" as const, height: 14, bottom: 2, textStyle: { fontSize: 8 } },
+      ],
+      xAxis: { type: "category" as const, data: varDates, axisLabel: { fontSize: 8, rotate: 30, interval: "auto" as const } },
+      yAxis: { type: "value" as const, axisLabel: { fontSize: 8, formatter: (v: number) => (v / 1e4).toFixed(0) + "万" }, splitLine: { lineStyle: { type: "dashed" as const } } },
+      series: [
+        {
+          name: "实际|盈亏|",
+          type: "bar" as const,
+          // no bar for the synthetic next-day point
+          data: [...varGroupData.map(r => ({
+            value: r.actual,
+            itemStyle: { color: r.actual > r.var ? "#ef4444" : "#94a3b8" },
+          })), { value: null as unknown as number, itemStyle: { color: "transparent" } }],
+          barMaxWidth: 12,
+        },
+        {
+          name: confLabel,
+          type: "line" as const,
+          // Historical VaR solid up to last known day, then dashed to the next-day prediction
+          data: [
+            ...varGroupData.map(r => ({ value: r.var })),
+            // true next-day VaR computed from today's positions
+            { value: nextVar },
+          ],
+          lineStyle: { color: "#f97316", width: 2 },
+          itemStyle: { color: "#f97316" },
+          // Show a distinct dot only on the prediction point
+          symbol: (_value: number, params: { dataIndex: number }) =>
+            params.dataIndex === varDates.length - 1 ? "circle" : "none",
+          symbolSize: (_value: number, params: { dataIndex: number }) =>
+            params.dataIndex === varDates.length - 1 ? 8 : 0,
+          z: 10,
+          // Dashed segment from last known point to the prediction
+          markLine: {
+            silent: true,
+            symbol: "none",
+            lineStyle: { type: "dashed" as const, color: "#f97316", width: 2, opacity: 0.8 },
+            data: [
+              [{ coord: [varGroupData.length - 1, lastRow.var] }, { coord: [varGroupData.length, nextVar] }],
+            ],
+          },
+        },
+      ],
+    }
+  }, [varGroupData, varGroupConf, varGroupNextDayVar])
 
   // Cascading available products for the product filter dropdown
   const availableProds = useMemo(() => {
@@ -2773,7 +4139,7 @@ function PositionContent() {
 
   return (
     <div className="space-y-6">
-      <section>
+      <section id="section-pos-timeseries">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           分类持仓时序
           <span className="h-px flex-1 bg-border" />
@@ -2931,7 +4297,7 @@ function PositionContent() {
           </CardContent>
         </Card>
       </section>
-      <section>
+      <section id="section-pos-cross">
         <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
           分类持仓截面
           <span className="h-px flex-1 bg-border" />
@@ -3081,6 +4447,196 @@ function PositionContent() {
       </section>
 
       <OptionHoldingContent />
+
+      <section id="section-pos-change-area" className="mt-6">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          持仓变化
+          <span className="h-px flex-1 bg-border" />
+        </h2>
+        <div className="flex gap-4" style={{ height: 460 }}>
+          <div className="w-1/3 shrink-0 h-full">
+            <Card className="h-full flex flex-col">
+              <CardHeader className="shrink-0 pb-1 pt-3 px-3">
+                <CardTitle className="text-sm">
+                  品种持仓变化 |ΔVaR|降序
+                  <span className="ml-2 text-[11px] font-normal text-muted-foreground">今日 vs 昨日</span>
+                </CardTitle>
+                <div className="flex items-center gap-2 mt-1 text-[11px]">
+                  <select className="border rounded px-1.5 py-0.5 bg-background text-xs" value={pcChartSector}
+                    onChange={e => { setPcChartSector(e.target.value); setPcChartSubSector("全部") }}>
+                    <option value="全部">板块:全部</option>
+                    {EXPOSURE_SECTORS.filter(s => s !== "全部").map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <select className="border rounded px-1.5 py-0.5 bg-background text-xs" value={pcChartSubSector}
+                    onChange={e => setPcChartSubSector(e.target.value)}>
+                    <option value="全部">细分:全部</option>
+                    {(pcChartSector !== "全部" ? (SECTOR_TO_SUB_SECTORS[pcChartSector] ?? []) : EXPOSURE_SUB_SECTORS.filter(s => s !== "全部")).map(s =>
+                      <option key={s} value={s}>{s}</option>
+                    )}
+                  </select>
+                </div>
+              </CardHeader>
+              <CardContent className="flex-1 min-h-0 p-2 pt-0">
+                <PositionChangeChart onProdClick={setPcProdFilter} sectorFilter={pcChartSector} subSectorFilter={pcChartSubSector} />
+              </CardContent>
+            </Card>
+          </div>
+          <PositionChangeDetailTable
+            prodFilter={pcProdFilter} setProdFilter={setPcProdFilter}
+            catFilter2={pcCatFilter} setCatFilter2={setPcCatFilter}
+            sectorFilter2={pcSectorFilter} setSectorFilter2={setPcSectorFilter}
+            subSectorFilter2={pcSubSectorFilter} setSubSectorFilter2={setPcSubSectorFilter}
+            onTodayDetail={() => {
+              setTodayDetailProd(pcProdFilter)
+              setTimeout(() => {
+                const scroller = document.getElementById("pos-main-scroll")
+                const target = document.getElementById("section-today-position")
+                if (scroller && target) {
+                  const scrollerRect = scroller.getBoundingClientRect()
+                  const targetRect = target.getBoundingClientRect()
+                  scroller.scrollBy({ top: targetRect.top - scrollerRect.top - 12, behavior: "smooth" })
+                }
+              }, 50)
+            }}
+            onYesterdayDetail={() => {
+              setYesterdayDetailProd(pcProdFilter)
+              setTimeout(() => {
+                const scroller = document.getElementById("pos-main-scroll")
+                const target = document.getElementById("section-yesterday-position")
+                if (scroller && target) {
+                  const scrollerRect = scroller.getBoundingClientRect()
+                  const targetRect = target.getBoundingClientRect()
+                  scroller.scrollBy({ top: targetRect.top - scrollerRect.top - 12, behavior: "smooth" })
+                }
+              }, 50)
+            }}
+          />
+        </div>
+
+        {/* Three placeholder charts */}
+        <div className="grid grid-cols-3 gap-4 mt-4">
+          <Card>
+            <CardHeader className="pb-1 pt-3 px-3">
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-xs font-medium">多空变化象限图</CardTitle>
+                <div className="flex text-[10px] border rounded overflow-hidden">
+                  {(["大类", "板块", "细分"] as const).map(val => (
+                    <button
+                      key={val}
+                      onClick={() => setScatterDim(val)}
+                      className={`px-2 py-0.5 transition-colors ${
+                        scatterDim === val
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-background text-muted-foreground hover:bg-muted"
+                      }`}
+                    >{val === "细分" ? "细分板块" : val === "大类" ? "大类资产" : "板块"}</button>
+                  ))}
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="p-2 pt-0">
+              {loading || !catScatterOption
+                ? <div className="h-64 flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
+                : <ReactECharts option={catScatterOption} style={{ height: 300 }} notMerge />
+              }
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader className="pb-1 pt-3 px-3">
+              <CardTitle className="text-xs font-medium">
+                多空持仓市值走势
+                {pcProdFilter !== "全部" ? ` — ${pcProdFilter}${PROD_NAMES[pcProdFilter] ? ` ${PROD_NAMES[pcProdFilter]}` : ""}` : pcSubSectorFilter !== "全部" ? ` — ${pcSubSectorFilter}` : pcSectorFilter !== "全部" ? ` — ${pcSectorFilter}` : pcCatFilter !== "全部" ? ` — ${pcCatFilter}` : " — 全部"}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-2 pt-0">
+              {loading
+                ? <div className="h-[300px] flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
+                : <ReactECharts option={miniExposureOption} style={{ height: 300 }} notMerge />
+              }
+            </CardContent>
+          </Card>
+          <Card key={3}>
+            <CardHeader className="pb-1 pt-3 px-3">
+              <div className="flex items-center gap-2 flex-wrap">
+                <CardTitle className="text-xs font-medium">
+                  {card3View === "timeseries"
+                    ? <>VaR预测 vs 实际 |盈亏|{varGroupLabel !== "全部" ? ` — ${varGroupLabel}` : " — 全部"}</>
+                    : <>ΔVaR分解 — {breakdownDim}</>
+                  }
+                </CardTitle>
+                <button
+                  className="ml-auto text-[10px] border rounded px-1.5 py-0.5 bg-background hover:bg-muted transition-colors"
+                  onClick={() => setCard3View(v => v === "timeseries" ? "breakdown" : "timeseries")}
+                >
+                  {card3View === "timeseries" ? "ΔVaR分布 →" : "← VaR走势"}
+                </button>
+                {card3View === "breakdown"
+                  ? (["大类", "板块", "细分板块"] as const).map(dim => (
+                      <button
+                        key={dim}
+                        className={`text-[10px] border rounded px-1.5 py-0.5 transition-colors ${breakdownDim === dim ? "bg-primary text-primary-foreground" : "bg-background hover:bg-muted"}`}
+                        onClick={() => setBreakdownDim(dim)}
+                      >
+                        {dim}
+                      </button>
+                    ))
+                  : <select
+                      className="text-[10px] border rounded px-1 py-0.5 bg-background"
+                      value={varGroupConf}
+                      onChange={e => setVarGroupConf(e.target.value as "90" | "95" | "99")}
+                    >
+                      <option value="90">90%</option>
+                      <option value="95">95%</option>
+                      <option value="99">99%</option>
+                    </select>
+                }
+              </div>
+            </CardHeader>
+            <CardContent className="p-2 pt-0">
+              {card3View === "timeseries"
+                ? varGroupLoading
+                  ? <div className="h-[300px] flex items-center justify-center text-xs text-muted-foreground">加载中...</div>
+                  : !varGroupOption
+                  ? <div className="h-[300px] flex items-center justify-center text-xs text-muted-foreground">暂无数据</div>
+                  : <ReactECharts option={varGroupOption} style={{ height: 300 }} notMerge />
+                : !varBreakdownOption
+                ? <div className="h-[300px] flex items-center justify-center text-xs text-muted-foreground">{varBreakdownProds.length === 0 ? "加载中..." : "暂无数据"}</div>
+                : <ReactECharts option={varBreakdownOption} style={{ height: 300 }} notMerge />
+              }
+            </CardContent>
+          </Card>
+        </div>
+
+        <TodayPositionSection
+          prodOverride={todayDetailProd}
+          sectionId="section-today-position"
+          dayLabel="今日"
+          onScrollBack={() => {
+            const scroller = document.getElementById("pos-main-scroll")
+            const target = document.getElementById("section-pos-change")
+            if (scroller && target) {
+              const scrollerRect = scroller.getBoundingClientRect()
+              const targetRect = target.getBoundingClientRect()
+              scroller.scrollBy({ top: targetRect.top - scrollerRect.top - 12, behavior: "smooth" })
+            }
+          }}
+        />
+        <TodayPositionSection
+          dayRank={2}
+          prodOverride={yesterdayDetailProd}
+          sectionId="section-yesterday-position"
+          dayLabel="昨日"
+          onScrollBack={() => {
+            const scroller = document.getElementById("pos-main-scroll")
+            const target = document.getElementById("section-pos-change")
+            if (scroller && target) {
+              const scrollerRect = scroller.getBoundingClientRect()
+              const targetRect = target.getBoundingClientRect()
+              scroller.scrollBy({ top: targetRect.top - scrollerRect.top - 12, behavior: "smooth" })
+            }
+          }}
+        />
+      </section>
     </div>
   )
 }
@@ -3120,7 +4676,36 @@ export default function RiskReportNewPage() {
       </aside>
 
       {/* Content area */}
-      <div className="flex-1 overflow-y-auto px-6 pb-6">
+      <div id="pos-main-scroll" className="flex-1 overflow-y-auto px-6 pb-6">
+        {activeTab === "position" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-pos-timeseries")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >时序持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-pos-cross")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >截面持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-pos-change-area")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >持仓变化 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-today-position")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >今日持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-yesterday-position")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >昨日持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >↑ 回到顶部</button>
+          </div>
+        )}
         {activeTab === "intraday" && (
           <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
             <span className="text-xs text-muted-foreground">快捷导航：</span>

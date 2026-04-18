@@ -74,6 +74,9 @@ export async function GET(req: Request) {
   const volDays     = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays")  ?? "20",  10)))
   const corrDays    = Math.max(5, Math.min(756, parseInt(searchParams.get("corrDays") ?? "252", 10)))
   const distModel   = searchParams.get("distModel") ?? "normal"  // "normal"|"t"|"laplace"|"logistic"|"kde"
+  // Optional product prefix whitelist (comma-separated, e.g. "PP,L,PL")
+  const prodsParam  = searchParams.get("prods")
+  const prodsFilter = prodsParam ? new Set(prodsParam.split(",").map(s => s.trim().toUpperCase()).filter(Boolean)) : null
 
   try {
     const VOL_WINDOW  = volDays
@@ -150,13 +153,30 @@ export async function GET(req: Request) {
       m.set(r.date, (m.get(r.date) ?? 0) + toNum(r.mv))  // signed: positive = net long
     }
 
-    const allProds     = [...prodPnlMap.keys()]
-    const tradingDates = [...totalPnlMap.keys()].sort()
+    const allProds     = [...prodPnlMap.keys()].filter(p => !prodsFilter || prodsFilter.has(p))
+    // When filtering products, totalPnlMap must also be scoped to those products
+    const filteredTotalPnlMap = prodsFilter
+      ? (() => {
+          const m = new Map<string, number>()
+          for (const prod of allProds) {
+            for (const [date, pnl] of (prodPnlMap.get(prod) ?? [])) {
+              m.set(date, (m.get(date) ?? 0) + pnl)
+            }
+          }
+          return m
+        })()
+      : totalPnlMap
+    const tradingDates = [...filteredTotalPnlMap.keys()].sort()
     if (tradingDates.length < VOL_WINDOW + 2) {
       return NextResponse.json({ ok: true, data: [], notEnoughData: true })
     }
 
-    // 2. Fetch pct_change from raw_akshare_futures_daily
+    const results: { date: string; var: number; actual: number }[] = []
+
+    // ── VaR via correlation matrix (same method for total and filtered groups) ──
+    // sigma_i = stdDev of last VOL_WINDOW pct_change values ending at day d
+    // w_i     = sigma_i * |mv_i_d|   (dollar volatility, signed by direction)
+    // VaR     = Z_SCORE * sqrt(w' * Corr * w)
     const akCodes = [...new Set(allProds.map((p) => AKSHARE_CODE[p]).filter(Boolean))]
     const pctRows = await query<{ date: string; code: string; pct: string }>(
       `SELECT trade_date::text AS date, code, pct_change::text AS pct
@@ -166,7 +186,6 @@ export async function GET(req: Request) {
       [akCodes],
     )
 
-    // code → (date → return as decimal, e.g. 1.23% → 0.0123)
     const pctMap = new Map<string, Map<string, number>>()
     for (const r of pctRows) {
       if (!pctMap.has(r.code)) pctMap.set(r.code, new Map())
@@ -180,7 +199,6 @@ export async function GET(req: Request) {
       return dates.map((dt) => m?.get(dt) ?? 0)
     }
 
-    // 3. Correlation matrix from last CORR_WINDOW market data dates
     const allMktDates = [...new Set(pctRows.map((r) => r.date))].sort()
     const corrDates   = allMktDates.slice(-CORR_WINDOW)
     const retSeries   = allProds.map((p) => getPctSeries(p, corrDates))
@@ -192,17 +210,8 @@ export async function GET(req: Request) {
       )
     )
 
-    // 4. Rolling daily VaR
-    //   sigma_i = stdDev of last 20 pct_change values ending at day d
-    //   w_i     = sigma_i * |mv_i_d|   (dollar volatility)
-    //   VaR     = Z_95 * sqrt(w' * Corr * w)
-    const results: { date: string; var: number; actual: number }[] = []
-
-    for (let di = VOL_WINDOW; di < tradingDates.length - 1; di++) {
-      const d     = tradingDates[di]
-      const dNext = tradingDates[di + 1]
-
-      // 20 market-calendar days ending at d (not trading days, to match pct_change table)
+    // Helper: compute parametric VaR for a single day d using today's MV and recent vol window
+    const computeVar = (d: string): number => {
       const mi       = allMktDates.indexOf(d)
       const volDates = mi >= VOL_WINDOW
         ? allMktDates.slice(mi - VOL_WINDOW, mi)
@@ -210,14 +219,12 @@ export async function GET(req: Request) {
 
       const dollarVols = allProds.map((prod) => {
         const mvD = prodMvMap.get(prod)?.get(d) ?? 0
-        if (Math.abs(mvD) < 1000) return 0 // no meaningful open position
-
+        if (Math.abs(mvD) < 1000) return 0
         const rets  = getPctSeries(prod, volDates).filter((r) => r !== 0)
         const sigma = stdDev(rets)
-        return sigma * mvD  // signed: net long → positive, net short → negative
+        return sigma * mvD
       })
 
-      // Portfolio variance = w' * Corr * w
       let portVar = 0
       for (let i = 0; i < N; i++) {
         if (dollarVols[i] === 0) continue
@@ -226,27 +233,35 @@ export async function GET(req: Request) {
           portVar += dollarVols[i] * dollarVols[j] * corrMatrix[i][j]
         }
       }
+      return portVar > 0 ? Math.round(Z_SCORE * Math.sqrt(portVar)) : 0
+    }
+
+    for (let di = VOL_WINDOW; di < tradingDates.length - 1; di++) {
+      const d     = tradingDates[di]
+      const dNext = tradingDates[di + 1]
 
       let varValue: number
       if (distModel === "kde") {
-        // Historical-simulation (non-parametric): empirical loss quantile
         const histPnl = tradingDates
           .slice(Math.max(0, di - CORR_WINDOW), di)
-          .map((dt) => totalPnlMap.get(dt) ?? 0)
+          .map((dt) => filteredTotalPnlMap.get(dt) ?? 0)
           .sort((a, b) => a - b)
         if (histPnl.length < 5) { continue }
         const alpha = 1 - parseInt(confidence, 10) / 100
         const idx   = Math.max(0, Math.floor(alpha * histPnl.length) - 1)
         varValue = Math.abs(Math.round(histPnl[idx] ?? 0))
       } else {
-        varValue = portVar > 0 ? Math.round(Z_SCORE * Math.sqrt(portVar)) : 0
+        varValue = computeVar(d)
       }
-      const actualAbs = Math.abs(Math.round(totalPnlMap.get(dNext) ?? 0))
-
+      const actualAbs = Math.abs(Math.round(filteredTotalPnlMap.get(dNext) ?? 0))
       if (varValue > 0 || actualAbs > 0) {
         results.push({ date: dNext, var: varValue, actual: actualAbs })
       }
     }
+
+    // Compute next-day prediction using the most recent trading day's positions
+    const lastD      = tradingDates[tradingDates.length - 1]
+    const nextDayVar = distModel !== "kde" ? computeVar(lastD) : 0
 
     const valid      = results.filter((r) => r.var > 0)
     const breaches   = valid.filter((r) => r.actual > r.var).length
@@ -255,6 +270,7 @@ export async function GET(req: Request) {
     return NextResponse.json({
       ok: true,
       data: results.slice(-180),
+      nextDayVar,
       breachRate: Math.round(breachRate * 1000) / 10,
       params: { confidence, volDays: VOL_WINDOW, corrDays: CORR_WINDOW, distModel },
     })

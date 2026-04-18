@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -57,7 +58,7 @@ const T6_TABLE:       Record<string, number> = { "90": 1.440,  "95": 1.943,  "99
 const LAPLACE_TABLE:  Record<string, number> = { "90": 1.138,  "95": 1.629,  "99": 2.767 }
 const LOGISTIC_TABLE: Record<string, number> = { "90": 1.211,  "95": 1.623,  "99": 2.532 }
 
-export async function GET(req: Request) {
+async function _GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const confidence = searchParams.get("confidence") ?? "95"
   const volDays    = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays")  ?? "20",  10)))
@@ -74,15 +75,15 @@ export async function GET(req: Request) {
     const mvRows = await query<{ contract: string; mv: string; lots: string }>(
       `SELECT UPPER(TRIM("合约")) AS contract,
               SUM(
-                CASE WHEN ${numExpr("买持仓")} > 0
-                     THEN  ${numExpr("持仓市値")}
-                     ELSE -${numExpr("持仓市値")}
+                CASE WHEN ${numExpr("买持�?)} > 0
+                     THEN  ${numExpr("持仓市�?)}
+                     ELSE -${numExpr("持仓市�?)}
                 END
               )::text AS mv,
               SUM(
-                CASE WHEN ${numExpr("买持仓")} > 0
-                     THEN  ${numExpr("买持仓")}
-                     ELSE -${numExpr("卖持仓")}
+                CASE WHEN ${numExpr("买持�?)} > 0
+                     THEN  ${numExpr("买持�?)}
+                     ELSE -${numExpr("卖持�?)}
                 END
               )::text AS lots
        FROM mom_position_details
@@ -107,7 +108,7 @@ export async function GET(req: Request) {
       prodLotsMap.set(prod, (prodLotsMap.get(prod) ?? 0) + Math.round(toNum(r.lots)))
     }
 
-    // Sort by abs(mv) descending — this order is shared with corrMatrix
+    // Sort by abs(mv) descending �?this order is shared with corrMatrix
     const activeProds = [...prodMvMap.keys()]
       .filter(p => Math.abs(prodMvMap.get(p)!) > 1000)
       .sort((a, b) => Math.abs(prodMvMap.get(b)!) - Math.abs(prodMvMap.get(a)!))
@@ -191,3 +192,5 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("var-sandbox", _GET)

@@ -2047,6 +2047,30 @@ def step_futures_rollover_dates(conn, *, force: bool = False) -> int:
     return len(records)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP — Warm MOM dashboard API caches
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def step_warm_mom_cache() -> int:
+    """Call the /ma/api/mom-analysis/warm-cache endpoint to pre-compute all chart data."""
+    import urllib.request
+    base = os.environ.get("WARM_CACHE_BASE_URL", "http://127.0.0.1:3000")
+    url = f"{base}/ma/api/mom-analysis/warm-cache"
+    log.info("Warming MOM cache via %s …", url)
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            body = json.loads(resp.read().decode())
+        routes = body.get("results") or []
+        ok_count = sum(1 for r in routes if r.get("ok"))
+        total_ms = body.get("totalMs", 0)
+        log.info("MOM cache warmed: %d/%d routes OK in %.1fs", ok_count, len(routes), total_ms / 1000)
+        return ok_count
+    except Exception as exc:
+        log.warning("Cache warming failed (non-fatal): %s", exc)
+        return 0
+
+
 ORDERED_STEPS = [
     "nhci",
     "nheci",
@@ -2071,6 +2095,7 @@ ORDERED_STEPS = [
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
+    "warm_mom_cache",                # warm MOM dashboard API caches
 ]
 
 
@@ -2179,6 +2204,7 @@ def main():
         "regime_similarity":               lambda: step_regime_similarity(conn),
         "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),
         "money_credit":                    lambda: step_money_credit(conn),
+        "warm_mom_cache":                  lambda: step_warm_mom_cache(),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS

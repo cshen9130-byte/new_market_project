@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -31,7 +32,7 @@ interface HoldingPoint {
   closeCount: number
 }
 
-export async function GET(req: Request) {
+async function _GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const productCode = searchParams.get("product_code") || null
@@ -72,7 +73,7 @@ export async function GET(req: Request) {
     )
 
     // ── 2. Aggregate daily PnL from mom_daily_reports ───────────────────
-    // pnl = 当日盈亏 - 当日手续费 + 权利金收入 - 权利金支出
+    // pnl = 当日盈亏 - 当日手续�?+ 权利金收�?- 权利金支�?
     const numExpr = (col: string) =>
       `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}", ''), ',', ''), ' ', ''), '')::numeric, 0)`
 
@@ -81,9 +82,9 @@ export async function GET(req: Request) {
          "交易日期"::text AS date,
          SUM(
            ${numExpr("当日盈亏")}
-           - ${numExpr("当日手续费")}
-           + ${numExpr("权利金收入")}
-           - ${numExpr("权利金支出")}
+           - ${numExpr("当日手续�?)}
+           + ${numExpr("权利金收�?)}
+           - ${numExpr("权利金支�?)}
          )::text AS daily_pnl,
          SUM(${numExpr("客户权益")})::text AS daily_equity
        FROM mom_daily_reports
@@ -104,7 +105,7 @@ export async function GET(req: Request) {
       turnoverRows = await query<{ date: string; turnover_amount: string }>(
         `SELECT
            "交易日期"::text AS date,
-           SUM(${numExpr("成交额")})::text AS turnover_amount
+           SUM(${numExpr("成交�?)})::text AS turnover_amount
          FROM mom_summary_details
          ${turnoverFilter}
          GROUP BY "交易日期"
@@ -128,11 +129,11 @@ export async function GET(req: Request) {
       holdingRows = await query<{ date: string; avg_holding_days: string; close_count: string }>(
         `SELECT
            "交易日期"::text AS date,
-           AVG(GREATEST(("交易日期"::date - "开仓日期"::date), 0))::text AS avg_holding_days,
+           AVG(GREATEST(("交易日期"::date - "开仓日�?::date), 0))::text AS avg_holding_days,
            COUNT(*)::text AS close_count
          FROM mom_close_details
          WHERE "交易日期" IS NOT NULL
-           AND "开仓日期" IS NOT NULL
+           AND "开仓日�? IS NOT NULL
            ${holdingFilter}
          GROUP BY "交易日期"
          ORDER BY "交易日期"`,
@@ -216,3 +217,5 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("product-nav", _GET)

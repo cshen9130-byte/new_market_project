@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -38,9 +39,9 @@ const SECTOR_MAP: Record<string, string> = {
   A:"农产",B:"农产",M:"农产",Y:"农产",RM:"农产",OI:"农产",RS:"农产",PK:"农产",P:"农产",
   SR:"农产",CF:"农产",CY:"农产",LG:"农产",SP:"农产",OP:"农产",
   AP:"生鲜",CJ:"生鲜",LH:"生鲜",JD:"生鲜",
-  AU:"贵金属",AG:"贵金属",PT:"贵金属",PD:"贵金属",
+  AU:"贵金�?,AG:"贵金�?,PT:"贵金�?,PD:"贵金�?,
   CU:"有色",BC:"有色",AL:"有色",AO:"有色",AD:"有色",ZN:"有色",PB:"有色",NI:"有色",SN:"有色",
-  LC:"新能源",PS:"新能源",SI:"新能源",
+  LC:"新能�?,PS:"新能�?,SI:"新能�?,
   I:"黑色",SF:"黑色",SM:"黑色",RB:"黑色",HC:"黑色",SS:"黑色",WR:"黑色",
   JM:"黑色",J:"黑色",ZC:"黑色",FG:"黑色",BB:"黑色",FB:"黑色",
   SC:"能源化工",FU:"能源化工",LU:"能源化工",PG:"能源化工",BU:"能源化工",
@@ -50,7 +51,7 @@ const SECTOR_MAP: Record<string, string> = {
   SA:"能源化工",SH:"能源化工",V:"能源化工",UR:"能源化工",MA:"能源化工",
   EC:"航运",
   IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
-  TS:"国债",TF:"国债",T:"国债",TL:"国债",
+  TS:"国�?,TF:"国�?,T:"国�?,TL:"国�?,
 }
 
 function stdDev(xs: number[]): number {
@@ -81,7 +82,7 @@ function cumulativeSeries(xs: number[]): number[] {
   })
 }
 
-export async function GET(req: Request) {
+async function _GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const WINDOW = Math.max(5, Math.min(120, parseInt(searchParams.get("window") ?? "20", 10)))
   const CORR_WINDOW = Math.max(5, Math.min(504, parseInt(searchParams.get("corrWindow") ?? String(WINDOW), 10)))
@@ -91,9 +92,9 @@ export async function GET(req: Request) {
     const mvRows = await query<{ contract: string; mv: string }>(
       `SELECT UPPER(TRIM("合约")) AS contract,
               SUM(
-                CASE WHEN ${numExpr("买持仓")} > 0
-                     THEN  ${numExpr("持仓市値")}
-                     ELSE -${numExpr("持仓市値")}
+                CASE WHEN ${numExpr("买持�?)} > 0
+                     THEN  ${numExpr("持仓市�?)}
+                     ELSE -${numExpr("持仓市�?)}
                 END
               )::text AS mv
        FROM mom_position_details
@@ -102,7 +103,7 @@ export async function GET(req: Request) {
        GROUP BY UPPER(TRIM("合约"))`,
     )
 
-    // prod → net MV on latest date
+    // prod �?net MV on latest date
     const prodMV = new Map<string, number>()
     for (const r of mvRows) {
       const prod = getPrefix(r.contract)
@@ -135,15 +136,15 @@ export async function GET(req: Request) {
     try {
       feeRows = await query<{ date: string; contract: string; fee: string; premium: string }>(
         `SELECT trade_date::text AS date, UPPER(TRIM("合约")) AS contract,
-                SUM(${numExpr("手续费")})::text AS fee,
-                SUM(${numExpr("权利金收支")})::text AS premium
+                SUM(${numExpr("手续�?)})::text AS fee,
+                SUM(${numExpr("权利金收�?)})::text AS premium
          FROM mom_trade_details
          WHERE trade_date IS NOT NULL AND "合约" IS NOT NULL
          GROUP BY trade_date, UPPER(TRIM("合约")) ORDER BY 1`,
       )
     } catch { /* optional */ }
 
-    // prod → date → pnl
+    // prod �?date �?pnl
     const prodPnlMap = new Map<string, Map<string, number>>()
     const totalPnlMap = new Map<string, number>()
     const addPnl = (contract: string, date: string, pnl: number) => {
@@ -228,12 +229,12 @@ export async function GET(req: Request) {
       const mvcRaw = w * mktSigma * mktCorrWithPort      // contribution to portMktVol
       const mvc = portMktVol > 0 ? Math.round(mvcRaw / portMktVol * 10000) / 100 : 0  // %
 
-      const mv = Math.round(netMV / 10000) / 100  // 万
+      const mv = Math.round(netMV / 10000) / 100  // �?
 
       points.push({ prod, sector: SECTOR_MAP[prod] ?? "其他", vol, corr, mv, mvc })
     }
 
-    // 6. Pairwise correlation matrix — uses CORR_WINDOW (may differ from WINDOW)
+    // 6. Pairwise correlation matrix �?uses CORR_WINDOW (may differ from WINDOW)
     const corrMktDates = allMktDates.slice(-CORR_WINDOW)
     const matrixProds = points.map((p) => p.prod)
     const matrixRets = matrixProds.map((prod) => {
@@ -244,7 +245,7 @@ export async function GET(req: Request) {
     for (let i = 0; i < matrixProds.length; i++) {
       for (let j = 0; j < matrixProds.length; j++) {
         const c = i === j ? 1 : Math.round(pearsonCorr(matrixRets[i], matrixRets[j]) * 100) / 100
-        corrMatrixData.push([j, i, c])  // [xIdx, yIdx, value] — yIdx=i so first prod is top row
+        corrMatrixData.push([j, i, c])  // [xIdx, yIdx, value] �?yIdx=i so first prod is top row
       }
     }
 
@@ -258,3 +259,5 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("vol-corr-scatter", _GET)
