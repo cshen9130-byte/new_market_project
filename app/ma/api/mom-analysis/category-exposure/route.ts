@@ -112,6 +112,24 @@ function getSubSector(prefix: string): string {
   return SUB_SECTOR_MAP[prefix] ?? "其他"
 }
 
+const ALL_PRODS = [
+  "C","CS","WH","PM","RR","RI","JR","LR",
+  "A","B","M","Y","RM","OI","RS","PK","P",
+  "SR","CF","CY","LG","SP","OP",
+  "AP","CJ","LH","JD",
+  "AU","AG","PT","PD",
+  "CU","BC","AL","AO","AD","ZN","PB","NI","SN",
+  "LC","PS","SI",
+  "I","SF","SM","RB","HC","SS","WR",
+  "JM","J","ZC","FG","BB","FB",
+  "SC","FU","LU","PG","BU",
+  "TA","EG","PF","PR","PL","PP","L",
+  "BZ","PX","EB","RU","BR","NR",
+  "SA","SH","V","UR","MA","EC",
+  "IH","IF","IC","IM","MO",
+  "TS","TF","T","TL",
+]
+
 export async function GET() {
   try {
     const rows = await query<{
@@ -166,6 +184,8 @@ export async function GET() {
       sshort: Record<string, number>
       sslong: Record<string, number>
       ssshort: Record<string, number>
+      plong: Record<string, number>
+      pshort: Record<string, number>
     }
     const dateMap = new Map<string, DayEntry>()
 
@@ -179,7 +199,7 @@ export async function GET() {
 
       const subSector = getSubSector(prefix)
       if (!dateMap.has(r.date)) {
-        dateMap.set(r.date, { long: {}, short: {}, slong: {}, sshort: {}, sslong: {}, ssshort: {} })
+        dateMap.set(r.date, { long: {}, short: {}, slong: {}, sshort: {}, sslong: {}, ssshort: {}, plong: {}, pshort: {} })
       }
       const entry = dateMap.get(r.date)!
       entry.long[cat] = (entry.long[cat] ?? 0) + longMv
@@ -188,6 +208,8 @@ export async function GET() {
       entry.sshort[sector] = (entry.sshort[sector] ?? 0) + shortMv
       entry.sslong[subSector] = (entry.sslong[subSector] ?? 0) + longMv
       entry.ssshort[subSector] = (entry.ssshort[subSector] ?? 0) + shortMv
+      entry.plong[prefix] = (entry.plong[prefix] ?? 0) + longMv
+      entry.pshort[prefix] = (entry.pshort[prefix] ?? 0) + shortMv
     }
 
     const cats = ["商品", "股指", "国债"]
@@ -206,6 +228,11 @@ export async function GET() {
           subSectorFields[`long_ss_${ss}`] = Math.round(entry.sslong[ss] ?? 0)
           subSectorFields[`short_ss_${ss}`] = -Math.round(entry.ssshort[ss] ?? 0)
         }
+        const productFields: Record<string, number> = {}
+        for (const p of ALL_PRODS) {
+          productFields[`long_p_${p}`] = Math.round(entry.plong[p] ?? 0)
+          productFields[`short_p_${p}`] = -Math.round(entry.pshort[p] ?? 0)
+        }
         return {
           date,
           // long per category (positive)
@@ -222,6 +249,7 @@ export async function GET() {
           equity: equityMap.get(date) ?? 0,
           ...sectorFields,
           ...subSectorFields,
+          ...productFields,
         }
       })
 

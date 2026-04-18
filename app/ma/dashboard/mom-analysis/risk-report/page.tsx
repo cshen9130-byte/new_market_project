@@ -2145,11 +2145,31 @@ const SUB_SECTOR_COLORS: Record<string, string> = {
   股指: "#d946ef",国债: "#ef4444",其他: "#94a3b8",
 }
 
+// Maps each sector to its sub-sectors for cascading filter
+const SECTOR_TO_SUB_SECTORS: Record<string, readonly string[]> = {
+  农产: ["谷物", "油脂油料", "软商品", "林业"],
+  生鲜: ["生鲜"],
+  贵金属: ["贵金属"],
+  有色: ["有色"],
+  新能源: ["新能源"],
+  黑色: ["原材", "成材", "煤炭", "建材"],
+  能源化工: ["油品", "聚酯", "烯烃", "芳烃", "橡胶", "盐化工", "煤化工"],
+  航运: ["航运"],
+  股指: ["股指"],
+  国债: ["国债"],
+}
+
 // Maps each sector to its 大类 category for filtering
 const SECTOR_TO_CAT: Record<string, string> = {
   农产: "商品", 生鲜: "商品", 贵金属: "商品", 有色: "商品",
   新能源: "商品", 黑色: "商品", 能源化工: "商品", 航运: "商品",
   股指: "股指", 国债: "国债",
+}
+
+const CAT_TO_SECTORS: Record<string, readonly string[]> = {
+  商品: ["农产", "生鲜", "贵金属", "有色", "新能源", "黑色", "能源化工", "航运"],
+  股指: ["股指"],
+  国债: ["国债"],
 }
 
 const EXPOSURE_SERIES_CFG = [
@@ -2161,6 +2181,172 @@ const EXPOSURE_SERIES_CFG = [
   { key: "short国债", name: "空-国债", stack: "short", cat: "国债", color: "#e879f9" },
 ] as const
 
+type OptionRow = {
+  account: string; contract: string; tradeSeq: string
+  longLots: number; buyPrice: number; shortLots: number; sellPrice: number
+  prevSettle: number; todaySettle: number; hedgeType: string; tradeDate: string
+  margin: number; exchange: string; multiplier: number
+  cost: number; marketValue: number; floatingPnl: number; optionType: string
+}
+
+function OptionHoldingContent() {
+  const [rows, setRows] = useState<OptionRow[]>([])
+  const [date, setDate] = useState<string>("")
+  const [loading, setLoading] = useState(true)
+  const [contractSearch, setContractSearch] = useState("")
+  const [accountFilter, setAccountFilter] = useState("全部")
+  const [tradeDateFilter, setTradeDateFilter] = useState("全部")
+  const [dirFilter, setDirFilter] = useState("全部")
+  const [optTypeFilter, setOptTypeFilter] = useState("全部")
+  const [pnlFilter, setPnlFilter] = useState("全部")
+
+  useEffect(() => {
+    fetch("/ma/api/mom-analysis/option-positions")
+      .then(r => r.json())
+      .then(j => { if (j.ok) { setRows(j.rows ?? []); setDate(j.date ?? "") } })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  const accounts   = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.account))).sort()], [rows])
+  const tradeDates = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.tradeDate).filter(Boolean))).sort().reverse()], [rows])
+
+  const filtered = useMemo(() => rows.filter(r => {
+    if (contractSearch && !r.contract.toLowerCase().includes(contractSearch.toLowerCase())) return false
+    if (accountFilter !== "全部" && r.account !== accountFilter) return false
+    if (tradeDateFilter !== "全部" && r.tradeDate !== tradeDateFilter) return false
+    if (dirFilter !== "全部") {
+      if (dirFilter === "买入" && r.longLots <= 0) return false
+      if (dirFilter === "卖出" && r.shortLots <= 0) return false
+    }
+    if (optTypeFilter !== "全部" && r.optionType !== optTypeFilter) return false
+    if (pnlFilter !== "全部") {
+      if (pnlFilter === "盈利" && r.floatingPnl <= 0) return false
+      if (pnlFilter === "亏损" && r.floatingPnl >= 0) return false
+    }
+    return true
+  }), [rows, contractSearch, accountFilter, tradeDateFilter, dirFilter, optTypeFilter, pnlFilter])
+
+  const totalMargin    = filtered.reduce((s, r) => s + r.margin, 0)
+  const totalCost      = filtered.reduce((s, r) => s + r.cost, 0)
+  const totalMv        = filtered.reduce((s, r) => s + r.marketValue, 0)
+  const totalPnl       = filtered.reduce((s, r) => s + r.floatingPnl, 0)
+  const totalLongLots  = filtered.reduce((s, r) => s + r.longLots, 0)
+  const totalShortLots = filtered.reduce((s, r) => s + r.shortLots, 0)
+
+  const fmt = (v: number) => v.toLocaleString("zh-CN")
+  const fmtP = (v: number) => <span className={v > 0 ? "text-orange-500" : v < 0 ? "text-teal-400" : ""}>{fmt(v)}</span>
+
+  const resetFilters = () => {
+    setContractSearch(""); setAccountFilter("全部"); setTradeDateFilter("全部")
+    setDirFilter("全部"); setOptTypeFilter("全部"); setPnlFilter("全部")
+  }
+
+  return (
+    <Card className="mt-6">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">期权持仓明细（最新交易日汇总）{date && <span className="ml-2 text-xs font-normal text-muted-foreground">{date}</span>}</CardTitle>
+        {/* Filters */}
+        <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">合约：</span>
+            <input
+              className="border rounded px-2 py-0.5 bg-background w-28 text-xs"
+              placeholder="包含..."
+              value={contractSearch}
+              onChange={e => setContractSearch(e.target.value)}
+            />
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">账户：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
+              {accounts.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">成交日期：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={tradeDateFilter} onChange={e => setTradeDateFilter(e.target.value)}>
+              {tradeDates.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">方向：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={dirFilter} onChange={e => setDirFilter(e.target.value)}>
+              {["全部","买入","卖出"].map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">期权类型：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={optTypeFilter} onChange={e => setOptTypeFilter(e.target.value)}>
+              {["全部","C","P"].map(t => <option key={t} value={t}>{t === "C" ? "C（认购）" : t === "P" ? "P（认沽）" : "全部"}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="text-muted-foreground">浮动盈亏：</span>
+            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={pnlFilter} onChange={e => setPnlFilter(e.target.value)}>
+              {["全部","盈利","亏损"].map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </div>
+          <button onClick={resetFilters} className="px-2.5 py-0.5 border rounded text-xs hover:bg-muted transition-colors">重置</button>
+        </div>
+      </CardHeader>
+      <CardContent className="p-0 overflow-x-auto overflow-y-auto" style={{ maxHeight: 480 }}>
+        {loading ? (
+          <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
+        ) : filtered.length === 0 ? (
+          <p className="text-sm text-muted-foreground px-4 py-6">暂无期权持仓数据</p>
+        ) : (
+          <table className="w-full text-xs whitespace-nowrap">
+            <thead className="sticky top-0 bg-card z-10">
+              {/* Totals summary row */}
+              <tr className="border-b bg-muted/30 text-muted-foreground">
+                <td colSpan={3} />
+                <td className="px-3 py-1 text-right font-medium text-orange-500">{totalLongLots > 0 ? totalLongLots : ""}</td>
+                <td />
+                <td className="px-3 py-1 text-right font-medium text-teal-400">{totalShortLots > 0 ? totalShortLots : ""}</td>
+                <td colSpan={4} />
+                <td className="px-3 py-1 text-right font-medium text-foreground">{fmt(totalMargin)}</td>
+                <td colSpan={2} />
+                <td className="px-3 py-1 text-right font-medium text-foreground">{fmt(totalCost)}</td>
+                <td className="px-3 py-1 text-right font-medium text-foreground">{fmt(totalMv)}</td>
+                <td className={`px-3 py-1 text-right font-medium ${totalPnl > 0 ? "text-orange-500" : totalPnl < 0 ? "text-teal-400" : "text-foreground"}`}>{fmt(totalPnl)}</td>
+              </tr>
+              {/* Column headers */}
+              <tr className="border-b bg-muted/50 text-muted-foreground">
+                {["合约","品种","账户","买持仓","买入价","卖持仓","卖出价","昨结算价","投机/套保","成交日期","保证金","交易所","合约乘数","成本","市值","浮动盈亏"].map(h => (
+                  <th key={h} className="px-3 py-2 text-left font-medium">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((r, i) => (
+                <tr key={i} className="border-b hover:bg-muted/20 transition-colors">
+                  <td className="px-3 py-1.5 font-mono">{r.contract}</td>
+                  <td className="px-3 py-1.5 text-muted-foreground">{PROD_NAMES[r.contract.match(/^[A-Za-z]+/)?.[0]?.toUpperCase() ?? ""] ?? ""}</td>
+                  <td className="px-3 py-1.5">{r.account}</td>
+                  <td className={`px-3 py-1.5 text-right ${r.longLots > 0 ? "text-orange-500" : "text-muted-foreground"}`}>{r.longLots}</td>
+                  <td className="px-3 py-1.5 text-right">{r.buyPrice > 0 ? r.buyPrice.toFixed(2) : "0.00"}</td>
+                  <td className={`px-3 py-1.5 text-right ${r.shortLots > 0 ? "text-teal-400" : "text-muted-foreground"}`}>{r.shortLots}</td>
+                  <td className="px-3 py-1.5 text-right">{r.sellPrice > 0 ? r.sellPrice.toFixed(2) : "0.00"}</td>
+                  <td className="px-3 py-1.5 text-right">{r.prevSettle.toFixed(2)}</td>
+                  <td className="px-3 py-1.5">{r.hedgeType}</td>
+                  <td className="px-3 py-1.5">{r.tradeDate}</td>
+                  <td className="px-3 py-1.5 text-right">{fmt(r.margin)}</td>
+                  <td className="px-3 py-1.5">{r.exchange}</td>
+                  <td className="px-3 py-1.5 text-right">{r.multiplier}</td>
+                  <td className="px-3 py-1.5 text-right">{fmt(r.cost)}</td>
+                  <td className="px-3 py-1.5 text-right">{fmt(r.marketValue)}</td>
+                  <td className="px-3 py-1.5 text-right">{fmtP(r.floatingPnl)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function PositionContent() {
   const [series, setSeries] = useState<ExposureRow[]>([])
   const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
@@ -2168,9 +2354,11 @@ function PositionContent() {
   const [catFilter, setCatFilter] = useState<ExposureCat>("商品")
   const [sectorFilter, setSectorFilter] = useState<ExposureSector>("全部")
   const [subSectorFilter, setSubSectorFilter] = useState<ExposureSubSector>("全部")
-  const [weightMode, setWeightMode] = useState<"大类" | "板块" | "细分">("板块")
-  const [sectorBarSort, setSectorBarSort] = useState<{ col: "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv"; dir: "asc" | "desc" } | null>({ col: "longMv", dir: "desc" })
-  const [sectorBarMode, setSectorBarMode] = useState<"大类" | "板块" | "细分">("板块")
+  const [prodFilter, setProdFilter] = useState<string>("全部")
+  const [weightMode, setWeightMode] = useState<"大类" | "板块" | "细分">("大类")
+  const [weightCalcMode, setWeightCalcMode] = useState<"gross" | "net">("net")
+  const [sectorBarSort, setSectorBarSort] = useState<{ col: "sector" | "longMv" | "longPct" | "shortMv" | "shortPct" | "netMv" | "netPctNorm"; dir: "asc" | "desc" } | null>({ col: "longMv", dir: "desc" })
+  const [sectorBarMode, setSectorBarMode] = useState<"大类" | "板块" | "细分">("大类")
   const [sectorBarDate, setSectorBarDate] = useState<string>("")
   const barLeftRef = useRef<HTMLDivElement>(null)
   const [barLeftHeight, setBarLeftHeight] = useState<number | undefined>()
@@ -2197,13 +2385,24 @@ function PositionContent() {
 
   const dates = series.map(r => r.date)
 
+  // Cascading available products for the product filter dropdown
+  const availableProds = useMemo(() => {
+    const allProds = Object.keys(PROD_NAMES)
+    if (subSectorFilter !== "全部") return allProds.filter(p => PROD_SUB_SECTOR[p] === subSectorFilter)
+    if (sectorFilter !== "全部") return allProds.filter(p => PROD_SECTOR[p] === sectorFilter)
+    if (catFilter !== "全部") return allProds.filter(p => PROD_CAT[p] === catFilter)
+    return allProds
+  }, [catFilter, sectorFilter, subSectorFilter])
+
   // When a sector filter is active, it overrides the cat filter
   const SECTOR_CFG = [
     { key: "long_sector",  name: "多",  stack: "long",  color: "#38bdf8" },
     { key: "short_sector", name: "空",  stack: "short", color: "#fb923c" },
   ] as const
 
-  const visibleCfg  = subSectorFilter !== "全部"
+  const visibleCfg  = prodFilter !== "全部"
+    ? SECTOR_CFG.map(c => ({ ...c, key: c.key.replace("_sector", `_p_${prodFilter}`) }))
+    : subSectorFilter !== "全部"
     ? SECTOR_CFG.map(c => ({ ...c, key: c.key.replace("_sector", `_ss_${subSectorFilter}`) }))
     : sectorFilter !== "全部"
     ? SECTOR_CFG.map(c => ({ ...c, key: c.key.replace("_sector", `_s_${sectorFilter}`) }))
@@ -2212,6 +2411,13 @@ function PositionContent() {
   const visibleCfg2 = visibleCfg
 
   const filteredNet = useMemo(() => {
+    if (prodFilter !== "全部") {
+      return series.map(r => {
+        const lv = (r as Record<string, number>)[`long_p_${prodFilter}`] ?? 0
+        const sv = (r as Record<string, number>)[`short_p_${prodFilter}`] ?? 0
+        return lv + sv
+      })
+    }
     if (subSectorFilter !== "全部") {
       return series.map(r => {
         const lv = (r as Record<string, number>)[`long_ss_${subSectorFilter}`] ?? 0
@@ -2232,7 +2438,7 @@ function PositionContent() {
       const shortKey = `short${catFilter}` as keyof ExposureRow
       return (r[longKey] as number) + (r[shortKey] as number)
     })
-  }, [series, catFilter, sectorFilter, subSectorFilter])
+  }, [series, catFilter, sectorFilter, subSectorFilter, prodFilter])
 
   const filteredNet2 = filteredNet
 
@@ -2250,7 +2456,7 @@ function PositionContent() {
         const date = (params[0] as unknown as { axisValue: string }).axisValue
         const fmt = (v: number) => `${Math.round(Math.abs(v) / 1e8 * 100) / 100}亿`
         const fmtNet = (v: number) => `${v < 0 ? "-" : ""}${Math.round(Math.abs(v) / 1e8 * 100) / 100}亿`
-        if (subSectorFilter !== "全部" || sectorFilter !== "全部" || catFilter === "全部") {
+        if (prodFilter !== "全部" || subSectorFilter !== "全部" || sectorFilter !== "全部" || catFilter === "全部") {
           const longTotal  = params.filter(p => ["多", "多-商品", "多-股指", "多-国债"].includes(p.seriesName) || p.seriesName.startsWith("多-")).reduce((s, p) => s + p.value, 0)
           const shortTotal = params.filter(p => ["空", "空-商品", "空-股指", "空-国债"].includes(p.seriesName) || p.seriesName.startsWith("空-")).reduce((s, p) => s + Math.abs(p.value), 0)
           const net        = params.find(p => p.seriesName === "净持仓")?.value ?? (longTotal - shortTotal)
@@ -2312,7 +2518,7 @@ function PositionContent() {
         z: 10,
       },
     ],
-  }), [series, dates, visibleCfg, filteredNet, catFilter, sectorFilter, subSectorFilter])
+  }), [series, dates, visibleCfg, filteredNet, catFilter, sectorFilter, subSectorFilter, prodFilter])
 
   const ratioOption = useMemo(() => ({
     tooltip: {
@@ -2321,21 +2527,21 @@ function PositionContent() {
         const date = (params[0] as unknown as { axisValue: string }).axisValue
         const fmt = (v: number) => Math.abs(v).toFixed(2)
         const fmtNet = (v: number) => v.toFixed(2)
-        if (subSectorFilter !== "全部" || sectorFilter !== "全部" || catFilter === "全部") {
-          const longTotal  = params.filter(p => ["多", "多-商品", "多-股指", "多-国债"].includes(p.seriesName) || p.seriesName.startsWith("多-")).reduce((s, p) => s + p.value, 0)
-          const shortTotal = params.filter(p => ["空", "空-商品", "空-股指", "空-国债"].includes(p.seriesName) || p.seriesName.startsWith("空-")).reduce((s, p) => s + Math.abs(p.value), 0)
-          const net        = params.find(p => p.seriesName === "净持仓")?.value ?? (longTotal - shortTotal)
+        if (prodFilter !== "全部" || subSectorFilter !== "全部" || sectorFilter !== "全部" || catFilter === "全部") {
+          const longTotal  = params.filter(p => p.seriesName.startsWith("多")).reduce((s, p) => s + p.value, 0)
+          const shortTotal = params.filter(p => p.seriesName.startsWith("空")).reduce((s, p) => s + Math.abs(p.value), 0)
+          const net        = params.find(p => p.seriesName === "净持仓/净资本")?.value ?? (longTotal - shortTotal)
           const dot = (color: string) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:4px"></span>`
           return [
             date,
             `${dot("#38bdf8")}多头市值/净资本: ${fmt(longTotal)}`,
             `${dot("#fb923c")}空头市值/净资本: ${fmt(shortTotal)}`,
-            `${dot("#dc2626")}净市值/净资本: ${fmtNet(net)}`,
+            `${dot("#dc2626")}净持仓/净资本: ${fmtNet(net)}`,
           ].join("<br/>")
         }
         const rows = params
           .filter(p => p.value !== 0)
-          .map(p => `${p.marker}${p.seriesName}: ${p.seriesName === "净持仓" ? fmtNet(p.value) : fmt(p.value)}`)
+          .map(p => `${p.marker}${p.seriesName}: ${p.seriesName === "净持仓/净资本" ? fmtNet(p.value) : fmt(p.value)}`)
         return [date, ...rows].join("<br/>")
       },
     },
@@ -2357,16 +2563,16 @@ function PositionContent() {
     },
     series: [
       ...visibleCfg2.map(c => ({
-        name: c.name,
+        name: c.name + "/净资本",
         type: "bar" as const,
         stack: c.stack,
         data: series.map(r => toRatio((r as Record<string, number>)[c.key] ?? 0, r.date)),
         itemStyle: { color: c.color },
       })),
       {
-        name: "净持仓",
+        name: "净持仓/净资本",
         type: "line" as const,
-        data: filteredNet2.map((v, i) => toRatio(v, series[i]?.date ?? "")),
+        data: filteredNet2.map((v, i) => toRatio(v, series[i]?.date ?? "")),      
         symbol: "none",
         lineStyle: { color: "#dc2626", width: 3 },
         itemStyle: { color: "#dc2626" },
@@ -2380,7 +2586,7 @@ function PositionContent() {
         z: 10,
       },
     ],
-  }), [series, dates, visibleCfg2, filteredNet2, catFilter, sectorFilter, subSectorFilter, toRatio])
+  }), [series, dates, visibleCfg2, filteredNet2, catFilter, sectorFilter, subSectorFilter, prodFilter, toRatio])
 
   const sectorBarRows = useMemo(() => {
     let row: ExposureRow | undefined
@@ -2399,7 +2605,7 @@ function PositionContent() {
       sectorBarMode === "大类" ? CAT_WEIGHT_GROUPS
       : sectorBarMode === "板块" ? EXPOSURE_SECTORS.slice(1)
       : EXPOSURE_SUB_SECTORS.slice(1)
-    return groups.map(g => {
+    const raw = groups.map(g => {
       let lv: number, sv: number
       if (sectorBarMode === "大类") {
         lv = (row as Record<string, number>)[`long${g}`] ?? 0
@@ -2420,8 +2626,11 @@ function PositionContent() {
         shortMv: absShort,
         shortPct: capital > 0 ? absShort / capital * 100 : 0,
         netMv: net,
+        netPctNorm: 0, // filled in second pass
       }
     })
+    const totalAbsNet = raw.reduce((s, r) => s + Math.abs(r.netMv), 0)
+    return raw.map(r => ({ ...r, netPctNorm: totalAbsNet > 0 ? Math.abs(r.netMv) / totalAbsNet * 100 : 0 }))
   }, [series, capitalMap, sectorBarMode, sectorBarDate])
 
   const sectorBarOption = useMemo(() => {
@@ -2509,7 +2718,7 @@ function PositionContent() {
           lv = (r as Record<string, number>)[`long_${keyPrefix}_${g}`] ?? 0
           sv = (r as Record<string, number>)[`short_${keyPrefix}_${g}`] ?? 0  // stored negative
         }
-        const v = lv - sv
+        const v = weightCalcMode === "net" ? Math.abs(lv + sv) : lv - sv
         mv[g] = v
         total += v
       }
@@ -2560,7 +2769,7 @@ function PositionContent() {
         emphasis: { focus: "series" as const },
       })),
     }
-  }, [series, dates, weightMode])
+  }, [series, dates, weightMode, weightCalcMode])
 
   return (
     <div className="space-y-6">
@@ -2574,29 +2783,42 @@ function PositionContent() {
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center gap-3">
-              <CardTitle className="text-sm">大类资产多空敞口</CardTitle>
+              <CardTitle className="text-sm">大类资产多空持仓市值</CardTitle>
               <select
                 className="text-xs border rounded px-2 py-0.5 bg-background"
                 value={catFilter}
-                onChange={e => setCatFilter(e.target.value as ExposureCat)}
+                onChange={e => { setCatFilter(e.target.value as ExposureCat); setSectorFilter("全部"); setSubSectorFilter("全部"); setProdFilter("全部") }}
               >
                 {EXPOSURE_CATS.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
               <select
                 className="text-xs border rounded px-2 py-0.5 bg-background"
                 value={sectorFilter}
-                onChange={e => { setSectorFilter(e.target.value as ExposureSector) }}
+                onChange={e => { setSectorFilter(e.target.value as ExposureSector); setSubSectorFilter("全部"); setProdFilter("全部") }}
               >
                 <option value="全部">全部板块</option>
-                {EXPOSURE_SECTORS.slice(1).map(s => <option key={s} value={s}>{s}</option>)}
+                {(catFilter !== "全部" ? (CAT_TO_SECTORS[catFilter] ?? []) : EXPOSURE_SECTORS.slice(1)).map(s => <option key={s} value={s}>{s}</option>)}
               </select>
               <select
                 className="text-xs border rounded px-2 py-0.5 bg-background"
                 value={subSectorFilter}
-                onChange={e => { setSubSectorFilter(e.target.value as ExposureSubSector) }}
+                onChange={e => { setSubSectorFilter(e.target.value as ExposureSubSector); setProdFilter("全部") }}
               >
                 <option value="全部">全部细分</option>
-                {EXPOSURE_SUB_SECTORS.slice(1).map(s => <option key={s} value={s}>{s}</option>)}
+                {(sectorFilter !== "全部"
+                  ? (SECTOR_TO_SUB_SECTORS[sectorFilter] ?? [])
+                  : catFilter !== "全部"
+                  ? (CAT_TO_SECTORS[catFilter] ?? []).flatMap(s => SECTOR_TO_SUB_SECTORS[s] ?? [])
+                  : EXPOSURE_SUB_SECTORS.slice(1)
+                ).map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select
+                className="text-xs border rounded px-2 py-0.5 bg-background"
+                value={prodFilter}
+                onChange={e => setProdFilter(e.target.value)}
+              >
+                <option value="全部">全部品种</option>
+                {availableProds.map(p => <option key={p} value={p}>{p} {PROD_NAMES[p]}</option>)}
               </select>
             </div>
           </CardHeader>
@@ -2615,29 +2837,42 @@ function PositionContent() {
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center gap-3">
-              <CardTitle className="text-sm">大类资产多空敞口/净资本</CardTitle>
+              <CardTitle className="text-sm">大类资产多空持仓市值/净资本</CardTitle>
               <select
                 className="text-xs border rounded px-2 py-0.5 bg-background"
                 value={catFilter}
-                onChange={e => setCatFilter(e.target.value as ExposureCat)}
+                onChange={e => { setCatFilter(e.target.value as ExposureCat); setSectorFilter("全部"); setSubSectorFilter("全部"); setProdFilter("全部") }}
               >
                 {EXPOSURE_CATS.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
               <select
                 className="text-xs border rounded px-2 py-0.5 bg-background"
                 value={sectorFilter}
-                onChange={e => { setSectorFilter(e.target.value as ExposureSector) }}
+                onChange={e => { setSectorFilter(e.target.value as ExposureSector); setSubSectorFilter("全部"); setProdFilter("全部") }}
               >
                 <option value="全部">全部板块</option>
-                {EXPOSURE_SECTORS.slice(1).map(s => <option key={s} value={s}>{s}</option>)}
+                {(catFilter !== "全部" ? (CAT_TO_SECTORS[catFilter] ?? []) : EXPOSURE_SECTORS.slice(1)).map(s => <option key={s} value={s}>{s}</option>)}
               </select>
               <select
                 className="text-xs border rounded px-2 py-0.5 bg-background"
                 value={subSectorFilter}
-                onChange={e => { setSubSectorFilter(e.target.value as ExposureSubSector) }}
+                onChange={e => { setSubSectorFilter(e.target.value as ExposureSubSector); setProdFilter("全部") }}
               >
                 <option value="全部">全部细分</option>
-                {EXPOSURE_SUB_SECTORS.slice(1).map(s => <option key={s} value={s}>{s}</option>)}
+                {(sectorFilter !== "全部"
+                  ? (SECTOR_TO_SUB_SECTORS[sectorFilter] ?? [])
+                  : catFilter !== "全部"
+                  ? (CAT_TO_SECTORS[catFilter] ?? []).flatMap(s => SECTOR_TO_SUB_SECTORS[s] ?? [])
+                  : EXPOSURE_SUB_SECTORS.slice(1)
+                ).map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select
+                className="text-xs border rounded px-2 py-0.5 bg-background"
+                value={prodFilter}
+                onChange={e => setProdFilter(e.target.value)}
+              >
+                <option value="全部">全部品种</option>
+                {availableProds.map(p => <option key={p} value={p}>{p} {PROD_NAMES[p]}</option>)}
               </select>
             </div>
           </CardHeader>
@@ -2656,7 +2891,7 @@ function PositionContent() {
         <Card className="mt-4">
           <CardHeader className="pb-2">
             <div className="flex items-center gap-3">
-              <CardTitle className="text-sm">持仓权重走势（市值/期货总市值）</CardTitle>
+              <CardTitle className="text-sm">持仓权重走势（{weightCalcMode === "net" ? "净市值/净总市值" : "总市值/期货总市值"}）</CardTitle>
               <div className="flex text-xs border rounded overflow-hidden">
                 {([["大类", "大类资产"], ["板块", "板块"], ["细分", "细分板块"]] as const).map(([val, label]) => (
                   <button
@@ -2664,6 +2899,19 @@ function PositionContent() {
                     onClick={() => setWeightMode(val)}
                     className={`px-2.5 py-0.5 transition-colors ${
                       weightMode === val
+                        ? "bg-primary text-primary-foreground"
+                        : "bg-background text-muted-foreground hover:bg-muted"
+                    }`}
+                  >{label}</button>
+                ))}
+              </div>
+              <div className="flex text-xs border rounded overflow-hidden">
+                {([["总市值", "gross"], ["净市值", "net"]] as const).map(([label, val]) => (
+                  <button
+                    key={val}
+                    onClick={() => setWeightCalcMode(val)}
+                    className={`px-2.5 py-0.5 transition-colors ${
+                      weightCalcMode === val
                         ? "bg-primary text-primary-foreground"
                         : "bg-background text-muted-foreground hover:bg-muted"
                     }`}
@@ -2758,10 +3006,10 @@ function PositionContent() {
         <Card className="overflow-hidden flex flex-col h-full">
           <CardContent className="p-0 overflow-y-auto flex-1 min-h-0">
             <table className="w-full text-xs">
-              <thead className="sticky top-0">
+              <thead className="sticky top-0 bg-card z-10">
                 <tr className="border-b bg-muted/40">
-                  {(["sector","longMv","longPct","shortMv","shortPct","netMv"] as const).map((col, ci) => {
-                    const labels: Record<string, string> = { sector:"板块", longMv:"多头市值(元)", longPct:"多头占比", shortMv:"空头市值(元)", shortPct:"空头占比", netMv:"轧差市值(元)" }
+                  {(["sector","longMv","longPct","shortMv","shortPct","netMv","netPctNorm"] as const).map((col, ci) => {
+                    const labels: Record<string, string> = { sector:"板块", longMv:"多头市值(元)", longPct:"多头占比", shortMv:"空头市值(元)", shortPct:"空头占比", netMv:"轧差市值(元)", netPctNorm:"轧差市值占比(归一)" }
                     const active = sectorBarSort?.col === col
                     const dir = active ? sectorBarSort!.dir : null
                     return (
@@ -2796,6 +3044,9 @@ function PositionContent() {
                     <td className={`px-3 py-1.5 text-right ${row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
                       {Math.round(row.netMv).toLocaleString("zh-CN")}
                     </td>
+                    <td className={`px-3 py-1.5 text-right ${row.netMv < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                      {row.netPctNorm.toFixed(1)}%
+                    </td>
                   </tr>
                 ))}
                 {sectorBarRows.length > 0 && (() => {
@@ -2804,6 +3055,7 @@ function PositionContent() {
                   const totalLongPct = sectorBarRows.reduce((s, r) => s + r.longPct, 0)
                   const totalShortPct = sectorBarRows.reduce((s, r) => s + r.shortPct, 0)
                   const totalNet = sectorBarRows.reduce((s, r) => s + r.netMv, 0)
+                  const totalNetPctNorm = sectorBarRows.reduce((s, r) => s + r.netPctNorm, 0)
                   return (
                     <tr className="border-t-2 font-semibold bg-muted/40">
                       <td className="px-3 py-1.5">合计</td>
@@ -2813,6 +3065,9 @@ function PositionContent() {
                       <td className="px-3 py-1.5 text-right">{totalShortPct.toFixed(1)}%</td>
                       <td className={`px-3 py-1.5 text-right ${totalNet < 0 ? "text-blue-500" : "text-orange-500"}`}>
                         {Math.round(totalNet).toLocaleString("zh-CN")}
+                      </td>
+                      <td className={`px-3 py-1.5 text-right ${totalNetPctNorm < 0 ? "text-blue-500" : "text-orange-500"}`}>
+                        {totalNetPctNorm.toFixed(1)}%
                       </td>
                     </tr>
                   )
@@ -2824,6 +3079,8 @@ function PositionContent() {
         </div>
         </div>
       </section>
+
+      <OptionHoldingContent />
     </div>
   )
 }
