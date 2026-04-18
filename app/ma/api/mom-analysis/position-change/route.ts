@@ -36,8 +36,8 @@ async function _GET() {
          "交易日期"::date::text     AS date,
          SUM(
            CASE WHEN ${numExpr("买持仓")} > 0
-                THEN  ${numExpr("持仓市值")}
-                ELSE -${numExpr("持仓市值")}
+                THEN  ${numExpr("持仓市値")}
+                ELSE -${numExpr("持仓市値")}
            END
          )::text AS signed_mv,
          SUM(
