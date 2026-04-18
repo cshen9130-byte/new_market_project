@@ -35,15 +35,15 @@ async function _GET() {
          UPPER(TRIM("合约"))        AS contract,
          "交易日期"::date::text     AS date,
          SUM(
-           CASE WHEN ${numExpr("买持�?)} > 0
-                THEN  ${numExpr("持仓市�?)}
-                ELSE -${numExpr("持仓市�?)}
+           CASE WHEN ${numExpr("买持仓")} > 0
+                THEN  ${numExpr("持仓市值")}
+                ELSE -${numExpr("持仓市值")}
            END
          )::text AS signed_mv,
          SUM(
-           CASE WHEN ${numExpr("买持�?)} > 0
-                THEN  ${numExpr("买持�?)}
-                ELSE -${numExpr("卖持�?)}
+           CASE WHEN ${numExpr("买持仓")} > 0
+                THEN  ${numExpr("买持仓")}
+                ELSE -${numExpr("卖持仓")}
            END
          )::text AS net_lots
        FROM mom_position_details

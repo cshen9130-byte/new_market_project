@@ -73,7 +73,7 @@ async function _GET(req: Request) {
     )
 
     // ── 2. Aggregate daily PnL from mom_daily_reports ───────────────────
-    // pnl = 当日盈亏 - 当日手续�?+ 权利金收�?- 权利金支�?
+    // pnl = 当日盈亏 - 当日手续费 + 权利金收入 - 权利金支出
     const numExpr = (col: string) =>
       `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}", ''), ',', ''), ' ', ''), '')::numeric, 0)`
 
@@ -82,9 +82,9 @@ async function _GET(req: Request) {
          "交易日期"::text AS date,
          SUM(
            ${numExpr("当日盈亏")}
-           - ${numExpr("当日手续�?)}
-           + ${numExpr("权利金收�?)}
-           - ${numExpr("权利金支�?)}
+           - ${numExpr("当日手续费")}
+           + ${numExpr("权利金收入")}
+           - ${numExpr("权利金支出")}
          )::text AS daily_pnl,
          SUM(${numExpr("客户权益")})::text AS daily_equity
        FROM mom_daily_reports
@@ -105,7 +105,7 @@ async function _GET(req: Request) {
       turnoverRows = await query<{ date: string; turnover_amount: string }>(
         `SELECT
            "交易日期"::text AS date,
-           SUM(${numExpr("成交�?)})::text AS turnover_amount
+           SUM(${numExpr("成交额")})::text AS turnover_amount
          FROM mom_summary_details
          ${turnoverFilter}
          GROUP BY "交易日期"
@@ -129,11 +129,11 @@ async function _GET(req: Request) {
       holdingRows = await query<{ date: string; avg_holding_days: string; close_count: string }>(
         `SELECT
            "交易日期"::text AS date,
-           AVG(GREATEST(("交易日期"::date - "开仓日�?::date), 0))::text AS avg_holding_days,
+           AVG(GREATEST(("交易日期"::date - "开仓日期"::date), 0))::text AS avg_holding_days,
            COUNT(*)::text AS close_count
          FROM mom_close_details
          WHERE "交易日期" IS NOT NULL
-           AND "开仓日�? IS NOT NULL
+           AND "开仓日期" IS NOT NULL
            ${holdingFilter}
          GROUP BY "交易日期"
          ORDER BY "交易日期"`,

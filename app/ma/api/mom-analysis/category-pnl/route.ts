@@ -14,10 +14,10 @@ function getPrefix(contract: string): string {
   return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
 }
 
-function getCategory(contract: string): "股指" | "国�? | "商品" {
+function getCategory(contract: string): "股指" | "国债" | "商品" {
   const prefix = getPrefix(contract)
   if (STOCK_INDEX.has(prefix)) return "股指"
-  if (BOND.has(prefix)) return "国�?
+  if (BOND.has(prefix)) return "国债"
   return "商品"
 }
 
@@ -28,12 +28,12 @@ const SECTOR_MAP: Record<string, string> = {
   SR: "农产", CF: "农产", CY: "农产", LG: "农产", SP: "农产", OP: "农产",
   // 生鲜
   AP: "生鲜", CJ: "生鲜", LH: "生鲜", JD: "生鲜",
-  // 贵金�?
-  AU: "贵金�?, AG: "贵金�?, PT: "贵金�?, PD: "贵金�?,
+  // 贵金属
+  AU: "贵金属", AG: "贵金属", PT: "贵金属", PD: "贵金属",
   // 有色
   CU: "有色", BC: "有色", AL: "有色", AO: "有色", AD: "有色", ZN: "有色", PB: "有色", NI: "有色", SN: "有色",
-  // 新能�?
-  LC: "新能�?, PS: "新能�?, SI: "新能�?,
+  // 新能源
+  LC: "新能源", PS: "新能源", SI: "新能源",
   // 黑色
   I: "黑色", SF: "黑色", SM: "黑色", RB: "黑色", HC: "黑色", SS: "黑色", WR: "黑色",
   JM: "黑色", J: "黑色", ZC: "黑色", FG: "黑色", BB: "黑色", FB: "黑色",
@@ -49,8 +49,8 @@ const SECTOR_MAP: Record<string, string> = {
   EC: "航运",
   // 股指
   IH: "股指", IF: "股指", IC: "股指", IM: "股指", MO: "股指",
-  // 国�?
-  TS: "国�?, TF: "国�?, T: "国�?, TL: "国�?,
+  // 国债
+  TS: "国债", TF: "国债", T: "国债", TL: "国债",
 }
 
 function getSector(contract: string): string {
@@ -63,18 +63,18 @@ const SUB_SECTOR_MAP: Record<string, string> = {
   C: "谷物", CS: "谷物", WH: "谷物", PM: "谷物", RR: "谷物", RI: "谷物", JR: "谷物", LR: "谷物",
   // 油脂油料
   A: "油脂油料", B: "油脂油料", M: "油脂油料", Y: "油脂油料", RM: "油脂油料", OI: "油脂油料", RS: "油脂油料", PK: "油脂油料", P: "油脂油料",
-  // 软商�?
-  SR: "软商�?, CF: "软商�?, CY: "软商�?,
+  // 软商品
+  SR: "软商品", CF: "软商品", CY: "软商品",
   // 林业
   LG: "林业", SP: "林业", OP: "林业",
   // 生鲜
   AP: "生鲜", CJ: "生鲜", LH: "生鲜", JD: "生鲜",
-  // 贵金�?
-  AU: "贵金�?, AG: "贵金�?, PT: "贵金�?, PD: "贵金�?,
+  // 贵金属
+  AU: "贵金属", AG: "贵金属", PT: "贵金属", PD: "贵金属",
   // 有色
   CU: "有色", BC: "有色", AL: "有色", AO: "有色", AD: "有色", ZN: "有色", PB: "有色", NI: "有色", SN: "有色",
-  // 新能�?
-  LC: "新能�?, PS: "新能�?, SI: "新能�?,
+  // 新能源
+  LC: "新能源", PS: "新能源", SI: "新能源",
   // 原材
   I: "原材", SF: "原材", SM: "原材",
   // 成材
@@ -93,16 +93,16 @@ const SUB_SECTOR_MAP: Record<string, string> = {
   BZ: "芳烃", PX: "芳烃", EB: "芳烃",
   // 橡胶
   RU: "橡胶", BR: "橡胶", NR: "橡胶",
-  // 盐化�?
-  SA: "盐化�?, SH: "盐化�?, V: "盐化�?,
-  // 煤化�?
-  UR: "煤化�?, MA: "煤化�?,
+  // 盐化工
+  SA: "盐化工", SH: "盐化工", V: "盐化工",
+  // 煤化工
+  UR: "煤化工", MA: "煤化工",
   // 航运
   EC: "航运",
   // 股指
   IH: "股指", IF: "股指", IC: "股指", IM: "股指", MO: "股指",
-  // 国�?
-  TS: "国�?, TF: "国�?, T: "国�?, TL: "国�?,
+  // 国债
+  TS: "国债", TF: "国债", T: "国债", TL: "国债",
 }
 
 function getSubSector(contract: string): string {
@@ -160,7 +160,7 @@ async function _GET(req: Request) {
       params.length ? params : undefined,
     )
 
-    // ── 3. 手续�?+ 权利金收�?from mom_trade_details ──────────────────
+    // ── 3. 手续费 + 权利金收支 from mom_trade_details ──────────────────
     // NOTE: mom_trade_details uses English column names: account, trade_date
     const tradeAccountFilter = productCode
       ? `AND UPPER(TRIM(account)) LIKE UPPER('%' || $1 || '%')`
@@ -168,8 +168,8 @@ async function _GET(req: Request) {
     const tradeRows = await query<{ date: string; contract: string; fee: string; premium: string }>(
       `SELECT trade_date::text AS date,
               UPPER(TRIM("合约"))  AS contract,
-              SUM(${numExpr("手续�?)})::text      AS fee,
-              SUM(${numExpr("权利金收�?)})::text  AS premium
+              SUM(${numExpr("手续费")})::text      AS fee,
+              SUM(${numExpr("权利金收支")})::text  AS premium
        FROM mom_trade_details
        WHERE trade_date IS NOT NULL
          AND "合约" IS NOT NULL
@@ -211,7 +211,7 @@ async function _GET(req: Request) {
     for (const row of tradeRows) {
       const cat = getCategory(row.contract)
       const key = `${row.date}|${cat}`
-      // 手续�?is a cost (negative), 权利金收�?can be positive or negative
+      // 手续费 is a cost (negative), 权利金收支 can be positive or negative
       dayMap.set(key, (dayMap.get(key) ?? 0) - toNum(row.fee) + toNum(row.premium))
       const sec = getSector(row.contract)
       sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) - toNum(row.fee) + toNum(row.premium))
@@ -223,7 +223,7 @@ async function _GET(req: Request) {
 
     // ── Build sorted series per category ─────────────────────────────
     type DailyRow = { date: string; pnl: number; cumPnl: number }
-    const categories = ["股指", "国�?, "商品"] as const
+    const categories = ["股指", "国债", "商品"] as const
 
     const allDates = [...new Set([...dayMap.keys()].map((k) => k.split("|")[0]))].sort()
 
@@ -237,7 +237,7 @@ async function _GET(req: Request) {
           return { date, pnl: Math.round(pnl), cumPnl: Math.round(cumPnl) }
         })
         .filter((_, i) => {
-          // trim leading zeros �?only start from first date with any activity for this cat
+          // trim leading zeros — only start from first date with any activity for this cat
           const hasSeen = result[cat] && result[cat].some((r) => r.pnl !== 0)
           const pnl = dayMap.get(`${allDates[i]}|${cat}`) ?? 0
           return hasSeen || pnl !== 0

@@ -14,9 +14,9 @@ const SECTOR_MAP: Record<string, string> = {
   A:"农产",B:"农产",M:"农产",Y:"农产",RM:"农产",OI:"农产",RS:"农产",PK:"农产",P:"农产",
   SR:"农产",CF:"农产",CY:"农产",LG:"农产",SP:"农产",OP:"农产",
   AP:"生鲜",CJ:"生鲜",LH:"生鲜",JD:"生鲜",
-  AU:"贵金�?,AG:"贵金�?,PT:"贵金�?,PD:"贵金�?,
+  AU:"贵金属",AG:"贵金属",PT:"贵金属",PD:"贵金属",
   CU:"有色",BC:"有色",AL:"有色",AO:"有色",AD:"有色",ZN:"有色",PB:"有色",NI:"有色",SN:"有色",
-  LC:"新能�?,PS:"新能�?,SI:"新能�?,
+  LC:"新能源",PS:"新能源",SI:"新能源",
   I:"黑色",SF:"黑色",SM:"黑色",RB:"黑色",HC:"黑色",SS:"黑色",WR:"黑色",
   JM:"黑色",J:"黑色",ZC:"黑色",FG:"黑色",BB:"黑色",FB:"黑色",
   SC:"能源化工",FU:"能源化工",LU:"能源化工",PG:"能源化工",BU:"能源化工",
@@ -26,7 +26,7 @@ const SECTOR_MAP: Record<string, string> = {
   SA:"能源化工",SH:"能源化工",V:"能源化工",UR:"能源化工",MA:"能源化工",
   EC:"航运",
   IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
-  TS:"国�?,TF:"国�?,T:"国�?,TL:"国�?,
+  TS:"国债",TF:"国债",T:"国债",TL:"国债",
 }
 
 function getSector(contract: string): string {
@@ -53,53 +53,53 @@ async function _GET() {
       return NextResponse.json({ ok: true, sectorLS: [], latestDate: null })
     }
 
-    // ── 1. 平仓盈亏 from mom_futures_trade_details, split by �?�?direction
-    // '�? = selling to close a long  �?long PnL
-    // '�? = buying to close a short  �?short PnL
+    // ── 1. 平仓盈亏 from mom_futures_trade_details, split by 买/卖 direction
+    // '卖' = selling to close a long  → long PnL
+    // '买' = buying to close a short  → short PnL
     const closeRows = await query<{ contract: string; direction: string; pnl: string }>(
       `SELECT
          UPPER(TRIM("合约")) AS contract,
-         TRIM("�?�?)        AS direction,
+         TRIM("买/卖")        AS direction,
          SUM(${numExpr("平仓盈亏")})::text AS pnl
        FROM mom_futures_trade_details
        WHERE "交易日期"::date = $1
          AND "合约" IS NOT NULL
-       GROUP BY UPPER(TRIM("合约")), TRIM("�?�?)`,
+       GROUP BY UPPER(TRIM("合约")), TRIM("买/卖")`,
       [latestDate],
     )
 
-    // ── 2. 持仓盈亏 from mom_position_details, split by 买持�?/ 卖持�?
-    // 买持�?> 0  �?long position  �?long PnL
-    // 卖持�?> 0  �?short position �?short PnL
+    // ── 2. 持仓盈亏 from mom_position_details, split by 买持仓 / 卖持仓
+    // 买持仓 > 0  → long position  → long PnL
+    // 卖持仓 > 0  → short position → short PnL
     const posRows = await query<{ contract: string; direction: string; pnl: string }>(
       `SELECT
          UPPER(TRIM("合约")) AS contract,
          CASE
-           WHEN ${numExpr("买持�?)} > 0 THEN '�?
-           ELSE '�?
+           WHEN ${numExpr("买持仓")} > 0 THEN '买'
+           ELSE '卖'
          END AS direction,
          SUM(${numExpr("持仓盈亏")})::text AS pnl
        FROM mom_position_details
        WHERE "交易日期"::date = $1
          AND "合约" IS NOT NULL
        GROUP BY UPPER(TRIM("合约")),
-         CASE WHEN ${numExpr("买持�?)} > 0 THEN '�? ELSE '�? END`,
+         CASE WHEN ${numExpr("买持仓")} > 0 THEN '买' ELSE '卖' END`,
       [latestDate],
     )
 
-    // ── 3. -手续�?+ 权利金收�?from mom_trade_details, split by �?�?direction
+    // ── 3. -手续费 + 权利金收支 from mom_trade_details, split by 买/卖 direction
     let feeRows: { contract: string; direction: string; fee: string; premium: string }[] = []
     try {
       feeRows = await query<{ contract: string; direction: string; fee: string; premium: string }>(
         `SELECT
            UPPER(TRIM("合约")) AS contract,
-           TRIM("�?�?)        AS direction,
-           SUM(${numExpr("手续�?)})::text     AS fee,
-           SUM(${numExpr("权利金收�?)})::text AS premium
+           TRIM("买/卖")        AS direction,
+           SUM(${numExpr("手续费")})::text     AS fee,
+           SUM(${numExpr("权利金收支")})::text AS premium
          FROM mom_trade_details
          WHERE trade_date::date = $1
            AND "合约" IS NOT NULL
-         GROUP BY UPPER(TRIM("合约")), TRIM("�?�?)`,
+         GROUP BY UPPER(TRIM("合约")), TRIM("买/卖")`,
         [latestDate],
       )
     } catch { feeRows = [] }
@@ -125,22 +125,22 @@ async function _GET() {
     for (const row of closeRows) {
       const pnl = toNum(row.pnl)
       const dir = row.direction?.trim()
-      if (dir === "�?) add(row.contract, "long", pnl)
-      else if (dir === "�?) add(row.contract, "short", pnl)
+      if (dir === "卖") add(row.contract, "long", pnl)
+      else if (dir === "买") add(row.contract, "short", pnl)
     }
 
     for (const row of posRows) {
       const pnl = toNum(row.pnl)
       const dir = row.direction?.trim()
-      if (dir === "�?) add(row.contract, "long", pnl)
+      if (dir === "买") add(row.contract, "long", pnl)
       else add(row.contract, "short", pnl)
     }
 
     for (const row of feeRows) {
       const net = -toNum(row.fee) + toNum(row.premium)
       const dir = row.direction?.trim()
-      if (dir === "�?) add(row.contract, "long", net)
-      else if (dir === "�?) add(row.contract, "short", net)
+      if (dir === "卖") add(row.contract, "long", net)
+      else if (dir === "买") add(row.contract, "short", net)
     }
 
     // Merge into sorted lists

@@ -17,15 +17,15 @@ async function _GET() {
          "交易日期"::text AS date,
          (
            ${numExpr("当日盈亏")}
-           - ${numExpr("当日手续�?)}
-           + ${numExpr("权利金收�?)}
-           - ${numExpr("权利金支�?)}
+           - ${numExpr("当日手续费")}
+           + ${numExpr("权利金收入")}
+           - ${numExpr("权利金支出")}
          )::text AS daily_pnl
        FROM mom_daily_reports
        ORDER BY "交易日期", "账户"`,
     )
 
-    // Group by account �?array of {date, pnl, cumPnl}
+    // Group by account → array of {date, pnl, cumPnl}
     const accountMap: Record<string, { date: string; pnl: number; cumPnl: number }[]> = {}
     for (const row of rows) {
       const pnl = parseFloat(row.daily_pnl) || 0

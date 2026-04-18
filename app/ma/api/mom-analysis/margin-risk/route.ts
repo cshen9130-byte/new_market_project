@@ -15,16 +15,16 @@ function parseNum(v: string | null | undefined): number | null {
 async function _GET() {
   try {
     // Time-series: daily margin/equity + fund NAV matching product-nav formula exactly
-    // (net of handling_fee + performance_fee on flows; net pnl = 当日盈亏 - 手续�?+ 权利金收�?- 权利金支�?
+    // (net of handling_fee + performance_fee on flows; net pnl = 当日盈亏 - 手续费 + 权利金收入 - 权利金支出)
     const tsSql = `
       WITH daily_pnl AS (
         SELECT
           "交易日期"::date AS date,
           SUM(
             COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("当日盈亏",     ''), ',', ''), ' ', ''), '')::numeric, 0)
-            - COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("当日手续�?,  ''), ',', ''), ' ', ''), '')::numeric, 0)
-            + COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("权利金收�?,  ''), ',', ''), ' ', ''), '')::numeric, 0)
-            - COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("权利金支�?,  ''), ',', ''), ' ', ''), '')::numeric, 0)
+            - COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("当日手续费",  ''), ',', ''), ' ', ''), '')::numeric, 0)
+            + COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("权利金收入",  ''), ',', ''), ' ', ''), '')::numeric, 0)
+            - COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("权利金支出",  ''), ',', ''), ' ', ''), '')::numeric, 0)
           ) AS day_pnl
         FROM mom_daily_reports
         GROUP BY "交易日期"::date
@@ -59,7 +59,7 @@ async function _GET() {
       daily_margin AS (
         SELECT
           "交易日期"::date AS date,
-          SUM((NULLIF(REPLACE(REPLACE(COALESCE("保证金占�?, ''), ',', ''), ' ', ''), ''))::numeric) AS margin,
+          SUM((NULLIF(REPLACE(REPLACE(COALESCE("保证金占用", ''), ',', ''), ' ', ''), ''))::numeric) AS margin,
           SUM((NULLIF(REPLACE(REPLACE(COALESCE("客户权益",   ''), ',', ''), ' ', ''), ''))::numeric) AS equity,
           SUM((NULLIF(REPLACE(REPLACE(COALESCE("可用资金",   ''), ',', ''), ' ', ''), ''))::numeric) AS available
         FROM mom_daily_reports
@@ -80,8 +80,8 @@ async function _GET() {
     const lsSql = `
       SELECT
         "交易日期"::date::text                                         AS date,
-        SUM(CASE WHEN "买持�?::numeric > 0 THEN "保证�?::numeric ELSE 0 END) AS long_margin,
-        SUM(CASE WHEN "卖持�?::numeric > 0 THEN "保证�?::numeric ELSE 0 END) AS short_margin
+        SUM(CASE WHEN "买持仓"::numeric > 0 THEN "保证金"::numeric ELSE 0 END) AS long_margin,
+        SUM(CASE WHEN "卖持仓"::numeric > 0 THEN "保证金"::numeric ELSE 0 END) AS short_margin
       FROM mom_futures_position_details
       GROUP BY "交易日期"::date
       ORDER BY "交易日期"::date ASC
@@ -92,8 +92,8 @@ async function _GET() {
       SELECT
         "账户"            AS account,
         "交易日期"::text  AS date,
-        (NULLIF(REPLACE(REPLACE(REPLACE(COALESCE("风险�?,     ''), ',', ''), ' ', ''), '%', ''), ''))::numeric  AS risk_ratio,
-        (NULLIF(REPLACE(REPLACE(COALESCE("保证金占�?, ''), ',', ''), ' ', ''), ''))::numeric  AS margin,
+        (NULLIF(REPLACE(REPLACE(REPLACE(COALESCE("风险度",     ''), ',', ''), ' ', ''), '%', ''), ''))::numeric  AS risk_ratio,
+        (NULLIF(REPLACE(REPLACE(COALESCE("保证金占用", ''), ',', ''), ' ', ''), ''))::numeric  AS margin,
         (NULLIF(REPLACE(REPLACE(COALESCE("客户权益",   ''), ',', ''), ' ', ''), ''))::numeric  AS equity,
         (NULLIF(REPLACE(REPLACE(COALESCE("可用资金",   ''), ',', ''), ' ', ''), ''))::numeric  AS available
       FROM mom_daily_reports
@@ -105,18 +105,18 @@ async function _GET() {
     const sectorSqlWithAdvisor = `
       SELECT
         d."交易日期"::date::text                                                                            AS date,
-        COALESCE(NULLIF(TRIM(a.sector), ''), '未分�?)                                                     AS sector,
-        SUM((NULLIF(REPLACE(REPLACE(COALESCE(d."保证金占�?, ''), ',', ''), ' ', ''), ''))::numeric)       AS sector_margin
+        COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')                                                     AS sector,
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE(d."保证金占用", ''), ',', ''), ' ', ''), ''))::numeric)       AS sector_margin
       FROM mom_daily_reports d
       LEFT JOIN mom_advisor_info a ON a.account_code = d."账户"
-      GROUP BY d."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分�?)
+      GROUP BY d."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')
       ORDER BY d."交易日期"::date ASC
     `
     const sectorSqlByAccount = `
       SELECT
         "交易日期"::date::text                                                                              AS date,
         "账户"                                                                                              AS sector,
-        SUM((NULLIF(REPLACE(REPLACE(COALESCE("保证金占�?, ''), ',', ''), ' ', ''), ''))::numeric)         AS sector_margin
+        SUM((NULLIF(REPLACE(REPLACE(COALESCE("保证金占用", ''), ',', ''), ' ', ''), ''))::numeric)         AS sector_margin
       FROM mom_daily_reports
       GROUP BY "交易日期"::date, "账户"
       ORDER BY "交易日期"::date ASC
@@ -126,14 +126,14 @@ async function _GET() {
     const sectorLsSql = `
       SELECT
         fp."交易日期"::date::text                                                                           AS date,
-        COALESCE(NULLIF(TRIM(a.sector), ''), '未分�?)                                                     AS sector,
-        SUM(CASE WHEN (NULLIF(REPLACE(fp."买持�?, ',', ''), ''))::numeric > 0
-              THEN (NULLIF(REPLACE(REPLACE(fp."保证�?, ',', ''), ' ', ''), ''))::numeric ELSE 0 END)      AS long_margin,
-        SUM(CASE WHEN (NULLIF(REPLACE(fp."卖持�?, ',', ''), ''))::numeric > 0
-              THEN (NULLIF(REPLACE(REPLACE(fp."保证�?, ',', ''), ' ', ''), ''))::numeric ELSE 0 END)      AS short_margin
+        COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')                                                     AS sector,
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."买持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END)      AS long_margin,
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."卖持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END)      AS short_margin
       FROM mom_futures_position_details fp
       LEFT JOIN mom_advisor_info a ON a.account_code = fp."账户"
-      GROUP BY fp."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分�?)
+      GROUP BY fp."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')
       ORDER BY fp."交易日期"::date ASC
     `
 
@@ -250,10 +250,10 @@ async function _GET() {
       SELECT
         fp."账户"                AS account,
         fp."交易日期"::date::text AS date,
-        SUM(CASE WHEN (NULLIF(REPLACE(fp."买持�?, ',', ''), ''))::numeric > 0
-              THEN (NULLIF(REPLACE(REPLACE(fp."保证�?, ',', ''), ' ', ''), ''))::numeric ELSE 0 END) AS long_margin,
-        SUM(CASE WHEN (NULLIF(REPLACE(fp."卖持�?, ',', ''), ''))::numeric > 0
-              THEN (NULLIF(REPLACE(REPLACE(fp."保证�?, ',', ''), ' ', ''), ''))::numeric ELSE 0 END) AS short_margin
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."买持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END) AS long_margin,
+        SUM(CASE WHEN (NULLIF(REPLACE(fp."卖持仓", ',', ''), ''))::numeric > 0
+              THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END) AS short_margin
       FROM mom_futures_position_details fp
       GROUP BY fp."账户", fp."交易日期"::date
       ORDER BY fp."交易日期"::date ASC
@@ -275,7 +275,7 @@ async function _GET() {
       const lm = parseNum(last.long_margin) ?? 0
       const sm = parseNum(last.short_margin) ?? 0
       const total = lm + sm
-      // Store proportions (0�?); chart will multiply by account's own riskRatio
+      // Store proportions (0–1); chart will multiply by account's own riskRatio
       acctLsLatestMap.set(account, {
         longMarginRatio: total > 0 ? lm / total : null,
         shortMarginRatio: total > 0 ? sm / total : null,
@@ -283,13 +283,13 @@ async function _GET() {
     }
     // Merge into latest snapshot (with sector from mom_advisor_info)
     const acctSectorRows: { account_code: string; sector: string }[] = await query<{ account_code: string; sector: string }>(
-      `SELECT account_code, COALESCE(NULLIF(TRIM(sector),''),'未分�?) AS sector FROM mom_advisor_info`
+      `SELECT account_code, COALESCE(NULLIF(TRIM(sector),''),'未分类') AS sector FROM mom_advisor_info`
     ).catch(() => [] as { account_code: string; sector: string }[])
     const acctSectorMap = new Map(acctSectorRows.map(r => [r.account_code, r.sector]))
 
     const latestWithLs = latest.map(a => ({
       ...a,
-      sector: acctSectorMap.get(a.account) ?? '未分�?,
+      sector: acctSectorMap.get(a.account) ?? '未分类',
       ...(acctLsLatestMap.get(a.account) ?? { longMarginRatio: null, shortMarginRatio: null }),
     }))
 
