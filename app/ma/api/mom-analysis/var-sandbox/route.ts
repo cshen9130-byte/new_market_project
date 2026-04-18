@@ -75,15 +75,15 @@ async function _GET(req: Request) {
     const mvRows = await query<{ contract: string; mv: string; lots: string }>(
       `SELECT UPPER(TRIM("合约")) AS contract,
               SUM(
-                CASE WHEN ${numExpr("买持�?)} > 0
-                     THEN  ${numExpr("持仓市�?)}
-                     ELSE -${numExpr("持仓市�?)}
+                CASE WHEN ${numExpr("买持�?)} > 0
+                     THEN  ${numExpr("持仓市�?)}
+                     ELSE -${numExpr("持仓市�?)}
                 END
               )::text AS mv,
               SUM(
-                CASE WHEN ${numExpr("买持�?)} > 0
-                     THEN  ${numExpr("买持�?)}
-                     ELSE -${numExpr("卖持�?)}
+                CASE WHEN ${numExpr("买持�?)} > 0
+                     THEN  ${numExpr("买持�?)}
+                     ELSE -${numExpr("卖持�?)}
                 END
               )::text AS lots
        FROM mom_position_details
@@ -108,7 +108,7 @@ async function _GET(req: Request) {
       prodLotsMap.set(prod, (prodLotsMap.get(prod) ?? 0) + Math.round(toNum(r.lots)))
     }
 
-    // Sort by abs(mv) descending �?this order is shared with corrMatrix
+    // Sort by abs(mv) descending �?this order is shared with corrMatrix
     const activeProds = [...prodMvMap.keys()]
       .filter(p => Math.abs(prodMvMap.get(p)!) > 1000)
       .sort((a, b) => Math.abs(prodMvMap.get(b)!) - Math.abs(prodMvMap.get(a)!))
