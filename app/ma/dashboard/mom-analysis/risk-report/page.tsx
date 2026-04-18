@@ -734,9 +734,8 @@ function IntradayContent() {
       fetch("/ma/api/mom-analysis/category-pnl").then((r) => r.json()),
       fetch("/ma/api/mom-analysis/account-daily-pnl").then((r) => r.json()),
       fetch("/ma/api/mom-analysis/sector-ls-pnl").then((r) => r.json()),
-      fetch(`/ma/api/mom-analysis/var-prediction?confidence=${varConfidence}&volDays=${varVolDays}&corrDays=${varCorrDays}&distModel=${varDistModel}`).then((r) => r.json()),
       fetch("/ma/api/mom-analysis/vol-corr-scatter?window=20&corrWindow=20").then((r) => r.json()),
-    ]).then(([navJson, catJson, acctJson, lsJson, varJson, scatterJson]) => {
+    ]).then(([navJson, catJson, acctJson, lsJson, scatterJson]) => {
       const rows: { date: string; pnl: number }[] = (navJson.data ?? []).map(
         (r: { date: string; pnl: number }) => ({ date: r.date, pnl: r.pnl })
       )
@@ -769,13 +768,20 @@ function IntradayContent() {
       const rawProdLS: { prod: string; long: number; short: number }[] = lsJson.productLS ?? []
       setProdLS([...rawProdLS].sort((a, b) => (b.long + b.short) - (a.long + a.short)))
 
-      setVarData(varJson.data ?? [])
-      if (varJson.breachRate != null) setVarBreachRate(varJson.breachRate)
       const pts: { prod: string; sector: string; vol: number; mvc: number }[] = scatterJson.points ?? []
       setVolBarData([...pts].sort((a, b) => b.vol - a.vol))
       setMvcData([...pts].sort((a, b) => b.mvc - a.mvc))
       setCorrMatrixData(scatterJson.corrMatrix ?? null)
     }).catch(() => {}).finally(() => setLoading(false))
+
+    // var-prediction is not cached — fetch separately so it doesn't block PnL rendering
+    fetch(`/ma/api/mom-analysis/var-prediction?confidence=${varConfidence}&volDays=${varVolDays}&corrDays=${varCorrDays}&distModel=${varDistModel}`)
+      .then((r) => r.json())
+      .then((varJson) => {
+        setVarData(varJson.data ?? [])
+        if (varJson.breachRate != null) setVarBreachRate(varJson.breachRate)
+      })
+      .catch(() => {})
   }, [])
 
   const barOption = {
