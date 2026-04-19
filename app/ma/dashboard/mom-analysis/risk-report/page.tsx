@@ -7,7 +7,14 @@ import { BarChart2, ShieldAlert, PieChart, Users } from "lucide-react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
-const ProductNavChart = dynamic(() => import("@/components/ma/product-nav-chart"), { ssr: false })
+const ProductNavChart           = dynamic(() => import("@/components/ma/product-nav-chart"),            { ssr: false })
+const AdvisorEquityCurveChart  = dynamic(() => import("@/components/ma/advisor-equity-curve-chart"), { ssr: false })
+const AdvisorVolCorrScatter    = dynamic(() => import("@/components/ma/advisor-vol-corr-scatter"),   { ssr: false })
+const AdvisorCorrTimeseries    = dynamic(() => import("@/components/ma/advisor-corr-timeseries"),    { ssr: false })
+const AdvisorRiskReturnScatter = dynamic(() => import("@/components/ma/advisor-risk-return-scatter"), { ssr: false })
+const AdvisorMaxSharpeWeights  = dynamic(() => import("@/components/ma/advisor-max-sharpe-weights"),  { ssr: false })
+const AdvisorCapitalEfficiency = dynamic(() => import("@/components/ma/advisor-capital-efficiency"),  { ssr: false })
+const AdvisorReallocation      = dynamic(() => import("@/components/ma/advisor-reallocation"),       { ssr: false })
 
 const subNavItems = [
   { key: "overview",  name: "产品总览", icon: BarChart2 },
@@ -23,6 +30,630 @@ function PlaceholderContent({ title }: { title: string }) {
     <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-2">
       <p className="text-lg font-medium">{title}</p>
       <p className="text-sm">页面建设中，敬请期待。</p>
+    </div>
+  )
+}
+
+function AdvisorContent() {
+  const [volWindow, setVolWindow] = useState("20")
+  const [advisorVol, setAdvisorVol] = useState<{ account: string; vol: number; marginalVol: number }[]>([])
+  const [volLoading, setVolLoading] = useState(false)
+  const [volError, setVolError] = useState<string | null>(null)
+
+  const [mvolWindow, setMvolWindow] = useState("20")
+  const [advisorMvol, setAdvisorMvol] = useState<{ account: string; vol: number; marginalVol: number }[]>([])
+  const [mvolLoading, setMvolLoading] = useState(false)
+  const [mvolError, setMvolError] = useState<string | null>(null)
+
+  const [mvolCompare, setMvolCompare] = useState("1")
+  const [advisorMvolChange, setAdvisorMvolChange] = useState<{ account: string; mvolChange: number }[]>([])
+  const [mvolChangeLoading, setMvolChangeLoading] = useState(false)
+  const [mvolChangeError, setMvolChangeError] = useState<string | null>(null)
+  const [mvolChangePieView, setMvolChangePieView] = useState(false)
+
+  const [pnlWindow, setPnlWindow] = useState("20")
+  const [advisorPnl, setAdvisorPnl] = useState<{ account: string; pnl: number }[]>([])
+  const [pnlLoading, setPnlLoading] = useState(false)
+  const [pnlError, setPnlError] = useState<string | null>(null)
+
+  const fetchAdvisorVol = useCallback((window: string) => {
+    setVolLoading(true)
+    setVolError(null)
+    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok === false) { setVolError(j.error ?? "加载失败"); return }
+        setAdvisorVol(j.advisors ?? [])
+      })
+      .catch((e) => setVolError(e instanceof Error ? e.message : "请求失败"))
+      .finally(() => setVolLoading(false))
+  }, [])
+
+  const fetchAdvisorMvol = useCallback((window: string) => {
+    setMvolLoading(true)
+    setMvolError(null)
+    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok === false) { setMvolError(j.error ?? "加载失败"); return }
+        setAdvisorMvol(j.advisors ?? [])
+      })
+      .catch((e) => setMvolError(e instanceof Error ? e.message : "请求失败"))
+      .finally(() => setMvolLoading(false))
+  }, [])
+
+  const fetchAdvisorMvolChange = useCallback((window: string, compare: string) => {
+    setMvolChangeLoading(true)
+    setMvolChangeError(null)
+    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}&compare=${compare}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok === false) { setMvolChangeError(j.error ?? "加载失败"); return }
+        setAdvisorMvolChange((j.advisors ?? []).filter((a: { mvolChange?: number }) => a.mvolChange !== undefined) as { account: string; mvolChange: number }[])
+      })
+      .catch((e) => setMvolChangeError(e instanceof Error ? e.message : "请求失败"))
+      .finally(() => setMvolChangeLoading(false))
+  }, [])
+
+  const fetchAdvisorPnl = useCallback((window: string) => {
+    setPnlLoading(true)
+    setPnlError(null)
+    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok === false) { setPnlError(j.error ?? "加载失败"); return }
+        setAdvisorPnl((j.advisors ?? []) as { account: string; pnl: number }[])
+      })
+      .catch((e) => setPnlError(e instanceof Error ? e.message : "请求失败"))
+      .finally(() => setPnlLoading(false))
+  }, [])
+
+  useEffect(() => { fetchAdvisorVol(volWindow) }, [])
+  useEffect(() => { fetchAdvisorMvol(mvolWindow) }, [])
+  useEffect(() => { fetchAdvisorMvolChange(mvolWindow, mvolCompare) }, [])
+  useEffect(() => { fetchAdvisorPnl(pnlWindow) }, [])
+
+  const volChartOption = useMemo(() => {
+    const sorted = [...advisorVol].sort((a, b) => b.vol - a.vol)
+    const accounts = sorted.map((d) => d.account)
+    const vols = sorted.map((d) => d.vol)
+    return {
+      grid: { left: 40, right: 20, top: 16, bottom: 60 },
+      xAxis: {
+        type: "category",
+        data: accounts,
+        axisLabel: { fontSize: 11, rotate: 45, interval: 0 },
+      },
+      yAxis: {
+        type: "value",
+        name: "年化波动率 (%)",
+        nameLocation: "end",
+        nameTextStyle: { fontSize: 11 },
+        axisLabel: { fontSize: 11, formatter: (v: number) => `${v}%` },
+        splitLine: { lineStyle: { type: "dashed", opacity: 0.3 } },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: { name: string; value: number }[]) => {
+          const p = params[0]
+          return `${p.name}<br/>年化波动率：${p.value.toFixed(2)}%`
+        },
+      },
+      series: [{
+        type: "bar",
+        data: vols,
+        barMaxWidth: 28,
+        itemStyle: {
+          color: (params: { dataIndex: number }) => {
+            const v = vols[params.dataIndex]
+            if (v >= 20) return "#ef4444"
+            if (v >= 10) return "#f97316"
+            return "#3b82f6"
+          },
+        },
+        label: { show: false },
+      }],
+    }
+  }, [advisorVol])
+
+  const pieChartOption = useMemo(() => {
+    const sorted = [...advisorVol].sort((a, b) => b.vol - a.vol)
+    const COLORS = ["#3b82f6","#f97316","#ef4444","#22c55e","#a855f7","#eab308","#06b6d4","#ec4899","#14b8a6","#f43f5e"]
+    const total = sorted.reduce((s, d) => s + d.vol, 0)
+    return {
+      tooltip: {
+        trigger: "item",
+        formatter: (p: { name: string; value: number; percent: number }) =>
+          `${p.name}<br/>年化波动率：${p.value.toFixed(2)}%<br/>占比：${p.percent.toFixed(1)}%`,
+      },
+      legend: {
+        orient: "vertical",
+        right: 8,
+        top: "middle",
+        icon: "circle",
+        itemWidth: 8,
+        itemHeight: 8,
+        textStyle: { fontSize: 11 },
+        formatter: (name: string) => {
+          const d = sorted.find((x) => x.account === name)
+          if (!d) return name
+          const pct = total > 0 ? ((d.vol / total) * 100).toFixed(1) : "0.0"
+          return `${name}  ${pct}%`
+        },
+      },
+      series: [{
+        type: "pie",
+        radius: "65%",
+        center: ["36%", "50%"],
+        data: sorted.map((d, i) => ({
+          name: d.account,
+          value: d.vol,
+          itemStyle: { color: COLORS[i % COLORS.length] },
+        })),
+        label: { show: false },
+        emphasis: { label: { show: true, fontSize: 12, fontWeight: "bold" } },
+      }],
+    }
+  }, [advisorVol])
+
+  const mvolChartOption = useMemo(() => {
+    const sorted = [...advisorMvol].sort((a, b) => b.marginalVol - a.marginalVol)
+    const accounts = sorted.map((d) => d.account)
+    const mvols = sorted.map((d) => d.marginalVol)
+    return {
+      grid: { left: 40, right: 20, top: 16, bottom: 60 },
+      xAxis: {
+        type: "category",
+        data: accounts,
+        axisLabel: { fontSize: 11, rotate: 45, interval: 0 },
+      },
+      yAxis: {
+        type: "value",
+        name: "边际波动率 (%)",
+        nameLocation: "end",
+        nameTextStyle: { fontSize: 11 },
+        axisLabel: { fontSize: 11, formatter: (v: number) => `${v}%` },
+        splitLine: { lineStyle: { type: "dashed", opacity: 0.3 } },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: { name: string; value: number }[]) => {
+          const p = params?.[0]
+          if (!p) return ""
+          return `${p.name}<br/>边际波动率：${(p.value ?? 0).toFixed(2)}%`
+        },
+      },
+      series: [{
+        type: "bar",
+        data: mvols,
+        barMaxWidth: 28,
+        itemStyle: {
+          color: (params: { dataIndex: number }) => {
+            const v = mvols[params.dataIndex]
+            if (v < 0) return "#22c55e"
+            if (v >= 20) return "#ef4444"
+            if (v >= 10) return "#f97316"
+            return "#3b82f6"
+          },
+        },
+        label: { show: false },
+      }],
+    }
+  }, [advisorMvol])
+
+  const mvolChangeChartOption = useMemo(() => {
+    const sorted = [...advisorMvolChange].sort((a, b) => b.mvolChange - a.mvolChange)
+    const accounts = sorted.map((d) => d.account)
+    const changes = sorted.map((d) => d.mvolChange)
+    return {
+      grid: { left: 40, right: 20, top: 16, bottom: 60 },
+      xAxis: {
+        type: "category",
+        data: accounts,
+        axisLabel: { fontSize: 11, rotate: 45, interval: 0 },
+      },
+      yAxis: {
+        type: "value",
+        name: "边际波动率变化 (%)",
+        nameLocation: "end",
+        nameTextStyle: { fontSize: 11 },
+        axisLabel: { fontSize: 11, formatter: (v: number) => `${v}%` },
+        splitLine: { lineStyle: { type: "dashed", opacity: 0.3 } },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: { name: string; value: number }[]) => {
+          const p = params?.[0]
+          if (!p) return ""
+          return `${p.name}<br/>边际波动率变化：${(p.value ?? 0).toFixed(2)}%`
+        },
+      },
+      series: [{
+        type: "bar",
+        data: changes,
+        barMaxWidth: 28,
+        itemStyle: {
+          color: (params: { dataIndex: number }) => {
+            const v = changes[params.dataIndex]
+            return v < 0 ? "#22c55e" : "#ef4444"
+          },
+        },
+        label: { show: false },
+      }],
+    }
+  }, [advisorMvolChange])
+
+  const mvolChangePieOption = useMemo(() => {
+    const COLORS = ["#3b82f6","#f97316","#ef4444","#22c55e","#a855f7","#eab308","#06b6d4","#ec4899","#14b8a6","#f43f5e"]
+    const pos = advisorMvol.filter((d) => d.marginalVol >= 0)
+    const neg = advisorMvol.filter((d) => d.marginalVol < 0)
+    const makePie = (data: typeof pos, center: string) => ({
+      type: "pie" as const,
+      radius: "55%",
+      center: [center, "50%"],
+      data: data.map((d, i) => ({
+        name: d.account,
+        value: Math.round(Math.abs(d.marginalVol) * 100) / 100,
+        itemStyle: { color: COLORS[i % COLORS.length] },
+      })),
+      label: { show: false },
+      emphasis: { label: { show: true, fontSize: 12, fontWeight: "bold" } },
+    })
+    const posTotal = pos.reduce((s, d) => s + Math.abs(d.marginalVol), 0)
+    const negTotal = neg.reduce((s, d) => s + Math.abs(d.marginalVol), 0)
+    return {
+      tooltip: {
+        trigger: "item",
+        formatter: (p: { seriesName: string; name: string; value: number; percent: number }) =>
+          `${p.seriesName}<br/>${p.name}<br/>边际波动率：${p.value.toFixed(2)}%<br/>占比：${p.percent.toFixed(1)}%`,
+      },
+      legend: { show: false },
+      graphic: [
+        { type: "text", left: "22%", top: 8, style: { text: `正向 (${pos.length}账户)`, fontSize: 11, fill: "#888", textAlign: "center" } },
+        { type: "text", left: "72%", top: 8, style: { text: `负向 (${neg.length}账户)`, fontSize: 11, fill: "#888", textAlign: "center" } },
+        posTotal > 0 ? { type: "text", left: "22%", bottom: 8, style: { text: `合计 ${posTotal.toFixed(1)}%`, fontSize: 11, fill: "#888", textAlign: "center" } } : null,
+        negTotal > 0 ? { type: "text", left: "72%", bottom: 8, style: { text: `合计 ${negTotal.toFixed(1)}%`, fontSize: 11, fill: "#888", textAlign: "center" } } : null,
+      ].filter(Boolean),
+      series: [
+        { ...makePie(pos, "25%"), name: "边际波动率占比正" },
+        { ...makePie(neg, "75%"), name: "边际波动率占比负" },
+      ],
+    }
+  }, [advisorMvol])
+
+  const pnlChartOption = useMemo(() => {
+    const sorted = [...advisorPnl].sort((a, b) => b.pnl - a.pnl)
+    const accounts = sorted.map((d) => d.account)
+    const pnls = sorted.map((d) => d.pnl)
+    return {
+      grid: { left: 56, right: 20, top: 16, bottom: 60 },
+      xAxis: {
+        type: "category",
+        data: accounts,
+        axisLabel: { fontSize: 11, rotate: 45, interval: 0 },
+      },
+      yAxis: {
+        type: "value",
+        name: "盈亏 (元)",
+        nameLocation: "end",
+        nameTextStyle: { fontSize: 11 },
+        axisLabel: {
+          fontSize: 11,
+          formatter: (v: number) => v >= 10000 || v <= -10000 ? `${(v / 10000).toFixed(1)}万` : `${v}`,
+        },
+        splitLine: { lineStyle: { type: "dashed", opacity: 0.3 } },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: { name: string; value: number }[]) => {
+          const p = params?.[0]
+          if (!p) return ""
+          const val = p.value ?? 0
+          const display = Math.abs(val) >= 10000
+            ? `${(val / 10000).toFixed(2)} 万元`
+            : `${val.toLocaleString("zh-CN")} 元`
+          return `${p.name}<br/>盈亏：${display}`
+        },
+      },
+      series: [{
+        type: "bar",
+        data: pnls,
+        barMaxWidth: 28,
+        itemStyle: {
+          color: (params: { dataIndex: number }) => pnls[params.dataIndex] >= 0 ? "#ef4444" : "#22c55e",
+        },
+        label: { show: false },
+      }],
+    }
+  }, [advisorPnl])
+
+  const pnlHistChartOption = useMemo(() => {
+    if (advisorPnl.length === 0) return {}
+    const pnls = advisorPnl.map((d) => d.pnl)
+    const minVal = Math.min(...pnls)
+    const maxVal = Math.max(...pnls)
+    const range = maxVal - minVal || 1
+    const BIN_COUNT = Math.min(10, advisorPnl.length)
+    const binSize = range / BIN_COUNT
+    const bins: { label: string; count: number; profit: boolean }[] = []
+    for (let i = 0; i < BIN_COUNT; i++) {
+      const lo = minVal + i * binSize
+      const hi = lo + binSize
+      const count = pnls.filter((v) => i === BIN_COUNT - 1 ? v >= lo && v <= hi : v >= lo && v < hi).length
+      const mid = (lo + hi) / 2
+      const fmt = (v: number) => Math.abs(v) >= 10000 ? `${(v / 10000).toFixed(1)}万` : `${Math.round(v)}`
+      bins.push({ label: `${fmt(lo)}~${fmt(hi)}`, count, profit: mid >= 0 })
+    }
+    return {
+      grid: { left: 36, right: 20, top: 16, bottom: 80 },
+      xAxis: {
+        type: "category",
+        data: bins.map((b) => b.label),
+        axisLabel: { fontSize: 10, rotate: 40, interval: 0 },
+      },
+      yAxis: {
+        type: "value",
+        name: "账户数",
+        nameLocation: "end",
+        nameTextStyle: { fontSize: 11 },
+        minInterval: 1,
+        axisLabel: { fontSize: 11 },
+        splitLine: { lineStyle: { type: "dashed", opacity: 0.3 } },
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: { name: string; value: number }[]) => {
+          const p = params?.[0]; if (!p) return ""
+          return `${p.name}<br/>账户数：${p.value}`
+        },
+      },
+      series: [{
+        type: "bar",
+        data: bins.map((b) => b.count),
+        barMaxWidth: 40,
+        itemStyle: {
+          color: (params: { dataIndex: number }) => bins[params.dataIndex].profit ? "#ef4444" : "#22c55e",
+        },
+        label: { show: true, position: "top", fontSize: 11,
+          formatter: (p: { value: number }) => p.value > 0 ? String(p.value) : "",
+        },
+      }],
+    }
+  }, [advisorPnl])
+
+  return (
+    <div className="space-y-6">
+      <div id="section-advisor-daily" className="flex items-center gap-3">
+        <h2 className="text-lg font-semibold tracking-tight">当日分析</h2>
+        <div className="flex-1 border-t border-border" />
+      </div>
+
+      {/* charts row */}
+      <div className="flex gap-4">
+        {/* 投顾年化波动率排序 */}
+        <Card className="flex-1">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="text-sm font-medium">投顾年化波动率排序</CardTitle>
+            <select
+              value={volWindow}
+              onChange={(e) => { setVolWindow(e.target.value); fetchAdvisorVol(e.target.value) }}
+              className="rounded-md border border-input bg-background px-2.5 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="5">近 5 日</option>
+              <option value="10">近 10 日</option>
+              <option value="20">近 20 日</option>
+            </select>
+          </CardHeader>
+          <CardContent>
+            {volLoading ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">加载中…</div>
+            ) : volError ? (
+              <div className="flex h-48 items-center justify-center text-sm text-destructive px-4 text-center">{volError}</div>
+            ) : advisorVol.length === 0 ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+            ) : (
+              <ReactECharts key={`vol-${volWindow}-${advisorVol.length}`} option={volChartOption} style={{ height: 320 }} />
+            )}
+          </CardContent>
+        </Card>
+
+        {/* 投顾年化波动率当日占比 */}
+        <Card className="flex-1">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium">投顾年化波动率当日占比</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {volLoading ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">加载中…</div>
+            ) : volError ? (
+              <div className="flex h-48 items-center justify-center text-sm text-destructive px-4 text-center">{volError}</div>
+            ) : advisorVol.length === 0 ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+            ) : (
+              <ReactECharts key={`pie-${volWindow}-${advisorVol.length}`} option={pieChartOption} style={{ height: 320 }} />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 投顾边际波动率排序 */}
+      <div className="flex gap-4">
+        <Card className="flex-1">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="text-sm font-medium">投顾边际波动率排序</CardTitle>
+            <select
+              value={mvolWindow}
+              onChange={(e) => { setMvolWindow(e.target.value); fetchAdvisorMvol(e.target.value); fetchAdvisorMvolChange(e.target.value, mvolCompare) }}
+              className="rounded-md border border-input bg-background px-2.5 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="5">近 5 日</option>
+              <option value="10">近 10 日</option>
+              <option value="20">近 20 日</option>
+            </select>
+          </CardHeader>
+          <CardContent>
+            {mvolLoading ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">加载中…</div>
+            ) : mvolError ? (
+              <div className="flex h-48 items-center justify-center text-sm text-destructive px-4 text-center">{mvolError}</div>
+            ) : advisorMvol.length === 0 ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+            ) : (
+              <ReactECharts key={`mvol-${mvolWindow}-${advisorMvol.length}`} option={mvolChartOption} style={{ height: 320 }} />
+            )}
+          </CardContent>
+        </Card>
+        {/* 投顾边际波动率变化排序 */}
+        <Card className="flex-1">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="text-sm font-medium">
+              {mvolChangePieView ? "投顾边际波动率占比" : "投顾边际波动率变化排序"}
+            </CardTitle>
+            <div className="flex items-center gap-2">
+              {!mvolChangePieView && (<>
+                <select
+                  value={mvolWindow}
+                  onChange={(e) => { setMvolWindow(e.target.value); fetchAdvisorMvol(e.target.value); fetchAdvisorMvolChange(e.target.value, mvolCompare) }}
+                  className="rounded-md border border-input bg-background px-2.5 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="5">近 5 日</option>
+                  <option value="10">近 10 日</option>
+                  <option value="20">近 20 日</option>
+                </select>
+                <select
+                  value={mvolCompare}
+                  onChange={(e) => { setMvolCompare(e.target.value); fetchAdvisorMvolChange(mvolWindow, e.target.value) }}
+                  className="rounded-md border border-input bg-background px-2.5 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  <option value="1">日变化</option>
+                  <option value="5">周变化</option>
+                  <option value="20">月变化</option>
+                  <option value="252">年变化</option>
+                </select>
+              </>)}
+              <button
+                onClick={() => setMvolChangePieView((v) => !v)}
+                className="rounded-md border border-input bg-background px-2.5 py-1 text-xs shadow-sm hover:bg-muted transition-colors"
+              >
+                {mvolChangePieView ? "变化排序" : "占比饼图"}
+              </button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {mvolChangePieView ? (
+              mvolLoading ? (
+                <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">加载中…</div>
+              ) : mvolError ? (
+                <div className="flex h-48 items-center justify-center text-sm text-destructive px-4 text-center">{mvolError}</div>
+              ) : advisorMvol.length === 0 ? (
+                <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+              ) : (
+                <ReactECharts key={`mvolpie-${mvolWindow}-${advisorMvol.length}`} option={mvolChangePieOption} style={{ height: 320 }} />
+              )
+            ) : (
+              mvolChangeLoading ? (
+                <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">加载中…</div>
+              ) : mvolChangeError ? (
+                <div className="flex h-48 items-center justify-center text-sm text-destructive px-4 text-center">{mvolChangeError}</div>
+              ) : advisorMvolChange.length === 0 ? (
+                <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+              ) : (
+                <ReactECharts key={`mvolchange-${mvolWindow}-${mvolCompare}-${advisorMvolChange.length}`} option={mvolChangeChartOption} style={{ height: 320 }} />
+              )
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* 投顾盈亏情况排序 */}
+      <div className="flex gap-4">
+        <Card className="flex-1">
+          <CardHeader className="flex flex-row items-center justify-between pb-3">
+            <CardTitle className="text-sm font-medium">投顾盈亏情况排序</CardTitle>
+            <select
+              value={pnlWindow}
+              onChange={(e) => { setPnlWindow(e.target.value); fetchAdvisorPnl(e.target.value) }}
+              className="rounded-md border border-input bg-background px-2.5 py-1 text-xs shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option value="5">近 5 日</option>
+              <option value="10">近 10 日</option>
+              <option value="20">近 20 日</option>
+            </select>
+          </CardHeader>
+          <CardContent>
+            {pnlLoading ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">加载中…</div>
+            ) : pnlError ? (
+              <div className="flex h-48 items-center justify-center text-sm text-destructive px-4 text-center">{pnlError}</div>
+            ) : advisorPnl.length === 0 ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+            ) : (
+              <ReactECharts key={`pnl-${pnlWindow}-${advisorPnl.length}`} option={pnlChartOption} style={{ height: 320 }} />
+            )}
+          </CardContent>
+        </Card>
+        {/* 投顾盈亏分布直方图 */}
+        <Card className="flex-1">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-medium">投顾盈亏分布直方图</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {pnlLoading ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">加载中…</div>
+            ) : pnlError ? (
+              <div className="flex h-48 items-center justify-center text-sm text-destructive px-4 text-center">{pnlError}</div>
+            ) : advisorPnl.length === 0 ? (
+              <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+            ) : (
+              <ReactECharts key={`pnlhist-${pnlWindow}-${advisorPnl.length}`} option={pnlHistChartOption} style={{ height: 320 }} />
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div id="section-advisor-history" className="flex items-center gap-3">
+        <h2 className="text-lg font-semibold tracking-tight">历史回溯</h2>
+        <div className="flex-1 border-t border-border" />
+      </div>
+
+      <AdvisorEquityCurveChart height={400} />
+
+      <div id="section-advisor-optimize" className="flex items-center gap-3 mt-4">
+        <h2 className="text-lg font-semibold tracking-tight">投顾优化</h2>
+        <div className="flex-1 border-t border-border" />
+      </div>
+
+      <div className="flex gap-4 items-stretch">
+        <div className="w-1/2 flex flex-col">
+          <AdvisorVolCorrScatter height={380} />
+        </div>
+        <div className="w-1/2 flex flex-col">
+          <AdvisorCorrTimeseries height={380} />
+        </div>
+      </div>
+
+      <div className="mt-4 flex gap-4 items-stretch">
+        <div className="w-1/2 flex flex-col">
+          <AdvisorRiskReturnScatter height={420} />
+        </div>
+        <div className="w-1/2 flex flex-col">
+          <AdvisorMaxSharpeWeights height={420} />
+        </div>
+      </div>
+
+      <div className="mt-4 flex gap-4 items-stretch">
+        <div className="w-1/2 flex flex-col">
+          <AdvisorCapitalEfficiency height={480} />
+        </div>
+        <div className="w-1/2 flex flex-col">
+          <AdvisorReallocation height={480} />
+        </div>
+      </div>
     </div>
   )
 }
@@ -4775,6 +5406,27 @@ export default function RiskReportNewPage() {
             </button>
           </div>
         )}
+        {activeTab === "advisor" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-advisor-daily")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >当日分析 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-advisor-history")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >历史回溯 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-advisor-optimize")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >投顾优化 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >↑ 回到顶部</button>
+          </div>
+        )}
         <h1 id="section-top" className="text-2xl font-semibold tracking-tight pt-6 mb-4">{activeItem.name}</h1>
         {activeTab === "overview" ? (
           <OverviewContent />
@@ -4782,6 +5434,8 @@ export default function RiskReportNewPage() {
           <IntradayContent />
         ) : activeTab === "position" ? (
           <PositionContent />
+        ) : activeTab === "advisor" ? (
+          <AdvisorContent />
         ) : (
           <PlaceholderContent title={activeItem.name} />
         )}

@@ -187,7 +187,7 @@ export default function TraderAnalysisPage() {
   const [error, setError] = useState<string | null>(null)
   const [sortKey, setSortKey] = useState<SortKey>("netPnl")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
-  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review" | "equity-curve">("pnl-rank")
+  const [activeTab, setActiveTab] = useState<"pnl-rank" | "variety-review" | "equity-curve" | "daily-analysis">("pnl-rank")
 
   // ── equity curve state ────────────────────────────────────────────────────
   type EquityPoint = { date: string; cumPnl: number }
@@ -369,6 +369,7 @@ export default function TraderAnalysisPage() {
           { key: "pnl-rank",       label: "盈亏排名" },
           { key: "variety-review", label: "品种交易回顾" },
           { key: "equity-curve",   label: "盘手收益曲线" },
+          { key: "daily-analysis", label: "当日分析" },
         ] as const).map((tab) => (
           <button
             key={tab.key}
@@ -383,6 +384,19 @@ export default function TraderAnalysisPage() {
           </button>
         ))}
       </div>
+
+      {/* 当日分析 */}
+      {activeTab === "daily-analysis" && (
+        <div className="space-y-6">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold tracking-tight">当日分析</h2>
+            <div className="flex-1 border-t border-border" />
+          </div>
+          <div className="rounded-lg border border-border/60 bg-card px-6 py-10 text-center text-sm text-muted-foreground">
+            暂无内容
+          </div>
+        </div>
+      )}
 
       {/* 品种交易回顾 */}
       {activeTab === "variety-review" && (
