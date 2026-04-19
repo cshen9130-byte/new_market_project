@@ -71,7 +71,7 @@ async function _GET(req: Request) {
                 :                            (Z_TABLE[confidence]        ?? 1.6449)
 
   try {
-    // 1. Latest day positions: signed mv + net lots per contract
+    // 1. Latest day positions: signed mv + net lots per contract (futures only)
     const mvRows = await query<{ contract: string; mv: string; lots: string }>(
       `SELECT UPPER(TRIM("合约")) AS contract,
               SUM(
@@ -90,6 +90,8 @@ async function _GET(req: Request) {
        WHERE "交易日期" = (
          SELECT MAX("交易日期") FROM mom_position_details WHERE "交易日期" IS NOT NULL
        )
+         AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
+         AND TRIM("合约") NOT LIKE '%-%-%'
        GROUP BY UPPER(TRIM("合约"))`,
     )
 
