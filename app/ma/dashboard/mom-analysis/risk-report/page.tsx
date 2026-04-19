@@ -176,6 +176,8 @@ function VarSandboxContent() {
   }
 
   // stable scale from original positions — never changes during drag so other bars stay fixed
+  const origMvMap = useMemo(() => new Map(sbOrigProds.map(p => [p.prod, p.mv])), [sbOrigProds])
+
   const origMaxAbsMv = useMemo(() => Math.max(...sbOrigProds.map(p => Math.abs(p.mv)), 1), [sbOrigProds])
 
   const sbListRef = useRef<HTMLDivElement>(null)
@@ -439,7 +441,8 @@ function VarSandboxContent() {
           const pct    = Math.min(Math.abs(p.mv) / origMaxAbsMv, 1)
           const isLong = p.mv >= 0
           const cn     = PROD_NAMES[p.prod] ?? ""
-          const step   = Math.max(p.lotMv, 1)
+          const origMv = origMvMap.get(p.prod) ?? p.mv
+          const step   = Math.max(Math.round(Math.abs(origMv) / 10), 1)
           return (
             <div
               key={p.prod}
