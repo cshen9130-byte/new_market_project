@@ -13,8 +13,10 @@ const AdvisorVolCorrScatter    = dynamic(() => import("@/components/ma/advisor-v
 const AdvisorCorrTimeseries    = dynamic(() => import("@/components/ma/advisor-corr-timeseries"),    { ssr: false })
 const AdvisorRiskReturnScatter = dynamic(() => import("@/components/ma/advisor-risk-return-scatter"), { ssr: false })
 const AdvisorMaxSharpeWeights  = dynamic(() => import("@/components/ma/advisor-max-sharpe-weights"),  { ssr: false })
-const AdvisorCapitalEfficiency = dynamic(() => import("@/components/ma/advisor-capital-efficiency"),  { ssr: false })
-const AdvisorReallocation      = dynamic(() => import("@/components/ma/advisor-reallocation"),       { ssr: false })
+const AdvisorCapitalEfficiency    = dynamic(() => import("@/components/ma/advisor-capital-efficiency"),        { ssr: false })
+const AdvisorReallocation         = dynamic(() => import("@/components/ma/advisor-reallocation"),            { ssr: false })
+const AdvisorSectorLeverageHeatmap  = dynamic(() => import("@/components/ma/advisor-sector-leverage-heatmap"),  { ssr: false })
+const AdvisorSectorExposureStack   = dynamic(() => import("@/components/ma/advisor-sector-exposure-stack"),   { ssr: false })
 
 const subNavItems = [
   { key: "overview",  name: "产品总览", icon: BarChart2 },
@@ -652,6 +654,15 @@ function AdvisorContent() {
         </div>
         <div className="w-1/2 flex flex-col">
           <AdvisorReallocation height={480} />
+        </div>
+      </div>
+
+      <div className="mt-4 flex gap-4 items-stretch">
+        <div className="w-1/2 flex flex-col">
+          <AdvisorSectorLeverageHeatmap height={320} />
+        </div>
+        <div className="w-1/2 flex flex-col">
+          <AdvisorSectorExposureStack height={320} />
         </div>
       </div>
     </div>
