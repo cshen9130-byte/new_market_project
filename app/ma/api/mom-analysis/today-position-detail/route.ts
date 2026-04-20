@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -19,7 +20,7 @@ function parseTradeDate(v: string | null): string {
   return v
 }
 
-export async function GET(req: Request) {
+async function _GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const dateParam = searchParams.get("date") // optional: YYYY-MM-DD
   const rankParam = parseInt(searchParams.get("rank") ?? "1", 10) // 1=latest, 2=second-latest
@@ -79,3 +80,5 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: String(err) }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("today-position-detail", _GET)

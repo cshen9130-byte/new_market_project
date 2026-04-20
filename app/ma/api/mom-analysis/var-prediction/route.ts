@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -68,7 +69,7 @@ const LAPLACE_TABLE: Record<string, number> = { "90": 1.138, "95": 1.629, "99": 
 // Logistic: (√3/π) * ln(p/(1-p))   (derived from Logistic(0, σ√3/π) quantile)
 const LOGISTIC_TABLE: Record<string, number> = { "90": 1.211, "95": 1.623, "99": 2.532 }
 
-export async function GET(req: Request) {
+async function _GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const confidence  = searchParams.get("confidence")  ?? "95"    // "90"|"95"|"99"
   const volDays     = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays")  ?? "20",  10)))
@@ -284,3 +285,5 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("var-prediction", _GET)

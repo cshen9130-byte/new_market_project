@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 import { query, fmtIso, n } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -14,8 +15,8 @@ const NH_NAMES: Record<string, string> = {
   "NHNFI.NH": "南华有色金属指数",
 }
 
-export async function GET(req: NextRequest) {
-  const sp  = req.nextUrl.searchParams
+async function _GET(req: Request) {
+  const sp = new URL(req.url).searchParams
   const from   = sp.get("from") || "2020-01-01"
   const to     = sp.get("to")   || new Date().toISOString().slice(0, 10)
   const codesParam = sp.get("codes") || "NHCI.NH"
@@ -61,3 +62,5 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("benchmark", _GET)

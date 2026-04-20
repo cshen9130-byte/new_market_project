@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -15,7 +16,7 @@ function toNum(v: unknown): number {
 const numExpr = (col: string) =>
   `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}"::text, ''), ',', ''), ' ', ''), '')::numeric, 0)`
 
-export async function GET() {
+async function _GET(_req: Request) {
   try {
     const dateRows = await query<{ dt: string }>(
       `SELECT DISTINCT "交易日期"::date::text AS dt
@@ -94,3 +95,5 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("position-change-detail", _GET)

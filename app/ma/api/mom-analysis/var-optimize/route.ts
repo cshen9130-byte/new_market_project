@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -151,7 +152,7 @@ function computeStats(results: { var: number; actual: number }[], confidence: st
 }
 
 // ── main handler ──────────────────────────────────────────────────────────────
-export async function GET() {
+async function _GET(_req: Request) {
   try {
     // 1. Fetch all DB data once
     const [closeRows, posRows, mvRows] = await Promise.all([
@@ -390,3 +391,5 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("var-optimize", _GET)

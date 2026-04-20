@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query, rawQuery } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -38,7 +39,7 @@ const AKSHARE_CODE: Record<string, string> = {
   WH:"WH0.CZC", WR:"WR0.SHF", Y:"Y0.DCE", ZC:"ZC0.CZC", ZN:"ZN0.SHF",
 }
 
-export async function GET(req: Request) {
+async function _GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
     const from         = searchParams.get("from")          || "2025-01-01"
@@ -322,3 +323,5 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }
 }
+
+export const GET = withMomCache("advisor-equity-curve", _GET)
