@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+
 import { authService } from "@/lib/auth"
 import { useToast } from "@/hooks/use-toast"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
@@ -74,17 +74,6 @@ export default function LoginPage() {
           <CardTitle className="text-2xl font-bold text-center text-emerald-400">市场环境监测系统</CardTitle>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="login" className="w-full">
-            <TabsList className="grid w-full grid-cols-1 bg-emerald-950/50">
-              <TabsTrigger
-                value="login"
-                className="data-[state=active]:bg-emerald-500/20 data-[state=active]:text-emerald-400"
-              >
-                登录
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="login">
               <form onSubmit={handleLogin} className="space-y-4">
                 <div className="space-y-2">
                   <Label htmlFor="login-identifier" className="text-emerald-400">
@@ -185,10 +174,6 @@ export default function LoginPage() {
                   {isLoading ? "正在进入..." : "进入系统"}
                 </Button>
               </form>
-            </TabsContent>
-
-            {/* 注册模块已移除 */}
-          </Tabs>
         </CardContent>
       </Card>
     </div>
