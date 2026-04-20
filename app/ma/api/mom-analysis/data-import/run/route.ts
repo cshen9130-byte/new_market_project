@@ -75,8 +75,21 @@ export async function POST(request: Request) {
         controller.close()
       }, 600_000)
 
-      proc.on("close", (code: number | null) => {
+      proc.on("close", async (code: number | null) => {
         clearTimeout(timer)
+        if (code === 0) {
+          send("[warm-cache] ETL 完成，开始预热图表缓存…")
+          try {
+            const origin = new URL(request.url).origin
+            const resp = await fetch(`${origin}/ma/api/mom-analysis/warm-cache`)
+            const body = await resp.json() as { ok: boolean; totalMs?: number; results?: { route: string; ok: boolean }[] }
+            const ok = body.results?.filter((r: { ok: boolean }) => r.ok).length ?? 0
+            const total = body.results?.length ?? 0
+            send(`[warm-cache] 缓存预热完成: ${ok}/${total} 路由成功 (${((body.totalMs ?? 0) / 1000).toFixed(1)}s)`)
+          } catch (e) {
+            send(`[warm-cache] 缓存预热失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
+          }
+        }
         send(`__EXIT__:${code ?? "unknown"}`)
         controller.close()
       })
