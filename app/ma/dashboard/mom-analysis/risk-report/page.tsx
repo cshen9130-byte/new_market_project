@@ -5332,8 +5332,6 @@ export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
   // Keep-alive: track which tabs have been mounted; once mounted, keep them in DOM (hidden) to avoid re-fetching
   const [mountedTabs, setMountedTabs] = useState<Set<TabKey>>(() => new Set(["overview"]))
-  const activeItem = subNavItems.find((i) => i.key === activeTab)!
-
   const handleTabChange = (key: TabKey) => {
     setActiveTab(key)
     setMountedTabs((prev) => {
@@ -5372,136 +5370,61 @@ export default function RiskReportNewPage() {
         </nav>
       </aside>
 
-      {/* Content area */}
-      <div id="pos-main-scroll" className="flex-1 overflow-y-auto px-6 pb-6">
-        {activeTab === "position" && (
-          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-            <span className="text-xs text-muted-foreground">快捷导航：</span>
-            <button
-              onClick={() => document.getElementById("section-pos-timeseries")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >时序持仓 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-pos-cross")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >截面持仓 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-pos-change-area")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >持仓变化 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-today-position")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >今日持仓 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-yesterday-position")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >昨日持仓 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
-              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >↑ 回到顶部</button>
-          </div>
-        )}
-        {activeTab === "intraday" && (
-          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-            <span className="text-xs text-muted-foreground">快捷导航：</span>
-            <button
-              onClick={() => document.getElementById("section-intraday-pnl")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >当日盈亏 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-intraday-var")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >次日预测 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-intraday-sandbox")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >VaR沙盒 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >风险水平 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
-              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >↑ 回到顶部</button>
-          </div>
-        )}
-        {activeTab === "overview" && (
-          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-            <span className="text-xs text-muted-foreground">快捷导航：</span>
-            <button
-              onClick={() => document.getElementById("section-product")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              产品要素 ↓
-            </button>
-            <button
-              onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              业绩指标 ↓
-            </button>
-            <button
-              onClick={() => document.getElementById("section-volatility")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              波动分析 ↓
-            </button>
-            <button
-              onClick={() => document.getElementById("section-pnl")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              分类盈亏 ↓
-            </button>
-            <button
-              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
-              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >
-              ↑ 回到顶部
-            </button>
-          </div>
-        )}
-        {activeTab === "advisor" && (
-          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-            <span className="text-xs text-muted-foreground">快捷导航：</span>
-            <button
-              onClick={() => document.getElementById("section-advisor-daily")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >当日分析 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-advisor-history")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >历史回溯 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-advisor-optimize")?.scrollIntoView({ behavior: "smooth" })}
-              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >投顾优化 ↓</button>
-            <button
-              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
-              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
-            >↑ 回到顶部</button>
-          </div>
-        )}
-        <h1 id="section-top" className="text-2xl font-semibold tracking-tight pt-6 mb-4">{activeItem.name}</h1>
+      {/* Content area – each tab is absolutely positioned so charts keep their dimensions when hidden via visibility:hidden (not display:none) */}
+      <div className="flex-1 relative" style={{ minHeight: 0 }}>
         {mountedTabs.has("overview") && (
-          <div className={activeTab !== "overview" ? "hidden" : undefined}>
+          <div className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "overview" && "invisible pointer-events-none")}>
+            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+              <span className="text-xs text-muted-foreground">快捷导航：</span>
+              <button onClick={() => document.getElementById("section-product")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">产品要素 ↓</button>
+              <button onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">业绩指标 ↓</button>
+              <button onClick={() => document.getElementById("section-volatility")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">波动分析 ↓</button>
+              <button onClick={() => document.getElementById("section-pnl")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">分类盈亏 ↓</button>
+              <button onClick={() => document.getElementById("section-top-overview")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
+            </div>
+            <h1 id="section-top-overview" className="text-2xl font-semibold tracking-tight pt-6 mb-4">产品总览</h1>
             <OverviewContent />
           </div>
         )}
         {mountedTabs.has("intraday") && (
-          <div className={activeTab !== "intraday" ? "hidden" : undefined}>
+          <div className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "intraday" && "invisible pointer-events-none")}>
+            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+              <span className="text-xs text-muted-foreground">快捷导航：</span>
+              <button onClick={() => document.getElementById("section-intraday-pnl")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">当日盈亏 ↓</button>
+              <button onClick={() => document.getElementById("section-intraday-var")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">次日预测 ↓</button>
+              <button onClick={() => document.getElementById("section-intraday-sandbox")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">VaR沙盒 ↓</button>
+              <button onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">风险水平 ↓</button>
+              <button onClick={() => document.getElementById("section-top-intraday")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
+            </div>
+            <h1 id="section-top-intraday" className="text-2xl font-semibold tracking-tight pt-6 mb-4">日间风控</h1>
             <IntradayContent />
           </div>
         )}
         {mountedTabs.has("position") && (
-          <div className={activeTab !== "position" ? "hidden" : undefined}>
+          <div id="pos-main-scroll" className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "position" && "invisible pointer-events-none")}>
+            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+              <span className="text-xs text-muted-foreground">快捷导航：</span>
+              <button onClick={() => document.getElementById("section-pos-timeseries")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">时序持仓 ↓</button>
+              <button onClick={() => document.getElementById("section-pos-cross")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">截面持仓 ↓</button>
+              <button onClick={() => document.getElementById("section-pos-change-area")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">持仓变化 ↓</button>
+              <button onClick={() => document.getElementById("section-today-position")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">今日持仓 ↓</button>
+              <button onClick={() => document.getElementById("section-yesterday-position")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">昨日持仓 ↓</button>
+              <button onClick={() => document.getElementById("section-top-position")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
+            </div>
+            <h1 id="section-top-position" className="text-2xl font-semibold tracking-tight pt-6 mb-4">持仓分析</h1>
             <PositionContent />
           </div>
         )}
         {mountedTabs.has("advisor") && (
-          <div className={activeTab !== "advisor" ? "hidden" : undefined}>
+          <div className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "advisor" && "invisible pointer-events-none")}>
+            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+              <span className="text-xs text-muted-foreground">快捷导航：</span>
+              <button onClick={() => document.getElementById("section-advisor-daily")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">当日分析 ↓</button>
+              <button onClick={() => document.getElementById("section-advisor-history")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">历史回溯 ↓</button>
+              <button onClick={() => document.getElementById("section-advisor-optimize")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">投顾优化 ↓</button>
+              <button onClick={() => document.getElementById("section-top-advisor")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
+            </div>
+            <h1 id="section-top-advisor" className="text-2xl font-semibold tracking-tight pt-6 mb-4">投顾分析</h1>
             <AdvisorContent />
           </div>
         )}
