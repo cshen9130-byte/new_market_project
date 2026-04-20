@@ -111,9 +111,30 @@ function AdvisorContent() {
   }, [])
 
   useEffect(() => { fetchAdvisorVol(volWindow) }, [])
-  useEffect(() => { fetchAdvisorMvol(mvolWindow) }, [])
   useEffect(() => { fetchAdvisorMvolChange(mvolWindow, mvolCompare) }, [])
-  useEffect(() => { fetchAdvisorPnl(pnlWindow) }, [])
+
+  // Fetch vol data once and share with mvol + pnl (same endpoint, same window)
+  useEffect(() => {
+    setMvolLoading(true)
+    setPnlLoading(true)
+    fetch(`/ma/api/mom-analysis/advisor-vol?window=${pnlWindow}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok === false) {
+          setMvolError(j.error ?? "加载失败")
+          setPnlError(j.error ?? "加载失败")
+          return
+        }
+        setAdvisorMvol(j.advisors ?? [])
+        setAdvisorPnl((j.advisors ?? []) as { account: string; pnl: number }[])
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : "请求失败"
+        setMvolError(msg)
+        setPnlError(msg)
+      })
+      .finally(() => { setMvolLoading(false); setPnlLoading(false) })
+  }, [])
 
   const volChartOption = useMemo(() => {
     const sorted = [...advisorVol].sort((a, b) => b.vol - a.vol)
@@ -781,10 +802,10 @@ function VarSandboxContent() {
   const [sbDirFilter, setSbDirFilter] = useState("全部")
 
   useEffect(() => {
-    Promise.all([
-      fetch("/ma/api/mom-analysis/var-sandbox").then(r => r.json()),
-      fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()),
-    ]).then(([j, navJ]) => {
+    let doneCount = 0
+    const maybeFinish = () => { if (++doneCount >= 2) setSbLoading(false) }
+
+    fetch("/ma/api/mom-analysis/var-sandbox").then(r => r.json()).then(j => {
       if (j.ok && j.products?.length > 0) {
         setSbDate(j.date ?? "")
         setSbProds(j.products)
@@ -793,13 +814,14 @@ function VarSandboxContent() {
         setSbZScore(j.zScore ?? 1.6449)
         setSbConfidence(j.confidence ?? "95")
       }
+    }).catch(() => {}).finally(maybeFinish)
+
+    fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()).then(navJ => {
       const navData: { cumCapital?: number }[] = navJ.data ?? []
       if (navData.length > 0) {
         setSbNetCapital(navData[navData.length - 1].cumCapital ?? 0)
       }
-    })
-    .catch(() => {})
-    .finally(() => setSbLoading(false))
+    }).catch(() => {}).finally(maybeFinish)
   }, [])
 
   const updateMv = useCallback((prod: string, newMv: number) => {
@@ -1374,18 +1396,18 @@ function IntradayContent() {
   }, [])
 
   useEffect(() => {
-    Promise.all([
-      fetch("/ma/api/mom-analysis/product-nav").then((r) => r.json()),
-      fetch("/ma/api/mom-analysis/category-pnl").then((r) => r.json()),
-      fetch("/ma/api/mom-analysis/account-daily-pnl").then((r) => r.json()),
-      fetch("/ma/api/mom-analysis/sector-ls-pnl").then((r) => r.json()),
-      fetch("/ma/api/mom-analysis/vol-corr-scatter?window=20&corrWindow=20").then((r) => r.json()),
-    ]).then(([navJson, catJson, acctJson, lsJson, scatterJson]) => {
+    // Fetch each endpoint independently so charts render progressively
+    let doneCount = 0
+    const maybeFinish = () => { if (++doneCount >= 5) setLoading(false) }
+
+    fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()).then(navJson => {
       const rows: { date: string; pnl: number }[] = (navJson.data ?? []).map(
         (r: { date: string; pnl: number }) => ({ date: r.date, pnl: r.pnl })
       )
       setPnlData(rows)
+    }).catch(() => {}).finally(maybeFinish)
 
+    fetch("/ma/api/mom-analysis/category-pnl").then(r => r.json()).then(catJson => {
       const sectorData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = catJson.sectorData ?? {}
       const latest = Object.entries(sectorData)
         .map(([sector, rows]) => ({ sector, pnl: rows.length > 0 ? rows[rows.length - 1].pnl : 0 }))
@@ -1399,25 +1421,31 @@ function IntradayContent() {
         .filter((p) => p.pnl !== 0)
         .sort((a, b) => b.pnl - a.pnl)
       setProdLatest(prodList)
+    }).catch(() => {}).finally(maybeFinish)
 
+    fetch("/ma/api/mom-analysis/account-daily-pnl").then(r => r.json()).then(acctJson => {
       const accountData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = acctJson.accountData ?? {}
       const acctList = Object.entries(accountData)
         .map(([account, rows]) => ({ account, pnl: rows.length > 0 ? rows[rows.length - 1].pnl : 0 }))
         .filter((a) => a.pnl !== 0)
         .sort((a, b) => b.pnl - a.pnl)
       setAccountLatest(acctList)
+    }).catch(() => {}).finally(maybeFinish)
 
+    fetch("/ma/api/mom-analysis/sector-ls-pnl").then(r => r.json()).then(lsJson => {
       const rawLS: { sector: string; long: number; short: number }[] = lsJson.sectorLS ?? []
       setSectorLS([...rawLS].sort((a, b) => (b.long + b.short) - (a.long + a.short)))
 
       const rawProdLS: { prod: string; long: number; short: number }[] = lsJson.productLS ?? []
       setProdLS([...rawProdLS].sort((a, b) => (b.long + b.short) - (a.long + a.short)))
+    }).catch(() => {}).finally(maybeFinish)
 
+    fetch("/ma/api/mom-analysis/vol-corr-scatter?window=20&corrWindow=20").then(r => r.json()).then(scatterJson => {
       const pts: { prod: string; sector: string; vol: number; mvc: number }[] = scatterJson.points ?? []
       setVolBarData([...pts].sort((a, b) => b.vol - a.vol))
       setMvcData([...pts].sort((a, b) => b.mvc - a.mvc))
       setCorrMatrixData(scatterJson.corrMatrix ?? null)
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch(() => {}).finally(maybeFinish)
 
     // var-prediction is not cached — fetch separately so it doesn't block PnL rendering
     fetch(`/ma/api/mom-analysis/var-prediction?confidence=${varConfidence}&volDays=${varVolDays}&corrDays=${varCorrDays}&distModel=${varDistModel}`)
@@ -3051,13 +3079,16 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
   const [loading, setLoading]       = useState(true)
 
   useEffect(() => {
-    Promise.all([
-      fetch("/ma/api/mom-analysis/position-change").then(r => r.json()),
-      fetch("/ma/api/mom-analysis/var-sandbox").then(r => r.json()),
-    ]).then(([pcJ, varJ]) => {
+    let doneCount = 0
+    const maybeFinish = () => { if (++doneCount >= 2) setLoading(false) }
+
+    fetch("/ma/api/mom-analysis/position-change").then(r => r.json()).then(pcJ => {
       if (pcJ.ok) { setPosDataRaw(pcJ.products ?? []); setToday(pcJ.today ?? ""); setYesterday(pcJ.yesterday ?? "") }
+    }).catch(() => {}).finally(maybeFinish)
+
+    fetch("/ma/api/mom-analysis/var-sandbox").then(r => r.json()).then(varJ => {
       if (varJ.ok) { setVarProds(varJ.products ?? []); setCorrMatrix(varJ.corrMatrix ?? []) }
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch(() => {}).finally(maybeFinish)
   }, [])
 
   // Apply sector / sub-sector filter
@@ -3997,18 +4028,23 @@ function PositionContent() {
   }, [])
 
   useEffect(() => {
-    Promise.all([
-      fetch("/ma/api/mom-analysis/category-exposure").then(r => r.json()),
-      fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()),
-      fetch("/ma/api/mom-analysis/position-change").then(r => r.json()),
-    ]).then(([expJ, navJ, pcJ]) => {
+    let doneCount = 0
+    const maybeFinish = () => { if (++doneCount >= 3) setLoading(false) }
+
+    fetch("/ma/api/mom-analysis/category-exposure").then(r => r.json()).then(expJ => {
       if (expJ.ok) setSeries(expJ.series ?? [])
+    }).catch(() => {}).finally(maybeFinish)
+
+    fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()).then(navJ => {
       const navData: { date: string; cumCapital: number }[] = navJ.data ?? []
       const map = new Map<string, number>()
       for (const d of navData) if (d.cumCapital > 0) map.set(d.date, d.cumCapital)
       setCapitalMap(map)
+    }).catch(() => {}).finally(maybeFinish)
+
+    fetch("/ma/api/mom-analysis/position-change").then(r => r.json()).then(pcJ => {
       if (pcJ.ok && pcJ.yesterday) setPcYesterday(pcJ.yesterday)
-    }).catch(() => {}).finally(() => setLoading(false))
+    }).catch(() => {}).finally(maybeFinish)
   }, [])
 
   // Derive VaR group from current filters (one level up)
@@ -4064,11 +4100,11 @@ function PositionContent() {
   }, [varGroupProds, varGroupConf])
 
   useEffect(() => {
-    Promise.all([
-      fetch("/ma/api/mom-analysis/var-sandbox?volDays=20&corrDays=252").then(r => r.json()),
-      fetch("/ma/api/mom-analysis/position-change").then(r => r.json()),
-    ]).then(([varJ, pcJ]) => {
+    fetch("/ma/api/mom-analysis/var-sandbox?volDays=20&corrDays=252").then(r => r.json()).then(varJ => {
       if (varJ.ok) { setVarBreakdownProds(varJ.products ?? []); setVarBreakdownCorr(varJ.corrMatrix ?? []) }
+    }).catch(() => {})
+
+    fetch("/ma/api/mom-analysis/position-change").then(r => r.json()).then(pcJ => {
       if (pcJ.ok) {
         const m = new Map<string, number>()
         for (const p of (pcJ.products ?? [])) m.set(p.prod, p.deltaMv)

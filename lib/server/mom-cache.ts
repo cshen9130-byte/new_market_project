@@ -65,6 +65,10 @@ export function withMomCache(
   routeKey: string,
   handler: (req: Request) => Promise<NextResponse>,
 ): (req: Request) => Promise<NextResponse> {
+  const cacheHeaders = {
+    "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
+  }
+
   return async (req: Request) => {
     const url = new URL(req.url)
     const noCache = url.searchParams.get("nocache") === "1"
@@ -73,7 +77,7 @@ export function withMomCache(
     if (!noCache) {
       const cached = readCache(key)
       if (cached !== null) {
-        return NextResponse.json(cached)
+        return NextResponse.json(cached, { headers: cacheHeaders })
       }
     }
 
@@ -84,7 +88,7 @@ export function withMomCache(
       try {
         const body = await resp.json()
         writeCache(key, body)
-        return NextResponse.json(body)
+        return NextResponse.json(body, { headers: cacheHeaders })
       } catch {
         // couldn't parse — return original
       }
