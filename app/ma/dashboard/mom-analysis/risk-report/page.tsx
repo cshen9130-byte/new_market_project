@@ -27,6 +27,30 @@ const subNavItems = [
 
 type TabKey = (typeof subNavItems)[number]["key"]
 
+const jsonResponseCache = new Map<string, unknown>()
+const inflightJsonRequests = new Map<string, Promise<unknown>>()
+
+function fetchJsonCached(url: string): Promise<any> {
+  if (jsonResponseCache.has(url)) {
+    return Promise.resolve(jsonResponseCache.get(url))
+  }
+  const inflight = inflightJsonRequests.get(url)
+  if (inflight) {
+    return inflight
+  }
+  const request = fetch(url)
+    .then((r) => r.json())
+    .then((json) => {
+      jsonResponseCache.set(url, json)
+      return json
+    })
+    .finally(() => {
+      inflightJsonRequests.delete(url)
+    })
+  inflightJsonRequests.set(url, request)
+  return request
+}
+
 function PlaceholderContent({ title }: { title: string }) {
   return (
     <div className="flex flex-col items-center justify-center h-64 text-muted-foreground gap-2">
@@ -61,8 +85,7 @@ function AdvisorContent() {
   const fetchAdvisorVol = useCallback((window: string) => {
     setVolLoading(true)
     setVolError(null)
-    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
-      .then((r) => r.json())
+    fetchJsonCached(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
       .then((j) => {
         if (j.ok === false) { setVolError(j.error ?? "加载失败"); return }
         setAdvisorVol(j.advisors ?? [])
@@ -74,8 +97,7 @@ function AdvisorContent() {
   const fetchAdvisorMvol = useCallback((window: string) => {
     setMvolLoading(true)
     setMvolError(null)
-    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
-      .then((r) => r.json())
+    fetchJsonCached(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
       .then((j) => {
         if (j.ok === false) { setMvolError(j.error ?? "加载失败"); return }
         setAdvisorMvol(j.advisors ?? [])
@@ -87,8 +109,7 @@ function AdvisorContent() {
   const fetchAdvisorMvolChange = useCallback((window: string, compare: string) => {
     setMvolChangeLoading(true)
     setMvolChangeError(null)
-    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}&compare=${compare}`)
-      .then((r) => r.json())
+    fetchJsonCached(`/ma/api/mom-analysis/advisor-vol?window=${window}&compare=${compare}`)
       .then((j) => {
         if (j.ok === false) { setMvolChangeError(j.error ?? "加载失败"); return }
         setAdvisorMvolChange((j.advisors ?? []).filter((a: { mvolChange?: number }) => a.mvolChange !== undefined) as { account: string; mvolChange: number }[])
@@ -100,8 +121,7 @@ function AdvisorContent() {
   const fetchAdvisorPnl = useCallback((window: string) => {
     setPnlLoading(true)
     setPnlError(null)
-    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
-      .then((r) => r.json())
+    fetchJsonCached(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
       .then((j) => {
         if (j.ok === false) { setPnlError(j.error ?? "加载失败"); return }
         setAdvisorPnl((j.advisors ?? []) as { account: string; pnl: number }[])
@@ -117,8 +137,7 @@ function AdvisorContent() {
   useEffect(() => {
     setMvolLoading(true)
     setPnlLoading(true)
-    fetch(`/ma/api/mom-analysis/advisor-vol?window=${pnlWindow}`)
-      .then((r) => r.json())
+    fetchJsonCached(`/ma/api/mom-analysis/advisor-vol?window=${pnlWindow}`)
       .then((j) => {
         if (j.ok === false) {
           setMvolError(j.error ?? "加载失败")
@@ -2895,8 +2914,7 @@ function PositionChangeDetailTable({ prodFilter, setProdFilter, catFilter2, setC
   const [optFilter2, setOptFilter2] = useState("仅期货")
 
   useEffect(() => {
-    fetch("/ma/api/mom-analysis/position-change-detail")
-      .then(r => r.json())
+    fetchJsonCached("/ma/api/mom-analysis/position-change-detail")
       .then(j => { if (j.ok) { setRows(j.rows ?? []); setToday(j.today ?? ""); setYesterday(j.yesterday ?? "") } })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -3082,11 +3100,11 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
     let doneCount = 0
     const maybeFinish = () => { if (++doneCount >= 2) setLoading(false) }
 
-    fetch("/ma/api/mom-analysis/position-change").then(r => r.json()).then(pcJ => {
+    fetchJsonCached("/ma/api/mom-analysis/position-change").then(pcJ => {
       if (pcJ.ok) { setPosDataRaw(pcJ.products ?? []); setToday(pcJ.today ?? ""); setYesterday(pcJ.yesterday ?? "") }
     }).catch(() => {}).finally(maybeFinish)
 
-    fetch("/ma/api/mom-analysis/var-sandbox").then(r => r.json()).then(varJ => {
+    fetchJsonCached("/ma/api/mom-analysis/var-sandbox").then(varJ => {
       if (varJ.ok) { setVarProds(varJ.products ?? []); setCorrMatrix(varJ.corrMatrix ?? []) }
     }).catch(() => {}).finally(maybeFinish)
   }, [])
@@ -3306,8 +3324,7 @@ function OptionHoldingContent() {
   const [pnlFilter, setPnlFilter] = useState("全部")
 
   useEffect(() => {
-    fetch("/ma/api/mom-analysis/option-positions")
-      .then(r => r.json())
+    fetchJsonCached("/ma/api/mom-analysis/option-positions")
       .then(j => { if (j.ok) { setRows(j.rows ?? []); setDate(j.date ?? "") } })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -3505,8 +3522,7 @@ function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRan
       : dayRank === 2
       ? "/ma/api/mom-analysis/today-position-detail?rank=2"
       : "/ma/api/mom-analysis/today-position-detail"
-    fetch(url)
-      .then(r => r.json())
+    fetchJsonCached(url)
       .then(j => { if (j.ok) { setRows(j.rows ?? []); setDate(j.date ?? "") } })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -4031,18 +4047,18 @@ function PositionContent() {
     let doneCount = 0
     const maybeFinish = () => { if (++doneCount >= 3) setLoading(false) }
 
-    fetch("/ma/api/mom-analysis/category-exposure").then(r => r.json()).then(expJ => {
+    fetchJsonCached("/ma/api/mom-analysis/category-exposure").then(expJ => {
       if (expJ.ok) setSeries(expJ.series ?? [])
     }).catch(() => {}).finally(maybeFinish)
 
-    fetch("/ma/api/mom-analysis/product-nav").then(r => r.json()).then(navJ => {
+    fetchJsonCached("/ma/api/mom-analysis/product-nav").then(navJ => {
       const navData: { date: string; cumCapital: number }[] = navJ.data ?? []
       const map = new Map<string, number>()
       for (const d of navData) if (d.cumCapital > 0) map.set(d.date, d.cumCapital)
       setCapitalMap(map)
     }).catch(() => {}).finally(maybeFinish)
 
-    fetch("/ma/api/mom-analysis/position-change").then(r => r.json()).then(pcJ => {
+    fetchJsonCached("/ma/api/mom-analysis/position-change").then(pcJ => {
       if (pcJ.ok && pcJ.yesterday) setPcYesterday(pcJ.yesterday)
     }).catch(() => {}).finally(maybeFinish)
   }, [])
@@ -4092,19 +4108,18 @@ function PositionContent() {
     setVarGroupLoading(true)
     const params = new URLSearchParams({ confidence: varGroupConf, volDays: "20", corrDays: "252", distModel: "normal" })
     if (varGroupProds) params.set("prods", varGroupProds.join(","))
-    fetch(`/ma/api/mom-analysis/var-prediction?${params}`)
-      .then(r => r.json())
+    fetchJsonCached(`/ma/api/mom-analysis/var-prediction?${params}`)
       .then(j => { setVarGroupData(j.data ?? []); setVarGroupNextDayVar(j.nextDayVar ?? null) })
       .catch(() => { setVarGroupData([]); setVarGroupNextDayVar(null) })
       .finally(() => setVarGroupLoading(false))
   }, [varGroupProds, varGroupConf])
 
   useEffect(() => {
-    fetch("/ma/api/mom-analysis/var-sandbox?volDays=20&corrDays=252").then(r => r.json()).then(varJ => {
+    fetchJsonCached("/ma/api/mom-analysis/var-sandbox?volDays=20&corrDays=252").then(varJ => {
       if (varJ.ok) { setVarBreakdownProds(varJ.products ?? []); setVarBreakdownCorr(varJ.corrMatrix ?? []) }
     }).catch(() => {})
 
-    fetch("/ma/api/mom-analysis/position-change").then(r => r.json()).then(pcJ => {
+    fetchJsonCached("/ma/api/mom-analysis/position-change").then(pcJ => {
       if (pcJ.ok) {
         const m = new Map<string, number>()
         for (const p of (pcJ.products ?? [])) m.set(p.prod, p.deltaMv)
@@ -5330,14 +5345,10 @@ function PositionContent() {
 
 export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
-  // Keep-alive: track which tabs have been mounted; once mounted, keep them in DOM (hidden) to avoid re-fetching
-  const [mountedTabs, setMountedTabs] = useState<Set<TabKey>>(() => new Set(["overview"]))
+  const activeItem = subNavItems.find((i) => i.key === activeTab)!
+
   const handleTabChange = (key: TabKey) => {
     setActiveTab(key)
-    setMountedTabs((prev) => {
-      if (prev.has(key)) return prev
-      return new Set([...prev, key])
-    })
   }
 
   return (
@@ -5370,64 +5381,124 @@ export default function RiskReportNewPage() {
         </nav>
       </aside>
 
-      {/* Content area – each tab is absolutely positioned so charts keep their dimensions when hidden via visibility:hidden (not display:none) */}
-      <div className="flex-1 relative" style={{ minHeight: 0 }}>
-        {mountedTabs.has("overview") && (
-          <div className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "overview" && "invisible pointer-events-none")}>
-            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-              <span className="text-xs text-muted-foreground">快捷导航：</span>
-              <button onClick={() => document.getElementById("section-product")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">产品要素 ↓</button>
-              <button onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">业绩指标 ↓</button>
-              <button onClick={() => document.getElementById("section-volatility")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">波动分析 ↓</button>
-              <button onClick={() => document.getElementById("section-pnl")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">分类盈亏 ↓</button>
-              <button onClick={() => document.getElementById("section-top-overview")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
-            </div>
-            <h1 id="section-top-overview" className="text-2xl font-semibold tracking-tight pt-6 mb-4">产品总览</h1>
-            <OverviewContent />
+      {/* Content area */}
+      <div id={activeTab === "position" ? "pos-main-scroll" : undefined} className="flex-1 overflow-y-auto px-6 pb-6">
+        {activeTab === "position" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-pos-timeseries")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >时序持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-pos-cross")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >截面持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-pos-change-area")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >持仓变化 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-today-position")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >今日持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-yesterday-position")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >昨日持仓 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >↑ 回到顶部</button>
           </div>
         )}
-        {mountedTabs.has("intraday") && (
-          <div className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "intraday" && "invisible pointer-events-none")}>
-            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-              <span className="text-xs text-muted-foreground">快捷导航：</span>
-              <button onClick={() => document.getElementById("section-intraday-pnl")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">当日盈亏 ↓</button>
-              <button onClick={() => document.getElementById("section-intraday-var")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">次日预测 ↓</button>
-              <button onClick={() => document.getElementById("section-intraday-sandbox")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">VaR沙盒 ↓</button>
-              <button onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">风险水平 ↓</button>
-              <button onClick={() => document.getElementById("section-top-intraday")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
-            </div>
-            <h1 id="section-top-intraday" className="text-2xl font-semibold tracking-tight pt-6 mb-4">日间风控</h1>
-            <IntradayContent />
+        {activeTab === "intraday" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-intraday-pnl")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >当日盈亏 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-intraday-var")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >次日预测 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-intraday-sandbox")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >VaR沙盒 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-intraday-margin")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >风险水平 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >↑ 回到顶部</button>
           </div>
         )}
-        {mountedTabs.has("position") && (
-          <div id="pos-main-scroll" className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "position" && "invisible pointer-events-none")}>
-            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-              <span className="text-xs text-muted-foreground">快捷导航：</span>
-              <button onClick={() => document.getElementById("section-pos-timeseries")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">时序持仓 ↓</button>
-              <button onClick={() => document.getElementById("section-pos-cross")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">截面持仓 ↓</button>
-              <button onClick={() => document.getElementById("section-pos-change-area")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">持仓变化 ↓</button>
-              <button onClick={() => document.getElementById("section-today-position")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">今日持仓 ↓</button>
-              <button onClick={() => document.getElementById("section-yesterday-position")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">昨日持仓 ↓</button>
-              <button onClick={() => document.getElementById("section-top-position")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
-            </div>
-            <h1 id="section-top-position" className="text-2xl font-semibold tracking-tight pt-6 mb-4">持仓分析</h1>
-            <PositionContent />
+        {activeTab === "overview" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-product")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              产品要素 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-performance")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              业绩指标 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-volatility")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              波动分析 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-pnl")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              分类盈亏 ↓
+            </button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              ↑ 回到顶部
+            </button>
           </div>
         )}
-        {mountedTabs.has("advisor") && (
-          <div className={cn("absolute inset-0 overflow-y-auto px-6 pb-6", activeTab !== "advisor" && "invisible pointer-events-none")}>
-            <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
-              <span className="text-xs text-muted-foreground">快捷导航：</span>
-              <button onClick={() => document.getElementById("section-advisor-daily")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">当日分析 ↓</button>
-              <button onClick={() => document.getElementById("section-advisor-history")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">历史回溯 ↓</button>
-              <button onClick={() => document.getElementById("section-advisor-optimize")?.scrollIntoView({ behavior: "smooth" })} className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">投顾优化 ↓</button>
-              <button onClick={() => document.getElementById("section-top-advisor")?.scrollIntoView({ behavior: "smooth" })} className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted">↑ 回到顶部</button>
-            </div>
-            <h1 id="section-top-advisor" className="text-2xl font-semibold tracking-tight pt-6 mb-4">投顾分析</h1>
-            <AdvisorContent />
+        {activeTab === "advisor" && (
+          <div className="sticky top-0 z-10 -mx-6 flex items-center gap-2 border-b border-border bg-background px-6 py-2">
+            <span className="text-xs text-muted-foreground">快捷导航：</span>
+            <button
+              onClick={() => document.getElementById("section-advisor-daily")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >当日分析 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-advisor-history")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >历史回溯 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-advisor-optimize")?.scrollIntoView({ behavior: "smooth" })}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >投顾优化 ↓</button>
+            <button
+              onClick={() => document.getElementById("section-top")?.scrollIntoView({ behavior: "smooth" })}
+              className="ml-auto rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >↑ 回到顶部</button>
           </div>
         )}
+
+        <h1 id="section-top" className="text-2xl font-semibold tracking-tight pt-6 mb-4">{activeItem.name}</h1>
+        {activeTab === "overview" && <OverviewContent />}
+        {activeTab === "intraday" && <IntradayContent />}
+        {activeTab === "position" && <PositionContent />}
+        {activeTab === "advisor" && <AdvisorContent />}
       </div>
     </div>
   )
