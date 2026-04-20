@@ -3314,7 +3314,9 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
 function OptionHoldingContent() {
   const [rows, setRows] = useState<OptionRow[]>([])
   const [date, setDate] = useState<string>("")
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
+  const [tableExpanded, setTableExpanded] = useState(false)
   const [contractSearch, setContractSearch] = useState("")
   const [accountFilter, setAccountFilter] = useState("全部")
   const [tradeDateFilter, setTradeDateFilter] = useState("全部")
@@ -3324,11 +3326,19 @@ function OptionHoldingContent() {
   const [pnlFilter, setPnlFilter] = useState("全部")
 
   useEffect(() => {
+    if (!tableExpanded || hasLoadedOnce) return
+    setLoading(true)
     fetchJsonCached("/ma/api/mom-analysis/option-positions")
-      .then(j => { if (j.ok) { setRows(j.rows ?? []); setDate(j.date ?? "") } })
+      .then(j => {
+        if (j.ok) {
+          setRows(j.rows ?? [])
+          setDate(j.date ?? "")
+          setHasLoadedOnce(true)
+        }
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [tableExpanded, hasLoadedOnce])
 
   const accounts   = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.account))).sort()], [rows])
   const tradeDates = useMemo(() => ["全部", ...Array.from(new Set(rows.map(r => r.tradeDate).filter(Boolean))).sort().reverse()], [rows])
@@ -3372,57 +3382,72 @@ function OptionHoldingContent() {
   return (
     <Card className="mt-6">
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm">期权持仓明细（最新交易日汇总）{date && <span className="ml-2 text-xs font-normal text-muted-foreground">{date}</span>}</CardTitle>
-        {/* Filters */}
-        <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground">合约：</span>
-            <input
-              className="border rounded px-2 py-0.5 bg-background w-28 text-xs"
-              placeholder="包含..."
-              value={contractSearch}
-              onChange={e => setContractSearch(e.target.value)}
-            />
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground">品种：</span>
-            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={prodFilter2} onChange={e => setProdFilter2(e.target.value)}>
-              {prodCodes.map(p => <option key={p} value={p}>{p === "全部" ? "全部" : `${p} ${PROD_NAMES[p] ?? ""}`}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground">账户：</span>
-            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
-              {accounts.map(a => <option key={a} value={a}>{a}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground">成交日期：</span>
-            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={tradeDateFilter} onChange={e => setTradeDateFilter(e.target.value)}>
-              {tradeDates.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground">方向：</span>
-            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={dirFilter} onChange={e => setDirFilter(e.target.value)}>
-              {["全部","买入","卖出"].map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground">期权类型：</span>
-            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={optTypeFilter} onChange={e => setOptTypeFilter(e.target.value)}>
-              {["全部","C","P"].map(t => <option key={t} value={t}>{t === "C" ? "C（认购）" : t === "P" ? "P（认沽）" : "全部"}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-1">
-            <span className="text-muted-foreground">浮动盈亏：</span>
-            <select className="border rounded px-2 py-0.5 bg-background text-xs" value={pnlFilter} onChange={e => setPnlFilter(e.target.value)}>
-              {["全部","盈利","亏损"].map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <button onClick={resetFilters} className="px-2.5 py-0.5 border rounded text-xs hover:bg-muted transition-colors">重置</button>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-sm">期权持仓明细（最新交易日汇总）{date && <span className="ml-2 text-xs font-normal text-muted-foreground">{date}</span>}</CardTitle>
+          <button
+            type="button"
+            onClick={() => setTableExpanded((v) => !v)}
+            className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+          >
+            {tableExpanded ? "收起" : "展开"}
+          </button>
         </div>
+        {!tableExpanded && <p className="mt-2 text-xs text-muted-foreground">默认收起，点击“展开”查看筛选和明细表。</p>}
+        {tableExpanded && (
+          <>
+            {/* Filters */}
+            <div className="flex flex-wrap items-center gap-2 mt-2 text-xs">
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">合约：</span>
+                <input
+                  className="border rounded px-2 py-0.5 bg-background w-28 text-xs"
+                  placeholder="包含..."
+                  value={contractSearch}
+                  onChange={e => setContractSearch(e.target.value)}
+                />
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">品种：</span>
+                <select className="border rounded px-2 py-0.5 bg-background text-xs" value={prodFilter2} onChange={e => setProdFilter2(e.target.value)}>
+                  {prodCodes.map(p => <option key={p} value={p}>{p === "全部" ? "全部" : `${p} ${PROD_NAMES[p] ?? ""}`}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">账户：</span>
+                <select className="border rounded px-2 py-0.5 bg-background text-xs" value={accountFilter} onChange={e => setAccountFilter(e.target.value)}>
+                  {accounts.map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">成交日期：</span>
+                <select className="border rounded px-2 py-0.5 bg-background text-xs" value={tradeDateFilter} onChange={e => setTradeDateFilter(e.target.value)}>
+                  {tradeDates.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">方向：</span>
+                <select className="border rounded px-2 py-0.5 bg-background text-xs" value={dirFilter} onChange={e => setDirFilter(e.target.value)}>
+                  {["全部","买入","卖出"].map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">期权类型：</span>
+                <select className="border rounded px-2 py-0.5 bg-background text-xs" value={optTypeFilter} onChange={e => setOptTypeFilter(e.target.value)}>
+                  {["全部","C","P"].map(t => <option key={t} value={t}>{t === "C" ? "C（认购）" : t === "P" ? "P（认沽）" : "全部"}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-muted-foreground">浮动盈亏：</span>
+                <select className="border rounded px-2 py-0.5 bg-background text-xs" value={pnlFilter} onChange={e => setPnlFilter(e.target.value)}>
+                  {["全部","盈利","亏损"].map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+              <button onClick={resetFilters} className="px-2.5 py-0.5 border rounded text-xs hover:bg-muted transition-colors">重置</button>
+            </div>
+          </>
+        )}
       </CardHeader>
+      {tableExpanded && (
       <CardContent className="p-0 overflow-x-auto overflow-y-auto" style={{ maxHeight: 480 }}>
         {loading ? (
           <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
@@ -3476,6 +3501,7 @@ function OptionHoldingContent() {
           </table>
         )}
       </CardContent>
+      )}
     </Card>
   )
 }
@@ -3490,17 +3516,25 @@ type TodayPosRow = {
   positionMv: number; margin: number; exchange: string
 }
 
-function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRank, sectionId, dayLabel }: {
+function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRank, sectionId, dayLabel, expandTrigger }: {
   prodOverride?: string
   onScrollBack?: () => void
   dateOverride?: string
   dayRank?: number
   sectionId?: string
   dayLabel?: string
+  expandTrigger?: number
 }) {
   const [rows, setRows]       = useState<TodayPosRow[]>([])
   const [date, setDate]       = useState("")
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
+  const [sectionExpanded, setSectionExpanded] = useState(false)
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false)
+
+  // Parent can force-open by incrementing expandTrigger
+  useEffect(() => {
+    if (expandTrigger && expandTrigger > 0) setSectionExpanded(true)
+  }, [expandTrigger])
 
   // filters
   const [contractInput, setContractInput] = useState("")
@@ -3517,16 +3551,18 @@ function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRan
   const [optFilter, setOptFilter]         = useState("仅期货")   // 全部 / 仅期货 / 仅期权
 
   useEffect(() => {
+    if (!sectionExpanded || hasLoadedOnce) return
+    setLoading(true)
     const url = dateOverride
       ? `/ma/api/mom-analysis/today-position-detail?date=${dateOverride}`
       : dayRank === 2
       ? "/ma/api/mom-analysis/today-position-detail?rank=2"
       : "/ma/api/mom-analysis/today-position-detail"
     fetchJsonCached(url)
-      .then(j => { if (j.ok) { setRows(j.rows ?? []); setDate(j.date ?? "") } })
+      .then(j => { if (j.ok) { setRows(j.rows ?? []); setDate(j.date ?? ""); setHasLoadedOnce(true) } })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [])
+  }, [sectionExpanded, hasLoadedOnce])
 
   const getProd = (contract: string) => contract.match(/^[A-Z]+/)?.[0] ?? ""
 
@@ -3775,7 +3811,23 @@ function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRan
 
   return (
     <div id={sectionId ?? "section-today-position"} className="mt-6">
+      <Card className="mb-4">
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="text-sm">子账户{label}持仓明细{date && <span className="ml-2 text-xs font-normal text-muted-foreground">{date}</span>}</CardTitle>
+            <button
+              type="button"
+              onClick={() => setSectionExpanded((v) => !v)}
+              className="rounded border border-border px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+            >
+              {sectionExpanded ? "收起" : "展开"}
+            </button>
+          </div>
+          {!sectionExpanded && <p className="mt-2 text-xs text-muted-foreground">默认收起，点击"展开"查看图表和明细表。</p>}
+        </CardHeader>
+      </Card>
 
+      {sectionExpanded && (<>
       {/* Pie charts row */}
       <div className="grid grid-cols-3 gap-4 mb-4">
         <Card>
@@ -3983,6 +4035,7 @@ function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRan
           )}
         </CardContent>
       </Card>
+      </>)}
     </div>
   )
 }
@@ -4001,6 +4054,8 @@ function PositionContent() {
   const [pcCatFilter, setPcCatFilter]           = useState<ExposureCat>("全部")
   const [todayDetailProd, setTodayDetailProd] = useState<string>("全部")
   const [yesterdayDetailProd, setYesterdayDetailProd] = useState<string>("全部")
+  const [todayExpandTrigger, setTodayExpandTrigger] = useState(0)
+  const [yesterdayExpandTrigger, setYesterdayExpandTrigger] = useState(0)
   const [pcYesterday, setPcYesterday] = useState<string>("")
   const [pcSectorFilter, setPcSectorFilter]     = useState<ExposureSector>("全部")
   const [pcSubSectorFilter, setPcSubSectorFilter] = useState<ExposureSubSector>("全部")
@@ -5190,6 +5245,7 @@ function PositionContent() {
             subSectorFilter2={pcSubSectorFilter} setSubSectorFilter2={setPcSubSectorFilter}
             onTodayDetail={() => {
               setTodayDetailProd(pcProdFilter)
+              setTodayExpandTrigger(n => n + 1)
               setTimeout(() => {
                 const scroller = document.getElementById("pos-main-scroll")
                 const target = document.getElementById("section-today-position")
@@ -5202,6 +5258,7 @@ function PositionContent() {
             }}
             onYesterdayDetail={() => {
               setYesterdayDetailProd(pcProdFilter)
+              setYesterdayExpandTrigger(n => n + 1)
               setTimeout(() => {
                 const scroller = document.getElementById("pos-main-scroll")
                 const target = document.getElementById("section-yesterday-position")
@@ -5313,6 +5370,7 @@ function PositionContent() {
           prodOverride={todayDetailProd}
           sectionId="section-today-position"
           dayLabel="今日"
+          expandTrigger={todayExpandTrigger}
           onScrollBack={() => {
             const scroller = document.getElementById("pos-main-scroll")
             const target = document.getElementById("section-pos-change")
@@ -5328,6 +5386,7 @@ function PositionContent() {
           prodOverride={yesterdayDetailProd}
           sectionId="section-yesterday-position"
           dayLabel="昨日"
+          expandTrigger={yesterdayExpandTrigger}
           onScrollBack={() => {
             const scroller = document.getElementById("pos-main-scroll")
             const target = document.getElementById("section-pos-change")
