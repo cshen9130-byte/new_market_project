@@ -5294,7 +5294,45 @@ function PositionContent() {
 
 export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
+  // Keep-alive: track which tabs have been mounted; once mounted, keep them in DOM (hidden) to avoid re-fetching
+  const [mountedTabs, setMountedTabs] = useState<Set<TabKey>>(() => new Set(["overview"]))
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
+
+  const handleTabChange = (key: TabKey) => {
+    setActiveTab(key)
+    setMountedTabs((prev) => {
+      if (prev.has(key)) return prev
+      return new Set([...prev, key])
+    })
+  }
+
+  // Background prefetch: after overview loads, quietly fetch heavy endpoints
+  // so the browser HTTP cache has them ready when the user switches tabs
+  useEffect(() => {
+    const heavy = [
+      "/ma/api/mom-analysis/today-position-detail",
+      "/ma/api/mom-analysis/today-position-detail?rank=2",
+      "/ma/api/mom-analysis/category-exposure",
+      "/ma/api/mom-analysis/margin-risk",
+      "/ma/api/mom-analysis/category-pnl",
+      "/ma/api/mom-analysis/vol-corr-scatter?window=20&corrWindow=20",
+      "/ma/api/mom-analysis/advisor-vol?window=20",
+      "/ma/api/mom-analysis/advisor-vol?window=20&compare=1",
+      "/ma/api/mom-analysis/position-change",
+      "/ma/api/mom-analysis/position-change-detail",
+      "/ma/api/mom-analysis/var-prediction?confidence=95&volDays=20&corrDays=252&distModel=normal",
+      "/ma/api/mom-analysis/account-daily-pnl",
+      "/ma/api/mom-analysis/sector-ls-pnl",
+    ]
+    // Stagger prefetch to avoid overwhelming slow machines
+    const timers: ReturnType<typeof setTimeout>[] = []
+    heavy.forEach((url, i) => {
+      timers.push(setTimeout(() => {
+        fetch(url, { priority: "low" } as RequestInit).catch(() => {})
+      }, 2000 + i * 300))
+    })
+    return () => timers.forEach(clearTimeout)
+  }, [])
 
   return (
     <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
@@ -5310,7 +5348,7 @@ export default function RiskReportNewPage() {
             return (
               <button
                 key={item.key}
-                onClick={() => setActiveTab(item.key)}
+                onClick={() => handleTabChange(item.key)}
                 className={cn(
                   "w-full flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors text-left",
                   activeTab === item.key
@@ -5439,16 +5477,25 @@ export default function RiskReportNewPage() {
           </div>
         )}
         <h1 id="section-top" className="text-2xl font-semibold tracking-tight pt-6 mb-4">{activeItem.name}</h1>
-        {activeTab === "overview" ? (
-          <OverviewContent />
-        ) : activeTab === "intraday" ? (
-          <IntradayContent />
-        ) : activeTab === "position" ? (
-          <PositionContent />
-        ) : activeTab === "advisor" ? (
-          <AdvisorContent />
-        ) : (
-          <PlaceholderContent title={activeItem.name} />
+        {mountedTabs.has("overview") && (
+          <div className={activeTab !== "overview" ? "hidden" : undefined}>
+            <OverviewContent />
+          </div>
+        )}
+        {mountedTabs.has("intraday") && (
+          <div className={activeTab !== "intraday" ? "hidden" : undefined}>
+            <IntradayContent />
+          </div>
+        )}
+        {mountedTabs.has("position") && (
+          <div className={activeTab !== "position" ? "hidden" : undefined}>
+            <PositionContent />
+          </div>
+        )}
+        {mountedTabs.has("advisor") && (
+          <div className={activeTab !== "advisor" ? "hidden" : undefined}>
+            <AdvisorContent />
+          </div>
         )}
       </div>
     </div>
