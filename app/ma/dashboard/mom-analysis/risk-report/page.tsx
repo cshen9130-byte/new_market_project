@@ -5306,34 +5306,6 @@ export default function RiskReportNewPage() {
     })
   }
 
-  // Background prefetch: after overview loads, quietly fetch heavy endpoints
-  // so the browser HTTP cache has them ready when the user switches tabs
-  useEffect(() => {
-    const heavy = [
-      "/ma/api/mom-analysis/today-position-detail",
-      "/ma/api/mom-analysis/today-position-detail?rank=2",
-      "/ma/api/mom-analysis/category-exposure",
-      "/ma/api/mom-analysis/margin-risk",
-      "/ma/api/mom-analysis/category-pnl",
-      "/ma/api/mom-analysis/vol-corr-scatter?window=20&corrWindow=20",
-      "/ma/api/mom-analysis/advisor-vol?window=20",
-      "/ma/api/mom-analysis/advisor-vol?window=20&compare=1",
-      "/ma/api/mom-analysis/position-change",
-      "/ma/api/mom-analysis/position-change-detail",
-      "/ma/api/mom-analysis/var-prediction?confidence=95&volDays=20&corrDays=252&distModel=normal",
-      "/ma/api/mom-analysis/account-daily-pnl",
-      "/ma/api/mom-analysis/sector-ls-pnl",
-    ]
-    // Stagger prefetch to avoid overwhelming slow machines
-    const timers: ReturnType<typeof setTimeout>[] = []
-    heavy.forEach((url, i) => {
-      timers.push(setTimeout(() => {
-        fetch(url, { priority: "low" } as RequestInit).catch(() => {})
-      }, 2000 + i * 300))
-    })
-    return () => timers.forEach(clearTimeout)
-  }, [])
-
   return (
     <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
       {/* Secondary sidebar */}
