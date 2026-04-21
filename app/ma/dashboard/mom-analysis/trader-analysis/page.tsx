@@ -788,7 +788,7 @@ export default function TraderAnalysisPage() {
                   <td className="px-4 py-3 text-center font-medium whitespace-nowrap text-sm">
                     {t.account}
                     {t.source === "guosen" && (
-                      <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">国信</span>
+                      <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">guoxin</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-center tabular-nums text-sm">{t.tradingDays}</td>
