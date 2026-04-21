@@ -143,7 +143,7 @@ export async function GET(req: Request) {
         const fee = parseNum(r.period_fee)
         const optionsPnl = parseNum(r.period_options_pnl)
         traders.push({
-          account: r.client_id || r.client_name || "guoxin",
+          account: "guoxin",
           firstDate: r.first_date,
           lastDate: r.last_date,
           tradingDays: parseInt(r.trading_days, 10),

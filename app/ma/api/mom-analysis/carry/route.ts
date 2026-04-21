@@ -124,7 +124,7 @@ export async function GET() {
         const cumCommission = parseNum(r.cum_commission) ?? 0
         const optionsPnl    = parseNum(r.options_pnl)   ?? 0
         accounts.push({
-          account:       r.client_id || r.client_name || "guoxin",
+          account:       "guoxin",
           cumPnl, cumCommission, optionsPnl,
           cumNetPnl:     cumPnl - cumCommission + optionsPnl,
           latestEquity:  parseNum(r.latest_equity) ?? null,

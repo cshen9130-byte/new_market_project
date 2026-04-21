@@ -510,7 +510,7 @@ export default function CarryCalcPage() {
                           {a.account}
                           {a.source === "guosen" && (
                             <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
-                              guoxin{a.latestDataDate ? ` ${a.latestDataDate}` : ""}
+                              guoxin
                             </span>
                           )}
                         </td>
