@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
       imapPort: typeof body.imapPort === "number" ? body.imapPort : current.imapPort,
       enabled: typeof body.enabled === "boolean" ? body.enabled : current.enabled,
       scheduleTime: typeof body.scheduleTime === "string" ? body.scheduleTime.trim() : current.scheduleTime,
+      sender: typeof body.sender === "string" ? body.sender.trim() : current.sender,
     }
 
     // Only overwrite password if a real value is sent (not the masked placeholder)

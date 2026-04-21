@@ -1,4 +1,4 @@
-import { spawn } from "child_process"
+import { spawn, type ChildProcess } from "child_process"
 import fs from "fs"
 import path from "path"
 
@@ -46,18 +46,41 @@ export async function POST(request: Request) {
   if (skipDedup) args.push("--skip-dedup")
   if (skipMarketData) args.push("--skip-market-data")
 
-  const proc = spawn(python, args, {
-    env: { ...process.env },
-    cwd: process.cwd(),
-  })
+  const { readConfig, fetchSettlementFiles } = await import("@/lib/server/settlement-email")
+  const settlementCfg = readConfig()
 
   const encoder = new TextEncoder()
+  let proc: ChildProcess | null = null
 
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       const send = (line: string) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(line)}\n\n`))
       }
+
+      // Step 1: fetch settlement files from mailbox before running ETL
+      if (settlementCfg.enabled && settlementCfg.email && settlementCfg.pass) {
+        send("[settlement] 正在从邮箱获取结算单附件…")
+        try {
+          const result = await fetchSettlementFiles()
+          if (result.downloaded.length > 0) {
+            send(`[settlement] 已下载 ${result.downloaded.length} 个文件: ${result.downloaded.join(", ")}`)
+          } else if (result.errors.length > 0) {
+            send(`[settlement] 获取完成，有 ${result.errors.length} 个错误: ${result.errors.join("; ")}`)
+          } else {
+            const skippedNote = result.skipped.length > 0 ? `已跳过 ${result.skipped.length}` : "收件箱中无匹配附件"
+            send(`[settlement] 无新文件 (${skippedNote})`)
+          }
+        } catch (e) {
+          send(`[settlement] 获取失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+
+      // Step 2: spawn ETL process
+      proc = spawn(python, args, {
+        env: { ...process.env },
+        cwd: process.cwd(),
+      })
 
       const splitLines = (buf: string, tag: string) => {
         for (const line of buf.split("\n")) {
@@ -70,7 +93,7 @@ export async function POST(request: Request) {
       proc.stderr?.on("data", (d: Buffer) => splitLines(d.toString(), "stderr"))
 
       const timer = setTimeout(() => {
-        proc.kill()
+        proc?.kill()
         send("__EXIT__:timeout")
         controller.close()
       }, 600_000)
@@ -102,7 +125,7 @@ export async function POST(request: Request) {
       })
     },
     cancel() {
-      proc.kill()
+      proc?.kill()
     },
   })
 

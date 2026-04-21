@@ -116,6 +116,7 @@ export default function DataImportPage() {
     imapPort: 993,
     enabled: false,
     scheduleTime: "19:00",
+    sender: "",
   })
   const [isSavingSettlementCfg, setIsSavingSettlementCfg] = useState(false)
   const [isFetchingSettlement, setIsFetchingSettlement] = useState(false)
@@ -288,6 +289,7 @@ export default function DataImportPage() {
         imapPort: data.imapPort ?? 993,
         enabled: data.enabled ?? false,
         scheduleTime: data.scheduleTime ?? "19:00",
+        sender: data.sender ?? "",
       })
     } catch { /* non-critical */ }
   }, [])
@@ -1285,13 +1287,26 @@ export default function DataImportPage() {
         {showSettlementSetup && (
           <CardContent className="space-y-4">
             <p className="text-xs text-muted-foreground">
-              配置 IMAP 邮箱，系统每天到达设定时间后自动连接收件箱，搜索主题含
-              <span className="font-mono mx-1">YYYYMMDD_××××_交易结算单</span>的邮件，
-              逐一读取 .xlsx 附件的 A3 单元格，仅保存值为
+              配置 IMAP 邮箱，系统每天到达设定时间后自动连接收件箱。
+              填写<span className="font-mono mx-1">发件人地址</span>后按发件人筛选邮件；
+              留空则退回到按主题匹配（主题须含 <span className="font-mono">YYYYMMDD_××××_交易结算单</span>）。
+              下载所有 .xlsx 附件后读取 A3 单元格，仅保存值为
               <span className="font-mono mx-1">交易结算单(盯市)</span>的文件到服务器指定目录。
+              运行 ETL 时也会自动触发一次结算单获取。
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Sender filter */}
+              <div className="space-y-1 sm:col-span-2">
+                <label className="text-xs text-muted-foreground">发件人地址过滤（推荐，留空则按主题匹配）</label>
+                <Input
+                  className="h-8 text-xs font-mono"
+                  placeholder="hulingyu1@guosen.com.cn"
+                  value={settlementCfg.sender}
+                  onChange={(e) => setSettlementCfg((c) => ({ ...c, sender: e.target.value }))}
+                />
+              </div>
+
               {/* Email provider preset */}
               <div className="space-y-1 sm:col-span-2">
                 <label className="text-xs text-muted-foreground">邮件服务商（选择后自动填入服务器地址）</label>

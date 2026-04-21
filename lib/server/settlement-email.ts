@@ -12,6 +12,7 @@ export type SettlementEmailConfig = {
   imapPort: number
   enabled: boolean
   scheduleTime: string        // HH:MM (24h), e.g. "19:00"
+  sender: string              // Filter by sender address (leave empty for legacy subject filter)
   lastFetchDate: string | null  // YYYYMMDD
   lastFetchAt: string | null    // ISO timestamp
 }
@@ -42,6 +43,7 @@ const DEFAULT_CONFIG: SettlementEmailConfig = {
   imapPort: 993,
   enabled: false,
   scheduleTime: "19:00",
+  sender: "",
   lastFetchDate: null,
   lastFetchAt: null,
 }
@@ -146,17 +148,23 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
     const since = new Date()
     since.setDate(since.getDate() - 2)
 
-    const allUids = await client.search({ since })
+    const senderFilter = (cfg.sender ?? "").trim()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const searchCriteria: Record<string, any> = { since }
+    if (senderFilter) searchCriteria.from = senderFilter
+
+    const allUids = await client.search(searchCriteria)
 
     for (const uid of allUids) {
-      // First: cheap envelope fetch to filter by subject
-      const envelope = await client.fetchOne(String(uid), { envelope: true })
-      const subj: string = (envelope as { envelope?: { subject?: string } }).envelope?.subject ?? ""
+      // When no sender filter is set, fall back to legacy subject-pattern check
+      if (!senderFilter) {
+        const envelope = await client.fetchOne(String(uid), { envelope: true })
+        const subj: string = (envelope as { envelope?: { subject?: string } }).envelope?.subject ?? ""
+        // Pattern: YYYYMMDD_<digits>_交易结算单
+        if (!subj.includes("交易结算单") || !/\d{8}_\d+_交易结算单/.test(subj)) continue
+      }
 
-      // Pattern: YYYYMMDD_<digits>_交易结算单
-      if (!subj.includes("交易结算单") || !/\d{8}_\d+_交易结算单/.test(subj)) continue
-
-      // Second: fetch body structure to find xlsx attachments
+      // Fetch body structure to find xlsx attachments
       const bodyMsg = await client.fetchOne(String(uid), { bodyStructure: true })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const structure = (bodyMsg as any).bodyStructure
