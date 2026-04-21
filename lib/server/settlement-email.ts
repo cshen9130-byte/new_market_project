@@ -78,7 +78,7 @@ export function writeConfig(cfg: SettlementEmailConfig): void {
  * a3: trimmed value of cell A3 (e.g. "交易结算单(盯市)")
  * n5: date string derived from cell N5 (formatted as YYYYMMDD), or "" if missing
  */
-function readSettlementCells(buf: Buffer): { a3: string; n5: string } | null {
+export function readSettlementCells(buf: Buffer): { a3: string; n5: string } | null {
   try {
     const wb = XLSX.read(buf, { type: "buffer", cellDates: true })
     const ws = wb.Sheets[wb.SheetNames[0]]
@@ -121,7 +121,7 @@ function readSettlementCells(buf: Buffer): { a3: string; n5: string } | null {
  * e.g. "交易结算单(盯市)_20260420.xlsx"
  * Falls back to original attachment filename if N5 is empty.
  */
-function buildOutputFilename(cells: { a3: string; n5: string }, fallback: string): string {
+export function buildOutputFilename(cells: { a3: string; n5: string }, fallback: string): string {
   // Sanitise A3 for use as a filename segment (strip path-unsafe chars)
   const a3safe = cells.a3.replace(/[\\/:*?"<>|]/g, "")
   if (cells.n5) return `${a3safe}_${cells.n5}.xlsx`

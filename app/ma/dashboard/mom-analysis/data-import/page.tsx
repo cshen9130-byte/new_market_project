@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import {
   Activity,
   AlertCircle,
+  ArrowDownToLine,
   ArrowLeft,
   CheckCircle2,
   ChevronDown,
@@ -20,6 +21,7 @@ import {
   Save,
   Terminal,
   UploadCloud,
+  Wand2,
   X,
 } from "lucide-react"
 
@@ -134,6 +136,13 @@ export default function DataImportPage() {
   const [settlementFolder, setSettlementFolder] = useState("")
   const [settlementLastFetch, setSettlementLastFetch] = useState<string | null>(null)
   const [isLoadingSettlementFiles, setIsLoadingSettlementFiles] = useState(false)
+  const [isNormalizingFiles, setIsNormalizingFiles] = useState(false)
+  const [normalizeResult, setNormalizeResult] = useState<{
+    renamed: { from: string; to: string }[]
+    deleted: string[]
+    skipped: string[]
+    errors: string[]
+  } | null>(null)
 
   const autoFollowLogRef = useRef(true)
   const logScrollRef = useRef<HTMLDivElement | null>(null)
@@ -307,6 +316,24 @@ export default function DataImportPage() {
     } catch { /* non-critical */ }
     finally { setIsLoadingSettlementFiles(false) }
   }, [])
+
+  const normalizeSettlementFiles = useCallback(async () => {
+    setIsNormalizingFiles(true)
+    setNormalizeResult(null)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/settlement-email/normalize", { method: "POST" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "规范化失败")
+      setNormalizeResult(data)
+      await loadSettlementFiles()
+      const changed = (data.renamed?.length ?? 0) + (data.deleted?.length ?? 0)
+      toast({ title: changed > 0 ? `已整理 ${changed} 个文件` : "文件名已是最新格式，无需整理" })
+    } catch (e) {
+      toast({ title: "规范化失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
+    } finally {
+      setIsNormalizingFiles(false)
+    }
+  }, [loadSettlementFiles, toast])
 
   const saveSettlementConfig = useCallback(async () => {
     setIsSavingSettlementCfg(true)
@@ -1036,7 +1063,15 @@ export default function DataImportPage() {
                             files.map((f) => (
                               <div key={f} className="flex items-center gap-3 px-4 py-1.5 pl-12 text-xs text-muted-foreground">
                                 <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
-                                {f}
+                                <span className="flex-1">{f}</span>
+                                <a
+                                  href={`/ma/api/mom-analysis/data-import/download?folder=${encodeURIComponent(folder.name)}&file=${encodeURIComponent(f)}`}
+                                  download={f}
+                                  className="hover:text-foreground transition-colors"
+                                  title="下载"
+                                >
+                                  <ArrowDownToLine className="h-3 w-3" />
+                                </a>
                               </div>
                             ))
                           )}
@@ -1515,6 +1550,14 @@ export default function DataImportPage() {
             )}
             <button
               className="ml-auto text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              disabled={isNormalizingFiles}
+              onClick={() => void normalizeSettlementFiles()}
+              title="规范化文件名（重命名旧格式、删除重复）"
+            >
+              <Wand2 className={`h-3.5 w-3.5 ${isNormalizingFiles ? "animate-spin" : ""}`} />
+            </button>
+            <button
+              className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
               disabled={isLoadingSettlementFiles}
               onClick={() => void loadSettlementFiles()}
               title="刷新"
@@ -1544,11 +1587,37 @@ export default function DataImportPage() {
                   <span className="text-xs text-muted-foreground">
                     {new Date(f.mtime).toLocaleDateString("zh-CN")}
                   </span>
+                  <a
+                    href={`/ma/api/mom-analysis/settlement-email/download?file=${encodeURIComponent(f.name)}`}
+                    download={f.name}
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                    title="下载"
+                  >
+                    <ArrowDownToLine className="h-3.5 w-3.5" />
+                  </a>
                 </div>
               ))}
             </div>
           )}
         </CardContent>
+        {normalizeResult && (
+          <div className="border-t border-border/40 px-4 py-3 text-xs space-y-1">
+            <p className="font-medium text-muted-foreground mb-1">规范化结果</p>
+            {normalizeResult.renamed.map((r, i) => (
+              <div key={i} className="font-mono text-emerald-600 dark:text-emerald-400">
+                ✓ {r.from} → {r.to}
+              </div>
+            ))}
+            {normalizeResult.deleted.map((d, i) => (
+              <div key={i} className="font-mono text-amber-600 dark:text-amber-400">
+                ✕ {d}
+              </div>
+            ))}
+            {normalizeResult.errors.map((e, i) => (
+              <div key={i} className="font-mono text-destructive">{e}</div>
+            ))}
+          </div>
+        )}
       </Card>
     </div>
   )
