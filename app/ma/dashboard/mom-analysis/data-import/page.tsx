@@ -295,7 +295,7 @@ export default function DataImportPage() {
   const loadSettlementFiles = useCallback(async () => {
     setIsLoadingSettlementFiles(true)
     try {
-      const res = await fetch("/ma/api/mom-analysis/settlement-email/files")
+      const res = await fetch("/ma/api/mom-analysis/settlement-email/files", { cache: "no-store" })
       const data = await res.json()
       if (!res.ok) return
       setSettlementFiles(data.files ?? [])

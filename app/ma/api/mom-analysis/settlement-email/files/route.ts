@@ -12,5 +12,9 @@ export async function GET() {
     folder,
     lastFetchDate: cfg.lastFetchDate,
     lastFetchAt: cfg.lastFetchAt,
+  }, {
+    headers: {
+      "Cache-Control": "no-store, max-age=0",
+    },
   })
 }

@@ -46,6 +46,12 @@ const DEFAULT_CONFIG: SettlementEmailConfig = {
   lastFetchAt: null,
 }
 
+const AUTO_FETCH_RETRY_INTERVAL_MS = 60 * 60 * 1000
+
+function formatLocalDate(date: Date): string {
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
+}
+
 // ─── Config I/O ──────────────────────────────────────────────────────────────
 
 export function readConfig(): SettlementEmailConfig {
@@ -185,8 +191,11 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
 
   // Record last fetch
   const now = new Date()
-  const dateStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
-  writeConfig({ ...cfg, lastFetchDate: dateStr, lastFetchAt: now.toISOString() })
+  writeConfig({
+    ...cfg,
+    lastFetchDate: downloaded.length > 0 ? formatLocalDate(now) : cfg.lastFetchDate,
+    lastFetchAt: now.toISOString(),
+  })
 
   return { downloaded, skipped, errors }
 }
@@ -200,10 +209,16 @@ export async function runDueSettlementFetch(): Promise<void> {
   const now = new Date()
   const [schedH, schedM] = (cfg.scheduleTime || "19:00").split(":").map(Number)
 
-  const todayStr = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`
+  const todayStr = formatLocalDate(now)
   if (cfg.lastFetchDate === todayStr) return // already fetched today
 
   if (now.getHours() < schedH || (now.getHours() === schedH && now.getMinutes() < schedM)) return
+
+  const lastFetchAt = cfg.lastFetchAt ? new Date(cfg.lastFetchAt) : null
+  if (lastFetchAt && !Number.isNaN(lastFetchAt.getTime()) && formatLocalDate(lastFetchAt) === todayStr) {
+    // Retry later if the scheduled check ran before the settlement email arrived.
+    if (now.getTime() - lastFetchAt.getTime() < AUTO_FETCH_RETRY_INTERVAL_MS) return
+  }
 
   await fetchSettlementFiles()
 }
