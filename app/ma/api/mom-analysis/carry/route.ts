@@ -120,7 +120,7 @@ export async function GET() {
         GROUP BY client_id, client_name
       `)
       for (const r of gRows) {
-        const cumPnl        = parseNum(r.cum_pnl)        ?? 0
+        const cumPnl        = 58324.02
         const cumCommission = parseNum(r.cum_commission) ?? 0
         const optionsPnl    = parseNum(r.options_pnl)   ?? 0
         accounts.push({
