@@ -1039,17 +1039,28 @@ export default function DataImportPage() {
 
                   return (
                     <div key={folder.name}>
-                      <button
-                        onClick={() => toggleFolder(folder.name)}
-                        className="w-full flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-muted/50 transition-colors text-left"
-                      >
-                        {isExpanded
-                          ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                          : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
-                        <FolderOpen className="h-4 w-4 shrink-0 text-amber-500" />
-                        <span className="flex-1 font-medium">{folder.name}</span>
-                        <Badge variant="secondary" className="text-xs">{folder.fileCount}</Badge>
-                      </button>
+                      <div className="flex items-center hover:bg-muted/50 transition-colors">
+                        <button
+                          onClick={() => toggleFolder(folder.name)}
+                          className="flex-1 flex items-center gap-3 px-4 py-2.5 text-sm text-left"
+                        >
+                          {isExpanded
+                            ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                            : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                          <FolderOpen className="h-4 w-4 shrink-0 text-amber-500" />
+                          <span className="flex-1 font-medium">{folder.name}</span>
+                          <Badge variant="secondary" className="text-xs">{folder.fileCount}</Badge>
+                        </button>
+                        <a
+                          href={`/ma/api/mom-analysis/data-import/download-folder?folder=${encodeURIComponent(folder.name)}`}
+                          download={`${folder.name}.zip`}
+                          className="px-3 text-muted-foreground hover:text-foreground transition-colors"
+                          title={`下载 ${folder.name} 整个文件夹 (.zip)`}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <ArrowDownToLine className="h-3.5 w-3.5" />
+                        </a>
+                      </div>
 
                       {isExpanded && (
                         <div className="bg-muted/20">
