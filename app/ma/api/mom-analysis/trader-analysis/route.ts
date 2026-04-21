@@ -98,8 +98,74 @@ export async function GET(req: Request) {
         latestRiskRatio: r.latest_risk_ratio ?? null,
         latestMargin: parseNum(r.latest_margin),
         latestAvailable: parseNum(r.latest_available),
+        source: undefined as "guosen" | undefined,
       }
     })
+
+    // ── Merge guosen_account_summary data (optional – graceful fallback) ──
+    try {
+      const gParams: unknown[] = []
+      const gConds: string[] = []
+      if (from) { gParams.push(from); gConds.push(`trade_date >= $${gParams.length}::date`) }
+      if (to)   { gParams.push(to);   gConds.push(`trade_date <= $${gParams.length}::date`) }
+      const gWhere = gConds.length > 0 ? "WHERE " + gConds.join(" AND ") : ""
+
+      const gRows = await query<{
+        client_id: string; client_name: string
+        first_date: string; last_date: string; trading_days: string
+        period_pnl: string | null; period_fee: string | null; period_options_pnl: string | null
+        close_pnl: string | null; position_pnl: string | null
+        latest_equity: string | null; latest_balance: string | null
+        latest_risk_ratio: string | null; latest_margin: string | null; latest_available: string | null
+      }>(`
+        SELECT
+          client_id, client_name,
+          MIN(trade_date::text) AS first_date,
+          MAX(trade_date::text) AS last_date,
+          COUNT(*)::text AS trading_days,
+          SUM(COALESCE(realized_pl, 0) + COALESCE(mtm_pl, 0))::text           AS period_pnl,
+          SUM(COALESCE(commission, 0))::text                                   AS period_fee,
+          SUM(COALESCE(premium_received, 0) - COALESCE(premium_paid, 0))::text AS period_options_pnl,
+          SUM(COALESCE(realized_pl, 0))::text                                  AS close_pnl,
+          (array_agg(mtm_pl       ORDER BY trade_date DESC NULLS LAST))[1]::text AS position_pnl,
+          (array_agg(client_equity   ORDER BY trade_date DESC NULLS LAST))[1]::text AS latest_equity,
+          (array_agg(balance_cf      ORDER BY trade_date DESC NULLS LAST))[1]::text AS latest_balance,
+          (array_agg(risk_degree     ORDER BY trade_date DESC NULLS LAST))[1]::text AS latest_risk_ratio,
+          (array_agg(margin_occupied ORDER BY trade_date DESC NULLS LAST))[1]::text AS latest_margin,
+          (array_agg(fund_avail      ORDER BY trade_date DESC NULLS LAST))[1]::text AS latest_available
+        FROM guosen_account_summary
+        ${gWhere}
+        GROUP BY client_id, client_name
+      `, gParams.length > 0 ? gParams : undefined)
+
+      for (const r of gRows) {
+        const pnl = parseNum(r.period_pnl)
+        const fee = parseNum(r.period_fee)
+        const optionsPnl = parseNum(r.period_options_pnl)
+        traders.push({
+          account: r.client_name || r.client_id || "国信账户",
+          firstDate: r.first_date,
+          lastDate: r.last_date,
+          tradingDays: parseInt(r.trading_days, 10),
+          periodFuturesPnl: pnl,
+          periodFee: fee,
+          periodOptionsPnl: optionsPnl,
+          netPnl: pnl !== null || fee !== null || optionsPnl !== null
+            ? (pnl ?? 0) - (fee ?? 0) + (optionsPnl ?? 0)
+            : null,
+          closePnl: parseNum(r.close_pnl),
+          positionPnl: parseNum(r.position_pnl),
+          latestEquity: parseNum(r.latest_equity),
+          latestBalance: parseNum(r.latest_balance),
+          latestRiskRatio: r.latest_risk_ratio ?? null,
+          latestMargin: parseNum(r.latest_margin),
+          latestAvailable: parseNum(r.latest_available),
+          source: "guosen" as const,
+        })
+      }
+    } catch {
+      // guosen_account_summary not available — skip gracefully
+    }
 
     return NextResponse.json({ ok: true, from, to, traders })
   } catch (err: unknown) {
