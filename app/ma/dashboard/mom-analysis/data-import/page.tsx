@@ -1301,7 +1301,7 @@ export default function DataImportPage() {
         >
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <Mail className="h-4 w-4 text-sky-500" />
-            交易结算单 自动下载
+            国信交易结算单 自动下载
             <span className="ml-1 text-xs font-normal text-muted-foreground">
               每日自动从邮箱获取盯市结算单 .xlsx
             </span>
@@ -1542,7 +1542,7 @@ export default function DataImportPage() {
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <FileSpreadsheet className="h-4 w-4 text-sky-500" />
-            已下载结算单
+            国信已下载结算单
             {settlementFolder && (
               <span className="ml-1 font-mono text-xs font-normal text-muted-foreground truncate max-w-xs">
                 {settlementFolder}
