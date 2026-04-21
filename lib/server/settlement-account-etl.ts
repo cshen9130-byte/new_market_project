@@ -356,6 +356,9 @@ export async function runAccountSummaryETL(mode: "full" | "incremental"): Promis
 }
 
 // ─── Transaction Records ──────────────────────────────────────────────────────
+// Fixed typed columns matching the sheet layout:
+// 成交日期, 投资单元, 交易所, 交易编码, 品种, 合约, 买/卖, 投/保,
+// 成交价, 成交量, 成交额, 开平, 手续费, 平仓盈亏, 权利金收支, 成交编号
 
 const TRANSACTION_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS guosen_transaction_records (
@@ -365,9 +368,22 @@ const TRANSACTION_TABLE_SQL = `
     client_name     TEXT,
     settlement_date DATE,
     row_num         INTEGER NOT NULL,
-    zh_headers      TEXT[],
-    en_headers      TEXT[],
-    data            JSONB NOT NULL,
+    trade_date      DATE,
+    invest_unit     TEXT,
+    exchange        TEXT,
+    trading_code    TEXT,
+    product         TEXT,
+    instrument      TEXT,
+    bs              TEXT,
+    sh              TEXT,
+    price           NUMERIC,
+    lots            INTEGER,
+    turnover        NUMERIC,
+    oc              TEXT,
+    fee             NUMERIC,
+    realized_pl     NUMERIC,
+    premium_rp      NUMERIC,
+    trans_no        TEXT,
     updated_at      TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (source_file, row_num)
   )
@@ -377,11 +393,49 @@ async function ensureTransactionTable(): Promise<void> {
   await rawQuery(TRANSACTION_TABLE_SQL)
 }
 
-/**
- * Cell value for dynamic row reading.
- * Returns the raw value; Date objects become ISO date strings.
- */
-function cellVal(ws: XLSX.WorkSheet, r: number, c: number): string | number | boolean | null {
+// Column index → DB field name + converter
+// The sheet English header row maps positionally to these fields.
+// We identify columns by matching the English header text.
+const EN_HEADER_MAP: Record<string, string> = {
+  "Date":          "trade_date",
+  "InvestUnit":    "invest_unit",
+  "Exchange":      "exchange",
+  "TradingCode":   "trading_code",
+  "Product":       "product",
+  "Instrument":    "instrument",
+  "B/S":           "bs",
+  "S/H":           "sh",
+  "Price":         "price",
+  "Lots":          "lots",
+  "Turnover":      "turnover",
+  "O/C":           "oc",
+  "Fee":           "fee",
+  "RealizedP/L":   "realized_pl",
+  "PremiumR/P":    "premium_rp",
+  "Trans.No.":     "trans_no",
+}
+
+type ParsedTransactionRow = {
+  rowNum:       number
+  trade_date:   string | null
+  invest_unit:  string | null
+  exchange:     string | null
+  trading_code: string | null
+  product:      string | null
+  instrument:   string | null
+  bs:           string | null
+  sh:           string | null
+  price:        number | null
+  lots:         number | null
+  turnover:     number | null
+  oc:           string | null
+  fee:          number | null
+  realized_pl:  number | null
+  premium_rp:   number | null
+  trans_no:     string | null
+}
+
+function cellStr(ws: XLSX.WorkSheet, r: number, c: number): string | null {
   const cell = ws[XLSX.utils.encode_cell({ r, c })]
   if (!cell) return null
   const v = cell.v
@@ -391,119 +445,112 @@ function cellVal(ws: XLSX.WorkSheet, r: number, c: number): string | number | bo
     const d = String(v.getDate()).padStart(2, "0")
     return `${y}-${m}-${d}`
   }
-  if (typeof v === "number" || typeof v === "boolean") return v
   const s = String(v ?? "").trim()
   return s === "" ? null : s
 }
 
-type ParsedTransactionRow = {
-  rowNum: number
-  data: Record<string, string | number | boolean | null>
+function cellNum(ws: XLSX.WorkSheet, r: number, c: number): number | null {
+  const cell = ws[XLSX.utils.encode_cell({ r, c })]
+  if (!cell) return null
+  const v = cell.v
+  if (typeof v === "number") return v
+  const n = parseFloat(String(v ?? ""))
+  return isFinite(n) ? n : null
 }
 
-export function parseTransactionRecords(
-  buf: Buffer,
-  sourceFile: string,
-  clientId: string,
-  clientName: string,
-  settlementDate: string,
-): {
-  zhHeaders: string[]
-  enHeaders: string[]
-  rows: ParsedTransactionRow[]
-} | null {
-  try {
-    const wb = XLSX.read(buf, { type: "buffer", cellDates: true })
-    const ws = wb.Sheets[wb.SheetNames[0]]
-    if (!ws) return null
-
-    const ref = ws["!ref"]
-    if (!ref) return null
-    const range = XLSX.utils.decode_range(ref)
-
-    // ── Find the 成交记录 header row ──────────────────────────────────────
-    let sectionRow = -1
-    for (let r = range.s.r; r <= range.e.r; r++) {
-      const aVal = String(ws[XLSX.utils.encode_cell({ r, c: 0 })]?.v ?? "").trim()
-      if (aVal.includes("成交记录")) {
-        sectionRow = r
-        break
-      }
-    }
-    if (sectionRow === -1) return null   // section not found
-
-    const zhRow = sectionRow + 1
-    const enRow = sectionRow + 2
-    const dataStart = sectionRow + 3
-
-    if (enRow > range.e.r) return null  // nothing below
-
-    // ── Read Chinese & English headers ────────────────────────────────────
-    const zhHeaders: string[] = []
-    const enHeaders: string[] = []
-    let lastColWithHeader = range.s.c
-
-    for (let c = range.s.c; c <= range.e.c; c++) {
-      const zh = String(ws[XLSX.utils.encode_cell({ r: zhRow, c })]?.v ?? "").trim()
-      const en = String(ws[XLSX.utils.encode_cell({ r: enRow, c })]?.v ?? "").trim()
-      zhHeaders.push(zh)
-      enHeaders.push(en)
-      if (en !== "") lastColWithHeader = c
-    }
-
-    // Trim trailing empty headers
-    const colCount = lastColWithHeader - range.s.c + 1
-
-    // ── Read data rows ────────────────────────────────────────────────────
-    const rows: ParsedTransactionRow[] = []
-
-    for (let r = dataStart; r <= range.e.r; r++) {
-      const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
-
-      // Stop at first "总计 xx 行" encountered after the data section starts
-      if (aVal.startsWith("总计") && aVal.includes("行")) break
-      // Also match cells like "总计150行" (no space)
-      if (/^总计\d+行/.test(aVal)) break
-
-      // Skip fully empty rows
-      let hasAny = false
-      const rowData: Record<string, string | number | boolean | null> = {}
-
-      for (let c = range.s.c; c < range.s.c + colCount; c++) {
-        const colIdx = c - range.s.c
-        const header = enHeaders[colIdx] || zhHeaders[colIdx] || `col_${colIdx}`
-        const val = cellVal(ws, r, c)
-        rowData[header] = val
-        if (val !== null) hasAny = true
-      }
-
-      if (!hasAny) continue
-
-      rows.push({ rowNum: r - dataStart, data: rowData })
-    }
-
-    return {
-      zhHeaders: zhHeaders.slice(0, colCount),
-      enHeaders: enHeaders.slice(0, colCount),
-      rows,
-    }
-  } catch {
-    return null
+function parseTransactionRecords(
+  ws: XLSX.WorkSheet,
+  range: XLSX.Range,
+): ParsedTransactionRow[] | null {
+  // ── Find the 成交记录 header row ──────────────────────────────────────
+  let sectionRow = -1
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
+    if (aVal.includes("成交记录")) { sectionRow = r; break }
   }
+  if (sectionRow === -1) return null
+
+  const enRow = sectionRow + 2
+  const dataStart = sectionRow + 3
+  if (enRow > range.e.r) return []
+
+  // ── Map column index → field name ────────────────────────────────────
+  const colMap: { c: number; field: string }[] = []
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const en = String(ws[XLSX.utils.encode_cell({ r: enRow, c })]?.v ?? "").trim()
+    const field = EN_HEADER_MAP[en]
+    if (field) colMap.push({ c, field })
+  }
+  if (colMap.length === 0) return []
+
+  // ── Read data rows ────────────────────────────────────────────────────
+  const rows: ParsedTransactionRow[] = []
+  for (let r = dataStart; r <= range.e.r; r++) {
+    const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
+    if ((aVal.startsWith("总计") && aVal.includes("行")) || /^总计\d+行/.test(aVal)) break
+
+    // Build flat row object
+    const raw: Record<string, string | number | null> = {}
+    for (const { c, field } of colMap) {
+      const numericFields = new Set(["price","lots","turnover","fee","realized_pl","premium_rp"])
+      raw[field] = numericFields.has(field) ? cellNum(ws, r, c) : cellStr(ws, r, c)
+    }
+
+    // Skip fully empty rows
+    if (Object.values(raw).every(v => v === null)) continue
+
+    rows.push({
+      rowNum:       r - dataStart,
+      trade_date:   (raw["trade_date"] as string | null) ?? null,
+      invest_unit:  (raw["invest_unit"] as string | null) ?? null,
+      exchange:     (raw["exchange"] as string | null) ?? null,
+      trading_code: (raw["trading_code"] as string | null) ?? null,
+      product:      (raw["product"] as string | null) ?? null,
+      instrument:   (raw["instrument"] as string | null) ?? null,
+      bs:           (raw["bs"] as string | null) ?? null,
+      sh:           (raw["sh"] as string | null) ?? null,
+      price:        (raw["price"] as number | null) ?? null,
+      lots:         raw["lots"] != null ? Math.round(raw["lots"] as number) : null,
+      turnover:     (raw["turnover"] as number | null) ?? null,
+      oc:           (raw["oc"] as string | null) ?? null,
+      fee:          (raw["fee"] as number | null) ?? null,
+      realized_pl:  (raw["realized_pl"] as number | null) ?? null,
+      premium_rp:   (raw["premium_rp"] as number | null) ?? null,
+      trans_no:     (raw["trans_no"] as string | null) ?? null,
+    })
+  }
+  return rows
 }
 
 const TRANSACTION_UPSERT_SQL = `
   INSERT INTO guosen_transaction_records
-    (source_file, client_id, client_name, settlement_date, row_num, zh_headers, en_headers, data, updated_at)
-  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+    (source_file, client_id, client_name, settlement_date, row_num,
+     trade_date, invest_unit, exchange, trading_code, product, instrument,
+     bs, sh, price, lots, turnover, oc, fee, realized_pl, premium_rp, trans_no,
+     updated_at)
+  VALUES
+    ($1,$2,$3,$4,$5, $6,$7,$8,$9,$10,$11, $12,$13,$14,$15,$16,$17,$18,$19,$20,$21, NOW())
   ON CONFLICT (source_file, row_num)
   DO UPDATE SET
     client_id       = EXCLUDED.client_id,
     client_name     = EXCLUDED.client_name,
     settlement_date = EXCLUDED.settlement_date,
-    zh_headers      = EXCLUDED.zh_headers,
-    en_headers      = EXCLUDED.en_headers,
-    data            = EXCLUDED.data,
+    trade_date      = EXCLUDED.trade_date,
+    invest_unit     = EXCLUDED.invest_unit,
+    exchange        = EXCLUDED.exchange,
+    trading_code    = EXCLUDED.trading_code,
+    product         = EXCLUDED.product,
+    instrument      = EXCLUDED.instrument,
+    bs              = EXCLUDED.bs,
+    sh              = EXCLUDED.sh,
+    price           = EXCLUDED.price,
+    lots            = EXCLUDED.lots,
+    turnover        = EXCLUDED.turnover,
+    oc              = EXCLUDED.oc,
+    fee             = EXCLUDED.fee,
+    realized_pl     = EXCLUDED.realized_pl,
+    premium_rp      = EXCLUDED.premium_rp,
+    trans_no        = EXCLUDED.trans_no,
     updated_at      = NOW()
   RETURNING (xmax = 0) AS is_insert
 `
@@ -524,9 +571,7 @@ export async function runTransactionRecordsETL(mode: "full" | "incremental"): Pr
     processedFiles = new Set(rows.map((r) => r.source_file))
   }
 
-  const sortedFiles = [...files].reverse()
-
-  for (const file of sortedFiles) {
+  for (const file of [...files].reverse()) {
     if (mode === "incremental" && processedFiles.has(file.name)) {
       result.skipped++
       continue
@@ -536,41 +581,37 @@ export async function runTransactionRecordsETL(mode: "full" | "incremental"): Pr
       const filePath = path.join(folder, file.name)
       const buf = fs.readFileSync(filePath)
 
-      // Need client_id / client_name / settlement_date from account summary parse
       const summary = parseAccountSummary(buf, file.name)
       const clientId = summary?.client_id ?? ""
       const clientName = summary?.client_name ?? ""
       const settlementDate = summary?.trade_date ?? ""
 
-      const parsed = parseTransactionRecords(buf, file.name, clientId, clientName, settlementDate)
+      const wb = XLSX.read(buf, { type: "buffer", cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      if (!ws || !ws["!ref"]) {
+        result.errors.push(`${file.name}: 无法读取工作表`)
+        continue
+      }
+      const range = XLSX.utils.decode_range(ws["!ref"]!)
 
-      if (!parsed) {
+      const rows = parseTransactionRecords(ws, range)
+      if (rows === null) {
         result.errors.push(`${file.name}: 未找到成交记录区域`)
         continue
       }
-
-      if (parsed.rows.length === 0) {
-        // Empty section (no trades that day) — still count as processed
+      if (rows.length === 0) {
         result.processed++
         continue
       }
 
-      for (const row of parsed.rows) {
+      for (const row of rows) {
         const res = await rawQuery(TRANSACTION_UPSERT_SQL, [
-          file.name,
-          clientId,
-          clientName,
-          settlementDate || null,
-          row.rowNum,
-          parsed.zhHeaders,
-          parsed.enHeaders,
-          JSON.stringify(row.data),
+          file.name, clientId, clientName, settlementDate || null, row.rowNum,
+          row.trade_date, row.invest_unit, row.exchange, row.trading_code, row.product, row.instrument,
+          row.bs, row.sh, row.price, row.lots, row.turnover, row.oc, row.fee, row.realized_pl, row.premium_rp, row.trans_no,
         ])
-        if (res.rows[0]?.is_insert) {
-          result.inserted++
-        } else {
-          result.updated++
-        }
+        if (res.rows[0]?.is_insert) result.inserted++
+        else result.updated++
       }
 
       result.processed++

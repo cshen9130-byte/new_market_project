@@ -150,13 +150,6 @@ export default function DataImportPage() {
     transactions: { processed: number; inserted: number; updated: number; skipped: number; errors: string[] }
   } | null>(null)
 
-  // ── Transaction records viewer ─────────────────────────────────────────────
-  type TxRow = { row_num: number; zh_headers: string[]; en_headers: string[]; data: Record<string, unknown> }
-  const [txDates, setTxDates] = useState<string[]>([])
-  const [txDate, setTxDate] = useState<string>("")
-  const [txRows, setTxRows] = useState<TxRow[] | null>(null)
-  const [isFetchingTx, setIsFetchingTx] = useState(false)
-
   const autoFollowLogRef = useRef(true)
   const logScrollRef = useRef<HTMLDivElement | null>(null)
   const logEndRef = useRef<HTMLDivElement | null>(null)
@@ -372,32 +365,6 @@ export default function DataImportPage() {
     }
   }, [toast])
 
-  const loadTxDates = useCallback(async () => {
-    try {
-      const res = await fetch("/ma/api/mom-analysis/settlement-email/transactions", { cache: "no-store" })
-      const data = await res.json()
-      const dates: string[] = data.dates ?? []
-      setTxDates(dates)
-      if (dates.length > 0 && !txDate) setTxDate(dates[0])
-    } catch { /* ignore */ }
-  }, [txDate])
-
-  const loadTxRows = useCallback(async (date: string) => {
-    if (!date) return
-    setIsFetchingTx(true)
-    setTxRows(null)
-    try {
-      const res = await fetch(`/ma/api/mom-analysis/settlement-email/transactions?date=${date}`, { cache: "no-store" })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? "查询失败")
-      setTxRows(data.rows ?? [])
-    } catch (e) {
-      toast({ title: "查询失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
-    } finally {
-      setIsFetchingTx(false)
-    }
-  }, [toast])
-
   const saveSettlementConfig = useCallback(async () => {
     setIsSavingSettlementCfg(true)
     try {
@@ -437,7 +404,7 @@ export default function DataImportPage() {
     }
   }, [loadSettlementFiles, toast])
 
-  useEffect(() => { loadFolders(); checkDates(); checkEtlStatus(); loadSettlementConfig(); loadSettlementFiles(); loadTxDates() }, [loadFolders, checkDates, checkEtlStatus, loadSettlementConfig, loadSettlementFiles, loadTxDates])
+  useEffect(() => { loadFolders(); checkDates(); checkEtlStatus(); loadSettlementConfig(); loadSettlementFiles() }, [loadFolders, checkDates, checkEtlStatus, loadSettlementConfig, loadSettlementFiles])
 
   async function toggleFolder(name: string) {
     if (expandedFolder === name) {
@@ -1791,88 +1758,6 @@ export default function DataImportPage() {
                 ))}
               </div>
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* ── 成交记录浏览 ─────────────────────────────────────────────────── */}
-      <Card className="border-border/40 shadow-sm">
-        <CardHeader className="pb-3 flex flex-row items-center justify-between">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <FileSpreadsheet className="h-4 w-4 text-indigo-500" />
-            成交记录浏览
-            <span className="ml-1 text-xs font-normal text-muted-foreground">guosen_transaction_records</span>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Select value={txDate} onValueChange={setTxDate}>
-              <SelectTrigger className="h-8 w-40 text-xs">
-                <SelectValue placeholder="选择日期" />
-              </SelectTrigger>
-              <SelectContent>
-                {txDates.map(d => (
-                  <SelectItem key={d} value={d} className="text-xs font-mono">{d}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 text-xs gap-1"
-              onClick={() => loadTxRows(txDate)}
-              disabled={isFetchingTx || !txDate}
-            >
-              {isFetchingTx
-                ? <><RefreshCw className="h-3 w-3 animate-spin" />查询中…</>
-                : <><Play className="h-3 w-3" />查询</>}
-            </Button>
-            {txRows && (
-              <span className="text-xs text-muted-foreground">
-                共 <span className="font-semibold text-foreground">{txRows.length}</span> 条成交记录
-              </span>
-            )}
-          </div>
-
-          {txRows && txRows.length > 0 && (() => {
-            const zhHeaders = txRows[0].zh_headers
-            const enHeaders = txRows[0].en_headers
-            return (
-              <div className="overflow-x-auto rounded border border-border/40">
-                <table className="text-xs w-full border-collapse">
-                  <thead>
-                    <tr className="bg-muted/50">
-                      {zhHeaders.map((zh, i) => (
-                        <th key={i} className="px-2 py-1.5 text-left font-medium text-muted-foreground border-b border-border/40 whitespace-nowrap">
-                          <div>{zh}</div>
-                          <div className="text-[10px] font-normal opacity-60">{enHeaders[i]}</div>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {txRows.map((row) => (
-                      <tr key={row.row_num} className="hover:bg-muted/30 border-b border-border/20 last:border-0">
-                        {enHeaders.map((en, i) => {
-                          const val = row.data[en] ?? row.data[zhHeaders[i]] ?? null
-                          return (
-                            <td key={i} className="px-2 py-1 whitespace-nowrap font-mono tabular-nums">
-                              {val === null || val === undefined ? (
-                                <span className="text-muted-foreground/40">—</span>
-                              ) : String(val)}
-                            </td>
-                          )
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
-          })()}
-
-          {txRows && txRows.length === 0 && (
-            <p className="text-xs text-muted-foreground text-center py-4">当日无成交记录</p>
           )}
         </CardContent>
       </Card>
