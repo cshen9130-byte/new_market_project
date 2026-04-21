@@ -71,21 +71,62 @@ export function writeConfig(cfg: SettlementEmailConfig): void {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), "utf-8")
 }
 
-// ─── XLSX A3 check ───────────────────────────────────────────────────────────
+// ─── XLSX A3 / N5 reader ─────────────────────────────────────────────────────
 
-function isSettlementDingshi(buf: Buffer): boolean {
+/**
+ * Returns { a3, n5 } from the first sheet, or null if A3 doesn't match.
+ * a3: trimmed value of cell A3 (e.g. "交易结算单(盯市)")
+ * n5: date string derived from cell N5 (formatted as YYYYMMDD), or "" if missing
+ */
+function readSettlementCells(buf: Buffer): { a3: string; n5: string } | null {
   try {
-    const wb = XLSX.read(buf, { type: "buffer" })
+    const wb = XLSX.read(buf, { type: "buffer", cellDates: true })
     const ws = wb.Sheets[wb.SheetNames[0]]
-    if (!ws) return false
-    const cell = ws["A3"]
-    if (!cell) return false
-    const val = String(cell.v ?? "").trim()
-    // Accept both full-width （盯市） and half-width (盯市)
-    return val.includes("交易结算单") && val.includes("盯市")
+    if (!ws) return null
+
+    const cellA3 = ws["A3"]
+    if (!cellA3) return null
+    const a3 = String(cellA3.v ?? "").trim()
+    if (!a3.includes("交易结算单") || !a3.includes("盯市")) return null
+
+    // N5: may be a Date object (cellDates:true), a serial number, or a string
+    let n5 = ""
+    const cellN5 = ws["N5"]
+    if (cellN5) {
+      const raw = cellN5.v
+      if (raw instanceof Date) {
+        const y = raw.getFullYear()
+        const m = String(raw.getMonth() + 1).padStart(2, "0")
+        const d = String(raw.getDate()).padStart(2, "0")
+        n5 = `${y}${m}${d}`
+      } else if (typeof raw === "number") {
+        // Excel date serial → JS Date
+        const d = XLSX.SSF.parse_date_code(raw)
+        if (d) n5 = `${d.y}${String(d.m).padStart(2, "0")}${String(d.d).padStart(2, "0")}`
+      } else if (typeof raw === "string") {
+        // Try to extract 8-digit date string, e.g. "2026/04/20" or "20260420"
+        const digits = raw.replace(/\D/g, "")
+        if (digits.length >= 8) n5 = digits.slice(0, 8)
+      }
+    }
+
+    return { a3, n5 }
   } catch {
-    return false
+    return null
   }
+}
+
+/**
+ * Build a stable output filename from A3 + N5.
+ * e.g. "交易结算单(盯市)_20260420.xlsx"
+ * Falls back to original attachment filename if N5 is empty.
+ */
+function buildOutputFilename(cells: { a3: string; n5: string }, fallback: string): string {
+  // Sanitise A3 for use as a filename segment (strip path-unsafe chars)
+  const a3safe = cells.a3.replace(/[\\/:*?"<>|]/g, "")
+  if (cells.n5) return `${a3safe}_${cells.n5}.xlsx`
+  // If no date from N5, keep the original name
+  return fallback.toLowerCase().endsWith(".xlsx") ? fallback : `${fallback}.xlsx`
 }
 
 // ─── IMAP body part collector ────────────────────────────────────────────────
@@ -196,20 +237,23 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
           const buf = Buffer.concat(chunks)
 
           // A3 cell is the sole content gate: must contain both 交易结算单 and 盯市
-          if (!isSettlementDingshi(buf)) {
+          const cells = readSettlementCells(buf)
+          if (!cells) {
             log.push(`  → ${filename}: A3 不含"交易结算单(盯市)"，跳过`)
             skipped.push(filename)
             continue
           }
 
-          const outPath = path.join(dlDir, filename)
-          // Skip if already downloaded (same filename = same date+account)
+          const outName = buildOutputFilename(cells, filename)
+          log.push(`  → ${filename}: A3="${cells.a3}" N5="${cells.n5}" → 保存为 ${outName}`)
+          const outPath = path.join(dlDir, outName)
+          // Skip if already downloaded
           if (fs.existsSync(outPath)) {
-            skipped.push(`${filename} (已存在)`)
+            skipped.push(`${outName} (已存在)`)
             continue
           }
           fs.writeFileSync(outPath, buf)
-          downloaded.push(filename)
+          downloaded.push(outName)
         } catch (e) {
           errors.push(`${filename}: ${e instanceof Error ? e.message : String(e)}`)
         }
