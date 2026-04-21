@@ -76,6 +76,19 @@ export async function POST(request: Request) {
         }
       }
 
+      // Step 1b: incremental ETL of account summary cells into PostgreSQL
+      try {
+        send("[settlement-etl] 正在同步资金状况至数据库（增量）…")
+        const { runAccountSummaryETL } = await import("@/lib/server/settlement-account-etl")
+        const etlRes = await runAccountSummaryETL("incremental")
+        send(`[settlement-etl] 完成: 新增 ${etlRes.inserted} 条, 更新 ${etlRes.updated} 条, 跳过 ${etlRes.skipped} 条`)
+        if (etlRes.errors.length > 0) {
+          send(`[settlement-etl] 警告: ${etlRes.errors.join("; ")}`)
+        }
+      } catch (e) {
+        send(`[settlement-etl] 同步失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
+      }
+
       // Step 2: spawn ETL process
       proc = spawn(python, args, {
         env: { ...process.env },

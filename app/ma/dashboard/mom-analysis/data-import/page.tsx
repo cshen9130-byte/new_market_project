@@ -144,6 +144,15 @@ export default function DataImportPage() {
     errors: string[]
   } | null>(null)
 
+  const [isRunningAccountETL, setIsRunningAccountETL] = useState(false)
+  const [accountETLResult, setAccountETLResult] = useState<{
+    processed: number
+    inserted: number
+    updated: number
+    skipped: number
+    errors: string[]
+  } | null>(null)
+
   const autoFollowLogRef = useRef(true)
   const logScrollRef = useRef<HTMLDivElement | null>(null)
   const logEndRef = useRef<HTMLDivElement | null>(null)
@@ -334,6 +343,30 @@ export default function DataImportPage() {
       setIsNormalizingFiles(false)
     }
   }, [loadSettlementFiles, toast])
+
+  const runAccountETL = useCallback(async (mode: "full" | "incremental") => {
+    setIsRunningAccountETL(true)
+    setAccountETLResult(null)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/settlement-email/etl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+        cache: "no-store",
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "同步失败")
+      setAccountETLResult(data)
+      toast({
+        title: `资金状况同步完成`,
+        description: `新增 ${data.inserted} 条，更新 ${data.updated} 条，跳过 ${data.skipped} 条`,
+      })
+    } catch (e) {
+      toast({ title: "同步失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
+    } finally {
+      setIsRunningAccountETL(false)
+    }
+  }, [toast])
 
   const saveSettlementConfig = useCallback(async () => {
     setIsSavingSettlementCfg(true)
@@ -1645,6 +1678,71 @@ export default function DataImportPage() {
             ))}
           </div>
         )}
+      </Card>
+
+      {/* ── Account Summary ETL ────────────────────────────────────────────── */}
+      <Card className="border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Database className="h-4 w-4 text-violet-500" />
+            资金状况同步至数据库
+            <span className="ml-1 text-xs font-normal text-muted-foreground">
+              guosen_account_summary 表
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            从国信已下载结算单中解析资金状况数据（C5、G5、N5、D10–D23、K10–K23），
+            按 <span className="font-mono">(client_id, trade_date)</span> 唯一键写入数据库。
+            <br />
+            <span className="text-amber-600 dark:text-amber-400">全量同步</span>处理所有文件；
+            <span className="text-emerald-600 dark:text-emerald-400">增量同步</span>仅处理尚未入库的文件（每日 ETL 自动执行增量）。
+          </p>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs"
+              disabled={isRunningAccountETL}
+              onClick={() => void runAccountETL("full")}
+            >
+              {isRunningAccountETL ? (
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Database className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              全量同步
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 text-xs"
+              disabled={isRunningAccountETL}
+              onClick={() => void runAccountETL("incremental")}
+            >
+              {isRunningAccountETL ? (
+                <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Activity className="mr-1.5 h-3.5 w-3.5" />
+              )}
+              增量同步
+            </Button>
+          </div>
+          {accountETLResult && (
+            <div className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs space-y-1">
+              <div className="flex gap-4 text-muted-foreground">
+                <span>处理 <span className="font-semibold text-foreground">{accountETLResult.processed}</span></span>
+                <span className="text-emerald-600 dark:text-emerald-400">新增 <span className="font-semibold">{accountETLResult.inserted}</span></span>
+                <span className="text-sky-600 dark:text-sky-400">更新 <span className="font-semibold">{accountETLResult.updated}</span></span>
+                <span>跳过 <span className="font-semibold">{accountETLResult.skipped}</span></span>
+              </div>
+              {accountETLResult.errors.map((e, i) => (
+                <div key={i} className="font-mono text-destructive">{e}</div>
+              ))}
+            </div>
+          )}
+        </CardContent>
       </Card>
     </div>
   )
