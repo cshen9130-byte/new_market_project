@@ -77,6 +77,7 @@ export type SettlementETLResult = {
   transactions: ETLResult
   positions: ETLResult
   positionSummary: ETLResult
+  positionClosed: ETLResult
 }
 
 // ─── Table DDL ───────────────────────────────────────────────────────────────
@@ -1144,14 +1145,258 @@ export async function runPositionSummaryETL(mode: "full" | "incremental"): Promi
   return result
 }
 
+// ─── Position Closed (平仓明细) ────────────────────────────────────────────────
+// English headers from the sheet:
+// CloseDate, InvestUnit, Exchange, TradingCode, Product, Instrument,
+// OpenDate, S/H, B/S, Lots, Pos.OpenPrice, Prev.Sttl, Trans.Price,
+// RealizedP/L, PremiumR/P
+
+const POSITION_CLOSED_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS guosen_position_closed (
+    id               SERIAL PRIMARY KEY,
+    source_file      TEXT NOT NULL,
+    client_id        TEXT,
+    client_name      TEXT,
+    settlement_date  DATE,
+    date_range_raw   TEXT,
+    row_num          INTEGER NOT NULL,
+    close_date       TEXT,
+    invest_unit      TEXT,
+    exchange         TEXT,
+    trading_code     TEXT,
+    product          TEXT,
+    instrument       TEXT,
+    open_date        TEXT,
+    sh               TEXT,
+    bs               TEXT,
+    lots             NUMERIC,
+    pos_open_price   NUMERIC,
+    prev_settl       NUMERIC,
+    trans_price      NUMERIC,
+    realized_pl      NUMERIC,
+    premium_rp       NUMERIC,
+    updated_at       TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (source_file, row_num)
+  )
+`
+
+async function ensurePositionClosedTable(): Promise<void> {
+  await rawQuery(POSITION_CLOSED_TABLE_SQL)
+}
+
+const EN_POSITION_CLOSED_HEADER_MAP: Record<string, string> = {
+  "CloseDate":     "close_date",
+  "InvestUnit":    "invest_unit",
+  "Exchange":      "exchange",
+  "TradingCode":   "trading_code",
+  "Product":       "product",
+  "Instrument":    "instrument",
+  "OpenDate":      "open_date",
+  "S/H":           "sh",
+  "B/S":           "bs",
+  "Lots":          "lots",
+  "Pos.OpenPrice": "pos_open_price",
+  "Prev.Sttl":     "prev_settl",
+  "Trans.Price":   "trans_price",
+  "RealizedP/L":   "realized_pl",
+  "PremiumR/P":    "premium_rp",
+}
+
+const POSITION_CLOSED_NUM_FIELDS = new Set([
+  "lots", "pos_open_price", "prev_settl", "trans_price", "realized_pl", "premium_rp",
+])
+
+type ParsedPositionClosedRow = {
+  rowNum:         number
+  close_date:     string | null
+  invest_unit:    string | null
+  exchange:       string | null
+  trading_code:   string | null
+  product:        string | null
+  instrument:     string | null
+  open_date:      string | null
+  sh:             string | null
+  bs:             string | null
+  lots:           number | null
+  pos_open_price: number | null
+  prev_settl:     number | null
+  trans_price:    number | null
+  realized_pl:    number | null
+  premium_rp:     number | null
+}
+
+function parsePositionClosed(
+  ws: XLSX.WorkSheet,
+  range: XLSX.Range,
+): ParsedPositionClosedRow[] | null {
+  // ── Find 平仓明细 header row ──────────────────────────────────────────
+  let sectionRow = -1
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
+    if (aVal.includes("平仓明细")) { sectionRow = r; break }
+  }
+  if (sectionRow === -1) return null
+
+  const enRow = sectionRow + 2
+  const dataStart = sectionRow + 3
+  if (enRow > range.e.r) return []
+
+  // ── Map column index → field name ────────────────────────────────────
+  const colMap: { c: number; field: string }[] = []
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const en = String(ws[XLSX.utils.encode_cell({ r: enRow, c })]?.v ?? "").trim()
+    const field = EN_POSITION_CLOSED_HEADER_MAP[en]
+    if (field) colMap.push({ c, field })
+  }
+  if (colMap.length === 0) return []
+
+  // ── Read data rows; stop at first 总计 xx 行 ─────────────────────────
+  const rows: ParsedPositionClosedRow[] = []
+  for (let r = dataStart; r <= range.e.r; r++) {
+    const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
+    if ((aVal.startsWith("总计") && aVal.includes("行")) || /^总计\d+行/.test(aVal)) break
+
+    const raw: Record<string, string | number | null> = {}
+    for (const { c, field } of colMap) {
+      raw[field] = POSITION_CLOSED_NUM_FIELDS.has(field) ? cellNum(ws, r, c) : cellStr(ws, r, c)
+    }
+
+    if (Object.values(raw).every(v => v === null)) continue
+
+    rows.push({
+      rowNum:         r - dataStart,
+      close_date:     (raw["close_date"]     as string | null) ?? null,
+      invest_unit:    (raw["invest_unit"]     as string | null) ?? null,
+      exchange:       (raw["exchange"]        as string | null) ?? null,
+      trading_code:   (raw["trading_code"]    as string | null) ?? null,
+      product:        (raw["product"]         as string | null) ?? null,
+      instrument:     (raw["instrument"]      as string | null) ?? null,
+      open_date:      (raw["open_date"]       as string | null) ?? null,
+      sh:             (raw["sh"]             as string | null) ?? null,
+      bs:             (raw["bs"]             as string | null) ?? null,
+      lots:           (raw["lots"]           as number | null) ?? null,
+      pos_open_price: (raw["pos_open_price"] as number | null) ?? null,
+      prev_settl:     (raw["prev_settl"]     as number | null) ?? null,
+      trans_price:    (raw["trans_price"]    as number | null) ?? null,
+      realized_pl:    (raw["realized_pl"]    as number | null) ?? null,
+      premium_rp:     (raw["premium_rp"]     as number | null) ?? null,
+    })
+  }
+  return rows
+}
+
+const POSITION_CLOSED_UPSERT_SQL = `
+  INSERT INTO guosen_position_closed
+    (source_file, client_id, client_name, settlement_date, date_range_raw, row_num,
+     close_date, invest_unit, exchange, trading_code, product, instrument,
+     open_date, sh, bs, lots, pos_open_price, prev_settl, trans_price,
+     realized_pl, premium_rp, updated_at)
+  VALUES
+    ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11,$12, $13,$14,$15,$16,$17,$18,$19, $20,$21, NOW())
+  ON CONFLICT (source_file, row_num)
+  DO UPDATE SET
+    client_id       = EXCLUDED.client_id,
+    client_name     = EXCLUDED.client_name,
+    settlement_date = EXCLUDED.settlement_date,
+    date_range_raw  = EXCLUDED.date_range_raw,
+    close_date      = EXCLUDED.close_date,
+    invest_unit     = EXCLUDED.invest_unit,
+    exchange        = EXCLUDED.exchange,
+    trading_code    = EXCLUDED.trading_code,
+    product         = EXCLUDED.product,
+    instrument      = EXCLUDED.instrument,
+    open_date       = EXCLUDED.open_date,
+    sh              = EXCLUDED.sh,
+    bs              = EXCLUDED.bs,
+    lots            = EXCLUDED.lots,
+    pos_open_price  = EXCLUDED.pos_open_price,
+    prev_settl      = EXCLUDED.prev_settl,
+    trans_price     = EXCLUDED.trans_price,
+    realized_pl     = EXCLUDED.realized_pl,
+    premium_rp      = EXCLUDED.premium_rp,
+    updated_at      = NOW()
+  RETURNING (xmax = 0) AS is_insert
+`
+
+export async function runPositionClosedETL(mode: "full" | "incremental"): Promise<ETLResult> {
+  await ensurePositionClosedTable()
+
+  const { files, folder } = listDownloadedFiles()
+  const result: ETLResult = { processed: 0, inserted: 0, updated: 0, skipped: 0, errors: [] }
+
+  if (files.length === 0) return result
+
+  let processedFiles = new Set<string>()
+  if (mode === "incremental") {
+    const rows = await query<{ source_file: string }>(
+      "SELECT DISTINCT source_file FROM guosen_position_closed"
+    )
+    processedFiles = new Set(rows.map((r) => r.source_file))
+  }
+
+  for (const file of [...files].reverse()) {
+    if (mode === "incremental" && processedFiles.has(file.name)) {
+      result.skipped++
+      continue
+    }
+
+    try {
+      const filePath = path.join(folder, file.name)
+      const buf = fs.readFileSync(filePath)
+
+      const summary = parseAccountSummary(buf, file.name)
+      const clientId = summary?.client_id ?? ""
+      const clientName = summary?.client_name ?? ""
+      const settlementDate = summary?.trade_date ?? ""
+      const dateRangeRaw = summary?.date_range_raw ?? ""
+
+      const wb = XLSX.read(buf, { type: "buffer", cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      if (!ws || !ws["!ref"]) {
+        result.errors.push(`${file.name}: 无法读取工作表`)
+        continue
+      }
+      const range = XLSX.utils.decode_range(ws["!ref"]!)
+
+      const rows = parsePositionClosed(ws, range)
+      if (rows === null) {
+        result.errors.push(`${file.name}: 未找到平仓明细区域`)
+        continue
+      }
+      if (rows.length === 0) {
+        result.processed++
+        continue
+      }
+
+      for (const row of rows) {
+        const res = await rawQuery(POSITION_CLOSED_UPSERT_SQL, [
+          file.name, clientId, clientName, settlementDate || null, dateRangeRaw, row.rowNum,
+          row.close_date, row.invest_unit, row.exchange, row.trading_code, row.product, row.instrument,
+          row.open_date, row.sh, row.bs, row.lots, row.pos_open_price, row.prev_settl, row.trans_price,
+          row.realized_pl, row.premium_rp,
+        ])
+        if (res.rows[0]?.is_insert) result.inserted++
+        else result.updated++
+      }
+
+      result.processed++
+    } catch (e) {
+      result.errors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  return result
+}
+
 // ─── Combined entry point ─────────────────────────────────────────────────────
 
 export async function runSettlementFilesETL(mode: "full" | "incremental"): Promise<SettlementETLResult> {
-  const [accountSummary, transactions, positions, positionSummary] = await Promise.all([
+  const [accountSummary, transactions, positions, positionSummary, positionClosed] = await Promise.all([
     runAccountSummaryETL(mode),
     runTransactionRecordsETL(mode),
     runPositionDetailETL(mode),
     runPositionSummaryETL(mode),
+    runPositionClosedETL(mode),
   ])
-  return { accountSummary, transactions, positions, positionSummary }
+  return { accountSummary, transactions, positions, positionSummary, positionClosed }
 }
