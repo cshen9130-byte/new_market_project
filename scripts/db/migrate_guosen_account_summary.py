@@ -121,6 +121,23 @@ with conn.cursor() as cur:
     """)
     print("  + guosen_account_summary table created (or already exists)")
 
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS guosen_transaction_records (
+            id              SERIAL PRIMARY KEY,
+            source_file     TEXT NOT NULL,
+            client_id       TEXT,
+            client_name     TEXT,
+            settlement_date DATE,
+            row_num         INTEGER NOT NULL,
+            zh_headers      TEXT[],
+            en_headers      TEXT[],
+            data            JSONB NOT NULL,
+            updated_at      TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (source_file, row_num)
+        )
+    """)
+    print("  + guosen_transaction_records table created (or already exists)")
+
 conn.commit()
 conn.close()
 print("Migration complete.")

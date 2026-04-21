@@ -72,6 +72,11 @@ export type ETLResult = {
   errors: string[]
 }
 
+export type SettlementETLResult = {
+  accountSummary: ETLResult
+  transactions: ETLResult
+}
+
 // ─── Table DDL ───────────────────────────────────────────────────────────────
 
 const CREATE_TABLE_SQL = `
@@ -348,4 +353,241 @@ export async function runAccountSummaryETL(mode: "full" | "incremental"): Promis
   }
 
   return result
+}
+
+// ─── Transaction Records ──────────────────────────────────────────────────────
+
+const TRANSACTION_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS guosen_transaction_records (
+    id              SERIAL PRIMARY KEY,
+    source_file     TEXT NOT NULL,
+    client_id       TEXT,
+    client_name     TEXT,
+    settlement_date DATE,
+    row_num         INTEGER NOT NULL,
+    zh_headers      TEXT[],
+    en_headers      TEXT[],
+    data            JSONB NOT NULL,
+    updated_at      TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (source_file, row_num)
+  )
+`
+
+async function ensureTransactionTable(): Promise<void> {
+  await rawQuery(TRANSACTION_TABLE_SQL)
+}
+
+/**
+ * Cell value for dynamic row reading.
+ * Returns the raw value; Date objects become ISO date strings.
+ */
+function cellVal(ws: XLSX.WorkSheet, r: number, c: number): string | number | boolean | null {
+  const cell = ws[XLSX.utils.encode_cell({ r, c })]
+  if (!cell) return null
+  const v = cell.v
+  if (v instanceof Date) {
+    const y = v.getFullYear()
+    const m = String(v.getMonth() + 1).padStart(2, "0")
+    const d = String(v.getDate()).padStart(2, "0")
+    return `${y}-${m}-${d}`
+  }
+  if (typeof v === "number" || typeof v === "boolean") return v
+  const s = String(v ?? "").trim()
+  return s === "" ? null : s
+}
+
+type ParsedTransactionRow = {
+  rowNum: number
+  data: Record<string, string | number | boolean | null>
+}
+
+export function parseTransactionRecords(
+  buf: Buffer,
+  sourceFile: string,
+  clientId: string,
+  clientName: string,
+  settlementDate: string,
+): {
+  zhHeaders: string[]
+  enHeaders: string[]
+  rows: ParsedTransactionRow[]
+} | null {
+  try {
+    const wb = XLSX.read(buf, { type: "buffer", cellDates: true })
+    const ws = wb.Sheets[wb.SheetNames[0]]
+    if (!ws) return null
+
+    const ref = ws["!ref"]
+    if (!ref) return null
+    const range = XLSX.utils.decode_range(ref)
+
+    // ── Find the 成交记录 header row ──────────────────────────────────────
+    let sectionRow = -1
+    for (let r = range.s.r; r <= range.e.r; r++) {
+      const aVal = String(ws[XLSX.utils.encode_cell({ r, c: 0 })]?.v ?? "").trim()
+      if (aVal.includes("成交记录")) {
+        sectionRow = r
+        break
+      }
+    }
+    if (sectionRow === -1) return null   // section not found
+
+    const zhRow = sectionRow + 1
+    const enRow = sectionRow + 2
+    const dataStart = sectionRow + 3
+
+    if (enRow > range.e.r) return null  // nothing below
+
+    // ── Read Chinese & English headers ────────────────────────────────────
+    const zhHeaders: string[] = []
+    const enHeaders: string[] = []
+    let lastColWithHeader = range.s.c
+
+    for (let c = range.s.c; c <= range.e.c; c++) {
+      const zh = String(ws[XLSX.utils.encode_cell({ r: zhRow, c })]?.v ?? "").trim()
+      const en = String(ws[XLSX.utils.encode_cell({ r: enRow, c })]?.v ?? "").trim()
+      zhHeaders.push(zh)
+      enHeaders.push(en)
+      if (en !== "") lastColWithHeader = c
+    }
+
+    // Trim trailing empty headers
+    const colCount = lastColWithHeader - range.s.c + 1
+
+    // ── Read data rows ────────────────────────────────────────────────────
+    const rows: ParsedTransactionRow[] = []
+
+    for (let r = dataStart; r <= range.e.r; r++) {
+      const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
+
+      // Stop at first "总计 xx 行" encountered after the data section starts
+      if (aVal.startsWith("总计") && aVal.includes("行")) break
+      // Also match cells like "总计150行" (no space)
+      if (/^总计\d+行/.test(aVal)) break
+
+      // Skip fully empty rows
+      let hasAny = false
+      const rowData: Record<string, string | number | boolean | null> = {}
+
+      for (let c = range.s.c; c < range.s.c + colCount; c++) {
+        const colIdx = c - range.s.c
+        const header = enHeaders[colIdx] || zhHeaders[colIdx] || `col_${colIdx}`
+        const val = cellVal(ws, r, c)
+        rowData[header] = val
+        if (val !== null) hasAny = true
+      }
+
+      if (!hasAny) continue
+
+      rows.push({ rowNum: r - dataStart, data: rowData })
+    }
+
+    return {
+      zhHeaders: zhHeaders.slice(0, colCount),
+      enHeaders: enHeaders.slice(0, colCount),
+      rows,
+    }
+  } catch {
+    return null
+  }
+}
+
+const TRANSACTION_UPSERT_SQL = `
+  INSERT INTO guosen_transaction_records
+    (source_file, client_id, client_name, settlement_date, row_num, zh_headers, en_headers, data, updated_at)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+  ON CONFLICT (source_file, row_num)
+  DO UPDATE SET
+    client_id       = EXCLUDED.client_id,
+    client_name     = EXCLUDED.client_name,
+    settlement_date = EXCLUDED.settlement_date,
+    zh_headers      = EXCLUDED.zh_headers,
+    en_headers      = EXCLUDED.en_headers,
+    data            = EXCLUDED.data,
+    updated_at      = NOW()
+  RETURNING (xmax = 0) AS is_insert
+`
+
+export async function runTransactionRecordsETL(mode: "full" | "incremental"): Promise<ETLResult> {
+  await ensureTransactionTable()
+
+  const { files, folder } = listDownloadedFiles()
+  const result: ETLResult = { processed: 0, inserted: 0, updated: 0, skipped: 0, errors: [] }
+
+  if (files.length === 0) return result
+
+  let processedFiles = new Set<string>()
+  if (mode === "incremental") {
+    const rows = await query<{ source_file: string }>(
+      "SELECT DISTINCT source_file FROM guosen_transaction_records"
+    )
+    processedFiles = new Set(rows.map((r) => r.source_file))
+  }
+
+  const sortedFiles = [...files].reverse()
+
+  for (const file of sortedFiles) {
+    if (mode === "incremental" && processedFiles.has(file.name)) {
+      result.skipped++
+      continue
+    }
+
+    try {
+      const filePath = path.join(folder, file.name)
+      const buf = fs.readFileSync(filePath)
+
+      // Need client_id / client_name / settlement_date from account summary parse
+      const summary = parseAccountSummary(buf, file.name)
+      const clientId = summary?.client_id ?? ""
+      const clientName = summary?.client_name ?? ""
+      const settlementDate = summary?.trade_date ?? ""
+
+      const parsed = parseTransactionRecords(buf, file.name, clientId, clientName, settlementDate)
+
+      if (!parsed) {
+        result.errors.push(`${file.name}: 未找到成交记录区域`)
+        continue
+      }
+
+      if (parsed.rows.length === 0) {
+        // Empty section (no trades that day) — still count as processed
+        result.processed++
+        continue
+      }
+
+      for (const row of parsed.rows) {
+        const res = await rawQuery(TRANSACTION_UPSERT_SQL, [
+          file.name,
+          clientId,
+          clientName,
+          settlementDate || null,
+          row.rowNum,
+          parsed.zhHeaders,
+          parsed.enHeaders,
+          JSON.stringify(row.data),
+        ])
+        if (res.rows[0]?.is_insert) {
+          result.inserted++
+        } else {
+          result.updated++
+        }
+      }
+
+      result.processed++
+    } catch (e) {
+      result.errors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  return result
+}
+
+// ─── Combined entry point ─────────────────────────────────────────────────────
+
+export async function runSettlementFilesETL(mode: "full" | "incremental"): Promise<SettlementETLResult> {
+  const [accountSummary, transactions] = await Promise.all([
+    runAccountSummaryETL(mode),
+    runTransactionRecordsETL(mode),
+  ])
+  return { accountSummary, transactions }
 }

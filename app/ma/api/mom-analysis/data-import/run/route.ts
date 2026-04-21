@@ -76,14 +76,16 @@ export async function POST(request: Request) {
         }
       }
 
-      // Step 1b: incremental ETL of account summary cells into PostgreSQL
+      // Step 1b: incremental ETL of account summary + transaction records into PostgreSQL
       try {
-        send("[settlement-etl] 正在同步资金状况至数据库（增量）…")
-        const { runAccountSummaryETL } = await import("@/lib/server/settlement-account-etl")
-        const etlRes = await runAccountSummaryETL("incremental")
-        send(`[settlement-etl] 完成: 新增 ${etlRes.inserted} 条, 更新 ${etlRes.updated} 条, 跳过 ${etlRes.skipped} 条`)
-        if (etlRes.errors.length > 0) {
-          send(`[settlement-etl] 警告: ${etlRes.errors.join("; ")}`)
+        send("[settlement-etl] 正在同步结算数据至数据库（增量）…")
+        const { runSettlementFilesETL } = await import("@/lib/server/settlement-account-etl")
+        const etlRes = await runSettlementFilesETL("incremental")
+        send(`[settlement-etl] 资金状况: 新增 ${etlRes.accountSummary.inserted}, 更新 ${etlRes.accountSummary.updated}, 跳过 ${etlRes.accountSummary.skipped}`)
+        send(`[settlement-etl] 成交记录: 新增 ${etlRes.transactions.inserted}, 更新 ${etlRes.transactions.updated}, 跳过 ${etlRes.transactions.skipped}`)
+        const allErrors = [...etlRes.accountSummary.errors, ...etlRes.transactions.errors]
+        if (allErrors.length > 0) {
+          send(`[settlement-etl] 警告: ${allErrors.join("; ")}`)
         }
       } catch (e) {
         send(`[settlement-etl] 同步失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)

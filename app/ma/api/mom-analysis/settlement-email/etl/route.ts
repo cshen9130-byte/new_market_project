@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { runAccountSummaryETL } from "@/lib/server/settlement-account-etl"
+import { runSettlementFilesETL } from "@/lib/server/settlement-account-etl"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   } catch { /* default to incremental */ }
 
   try {
-    const result = await runAccountSummaryETL(mode)
+    const result = await runSettlementFilesETL(mode)
     return NextResponse.json(result)
   } catch (e) {
     return NextResponse.json(

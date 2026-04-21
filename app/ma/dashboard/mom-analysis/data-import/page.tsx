@@ -146,11 +146,8 @@ export default function DataImportPage() {
 
   const [isRunningAccountETL, setIsRunningAccountETL] = useState(false)
   const [accountETLResult, setAccountETLResult] = useState<{
-    processed: number
-    inserted: number
-    updated: number
-    skipped: number
-    errors: string[]
+    accountSummary: { processed: number; inserted: number; updated: number; skipped: number; errors: string[] }
+    transactions: { processed: number; inserted: number; updated: number; skipped: number; errors: string[] }
   } | null>(null)
 
   const autoFollowLogRef = useRef(true)
@@ -1685,19 +1682,24 @@ export default function DataImportPage() {
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <Database className="h-4 w-4 text-violet-500" />
-            资金状况同步至数据库
+            结算数据同步至数据库
             <span className="ml-1 text-xs font-normal text-muted-foreground">
-              guosen_account_summary 表
+              资金状况 + 成交记录
             </span>
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            从国信已下载结算单中解析资金状况数据（C5、G5、N5、D10–D23、K10–K23），
-            按 <span className="font-mono">(client_id, trade_date)</span> 唯一键写入数据库。
+            从国信已下载结算单中解析两张表：
+            <br />
+            • <span className="font-mono">资金状况</span>（C5、G5、N5、D10–D23、K10–K23）→ <span className="font-mono">guosen_account_summary</span>
+            <br />
+            • <span className="font-mono">成交记录</span>（横表全列动态解析）→ <span className="font-mono">guosen_transaction_records</span>
+            <br />
+            按唯一键写入：<span className="font-mono">(client_id, trade_date)</span> 和 <span className="font-mono">(source_file, row_num)</span>。
             <br />
             <span className="text-amber-600 dark:text-amber-400">全量同步</span>处理所有文件；
-            <span className="text-emerald-600 dark:text-emerald-400">增量同步</span>仅处理尚未入库的文件（每日 ETL 自动执行增量）。
+            <span className="text-emerald-600 dark:text-emerald-400">增量同步</span>仅处理尚未入库的文件（每日 ETL 自动执行）。
           </p>
           <div className="flex gap-2">
             <Button
@@ -1730,16 +1732,31 @@ export default function DataImportPage() {
             </Button>
           </div>
           {accountETLResult && (
-            <div className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs space-y-1">
-              <div className="flex gap-4 text-muted-foreground">
-                <span>处理 <span className="font-semibold text-foreground">{accountETLResult.processed}</span></span>
-                <span className="text-emerald-600 dark:text-emerald-400">新增 <span className="font-semibold">{accountETLResult.inserted}</span></span>
-                <span className="text-sky-600 dark:text-sky-400">更新 <span className="font-semibold">{accountETLResult.updated}</span></span>
-                <span>跳过 <span className="font-semibold">{accountETLResult.skipped}</span></span>
+            <div className="rounded-md border border-border/40 bg-muted/30 px-3 py-2 text-xs space-y-2">
+              <div>
+                <p className="text-muted-foreground font-medium mb-0.5">资金状况</p>
+                <div className="flex gap-4 text-muted-foreground">
+                  <span>处理 <span className="font-semibold text-foreground">{accountETLResult.accountSummary.processed}</span></span>
+                  <span className="text-emerald-600 dark:text-emerald-400">新增 <span className="font-semibold">{accountETLResult.accountSummary.inserted}</span></span>
+                  <span className="text-sky-600 dark:text-sky-400">更新 <span className="font-semibold">{accountETLResult.accountSummary.updated}</span></span>
+                  <span>跳过 <span className="font-semibold">{accountETLResult.accountSummary.skipped}</span></span>
+                </div>
+                {accountETLResult.accountSummary.errors.map((e, i) => (
+                  <div key={i} className="font-mono text-destructive">{e}</div>
+                ))}
               </div>
-              {accountETLResult.errors.map((e, i) => (
-                <div key={i} className="font-mono text-destructive">{e}</div>
-              ))}
+              <div>
+                <p className="text-muted-foreground font-medium mb-0.5">成交记录</p>
+                <div className="flex gap-4 text-muted-foreground">
+                  <span>处理 <span className="font-semibold text-foreground">{accountETLResult.transactions.processed}</span></span>
+                  <span className="text-emerald-600 dark:text-emerald-400">新增 <span className="font-semibold">{accountETLResult.transactions.inserted}</span></span>
+                  <span className="text-sky-600 dark:text-sky-400">更新 <span className="font-semibold">{accountETLResult.transactions.updated}</span></span>
+                  <span>跳过 <span className="font-semibold">{accountETLResult.transactions.skipped}</span></span>
+                </div>
+                {accountETLResult.transactions.errors.map((e, i) => (
+                  <div key={i} className="font-mono text-destructive">{e}</div>
+                ))}
+              </div>
             </div>
           )}
         </CardContent>
