@@ -10,6 +10,26 @@ const BASE_DIR = process.env.MOM_DATA_DIR ?? path.join(process.cwd(), "..", "mom
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const folder = searchParams.get("folder") ?? ""
+  const all = searchParams.get("all") === "1"
+
+  if (!fs.existsSync(BASE_DIR)) {
+    return new Response("目录不存在", { status: 404 })
+  }
+
+  const zip = new AdmZip()
+
+  if (all) {
+    // Zip the entire BASE_DIR (all sub-folders and their files)
+    zip.addLocalFolder(BASE_DIR, "03.投顾逐日")
+    const buf = zip.toBuffer()
+    return new Response(buf, {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent("03.投顾逐日.zip")}`,
+        "Cache-Control": "no-store",
+      },
+    })
+  }
 
   if (!folder) {
     return new Response("缺少 folder 参数", { status: 400 })
@@ -26,7 +46,6 @@ export async function GET(request: Request) {
     return new Response("文件夹不存在", { status: 404 })
   }
 
-  const zip = new AdmZip()
   const files = fs.readdirSync(folderPath).filter((f) => !f.startsWith("~$"))
   for (const file of files) {
     const filePath = path.join(folderPath, file)

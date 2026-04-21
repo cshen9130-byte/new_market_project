@@ -1019,6 +1019,14 @@ export default function DataImportPage() {
           <CardTitle className="text-sm font-medium flex items-center gap-2">
             <FolderOpen className="h-4 w-4 text-amber-500" />
             03.投顾逐日
+            <a
+              href="/ma/api/mom-analysis/data-import/download-folder?all=1"
+              download="03.投顾逐日.zip"
+              className="ml-auto text-muted-foreground hover:text-foreground transition-colors"
+              title="下载全部文件 (.zip)"
+            >
+              <ArrowDownToLine className="h-3.5 w-3.5" />
+            </a>
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">
@@ -1559,8 +1567,16 @@ export default function DataImportPage() {
                 {settlementFolder}
               </span>
             )}
+            <a
+              href="/ma/api/mom-analysis/settlement-email/download-all"
+              download="国信已下载结算单.zip"
+              className="ml-auto text-muted-foreground hover:text-foreground transition-colors"
+              title="下载全部结算单 (.zip)"
+            >
+              <ArrowDownToLine className="h-3.5 w-3.5" />
+            </a>
             <button
-              className="ml-auto text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+              className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
               disabled={isNormalizingFiles}
               onClick={() => void normalizeSettlementFiles()}
               title="规范化文件名（重命名旧格式、删除重复）"
