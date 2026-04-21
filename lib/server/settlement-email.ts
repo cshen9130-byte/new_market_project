@@ -21,6 +21,7 @@ export type FetchResult = {
   downloaded: string[]
   skipped: string[]
   errors: string[]
+  log: string[]
 }
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
@@ -139,28 +140,38 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
   const downloaded: string[] = []
   const skipped: string[] = []
   const errors: string[] = []
+  const log: string[] = []
 
   await client.connect()
   try {
     await client.mailboxOpen("INBOX")
 
-    // Look back 2 days to catch after-hours / next-morning delivery
+    // Look back 3 days to catch after-hours / next-morning delivery
     const since = new Date()
-    since.setDate(since.getDate() - 2)
+    since.setDate(since.getDate() - 3)
 
-    const senderFilter = (cfg.sender ?? "").trim()
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const searchCriteria: Record<string, any> = { since }
-    if (senderFilter) searchCriteria.from = senderFilter
+    const senderFilter = (cfg.sender ?? "").trim().toLowerCase()
 
-    const allUids = await client.search(searchCriteria)
+    // Always search by date only — server-side FROM search is unreliable on some IMAP servers.
+    // We do sender matching client-side from the envelope instead.
+    const allUids = await client.search({ since })
+    log.push(`收件箱最近3天共 ${allUids.length} 封邮件`)
+    if (senderFilter) log.push(`发件人过滤: ${senderFilter}`)
 
     for (const uid of allUids) {
-      // When no sender filter is set, fall back to legacy subject-pattern check
-      if (!senderFilter) {
-        const envelope = await client.fetchOne(String(uid), { envelope: true })
-        const subj: string = (envelope as { envelope?: { subject?: string } }).envelope?.subject ?? ""
-        // Pattern: YYYYMMDD_<digits>_交易结算单
+      // Always fetch envelope: needed for both sender check and subject fallback
+      const envMsg = await client.fetchOne(String(uid), { envelope: true })
+      const envelope = (envMsg as { envelope?: { subject?: string; from?: { address?: string }[] } }).envelope
+
+      // Sender filter: if configured, skip emails from other senders
+      if (senderFilter) {
+        const fromAddresses = (envelope?.from ?? []).map((f) => (f.address ?? "").toLowerCase())
+        const matchesSender = fromAddresses.some((addr) => addr.includes(senderFilter) || senderFilter.includes(addr))
+        if (!matchesSender) continue
+        log.push(`匹配发件人: ${fromAddresses.join(", ")} | 主题: ${envelope?.subject ?? "(无主题)"}`)
+      } else {
+        // Legacy fallback: require subject to match YYYYMMDD_<digits>_交易结算单
+        const subj: string = envelope?.subject ?? ""
         if (!subj.includes("交易结算单") || !/\d{8}_\d+_交易结算单/.test(subj)) continue
       }
 
@@ -171,7 +182,11 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
       if (!structure) continue
 
       const parts = collectXlsxParts(structure)
-      if (parts.length === 0) continue
+      if (parts.length === 0) {
+        log.push(`  → 无 xlsx 附件，跳过`)
+        continue
+      }
+      log.push(`  → 找到 ${parts.length} 个 xlsx 附件`)
 
       for (const { part, filename } of parts) {
         try {
@@ -180,12 +195,19 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
           for await (const chunk of dl.content) chunks.push(Buffer.from(chunk))
           const buf = Buffer.concat(chunks)
 
+          // A3 cell is the sole content gate: must contain both 交易结算单 and 盯市
           if (!isSettlementDingshi(buf)) {
+            log.push(`  → ${filename}: A3 不含"交易结算单(盯市)"，跳过`)
             skipped.push(filename)
             continue
           }
 
           const outPath = path.join(dlDir, filename)
+          // Skip if already downloaded (same filename = same date+account)
+          if (fs.existsSync(outPath)) {
+            skipped.push(`${filename} (已存在)`)
+            continue
+          }
           fs.writeFileSync(outPath, buf)
           downloaded.push(filename)
         } catch (e) {
@@ -205,7 +227,7 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
     lastFetchAt: now.toISOString(),
   })
 
-  return { downloaded, skipped, errors }
+  return { downloaded, skipped, errors, log }
 }
 
 // ─── Scheduler trigger (called every minute from instrumentation) ─────────────

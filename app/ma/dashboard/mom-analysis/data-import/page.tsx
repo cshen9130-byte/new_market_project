@@ -124,6 +124,7 @@ export default function DataImportPage() {
     downloaded: string[]
     skipped: string[]
     errors: string[]
+    log: string[]
   } | null>(null)
   const [settlementFiles, setSettlementFiles] = useState<{
     name: string
@@ -1486,6 +1487,14 @@ export default function DataImportPage() {
                   settlementFetchResult.skipped.length === 0 &&
                   settlementFetchResult.errors.length === 0 && (
                   <div className="px-4 py-2 text-muted-foreground">未找到匹配邮件</div>
+                )}
+                {settlementFetchResult.log && settlementFetchResult.log.length > 0 && (
+                  <div className="px-4 py-2 space-y-0.5 border-t border-border/40">
+                    <p className="font-medium text-xs text-muted-foreground mb-1">诊断日志</p>
+                    {settlementFetchResult.log.map((line, i) => (
+                      <div key={i} className="font-mono text-xs text-muted-foreground">{line}</div>
+                    ))}
+                  </div>
                 )}
               </div>
             )}
