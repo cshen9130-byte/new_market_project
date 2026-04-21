@@ -625,10 +625,9 @@ export async function runTransactionRecordsETL(mode: "full" | "incremental"): Pr
 }
 
 // ─── Position Detail (持仓明细) ───────────────────────────────────────────────
-// Fixed typed columns matching the sheet layout:
-// 投资单元, 交易所, 交易编码, 品种, 合约, 买/卖, 投/保,
-// 昨仓, 今买, 今卖, 持仓量, 开仓均价, 昨结算价, 今结算价,
-// 持仓盈亏, 占用保证金, 权利金收支
+// Actual English headers from the sheet:
+// InvestUnit, Exchange, TradingCode, Product, Instrument, OpenDate, S/H, B/S,
+// Positon (sic), OpenPrice, Prev.Sttl, SttlToday, Accum.P/L, MTMP/L, Margin, MarketVal
 
 const POSITION_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS guosen_position_detail (
@@ -644,73 +643,86 @@ const POSITION_TABLE_SQL = `
     trading_code    TEXT,
     product         TEXT,
     instrument      TEXT,
-    bs              TEXT,
+    open_date       DATE,
     sh              TEXT,
-    prev_lots       NUMERIC,
-    bought_lots     NUMERIC,
-    sold_lots       NUMERIC,
-    lots            NUMERIC,
-    open_avg_price  NUMERIC,
-    prev_settl_price NUMERIC,
-    settl_price     NUMERIC,
-    pl              NUMERIC,
+    bs              TEXT,
+    position_lots   NUMERIC,
+    open_price      NUMERIC,
+    prev_settl      NUMERIC,
+    settl_today     NUMERIC,
+    accum_pl        NUMERIC,
+    mtm_pl          NUMERIC,
     margin          NUMERIC,
-    premium_rp      NUMERIC,
+    market_val      NUMERIC,
     updated_at      TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (source_file, row_num)
   )
 `
 
 async function ensurePositionTable(): Promise<void> {
+  // If old schema (pre-refactor) exists, drop and recreate with correct columns
+  const oldCols = await rawQuery(`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'guosen_position_detail' AND column_name = 'prev_lots'
+    LIMIT 1
+  `)
+  if (oldCols.rows.length > 0) {
+    await rawQuery("DROP TABLE IF EXISTS guosen_position_detail")
+  }
   await rawQuery(POSITION_TABLE_SQL)
 }
 
-// Maps English header text from the sheet → DB column name
 const EN_POSITION_HEADER_MAP: Record<string, string> = {
-  "InvestUnit":     "invest_unit",
-  "Exchange":       "exchange",
-  "TradingCode":    "trading_code",
-  "Product":        "product",
-  "Instrument":     "instrument",
-  "B/S":            "bs",
-  "S/H":            "sh",
-  "PrevLots":       "prev_lots",
-  "BoughtLots":     "bought_lots",
-  "SoldLots":       "sold_lots",
-  "Lots":           "lots",
-  "OpenAvgPrice":   "open_avg_price",
-  "PrevSettlPrice": "prev_settl_price",
-  "SettlPrice":     "settl_price",
-  "P/L":            "pl",
-  "Margin":         "margin",
-  "PremiumR/P":     "premium_rp",
+  "InvestUnit":  "invest_unit",
+  "Exchange":    "exchange",
+  "TradingCode": "trading_code",
+  "Product":     "product",
+  "Instrument":  "instrument",
+  "OpenDate":    "open_date",
+  "S/H":         "sh",
+  "B/S":         "bs",
+  "Positon":     "position_lots",   // typo in actual sheet header
+  "Position":    "position_lots",   // also handle correct spelling
+  "OpenPrice":   "open_price",
+  "Prev.Sttl":   "prev_settl",
+  "SttlToday":   "settl_today",
+  "Accum.P/L":   "accum_pl",
+  "MTMP/L":      "mtm_pl",
+  "Margin":      "margin",
+  "MarketVal":   "market_val",
 }
 
 const POSITION_NUM_FIELDS = new Set([
-  "prev_lots", "bought_lots", "sold_lots", "lots",
-  "open_avg_price", "prev_settl_price", "settl_price",
-  "pl", "margin", "premium_rp",
+  "position_lots", "open_price", "prev_settl", "settl_today",
+  "accum_pl", "mtm_pl", "margin", "market_val",
 ])
 
 type ParsedPositionRow = {
-  rowNum:           number
-  invest_unit:      string | null
-  exchange:         string | null
-  trading_code:     string | null
-  product:          string | null
-  instrument:       string | null
-  bs:               string | null
-  sh:               string | null
-  prev_lots:        number | null
-  bought_lots:      number | null
-  sold_lots:        number | null
-  lots:             number | null
-  open_avg_price:   number | null
-  prev_settl_price: number | null
-  settl_price:      number | null
-  pl:               number | null
-  margin:           number | null
-  premium_rp:       number | null
+  rowNum:        number
+  invest_unit:   string | null
+  exchange:      string | null
+  trading_code:  string | null
+  product:       string | null
+  instrument:    string | null
+  open_date:     string | null   // stored as "YYYY-MM-DD"
+  sh:            string | null
+  bs:            string | null
+  position_lots: number | null
+  open_price:    number | null
+  prev_settl:    number | null
+  settl_today:   number | null
+  accum_pl:      number | null
+  mtm_pl:        number | null
+  margin:        number | null
+  market_val:    number | null
+}
+
+/** Convert YYYYMMDD number/string → "YYYY-MM-DD", or pass through if already ISO */
+function toIsoDate(raw: string | number | null): string | null {
+  if (raw === null) return null
+  const s = String(raw).replace(/\D/g, "")
+  if (s.length === 8) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`
+  return null
 }
 
 function parsePositionDetail(
@@ -752,24 +764,23 @@ function parsePositionDetail(
     if (Object.values(raw).every(v => v === null)) continue
 
     rows.push({
-      rowNum:           r - dataStart,
-      invest_unit:      (raw["invest_unit"]      as string | null) ?? null,
-      exchange:         (raw["exchange"]          as string | null) ?? null,
-      trading_code:     (raw["trading_code"]      as string | null) ?? null,
-      product:          (raw["product"]           as string | null) ?? null,
-      instrument:       (raw["instrument"]        as string | null) ?? null,
-      bs:               (raw["bs"]               as string | null) ?? null,
-      sh:               (raw["sh"]               as string | null) ?? null,
-      prev_lots:        (raw["prev_lots"]         as number | null) ?? null,
-      bought_lots:      (raw["bought_lots"]       as number | null) ?? null,
-      sold_lots:        (raw["sold_lots"]         as number | null) ?? null,
-      lots:             (raw["lots"]              as number | null) ?? null,
-      open_avg_price:   (raw["open_avg_price"]    as number | null) ?? null,
-      prev_settl_price: (raw["prev_settl_price"]  as number | null) ?? null,
-      settl_price:      (raw["settl_price"]       as number | null) ?? null,
-      pl:               (raw["pl"]               as number | null) ?? null,
-      margin:           (raw["margin"]            as number | null) ?? null,
-      premium_rp:       (raw["premium_rp"]        as number | null) ?? null,
+      rowNum:        r - dataStart,
+      invest_unit:   (raw["invest_unit"]   as string | null) ?? null,
+      exchange:      (raw["exchange"]       as string | null) ?? null,
+      trading_code:  (raw["trading_code"]   as string | null) ?? null,
+      product:       (raw["product"]        as string | null) ?? null,
+      instrument:    (raw["instrument"]     as string | null) ?? null,
+      open_date:     toIsoDate(raw["open_date"] as string | number | null),
+      sh:            (raw["sh"]             as string | null) ?? null,
+      bs:            (raw["bs"]             as string | null) ?? null,
+      position_lots: (raw["position_lots"]  as number | null) ?? null,
+      open_price:    (raw["open_price"]     as number | null) ?? null,
+      prev_settl:    (raw["prev_settl"]     as number | null) ?? null,
+      settl_today:   (raw["settl_today"]    as number | null) ?? null,
+      accum_pl:      (raw["accum_pl"]       as number | null) ?? null,
+      mtm_pl:        (raw["mtm_pl"]         as number | null) ?? null,
+      margin:        (raw["margin"]         as number | null) ?? null,
+      market_val:    (raw["market_val"]     as number | null) ?? null,
     })
   }
   return rows
@@ -778,35 +789,34 @@ function parsePositionDetail(
 const POSITION_UPSERT_SQL = `
   INSERT INTO guosen_position_detail
     (source_file, client_id, client_name, settlement_date, date_range_raw, row_num,
-     invest_unit, exchange, trading_code, product, instrument, bs, sh,
-     prev_lots, bought_lots, sold_lots, lots, open_avg_price,
-     prev_settl_price, settl_price, pl, margin, premium_rp, updated_at)
+     invest_unit, exchange, trading_code, product, instrument, open_date, sh, bs,
+     position_lots, open_price, prev_settl, settl_today, accum_pl, mtm_pl, margin, market_val,
+     updated_at)
   VALUES
-    ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11,$12,$13, $14,$15,$16,$17,$18, $19,$20,$21,$22,$23, NOW())
+    ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11,$12,$13,$14, $15,$16,$17,$18,$19,$20,$21,$22, NOW())
   ON CONFLICT (source_file, row_num)
   DO UPDATE SET
-    client_id        = EXCLUDED.client_id,
-    client_name      = EXCLUDED.client_name,
-    settlement_date  = EXCLUDED.settlement_date,
-    date_range_raw   = EXCLUDED.date_range_raw,
-    invest_unit      = EXCLUDED.invest_unit,
-    exchange         = EXCLUDED.exchange,
-    trading_code     = EXCLUDED.trading_code,
-    product          = EXCLUDED.product,
-    instrument       = EXCLUDED.instrument,
-    bs               = EXCLUDED.bs,
-    sh               = EXCLUDED.sh,
-    prev_lots        = EXCLUDED.prev_lots,
-    bought_lots      = EXCLUDED.bought_lots,
-    sold_lots        = EXCLUDED.sold_lots,
-    lots             = EXCLUDED.lots,
-    open_avg_price   = EXCLUDED.open_avg_price,
-    prev_settl_price = EXCLUDED.prev_settl_price,
-    settl_price      = EXCLUDED.settl_price,
-    pl               = EXCLUDED.pl,
-    margin           = EXCLUDED.margin,
-    premium_rp       = EXCLUDED.premium_rp,
-    updated_at       = NOW()
+    client_id       = EXCLUDED.client_id,
+    client_name     = EXCLUDED.client_name,
+    settlement_date = EXCLUDED.settlement_date,
+    date_range_raw  = EXCLUDED.date_range_raw,
+    invest_unit     = EXCLUDED.invest_unit,
+    exchange        = EXCLUDED.exchange,
+    trading_code    = EXCLUDED.trading_code,
+    product         = EXCLUDED.product,
+    instrument      = EXCLUDED.instrument,
+    open_date       = EXCLUDED.open_date,
+    sh              = EXCLUDED.sh,
+    bs              = EXCLUDED.bs,
+    position_lots   = EXCLUDED.position_lots,
+    open_price      = EXCLUDED.open_price,
+    prev_settl      = EXCLUDED.prev_settl,
+    settl_today     = EXCLUDED.settl_today,
+    accum_pl        = EXCLUDED.accum_pl,
+    mtm_pl          = EXCLUDED.mtm_pl,
+    margin          = EXCLUDED.margin,
+    market_val      = EXCLUDED.market_val,
+    updated_at      = NOW()
   RETURNING (xmax = 0) AS is_insert
 `
 
@@ -863,9 +873,10 @@ export async function runPositionDetailETL(mode: "full" | "incremental"): Promis
       for (const row of rows) {
         const res = await rawQuery(POSITION_UPSERT_SQL, [
           file.name, clientId, clientName, settlementDate || null, dateRangeRaw, row.rowNum,
-          row.invest_unit, row.exchange, row.trading_code, row.product, row.instrument, row.bs, row.sh,
-          row.prev_lots, row.bought_lots, row.sold_lots, row.lots, row.open_avg_price,
-          row.prev_settl_price, row.settl_price, row.pl, row.margin, row.premium_rp,
+          row.invest_unit, row.exchange, row.trading_code, row.product, row.instrument,
+          row.open_date, row.sh, row.bs,
+          row.position_lots, row.open_price, row.prev_settl, row.settl_today,
+          row.accum_pl, row.mtm_pl, row.margin, row.market_val,
         ])
         if (res.rows[0]?.is_insert) result.inserted++
         else result.updated++

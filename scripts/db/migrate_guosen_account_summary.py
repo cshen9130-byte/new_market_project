@@ -151,6 +151,7 @@ with conn.cursor() as cur:
     """)
     print("  + guosen_transaction_records table created (or already exists)")
 
+    cur.execute("DROP TABLE IF EXISTS guosen_position_detail")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS guosen_position_detail (
             id               SERIAL PRIMARY KEY,
@@ -165,18 +166,17 @@ with conn.cursor() as cur:
             trading_code     TEXT,
             product          TEXT,
             instrument       TEXT,
-            bs               TEXT,
+            open_date        DATE,
             sh               TEXT,
-            prev_lots        NUMERIC,
-            bought_lots      NUMERIC,
-            sold_lots        NUMERIC,
-            lots             NUMERIC,
-            open_avg_price   NUMERIC,
-            prev_settl_price NUMERIC,
-            settl_price      NUMERIC,
-            pl               NUMERIC,
+            bs               TEXT,
+            position_lots    NUMERIC,
+            open_price       NUMERIC,
+            prev_settl       NUMERIC,
+            settl_today      NUMERIC,
+            accum_pl         NUMERIC,
+            mtm_pl           NUMERIC,
             margin           NUMERIC,
-            premium_rp       NUMERIC,
+            market_val       NUMERIC,
             updated_at       TIMESTAMPTZ DEFAULT NOW(),
             UNIQUE (source_file, row_num)
         )
