@@ -76,6 +76,7 @@ export type SettlementETLResult = {
   accountSummary: ETLResult
   transactions: ETLResult
   positions: ETLResult
+  positionSummary: ETLResult
 }
 
 // ─── Table DDL ───────────────────────────────────────────────────────────────
@@ -891,13 +892,266 @@ export async function runPositionDetailETL(mode: "full" | "incremental"): Promis
   return result
 }
 
+// ─── Position Summary (持仓汇总) ─────────────────────────────────────────────
+// English headers from the sheet:
+// InvestUnit, Exchange, TradingCode, Product, Instrument,
+// LongPos., AvgBuyPrice, SPos., AvgSellPrice, Prev.Sttl, SttlToday,
+// MTMP/L, MarginOccupied, S/H, MarketValue(Long), MarketValue(Short)
+
+const POSITION_SUMMARY_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS guosen_position_summary (
+    id               SERIAL PRIMARY KEY,
+    source_file      TEXT NOT NULL,
+    client_id        TEXT,
+    client_name      TEXT,
+    settlement_date  DATE,
+    date_range_raw   TEXT,
+    row_num          INTEGER NOT NULL,
+    invest_unit      TEXT,
+    exchange         TEXT,
+    trading_code     TEXT,
+    product          TEXT,
+    instrument       TEXT,
+    long_pos         NUMERIC,
+    avg_buy_price    NUMERIC,
+    short_pos        NUMERIC,
+    avg_sell_price   NUMERIC,
+    prev_settl       NUMERIC,
+    settl_today      NUMERIC,
+    mtm_pl           NUMERIC,
+    margin_occupied  NUMERIC,
+    sh               TEXT,
+    market_val_long  NUMERIC,
+    market_val_short NUMERIC,
+    updated_at       TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (source_file, row_num)
+  )
+`
+
+async function ensurePositionSummaryTable(): Promise<void> {
+  await rawQuery(POSITION_SUMMARY_TABLE_SQL)
+}
+
+const EN_POSITION_SUMMARY_HEADER_MAP: Record<string, string> = {
+  "InvestUnit":          "invest_unit",
+  "Exchange":            "exchange",
+  "TradingCode":         "trading_code",
+  "Product":             "product",
+  "Instrument":          "instrument",
+  "LongPos.":            "long_pos",
+  "AvgBuyPrice":         "avg_buy_price",
+  "SPos.":               "short_pos",
+  "AvgSellPrice":        "avg_sell_price",
+  "Prev.Sttl":           "prev_settl",
+  "SttlToday":           "settl_today",
+  "MTMP/L":              "mtm_pl",
+  "MarginOccupied":      "margin_occupied",
+  "S/H":                 "sh",
+  "MarketValue(Long)":   "market_val_long",
+  "MarketValue(Short)":  "market_val_short",
+}
+
+const POSITION_SUMMARY_NUM_FIELDS = new Set([
+  "long_pos", "avg_buy_price", "short_pos", "avg_sell_price",
+  "prev_settl", "settl_today", "mtm_pl", "margin_occupied",
+  "market_val_long", "market_val_short",
+])
+
+type ParsedPositionSummaryRow = {
+  rowNum:           number
+  invest_unit:      string | null
+  exchange:         string | null
+  trading_code:     string | null
+  product:          string | null
+  instrument:       string | null
+  long_pos:         number | null
+  avg_buy_price:    number | null
+  short_pos:        number | null
+  avg_sell_price:   number | null
+  prev_settl:       number | null
+  settl_today:      number | null
+  mtm_pl:           number | null
+  margin_occupied:  number | null
+  sh:               string | null
+  market_val_long:  number | null
+  market_val_short: number | null
+}
+
+function parsePositionSummary(
+  ws: XLSX.WorkSheet,
+  range: XLSX.Range,
+): ParsedPositionSummaryRow[] | null {
+  // ── Find 持仓汇总 header row ──────────────────────────────────────────
+  let sectionRow = -1
+  for (let r = range.s.r; r <= range.e.r; r++) {
+    const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
+    if (aVal.includes("持仓汇总")) { sectionRow = r; break }
+  }
+  if (sectionRow === -1) return null
+
+  const enRow = sectionRow + 2
+  const dataStart = sectionRow + 3
+  if (enRow > range.e.r) return []
+
+  // ── Map column index → field name ────────────────────────────────────
+  const colMap: { c: number; field: string }[] = []
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const en = String(ws[XLSX.utils.encode_cell({ r: enRow, c })]?.v ?? "").trim()
+    const field = EN_POSITION_SUMMARY_HEADER_MAP[en]
+    if (field) colMap.push({ c, field })
+  }
+  if (colMap.length === 0) return []
+
+  // ── Read data rows; stop at first 总计 xx 行 ─────────────────────────
+  const rows: ParsedPositionSummaryRow[] = []
+  for (let r = dataStart; r <= range.e.r; r++) {
+    const aVal = String(ws[XLSX.utils.encode_cell({ r, c: range.s.c })]?.v ?? "").trim()
+    if ((aVal.startsWith("总计") && aVal.includes("行")) || /^总计\d+行/.test(aVal)) break
+
+    const raw: Record<string, string | number | null> = {}
+    for (const { c, field } of colMap) {
+      raw[field] = POSITION_SUMMARY_NUM_FIELDS.has(field) ? cellNum(ws, r, c) : cellStr(ws, r, c)
+    }
+
+    if (Object.values(raw).every(v => v === null)) continue
+
+    rows.push({
+      rowNum:           r - dataStart,
+      invest_unit:      (raw["invest_unit"]      as string | null) ?? null,
+      exchange:         (raw["exchange"]          as string | null) ?? null,
+      trading_code:     (raw["trading_code"]      as string | null) ?? null,
+      product:          (raw["product"]           as string | null) ?? null,
+      instrument:       (raw["instrument"]        as string | null) ?? null,
+      long_pos:         (raw["long_pos"]          as number | null) ?? null,
+      avg_buy_price:    (raw["avg_buy_price"]     as number | null) ?? null,
+      short_pos:        (raw["short_pos"]         as number | null) ?? null,
+      avg_sell_price:   (raw["avg_sell_price"]    as number | null) ?? null,
+      prev_settl:       (raw["prev_settl"]        as number | null) ?? null,
+      settl_today:      (raw["settl_today"]       as number | null) ?? null,
+      mtm_pl:           (raw["mtm_pl"]            as number | null) ?? null,
+      margin_occupied:  (raw["margin_occupied"]   as number | null) ?? null,
+      sh:               (raw["sh"]               as string | null) ?? null,
+      market_val_long:  (raw["market_val_long"]   as number | null) ?? null,
+      market_val_short: (raw["market_val_short"]  as number | null) ?? null,
+    })
+  }
+  return rows
+}
+
+const POSITION_SUMMARY_UPSERT_SQL = `
+  INSERT INTO guosen_position_summary
+    (source_file, client_id, client_name, settlement_date, date_range_raw, row_num,
+     invest_unit, exchange, trading_code, product, instrument,
+     long_pos, avg_buy_price, short_pos, avg_sell_price,
+     prev_settl, settl_today, mtm_pl, margin_occupied, sh,
+     market_val_long, market_val_short, updated_at)
+  VALUES
+    ($1,$2,$3,$4,$5,$6, $7,$8,$9,$10,$11, $12,$13,$14,$15, $16,$17,$18,$19,$20, $21,$22, NOW())
+  ON CONFLICT (source_file, row_num)
+  DO UPDATE SET
+    client_id        = EXCLUDED.client_id,
+    client_name      = EXCLUDED.client_name,
+    settlement_date  = EXCLUDED.settlement_date,
+    date_range_raw   = EXCLUDED.date_range_raw,
+    invest_unit      = EXCLUDED.invest_unit,
+    exchange         = EXCLUDED.exchange,
+    trading_code     = EXCLUDED.trading_code,
+    product          = EXCLUDED.product,
+    instrument       = EXCLUDED.instrument,
+    long_pos         = EXCLUDED.long_pos,
+    avg_buy_price    = EXCLUDED.avg_buy_price,
+    short_pos        = EXCLUDED.short_pos,
+    avg_sell_price   = EXCLUDED.avg_sell_price,
+    prev_settl       = EXCLUDED.prev_settl,
+    settl_today      = EXCLUDED.settl_today,
+    mtm_pl           = EXCLUDED.mtm_pl,
+    margin_occupied  = EXCLUDED.margin_occupied,
+    sh               = EXCLUDED.sh,
+    market_val_long  = EXCLUDED.market_val_long,
+    market_val_short = EXCLUDED.market_val_short,
+    updated_at       = NOW()
+  RETURNING (xmax = 0) AS is_insert
+`
+
+export async function runPositionSummaryETL(mode: "full" | "incremental"): Promise<ETLResult> {
+  await ensurePositionSummaryTable()
+
+  const { files, folder } = listDownloadedFiles()
+  const result: ETLResult = { processed: 0, inserted: 0, updated: 0, skipped: 0, errors: [] }
+
+  if (files.length === 0) return result
+
+  let processedFiles = new Set<string>()
+  if (mode === "incremental") {
+    const rows = await query<{ source_file: string }>(
+      "SELECT DISTINCT source_file FROM guosen_position_summary"
+    )
+    processedFiles = new Set(rows.map((r) => r.source_file))
+  }
+
+  for (const file of [...files].reverse()) {
+    if (mode === "incremental" && processedFiles.has(file.name)) {
+      result.skipped++
+      continue
+    }
+
+    try {
+      const filePath = path.join(folder, file.name)
+      const buf = fs.readFileSync(filePath)
+
+      const summary = parseAccountSummary(buf, file.name)
+      const clientId = summary?.client_id ?? ""
+      const clientName = summary?.client_name ?? ""
+      const settlementDate = summary?.trade_date ?? ""
+      const dateRangeRaw = summary?.date_range_raw ?? ""
+
+      const wb = XLSX.read(buf, { type: "buffer", cellDates: true })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      if (!ws || !ws["!ref"]) {
+        result.errors.push(`${file.name}: 无法读取工作表`)
+        continue
+      }
+      const range = XLSX.utils.decode_range(ws["!ref"]!)
+
+      const rows = parsePositionSummary(ws, range)
+      if (rows === null) {
+        result.errors.push(`${file.name}: 未找到持仓汇总区域`)
+        continue
+      }
+      if (rows.length === 0) {
+        result.processed++
+        continue
+      }
+
+      for (const row of rows) {
+        const res = await rawQuery(POSITION_SUMMARY_UPSERT_SQL, [
+          file.name, clientId, clientName, settlementDate || null, dateRangeRaw, row.rowNum,
+          row.invest_unit, row.exchange, row.trading_code, row.product, row.instrument,
+          row.long_pos, row.avg_buy_price, row.short_pos, row.avg_sell_price,
+          row.prev_settl, row.settl_today, row.mtm_pl, row.margin_occupied, row.sh,
+          row.market_val_long, row.market_val_short,
+        ])
+        if (res.rows[0]?.is_insert) result.inserted++
+        else result.updated++
+      }
+
+      result.processed++
+    } catch (e) {
+      result.errors.push(`${file.name}: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  return result
+}
+
 // ─── Combined entry point ─────────────────────────────────────────────────────
 
 export async function runSettlementFilesETL(mode: "full" | "incremental"): Promise<SettlementETLResult> {
-  const [accountSummary, transactions, positions] = await Promise.all([
+  const [accountSummary, transactions, positions, positionSummary] = await Promise.all([
     runAccountSummaryETL(mode),
     runTransactionRecordsETL(mode),
     runPositionDetailETL(mode),
+    runPositionSummaryETL(mode),
   ])
-  return { accountSummary, transactions, positions }
+  return { accountSummary, transactions, positions, positionSummary }
 }

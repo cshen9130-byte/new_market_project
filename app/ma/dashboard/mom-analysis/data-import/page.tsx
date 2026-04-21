@@ -149,6 +149,7 @@ export default function DataImportPage() {
     accountSummary: { processed: number; inserted: number; updated: number; skipped: number; errors: string[] }
     transactions: { processed: number; inserted: number; updated: number; skipped: number; errors: string[] }
     positions: { processed: number; inserted: number; updated: number; skipped: number; errors: string[] }
+    positionSummary: { processed: number; inserted: number; updated: number; skipped: number; errors: string[] }
   } | null>(null)
 
   const autoFollowLogRef = useRef(true)
@@ -1769,6 +1770,18 @@ export default function DataImportPage() {
                   <span>跳过 <span className="font-semibold">{accountETLResult.positions.skipped}</span></span>
                 </div>
                 {accountETLResult.positions.errors.map((e, i) => (
+                  <div key={i} className="font-mono text-destructive">{e}</div>
+                ))}
+              </div>
+              <div>
+                <p className="text-muted-foreground font-medium mb-0.5">持仓汇总</p>
+                <div className="flex gap-4 text-muted-foreground">
+                  <span>处理 <span className="font-semibold text-foreground">{accountETLResult.positionSummary.processed}</span></span>
+                  <span className="text-emerald-600 dark:text-emerald-400">新增 <span className="font-semibold">{accountETLResult.positionSummary.inserted}</span></span>
+                  <span className="text-sky-600 dark:text-sky-400">更新 <span className="font-semibold">{accountETLResult.positionSummary.updated}</span></span>
+                  <span>跳过 <span className="font-semibold">{accountETLResult.positionSummary.skipped}</span></span>
+                </div>
+                {accountETLResult.positionSummary.errors.map((e, i) => (
                   <div key={i} className="font-mono text-destructive">{e}</div>
                 ))}
               </div>

@@ -84,7 +84,8 @@ export async function POST(request: Request) {
         send(`[settlement-etl] 资金状况: 新增 ${etlRes.accountSummary.inserted}, 更新 ${etlRes.accountSummary.updated}, 跳过 ${etlRes.accountSummary.skipped}`)
         send(`[settlement-etl] 成交记录: 新增 ${etlRes.transactions.inserted}, 更新 ${etlRes.transactions.updated}, 跳过 ${etlRes.transactions.skipped}`)
         send(`[settlement-etl] 持仓明细: 新增 ${etlRes.positions.inserted}, 更新 ${etlRes.positions.updated}, 跳过 ${etlRes.positions.skipped}`)
-        const allErrors = [...etlRes.accountSummary.errors, ...etlRes.transactions.errors, ...etlRes.positions.errors]
+        send(`[settlement-etl] 持仓汇总: 新增 ${etlRes.positionSummary.inserted}, 更新 ${etlRes.positionSummary.updated}, 跳过 ${etlRes.positionSummary.skipped}`)
+        const allErrors = [...etlRes.accountSummary.errors, ...etlRes.transactions.errors, ...etlRes.positions.errors, ...etlRes.positionSummary.errors]
         if (allErrors.length > 0) {
           send(`[settlement-etl] 警告: ${allErrors.join("; ")}`)
         }
