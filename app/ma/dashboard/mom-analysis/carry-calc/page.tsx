@@ -508,11 +508,6 @@ export default function CarryCalcPage() {
                       <tr key={a.account} className={`hover:bg-muted/30 transition-colors ${a.source === "guosen" ? "bg-blue-50/40 dark:bg-blue-950/20" : ""}`}>
                         <td className="px-4 py-2 font-mono text-xs">
                           {a.account}
-                          {a.source === "guosen" && (
-                            <span className="ml-1.5 inline-flex items-center rounded px-1 py-0 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">
-                              guoxin
-                            </span>
-                          )}
                         </td>
                         <td className="px-4 py-2 text-right tabular-nums">{fmt(a.latestEquity)}</td>
                         <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(a.cumPnl)}`}>{fmt(a.cumPnl)}</td>
