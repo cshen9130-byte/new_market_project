@@ -457,7 +457,7 @@ function cellNum(ws: XLSX.WorkSheet, r: number, c: number): number | null {
   if (!cell) return null
   const v = cell.v
   if (typeof v === "number") return v
-  const n = parseFloat(String(v ?? ""))
+  const n = parseFloat(String(v ?? "").replace(/,/g, ""))
   return isFinite(n) ? n : null
 }
 
