@@ -40,25 +40,55 @@ function rowToUser(row: DbRow): StoredUser {
 // Singleton init promise — safe against concurrent requests and hot reloads
 let initPromise: Promise<void> | null = null
 
+type AuthUsersTableState = {
+  exists: boolean
+  hasPermissionsColumn: boolean
+}
+
 function ensureTable(): Promise<void> {
   if (!initPromise) initPromise = _initTable().catch((e) => { initPromise = null; throw e })
   return initPromise
 }
 
-async function _initTable() {
-  await query(`
-    CREATE TABLE IF NOT EXISTS auth_users (
-      id            TEXT PRIMARY KEY,
-      email         TEXT UNIQUE NOT NULL,
-      name          TEXT NOT NULL,
-      role          TEXT NOT NULL DEFAULT 'user',
-      permissions   JSONB NOT NULL DEFAULT '{}',
-      password_hash TEXT NOT NULL,
-      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
+async function getAuthUsersTableState(): Promise<AuthUsersTableState> {
+  const rows = await query<{ exists: boolean; has_permissions_column: boolean }>(`
+    SELECT
+      to_regclass('public.auth_users') IS NOT NULL AS exists,
+      EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'auth_users'
+          AND column_name = 'permissions'
+      ) AS has_permissions_column
   `)
-  // Add column if upgrading from older schema
-  await query(`ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}'`)
+
+  const row = rows[0]
+  return {
+    exists: !!row?.exists,
+    hasPermissionsColumn: !!row?.has_permissions_column,
+  }
+}
+
+async function _initTable() {
+  const state = await getAuthUsersTableState()
+
+  if (!state.exists) {
+    await query(`
+      CREATE TABLE auth_users (
+        id            TEXT PRIMARY KEY,
+        email         TEXT UNIQUE NOT NULL,
+        name          TEXT NOT NULL,
+        role          TEXT NOT NULL DEFAULT 'user',
+        permissions   JSONB NOT NULL DEFAULT '{}',
+        password_hash TEXT NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `)
+  } else if (!state.hasPermissionsColumn) {
+    await query(`ALTER TABLE auth_users ADD COLUMN permissions JSONB NOT NULL DEFAULT '{}'`)
+  }
+
   await _seedIfEmpty()
 }
 
