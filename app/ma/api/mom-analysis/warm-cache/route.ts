@@ -44,6 +44,7 @@ function buildRoutesToWarm() {
     "/ma/api/mom-analysis/var-sector-timeseries?corrDays=252",
     "/ma/api/mom-analysis/pnl-sector-timeseries",
     "/ma/api/mom-analysis/marginal-vol-timeseries",
+    "/ma/api/mom-analysis/cvar-sector-timeseries",
     // advisor-vol: all window × compare combos the page can request
     "/ma/api/mom-analysis/advisor-vol?window=5",
     "/ma/api/mom-analysis/advisor-vol?window=10",

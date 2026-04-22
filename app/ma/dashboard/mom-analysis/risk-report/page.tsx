@@ -4084,7 +4084,7 @@ function PositionContent() {
   const [varBDeltaMvMap, setVarBDeltaMvMap] = useState<Map<string, number>>(new Map())
 
   // VaR weight timeseries state
-  const [varWeightView, setVarWeightView] = useState<"weight" | "var" | "pnl" | "margvol">("weight")
+  const [varWeightView, setVarWeightView] = useState<"weight" | "var" | "pnl" | "margvol" | "cvar">("weight")
   const [varSectorDates, setVarSectorDates]               = useState<string[]>([])
   const [varSectorCatData, setVarSectorCatData]           = useState<Record<string, number[]>>({})
   const [varSectorSectorData, setVarSectorSectorData]     = useState<Record<string, number[]>>({})
@@ -4136,6 +4136,24 @@ function PositionContent() {
         setMargVolSubData(j.subSectorData ?? {})
       }
     }).catch(() => {}).finally(() => setMargVolLoading(false))
+  }, [])
+
+  // CVaR sector timeseries state
+  const [cvarSectorDates, setCvarSectorDates]               = useState<string[]>([])
+  const [cvarSectorCatData, setCvarSectorCatData]           = useState<Record<string, number[]>>({})
+  const [cvarSectorSectorData, setCvarSectorSectorData]     = useState<Record<string, number[]>>({})
+  const [cvarSectorSubData, setCvarSectorSubData]           = useState<Record<string, number[]>>({})
+  const [cvarSectorLoading, setCvarSectorLoading]           = useState(true)
+
+  useEffect(() => {
+    fetchJsonCached("/ma/api/mom-analysis/cvar-sector-timeseries").then(j => {
+      if (j.ok) {
+        setCvarSectorDates(j.dates ?? [])
+        setCvarSectorCatData(j.catData ?? {})
+        setCvarSectorSectorData(j.sectorData ?? {})
+        setCvarSectorSubData(j.subSectorData ?? {})
+      }
+    }).catch(() => {}).finally(() => setCvarSectorLoading(false))
   }, [])
 
   useEffect(() => {
@@ -5149,6 +5167,72 @@ function PositionContent() {
     }
   }, [weightMode, margVolDates, margVolCatData, margVolSectorData, margVolSubData])
 
+  // CVaR sector timeseries chart option (historical simulation ES, 95% confidence)
+  const sectorCVarOption = useMemo(() => {
+    type GroupKey = string
+    const groups: readonly GroupKey[] =
+      weightMode === "大类" ? (CAT_WEIGHT_GROUPS as readonly string[])
+      : weightMode === "板块" ? (WEIGHT_SECTORS as readonly string[])
+      : (WEIGHT_SUB_SECTORS as readonly string[])
+    const colorMap: Record<string, string> =
+      weightMode === "大类" ? CAT_COLORS
+      : weightMode === "板块" ? SECTOR_COLORS
+      : SUB_SECTOR_COLORS
+    const rawData: Record<string, number[]> =
+      weightMode === "大类" ? cvarSectorCatData
+      : weightMode === "板块" ? cvarSectorSectorData
+      : cvarSectorSubData
+
+    if (cvarSectorDates.length === 0) return null
+
+    const activeGroups = groups.filter(g => rawData[g]?.some(v => v > 0))
+    const extraGroups  = Object.keys(rawData).filter(g => !groups.includes(g) && rawData[g]?.some(v => v > 0))
+    const allGroups    = [...activeGroups, ...extraGroups]
+
+    return {
+      tooltip: {
+        trigger: "axis" as const,
+        formatter: (params: { seriesName: string; value: number; marker: string }[]) => {
+          const date = (params[0] as unknown as { axisValue: string }).axisValue
+          const rows = params
+            .filter(p => p.value > 0)
+            .sort((a, b) => b.value - a.value)
+            .map(p => `${p.marker}${p.seriesName}: ${p.value.toFixed(1)}%`)
+          return [date, ...rows].join("<br/>")
+        },
+      },
+      legend: { top: 5, itemWidth: 12, itemGap: 8, textStyle: { fontSize: 11 } },
+      grid: { left: 60, right: 20, top: 40, bottom: 50 },
+      dataZoom: [
+        { type: "inside" as const, start: 0, end: 100 },
+        { type: "slider" as const, height: 18, bottom: 5 },
+      ],
+      xAxis: {
+        type: "category" as const,
+        data: cvarSectorDates,
+        axisLabel: { fontSize: 10, rotate: 30 },
+      },
+      yAxis: {
+        type: "value" as const,
+        min: 0,
+        max: 100,
+        axisLabel: { formatter: (v: number) => v + "%" },
+        splitLine: { lineStyle: { type: "dashed" as const } },
+      },
+      series: allGroups.map(g => ({
+        name: g,
+        type: "line" as const,
+        stack: "total",
+        areaStyle: { color: colorMap[g] ?? "#94a3b8" },
+        lineStyle: { width: 0, color: colorMap[g] ?? "#94a3b8" },
+        itemStyle: { color: colorMap[g] ?? "#94a3b8" },
+        symbol: "none",
+        data: rawData[g] ?? cvarSectorDates.map(() => 0),
+        emphasis: { focus: "series" as const },
+      })),
+    }
+  }, [weightMode, cvarSectorDates, cvarSectorCatData, cvarSectorSectorData, cvarSectorSubData])
+
   return (
     <div className="space-y-6">
       <section id="section-pos-timeseries">
@@ -5270,7 +5354,7 @@ function PositionContent() {
           <CardHeader className="pb-2">
             <div className="flex items-center gap-3">
               <div className="flex text-xs border rounded overflow-hidden">
-                {([["weight", "持仓权重"], ["var", "持仓VaR"], ["pnl", "持仓|盈亏|"], ["margvol", "边际波动率"]] as const).map(([val, label]) => (
+                {([["weight", "持仓权重"], ["var", "持仓VaR"], ["pnl", "持仓|盈亏|"], ["margvol", "边际波动率"], ["cvar", "持仓CVaR"]] as const).map(([val, label]) => (
                   <button
                     key={val}
                     onClick={() => setVarWeightView(val)}
@@ -5289,7 +5373,9 @@ function PositionContent() {
                   ? "持仓VaR走势（各板块VaR占比）"
                   : varWeightView === "pnl"
                   ? "持仓|盈亏|走势（各板块|盈亏|占比）"
-                  : "持仓边际波动率走势（各板块边际波动率占比）"}
+                  : varWeightView === "margvol"
+                  ? "持仓边际波动率走势（各板块边际波动率占比）"
+                  : "持仓CVaR走势（各板块CVaR/ES贡献占比，历史模拟95%）"}
               </CardTitle>
               <div className="flex text-xs border rounded overflow-hidden">
                 {([["大类", "大类资产"], ["板块", "板块"], ["细分", "细分板块"]] as const).map(([val, label]) => (
@@ -5346,13 +5432,21 @@ function PositionContent() {
               ) : (
                 <ReactECharts option={sectorPnlOption} style={{ height: 360 }} notMerge />
               )
-            ) : (
+            ) : varWeightView === "margvol" ? (
               margVolLoading ? (
                 <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
               ) : !sectorMargVolOption ? (
                 <p className="text-sm text-muted-foreground px-4 py-6">暂无边际波动率数据</p>
               ) : (
                 <ReactECharts option={sectorMargVolOption} style={{ height: 360 }} notMerge />
+              )
+            ) : (
+              cvarSectorLoading ? (
+                <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
+              ) : !sectorCVarOption ? (
+                <p className="text-sm text-muted-foreground px-4 py-6">暂无CVaR数据</p>
+              ) : (
+                <ReactECharts option={sectorCVarOption} style={{ height: 360 }} notMerge />
               )
             )}
           </CardContent>
