@@ -4085,6 +4085,7 @@ function PositionContent() {
 
   // VaR weight timeseries state
   const [varWeightView, setVarWeightView] = useState<"weight" | "var" | "pnl" | "margvol" | "cvar">("weight")
+  const [varChartHelpOpen, setVarChartHelpOpen] = useState(false)
   const [varSectorDates, setVarSectorDates]               = useState<string[]>([])
   const [varSectorCatData, setVarSectorCatData]           = useState<Record<string, number[]>>({})
   const [varSectorSectorData, setVarSectorSectorData]     = useState<Record<string, number[]>>({})
@@ -5405,6 +5406,83 @@ function PositionContent() {
                   ))}
                 </div>
               )}
+              <div className="relative ml-auto">
+                <button
+                  onClick={() => setVarChartHelpOpen(v => !v)}
+                  className="w-5 h-5 rounded-full border text-xs font-bold text-muted-foreground hover:text-foreground hover:border-foreground transition-colors flex items-center justify-center"
+                  title="查看公式说明"
+                >?</button>
+                {varChartHelpOpen && (
+                  <div
+                    className="absolute right-0 top-7 z-50 w-[520px] rounded-lg border bg-popover text-popover-foreground shadow-lg p-4 text-xs leading-relaxed"
+                    style={{ maxHeight: "70vh", overflowY: "auto" }}
+                  >
+                    <button
+                      onClick={() => setVarChartHelpOpen(false)}
+                      className="float-right text-muted-foreground hover:text-foreground leading-none ml-2"
+                    >✕</button>
+                    {varWeightView === "weight" && (
+                      <div className="space-y-2">
+                        <p className="font-semibold text-sm">持仓权重走势</p>
+                        <p>每个板块占总持仓市值的比例。</p>
+                        <p className="font-medium mt-1">总市值模式（gross）</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`weight_s = (long_s + |short_s|) / Σ(long + |short|)`}</p>
+                        <p>将多头和空头市值累加，反映各板块占用资金规模。</p>
+                        <p className="font-medium mt-1">净市值模式（net）</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`weight_s = |long_s - |short_s|| / Σ|long - |short||`}</p>
+                        <p>反映各板块净敞口，多空对冲会减小权重。</p>
+                      </div>
+                    )}
+                    {varWeightView === "var" && (
+                      <div className="space-y-2">
+                        <p className="font-semibold text-sm">持仓VaR走势（边际风险贡献占比）</p>
+                        <p>每个板块对组合整体方差的边际贡献占比，与日间风控VaR沙盒的"板块边际波动贡献占比"饼图完全一致。</p>
+                        <p className="font-medium mt-1">Step 1 — 签名美元波动率 dv&#7522;</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`σ_i  = StdDev(r_{i,t})  t ∈ [-20, 0) 交易日\ndv_i = σ_i × MV_i        (MV带符号：多>0 / 空<0)`}</p>
+                        <p className="font-medium mt-1">Step 2 — 相关矩阵 ρ&#7522;ⱼ</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`ρ_{ij} = PearsonCorr(r_i, r_j)  t ∈ [-252, 0)`}</p>
+                        <p className="font-medium mt-1">Step 3 — 边际风险贡献 MCR&#7522;</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`MCR_i = |dv_i × Σ_j(dv_j × ρ_{ij})|`}</p>
+                        <p className="font-medium mt-1">Step 4 — 板块占比</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`VaR_s   = Σ_{i∈s} MCR_i\nweight_s = VaR_s / Σ VaR_s × 100%`}</p>
+                        <p>相关性高的板块共同放大组合风险，对冲排列封面会减小占比。</p>
+                      </div>
+                    )}
+                    {varWeightView === "pnl" && (
+                      <div className="space-y-2">
+                        <p className="font-semibold text-sm">持仓|盈亏|走势</p>
+                        <p>各板块实际持仓盈亏的绝对值占全部各板块绝对盈亏之和的比例。</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`PnL_s   = Σ_{i∈s} 持仓盈亏_i\nweight_s = |PnL_s| / Σ_s |PnL_s| × 100%`}</p>
+                        <p>直接反映各板块对产品组合实际收益的贡献度，不需要历史行情数据。</p>
+                      </div>
+                    )}
+                    {varWeightView === "margvol" && (
+                      <div className="space-y-2">
+                        <p className="font-semibold text-sm">边际波动率走势（板块级山岳法）</p>
+                        <p>各板块独立计算自身市值加权波动率，板块间相关性被忽略。</p>
+                        <p className="font-medium mt-1">Step 1 — 板块加权收益率</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`r_{s,t} = Σ_{i∈s} (|MV_i| / |MV_s|) × r_{i,t}`}</p>
+                        <p className="font-medium mt-1">Step 2 — 板块美元波动率</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`dv_s     = StdDev(r_{s,t}) × |MV_s|\nweight_s = dv_s / Σ dv_s × 100%`}</p>
+                        <p>回答"如果各板块是独立的，市值加权波动率各占多少？"</p>
+                      </div>
+                    )}
+                    {varWeightView === "cvar" && (
+                      <div className="space-y-2">
+                        <p className="font-semibold text-sm">持仓CVaR走势（历史模拟预期损失贡献占比）</p>
+                        <p>基于历史场景模拟，识别尾部最差平仓日，计算各产品对组合尾部损失的周边贡献。</p>
+                        <p className="font-medium mt-1">Step 1 — 组合模拟盈亏</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`PnL_t = Σ_i MV_i × r_{i,t}    t ∈ [-252, 0)`}</p>
+                        <p className="font-medium mt-1">Step 2 — 5%尾部场景（置信水平95%）</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`T* = {最差的 ⌊histDays × 5%⌋ 个日期}`}</p>
+                        <p className="font-medium mt-1">Step 3 — 周边CVaR贡献</p>
+                        <p className="font-mono bg-muted rounded px-2 py-1 whitespace-pre">{`CompCVaR_i = -mean_{t∈T*}(MV_i × r_{i,t})\nweight_s   = Σ_{i∈s} |CompCVaR_i| / Σ|CompCVaR_i| × 100%`}</p>
+                        <p>与VaR MCR的区别：VaR用协方差矩阵（全分布），CVaR仅用尾部场景，对极端市场应力更敏感。</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </CardHeader>
           <CardContent className="p-0 pb-2">
