@@ -41,6 +41,9 @@ function buildRoutesToWarm() {
     "/ma/api/mom-analysis/today-position-detail?rank=2",
     "/ma/api/mom-analysis/var-sandbox",
     "/ma/api/mom-analysis/var-sandbox?volDays=20&corrDays=252",
+    "/ma/api/mom-analysis/var-sector-timeseries",
+    "/ma/api/mom-analysis/pnl-sector-timeseries",
+    "/ma/api/mom-analysis/marginal-vol-timeseries",
     // advisor-vol: all window × compare combos the page can request
     "/ma/api/mom-analysis/advisor-vol?window=5",
     "/ma/api/mom-analysis/advisor-vol?window=10",

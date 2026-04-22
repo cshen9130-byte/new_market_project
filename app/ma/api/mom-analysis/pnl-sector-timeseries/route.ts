@@ -1,0 +1,194 @@
+import { NextResponse } from "next/server"
+import { query } from "@/lib/db"
+import { withMomCache } from "@/lib/server/mom-cache"
+
+export const runtime = "nodejs"
+export const dynamic = "force-dynamic"
+
+function getPrefix(contract: string): string {
+  return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
+}
+
+function toNum(v: unknown): number {
+  if (v == null) return 0
+  const n = parseFloat(String(v).replace(/[,%\s]/g, ""))
+  return isNaN(n) ? 0 : n
+}
+
+const numExpr = (col: string) =>
+  `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}"::text, ''), ',', ''), ' ', ''), '')::numeric, 0)`
+
+const PROD_CAT: Record<string, string> = {
+  C:"商品",CS:"商品",WH:"商品",PM:"商品",RR:"商品",RI:"商品",JR:"商品",LR:"商品",
+  A:"商品",B:"商品",M:"商品",Y:"商品",RM:"商品",OI:"商品",RS:"商品",PK:"商品",P:"商品",
+  SR:"商品",CF:"商品",CY:"商品",LG:"商品",SP:"商品",OP:"商品",
+  AP:"商品",CJ:"商品",LH:"商品",JD:"商品",
+  AU:"商品",AG:"商品",PT:"商品",PD:"商品",
+  CU:"商品",BC:"商品",AL:"商品",AO:"商品",AD:"商品",ZN:"商品",PB:"商品",NI:"商品",SN:"商品",
+  LC:"商品",PS:"商品",SI:"商品",
+  I:"商品",SF:"商品",SM:"商品",RB:"商品",HC:"商品",SS:"商品",WR:"商品",
+  JM:"商品",J:"商品",ZC:"商品",FG:"商品",BB:"商品",FB:"商品",
+  SC:"商品",FU:"商品",LU:"商品",PG:"商品",BU:"商品",
+  TA:"商品",EG:"商品",PF:"商品",PR:"商品",PL:"商品",PP:"商品",L:"商品",
+  BZ:"商品",PX:"商品",EB:"商品",
+  RU:"商品",BR:"商品",NR:"商品",
+  SA:"商品",SH:"商品",V:"商品",UR:"商品",MA:"商品",
+  EC:"商品",
+  IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
+  TS:"国债",TF:"国债",T:"国债",TL:"国债",
+}
+
+const PROD_SECTOR: Record<string, string> = {
+  C:"农产",CS:"农产",WH:"农产",PM:"农产",RR:"农产",RI:"农产",JR:"农产",LR:"农产",
+  A:"农产",B:"农产",M:"农产",Y:"农产",RM:"农产",OI:"农产",RS:"农产",PK:"农产",P:"农产",
+  SR:"农产",CF:"农产",CY:"农产",LG:"农产",SP:"农产",OP:"农产",
+  AP:"生鲜",CJ:"生鲜",LH:"生鲜",JD:"生鲜",
+  AU:"贵金属",AG:"贵金属",PT:"贵金属",PD:"贵金属",
+  CU:"有色",BC:"有色",AL:"有色",AO:"有色",AD:"有色",ZN:"有色",PB:"有色",NI:"有色",SN:"有色",
+  LC:"新能源",PS:"新能源",SI:"新能源",
+  I:"黑色",SF:"黑色",SM:"黑色",RB:"黑色",HC:"黑色",SS:"黑色",WR:"黑色",
+  JM:"黑色",J:"黑色",ZC:"黑色",FG:"黑色",BB:"黑色",FB:"黑色",
+  SC:"能源化工",FU:"能源化工",LU:"能源化工",PG:"能源化工",BU:"能源化工",
+  TA:"能源化工",EG:"能源化工",PF:"能源化工",PR:"能源化工",PL:"能源化工",PP:"能源化工",L:"能源化工",
+  BZ:"能源化工",PX:"能源化工",EB:"能源化工",
+  RU:"能源化工",BR:"能源化工",NR:"能源化工",
+  SA:"能源化工",SH:"能源化工",V:"能源化工",UR:"能源化工",MA:"能源化工",
+  EC:"航运",
+  IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
+  TS:"国债",TF:"国债",T:"国债",TL:"国债",
+}
+
+const PROD_SUB_SECTOR: Record<string, string> = {
+  C:"谷物",CS:"谷物",WH:"谷物",PM:"谷物",RR:"谷物",RI:"谷物",JR:"谷物",LR:"谷物",
+  A:"油脂油料",B:"油脂油料",M:"油脂油料",Y:"油脂油料",RM:"油脂油料",OI:"油脂油料",RS:"油脂油料",PK:"油脂油料",P:"油脂油料",
+  SR:"软商品",CF:"软商品",CY:"软商品",
+  LG:"林业",SP:"林业",OP:"林业",
+  AP:"生鲜",CJ:"生鲜",LH:"生鲜",JD:"生鲜",
+  AU:"贵金属",AG:"贵金属",PT:"贵金属",PD:"贵金属",
+  CU:"有色",BC:"有色",AL:"有色",AO:"有色",AD:"有色",ZN:"有色",PB:"有色",NI:"有色",SN:"有色",
+  LC:"新能源",PS:"新能源",SI:"新能源",
+  I:"原材",SF:"原材",SM:"原材",
+  RB:"成材",HC:"成材",SS:"成材",WR:"成材",
+  JM:"煤炭",J:"煤炭",ZC:"煤炭",
+  FG:"建材",BB:"建材",FB:"建材",
+  SC:"油品",FU:"油品",LU:"油品",PG:"油品",BU:"油品",
+  TA:"聚酯",EG:"聚酯",PF:"聚酯",PR:"聚酯",
+  PL:"烯烃",PP:"烯烃",L:"烯烃",
+  BZ:"芳烃",PX:"芳烃",EB:"芳烃",
+  RU:"橡胶",BR:"橡胶",NR:"橡胶",
+  SA:"盐化工",SH:"盐化工",V:"盐化工",
+  UR:"煤化工",MA:"煤化工",
+  EC:"航运",
+  IH:"股指",IF:"股指",IC:"股指",IM:"股指",MO:"股指",
+  TS:"国债",TF:"国债",T:"国债",TL:"国债",
+}
+
+async function _GET(_req: Request) {
+  try {
+    // Fetch per-contract per-day 持仓盈亏 from mom_position_details
+    const pnlRows = await query<{ date: string; contract: string; pnl: string }>(
+      `SELECT "交易日期"::text AS date,
+              UPPER(TRIM("合约")) AS contract,
+              SUM(${numExpr("持仓盈亏")})::text AS pnl
+       FROM mom_position_details
+       WHERE "交易日期" IS NOT NULL AND "合约" IS NOT NULL
+         AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
+         AND TRIM("合约") NOT LIKE '%-%-%'
+       GROUP BY "交易日期", UPPER(TRIM("合约"))
+       ORDER BY 1`,
+    )
+
+    if (pnlRows.length === 0) {
+      return NextResponse.json({ ok: true, dates: [], catData: {}, sectorData: {}, subSectorData: {} })
+    }
+
+    // For each date, sum PnL by sector, then compute |sector_pnl| / total_|sector_pnl|
+    type DateRow = {
+      date: string
+      cat: Record<string, number>
+      sector: Record<string, number>
+      sub: Record<string, number>
+    }
+
+    // Aggregate PnL by date → sector
+    const byDate = new Map<string, { cat: Record<string, number>; sector: Record<string, number>; sub: Record<string, number> }>()
+
+    for (const r of pnlRows) {
+      const prod   = getPrefix(r.contract)
+      const pnl    = toNum(r.pnl)
+      const cat    = PROD_CAT[prod]        ?? "其他"
+      const sector = PROD_SECTOR[prod]     ?? "其他"
+      const sub    = PROD_SUB_SECTOR[prod] ?? "其他"
+
+      if (!byDate.has(r.date)) byDate.set(r.date, { cat: {}, sector: {}, sub: {} })
+      const d = byDate.get(r.date)!
+
+      d.cat[cat]       = (d.cat[cat]       ?? 0) + pnl
+      d.sector[sector] = (d.sector[sector] ?? 0) + pnl
+      d.sub[sub]       = (d.sub[sub]       ?? 0) + pnl
+    }
+
+    const sortedDates = [...byDate.keys()].sort()
+
+    const rows: DateRow[] = []
+    for (const date of sortedDates) {
+      const d = byDate.get(date)!
+
+      const absCat:    Record<string, number> = {}
+      const absSector: Record<string, number> = {}
+      const absSub:    Record<string, number> = {}
+
+      for (const [k, v] of Object.entries(d.cat))    absCat[k]    = Math.abs(v)
+      for (const [k, v] of Object.entries(d.sector)) absSector[k] = Math.abs(v)
+      for (const [k, v] of Object.entries(d.sub))    absSub[k]    = Math.abs(v)
+
+      const totalCat    = Object.values(absCat).reduce((s, v) => s + v, 0)
+      const totalSector = Object.values(absSector).reduce((s, v) => s + v, 0)
+      const totalSub    = Object.values(absSub).reduce((s, v) => s + v, 0)
+
+      if (totalSector === 0) continue
+
+      const catPct:    Record<string, number> = {}
+      const sectorPct: Record<string, number> = {}
+      const subPct:    Record<string, number> = {}
+
+      for (const [k, v] of Object.entries(absCat))    catPct[k]    = Math.round(v / totalCat    * 10000) / 100
+      for (const [k, v] of Object.entries(absSector)) sectorPct[k] = Math.round(v / totalSector * 10000) / 100
+      for (const [k, v] of Object.entries(absSub))    subPct[k]    = Math.round(v / totalSub    * 10000) / 100
+
+      rows.push({ date, cat: catPct, sector: sectorPct, sub: subPct })
+    }
+
+    if (rows.length === 0) {
+      return NextResponse.json({ ok: true, dates: [], catData: {}, sectorData: {}, subSectorData: {} })
+    }
+
+    const allCats    = [...new Set(rows.flatMap(r => Object.keys(r.cat)))]
+    const allSectors = [...new Set(rows.flatMap(r => Object.keys(r.sector)))]
+    const allSubs    = [...new Set(rows.flatMap(r => Object.keys(r.sub)))]
+
+    const catData:       Record<string, number[]> = {}
+    const sectorData:    Record<string, number[]> = {}
+    const subSectorData: Record<string, number[]> = {}
+
+    for (const g of allCats)    catData[g]       = rows.map(r => r.cat[g]    ?? 0)
+    for (const g of allSectors) sectorData[g]    = rows.map(r => r.sector[g] ?? 0)
+    for (const g of allSubs)    subSectorData[g] = rows.map(r => r.sub[g]    ?? 0)
+
+    return NextResponse.json({
+      ok: true,
+      dates: rows.map(r => r.date),
+      catData,
+      sectorData,
+      subSectorData,
+    })
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes("does not exist")) {
+      return NextResponse.json({ ok: true, dates: [], catData: {}, sectorData: {}, subSectorData: {} })
+    }
+    return NextResponse.json({ ok: false, error: msg }, { status: 500 })
+  }
+}
+
+export const GET = withMomCache("pnl-sector-timeseries", _GET)
