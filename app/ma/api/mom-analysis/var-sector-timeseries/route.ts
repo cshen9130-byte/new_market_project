@@ -107,6 +107,20 @@ function stdDev(xs: number[]): number {
   return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - 1))
 }
 
+function pearsonCorr(x: number[], y: number[]): number {
+  const n = x.length
+  if (n < 3) return 0
+  const mx = x.reduce((s, v) => s + v, 0) / n
+  const my = y.reduce((s, v) => s + v, 0) / n
+  let num = 0, sx = 0, sy = 0
+  for (let i = 0; i < n; i++) {
+    const xi = x[i] - mx, yi = y[i] - my
+    num += xi * yi; sx += xi * xi; sy += yi * yi
+  }
+  const denom = Math.sqrt(sx * sy)
+  return denom < 1e-10 ? 0 : num / denom
+}
+
 /** Binary search: last index i such that arr[i] <= target, or -1 if none */
 function floorIndex(arr: string[], target: string): number {
   let lo = 0, hi = arr.length - 1, idx = -1
@@ -120,7 +134,8 @@ function floorIndex(arr: string[], target: string): number {
 
 async function _GET(req: Request) {
   const { searchParams } = new URL(req.url)
-  const volDays = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays") ?? "20", 10)))
+  const volDays  = Math.max(5, Math.min(120, parseInt(searchParams.get("volDays")  ?? "20",  10)))
+  const corrDays = Math.max(5, Math.min(756, parseInt(searchParams.get("corrDays") ?? "252", 10)))
 
   try {
     // 1. Fetch signed MV per contract per date
@@ -144,7 +159,7 @@ async function _GET(req: Request) {
       return NextResponse.json({ ok: true, dates: [], catData: {}, sectorData: {}, subSectorData: {} })
     }
 
-    // Aggregate to product prefix level
+    // Aggregate to product prefix level (signed mv)
     const prodMvByDate = new Map<string, Map<string, number>>()
     for (const r of mvRows) {
       const prod = getPrefix(r.contract)
@@ -177,8 +192,13 @@ async function _GET(req: Request) {
     }
 
     const allMktDates = [...new Set(pctRows.map(r => r.date))].sort()
+    const neededHistory = Math.max(volDays, corrDays)
 
-    // 3. For each trading date compute sector-level dollar volatility proportions
+    // 3. For each trading date compute sector-level MCR proportions
+    //    MCR formula (same as VaR sandbox pie chart):
+    //      dv[i] = sigma[i] * mv[i]  (signed dollar vol)
+    //      mcr[i] = |dv[i] * Σⱼ(dv[j] * corr[i,j])|
+    //    This exactly matches the "板块边际波动贡献占比" pie in 日间风控VaR沙盒
     type RowData = {
       date: string
       cat: Record<string, number>
@@ -189,47 +209,83 @@ async function _GET(req: Request) {
 
     for (const date of tradingDates) {
       const mktIdx = floorIndex(allMktDates, date)
-      if (mktIdx < volDays) continue
+      if (mktIdx < neededHistory) continue
 
-      const volDatesArr = allMktDates.slice(mktIdx - volDays, mktIdx)
+      const volDatesArr  = allMktDates.slice(mktIdx - volDays,  mktIdx)
+      const corrDatesArr = allMktDates.slice(mktIdx - corrDays, mktIdx)
 
-      const catDv: Record<string, number> = {}
-      const sectorDv: Record<string, number> = {}
-      const subDv: Record<string, number> = {}
-      let totalDv = 0
-
+      // Collect active products on this date
+      const prodMvs: { prod: string; mv: number }[] = []
       for (const [prod, mvByDate] of prodMvByDate) {
         const mv = mvByDate.get(date) ?? 0
-        if (Math.abs(mv) < 1000) continue
+        if (Math.abs(mv) >= 1000) prodMvs.push({ prod, mv })
+      }
+      if (prodMvs.length === 0) continue
 
+      const N = prodMvs.length
+
+      // Compute sigma per product (rolling volDays window)
+      const sigmas = prodMvs.map(({ prod }) => {
         const code = AKSHARE_CODE[prod]
         const m = pctMap.get(code ?? "")
-        const rets = volDatesArr.map(d => m?.get(d) ?? 0).filter(r => r !== 0)
-        if (rets.length < 3) continue
+        const rets = volDatesArr.map(d => m?.get(d) ?? 0)
+        return stdDev(rets)
+      })
 
-        const sigma = stdDev(rets)
-        const dv = sigma * Math.abs(mv)
-        if (dv < 1) continue
+      // dv[i] = sigma[i] * mv[i] (signed)
+      const dv = prodMvs.map(({ mv }, i) => sigmas[i] * mv)
 
-        const cat    = PROD_CAT[prod]       ?? "其他"
-        const sector = PROD_SECTOR[prod]    ?? "其他"
-        const sub    = PROD_SUB_SECTOR[prod] ?? "其他"
+      // Return series for correlation (rolling corrDays window)
+      const retSeries = prodMvs.map(({ prod }) => {
+        const code = AKSHARE_CODE[prod]
+        const m = pctMap.get(code ?? "")
+        return corrDatesArr.map(d => m?.get(d) ?? 0)
+      })
 
-        catDv[cat]       = (catDv[cat]    ?? 0) + dv
-        sectorDv[sector] = (sectorDv[sector] ?? 0) + dv
-        subDv[sub]       = (subDv[sub]    ?? 0) + dv
-        totalDv += dv
+      // Build upper-triangular correlation matrix (reuse for both [i][j] and [j][i])
+      const corrMat: number[][] = Array.from({ length: N }, () => new Array(N).fill(0))
+      for (let i = 0; i < N; i++) {
+        corrMat[i][i] = 1
+        for (let j = i + 1; j < N; j++) {
+          const c = pearsonCorr(retSeries[i], retSeries[j])
+          corrMat[i][j] = c
+          corrMat[j][i] = c
+        }
       }
 
-      if (totalDv === 0) continue
+      // mcr[i] = |dv[i] * (Corr × dv)[i]|  — identical to sandbox prodMcrData formula
+      const catMcr:    Record<string, number> = {}
+      const sectorMcr: Record<string, number> = {}
+      const subMcr:    Record<string, number> = {}
+      let totalMcr = 0
 
-      const catPct: Record<string, number> = {}
+      for (let i = 0; i < N; i++) {
+        if (dv[i] === 0) continue
+        let covSum = 0
+        for (let j = 0; j < N; j++) covSum += dv[j] * corrMat[i][j]
+        const mcr = Math.abs(dv[i] * covSum)
+        if (mcr < 1) continue
+
+        const { prod } = prodMvs[i]
+        const cat    = PROD_CAT[prod]        ?? "其他"
+        const sector = PROD_SECTOR[prod]     ?? "其他"
+        const sub    = PROD_SUB_SECTOR[prod] ?? "其他"
+
+        catMcr[cat]       = (catMcr[cat]       ?? 0) + mcr
+        sectorMcr[sector] = (sectorMcr[sector] ?? 0) + mcr
+        subMcr[sub]       = (subMcr[sub]       ?? 0) + mcr
+        totalMcr += mcr
+      }
+
+      if (totalMcr === 0) continue
+
+      const catPct:    Record<string, number> = {}
       const sectorPct: Record<string, number> = {}
-      const subPct: Record<string, number> = {}
+      const subPct:    Record<string, number> = {}
 
-      for (const [k, v] of Object.entries(catDv))    catPct[k]    = Math.round(v / totalDv * 10000) / 100
-      for (const [k, v] of Object.entries(sectorDv)) sectorPct[k] = Math.round(v / totalDv * 10000) / 100
-      for (const [k, v] of Object.entries(subDv))    subPct[k]    = Math.round(v / totalDv * 10000) / 100
+      for (const [k, v] of Object.entries(catMcr))    catPct[k]    = Math.round(v / totalMcr * 10000) / 100
+      for (const [k, v] of Object.entries(sectorMcr)) sectorPct[k] = Math.round(v / totalMcr * 10000) / 100
+      for (const [k, v] of Object.entries(subMcr))    subPct[k]    = Math.round(v / totalMcr * 10000) / 100
 
       rows.push({ date, cat: catPct, sector: sectorPct, sub: subPct })
     }
@@ -243,8 +299,8 @@ async function _GET(req: Request) {
     const allSectors = [...new Set(rows.flatMap(r => Object.keys(r.sector)))]
     const allSubs    = [...new Set(rows.flatMap(r => Object.keys(r.sub)))]
 
-    const catData: Record<string, number[]>       = {}
-    const sectorData: Record<string, number[]>    = {}
+    const catData:       Record<string, number[]> = {}
+    const sectorData:    Record<string, number[]> = {}
     const subSectorData: Record<string, number[]> = {}
 
     for (const g of allCats)    catData[g]       = rows.map(r => r.cat[g]    ?? 0)

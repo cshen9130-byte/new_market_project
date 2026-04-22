@@ -4092,7 +4092,7 @@ function PositionContent() {
   const [varSectorLoading, setVarSectorLoading]           = useState(true)
 
   useEffect(() => {
-    fetchJsonCached("/ma/api/mom-analysis/var-sector-timeseries").then(j => {
+    fetchJsonCached("/ma/api/mom-analysis/var-sector-timeseries?corrDays=252").then(j => {
       if (j.ok) {
         setVarSectorDates(j.dates ?? [])
         setVarSectorCatData(j.catData ?? {})
