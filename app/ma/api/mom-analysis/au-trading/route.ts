@@ -192,15 +192,15 @@ async function loadMomAccountingDailyPnl(from: string, to: string, account: stri
   const tradeCols = new Set(tradeSchemaRes.fields.map((f) => f.name))
   const positionCols = new Set(positionSchemaRes.fields.map((f) => f.name))
 
-  const tradeDateCol = pickColumn(tradeCols, ["交易日期", "日期", "结算日期", "trade_date", "date"])
-  const tradeAccountCol = pickColumn(tradeCols, ["账户", "期货账户", "账号", "客户号", "account"])
-  const tradeProductCol = pickColumn(tradeCols, ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
+  const tradeDateCol = pickColumn(tradeCols, ["交易日期", "成交日期", "平仓日期", "close_date", "日期", "结算日期", "settlement_date", "trade_date", "date"])
+  const tradeAccountCol = pickColumn(tradeCols, ["账户", "期货账户", "账号", "客户号", "client_id", "account"])
+  const tradeProductCol = pickColumn(tradeCols, ["品种", "产品", "product", "品种代码", "合约", "合约代码", "instrument", "contract", "symbol"])
   const realizedPnlCol = pickColumn(tradeCols, ["平仓盈亏", "realized_pnl", "close_pnl"])
 
-  const positionDateCol = pickColumn(positionCols, ["交易日期", "日期", "结算日期", "trade_date", "date"])
-  const positionAccountCol = pickColumn(positionCols, ["账户", "期货账户", "账号", "客户号", "account"])
-  const positionProductCol = pickColumn(positionCols, ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
-  const holdingPnlCol = pickColumn(positionCols, ["持仓盈亏", "holding_pnl", "position_pnl"])
+  const positionDateCol = pickColumn(positionCols, ["交易日期", "实际成交日期", "日期", "结算日期", "settlement_date", "trade_date", "date"])
+  const positionAccountCol = pickColumn(positionCols, ["账户", "期货账户", "账号", "客户号", "client_id", "account"])
+  const positionProductCol = pickColumn(positionCols, ["品种", "产品", "product", "品种代码", "合约", "合约代码", "instrument", "contract", "symbol"])
+  const holdingPnlCol = pickColumn(positionCols, ["持仓盈亏", "mtm_pl", "holding_pnl", "position_pnl", "accum_pl"])
 
   if (!tradeDateCol || !tradeAccountCol || !tradeProductCol || !realizedPnlCol) {
     const found = JSON.stringify([...tradeCols])
@@ -215,10 +215,10 @@ async function loadMomAccountingDailyPnl(from: string, to: string, account: stri
   const td = tradeDateCol!, ta = tradeAccountCol!, tp = tradeProductCol!, rp = realizedPnlCol!
   const pd = positionDateCol!, pa = positionAccountCol!, pp = positionProductCol!, hp = holdingPnlCol!
 
-  const tradeProductExpr = ["品种代码", "合约", "合约代码", "contract", "symbol"].includes(tp)
+  const tradeProductExpr = ["品种代码", "合约", "合约代码", "instrument", "contract", "symbol"].includes(tp)
     ? `${upperTrimExpr(tp)} ~ ('^' || $2 || '[0-9]')`
     : `${upperTrimExpr(tp)} = $2`
-  const positionProductExpr = ["品种代码", "合约", "合约代码", "contract", "symbol"].includes(pp)
+  const positionProductExpr = ["品种代码", "合约", "合约代码", "instrument", "contract", "symbol"].includes(pp)
     ? `${upperTrimExpr(pp)} ~ ('^' || $2 || '[0-9]')`
     : `${upperTrimExpr(pp)} = $2`
 

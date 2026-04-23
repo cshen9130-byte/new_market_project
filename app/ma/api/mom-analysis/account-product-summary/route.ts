@@ -108,16 +108,16 @@ export async function GET(req: Request) {
     const tradeCols    = new Set(tSchema.fields.map((f: { name: string }) => f.name))
     const positionCols = new Set(pSchema.fields.map((f: { name: string }) => f.name))
 
-    const td = pickColumn(tradeCols,    ["交易日期", "成交日期", "日期", "结算日期", "trade_date", "date"])
-    const ta = pickColumn(tradeCols,    ["账户", "期货账户", "账号", "客户号", "account"])
-    const tp = pickColumn(tradeCols,    ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
+    const td = pickColumn(tradeCols,    ["交易日期", "成交日期", "平仓日期", "close_date", "日期", "结算日期", "settlement_date", "trade_date", "date"])
+    const ta = pickColumn(tradeCols,    ["账户", "期货账户", "账号", "客户号", "client_id", "account"])
+    const tp = pickColumn(tradeCols,    ["品种", "产品", "product", "品种代码", "合约", "合约代码", "instrument", "contract", "symbol"])
     const rp = pickColumn(tradeCols,    ["平仓盈亏", "realized_pnl", "close_pnl"])
     const ac = pickColumn(tradeCols,    ["开/平", "action", "开平"])
 
-    const pd = pickColumn(positionCols, ["交易日期", "实际成交日期", "日期", "结算日期", "trade_date", "date"])
-    const pa = pickColumn(positionCols, ["账户", "期货账户", "账号", "客户号", "account"])
-    const pp = pickColumn(positionCols, ["品种", "品种代码", "合约", "合约代码", "contract", "symbol"])
-    const hp = pickColumn(positionCols, ["持仓盈亏", "holding_pnl", "position_pnl"])
+    const pd = pickColumn(positionCols, ["交易日期", "实际成交日期", "日期", "结算日期", "settlement_date", "trade_date", "date"])
+    const pa = pickColumn(positionCols, ["账户", "期货账户", "账号", "客户号", "client_id", "account"])
+    const pp = pickColumn(positionCols, ["品种", "产品", "product", "品种代码", "合约", "合约代码", "instrument", "contract", "symbol"])
+    const hp = pickColumn(positionCols, ["持仓盈亏", "mtm_pl", "holding_pnl", "position_pnl", "accum_pl"])
 
     if (!td || !ta || !tp || !rp) {
       throw new Error(`Trade table missing required columns. Found: ${JSON.stringify([...tradeCols])}`)
@@ -127,8 +127,8 @@ export async function GET(req: Request) {
     }
 
     // When column is a full contract code (e.g. "AU2501"), strip trailing digits to get product
-    const isContractCol    = ["品种代码", "合约", "合约代码", "contract", "symbol"].includes(tp)
-    const isPosContractCol = ["品种代码", "合约", "合约代码", "contract", "symbol"].includes(pp)
+    const isContractCol    = ["品种代码", "合约", "合约代码", "instrument", "contract", "symbol"].includes(tp)
+    const isPosContractCol = ["品种代码", "合约", "合约代码", "instrument", "contract", "symbol"].includes(pp)
     const tradeProductExpr = isContractCol
       ? `REGEXP_REPLACE(${upperTrimExpr(tp)}, '[0-9].*$', '')`
       : upperTrimExpr(tp)
