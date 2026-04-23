@@ -143,6 +143,25 @@ async function _GET() {
       else if (dir === "买") add(row.contract, "short", net)
     }
 
+    // Add guosen long/short position PnL — gracefully skipped if unavailable
+    try {
+      const guosenLsRows = await query<{ product: string; bs: string; pnl: string }>(
+        `SELECT UPPER(TRIM(product)) AS product,
+                bs,
+                SUM(COALESCE(mtm_pl, 0))::text AS pnl
+         FROM guosen_position_detail
+         WHERE settlement_date = (SELECT MAX(settlement_date) FROM guosen_position_detail)
+           AND product IS NOT NULL
+         GROUP BY UPPER(TRIM(product)), bs`,
+      )
+      for (const row of guosenLsRows) {
+        const side: "long" | "short" = row.bs === "B" ? "long" : "short"
+        add(row.product, side, toNum(row.pnl))
+      }
+    } catch {
+      // guosen_position_detail not available — skip
+    }
+
     // Merge into sorted lists
     const allSectors = new Set([...longMap.keys(), ...shortMap.keys()])
     const sectorLS = [...allSectors]

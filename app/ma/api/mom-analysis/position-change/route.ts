@@ -64,6 +64,42 @@ async function _GET() {
       map.set(prod, cur)
     }
 
+    // Merge guoxin (guosen) positions for the same two dates
+    try {
+      const guosenRows = await query<{ contract: string; date: string; signed_mv: string; net_lots: string }>(
+        `SELECT
+           UPPER(TRIM(instrument)) AS contract,
+           settlement_date::text   AS date,
+           SUM(
+             CASE WHEN bs='买'
+                  THEN  COALESCE(position_lots,0) * COALESCE(settl_today,0)
+                  ELSE -COALESCE(position_lots,0) * COALESCE(settl_today,0)
+             END
+           )::text AS signed_mv,
+           SUM(
+             CASE WHEN bs='买'
+                  THEN  COALESCE(position_lots,0)
+                  ELSE -COALESCE(position_lots,0)
+             END
+           )::text AS net_lots
+         FROM guosen_position_detail
+         WHERE instrument IS NOT NULL
+           AND settlement_date IN ($1::date${yesterday ? ", $2::date" : ""})
+         GROUP BY UPPER(TRIM(instrument)), settlement_date`,
+        yesterday ? [today, yesterday] : [today],
+      )
+      for (const r of guosenRows) {
+        const prod = getPrefix(r.contract)
+        const map  = r.date === today ? todayMap : yesterdayMap
+        const cur  = map.get(prod) ?? { mv: 0, lots: 0 }
+        cur.mv   += toNum(r.signed_mv)
+        cur.lots += Math.round(toNum(r.net_lots))
+        map.set(prod, cur)
+      }
+    } catch {
+      // guosen_position_detail unavailable — skip
+    }
+
     const allProds = new Set([...todayMap.keys(), ...yesterdayMap.keys()])
     const products = [...allProds]
       .map(prod => {

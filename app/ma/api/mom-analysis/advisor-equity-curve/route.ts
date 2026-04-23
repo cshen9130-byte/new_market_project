@@ -146,6 +146,26 @@ async function _GET(req: Request) {
         dm.set(row.date, (dm.get(row.date) ?? 0) + Number(row.daily_pnl || 0))
       }
 
+      // Merge guoxin (guosen) daily PnL
+      try {
+        const guosenRows = await query<{ date: string; daily_pnl: string }>(
+          `SELECT trade_date::text AS date,
+                  (realized_pl + mtm_pl + exercise_pl - commission)::text AS daily_pnl
+           FROM guosen_account_summary
+           WHERE client_id = '665300200077'
+             AND trade_date::date BETWEEN $1::date AND $2::date
+           ORDER BY trade_date`,
+          [from, to],
+        )
+        if (!pnlMap.has("guoxin")) pnlMap.set("guoxin", new Map())
+        for (const r of guosenRows) {
+          const dm = pnlMap.get("guoxin")!
+          dm.set(r.date, (dm.get(r.date) ?? 0) + Number(r.daily_pnl || 0))
+        }
+      } catch {
+        // guosen_account_summary unavailable — skip
+      }
+
       const accounts = [...pnlMap.keys()].sort()
       const series = accounts.map((acc) => {
         let cum = 0
@@ -288,6 +308,29 @@ async function _GET(req: Request) {
       if (!pnlMap.has(row.account)) pnlMap.set(row.account, new Map())
       const dm = pnlMap.get(row.account)!
       dm.set(row.date, (dm.get(row.date) ?? 0) + Number(row.pnl || 0))
+    }
+
+    // Merge guoxin (guosen) per-product PnL
+    try {
+      const guosenProdRows = await query<{ date: string; pnl: string }>(
+        `SELECT settlement_date::text AS date,
+                SUM(mtm_pl)::text AS pnl
+         FROM guosen_position_detail
+         WHERE UPPER(TRIM(instrument)) ~ ('^' || $1 || '[0-9]')
+           AND settlement_date::date BETWEEN $2::date AND $3::date
+         GROUP BY settlement_date
+         ORDER BY settlement_date`,
+        [product, from, to],
+      )
+      if (guosenProdRows.length > 0) {
+        if (!pnlMap.has("guoxin")) pnlMap.set("guoxin", new Map())
+        for (const r of guosenProdRows) {
+          const dm = pnlMap.get("guoxin")!
+          dm.set(r.date, (dm.get(r.date) ?? 0) + Number(r.pnl || 0))
+        }
+      }
+    } catch {
+      // guosen_position_detail unavailable — skip
     }
 
     const accounts = [...pnlMap.keys()].sort()

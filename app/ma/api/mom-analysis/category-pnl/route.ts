@@ -221,6 +221,56 @@ async function _GET(req: Request) {
       productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) - toNum(row.fee) + toNum(row.premium))
     }
 
+    // ── Add guosen product-level PnL ─────────────────────────────────
+    // Gracefully skipped if guosen tables are unavailable.
+    try {
+      // Holding PnL from open positions (daily MTM per product)
+      const guosenPosRows = await query<{ date: string; product: string; pnl: string }>(
+        `SELECT settlement_date::text AS date,
+                UPPER(TRIM(product)) AS product,
+                SUM(COALESCE(mtm_pl, 0))::text AS pnl
+         FROM guosen_position_detail
+         WHERE product IS NOT NULL
+         GROUP BY settlement_date, UPPER(TRIM(product))
+         ORDER BY settlement_date`,
+      )
+      for (const row of guosenPosRows) {
+        const pnl = toNum(row.pnl)
+        const cat = getCategory(row.product)
+        const sec = getSector(row.product)
+        const sub = getSubSector(row.product)
+        const prod = getPrefix(row.product)
+        dayMap.set(`${row.date}|${cat}`, (dayMap.get(`${row.date}|${cat}`) ?? 0) + pnl)
+        sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) + pnl)
+        subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) + pnl)
+        productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) + pnl)
+      }
+
+      // Closed PnL from settled positions (realized PnL per product per settlement date)
+      const guosenCloseRows = await query<{ date: string; product: string; pnl: string }>(
+        `SELECT settlement_date::text AS date,
+                UPPER(TRIM(product)) AS product,
+                SUM(COALESCE(realized_pl, 0))::text AS pnl
+         FROM guosen_position_closed
+         WHERE product IS NOT NULL
+         GROUP BY settlement_date, UPPER(TRIM(product))
+         ORDER BY settlement_date`,
+      )
+      for (const row of guosenCloseRows) {
+        const pnl = toNum(row.pnl)
+        const cat = getCategory(row.product)
+        const sec = getSector(row.product)
+        const sub = getSubSector(row.product)
+        const prod = getPrefix(row.product)
+        dayMap.set(`${row.date}|${cat}`, (dayMap.get(`${row.date}|${cat}`) ?? 0) + pnl)
+        sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) + pnl)
+        subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) + pnl)
+        productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) + pnl)
+      }
+    } catch {
+      // guosen tables not available — skip
+    }
+
     // ── Build sorted series per category ─────────────────────────────
     type DailyRow = { date: string; pnl: number; cumPnl: number }
     const categories = ["股指", "国债", "商品"] as const

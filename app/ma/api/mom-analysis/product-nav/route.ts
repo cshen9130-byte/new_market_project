@@ -154,6 +154,23 @@ async function _GET(req: Request) {
       pnlMap.set(row.date, parseNum(row.daily_pnl))
       equityMap.set(row.date, parseNum(row.daily_equity))
     }
+
+    // Add guosen (国信) daily PnL — gracefully skipped if table unavailable
+    try {
+      const guosenPnlRows = await query<{ trade_date: string; daily_pnl: string }>(
+        `SELECT trade_date::text AS trade_date,
+                SUM(COALESCE(realized_pl, 0) + COALESCE(mtm_pl, 0))::text AS daily_pnl
+         FROM guosen_account_summary
+         GROUP BY trade_date
+         ORDER BY trade_date`,
+      )
+      for (const row of guosenPnlRows) {
+        pnlMap.set(row.trade_date, (pnlMap.get(row.trade_date) ?? 0) + parseNum(row.daily_pnl))
+      }
+    } catch {
+      // guosen_account_summary not available — skip
+    }
+
     const turnoverMap = new Map<string, number>()
     for (const row of turnoverRows) {
       turnoverMap.set(row.date, parseNum(row.turnover_amount))

@@ -66,6 +66,24 @@ async function _GET(req: Request) {
       accountMap[row.account][row.date] = equity > 0 ? pnl / equity : 0
     }
 
+    // Add guoxin (guosen account 665300200077)
+    const guosenCorrRows = await query<{ date: string; daily_pnl: string; equity: string }>(
+      `SELECT trade_date::text AS date,
+              (realized_pl + mtm_pl + exercise_pl - commission)::text AS daily_pnl,
+              client_equity::text AS equity
+       FROM guosen_account_summary
+       WHERE client_id = '665300200077'
+       ORDER BY trade_date`,
+    )
+    if (!accountMap["guoxin"]) accountMap["guoxin"] = {}
+    for (const r of guosenCorrRows) {
+      const pnl    = toNum(r.daily_pnl)
+      const equity = toNum(r.equity)
+      datePnl[r.date]   = (datePnl[r.date]   ?? 0) + pnl
+      dateEquity[r.date] = (dateEquity[r.date] ?? 0) + equity
+      accountMap["guoxin"][r.date] = equity > 0 ? pnl / equity : 0
+    }
+
     const allDates = Object.keys(datePnl).sort()
 
     const accounts = Object.keys(accountMap)

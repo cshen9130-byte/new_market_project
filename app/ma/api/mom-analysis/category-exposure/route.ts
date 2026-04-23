@@ -213,6 +213,57 @@ async function _GET() {
       entry.pshort[prefix] = (entry.pshort[prefix] ?? 0) + shortMv
     }
 
+    // Merge guoxin (guosen) positions — signed MV = lots * settl_today
+    try {
+      const guosenRows = await query<{
+        date: string; contract: string; long_mv: string; short_mv: string
+      }>(
+        `SELECT settlement_date::text AS date,
+                UPPER(TRIM(instrument)) AS contract,
+                SUM(CASE WHEN bs='买' THEN COALESCE(position_lots,0)*COALESCE(settl_today,0) ELSE 0 END)::text AS long_mv,
+                SUM(CASE WHEN bs='卖' THEN COALESCE(position_lots,0)*COALESCE(settl_today,0) ELSE 0 END)::text AS short_mv
+         FROM guosen_position_detail
+         WHERE instrument IS NOT NULL
+           AND UPPER(TRIM(instrument)) !~ '[0-9][CP][0-9]'
+         GROUP BY settlement_date, UPPER(TRIM(instrument))
+         ORDER BY settlement_date`,
+      )
+      for (const r of guosenRows) {
+        const prefix = getPrefix(r.contract)
+        const cat = getCat(prefix)
+        const sector = getSector(prefix)
+        const subSector = getSubSector(prefix)
+        const longMv = toNum(r.long_mv)
+        const shortMv = toNum(r.short_mv)
+        if (longMv === 0 && shortMv === 0) continue
+        if (!dateMap.has(r.date)) {
+          dateMap.set(r.date, { long: {}, short: {}, slong: {}, sshort: {}, sslong: {}, ssshort: {}, plong: {}, pshort: {} })
+        }
+        const entry = dateMap.get(r.date)!
+        entry.long[cat] = (entry.long[cat] ?? 0) + longMv
+        entry.short[cat] = (entry.short[cat] ?? 0) + shortMv
+        entry.slong[sector] = (entry.slong[sector] ?? 0) + longMv
+        entry.sshort[sector] = (entry.sshort[sector] ?? 0) + shortMv
+        entry.sslong[subSector] = (entry.sslong[subSector] ?? 0) + longMv
+        entry.ssshort[subSector] = (entry.ssshort[subSector] ?? 0) + shortMv
+        entry.plong[prefix] = (entry.plong[prefix] ?? 0) + longMv
+        entry.pshort[prefix] = (entry.pshort[prefix] ?? 0) + shortMv
+      }
+      // Merge guoxin equity into equityMap
+      const guosenEquityRows = await query<{ date: string; equity: string }>(
+        `SELECT trade_date::text AS date, COALESCE(client_equity,0)::text AS equity
+         FROM guosen_account_summary
+         WHERE client_equity IS NOT NULL
+         ORDER BY trade_date`,
+      )
+      for (const r of guosenEquityRows) {
+        const v = toNum(r.equity)
+        if (v > 0) equityMap.set(r.date, (equityMap.get(r.date) ?? 0) + v)
+      }
+    } catch {
+      // guosen tables unavailable — skip
+    }
+
     const cats = ["商品", "股指", "国债"]
     const series = Array.from(dateMap.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))

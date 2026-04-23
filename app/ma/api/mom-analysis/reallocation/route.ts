@@ -65,6 +65,25 @@ async function _GET(req: Request) {
       allDatesSet.add(row.date)
     }
 
+    // Add guoxin (guosen account 665300200077)
+    const guosenReallocRows = await query<{ date: string; daily_pnl: string; equity: string }>(
+      `SELECT trade_date::text AS date,
+              (realized_pl + mtm_pl + exercise_pl - commission)::text AS daily_pnl,
+              client_equity::text AS equity
+       FROM guosen_account_summary
+       WHERE client_id = '665300200077'
+       ORDER BY trade_date`,
+    )
+    sectorMap.set("guoxin", "商品")
+    equityWanMap.set("guoxin", 1000)
+    if (!accountMap["guoxin"]) accountMap["guoxin"] = {}
+    for (const r of guosenReallocRows) {
+      const pnl    = toNum(r.daily_pnl)
+      const equity = toNum(r.equity)
+      accountMap["guoxin"][r.date] = equity > 0 ? pnl / equity : 0
+      allDatesSet.add(r.date)
+    }
+
     const allDates   = [...allDatesSet].sort()
     const windowDates = WINDOW ? allDates.slice(-WINDOW) : allDates
     const T = windowDates.length

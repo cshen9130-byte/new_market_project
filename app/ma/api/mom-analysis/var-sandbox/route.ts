@@ -110,6 +110,29 @@ async function _GET(req: Request) {
       prodLotsMap.set(prod, (prodLotsMap.get(prod) ?? 0) + Math.round(toNum(r.lots)))
     }
 
+    // Merge guosen positions — gracefully skipped if unavailable
+    try {
+      const guosenPosRows = await query<{ product: string; bs: string; market_val: string; position_lots: string }>(
+        `SELECT UPPER(TRIM(product)) AS product, bs,
+                COALESCE(market_val, 0)::text AS market_val,
+                COALESCE(position_lots, 0)::text AS position_lots
+         FROM guosen_position_detail
+         WHERE settlement_date = (SELECT MAX(settlement_date) FROM guosen_position_detail)
+           AND product IS NOT NULL
+           AND position_lots IS NOT NULL AND position_lots <> 0`,
+      )
+      for (const r of guosenPosRows) {
+        const prod  = r.product
+        const isLong = r.bs === "B"
+        const mv    = (isLong ? 1 : -1) * toNum(r.market_val)
+        const lots  = (isLong ? 1 : -1) * Math.round(toNum(r.position_lots))
+        prodMvMap.set(prod,   (prodMvMap.get(prod)   ?? 0) + mv)
+        prodLotsMap.set(prod, (prodLotsMap.get(prod) ?? 0) + lots)
+      }
+    } catch {
+      // guosen_position_detail not available — skip
+    }
+
     // Sort by abs(mv) descending — this order is shared with corrMatrix
     const activeProds = [...prodMvMap.keys()]
       .filter(p => Math.abs(prodMvMap.get(p)!) > 1000)

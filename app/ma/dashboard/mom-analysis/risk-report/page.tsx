@@ -1366,6 +1366,7 @@ function IntradayContent() {
   const [sectorLsSeries, setSectorLsSeries] = useState<SectorLsTs[]>([])
   const [sectorFilter, setSectorFilter] = useState<string>("全部")
   const [acctRankFilter, setAcctRankFilter] = useState<string>("全部")
+  const [snapshotSort, setSnapshotSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "riskRatio", dir: "desc" })
   const [marginLoading, setMarginLoading] = useState(true)
 
   const fetchVolBar = (window: string) => {
@@ -2657,16 +2658,46 @@ function IntradayContent() {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b bg-muted/40">
-                      <th className="text-left px-3 py-1.5 font-medium">账户</th>
-                      <th className="text-right px-3 py-1.5 font-medium">日期</th>
-                      <th className="text-right px-3 py-1.5 font-medium">保证金占用</th>
-                      <th className="text-right px-3 py-1.5 font-medium">客户权益</th>
-                      <th className="text-right px-3 py-1.5 font-medium">可用资金</th>
-                      <th className="text-right px-3 py-1.5 font-medium">风险度</th>
+                      {([
+                        { key: "account", label: "账户", align: "left" },
+                        { key: "date", label: "日期", align: "right" },
+                        { key: "margin", label: "保证金占用", align: "right" },
+                        { key: "equity", label: "客户权益", align: "right" },
+                        { key: "available", label: "可用资金", align: "right" },
+                        { key: "riskRatio", label: "风险度", align: "right" },
+                      ] as { key: string; label: string; align: string }[]).map(col => (
+                        <th
+                          key={col.key}
+                          className={`${col.align === "left" ? "text-left" : "text-right"} px-3 py-1.5 font-medium cursor-pointer select-none hover:text-foreground text-muted-foreground whitespace-nowrap`}
+                          onClick={() => setSnapshotSort(s => s.col === col.key ? { col: col.key, dir: s.dir === "asc" ? "desc" : "asc" } : { col: col.key, dir: "desc" })}
+                        >
+                          {col.label}{snapshotSort.col === col.key ? (snapshotSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {[...marginLatest].sort((a, b) => a.account.localeCompare(b.account)).map((r, i) => {
+                    {[...marginLatest].sort((a, b) => {
+                      const { col, dir } = snapshotSort
+                      let av: number | string | null = null
+                      let bv: number | string | null = null
+                      if (col === "account" || col === "date") {
+                        av = (a as Record<string, unknown>)[col] as string
+                        bv = (b as Record<string, unknown>)[col] as string
+                        const cmp = (av ?? "").localeCompare(bv ?? "")
+                        return dir === "asc" ? cmp : -cmp
+                      }
+                      if (col === "riskRatio") {
+                        av = a.riskRatio ?? (a.equity > 0 ? a.margin / a.equity * 100 : null)
+                        bv = b.riskRatio ?? (b.equity > 0 ? b.margin / b.equity * 100 : null)
+                      } else {
+                        av = (a as Record<string, unknown>)[col] as number
+                        bv = (b as Record<string, unknown>)[col] as number
+                      }
+                      const an = av as number ?? -Infinity
+                      const bn = bv as number ?? -Infinity
+                      return dir === "asc" ? an - bn : bn - an
+                    }).map((r, i) => {
                       const ratio = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
                       const danger = ratio != null && ratio > 80
                       const warning = ratio != null && ratio > 60 && ratio <= 80
