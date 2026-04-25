@@ -30,6 +30,22 @@ export interface ContractLiquidity {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Expand CZCE 3-digit delivery codes to 4-digit (e.g. CF609 → CF2609, MA701 → MA2701).
+ * CZCE stores contracts as PRODUCT + 1-digit-year + 2-digit-month in position data,
+ * but the market DB stores them expanded (PRODUCT + 2-digit-year + 2-digit-month).
+ */
+function czceExpand(code: string): string {
+  const m = code.match(/^([A-Z]{1,4})(\d)(\d{2})$/)
+  if (!m) return code
+  const yr = parseInt(m[2], 10)
+  const thisYear = new Date().getFullYear()
+  const decade = Math.floor(thisYear / 10)
+  let fullYear = decade * 10 + yr
+  if (fullYear < thisYear - 1) fullYear += 10
+  return `${m[1]}${String(fullYear % 100).padStart(2, "0")}${m[3]}`
+}
+
 function toNum(v: unknown): number {
   if (v == null) return 0
   const n = parseFloat(String(v).replace(/[,%\s]/g, ""))
@@ -140,8 +156,8 @@ async function _GET(_req: Request) {
     }>()
 
     for (const r of posRows) {
-      // Strip exchange suffix (e.g. "M2605.DCE" → "M2605") so market data lookup matches
-      const key = r.contract.split(".")[0]
+      // Strip exchange suffix (e.g. "M2605.DCE" → "M2605") and expand CZCE 3-digit codes
+      const key = czceExpand(r.contract.split(".")[0])
       const existing = contractMap.get(key)
       if (existing) {
         existing.longLots   += toNum(r.long_lots)
@@ -180,7 +196,7 @@ async function _GET(_req: Request) {
         const mv = lots * toNum(r.settl_today)
         const mg = toNum(r.margin)
         const isLong = r.bs === "买"
-        const instrKey = r.instrument.split(".")[0]  // strip suffix
+        const instrKey = czceExpand(r.instrument.split(".")[0])  // strip suffix + expand CZCE
         const existing = contractMap.get(instrKey)
         if (existing) {
           if (isLong) existing.longLots += lots; else existing.shortLots += lots
