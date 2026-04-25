@@ -3,32 +3,27 @@
 fetch_akshare_exchange_daily.py — Per-contract daily OHLCV via AkShare
 ========================================================================
 Fetches daily volume, open interest, and settlement price for EVERY futures
-contract traded on each Chinese exchange using AkShare's free exchange-bulletin
-endpoints.  This is a FREE complement / fallback to fetch_futures_contracts_daily.py
+contract traded on each Chinese exchange using AkShare's free APIs.
+
+This is a FREE complement / fallback to fetch_futures_contracts_daily.py
 (which requires paid EmQuant / Choice API access).
 
-Why this script?
-  • EmQuant fetches only contracts that appear in mom_futures_trade_details.
-  • AkShare fetches the ENTIRE exchange daily bulletin → captures any contract.
-  • Stored codes use the same plain format as position tables: "LC2702" not "LC2702.GFE".
-  • On conflict (trade_date, contract), existing non-null volume / hqoi from
-    EmQuant are preserved; missing values are filled from AkShare.
+AkShare API strategy (akshare >= 1.8):
+  Primary  : ak.get_futures_daily(start_date, end_date, market)
+               market in {"DCE","CZCE","SHFE","CFFEX","GFEX","INE"}
+               Returns all contracts across the date range.
+  Fallback : ak.futures_settle_shfe/czce/cffex/gfex(date)
+               Per-exchange settlement bulletin (single date, richer data).
 
-Exchanges covered
-  DCE   大连商品交易所  (ak.futures_dce_daily)
-  SHFE  上海期货交易所  (ak.futures_shfe_daily)  — includes INE contracts
-  CZCE  郑州商品交易所  (ak.futures_czce_daily)
-  CFFEX 中国金融期货交易所 (ak.futures_cffex_daily)
-  GFEX  广州期货交易所  (ak.futures_gfex_daily)
+On conflict (trade_date, contract): preserves existing non-null values
+from EmQuant so AkShare only fills gaps.
 
 Usage
 -----
   python fetch_akshare_exchange_daily.py                   # yesterday
   python fetch_akshare_exchange_daily.py 20250424          # single date
   python fetch_akshare_exchange_daily.py 20250101 20250424 # date range (backfill)
-
-  # Query only exchanges needed for held contracts (faster):
-  python fetch_akshare_exchange_daily.py 20250424 --held-only
+  python fetch_akshare_exchange_daily.py 20250424 --held-only  # only needed exchanges
 
 Outputs JSON to stdout (nightly_etl.py run_script-compatible).
 """
@@ -44,17 +39,17 @@ from pathlib import Path
 from typing import TypedDict
 
 # ── Column aliases ────────────────────────────────────────────────────────────
-# AkShare column names differ per exchange version — we try all candidates.
+# AkShare column names vary by function and version — try all known candidates.
 
-_CONTRACT_COLS = ["合约代码", "合约", "品种月份", "商品合约", "合约名称"]
-_VOLUME_COLS   = ["成交量(手)", "成交量", "成交量（手）", "volume"]
-_OI_COLS       = ["持仓量(手)", "持仓量", "持仓量（手）", "open_interest"]
+_CONTRACT_COLS = ["合约代码", "合约", "品种月份", "商品合约", "合约名称", "symbol", "contract"]
+_VOLUME_COLS   = ["成交量(手)", "成交量", "成交量（手）", "volume", "vol"]
+_OI_COLS       = ["持仓量(手)", "持仓量", "持仓量（手）", "open_interest", "oi", "持仓量(手)"]
 _CLOSE_COLS    = ["收盘价", "close"]
-_SETTLE_COLS   = ["结算价", "当日结算价", "settle"]
+_SETTLE_COLS   = ["结算价", "当日结算价", "settle", "settlement"]
 _OPEN_COLS     = ["开盘价", "open"]
 _HIGH_COLS     = ["最高价", "high"]
 _LOW_COLS      = ["最低价", "low"]
-_PRECLOSE_COLS = ["前结算价", "昨结算价", "preclose", "前收盘价"]
+_PRECLOSE_COLS = ["前结算价", "昨结算价", "preclose", "前收盘价", "pre_settle"]
 
 
 def _first_col(df, candidates: list[str]):
@@ -127,9 +122,16 @@ def _parse_df(df, exchange: str, trade_date_str: str, ref_year: int) -> list[Day
     if df is None or df.empty:
         return records
 
+    # Debug: print columns on first call so we can diagnose issues
+    sys.stderr.write(f"    columns ({exchange}): {list(df.columns[:15])}\n")
+
     contract_col = _first_col(df, _CONTRACT_COLS)
     if contract_col is None:
-        return records  # can't identify contracts
+        sys.stderr.write(f"    WARNING: no contract column found in {list(df.columns)}\n")
+        return records
+
+    # get_futures_daily may include a date column per row
+    date_col = _first_col(df, ["date", "trade_date", "日期", "交易日"])
 
     volume_col   = _first_col(df, _VOLUME_COLS)
     oi_col       = _first_col(df, _OI_COLS)
@@ -157,8 +159,20 @@ def _parse_df(df, exchange: str, trade_date_str: str, ref_year: int) -> list[Day
         def g(col):
             return _safe_float(row[col]) if col else None
 
+        # Use per-row date if available (get_futures_daily returns multi-day data)
+        row_date = trade_date_str
+        if date_col:
+            try:
+                raw_date = str(row[date_col])
+                # Normalise to YYYY-MM-DD
+                raw_date = raw_date.replace("-", "").strip()
+                if len(raw_date) == 8:
+                    row_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+            except Exception:
+                pass
+
         records.append(DayRecord(
-            date       = trade_date_str,
+            date       = row_date,
             contract   = code,
             exchange   = exchange,
             open       = g(open_col),
@@ -169,7 +183,7 @@ def _parse_df(df, exchange: str, trade_date_str: str, ref_year: int) -> list[Day
             settlement = g(settle_col),
             volume     = g(volume_col),
             hqoi       = g(oi_col),
-            amount     = None,   # not always available / consistent units
+            amount     = None,
         ))
 
     return records
@@ -177,7 +191,11 @@ def _parse_df(df, exchange: str, trade_date_str: str, ref_year: int) -> list[Day
 
 def fetch_exchange_day(exchange: str, date_str_yyyymmdd: str, ref_year: int) -> list[DayRecord]:
     """
-    Fetch all contracts for one exchange on one date.
+    Fetch all contracts for one exchange on one date using available AkShare APIs.
+
+    Strategy (akshare 1.8+):
+      1. ak.get_futures_daily(start_date, end_date, market) — covers DCE/CZCE/SHFE/CFFEX/GFEX/INE
+      2. ak.futures_settle_<exchange>(date) — richer settlement bulletin per exchange
     date_str_yyyymmdd: "20250424"
     """
     try:
@@ -187,37 +205,56 @@ def fetch_exchange_day(exchange: str, date_str_yyyymmdd: str, ref_year: int) -> 
         return []
 
     trade_date_iso = f"{date_str_yyyymmdd[:4]}-{date_str_yyyymmdd[4:6]}-{date_str_yyyymmdd[6:]}"
+    df = None
 
-    try:
-        if exchange == "DCE":
-            df = ak.futures_dce_daily(date=date_str_yyyymmdd)
-        elif exchange == "SHFE":
-            df = ak.futures_shfe_daily(date=date_str_yyyymmdd)
-        elif exchange == "CZCE":
-            df = ak.futures_czce_daily(date=date_str_yyyymmdd)
-        elif exchange == "CFFEX":
-            df = ak.futures_cffex_daily(date=date_str_yyyymmdd)
-        elif exchange == "GFEX":
-            df = ak.futures_gfex_daily(date=date_str_yyyymmdd)
-        elif exchange == "INE":
-            # INE contracts are usually included in SHFE data.
-            # Try dedicated function if available.
-            if hasattr(ak, "futures_ine_daily"):
-                df = ak.futures_ine_daily(date=date_str_yyyymmdd)
-            else:
-                sys.stderr.write(f"  INE: no dedicated AkShare function, skipped\n")
-                return []
-        else:
-            sys.stderr.write(f"  Unknown exchange: {exchange}\n")
-            return []
+    # ── Strategy 1: get_futures_daily (primary, covers all exchanges) ──────────
+    if hasattr(ak, "get_futures_daily"):
+        try:
+            df_raw = ak.get_futures_daily(
+                start_date=date_str_yyyymmdd,
+                end_date=date_str_yyyymmdd,
+                market=exchange,
+            )
+            if df_raw is not None and not df_raw.empty:
+                df = df_raw
+                sys.stderr.write(
+                    f"  {exchange} {date_str_yyyymmdd}: get_futures_daily → {len(df)} rows\n"
+                )
+        except Exception as exc:
+            sys.stderr.write(
+                f"  {exchange} {date_str_yyyymmdd}: get_futures_daily failed ({exc}), trying fallback\n"
+            )
 
-        records = _parse_df(df, exchange, trade_date_iso, ref_year)
-        sys.stderr.write(f"  {exchange} {date_str_yyyymmdd}: {len(records)} contracts\n")
-        return records
+    # ── Strategy 2: exchange-specific settle bulletin (richer data) ────────────
+    _settle_fn_map = {
+        "SHFE":  "futures_settle_shfe",
+        "CZCE":  "futures_settle_czce",
+        "CFFEX": "futures_settle_cffex",
+        "GFEX":  "futures_settle_gfex",
+    }
+    if df is None and exchange in _settle_fn_map:
+        fn_name = _settle_fn_map[exchange]
+        fn = getattr(ak, fn_name, None)
+        if fn is not None:
+            try:
+                df_settle = fn(date=date_str_yyyymmdd)
+                if df_settle is not None and not df_settle.empty:
+                    df = df_settle
+                    sys.stderr.write(
+                        f"  {exchange} {date_str_yyyymmdd}: {fn_name} → {len(df)} rows\n"
+                    )
+            except Exception as exc:
+                sys.stderr.write(
+                    f"  {exchange} {date_str_yyyymmdd}: {fn_name} failed ({exc})\n"
+                )
 
-    except Exception as exc:
-        sys.stderr.write(f"  {exchange} {date_str_yyyymmdd}: ERROR — {exc}\n")
+    if df is None or df.empty:
+        sys.stderr.write(f"  {exchange} {date_str_yyyymmdd}: no data\n")
         return []
+
+    records = _parse_df(df, exchange, trade_date_iso, ref_year)
+    sys.stderr.write(f"  {exchange} {date_str_yyyymmdd}: parsed {len(records)} contracts\n")
+    return records
 
 
 # ── Exchange detection from held contracts ────────────────────────────────────
