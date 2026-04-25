@@ -307,6 +307,87 @@ def _contract_to_exchange(contract: str) -> str | None:
     return _PRODUCT_EXCHANGE.get(m.group(1).upper())
 
 
+def _dce_contracts_from_db(conn) -> list[str]:
+    """Return all distinct DCE contract codes appearing in any position table."""
+    contracts: set[str] = set()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT UPPER(SPLIT_PART(TRIM("合约"), '.', 1)) AS c
+                FROM mom_position_details
+                WHERE "合约" IS NOT NULL AND TRIM("合约") <> ''
+            """)
+            for (c,) in cur.fetchall():
+                if _contract_to_exchange(c) == "DCE":
+                    contracts.add(c)
+    except Exception as exc:
+        sys.stderr.write(f"  _dce_contracts_from_db (mom): {exc}\n")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT DISTINCT UPPER(SPLIT_PART(TRIM(instrument), '.', 1)) AS c
+                FROM guosen_position_detail
+                WHERE instrument IS NOT NULL AND TRIM(instrument) <> ''
+            """)
+            for (c,) in cur.fetchall():
+                if _contract_to_exchange(c) == "DCE":
+                    contracts.add(c)
+    except Exception:
+        pass
+    return sorted(contracts)
+
+
+def fetch_dce_sina(
+    contracts: list[str],
+    start_date: date,
+    end_date: date,
+) -> list[DayRecord]:
+    """
+    Fetch DCE daily data via Sina Finance (ak.futures_zh_daily_sina).
+    Called once per contract for the full date range — avoids DCE WAF.
+    Returns DayRecord list for all contracts × dates in range.
+    """
+    try:
+        import akshare as ak  # noqa: PLC0415
+    except ImportError:
+        sys.stderr.write("akshare not installed\n")
+        return []
+
+    records: list[DayRecord] = []
+    for contract in contracts:
+        try:
+            df = ak.futures_zh_daily_sina(symbol=contract)
+            if df is None or df.empty:
+                continue
+            import pandas as pd  # noqa: PLC0415
+            df["date"] = pd.to_datetime(df["date"]).dt.date
+            df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
+            if df.empty:
+                continue
+            for _, row in df.iterrows():
+                records.append(DayRecord(
+                    date=row["date"].isoformat(),
+                    contract=contract.upper(),
+                    exchange="DCE",
+                    open=_safe_float(row.get("open")),
+                    high=_safe_float(row.get("high")),
+                    low=_safe_float(row.get("low")),
+                    close=_safe_float(row.get("close")),
+                    preclose=None,
+                    settlement=_safe_float(row.get("settle")),
+                    volume=_safe_float(row.get("volume")),
+                    hqoi=_safe_float(row.get("hold")),
+                    amount=None,
+                ))
+            sys.stderr.write(
+                f"  DCE/{contract}: Sina → {len(df)} rows "
+                f"({start_date} to {end_date})\n"
+            )
+        except Exception as exc:
+            sys.stderr.write(f"  DCE/{contract}: Sina fetch failed ({exc})\n")
+    return records
+
+
 def _held_exchanges_from_db(conn) -> list[str]:
     """Return exchanges needed for contracts currently held in mom_position_details."""
     with conn.cursor() as cur:
@@ -558,7 +639,7 @@ def main() -> None:
     else:
         exchanges = _ALL_EXCHANGES
 
-    # ── Fetch and upsert ───────────────────────────────────────────────────────
+    # ── Fetch and upsert per-day (non-DCE exchanges) ──────────────────────────
     total_rows = 0
     ref_year = today.year
 
@@ -576,15 +657,33 @@ def main() -> None:
         else:
             sys.stderr.write(f"  {d.isoformat()}: no data (holiday?)\n")
 
+    # ── DCE via Sina (one call per contract for full date range) ──────────────
+    # ak.get_dce_daily / get_futures_daily both fail from Aliyun (DCE WAF 412).
+    # ak.futures_zh_daily_sina works and returns full history per contract.
+    dce_contracts = _dce_contracts_from_db(conn)
+    if dce_contracts:
+        sys.stderr.write(
+            f"DCE: fetching {len(dce_contracts)} contracts via Sina "
+            f"({start_date} → {end_date}): {dce_contracts}\n"
+        )
+        dce_records = fetch_dce_sina(dce_contracts, start_date, end_date)
+        if dce_records:
+            n = _upsert_records(conn, dce_records)
+            total_rows += n
+            sys.stderr.write(f"DCE: upserted {n} rows total\n")
+    else:
+        sys.stderr.write("DCE: no held DCE contracts found in position tables\n")
+
     conn.close()
     sys.stderr.write(f"Done. Total rows upserted: {total_rows}\n")
 
+    all_exchanges = exchanges + (["DCE"] if dce_contracts else [])
     print(json.dumps({
         "ok":         True,
         "start":      start_date.isoformat(),
         "end":        end_date.isoformat(),
         "days":       len(dates_to_fetch),
-        "exchanges":  exchanges,
+        "exchanges":  all_exchanges,
         "rows":       total_rows,
     }))
 
