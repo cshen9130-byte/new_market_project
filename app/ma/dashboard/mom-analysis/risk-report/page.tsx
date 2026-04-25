@@ -5937,9 +5937,16 @@ function anomalySeverityBorderClass(s: AnomalySeverity): string {
   return "border-blue-500/50 bg-blue-500/5"
 }
 
+interface LiqDaySummary {
+  date: string
+  liqCritical: number
+  liqWarning: number
+}
+
 function AnomalyContent() {
   const [anomalies, setAnomalies] = useState<Anomaly[]>([])
   const [dailySummary, setDailySummary] = useState<DailySummary[]>([])
+  const [liqHistory, setLiqHistory] = useState<LiqDaySummary[]>([])
   const [latestDate, setLatestDate] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -5950,14 +5957,20 @@ function AnomalyContent() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/ma/api/mom-analysis/anomaly-detection?lookback=30${nocache ? "&nocache=1" : ""}`)
-      const json = await res.json()
+      const suffix = nocache ? "&nocache=1" : ""
+      const [anomalyRes, liqRes] = await Promise.all([
+        fetch(`/ma/api/mom-analysis/anomaly-detection?lookback=30${suffix}`),
+        fetch(`/ma/api/mom-analysis/liquidity-history?lookback=30${suffix}`),
+      ])
+      const json = await anomalyRes.json()
       if (!json.ok && json.error) { setError(json.error); return }
       setNotYetRun(!!json.notYetRun)
       setAnomalies(json.anomalies ?? [])
       setDailySummary(json.dailySummary ?? [])
       setLatestDate(json.latestDate ?? null)
       if (json.latestDate) setSelectedDate((prev) => prev ?? json.latestDate)
+      const liqJson = await liqRes.json()
+      if (liqJson.ok) setLiqHistory(liqJson.data ?? [])
     } catch (e) {
       setError(e instanceof Error ? e.message : "请求失败")
     } finally {
@@ -5992,9 +6005,21 @@ function AnomalyContent() {
     return map
   }, [dayAnomalies])
 
+  const liqMap = useMemo(() => {
+    const m = new Map<string, LiqDaySummary>()
+    for (const d of liqHistory) m.set(d.date, d)
+    return m
+  }, [liqHistory])
+
+  const dayLiq = useMemo(() =>
+    selectedDate ? (liqMap.get(selectedDate) ?? null) : null,
+    [liqMap, selectedDate]
+  )
+
   const chartOption = useMemo(() => {
     if (dailySummary.length === 0) return null
     const sorted = [...dailySummary].sort((a, b) => a.date.localeCompare(b.date))
+    const hasLiq = liqHistory.length > 0
     return {
       backgroundColor: "transparent",
       tooltip: {
@@ -6002,10 +6027,18 @@ function AnomalyContent() {
         axisPointer: { type: "shadow" },
         formatter: (params: any[]) => {
           const date = params[0]?.axisValue ?? ""
-          return [date, ...params.map((p: any) => `${p.marker}${p.seriesName}: ${p.value}`)].join("<br/>")
+          const lines = params
+            .filter((p: any) => p.value > 0)
+            .map((p: any) => `${p.marker}${p.seriesName}: ${p.value}`)
+          return lines.length ? [date, ...lines].join("<br/>") : date + "<br/>无异常"
         },
       },
-      legend: { data: ["严重", "警告"], textStyle: { color: "#94a3b8", fontSize: 11 }, right: 0, top: 0 },
+      legend: {
+        data: hasLiq ? ["异常严重", "异常警告", "流动性严重", "流动性警告"] : ["严重", "警告"],
+        textStyle: { color: "#94a3b8", fontSize: 10 },
+        right: 0,
+        top: 0,
+      },
       grid: { left: 0, right: 16, top: 28, bottom: 0, containLabel: true },
       xAxis: {
         type: "category",
@@ -6020,12 +6053,17 @@ function AnomalyContent() {
         axisLabel: { color: "#94a3b8", fontSize: 10 },
         splitLine: { lineStyle: { color: "#1e293b" } },
       },
-      series: [
+      series: hasLiq ? [
+        { name: "异常严重",   type: "bar", stack: "total", data: sorted.map((s) => s.critical),                       itemStyle: { color: "#ef4444" }, emphasis: { itemStyle: { color: "#dc2626" } } },
+        { name: "异常警告",   type: "bar", stack: "total", data: sorted.map((s) => s.warning),                        itemStyle: { color: "#eab308" }, emphasis: { itemStyle: { color: "#ca8a04" } } },
+        { name: "流动性严重", type: "bar", stack: "total", data: sorted.map((s) => liqMap.get(s.date)?.liqCritical ?? 0), itemStyle: { color: "#f97316" }, emphasis: { itemStyle: { color: "#ea6c00" } } },
+        { name: "流动性警告", type: "bar", stack: "total", data: sorted.map((s) => liqMap.get(s.date)?.liqWarning  ?? 0), itemStyle: { color: "#fb923c", borderRadius: [3, 3, 0, 0] }, emphasis: { itemStyle: { color: "#f97316" } } },
+      ] : [
         { name: "严重", type: "bar", stack: "total", data: sorted.map((s) => s.critical), itemStyle: { color: "#ef4444" }, emphasis: { itemStyle: { color: "#dc2626" } } },
-        { name: "警告", type: "bar", stack: "total", data: sorted.map((s) => s.warning), itemStyle: { color: "#eab308", borderRadius: [3, 3, 0, 0] }, emphasis: { itemStyle: { color: "#ca8a04" } } },
+        { name: "警告", type: "bar", stack: "total", data: sorted.map((s) => s.warning),  itemStyle: { color: "#eab308", borderRadius: [3, 3, 0, 0] }, emphasis: { itemStyle: { color: "#ca8a04" } } },
       ],
     }
-  }, [dailySummary])
+  }, [dailySummary, liqHistory, liqMap])
 
   if (loading) {
     return (
@@ -6101,19 +6139,23 @@ function AnomalyContent() {
         >
           <ChevronRight className="h-4 w-4" />
         </button>
-        {daySummary && (
-          <div className="flex items-center gap-2 ml-2">
-            {daySummary.critical > 0 && (
-              <Badge variant="destructive" className="text-xs">{daySummary.critical} 严重</Badge>
-            )}
-            {daySummary.warning > 0 && (
-              <Badge variant="outline" className="text-xs border-yellow-500 text-yellow-600 dark:text-yellow-400">{daySummary.warning} 警告</Badge>
-            )}
-            {daySummary.total === 0 && (
-              <Badge variant="secondary" className="text-xs text-green-600 dark:text-green-400 border-green-500/30">无异常</Badge>
-            )}
-          </div>
-        )}
+        <div className="flex items-center gap-2 ml-2">
+          {daySummary && daySummary.critical > 0 && (
+            <Badge variant="destructive" className="text-xs">{daySummary.critical} 异常严重</Badge>
+          )}
+          {daySummary && daySummary.warning > 0 && (
+            <Badge variant="outline" className="text-xs border-yellow-500 text-yellow-600 dark:text-yellow-400">{daySummary.warning} 异常警告</Badge>
+          )}
+          {dayLiq && dayLiq.liqCritical > 0 && (
+            <Badge variant="outline" className="text-xs border-orange-500 text-orange-600 dark:text-orange-400">{dayLiq.liqCritical} 流动性严重</Badge>
+          )}
+          {dayLiq && dayLiq.liqWarning > 0 && (
+            <Badge variant="outline" className="text-xs border-orange-400/60 text-orange-500 dark:text-orange-300">{dayLiq.liqWarning} 流动性警告</Badge>
+          )}
+          {daySummary && daySummary.total === 0 && (!dayLiq || (dayLiq.liqCritical === 0 && dayLiq.liqWarning === 0)) && (
+            <Badge variant="secondary" className="text-xs text-green-600 dark:text-green-400 border-green-500/30">无异常</Badge>
+          )}
+        </div>
       </div>
 
       {/* Anomaly list */}
