@@ -122,11 +122,9 @@ def _parse_df(df, exchange: str, trade_date_str: str, ref_year: int) -> list[Day
     if df is None or df.empty:
         return records
 
-    # Debug: print columns on first call so we can diagnose issues
-    sys.stderr.write(f"    columns ({exchange}): {list(df.columns[:15])}\n")
     contract_col = _first_col(df, _CONTRACT_COLS)
     if contract_col is None:
-        sys.stderr.write(f"    WARNING: no contract column found in {list(df.columns)}\n")
+        sys.stderr.write(f"    WARNING ({exchange}): no contract column in {list(df.columns)}\n")
         return records
 
     # get_futures_daily may include a date column per row
@@ -207,10 +205,14 @@ def fetch_exchange_day(exchange: str, date_str_yyyymmdd: str, ref_year: int) -> 
     trade_date_iso = f"{date_str_yyyymmdd[:4]}-{date_str_yyyymmdd[4:6]}-{date_str_yyyymmdd[6:]}"
     df = None
 
-    # AkShare get_futures_daily accepts both English short codes and Chinese exchange names.
-    # Try multiple variants in case one version uses Chinese names.
+    # AkShare get_futures_daily supports SHFE/CZCE/CFFEX/GFEX/INE but NOT DCE
+    # in akshare 1.18.x.  DCE is skipped; its contracts appear via SHFE/other sources.
+    if exchange == "DCE":
+        sys.stderr.write(f"  DCE {date_str_yyyymmdd}: get_futures_daily does not support DCE in this akshare version, skipping\n")
+        return []
+
+    # Try both English short codes and Chinese exchange names.
     _market_variants: dict[str, list[str]] = {
-        "DCE":   ["DCE",  "大商所"],
         "SHFE":  ["SHFE", "上期所"],
         "CZCE":  ["CZCE", "郑商所"],
         "CFFEX": ["CFFEX","中金所"],
@@ -295,7 +297,7 @@ _PRODUCT_EXCHANGE: dict[str, str] = {
     "IC": "CFFEX", "IF": "CFFEX", "IH": "CFFEX", "IM": "CFFEX",
     "T": "CFFEX", "TF": "CFFEX", "TL": "CFFEX", "TS": "CFFEX",
 }
-_ALL_EXCHANGES = ["DCE", "SHFE", "CZCE", "CFFEX", "GFEX", "INE"]
+_ALL_EXCHANGES = ["SHFE", "CZCE", "CFFEX", "GFEX", "INE"]  # DCE not supported by get_futures_daily in akshare 1.18.x
 
 
 def _contract_to_exchange(contract: str) -> str | None:
