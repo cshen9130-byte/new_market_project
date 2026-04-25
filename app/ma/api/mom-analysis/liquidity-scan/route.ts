@@ -114,18 +114,38 @@ function assessSeverity(
 // ── handler ───────────────────────────────────────────────────────────────────
 
 async function _GET(_req: Request) {
+  const url = new URL(_req.url)
+  // Optional: request a specific historical date (e.g. ?date=2026-04-22)
+  const reqDate = url.searchParams.get("date") ?? null
+
   try {
-    // ── 1. Get latest position date ───────────────────────────────────────────
-    const dateRows = await query<{ date: string }>(
-      `SELECT DISTINCT "交易日期"::date::text AS date
-       FROM mom_position_details
-       WHERE "交易日期" IS NOT NULL
-       ORDER BY date DESC LIMIT 1`,
-    )
-    if (dateRows.length === 0) {
-      return NextResponse.json({ ok: true, date: null, contracts: [], notYetRun: true })
+    // ── 1. Get position date ──────────────────────────────────────────────────
+    let posDate: string
+    if (reqDate) {
+      // Validate it exists in the DB
+      const checkRows = await query<{ date: string }>(
+        `SELECT DISTINCT "交易日期"::date::text AS date
+         FROM mom_position_details
+         WHERE "交易日期"::date = $1 AND "交易日期" IS NOT NULL
+         LIMIT 1`,
+        [reqDate],
+      )
+      if (checkRows.length === 0) {
+        return NextResponse.json({ ok: true, date: reqDate, contracts: [], notYetRun: false })
+      }
+      posDate = checkRows[0].date
+    } else {
+      const dateRows = await query<{ date: string }>(
+        `SELECT DISTINCT "交易日期"::date::text AS date
+         FROM mom_position_details
+         WHERE "交易日期" IS NOT NULL
+         ORDER BY date DESC LIMIT 1`,
+      )
+      if (dateRows.length === 0) {
+        return NextResponse.json({ ok: true, date: null, contracts: [], notYetRun: true })
+      }
+      posDate = dateRows[0].date
     }
-    const posDate = dateRows[0].date
 
     // ── 2. Aggregate net lots per contract from mom_position_details ──────────
     const numCol = (col: string) =>
@@ -186,9 +206,11 @@ async function _GET(_req: Request) {
     let guosenDate: string | null = null
 
     try {
-      // Use guosen's own latest available date (may differ from mom posDate if not uploaded same day)
+      // Use guosen's own latest available date ≤ posDate (may differ if not uploaded same day)
       const guosenDateRows = await query<{ date: string }>(
-        `SELECT MAX(settlement_date)::date::text AS date FROM guosen_position_detail`,
+        `SELECT MAX(settlement_date)::date::text AS date FROM guosen_position_detail
+         WHERE settlement_date::date <= $1`,
+        [posDate],
       )
       guosenDate = guosenDateRows[0]?.date ?? posDate
 

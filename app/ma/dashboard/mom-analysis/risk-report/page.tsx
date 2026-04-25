@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
 import { cn } from "@/lib/utils"
-import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react"
+import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw, Droplets } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -5952,6 +5952,8 @@ function AnomalyContent() {
   const [loading, setLoading] = useState(true)
   const [notYetRun, setNotYetRun] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [liqDetail, setLiqDetail] = useState<ContractLiquidity[] | null>(null)
+  const [liqDetailLoading, setLiqDetailLoading] = useState(false)
 
   const load = useCallback(async (nocache = false) => {
     setLoading(true)
@@ -5980,6 +5982,32 @@ function AnomalyContent() {
 
   useEffect(() => { load() }, [])
 
+  const liqMap = useMemo(() => {
+    const m = new Map<string, LiqDaySummary>()
+    for (const d of liqHistory) m.set(d.date, d)
+    return m
+  }, [liqHistory])
+
+  // Fetch liquidity details for the selected date when it has liquidity issues
+  useEffect(() => {
+    if (!selectedDate) { setLiqDetail(null); return }
+    const summary = liqMap.get(selectedDate)
+    if (!summary || (summary.liqCritical === 0 && summary.liqWarning === 0)) {
+      setLiqDetail(null); return
+    }
+    setLiqDetailLoading(true)
+    fetch(`/ma/api/mom-analysis/liquidity-scan?date=${selectedDate}`)
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok) {
+          const flagged = (j.contracts as ContractLiquidity[]).filter((c) => c.severity !== "ok")
+          setLiqDetail(flagged.length > 0 ? flagged : null)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLiqDetailLoading(false))
+  }, [selectedDate, liqMap])
+
   const availableDates = useMemo(() => dailySummary.map((d) => d.date).sort(), [dailySummary])
   const currentIndex = selectedDate ? availableDates.indexOf(selectedDate) : -1
   const canPrev = currentIndex > 0
@@ -6004,12 +6032,6 @@ function AnomalyContent() {
     }
     return map
   }, [dayAnomalies])
-
-  const liqMap = useMemo(() => {
-    const m = new Map<string, LiqDaySummary>()
-    for (const d of liqHistory) m.set(d.date, d)
-    return m
-  }, [liqHistory])
 
   const dayLiq = useMemo(() =>
     selectedDate ? (liqMap.get(selectedDate) ?? null) : null,
@@ -6214,6 +6236,79 @@ function AnomalyContent() {
             </Card>
           ))}
         </div>
+      )}
+
+      {/* ── Historical liquidity detail for selected date ─────────────── */}
+      {(liqDetailLoading || liqDetail) && (
+        <Card>
+          <CardHeader className="pb-2 pt-4">
+            <CardTitle className="text-sm font-medium flex items-center gap-2">
+              <Droplets className="h-4 w-4 text-orange-500" />
+              {selectedDate} 流动性风险合约
+              {liqDetailLoading && <RefreshCw className="h-3.5 w-3.5 animate-spin text-muted-foreground ml-1" />}
+            </CardTitle>
+          </CardHeader>
+          {liqDetail && liqDetail.length > 0 && (
+            <CardContent className="pt-0">
+              <div className="space-y-1.5">
+                {liqDetail.map((c) => (
+                  <div
+                    key={c.contract}
+                    className={`flex items-start gap-3 px-3 py-3 rounded-md border ${
+                      c.severity === "critical"
+                        ? "border-red-200 dark:border-red-900/60 bg-red-50/40 dark:bg-red-900/10"
+                        : "border-orange-200 dark:border-orange-900/60 bg-orange-50/40 dark:bg-orange-900/10"
+                    }`}
+                  >
+                    <div className="mt-0.5 shrink-0">{liqSeverityIcon(c.severity)}</div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-semibold font-mono">{c.contract}</span>
+                        {c.exchange && <span className="text-xs text-muted-foreground">{c.exchange}</span>}
+                        <Badge
+                          variant="outline"
+                          className={`text-[10px] h-4 px-1.5 ${
+                            c.severity === "critical"
+                              ? "border-red-500 text-red-600 dark:text-red-400"
+                              : "border-orange-500 text-orange-600 dark:text-orange-400"
+                          }`}
+                        >
+                          {c.severity === "critical" ? "严重" : "警告"}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">净持仓 {c.netLots} 手</span>
+                      </div>
+                      <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1">
+                        {c.volume !== null && (
+                          <span className="text-xs text-muted-foreground">日成交 {c.volume.toLocaleString()} 手</span>
+                        )}
+                        {c.participationRate !== null && (
+                          <span className={`text-xs font-medium ${c.participationRate >= 15 ? "text-red-500" : c.participationRate >= 5 ? "text-orange-500" : "text-muted-foreground"}`}>
+                            成交占比 {c.participationRate.toFixed(1)}%
+                          </span>
+                        )}
+                        {c.openInterest !== null && (
+                          <span className="text-xs text-muted-foreground">持仓量 {c.openInterest.toLocaleString()} 手</span>
+                        )}
+                        {c.oiConcentration !== null && (
+                          <span className={`text-xs font-medium ${c.oiConcentration >= 8 ? "text-red-500" : c.oiConcentration >= 3 ? "text-orange-500" : "text-muted-foreground"}`}>
+                            持仓占比 {c.oiConcentration.toFixed(1)}%
+                          </span>
+                        )}
+                      </div>
+                      {c.warnings.length > 0 && (
+                        <ul className="mt-1 space-y-0.5">
+                          {c.warnings.map((w, i) => (
+                            <li key={i} className="text-xs text-muted-foreground leading-relaxed">• {w}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          )}
+        </Card>
       )}
 
       {/* ── Liquidity Scan ───────────────────────────────────────────── */}
