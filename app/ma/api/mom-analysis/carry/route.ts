@@ -98,17 +98,18 @@ export async function GET() {
       }
     })
 
+    // Normalize by account name to avoid duplicate rows when merging optional sources.
+    const accountMap = new Map(accounts.map((a) => [a.account, a]))
+
     // ── Merge guosen_account_summary data (optional – graceful fallback) ──
     try {
       const gRows = await query<{
-        client_id: string; client_name: string
         cum_pnl: string; cum_commission: string; options_pnl: string
         latest_equity: string | null
         cum_deposit: string; cum_withdrawal: string
         latest_date: string | null
       }>(`
         SELECT
-          client_id, client_name,
           SUM(COALESCE(realized_pl, 0) + COALESCE(mtm_pl, 0))::text            AS cum_pnl,
           SUM(COALESCE(commission, 0))::text                                   AS cum_commission,
           SUM(COALESCE(premium_received, 0) - COALESCE(premium_paid, 0))::text AS options_pnl,
@@ -117,13 +118,13 @@ export async function GET() {
           SUM(CASE WHEN COALESCE(deposit_withdrawal, 0) < 0 THEN deposit_withdrawal ELSE 0 END)::text AS cum_withdrawal,
           MAX(trade_date::text) AS latest_date
         FROM guosen_account_summary
-        GROUP BY client_id, client_name
+        WHERE client_id = '665300200077'
       `)
       for (const r of gRows) {
-        const cumPnl        = (parseNum(r.cum_pnl) ?? 0) + 68662.32
+        const cumPnl        = parseNum(r.cum_pnl) ?? 0
         const cumCommission = parseNum(r.cum_commission) ?? 0
         const optionsPnl    = parseNum(r.options_pnl)   ?? 0
-        accounts.push({
+        accountMap.set("guoxin", {
           account:       "guoxin",
           cumPnl, cumCommission, optionsPnl,
           cumNetPnl:     cumPnl - cumCommission + optionsPnl,
@@ -137,6 +138,8 @@ export async function GET() {
     } catch {
       // guosen_account_summary not available — skip gracefully
     }
+
+    const mergedAccounts = Array.from(accountMap.values()).sort((a, b) => a.account.localeCompare(b.account))
 
     // Already-paid carry payment records
     let payments: Array<{
@@ -176,7 +179,7 @@ export async function GET() {
       // mom_carry_payments table not yet created — treat as empty
     }
 
-    return NextResponse.json({ ok: true, latestDate, ...rates, accounts, payments })
+    return NextResponse.json({ ok: true, latestDate, ...rates, accounts: mergedAccounts, payments })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {
