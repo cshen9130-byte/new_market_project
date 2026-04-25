@@ -308,8 +308,10 @@ def _contract_to_exchange(contract: str) -> str | None:
 
 
 def _dce_contracts_from_db(conn) -> list[str]:
-    """Return all distinct DCE contract codes appearing in any position table."""
+    """Return all distinct DCE futures contract codes (options excluded) from position tables."""
     contracts: set[str] = set()
+    # Options have a strike price suffix like C2601-C-2320 or M2605-P-2600 — skip them
+    _is_option = re.compile(r'-[CP]-\d+$', re.IGNORECASE)
     try:
         with conn.cursor() as cur:
             cur.execute("""
@@ -318,7 +320,7 @@ def _dce_contracts_from_db(conn) -> list[str]:
                 WHERE "合约" IS NOT NULL AND TRIM("合约") <> ''
             """)
             for (c,) in cur.fetchall():
-                if _contract_to_exchange(c) == "DCE":
+                if _contract_to_exchange(c) == "DCE" and not _is_option.search(c):
                     contracts.add(c)
     except Exception as exc:
         sys.stderr.write(f"  _dce_contracts_from_db (mom): {exc}\n")
@@ -330,7 +332,7 @@ def _dce_contracts_from_db(conn) -> list[str]:
                 WHERE instrument IS NOT NULL AND TRIM(instrument) <> ''
             """)
             for (c,) in cur.fetchall():
-                if _contract_to_exchange(c) == "DCE":
+                if _contract_to_exchange(c) == "DCE" and not _is_option.search(c):
                     contracts.add(c)
     except Exception:
         pass
