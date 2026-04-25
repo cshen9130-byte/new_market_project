@@ -182,7 +182,16 @@ async function _GET(_req: Request) {
       }
     }
 
+    // guosenDate declared here so it's available in the final return
+    let guosenDate: string | null = null
+
     try {
+      // Use guosen's own latest available date (may differ from mom posDate if not uploaded same day)
+      const guosenDateRows = await query<{ date: string }>(
+        `SELECT MAX(settlement_date)::date::text AS date FROM guosen_position_detail`,
+      )
+      guosenDate = guosenDateRows[0]?.date ?? posDate
+
       const guosenRows = await query<{
         instrument: string; bs: string; position_lots: string
         settl_today: string; margin: string
@@ -195,7 +204,7 @@ async function _GET(_req: Request) {
          FROM guosen_position_detail
          WHERE settlement_date::date = $1
            AND COALESCE(position_lots, 0) > 0`,
-        [posDate],
+        [guosenDate],
       )
       for (const r of guosenRows) {
         const lots = toNum(r.position_lots)
@@ -327,7 +336,7 @@ async function _GET(_req: Request) {
       noMktContracts: noMktList,  // debug: list of contracts with no market data
     }
 
-    return NextResponse.json({ ok: true, date: posDate, mktDate, contracts: result, summary })
+    return NextResponse.json({ ok: true, date: posDate, guosenDate, mktDate, contracts: result, summary })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_position_details") || msg.includes("does not exist")) {

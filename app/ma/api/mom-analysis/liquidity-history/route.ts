@@ -115,9 +115,31 @@ async function _GET(req: Request) {
 
     const allMktDates = [...mktMap.keys()].sort()
 
+    // 3. Also fetch guosen positions for the same window (use each day's own data)
+    let guosenPosRows: { d: string; contract: string; long_lots: string; short_lots: string }[] = []
+    try {
+      guosenPosRows = await query<{ d: string; contract: string; long_lots: string; short_lots: string }>(
+        `SELECT
+           settlement_date::date::text AS d,
+           UPPER(SPLIT_PART(TRIM(instrument), '.', 1)) AS contract,
+           SUM(CASE WHEN bs = '买' THEN COALESCE(position_lots, 0) ELSE 0 END)::text AS long_lots,
+           SUM(CASE WHEN bs = '卖' THEN COALESCE(position_lots, 0) ELSE 0 END)::text AS short_lots
+         FROM guosen_position_detail
+         WHERE settlement_date >= NOW() - ($1 || ' days')::interval
+           AND instrument IS NOT NULL AND TRIM(instrument) <> ''
+           AND COALESCE(position_lots, 0) > 0
+         GROUP BY 1, 2`,
+        [lookback + 5],
+      )
+    } catch { /* guosen table unavailable */ }
+
     // Group positions by date, applying CZCE expansion and skipping options
     const posByDate = new Map<string, Map<string, number>>() // date → contract → netLots
-    for (const r of posRows) {
+    const allPosRows = [
+      ...posRows,
+      ...guosenPosRows,
+    ]
+    for (const r of allPosRows) {
       const contract = czceExpand(r.contract)
       if (/^[A-Z]+\d+-?[CP]-?\d+$/i.test(contract)) continue // skip options
       const netLots = Math.abs(toNum(r.long_lots) - toNum(r.short_lots)) ||
@@ -139,8 +161,10 @@ async function _GET(req: Request) {
 
       for (const [contract, netLots] of contracts) {
         const mkt = dayMkt.get(contract)
-        if (!mkt || mkt.volume === null) continue // no market data — don't flag, just skip
-        const level = computeSeverityLevel(netLots, mkt.volume, mkt.hqoi)
+        // Pass null volume/hqoi when no market data — computeSeverityLevel will flag it as warning
+        const volume = mkt?.volume ?? null
+        const hqoi = mkt?.hqoi ?? null
+        const level = computeSeverityLevel(netLots, volume, hqoi)
         if (level === 2) critical++
         else if (level === 1) warning++
       }
