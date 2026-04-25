@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
 import { cn } from "@/lib/utils"
-import { BarChart2, ShieldAlert, PieChart, Users } from "lucide-react"
+import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
@@ -23,6 +24,7 @@ const subNavItems = [
   { key: "intraday",  name: "日间风控", icon: ShieldAlert },
   { key: "position",  name: "持仓分析", icon: PieChart },
   { key: "advisor",   name: "投顾分析", icon: Users },
+  { key: "anomaly",   name: "异常监测", icon: ScanSearch },
 ] as const
 
 type TabKey = (typeof subNavItems)[number]["key"]
@@ -1366,7 +1368,6 @@ function IntradayContent() {
   const [sectorLsSeries, setSectorLsSeries] = useState<SectorLsTs[]>([])
   const [sectorFilter, setSectorFilter] = useState<string>("全部")
   const [acctRankFilter, setAcctRankFilter] = useState<string>("全部")
-  const [snapshotSort, setSnapshotSort] = useState<{ col: string; dir: "asc" | "desc" }>({ col: "riskRatio", dir: "desc" })
   const [marginLoading, setMarginLoading] = useState(true)
 
   const fetchVolBar = (window: string) => {
@@ -2658,46 +2659,16 @@ function IntradayContent() {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b bg-muted/40">
-                      {([
-                        { key: "account", label: "账户", align: "left" },
-                        { key: "date", label: "日期", align: "right" },
-                        { key: "margin", label: "保证金占用", align: "right" },
-                        { key: "equity", label: "客户权益", align: "right" },
-                        { key: "available", label: "可用资金", align: "right" },
-                        { key: "riskRatio", label: "风险度", align: "right" },
-                      ] as { key: string; label: string; align: string }[]).map(col => (
-                        <th
-                          key={col.key}
-                          className={`${col.align === "left" ? "text-left" : "text-right"} px-3 py-1.5 font-medium cursor-pointer select-none hover:text-foreground text-muted-foreground whitespace-nowrap`}
-                          onClick={() => setSnapshotSort(s => s.col === col.key ? { col: col.key, dir: s.dir === "asc" ? "desc" : "asc" } : { col: col.key, dir: "desc" })}
-                        >
-                          {col.label}{snapshotSort.col === col.key ? (snapshotSort.dir === "asc" ? " ▲" : " ▼") : ""}
-                        </th>
-                      ))}
+                      <th className="text-left px-3 py-1.5 font-medium">账户</th>
+                      <th className="text-right px-3 py-1.5 font-medium">日期</th>
+                      <th className="text-right px-3 py-1.5 font-medium">保证金占用</th>
+                      <th className="text-right px-3 py-1.5 font-medium">客户权益</th>
+                      <th className="text-right px-3 py-1.5 font-medium">可用资金</th>
+                      <th className="text-right px-3 py-1.5 font-medium">风险度</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {[...marginLatest].sort((a, b) => {
-                      const { col, dir } = snapshotSort
-                      let av: number | string | null = null
-                      let bv: number | string | null = null
-                      if (col === "account" || col === "date") {
-                        av = (a as Record<string, unknown>)[col] as string
-                        bv = (b as Record<string, unknown>)[col] as string
-                        const cmp = (av ?? "").localeCompare(bv ?? "")
-                        return dir === "asc" ? cmp : -cmp
-                      }
-                      if (col === "riskRatio") {
-                        av = a.riskRatio ?? (a.equity > 0 ? a.margin / a.equity * 100 : null)
-                        bv = b.riskRatio ?? (b.equity > 0 ? b.margin / b.equity * 100 : null)
-                      } else {
-                        av = (a as Record<string, unknown>)[col] as number
-                        bv = (b as Record<string, unknown>)[col] as number
-                      }
-                      const an = av as number ?? -Infinity
-                      const bn = bv as number ?? -Infinity
-                      return dir === "asc" ? an - bn : bn - an
-                    }).map((r, i) => {
+                    {[...marginLatest].sort((a, b) => a.account.localeCompare(b.account)).map((r, i) => {
                       const ratio = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
                       const danger = ratio != null && ratio > 80
                       const warning = ratio != null && ratio > 60 && ratio <= 80
@@ -5909,6 +5880,547 @@ function PositionContent() {
   )
 }
 
+// ── Anomaly Detection ──────────────────────────────────────────────────────
+
+type AnomalySeverity = "critical" | "warning" | "info"
+
+interface Anomaly {
+  id: string
+  date: string
+  account: string | null
+  type: string
+  severity: AnomalySeverity
+  title: string
+  detail: string
+  value: number | null
+  threshold: number | null
+  unit?: string
+}
+
+interface DailySummary {
+  date: string
+  critical: number
+  warning: number
+  info: number
+  total: number
+}
+
+const ANOMALY_TYPE_LABELS: Record<string, string> = {
+  HIGH_RISK_RATIO: "高风险度",
+  LOW_AVAILABLE_FUNDS: "可用资金不足",
+  MARGIN_OVERUSE: "保证金占用过高",
+  LARGE_DAILY_LOSS: "当日亏损",
+  NEGATIVE_EQUITY: "权益为负",
+}
+
+const SEVERITY_ORDER: AnomalySeverity[] = ["critical", "warning", "info"]
+
+function anomalySeverityIcon(s: AnomalySeverity) {
+  if (s === "critical") return <AlertCircle className="h-4 w-4 text-red-500" />
+  if (s === "warning") return <AlertTriangle className="h-4 w-4 text-yellow-500" />
+  return <Info className="h-4 w-4 text-blue-500" />
+}
+
+function anomalySeverityLabel(s: AnomalySeverity) {
+  return { critical: "严重", warning: "警告", info: "提示" }[s]
+}
+
+function anomalySeverityBadgeVariant(s: AnomalySeverity): "destructive" | "outline" | "secondary" {
+  if (s === "critical") return "destructive"
+  if (s === "warning") return "outline"
+  return "secondary"
+}
+
+function anomalySeverityBorderClass(s: AnomalySeverity): string {
+  if (s === "critical") return "border-red-500/50 bg-red-500/5"
+  if (s === "warning") return "border-yellow-500/50 bg-yellow-500/5"
+  return "border-blue-500/50 bg-blue-500/5"
+}
+
+function AnomalyContent() {
+  const [anomalies, setAnomalies] = useState<Anomaly[]>([])
+  const [dailySummary, setDailySummary] = useState<DailySummary[]>([])
+  const [latestDate, setLatestDate] = useState<string | null>(null)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [notYetRun, setNotYetRun] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async (nocache = false) => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/ma/api/mom-analysis/anomaly-detection?lookback=30${nocache ? "&nocache=1" : ""}`)
+      const json = await res.json()
+      if (!json.ok && json.error) { setError(json.error); return }
+      setNotYetRun(!!json.notYetRun)
+      setAnomalies(json.anomalies ?? [])
+      setDailySummary(json.dailySummary ?? [])
+      setLatestDate(json.latestDate ?? null)
+      if (json.latestDate) setSelectedDate((prev) => prev ?? json.latestDate)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "请求失败")
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [])
+
+  const availableDates = useMemo(() => dailySummary.map((d) => d.date).sort(), [dailySummary])
+  const currentIndex = selectedDate ? availableDates.indexOf(selectedDate) : -1
+  const canPrev = currentIndex > 0
+  const canNext = currentIndex < availableDates.length - 1
+
+  const dayAnomalies = useMemo(() =>
+    (anomalies.filter((a) => a.date === selectedDate)
+      .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))),
+    [anomalies, selectedDate]
+  )
+
+  const daySummary = useMemo(() =>
+    dailySummary.find((d) => d.date === selectedDate) ?? null,
+    [dailySummary, selectedDate]
+  )
+
+  const byType = useMemo(() => {
+    const map: Record<string, Anomaly[]> = {}
+    for (const a of dayAnomalies) {
+      if (!map[a.type]) map[a.type] = []
+      map[a.type].push(a)
+    }
+    return map
+  }, [dayAnomalies])
+
+  const chartOption = useMemo(() => {
+    if (dailySummary.length === 0) return null
+    const sorted = [...dailySummary].sort((a, b) => a.date.localeCompare(b.date))
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params: any[]) => {
+          const date = params[0]?.axisValue ?? ""
+          return [date, ...params.map((p: any) => `${p.marker}${p.seriesName}: ${p.value}`)].join("<br/>")
+        },
+      },
+      legend: { data: ["严重", "警告"], textStyle: { color: "#94a3b8", fontSize: 11 }, right: 0, top: 0 },
+      grid: { left: 0, right: 16, top: 28, bottom: 0, containLabel: true },
+      xAxis: {
+        type: "category",
+        data: sorted.map((s) => s.date),
+        axisLabel: { color: "#94a3b8", fontSize: 10, rotate: 35, formatter: (v: string) => v.slice(5) },
+        axisLine: { lineStyle: { color: "#334155" } },
+        axisTick: { show: false },
+      },
+      yAxis: {
+        type: "value",
+        minInterval: 1,
+        axisLabel: { color: "#94a3b8", fontSize: 10 },
+        splitLine: { lineStyle: { color: "#1e293b" } },
+      },
+      series: [
+        { name: "严重", type: "bar", stack: "total", data: sorted.map((s) => s.critical), itemStyle: { color: "#ef4444" }, emphasis: { itemStyle: { color: "#dc2626" } } },
+        { name: "警告", type: "bar", stack: "total", data: sorted.map((s) => s.warning), itemStyle: { color: "#eab308", borderRadius: [3, 3, 0, 0] }, emphasis: { itemStyle: { color: "#ca8a04" } } },
+      ],
+    }
+  }, [dailySummary])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64 text-muted-foreground">
+        <RefreshCw className="h-5 w-5 animate-spin mr-2" />加载中…
+      </div>
+    )
+  }
+
+  if (notYetRun) {
+    return (
+      <div className="flex flex-col items-center justify-center h-48 text-muted-foreground gap-2">
+        <ScanSearch className="h-10 w-10 opacity-30" />
+        <p className="text-sm">暂无数据，请先完成数据导入。</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return <p className="text-sm text-red-500 pt-4">{error}</p>
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Refresh */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => load(true)}
+          className="flex items-center gap-1.5 rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium shadow-sm hover:bg-muted transition-colors"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />刷新
+        </button>
+      </div>
+
+      {/* Bar chart */}
+      {chartOption && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-medium">近期异常趋势</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts
+              option={chartOption}
+              style={{ height: 160 }}
+              notMerge
+              opts={{ renderer: "svg" }}
+              onEvents={{
+                click: (params: { dataIndex: number }) => {
+                  const d = dailySummary[params.dataIndex]?.date
+                  if (d) setSelectedDate(d)
+                },
+              }}
+            />
+            <p className="text-xs text-muted-foreground mt-1 text-center">点击柱形可跳转至对应日期</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Date navigator */}
+      <div className="flex items-center gap-3">
+        <button
+          disabled={!canPrev}
+          onClick={() => setSelectedDate(availableDates[currentIndex - 1])}
+          className="rounded-md border border-input bg-background p-1 shadow-sm disabled:opacity-40 hover:bg-muted transition-colors"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+        <span className="text-sm font-medium tabular-nums w-28 text-center">{selectedDate ?? "—"}</span>
+        <button
+          disabled={!canNext}
+          onClick={() => setSelectedDate(availableDates[currentIndex + 1])}
+          className="rounded-md border border-input bg-background p-1 shadow-sm disabled:opacity-40 hover:bg-muted transition-colors"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+        {daySummary && (
+          <div className="flex items-center gap-2 ml-2">
+            {daySummary.critical > 0 && (
+              <Badge variant="destructive" className="text-xs">{daySummary.critical} 严重</Badge>
+            )}
+            {daySummary.warning > 0 && (
+              <Badge variant="outline" className="text-xs border-yellow-500 text-yellow-600 dark:text-yellow-400">{daySummary.warning} 警告</Badge>
+            )}
+            {daySummary.total === 0 && (
+              <Badge variant="secondary" className="text-xs text-green-600 dark:text-green-400 border-green-500/30">无异常</Badge>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Anomaly list */}
+      {dayAnomalies.length === 0 ? (
+        <div className="flex flex-col items-center justify-center h-48 text-muted-foreground gap-2">
+          <ScanSearch className="h-10 w-10 opacity-20" />
+          <p className="text-sm">{selectedDate ? `${selectedDate} 无异常` : "请选择日期"}</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {Object.entries(byType).map(([type, items]) => (
+            <Card key={type}>
+              <CardHeader className="pb-2 pt-4">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  {anomalySeverityIcon(items[0].severity)}
+                  {ANOMALY_TYPE_LABELS[type] ?? type}
+                  <span className="text-muted-foreground font-normal ml-1">({items.length} 条)</span>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <div className="space-y-1.5">
+                  {items.map((anomaly) => (
+                    <div
+                      key={anomaly.id}
+                      className={`flex items-start gap-3 px-3 py-3 rounded-md border ${anomalySeverityBorderClass(anomaly.severity)}`}
+                    >
+                      <div className="mt-0.5 shrink-0">{anomalySeverityIcon(anomaly.severity)}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium">{anomaly.title}</span>
+                          <Badge variant={anomalySeverityBadgeVariant(anomaly.severity)} className="text-[10px] h-4 px-1.5">
+                            {anomalySeverityLabel(anomaly.severity)}
+                          </Badge>
+                          {anomaly.account && (
+                            <span className="text-xs font-mono text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded">{anomaly.account}</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1 leading-relaxed">{anomaly.detail}</p>
+                      </div>
+                      {anomaly.value !== null && (
+                        <div className="shrink-0 text-right">
+                          <div className={`text-sm font-semibold tabular-nums ${
+                            anomaly.severity === "critical" ? "text-red-500" : anomaly.severity === "warning" ? "text-yellow-500" : "text-blue-500"
+                          }`}>
+                            {anomaly.value.toLocaleString("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 2 })}{anomaly.unit ?? ""}
+                          </div>
+                          {anomaly.threshold !== null && (
+                            <div className="text-[10px] text-muted-foreground">阈值 {anomaly.threshold}{anomaly.unit ?? ""}</div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* ── Liquidity Scan ───────────────────────────────────────────── */}
+      <LiquiditySection />
+    </div>
+  )
+}
+
+// ── Liquidity types ───────────────────────────────────────────────────────────
+
+type LiquiditySeverity = "critical" | "warning" | "ok"
+
+interface ContractLiquidity {
+  contract: string
+  product: string
+  exchange: string
+  netLots: number
+  longLots: number
+  shortLots: number
+  positionMv: number
+  margin: number
+  volume: number | null
+  openInterest: number | null
+  participationRate: number | null
+  oiConcentration: number | null
+  severity: LiquiditySeverity
+  warnings: string[]
+  dataDate: string
+  mktDate: string | null
+}
+
+interface LiquidityScanResult {
+  ok: boolean
+  date: string | null
+  mktDate: string | null
+  contracts: ContractLiquidity[]
+  summary: { total: number; critical: number; warning: number; ok: number; noMktData: number } | null
+  notYetRun?: boolean
+  error?: string
+}
+
+function liqSeverityIcon(s: LiquiditySeverity) {
+  if (s === "critical") return <AlertCircle className="h-4 w-4 text-red-500 shrink-0" />
+  if (s === "warning")  return <AlertTriangle className="h-4 w-4 text-yellow-500 shrink-0" />
+  return <Info className="h-4 w-4 text-emerald-500 shrink-0" />
+}
+
+function liqSeverityBorderClass(s: LiquiditySeverity) {
+  if (s === "critical") return "border-red-500/40 bg-red-500/5"
+  if (s === "warning")  return "border-yellow-500/40 bg-yellow-500/5"
+  return "border-border"
+}
+
+function fmtLots(n: number | null) {
+  if (n === null) return "—"
+  return n.toLocaleString("zh-CN")
+}
+
+function fmtRate(n: number | null) {
+  if (n === null) return "—"
+  return `${n.toFixed(2)}%`
+}
+
+function LiquiditySection() {
+  const [data, setData] = useState<LiquidityScanResult | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showAll, setShowAll] = useState(false)
+
+  const load = useCallback(async (nocache = false) => {
+    setLoading(true)
+    try {
+      const res = await fetch(`/ma/api/mom-analysis/liquidity-scan${nocache ? "?nocache=1" : ""}`)
+      const json: LiquidityScanResult = await res.json()
+      setData(json)
+    } catch {
+      setData({ ok: false, date: null, mktDate: null, contracts: [], summary: null, error: "请求失败" })
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [])
+
+  const atRisk = useMemo(
+    () => data?.contracts.filter((c) => c.severity !== "ok") ?? [],
+    [data],
+  )
+  const shown = showAll ? (data?.contracts ?? []) : atRisk
+
+  return (
+    <div className="space-y-3 pt-2">
+      {/* Section header */}
+      <div className="flex items-center gap-3 pt-4">
+        <div className="flex-1 border-t border-border" />
+        <div className="flex items-center gap-2">
+          <ScanSearch className="h-4 w-4 text-muted-foreground" />
+          <span className="text-sm font-semibold text-muted-foreground uppercase tracking-wider">流动性扫描</span>
+        </div>
+        <div className="flex-1 border-t border-border" />
+      </div>
+
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-xs text-muted-foreground">
+          扫描当前持仓合约流动性风险（成交量占比、持仓量浓度、市场深度）
+          {data?.date && <span className="ml-1 font-mono">持仓日期 {data.date}</span>}
+          {data?.mktDate && data.mktDate !== data.date && (
+            <span className="ml-1 font-mono text-yellow-600 dark:text-yellow-400">市场数据 {data.mktDate}</span>
+          )}
+        </p>
+        <div className="flex items-center gap-2">
+          {data?.summary && (
+            <div className="flex items-center gap-1.5">
+              {data.summary.critical > 0 && (
+                <Badge variant="destructive" className="text-xs">{data.summary.critical} 严重</Badge>
+              )}
+              {data.summary.warning > 0 && (
+                <Badge variant="outline" className="text-xs border-yellow-500 text-yellow-600 dark:text-yellow-400">{data.summary.warning} 警告</Badge>
+              )}
+              {data.summary.ok > 0 && (
+                <Badge variant="secondary" className="text-xs text-emerald-600 dark:text-emerald-400">{data.summary.ok} 正常</Badge>
+              )}
+              {data.summary.noMktData > 0 && (
+                <Badge variant="outline" className="text-xs text-muted-foreground">{data.summary.noMktData} 无市场数据</Badge>
+              )}
+            </div>
+          )}
+          <button
+            onClick={() => load(true)}
+            disabled={loading}
+            className="flex items-center gap-1 rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium shadow-sm hover:bg-muted transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+            刷新
+          </button>
+        </div>
+      </div>
+
+      {loading && !data ? (
+        <div className="flex items-center justify-center h-24 text-muted-foreground text-sm">
+          <RefreshCw className="h-4 w-4 animate-spin mr-2" />加载中…
+        </div>
+      ) : data?.notYetRun ? (
+        <div className="flex flex-col items-center justify-center h-24 text-muted-foreground gap-1">
+          <ScanSearch className="h-8 w-8 opacity-20" />
+          <p className="text-xs">暂无持仓数据</p>
+        </div>
+      ) : data?.error ? (
+        <p className="text-xs text-red-500">{data.error}</p>
+      ) : shown.length === 0 && !showAll ? (
+        <div className="flex flex-col items-center justify-center h-24 text-muted-foreground gap-1">
+          <ScanSearch className="h-8 w-8 opacity-20" />
+          <p className="text-xs">所有持仓合约流动性正常</p>
+          {(data?.contracts.length ?? 0) > 0 && (
+            <button onClick={() => setShowAll(true)} className="text-xs text-primary hover:underline mt-1">
+              查看全部 {data!.contracts.length} 个合约
+            </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {/* Table header */}
+          <div className="grid grid-cols-[2rem_6rem_5rem_5rem_5rem_6rem_6rem_6rem] gap-2 px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide border-b border-border">
+            <div />
+            <div>合约</div>
+            <div className="text-right">净持仓(手)</div>
+            <div className="text-right">日成交量</div>
+            <div className="text-right">持仓量</div>
+            <div className="text-right">成交量占比</div>
+            <div className="text-right">持仓量占比</div>
+            <div className="text-right">保证金(万)</div>
+          </div>
+
+          {shown.map((c) => (
+            <div
+              key={c.contract}
+              className={`grid grid-cols-[2rem_6rem_5rem_5rem_5rem_6rem_6rem_6rem] gap-2 items-center px-3 py-2.5 rounded-md border ${liqSeverityBorderClass(c.severity)}`}
+            >
+              <div>{liqSeverityIcon(c.severity)}</div>
+              <div>
+                <div className="text-xs font-semibold font-mono">{c.contract}</div>
+                {c.exchange && <div className="text-[10px] text-muted-foreground">{c.exchange}</div>}
+              </div>
+              <div className="text-right text-xs tabular-nums">
+                <div>{fmtLots(c.netLots)}</div>
+                <div className="text-[10px] text-muted-foreground">
+                  {c.longLots > 0 && `多${c.longLots}`}{c.longLots > 0 && c.shortLots > 0 && "/"}{c.shortLots > 0 && `空${c.shortLots}`}
+                </div>
+              </div>
+              <div className={`text-right text-xs tabular-nums ${c.volume !== null && c.volume < 1000 ? "text-yellow-600 dark:text-yellow-400 font-medium" : ""}`}>
+                {c.volume !== null ? c.volume.toLocaleString("zh-CN") : <span className="text-muted-foreground/50 text-[10px]">无数据</span>}
+              </div>
+              <div className="text-right text-xs tabular-nums text-muted-foreground">
+                {c.openInterest !== null ? c.openInterest.toLocaleString("zh-CN") : <span className="text-[10px]">—</span>}
+              </div>
+              <div className={`text-right text-xs tabular-nums font-medium ${
+                c.participationRate !== null && c.participationRate >= 15 ? "text-red-500" :
+                c.participationRate !== null && c.participationRate >= 5  ? "text-yellow-600 dark:text-yellow-400" :
+                "text-muted-foreground"
+              }`}>
+                {fmtRate(c.participationRate)}
+              </div>
+              <div className={`text-right text-xs tabular-nums font-medium ${
+                c.oiConcentration !== null && c.oiConcentration >= 8 ? "text-red-500" :
+                c.oiConcentration !== null && c.oiConcentration >= 3 ? "text-yellow-600 dark:text-yellow-400" :
+                "text-muted-foreground"
+              }`}>
+                {fmtRate(c.oiConcentration)}
+              </div>
+              <div className="text-right text-xs tabular-nums text-muted-foreground">
+                {c.margin > 0 ? (c.margin / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 0 }) : "—"}
+              </div>
+            </div>
+          ))}
+
+          {/* Warning details for at-risk contracts */}
+          {atRisk.map((c) => c.warnings.length > 0 && (
+            <div key={`warn-${c.contract}`} className="px-3 py-2 rounded-md bg-muted/40 space-y-0.5">
+              <p className="text-[10px] font-semibold text-muted-foreground">{c.contract} 预警详情</p>
+              {c.warnings.map((w, i) => (
+                <p key={i} className="text-xs text-muted-foreground flex items-start gap-1">
+                  <span className="shrink-0 mt-0.5">⚠</span>{w}
+                </p>
+              ))}
+            </div>
+          ))}
+
+          {/* Toggle show all */}
+          {!showAll && (data?.contracts.length ?? 0) > atRisk.length && (
+            <button
+              onClick={() => setShowAll(true)}
+              className="w-full text-xs text-primary hover:underline py-1"
+            >
+              显示全部 {data!.contracts.length} 个持仓合约
+            </button>
+          )}
+          {showAll && (
+            <button
+              onClick={() => setShowAll(false)}
+              className="w-full text-xs text-primary hover:underline py-1"
+            >
+              仅显示异常合约
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
@@ -6065,6 +6577,7 @@ export default function RiskReportNewPage() {
         {activeTab === "intraday" && <IntradayContent />}
         {activeTab === "position" && <PositionContent />}
         {activeTab === "advisor" && <AdvisorContent />}
+        {activeTab === "anomaly" && <AnomalyContent />}
       </div>
     </div>
   )

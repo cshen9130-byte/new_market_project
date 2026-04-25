@@ -947,6 +947,54 @@ def step_options_contracts_ohlcv(conn, *, force: bool = False) -> int:
 _AK_FUTURES_BACKFILL_START = date(2025, 1, 1)
 
 
+# Backfill start for exchange daily bulletin data
+_AK_EXCHANGE_BACKFILL_START = date(2025, 1, 1)
+
+
+def step_akshare_exchange_daily(conn, *, force: bool = False) -> int:
+    """Fetch per-contract daily volume + OI from exchange bulletins via AkShare.
+
+    Source : ak.futures_dce_daily / shfe / czce / cffex / gfex  (public, no auth)
+    Table  : raw_futures_contracts_daily  (trade_date, contract) PK — shared with EmQuant
+    Coverage: ALL contracts traded on each exchange (not just held ones)
+    On conflict: preserves existing non-null values (EmQuant takes precedence)
+    First run  : backfills from 2025-01-01 → today
+    Subsequent : incremental from last stored date + 1 day
+    """
+    today   = date.today()
+    cur_max = max_date(conn, "raw_futures_contracts_daily")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("AkShare exchange daily up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    if cur_max is None or force:
+        start = _AK_EXCHANGE_BACKFILL_START
+        log.info("AkShare exchange daily: %s, backfilling from %s …",
+                 "forced" if force else "first run", start)
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("AkShare exchange daily: incremental fetch %s → %s …", start, today)
+
+    if start > today:
+        log.info("AkShare exchange daily: already up-to-date.")
+        return 0
+
+    out = run_script(
+        "fetch_akshare_exchange_daily.py",
+        extra_args=[iso(start), iso(today)],
+        timeout=1200,
+        log_stderr=True,
+    )
+    if not out or out.get("error"):
+        log.warning("AkShare exchange daily fetch failed (non-fatal): %s", out)
+        return 0
+
+    rows = int(out.get("rows", 0))
+    log.info("AkShare exchange daily: upserted %d rows (%s → %s).", rows, start, today)
+    return rows
+
+
 def step_akshare_futures_daily(conn, *, force: bool = False) -> int:
     """Fetch daily OHLCV + settlement for 87 continuous futures contracts via AkShare.
 
@@ -2076,7 +2124,8 @@ ORDERED_STEPS = [
     "nheci",
     "nanhua_indices",              # all 17 NH sub-indices OHLCV
     "nanhua_commodity_indices",    # all 80 NH single-commodity indices OHLCV
-    "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded
+    "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded (EmQuant)
+    "akshare_exchange_daily",       # per-contract volume+OI from exchange bulletins (free fallback)
     "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
     "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
     "futures_rollover_dates",       # rollover dates from OI-dominant-contract tracking
@@ -2186,6 +2235,7 @@ def main():
         "nanhua_indices":            lambda: step_nanhua_indices(conn, force=force),
         "nanhua_commodity_indices":  lambda: step_nanhua_commodity_indices(conn, force=force),
         "futures_contracts_ohlcv":    lambda: step_futures_contracts_ohlcv(conn, force=force),
+        "akshare_exchange_daily":      lambda: step_akshare_exchange_daily(conn, force=force),
         "options_contracts_ohlcv":    lambda: step_options_contracts_ohlcv(conn, force=force),
         "akshare_futures_daily":      lambda: step_akshare_futures_daily(conn, force=force),
         "futures_rollover_dates":     lambda: step_futures_rollover_dates(conn, force=force),
