@@ -124,7 +124,6 @@ def _parse_df(df, exchange: str, trade_date_str: str, ref_year: int) -> list[Day
 
     # Debug: print columns on first call so we can diagnose issues
     sys.stderr.write(f"    columns ({exchange}): {list(df.columns[:15])}\n")
-
     contract_col = _first_col(df, _CONTRACT_COLS)
     if contract_col is None:
         sys.stderr.write(f"    WARNING: no contract column found in {list(df.columns)}\n")
@@ -195,6 +194,7 @@ def fetch_exchange_day(exchange: str, date_str_yyyymmdd: str, ref_year: int) -> 
 
     Strategy (akshare 1.8+):
       1. ak.get_futures_daily(start_date, end_date, market) — covers DCE/CZCE/SHFE/CFFEX/GFEX/INE
+         Tries both English code and Chinese exchange name variants.
       2. ak.futures_settle_<exchange>(date) — richer settlement bulletin per exchange
     date_str_yyyymmdd: "20250424"
     """
@@ -207,23 +207,36 @@ def fetch_exchange_day(exchange: str, date_str_yyyymmdd: str, ref_year: int) -> 
     trade_date_iso = f"{date_str_yyyymmdd[:4]}-{date_str_yyyymmdd[4:6]}-{date_str_yyyymmdd[6:]}"
     df = None
 
+    # AkShare get_futures_daily accepts both English short codes and Chinese exchange names.
+    # Try multiple variants in case one version uses Chinese names.
+    _market_variants: dict[str, list[str]] = {
+        "DCE":   ["DCE",  "大商所"],
+        "SHFE":  ["SHFE", "上期所"],
+        "CZCE":  ["CZCE", "郑商所"],
+        "CFFEX": ["CFFEX","中金所"],
+        "GFEX":  ["GFEX", "广期所"],
+        "INE":   ["INE",  "上期能源"],
+    }
+
     # ── Strategy 1: get_futures_daily (primary, covers all exchanges) ──────────
     if hasattr(ak, "get_futures_daily"):
-        try:
-            df_raw = ak.get_futures_daily(
-                start_date=date_str_yyyymmdd,
-                end_date=date_str_yyyymmdd,
-                market=exchange,
-            )
-            if df_raw is not None and not df_raw.empty:
-                df = df_raw
-                sys.stderr.write(
-                    f"  {exchange} {date_str_yyyymmdd}: get_futures_daily → {len(df)} rows\n"
+        for market_arg in _market_variants.get(exchange, [exchange]):
+            try:
+                df_raw = ak.get_futures_daily(
+                    start_date=date_str_yyyymmdd,
+                    end_date=date_str_yyyymmdd,
+                    market=market_arg,
                 )
-        except Exception as exc:
-            sys.stderr.write(
-                f"  {exchange} {date_str_yyyymmdd}: get_futures_daily failed ({exc}), trying fallback\n"
-            )
+                if df_raw is not None and not df_raw.empty:
+                    df = df_raw
+                    sys.stderr.write(
+                        f"  {exchange} {date_str_yyyymmdd}: get_futures_daily(market={market_arg!r}) → {len(df)} rows\n"
+                    )
+                    break
+            except Exception as exc:
+                sys.stderr.write(
+                    f"  {exchange} {date_str_yyyymmdd}: get_futures_daily(market={market_arg!r}) failed ({exc})\n"
+                )
 
     # ── Strategy 2: exchange-specific settle bulletin (richer data) ────────────
     _settle_fn_map = {
@@ -453,7 +466,7 @@ def _upsert_records(conn, records: list[DayRecord]) -> int:
             """
             INSERT INTO raw_futures_contracts_daily
                 (trade_date, contract, open, high, low, close, preclose, clear,
-                 volume, hqoi, source, fetched_at)
+                 volume, hqoi, source)
             VALUES %s
             ON CONFLICT (trade_date, contract) DO UPDATE SET
                 open       = COALESCE(raw_futures_contracts_daily.open,    EXCLUDED.open),
