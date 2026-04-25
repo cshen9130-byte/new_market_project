@@ -101,6 +101,12 @@ function assessSeverity(
     maxLevel = Math.max(maxLevel, 1) as 0 | 1 | 2
   }
 
+  // No market data at all → can't assess liquidity, flag as warning
+  if (volume === null && oi === null) {
+    warnings.push("未找到市场成交量/持仓量数据，流动性无法评估（可能为远期合约或数据缺失）")
+    maxLevel = Math.max(maxLevel, 1) as 0 | 1 | 2
+  }
+
   const severity: LiquiditySeverity = maxLevel === 2 ? "critical" : maxLevel === 1 ? "warning" : "ok"
   return { severity, warnings }
 }

@@ -45,6 +45,9 @@ function computeSeverityLevel(netLots: number, volume: number | null, hqoi: numb
   if (volume !== null && volume > 0 && volume < 200) maxLevel = Math.max(maxLevel, 2) as 0 | 1 | 2
   else if (volume !== null && volume > 0 && volume < 1000) maxLevel = Math.max(maxLevel, 1) as 0 | 1 | 2
 
+  // No market data → flag as warning (can't assess liquidity)
+  if (volume === null && hqoi === null) maxLevel = Math.max(maxLevel, 1) as 0 | 1 | 2
+
   return maxLevel
 }
 
