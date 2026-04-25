@@ -9,6 +9,13 @@ export const dynamic = "force-dynamic"
 
 export type LiquiditySeverity = "critical" | "warning" | "ok"
 
+export interface ContractLiquidityAccount {
+  account: string
+  longLots: number
+  shortLots: number
+  netLots: number
+}
+
 export interface ContractLiquidity {
   contract: string            // e.g. "RB2506"
   product: string             // e.g. "RB"
@@ -26,6 +33,7 @@ export interface ContractLiquidity {
   warnings: string[]
   dataDate: string            // date of position data
   mktDate: string | null      // date of market volume/OI data
+  accounts: ContractLiquidityAccount[]  // per-account breakdown
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -154,6 +162,7 @@ async function _GET(_req: Request) {
     // Query both mom_position_details and mom_futures_position_details and UNION them
     // (mom_futures_position_details may have contracts not in mom_position_details, e.g. JD2702)
     const posRows = await query<{
+      account: string
       contract: string
       exchange: string
       long_lots: string
@@ -162,6 +171,7 @@ async function _GET(_req: Request) {
       margin: string
     }>(
       `SELECT
+         UPPER(TRIM("账户"))   AS account,
          UPPER(TRIM("合约"))   AS contract,
          TRIM("交易所")        AS exchange,
          SUM(${numCol("买持仓")})::text     AS long_lots,
@@ -171,9 +181,10 @@ async function _GET(_req: Request) {
        FROM mom_position_details
        WHERE "交易日期"::date = $1
          AND (${numCol("买持仓")} > 0 OR ${numCol("卖持仓")} > 0)
-       GROUP BY UPPER(TRIM("合约")), TRIM("交易所")
+       GROUP BY UPPER(TRIM("账户")), UPPER(TRIM("合约")), TRIM("交易所")
        UNION ALL
        SELECT
+         UPPER(TRIM("账户"))   AS account,
          UPPER(TRIM("合约"))   AS contract,
          TRIM("交易所")        AS exchange,
          SUM(${numCol("买持仓")})::text     AS long_lots,
@@ -183,13 +194,14 @@ async function _GET(_req: Request) {
        FROM mom_futures_position_details
        WHERE "交易日期"::date = $1
          AND (${numCol("买持仓")} > 0 OR ${numCol("卖持仓")} > 0)
-       GROUP BY UPPER(TRIM("合约")), TRIM("交易所")
+       GROUP BY UPPER(TRIM("账户")), UPPER(TRIM("合约")), TRIM("交易所")
        ORDER BY contract`,
       [posDate],
     ).catch(async () => {
       // Fallback: query only mom_position_details if mom_futures_position_details doesn't exist
-      return query<{ contract: string; exchange: string; long_lots: string; short_lots: string; position_mv: string; margin: string }>(
+      return query<{ account: string; contract: string; exchange: string; long_lots: string; short_lots: string; position_mv: string; margin: string }>(
         `SELECT
+           UPPER(TRIM("账户"))   AS account,
            UPPER(TRIM("合约"))   AS contract,
            TRIM("交易所")        AS exchange,
            SUM(${numCol("买持仓")})::text     AS long_lots,
@@ -199,7 +211,7 @@ async function _GET(_req: Request) {
          FROM mom_position_details
          WHERE "交易日期"::date = $1
            AND (${numCol("买持仓")} > 0 OR ${numCol("卖持仓")} > 0)
-         GROUP BY UPPER(TRIM("合约")), TRIM("交易所")
+         GROUP BY UPPER(TRIM("账户")), UPPER(TRIM("合约")), TRIM("交易所")
          ORDER BY contract`,
         [posDate],
       )
@@ -211,10 +223,13 @@ async function _GET(_req: Request) {
       longLots: number; shortLots: number
       positionMv: number; margin: number
     }>()
+    // Per-account breakdown: contract key → account name → {longLots, shortLots}
+    const contractAccountMap = new Map<string, Map<string, { longLots: number; shortLots: number }>>()
 
     for (const r of posRows) {
       // Strip exchange suffix (e.g. "M2605.DCE" → "M2605") and expand CZCE 3-digit codes
       const key = czceExpand(r.contract.split(".")[0])
+      const acct = (r.account ?? "").trim() || "unknown"
       const existing = contractMap.get(key)
       if (existing) {
         existing.longLots   += toNum(r.long_lots)
@@ -230,6 +245,16 @@ async function _GET(_req: Request) {
           positionMv: toNum(r.position_mv),
           margin: toNum(r.margin),
         })
+      }
+      // Per-account tracking
+      if (!contractAccountMap.has(key)) contractAccountMap.set(key, new Map())
+      const acctMap = contractAccountMap.get(key)!
+      const acctEntry = acctMap.get(acct)
+      if (acctEntry) {
+        acctEntry.longLots  += toNum(r.long_lots)
+        acctEntry.shortLots += toNum(r.short_lots)
+      } else {
+        acctMap.set(acct, { longLots: toNum(r.long_lots), shortLots: toNum(r.short_lots) })
       }
     }
 
@@ -277,6 +302,15 @@ async function _GET(_req: Request) {
             positionMv: mv,
             margin: mg,
           })
+        }
+        // Per-account tracking for guosen (labelled "guoxin")
+        if (!contractAccountMap.has(instrKey)) contractAccountMap.set(instrKey, new Map())
+        const acctMap = contractAccountMap.get(instrKey)!
+        const acctEntry = acctMap.get("guoxin")
+        if (acctEntry) {
+          if (isLong) acctEntry.longLots += lots; else acctEntry.shortLots += lots
+        } else {
+          acctMap.set("guoxin", { longLots: isLong ? lots : 0, shortLots: isLong ? 0 : lots })
         }
       }
     } catch {
@@ -349,6 +383,19 @@ async function _GET(_req: Request) {
 
       const { severity, warnings } = assessSeverity(netLots, volume, oi)
 
+      // Build per-account breakdown sorted by netLots descending
+      const accountsArr = [...(contractAccountMap.get(contract)?.entries() ?? [])]
+        .map(([account, a]) => {
+          const aNet = Math.abs(a.longLots - a.shortLots) || Math.max(a.longLots, a.shortLots)
+          return {
+            account,
+            longLots: Math.round(a.longLots),
+            shortLots: Math.round(a.shortLots),
+            netLots: Math.round(aNet),
+          }
+        })
+        .sort((a, b) => b.netLots - a.netLots)
+
       result.push({
         contract,
         product: getProduct(contract),
@@ -366,6 +413,7 @@ async function _GET(_req: Request) {
         warnings,
         dataDate: posDate,
         mktDate: mkt?.trade_date ?? mktDate,
+        accounts: accountsArr,
       })
     }
 

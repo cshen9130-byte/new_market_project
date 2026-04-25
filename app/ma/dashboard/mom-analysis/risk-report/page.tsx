@@ -6277,6 +6277,23 @@ function AnomalyContent() {
                         </Badge>
                         <span className="text-xs text-muted-foreground">净持仓 {c.netLots} 手</span>
                       </div>
+                      {c.accounts && c.accounts.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {c.accounts.map((a) => (
+                            <span
+                              key={a.account}
+                              className="inline-flex items-center gap-1 text-[10px] font-mono bg-muted/70 px-1.5 py-0.5 rounded border border-border/60"
+                            >
+                              <span className="font-medium">{a.account}</span>
+                              <span className="text-muted-foreground">
+                                {a.longLots > 0 && a.shortLots > 0
+                                  ? `多${a.longLots}/空${a.shortLots}手`
+                                  : `${a.netLots}手`}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      )}
                       <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1">
                         {c.volume !== null && (
                           <span className="text-xs text-muted-foreground">日成交 {c.volume.toLocaleString()} 手</span>
@@ -6321,6 +6338,13 @@ function AnomalyContent() {
 
 type LiquiditySeverity = "critical" | "warning" | "ok"
 
+interface ContractLiquidityAccount {
+  account: string
+  longLots: number
+  shortLots: number
+  netLots: number
+}
+
 interface ContractLiquidity {
   contract: string
   product: string
@@ -6338,6 +6362,7 @@ interface ContractLiquidity {
   warnings: string[]
   dataDate: string
   mktDate: string | null
+  accounts: ContractLiquidityAccount[]
 }
 
 interface LiquidityScanResult {
