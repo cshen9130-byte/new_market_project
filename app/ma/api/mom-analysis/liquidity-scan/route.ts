@@ -178,7 +178,7 @@ async function _GET(_req: Request) {
          TRIM("交易所")        AS exchange,
          SUM(${numCol("买持仓")})::text     AS long_lots,
          SUM(${numCol("卖持仓")})::text     AS short_lots,
-         SUM(${numCol("持仓市値")})::text   AS position_mv,
+         '0'::text                          AS position_mv,
          SUM(${numCol("保证金")})::text     AS margin
        FROM mom_futures_position_details
        WHERE "交易日期"::date = $1

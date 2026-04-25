@@ -87,8 +87,8 @@ async function _GET(req: Request) {
        FROM mom_futures_position_details
        WHERE "交易日期" >= NOW() - ($1 || ' days')::interval
          AND "合约" IS NOT NULL AND TRIM("合约") <> ''
-       GROUP BY 1, 2
-       HAVING SUM(${numCol("买持仓")}) > 0 OR SUM(${numCol("卖持仓")}) > 0`,
+         AND (${numCol("买持仓")} > 0 OR ${numCol("卖持仓")} > 0)
+       GROUP BY 1, 2`,
       [lookback + 5],
     ).catch(async () => {
       // Fallback if mom_futures_position_details doesn't exist
