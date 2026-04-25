@@ -6495,7 +6495,7 @@ function LiquiditySection() {
       ) : (
         <div className="space-y-2">
           {/* Table header */}
-          <div className="grid grid-cols-[2rem_6rem_5rem_5rem_5rem_6rem_6rem_6rem] gap-2 px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide border-b border-border">
+          <div className="grid grid-cols-[2rem_minmax(7rem,1fr)_5rem_5rem_5rem_6rem_6rem_6rem] gap-2 px-3 py-1.5 text-[10px] font-medium text-muted-foreground uppercase tracking-wide border-b border-border">
             <div />
             <div>合约</div>
             <div className="text-right">净持仓(手)</div>
@@ -6509,12 +6509,29 @@ function LiquiditySection() {
           {shown.map((c) => (
             <div
               key={c.contract}
-              className={`grid grid-cols-[2rem_6rem_5rem_5rem_5rem_6rem_6rem_6rem] gap-2 items-center px-3 py-2.5 rounded-md border ${liqSeverityBorderClass(c.severity)}`}
+              className={`grid grid-cols-[2rem_minmax(7rem,1fr)_5rem_5rem_5rem_6rem_6rem_6rem] gap-2 items-start px-3 py-2.5 rounded-md border ${liqSeverityBorderClass(c.severity)}`}
             >
               <div>{liqSeverityIcon(c.severity)}</div>
               <div>
                 <div className="text-xs font-semibold font-mono">{c.contract}</div>
                 {c.exchange && <div className="text-[10px] text-muted-foreground">{c.exchange}</div>}
+                {c.accounts && c.accounts.length > 0 && (
+                  <div className="flex flex-wrap gap-0.5 mt-0.5">
+                    {c.accounts.map((a) => (
+                      <span
+                        key={a.account}
+                        className="inline-flex items-center gap-0.5 text-[9px] font-mono bg-muted/70 px-1 py-0 rounded border border-border/50 leading-4"
+                      >
+                        <span className="font-medium">{a.account}</span>
+                        <span className="text-muted-foreground">
+                          {a.longLots > 0 && a.shortLots > 0
+                            ? `多${a.longLots}/空${a.shortLots}`
+                            : `${a.netLots}手`}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="text-right text-xs tabular-nums">
                 <div>{fmtLots(c.netLots)}</div>
