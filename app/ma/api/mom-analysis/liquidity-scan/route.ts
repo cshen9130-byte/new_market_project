@@ -295,12 +295,14 @@ async function _GET(_req: Request) {
       return (b.participationRate ?? 0) - (a.participationRate ?? 0)
     })
 
+    const noMktList = result.filter((c) => c.volume === null).map((c) => c.contract)
     const summary = {
       total: result.length,
       critical: result.filter((c) => c.severity === "critical").length,
       warning:  result.filter((c) => c.severity === "warning").length,
       ok:       result.filter((c) => c.severity === "ok").length,
-      noMktData: result.filter((c) => c.volume === null).length,
+      noMktData: noMktList.length,
+      noMktContracts: noMktList,  // debug: list of contracts with no market data
     }
 
     return NextResponse.json({ ok: true, date: posDate, mktDate, contracts: result, summary })
