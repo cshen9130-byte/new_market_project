@@ -140,7 +140,8 @@ async function _GET(_req: Request) {
     }>()
 
     for (const r of posRows) {
-      const key = r.contract
+      // Strip exchange suffix (e.g. "M2605.DCE" → "M2605") so market data lookup matches
+      const key = r.contract.split(".")[0]
       const existing = contractMap.get(key)
       if (existing) {
         existing.longLots   += toNum(r.long_lots)
@@ -149,7 +150,7 @@ async function _GET(_req: Request) {
         existing.margin     += toNum(r.margin)
       } else {
         contractMap.set(key, {
-          contract: r.contract,
+          contract: key,
           exchange: r.exchange ?? "",
           longLots: toNum(r.long_lots),
           shortLots: toNum(r.short_lots),
@@ -179,14 +180,15 @@ async function _GET(_req: Request) {
         const mv = lots * toNum(r.settl_today)
         const mg = toNum(r.margin)
         const isLong = r.bs === "买"
-        const existing = contractMap.get(r.instrument)
+        const instrKey = r.instrument.split(".")[0]  // strip suffix
+        const existing = contractMap.get(instrKey)
         if (existing) {
           if (isLong) existing.longLots += lots; else existing.shortLots += lots
           existing.positionMv += mv
           existing.margin     += mg
         } else {
-          contractMap.set(r.instrument, {
-            contract: r.instrument,
+          contractMap.set(instrKey, {
+            contract: instrKey,
             exchange: "",
             longLots: isLong ? lots : 0,
             shortLots: isLong ? 0 : lots,
