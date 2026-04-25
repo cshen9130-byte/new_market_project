@@ -217,6 +217,8 @@ async function _GET(_req: Request) {
     // Handles both plain codes ("LC2702", from AkShare) and suffixed codes
     // ("LC2702.GFE", from EmQuant/Choice) by stripping the exchange suffix
     // before matching.  Prefer the row with higher volume when duplicates exist.
+    // Use posDate as upper bound so that if today's non-DCE data was already
+    // inserted (making global MAX = today), DCE data from yesterday still matches.
     const mktRows = await query<{
       contract: string
       volume: string | null
@@ -229,9 +231,12 @@ async function _GET(_req: Request) {
               MAX(trade_date)::date::text  AS trade_date
        FROM raw_futures_contracts_daily
        WHERE UPPER(SPLIT_PART(TRIM(contract), '.', 1)) = ANY($1)
-         AND trade_date = (SELECT MAX(trade_date) FROM raw_futures_contracts_daily)
+         AND trade_date = (
+           SELECT MAX(trade_date) FROM raw_futures_contracts_daily
+           WHERE trade_date <= $2
+         )
        GROUP BY UPPER(SPLIT_PART(TRIM(contract), '.', 1))`,
-      [contracts],
+      [contracts, posDate],
     ).catch(() => [] as { contract: string; volume: string | null; hqoi: string | null; trade_date: string }[])
 
     const mktMap = new Map<string, { volume: number | null; hqoi: number | null; trade_date: string }>()
