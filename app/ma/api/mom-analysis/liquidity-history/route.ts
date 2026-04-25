@@ -61,7 +61,7 @@ async function _GET(req: Request) {
     const numCol = (col: string) =>
       `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}"::text, ''), ',', ''), ' ', ''), '')::numeric, 0)`
 
-    // 1. Fetch all position aggregates across the lookback window
+    // 1. Fetch all position aggregates across the lookback window (both tables)
     const posRows = await query<{
       d: string
       contract: string
@@ -77,9 +77,35 @@ async function _GET(req: Request) {
        WHERE "交易日期" >= NOW() - ($1 || ' days')::interval
          AND "合约" IS NOT NULL AND TRIM("合约") <> ''
        GROUP BY 1, 2
+       HAVING SUM(${numCol("买持仓")}) > 0 OR SUM(${numCol("卖持仓")}) > 0
+       UNION ALL
+       SELECT
+         "交易日期"::date::text AS d,
+         UPPER(SPLIT_PART(TRIM("合约"), '.', 1)) AS contract,
+         SUM(${numCol("买持仓")})::text AS long_lots,
+         SUM(${numCol("卖持仓")})::text AS short_lots
+       FROM mom_futures_position_details
+       WHERE "交易日期" >= NOW() - ($1 || ' days')::interval
+         AND "合约" IS NOT NULL AND TRIM("合约") <> ''
+       GROUP BY 1, 2
        HAVING SUM(${numCol("买持仓")}) > 0 OR SUM(${numCol("卖持仓")}) > 0`,
       [lookback + 5],
-    )
+    ).catch(async () => {
+      // Fallback if mom_futures_position_details doesn't exist
+      return query<{ d: string; contract: string; long_lots: string; short_lots: string }>(
+        `SELECT
+           "交易日期"::date::text AS d,
+           UPPER(SPLIT_PART(TRIM("合约"), '.', 1)) AS contract,
+           SUM(${numCol("买持仓")})::text AS long_lots,
+           SUM(${numCol("卖持仓")})::text AS short_lots
+         FROM mom_position_details
+         WHERE "交易日期" >= NOW() - ($1 || ' days')::interval
+           AND "合约" IS NOT NULL AND TRIM("合约") <> ''
+         GROUP BY 1, 2
+         HAVING SUM(${numCol("买持仓")}) > 0 OR SUM(${numCol("卖持仓")}) > 0`,
+        [lookback + 5],
+      )
+    })
 
     if (posRows.length === 0) {
       return NextResponse.json({ ok: true, data: [] })

@@ -147,10 +147,12 @@ async function _GET(_req: Request) {
       posDate = dateRows[0].date
     }
 
-    // ── 2. Aggregate net lots per contract from mom_position_details ──────────
+    // ── 2. Aggregate net lots per contract from both position tables ──────────
     const numCol = (col: string) =>
       `COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("${col}"::text, ''), ',', ''), ' ', ''), '')::numeric, 0)`
 
+    // Query both mom_position_details and mom_futures_position_details and UNION them
+    // (mom_futures_position_details may have contracts not in mom_position_details, e.g. JD2702)
     const posRows = await query<{
       contract: string
       exchange: string
@@ -170,9 +172,38 @@ async function _GET(_req: Request) {
        WHERE "交易日期"::date = $1
          AND (${numCol("买持仓")} > 0 OR ${numCol("卖持仓")} > 0)
        GROUP BY UPPER(TRIM("合约")), TRIM("交易所")
-       ORDER BY UPPER(TRIM("合约"))`,
+       UNION ALL
+       SELECT
+         UPPER(TRIM("合约"))   AS contract,
+         TRIM("交易所")        AS exchange,
+         SUM(${numCol("买持仓")})::text     AS long_lots,
+         SUM(${numCol("卖持仓")})::text     AS short_lots,
+         SUM(${numCol("持仓市値")})::text   AS position_mv,
+         SUM(${numCol("保证金")})::text     AS margin
+       FROM mom_futures_position_details
+       WHERE "交易日期"::date = $1
+         AND (${numCol("买持仓")} > 0 OR ${numCol("卖持仓")} > 0)
+       GROUP BY UPPER(TRIM("合约")), TRIM("交易所")
+       ORDER BY contract`,
       [posDate],
-    )
+    ).catch(async () => {
+      // Fallback: query only mom_position_details if mom_futures_position_details doesn't exist
+      return query<{ contract: string; exchange: string; long_lots: string; short_lots: string; position_mv: string; margin: string }>(
+        `SELECT
+           UPPER(TRIM("合约"))   AS contract,
+           TRIM("交易所")        AS exchange,
+           SUM(${numCol("买持仓")})::text     AS long_lots,
+           SUM(${numCol("卖持仓")})::text     AS short_lots,
+           SUM(${numCol("持仓市値")})::text   AS position_mv,
+           SUM(${numCol("保证金")})::text     AS margin
+         FROM mom_position_details
+         WHERE "交易日期"::date = $1
+           AND (${numCol("买持仓")} > 0 OR ${numCol("卖持仓")} > 0)
+         GROUP BY UPPER(TRIM("合约")), TRIM("交易所")
+         ORDER BY contract`,
+        [posDate],
+      )
+    })
 
     // ── 3. Merge guosen positions ─────────────────────────────────────────────
     const contractMap = new Map<string, {
@@ -206,13 +237,11 @@ async function _GET(_req: Request) {
     let guosenDate: string | null = null
 
     try {
-      // Use guosen's own latest available date ≤ posDate (may differ if not uploaded same day)
+      // Use guosen's own latest available date (uploaded independently, not tied to posDate)
       const guosenDateRows = await query<{ date: string }>(
-        `SELECT MAX(settlement_date)::date::text AS date FROM guosen_position_detail
-         WHERE settlement_date::date <= $1`,
-        [posDate],
+        `SELECT MAX(settlement_date)::date::text AS date FROM guosen_position_detail`,
       )
-      guosenDate = guosenDateRows[0]?.date ?? posDate
+      guosenDate = guosenDateRows[0]?.date ?? null
 
       const guosenRows = await query<{
         instrument: string; bs: string; position_lots: string
