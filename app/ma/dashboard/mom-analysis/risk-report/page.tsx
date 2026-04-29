@@ -2668,7 +2668,14 @@ function IntradayContent() {
                     </tr>
                   </thead>
                   <tbody>
-                    {[...marginLatest].sort((a, b) => a.account.localeCompare(b.account)).map((r, i) => {
+                    {[...marginLatest].sort((a, b) => {
+                      const ra = a.riskRatio ?? (a.equity > 0 ? a.margin / a.equity * 100 : null)
+                      const rb = b.riskRatio ?? (b.equity > 0 ? b.margin / b.equity * 100 : null)
+                      if (ra == null && rb == null) return 0
+                      if (ra == null) return 1
+                      if (rb == null) return -1
+                      return rb - ra
+                    }).map((r, i) => {
                       const ratio = r.riskRatio ?? (r.equity > 0 ? r.margin / r.equity * 100 : null)
                       const danger = ratio != null && ratio > 80
                       const warning = ratio != null && ratio > 60 && ratio <= 80
@@ -5357,7 +5364,7 @@ function PositionContent() {
           <CardHeader className="pb-2">
             <div className="flex items-center gap-3">
               <div className="flex text-xs border rounded overflow-hidden">
-                {([["weight", "持仓权重"], ["var", "持仓VaR"], ["pnl", "持仓|盈亏|"], ["margvol", "边际波动率"], ["cvar", "持仓CVaR"]] as const).map(([val, label]) => (
+                  {([["weight", "持仓权重"], ["var", "持仓VaR"], ["margvol", "市值加权波动率"], ["cvar", "持仓CVaR"]] as const).map(([val, label]) => (
                   <button
                     key={val}
                     onClick={() => setVarWeightView(val)}
