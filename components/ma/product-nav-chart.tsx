@@ -85,9 +85,10 @@ const QUICK_RANGES = [
 interface Props {
   productCode?: string
   height?: number
+  navCurveOnly?: boolean
 }
 
-export default function ProductNavChart({ productCode, height = 360 }: Props) {
+export default function ProductNavChart({ productCode, height = 360, navCurveOnly = false }: Props) {
   const [allData, setAllData] = useState<NavPoint[]>([])
   const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
   const [turnoverSeries, setTurnoverSeries] = useState<TurnoverPoint[]>([])
@@ -674,6 +675,62 @@ export default function ProductNavChart({ productCode, height = 360 }: Props) {
         itemStyle: { color: "#f59e0b" },
       }] : []),
     ],
+  }
+
+  if (navCurveOnly) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-3">
+            <CardTitle className="text-base">净值曲线</CardTitle>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">基准</span>
+                <select
+                  value={showBenchmark ? "show" : "hide"}
+                  onChange={(e) => setShowBenchmark(e.target.value === "show")}
+                  className="rounded border border-input bg-background px-2 py-0.5 text-xs"
+                >
+                  <option value="show">显示 NHCI</option>
+                  <option value="hide">隐藏 NHCI</option>
+                </select>
+              </div>
+              <button onClick={load} disabled={loading} className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted" title="刷新">
+                <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {QUICK_RANGES.map((r) => (
+              <button key={r.label} onClick={() => setRangeFrom(r.from())}
+                className={`rounded border px-2 py-0.5 text-xs transition-colors ${rangeFrom === r.from() ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:bg-muted"}`}>
+                {r.label}
+              </button>
+            ))}
+          </div>
+          {normalizedData.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-xs">
+              <span><span className="text-muted-foreground">累计收益 </span><span className={getChinaMarketTextClass(totalReturn)}>{fmtPct(totalReturn)}</span></span>
+              {annReturn !== null && <span><span className="text-muted-foreground">年化收益 </span><span className={getChinaMarketTextClass(annReturn)}>{fmtPct(annReturn)}</span></span>}
+              <span><span className="text-muted-foreground">最大回撤 </span><span className="text-green-500">-{(maxDrawdown * 100).toFixed(2)}%</span></span>
+              <span><span className="text-muted-foreground">最新净值 </span><span>{fmtNav(lastPoint?.navNorm ?? 1)}</span></span>
+              {showBenchmarkSeries && benchmarkLastPoint && (
+                <span><span className="text-muted-foreground">NHCI累计 </span><span className="text-amber-500">{benchmarkLastPoint.returnPct >= 0 ? "+" : ""}{benchmarkLastPoint.returnPct.toFixed(2)}%</span></span>
+              )}
+            </div>
+          )}
+        </CardHeader>
+        <CardContent className="pt-0">
+          {error && <div className="py-4 text-center text-sm text-red-500">{error}</div>}
+          {!error && allData.length === 0 && !loading && (
+            <div className="py-4 text-center text-sm text-muted-foreground">暂无数据 — 请先导入基金交易记录及日报数据</div>
+          )}
+          {(allData.length > 0 || loading || loadingBenchmark) && (
+            <ReactECharts option={option} style={{ height }} notMerge lazyUpdate />
+          )}
+        </CardContent>
+      </Card>
+    )
   }
 
   return (

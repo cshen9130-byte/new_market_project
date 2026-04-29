@@ -3,12 +3,15 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
 import { cn } from "@/lib/utils"
-import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw, Droplets } from "lucide-react"
+import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw, Droplets, FileText, Printer } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 const ProductNavChart           = dynamic(() => import("@/components/ma/product-nav-chart"),            { ssr: false })
+const VarPredictionChart        = dynamic(() => import("@/components/ma/var-prediction-chart"),         { ssr: false })
+const RollingVolChart           = dynamic(() => import("@/components/ma/rolling-vol-chart"),            { ssr: false })
+const SectorPositionCharts     = dynamic(() => import("@/components/ma/sector-position-charts"),       { ssr: false })
 const AdvisorEquityCurveChart  = dynamic(() => import("@/components/ma/advisor-equity-curve-chart"), { ssr: false })
 const AdvisorVolCorrScatter    = dynamic(() => import("@/components/ma/advisor-vol-corr-scatter"),   { ssr: false })
 const AdvisorCorrTimeseries    = dynamic(() => import("@/components/ma/advisor-corr-timeseries"),    { ssr: false })
@@ -25,6 +28,7 @@ const subNavItems = [
   { key: "position",  name: "持仓分析", icon: PieChart },
   { key: "advisor",   name: "投顾分析", icon: Users },
   { key: "anomaly",   name: "异常监测", icon: ScanSearch },
+  { key: "briefing",  name: "MOM 简报",  icon: FileText },
 ] as const
 
 type TabKey = (typeof subNavItems)[number]["key"]
@@ -6611,9 +6615,60 @@ export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
 
+  // Briefing: latest daily return + YTD return from product-nav API
+  const [briefingNav, setBriefingNav] = useState<{ date: string; nav: number; dailyReturn: number }[]>([])
+  const [briefingLoading, setBriefingLoading] = useState(false)
+
+  useEffect(() => {
+    if (activeTab !== "briefing") return
+    if (briefingNav.length > 0) return
+    setBriefingLoading(true)
+    fetch("/ma/api/mom-analysis/product-nav")
+      .then((r) => r.json())
+      .then((j) => { if (j.ok && j.data) setBriefingNav(j.data) })
+      .catch(() => {})
+      .finally(() => setBriefingLoading(false))
+  }, [activeTab])
+
+  const briefingSummary = useMemo(() => {
+    if (briefingNav.length === 0) return null
+    const latest = briefingNav[briefingNav.length - 1]
+    const yearStart = `${new Date().getFullYear()}-01-01`
+    const firstOfYear = briefingNav.find((p) => p.date >= yearStart) ?? briefingNav[0]
+    const ytdReturn = firstOfYear.nav > 0 ? (latest.nav / firstOfYear.nav - 1) : 0
+    return { date: latest.date, dailyReturn: latest.dailyReturn, ytdReturn }
+  }, [briefingNav])
+
   const handleTabChange = (key: TabKey) => {
     setActiveTab(key)
   }
+
+  const handleBriefingPrint = useCallback(() => {
+    const el = document.getElementById("mom-briefing-printable")
+    if (!el) return
+
+    // Remember original location
+    const parent = el.parentElement!
+    const nextSibling = el.nextSibling
+
+    // Hide all other direct children of <body> so only our element is visible
+    const bodyChildren = Array.from(document.body.children) as HTMLElement[]
+    const prevDisplays = bodyChildren.map((c) => c.style.display)
+    bodyChildren.forEach((c) => { c.style.display = "none" })
+
+    // Move element into <body> at top level — no overflow containers
+    document.body.appendChild(el)
+
+    // Restore after printing (afterprint fires when dialog closes)
+    const restore = () => {
+      parent.insertBefore(el, nextSibling)
+      bodyChildren.forEach((c, i) => { c.style.display = prevDisplays[i] })
+      window.removeEventListener("afterprint", restore)
+    }
+    window.addEventListener("afterprint", restore)
+
+    window.print()
+  }, [])
 
   return (
     <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
@@ -6764,6 +6819,181 @@ export default function RiskReportNewPage() {
         {activeTab === "position" && <PositionContent />}
         {activeTab === "advisor" && <AdvisorContent />}
         {activeTab === "anomaly" && <AnomalyContent />}
+        {activeTab === "briefing" && (
+          /* ── A4 newspaper wrapper ── */
+          <div className="flex justify-center py-8 px-2 min-h-full relative"
+               style={{ background: "linear-gradient(135deg,#1a1f2e 0%,#0f1520 60%,#1a1228 100%)" }}>
+            {/* Print/Download button */}
+            <button
+              onClick={handleBriefingPrint}
+              className="absolute top-4 right-4 z-10 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-[#c8a84b] text-[#c8a84b] hover:bg-[#c8a84b] hover:text-[#1a1228] transition-colors no-print"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              下载简报 PDF
+            </button>
+            {/* A4 paper */}
+            <div id="mom-briefing-printable" className="relative w-[794px] shrink-0 shadow-2xl"
+                 style={{
+                   background: "linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%)",
+                   minHeight: 1123,
+                   fontFamily: "'Noto Serif SC','Source Han Serif SC','SimSun',serif",
+                 }}>
+
+              {/* ── top accent bar ── */}
+              <div className="h-2 w-full" style={{ background: "linear-gradient(90deg,#1a3a5c,#c8a84b,#1a3a5c)" }} />
+
+              {/* ── masthead ── */}
+              <div className="px-10 pt-6 pb-4 border-b-2 border-[#1a3a5c]">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-[10px] tracking-[0.35em] text-[#5a6a7a] uppercase mb-1">MOM Portfolio Management</p>
+                    <h1 className="text-4xl font-black tracking-tight text-[#1a3a5c]"
+                        style={{ fontFamily: "'Noto Serif SC','SimHei',serif", letterSpacing: "-0.01em" }}>
+                      MOM 风控简报
+                    </h1>
+                    <p className="text-sm text-[#5a6a7a] mt-0.5 tracking-wide">
+                      每日风险与业绩速览
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <div className="inline-block border-2 border-[#1a3a5c] px-3 py-1 mb-1">
+                      <p className="text-[10px] tracking-widest text-[#1a3a5c] uppercase font-bold">Internal Use Only</p>
+                    </div>
+                    <p className="text-xs text-[#5a6a7a]">
+                      {briefingSummary?.date ?? new Date().toISOString().slice(0, 10)}
+                    </p>
+                    <p className="text-[10px] text-[#8a9aaa] mt-0.5">
+                      {new Date().getFullYear()} 年第&nbsp;
+                      {Math.ceil((new Date().getTime() - new Date(new Date().getFullYear(), 0, 0).getTime()) / 86400000 / 7)}
+                      &nbsp;周
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* ── gold rule ── */}
+              <div className="mx-10 my-0 h-[3px]" style={{ background: "linear-gradient(90deg,#c8a84b,#e8d48b,#c8a84b)" }} />
+
+              {/* ── content body ── */}
+              <div className="px-10 pt-5 pb-10">
+
+                {/* Section I headline */}
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
+                  <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
+                      style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
+                    一、当日预估收益
+                  </h2>
+                  <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
+                </div>
+
+                {/* Stats band */}
+                {briefingLoading ? (
+                  <p className="text-sm text-[#8a9aaa] py-4">加载中…</p>
+                ) : briefingSummary ? (
+                  <>
+                    <div className="grid grid-cols-3 gap-4 mb-4">
+                      {/* Daily return */}
+                      <div className="border border-[#d4c9a8] rounded p-3 text-center"
+                           style={{ background: "rgba(26,58,92,0.04)" }}>
+                        <p className="text-[10px] tracking-widest text-[#8a9aaa] uppercase mb-1">当日预估收益率</p>
+                        <p className={`text-3xl font-black tabular-nums ${briefingSummary.dailyReturn >= 0 ? "text-red-600" : "text-emerald-600"}`}
+                           style={{ fontFamily: "monospace" }}>
+                          {briefingSummary.dailyReturn >= 0 ? "+" : ""}{(briefingSummary.dailyReturn * 100).toFixed(2)}%
+                        </p>
+                        <p className="text-[10px] text-[#8a9aaa] mt-1">{briefingSummary.date}</p>
+                      </div>
+                      {/* YTD return */}
+                      <div className="border border-[#d4c9a8] rounded p-3 text-center"
+                           style={{ background: "rgba(26,58,92,0.04)" }}>
+                        <p className="text-[10px] tracking-widest text-[#8a9aaa] uppercase mb-1">当年累计收益率</p>
+                        <p className={`text-3xl font-black tabular-nums ${briefingSummary.ytdReturn >= 0 ? "text-red-600" : "text-emerald-600"}`}
+                           style={{ fontFamily: "monospace" }}>
+                          {briefingSummary.ytdReturn >= 0 ? "+" : ""}{(briefingSummary.ytdReturn * 100).toFixed(2)}%
+                        </p>
+                        <p className="text-[10px] text-[#8a9aaa] mt-1">{new Date().getFullYear()} 年 YTD</p>
+                      </div>
+                      {/* Latest NAV */}
+                      <div className="border border-[#d4c9a8] rounded p-3 text-center"
+                           style={{ background: "rgba(200,168,75,0.08)" }}>
+                        <p className="text-[10px] tracking-widest text-[#8a9aaa] uppercase mb-1">最新单位净值</p>
+                        <p className="text-3xl font-black tabular-nums text-[#1a3a5c]"
+                           style={{ fontFamily: "monospace" }}>
+                          {briefingNav.length > 0 ? briefingNav[briefingNav.length - 1].nav.toFixed(4) : "—"}
+                        </p>
+                        <p className="text-[10px] text-[#8a9aaa] mt-1">Unit NAV</p>
+                      </div>
+                    </div>
+
+                    {/* Summary sentence */}
+                    <p className="text-sm leading-7 text-[#2a3a4a] mb-4 pl-1 border-l-4 border-[#c8a84b] bg-[#faf7ef] py-2 px-3 rounded-r">
+                      <span className="font-semibold">{briefingSummary.date}</span>&nbsp;
+                      当日预估收益率为&nbsp;
+                      <span className={`font-bold ${briefingSummary.dailyReturn >= 0 ? "text-red-600" : "text-emerald-600"}`}>
+                        {briefingSummary.dailyReturn >= 0 ? "+" : ""}{(briefingSummary.dailyReturn * 100).toFixed(2)}%
+                      </span>
+                      ，当年累计收益率为&nbsp;
+                      <span className={`font-bold ${briefingSummary.ytdReturn >= 0 ? "text-red-600" : "text-emerald-600"}`}>
+                        {briefingSummary.ytdReturn >= 0 ? "+" : ""}{(briefingSummary.ytdReturn * 100).toFixed(2)}%
+                      </span>
+                      。
+                    </p>
+
+                    {/* Nav chart — full width, light background override */}
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden"
+                         style={{ background: "#ffffff" }}>
+                      <ProductNavChart height={340} navCurveOnly />
+                    </div>
+
+                    {/* VaR chart */}
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4"
+                         style={{ background: "#ffffff" }}>
+                      <VarPredictionChart height={320} />
+                    </div>
+
+                    {/* Rolling vol chart */}
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4"
+                         style={{ background: "#ffffff" }}>
+                      <RollingVolChart height={260} />
+                    </div>
+
+                    {/* Section: 板块持仓分析 */}
+                    <div className="flex items-center gap-3 mt-5 mb-3">
+                      <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
+                      <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
+                          style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
+                        二、板块持仓分析
+                      </h2>
+                      <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden"
+                         style={{ background: "#ffffff" }}>
+                      <div className="p-3">
+                        <SectorPositionCharts height={260} />
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-sm text-[#8a9aaa] py-4">暂无数据</p>
+                )}
+
+              </div>
+
+              {/* ── footer ── */}
+              <div className="absolute bottom-0 left-0 right-0">
+                <div className="mx-10 h-px bg-[#1a3a5c]" />
+                <div className="px-10 py-3 flex items-center justify-between">
+                  <p className="text-[9px] tracking-widest text-[#8a9aaa] uppercase">
+                    本简报仅供内部参考，不构成投资建议
+                  </p>
+                  <p className="text-[9px] text-[#8a9aaa]">MOM 风控团队</p>
+                </div>
+                <div className="h-1.5 w-full" style={{ background: "linear-gradient(90deg,#1a3a5c,#c8a84b,#1a3a5c)" }} />
+              </div>
+
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
