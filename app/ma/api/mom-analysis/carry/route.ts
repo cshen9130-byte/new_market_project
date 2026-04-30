@@ -29,16 +29,30 @@ function parseNum(v: string | null | undefined): number | null {
   return isNaN(n) ? null : n
 }
 
-export async function GET() {
+function isValidDateString(value: string | null): value is string {
+  return !!value && /^\d{4}-\d{2}-\d{2}$/.test(value)
+}
+
+export async function GET(req: Request) {
   try {
-    // Latest trading date
-    const latestDateRows = await query<{ latest_date: string }>(
-      `SELECT MAX("交易日期"::date)::text AS latest_date FROM mom_daily_reports`
+    const { searchParams } = new URL(req.url)
+    const requestedDate = searchParams.get("date")
+
+    const availableDateRows = await query<{ date: string }>(
+      `SELECT DISTINCT "交易日期"::date::text AS date
+       FROM mom_daily_reports
+       WHERE "交易日期" IS NOT NULL
+       ORDER BY date DESC`
     )
-    const latestDate = latestDateRows[0]?.latest_date ?? null
+    const availableDates = availableDateRows.map((row) => row.date).filter(Boolean)
+    const latestDate = availableDates[0] ?? null
     if (!latestDate) {
-      return NextResponse.json({ ok: true, latestDate: null, accounts: [], payments: [], notYetRun: true })
+      return NextResponse.json({ ok: true, latestDate: null, selectedDate: null, availableDates: [], accounts: [], payments: [], notYetRun: true })
     }
+
+    const selectedDate = isValidDateString(requestedDate) && availableDates.includes(requestedDate)
+      ? requestedDate
+      : latestDate
 
     // Rates from DB
     const rates = await readRates()
@@ -76,8 +90,10 @@ export async function GET() {
            - COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE("权利金支出", ''), ',', ''), ' ', ''), ''))::numeric), 0)
          )::text AS options_pnl
        FROM mom_daily_reports
+       WHERE "交易日期"::date <= $1
        GROUP BY "账户"
        ORDER BY "账户"`
+      , [selectedDate]
     )
 
     const accounts = pnlRows.map((r) => {
@@ -119,7 +135,8 @@ export async function GET() {
           MAX(trade_date::text) AS latest_date
         FROM guosen_account_summary
         WHERE client_id = '665300200077'
-      `)
+          AND trade_date::date <= $1
+      `, [selectedDate])
       for (const r of gRows) {
         const cumPnl        = parseNum(r.cum_pnl) ?? 0
         const cumCommission = parseNum(r.cum_commission) ?? 0
@@ -161,7 +178,9 @@ export async function GET() {
                 operating_days, balance::text, total_profit::text,
                 profit_portion::text, paid_child_carry::text, note
          FROM mom_carry_payments
+         WHERE carry_date::date <= $1
          ORDER BY carry_date, account`
+        , [selectedDate]
       )
       payments = rows.map((r) => ({
         id:             parseInt(r.id as string, 10),
@@ -179,11 +198,11 @@ export async function GET() {
       // mom_carry_payments table not yet created — treat as empty
     }
 
-    return NextResponse.json({ ok: true, latestDate, ...rates, accounts: mergedAccounts, payments })
+    return NextResponse.json({ ok: true, latestDate, selectedDate, availableDates, ...rates, accounts: mergedAccounts, payments })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {
-      return NextResponse.json({ ok: true, latestDate: null, accounts: [], payments: [], notYetRun: true })
+      return NextResponse.json({ ok: true, latestDate: null, selectedDate: null, availableDates: [], accounts: [], payments: [], notYetRun: true })
     }
     return NextResponse.json({ ok: false, error: msg }, { status: 500 })
   }

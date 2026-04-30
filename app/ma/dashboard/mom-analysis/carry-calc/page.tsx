@@ -7,6 +7,7 @@ import { ArrowLeft, Check, Download, Pencil, Plus, RefreshCw, Trash2, X } from "
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 // ── types ─────────────────────────────────────────────────────────────────────
 
@@ -41,6 +42,8 @@ type PaymentDraft = Omit<Payment, "id">
 interface InitialData {
   ok: boolean
   latestDate: string | null
+  selectedDate: string | null
+  availableDates: string[]
   motherRate: number
   childRate: number
   accounts: Account[]
@@ -195,6 +198,8 @@ export default function CarryCalcPage() {
   const [accounts, setAccounts]   = useState<Account[]>([])
   const [payments, setPayments]   = useState<Payment[]>([])
   const [latestDate, setLatestDate] = useState<string | null>(null)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [availableDates, setAvailableDates] = useState<string[]>([])
   const [loading, setLoading]     = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [notYetRun, setNotYetRun] = useState(false)
@@ -216,16 +221,20 @@ export default function CarryCalcPage() {
   const [deletingId, setDeletingId]           = useState<number | null>(null)
 
   // ── load ──────────────────────────────────────────────────────────────────
-  const load = useCallback(async () => {
+  const load = useCallback(async (date?: string | null) => {
     setLoading(true); setLoadError(null)
     try {
-      const res  = await fetch("/ma/api/mom-analysis/carry")
+      const url = date ? `/ma/api/mom-analysis/carry?date=${encodeURIComponent(date)}` : "/ma/api/mom-analysis/carry"
+      const res  = await fetch(url)
       const data = (await res.json()) as InitialData
       if (!data.ok) { setLoadError(data.error ?? "加载失败"); return }
       if (data.notYetRun) { setNotYetRun(true); return }
+      setNotYetRun(false)
       setAccounts(data.accounts ?? [])
       setPayments(data.payments ?? [])
       setLatestDate(data.latestDate ?? null)
+      setSelectedDate(data.selectedDate ?? data.latestDate ?? null)
+      setAvailableDates(data.availableDates ?? [])
       setMotherRateStr(pctInput(data.motherRate))
       setChildRateStr(pctInput(data.childRate))
     } catch (e) {
@@ -287,8 +296,8 @@ export default function CarryCalcPage() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? "保存失败")
-      setPayments((prev) => [...prev, json.record as Payment])
       setNewDraft(EMPTY_DRAFT); setAddingPayment(false)
+      await load(selectedDate)
     } catch (e) {
       alert(e instanceof Error ? e.message : "保存失败")
     } finally {
@@ -314,8 +323,8 @@ export default function CarryCalcPage() {
       })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error ?? "保存失败")
-      setPayments((prev) => prev.map((p) => (p.id === editingId ? (json.record as Payment) : p)))
       setEditingId(null)
+      await load(selectedDate)
     } catch (e) {
       alert(e instanceof Error ? e.message : "保存失败")
     } finally {
@@ -330,7 +339,7 @@ export default function CarryCalcPage() {
     try {
       const res = await fetch(`/ma/api/mom-analysis/carry-payments/${id}`, { method: "DELETE" })
       if (!res.ok) throw new Error("删除失败")
-      setPayments((prev) => prev.filter((p) => p.id !== id))
+      await load(selectedDate)
     } catch (e) {
       alert(e instanceof Error ? e.message : "删除失败")
     } finally {
@@ -352,9 +361,34 @@ export default function CarryCalcPage() {
         </Link>
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">业绩报酬测算</h1>
-          <p className="mt-1 text-muted-foreground text-sm">
-            截至最新交易日{latestDate ? <span className="font-medium text-foreground">（{latestDate}）</span> : ""}
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-3 text-sm">
+            <p className="text-muted-foreground">
+              截至交易日{selectedDate ? <span className="font-medium text-foreground">（{selectedDate}）</span> : ""}
+            </p>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground">筛选日期</span>
+              <Select
+                value={selectedDate ?? undefined}
+                onValueChange={(value) => {
+                  setSelectedDate(value)
+                  void load(value)
+                }}
+                disabled={loading || availableDates.length === 0}
+              >
+                <SelectTrigger className="h-8 min-w-40">
+                  <SelectValue placeholder="选择交易日" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableDates.map((date) => (
+                    <SelectItem key={date} value={date}>{date}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {latestDate && selectedDate !== latestDate && (
+              <p className="text-xs text-muted-foreground">最新交易日：{latestDate}</p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -478,7 +512,7 @@ export default function CarryCalcPage() {
                   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" })
                   const url = URL.createObjectURL(blob)
                   const a = document.createElement("a")
-                  a.href = url; a.download = `各账户调整后盈亏_${latestDate ?? ""}.csv`; a.click()
+                  a.href = url; a.download = `各账户调整后盈亏_${selectedDate ?? latestDate ?? ""}.csv`; a.click()
                   URL.revokeObjectURL(url)
                 }}
               >
@@ -537,7 +571,7 @@ export default function CarryCalcPage() {
           <Card>
             <CardHeader className="pb-1 flex flex-row items-center justify-between">
               <CardTitle className="text-base font-semibold">计算结果</CardTitle>
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={load} disabled={loading}>
+              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={() => void load(selectedDate)} disabled={loading}>
                 <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />刷新
               </Button>
             </CardHeader>
