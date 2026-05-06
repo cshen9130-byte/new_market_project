@@ -12,6 +12,11 @@ const ProductNavChart           = dynamic(() => import("@/components/ma/product-
 const VarPredictionChart        = dynamic(() => import("@/components/ma/var-prediction-chart"),         { ssr: false })
 const RollingVolChart           = dynamic(() => import("@/components/ma/rolling-vol-chart"),            { ssr: false })
 const SectorPositionCharts     = dynamic(() => import("@/components/ma/sector-position-charts"),       { ssr: false })
+const SectorDailyPnlChart      = dynamic(() => import("@/components/ma/sector-daily-pnl-chart"),      { ssr: false })
+const ProductDailyPnlChart     = dynamic(() => import("@/components/ma/product-daily-pnl-chart"),     { ssr: false })
+const SandboxProductMcrPieChart = dynamic(() => import("@/components/ma/sandbox-product-mcr-pie-chart"), { ssr: false })
+const AccountDailyPnlChart     = dynamic(() => import("@/components/ma/account-daily-pnl-chart"),     { ssr: false })
+const AdvisorPnlHistogramChart = dynamic(() => import("@/components/ma/advisor-pnl-histogram-chart"), { ssr: false })
 const AdvisorEquityCurveChart  = dynamic(() => import("@/components/ma/advisor-equity-curve-chart"), { ssr: false })
 const AdvisorVolCorrScatter    = dynamic(() => import("@/components/ma/advisor-vol-corr-scatter"),   { ssr: false })
 const AdvisorCorrTimeseries    = dynamic(() => import("@/components/ma/advisor-corr-timeseries"),    { ssr: false })
@@ -808,7 +813,13 @@ const PROD_NAMES: Record<string, string> = {
 }
 
 // ── VaR Sandbox ──────────────────────────────────────────────────────────────
-function VarSandboxContent() {
+function VarSandboxContent({
+  showPies = true,
+  onProdMcrChange,
+}: {
+  showPies?: boolean
+  onProdMcrChange?: (data: { name: string; value: number }[]) => void
+}) {
   type SbProd = { prod: string; mv: number; lots: number; sigma: number; lotMv: number }
 
   const [sbDate, setSbDate]           = useState("")
@@ -825,6 +836,7 @@ function VarSandboxContent() {
   const [sbCatFilter, setSbCatFilter] = useState("全部")
   const [sbSectorFilter, setSbSectorFilter] = useState("全部")
   const [sbDirFilter, setSbDirFilter] = useState("全部")
+  const [sbShowEditors, setSbShowEditors] = useState(false)
 
   useEffect(() => {
     let doneCount = 0
@@ -954,6 +966,10 @@ function VarSandboxContent() {
     }).filter(d => d.value > 0).sort((a, b) => b.value - a.value)
   }, [sbProds, displayProds, sbCorrMatrix])
 
+  useEffect(() => {
+    onProdMcrChange?.(prodMcrData)
+  }, [onProdMcrChange, prodMcrData])
+
   // Marginal vol contribution per sector
   const sectorMcrData = useMemo(() => {
     const sectorMap = new Map<string, number>()
@@ -1039,7 +1055,7 @@ function VarSandboxContent() {
   }
 
   return (
-    <div ref={fsRef} className={`flex gap-4 items-stretch${isFs ? " bg-background p-4 overflow-auto" : ""}`}>
+    <div ref={fsRef} className={`${showPies ? "flex gap-4 items-stretch" : ""}${isFs ? " bg-background p-4 overflow-auto" : ""}`}>
       {/* Left: sandbox card */}
       <div className="flex-1 min-w-0">
       <Card className="h-full">
@@ -1082,6 +1098,10 @@ function VarSandboxContent() {
             setSbDirFilter("全部")
           }}
         >重置为默认</button>
+        <button
+          className="text-xs px-2.5 py-1 rounded border border-border hover:bg-muted transition-colors"
+          onClick={() => setSbShowEditors(v => !v)}
+        >{sbShowEditors ? "收起编辑" : "展开编辑"}</button>
         <span className="text-xs text-muted-foreground ml-1">排序：</span>
         <select
           className="text-xs border rounded px-1 py-0.5 bg-background"
@@ -1189,39 +1209,43 @@ function VarSandboxContent() {
                 )}
               </div>
 
-              {/* MV input + ─ / + */}
-              <input
-                type="text"
-                inputMode="numeric"
-                className="text-xs border rounded px-1 py-0.5 w-28 text-right bg-background font-mono shrink-0"
-                value={p.mv.toLocaleString("zh-CN")}
-                onChange={e => updateMv(p.prod, parseInt(e.target.value.replace(/,/g, ""), 10) || 0)}
-              />
-              <button
-                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
-                onClick={() => updateMv(p.prod, p.mv - step)}
-              >−</button>
-              <button
-                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
-                onClick={() => updateMv(p.prod, p.mv + step)}
-              >+</button>
+              {sbShowEditors && (
+                <>
+                  {/* MV input + ─ / + */}
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    className="text-xs border rounded px-1 py-0.5 w-28 text-right bg-background font-mono shrink-0"
+                    value={p.mv.toLocaleString("zh-CN")}
+                    onChange={e => updateMv(p.prod, parseInt(e.target.value.replace(/,/g, ""), 10) || 0)}
+                  />
+                  <button
+                    className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                    onClick={() => updateMv(p.prod, p.mv - step)}
+                  >−</button>
+                  <button
+                    className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                    onClick={() => updateMv(p.prod, p.mv + step)}
+                  >+</button>
 
-              {/* Lots input + ─ / + */}
-              <span className="text-xs text-muted-foreground shrink-0">手数：</span>
-              <input
-                type="number"
-                className="text-xs border rounded px-1 py-0.5 w-16 text-right bg-background font-mono shrink-0"
-                value={p.lots}
-                onChange={e => updateLots(p.prod, parseInt(e.target.value, 10) || 0)}
-              />
-              <button
-                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
-                onClick={() => updateLots(p.prod, p.lots - 1)}
-              >−</button>
-              <button
-                className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
-                onClick={() => updateLots(p.prod, p.lots + 1)}
-              >+</button>
+                  {/* Lots input + ─ / + */}
+                  <span className="text-xs text-muted-foreground shrink-0">手数：</span>
+                  <input
+                    type="number"
+                    className="text-xs border rounded px-1 py-0.5 w-16 text-right bg-background font-mono shrink-0"
+                    value={p.lots}
+                    onChange={e => updateLots(p.prod, parseInt(e.target.value, 10) || 0)}
+                  />
+                  <button
+                    className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                    onClick={() => updateLots(p.prod, p.lots - 1)}
+                  >−</button>
+                  <button
+                    className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                    onClick={() => updateLots(p.prod, p.lots + 1)}
+                  >+</button>
+                </>
+              )}
             </div>
           )
         })}
@@ -1251,72 +1275,76 @@ function VarSandboxContent() {
     </Card>
     </div>{/* end left */}
 
-      {/* Right: two pie charts stacked */}
-      <div className="w-[460px] shrink-0 flex flex-col gap-4">
-        <Card className="flex-1">
-          <CardContent className="p-3 pb-2">
-            <ReactECharts
-              option={{
-                color: ['#5470c6','#91cc75','#fac858','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b0f1','#70d9a2','#f7a35c','#a0d8ef','#c9b4d4','#7cb5ec','#f4a460','#e4d354','#2b908f','#b0c4de','#7798bf','#aaeeee','#d4e157','#ffb74d','#80cbc4','#ce93d8','#80deea'],
-                title: { text: "品种边际波动贡献占比(%)（沙盒持仓）", textStyle: { fontSize: 12, fontWeight: "bold" }, top: 0, left: 0 },
-                tooltip: { trigger: "item", formatter: (p: { name: string; percent: number }) => {
-                    const cn = PROD_NAMES[p.name]
-                    return `${p.name}${cn ? `（${cn}）` : ""}: ${p.percent.toFixed(2)}%`
-                  }
-                },
-                legend: {
-                  type: "scroll", orient: "vertical", right: 0, top: 30, bottom: 10,
-                  textStyle: { fontSize: 11 },
-                  formatter: (name: string) => {
-                    const total = prodMcrData.reduce((s, d) => s + d.value, 0)
-                    const item = prodMcrData.find(d => d.name === name)
-                    const pct = total > 0 && item ? (item.value / total * 100).toFixed(2) : "0.00"
-                    const cn = PROD_NAMES[name]
-                    return `${name}${cn ? `（${cn}）` : ""}, ${pct}%`
-                  },
-                },
-                series: [{
-                  type: "pie", radius: "60%", center: ["30%", "55%"],
-                  label: { show: false },
-                  labelLine: { show: false },
-                  data: prodMcrData.map(d => d.name === "IM" ? { ...d, itemStyle: { color: "#ef4444" } } : d),
-                }],
-              }}
-              style={{ height: 300 }}
-              notMerge
-            />
-          </CardContent>
-        </Card>
-        <Card className="flex-1">
-          <CardContent className="p-3 pb-2">
-            <ReactECharts
-              option={{
-                color: ['#5470c6','#91cc75','#fac858','#ef4444','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc'],
-                title: { text: "板块边际波动贡献占比(%)（沙盒持仓）", textStyle: { fontSize: 12, fontWeight: "bold" }, top: 0, left: 0 },
-                tooltip: { trigger: "item", formatter: (p: { name: string; percent: number }) => `${p.name}: ${p.percent.toFixed(2)}%` },
-                legend: {
-                  type: "scroll", orient: "vertical", right: 0, top: 30, bottom: 10,
-                  textStyle: { fontSize: 11 },
-                  formatter: (name: string) => {
-                    const total = sectorMcrData.reduce((s, d) => s + d.value, 0)
-                    const item = sectorMcrData.find(d => d.name === name)
-                    const pct = total > 0 && item ? (item.value / total * 100).toFixed(2) : "0.00"
-                    return `${name}, ${pct}%`
-                  },
-                },
-                series: [{
-                  type: "pie", radius: "60%", center: ["30%", "55%"],
-                  label: { show: false },
-                  labelLine: { show: false },
-                  data: sectorMcrData.map(d => d.name === "股指" ? { ...d, itemStyle: { color: "#ef4444" } } : d),
-                }],
-              }}
-              style={{ height: 300 }}
-              notMerge
-            />
-          </CardContent>
-        </Card>
-      </div>{/* end right */}
+      {showPies && (
+        <>
+          {/* Right: two pie charts stacked */}
+          <div className="w-[460px] shrink-0 flex flex-col gap-4">
+            <Card className="flex-1">
+              <CardContent className="p-3 pb-2">
+                <ReactECharts
+                  option={{
+                    color: ['#5470c6','#91cc75','#fac858','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b0f1','#70d9a2','#f7a35c','#a0d8ef','#c9b4d4','#7cb5ec','#f4a460','#e4d354','#2b908f','#b0c4de','#7798bf','#aaeeee','#d4e157','#ffb74d','#80cbc4','#ce93d8','#80deea'],
+                    title: { text: "品种边际波动贡献占比(%)（沙盒持仓）", textStyle: { fontSize: 12, fontWeight: "bold" }, top: 0, left: 0 },
+                    tooltip: { trigger: "item", formatter: (p: { name: string; percent: number }) => {
+                        const cn = PROD_NAMES[p.name]
+                        return `${p.name}${cn ? `（${cn}）` : ""}: ${p.percent.toFixed(2)}%`
+                      }
+                    },
+                    legend: {
+                      type: "scroll", orient: "vertical", right: 0, top: 30, bottom: 10,
+                      textStyle: { fontSize: 11 },
+                      formatter: (name: string) => {
+                        const total = prodMcrData.reduce((s, d) => s + d.value, 0)
+                        const item = prodMcrData.find(d => d.name === name)
+                        const pct = total > 0 && item ? (item.value / total * 100).toFixed(2) : "0.00"
+                        const cn = PROD_NAMES[name]
+                        return `${name}${cn ? `（${cn}）` : ""}, ${pct}%`
+                      },
+                    },
+                    series: [{
+                      type: "pie", radius: "60%", center: ["30%", "55%"],
+                      label: { show: false },
+                      labelLine: { show: false },
+                      data: prodMcrData.map(d => d.name === "IM" ? { ...d, itemStyle: { color: "#ef4444" } } : d),
+                    }],
+                  }}
+                  style={{ height: 300 }}
+                  notMerge
+                />
+              </CardContent>
+            </Card>
+            <Card className="flex-1">
+              <CardContent className="p-3 pb-2">
+                <ReactECharts
+                  option={{
+                    color: ['#5470c6','#91cc75','#fac858','#ef4444','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc'],
+                    title: { text: "板块边际波动贡献占比(%)（沙盒持仓）", textStyle: { fontSize: 12, fontWeight: "bold" }, top: 0, left: 0 },
+                    tooltip: { trigger: "item", formatter: (p: { name: string; percent: number }) => `${p.name}: ${p.percent.toFixed(2)}%` },
+                    legend: {
+                      type: "scroll", orient: "vertical", right: 0, top: 30, bottom: 10,
+                      textStyle: { fontSize: 11 },
+                      formatter: (name: string) => {
+                        const total = sectorMcrData.reduce((s, d) => s + d.value, 0)
+                        const item = sectorMcrData.find(d => d.name === name)
+                        const pct = total > 0 && item ? (item.value / total * 100).toFixed(2) : "0.00"
+                        return `${name}, ${pct}%`
+                      },
+                    },
+                    series: [{
+                      type: "pie", radius: "60%", center: ["30%", "55%"],
+                      label: { show: false },
+                      labelLine: { show: false },
+                      data: sectorMcrData.map(d => d.name === "股指" ? { ...d, itemStyle: { color: "#ef4444" } } : d),
+                    }],
+                  }}
+                  style={{ height: 300 }}
+                  notMerge
+                />
+              </CardContent>
+            </Card>
+          </div>{/* end right */}
+        </>
+      )}
     </div>
   )
 }
@@ -3142,7 +3170,19 @@ function PositionChangeDetailTable({ prodFilter, setProdFilter, catFilter2, setC
   )
 }
 
-function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { onProdClick: (prod: string) => void; sectorFilter: string; subSectorFilter: string }) {
+function PositionChangeChart({
+  onProdClick,
+  sectorFilter,
+  subSectorFilter,
+  showMvDefault = true,
+  compactMode = false,
+}: {
+  onProdClick: (prod: string) => void
+  sectorFilter: string
+  subSectorFilter: string
+  showMvDefault?: boolean
+  compactMode?: boolean
+}) {
   const [posDataRaw, setPosDataRaw]   = useState<PcRow[]>([])
   const [varProds, setVarProds] = useState<{ prod: string; sigma: number; mv: number }[]>([])
   const [corrMatrix, setCorrMatrix] = useState<number[][]>([])
@@ -3229,6 +3269,7 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
     const fmtWan = (v: number) => `${v > 0 ? "+" : ""}${(v / 10000).toFixed(1)}万`
 
     const fmtVarWan = (v: number) => `${v > 0 ? "+" : ""}${(v / 10000).toFixed(2)}万`
+    const visibleCount = compactMode ? 16 : 12
 
     return {
       title: {
@@ -3238,8 +3279,12 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
       },
       legend: {
         data: ["市值变化", "ΔVaR贡献(99%)"],
-        bottom: 4,
-        textStyle: { fontSize: 11 },
+        selected: {
+          "市值变化": showMvDefault,
+          "ΔVaR贡献(99%)": true,
+        },
+        bottom: compactMode ? 0 : 4,
+        textStyle: { fontSize: compactMode ? 10 : 11 },
         itemWidth: 14, itemHeight: 10,
       },
       tooltip: {
@@ -3265,17 +3310,19 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
           ].join("<br/>")
         },
       },
-      grid: { left: 4, right: 24, top: 24, bottom: 30, containLabel: true },
+      grid: compactMode
+        ? { left: 4, right: 22, top: 8, bottom: 24, containLabel: true }
+        : { left: 4, right: 24, top: 24, bottom: 30, containLabel: true },
       xAxis: [
         {
           type: "value",
-          axisLabel: { formatter: (v: number) => `${(v / 10000).toFixed(0)}万`, fontSize: 10 },
+          axisLabel: { formatter: (v: number) => `${(v / 10000).toFixed(0)}万`, fontSize: compactMode ? 9 : 10 },
           splitLine: { lineStyle: { type: "dashed" } },
         },
         {
           type: "value",
           position: "top",
-          axisLabel: { formatter: (v: number) => `${(v / 10000).toFixed(1)}万`, fontSize: 10 },
+          axisLabel: { formatter: (v: number) => `${(v / 10000).toFixed(1)}万`, fontSize: compactMode ? 9 : 10 },
           splitLine: { show: false },
           axisLine: { show: true, lineStyle: { color: "#f97316", opacity: 0.6 } },
           axisTick: { show: true },
@@ -3284,7 +3331,7 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
       yAxis: {
         type: "category",
         data: categories,
-        axisLabel: { fontSize: 11 },
+        axisLabel: { fontSize: compactMode ? 10 : 11 },
       },
       dataZoom: [
         {
@@ -3293,7 +3340,7 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
           orient: "vertical",
           right: 0,
           startValue: data.length - 1 - 0,       // top item (highest |ΔVaR|)
-          endValue: data.length - 1 - Math.min(11, data.length - 1), // show ~12
+          endValue: data.length - 1 - Math.min(visibleCount - 1, data.length - 1), // show more rows in compact view
           width: 14,
           handleSize: "80%",
           brushSelect: false,
@@ -3349,7 +3396,7 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
         },
       ],
     }
-  }, [chartData, today, yesterday, deltaVarMap])
+  }, [chartData, today, yesterday, deltaVarMap, showMvDefault, compactMode])
 
   if (loading) return <p className="text-sm text-muted-foreground py-4">加载中...</p>
   if (!chartData.length) return <p className="text-sm text-muted-foreground py-4">暂无持仓变化数据</p>
@@ -3363,6 +3410,47 @@ function PositionChangeChart({ onProdClick, sectorFilter, subSectorFilter }: { o
   }
 
   return <ReactECharts option={option} style={{ height: "100%", width: "100%" }} notMerge onEvents={onEvents} />
+}
+
+function PositionChangeVarMiniCard() {
+  const [sector, setSector] = useState("全部")
+  const [subSector, setSubSector] = useState("全部")
+
+  return (
+    <Card className="h-full flex flex-col">
+      <CardHeader className="shrink-0 px-2 pt-1 pb-0">
+        <div className="flex items-center gap-2 text-[11px]">
+          <select
+            className="border rounded px-1.5 py-0.5 bg-background text-xs"
+            value={sector}
+            onChange={e => { setSector(e.target.value); setSubSector("全部") }}
+          >
+            <option value="全部">板块:全部</option>
+            {EXPOSURE_SECTORS.filter(s => s !== "全部").map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <select
+            className="border rounded px-1.5 py-0.5 bg-background text-xs"
+            value={subSector}
+            onChange={e => setSubSector(e.target.value)}
+          >
+            <option value="全部">细分:全部</option>
+            {(sector !== "全部" ? (SECTOR_TO_SUB_SECTORS[sector] ?? []) : EXPOSURE_SUB_SECTORS.filter(s => s !== "全部")).map(s => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </div>
+        <CardTitle className="text-sm mt-0.5">
+          品种持仓变化 |ΔVaR|降序
+          <span className="ml-2 text-[11px] font-normal text-muted-foreground">今日 vs 昨日</span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="flex-1 min-h-0 p-1 pt-0">
+        <div className="h-full">
+          <PositionChangeChart onProdClick={() => {}} sectorFilter={sector} subSectorFilter={subSector} showMvDefault={false} compactMode />
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 function OptionHoldingContent() {
@@ -6659,6 +6747,8 @@ export default function RiskReportNewPage() {
   // Briefing: latest daily return + YTD return from product-nav API
   const [briefingNav, setBriefingNav] = useState<{ date: string; nav: number; dailyReturn: number }[]>([])
   const [briefingLoading, setBriefingLoading] = useState(false)
+  const [briefingSandboxProdMcr, setBriefingSandboxProdMcr] = useState<{ name: string; value: number }[] | undefined>(undefined)
+  const [briefingSubAccountCount, setBriefingSubAccountCount] = useState<number | null>(null)
 
   useEffect(() => {
     if (activeTab !== "briefing") return
@@ -6670,6 +6760,39 @@ export default function RiskReportNewPage() {
       .catch(() => {})
       .finally(() => setBriefingLoading(false))
   }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== "briefing") return
+    if (briefingSubAccountCount !== null) return
+
+    fetch("/ma/api/mom-analysis/account-daily-pnl")
+      .then((r) => r.json())
+      .then((j) => {
+        const accountData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = j.accountData ?? {}
+        const dateNonZeroCount = new Map<string, number>()
+        for (const rows of Object.values(accountData)) {
+          for (const row of rows) {
+            if (row.pnl !== 0) dateNonZeroCount.set(row.date, (dateNonZeroCount.get(row.date) ?? 0) + 1)
+          }
+        }
+
+        const latestActiveDate = [...dateNonZeroCount.entries()]
+          .filter(([, count]) => count >= 2)
+          .sort(([a], [b]) => b.localeCompare(a))[0]?.[0] ?? null
+
+        if (!latestActiveDate) {
+          setBriefingSubAccountCount(Object.keys(accountData).length)
+          return
+        }
+
+        const count = Object.values(accountData).reduce((sum, rows) => {
+          const hasData = rows.some((row) => row.date === latestActiveDate && row.pnl !== 0)
+          return sum + (hasData ? 1 : 0)
+        }, 0)
+        setBriefingSubAccountCount(count)
+      })
+      .catch(() => setBriefingSubAccountCount(0))
+  }, [activeTab, briefingSubAccountCount])
 
   const briefingSummary = useMemo(() => {
     if (briefingNav.length === 0) return null
@@ -7012,6 +7135,75 @@ export default function RiskReportNewPage() {
                       <div className="p-3">
                         <SectorPositionCharts height={260} />
                       </div>
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4"
+                         style={{ background: "#ffffff" }}>
+                      <SectorDailyPnlChart height={300} />
+                    </div>
+
+                    {/* Section: 品种持仓分析 */}
+                    <div className="flex items-center gap-3 mt-5 mb-3">
+                      <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
+                      <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
+                          style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
+                        三、品种持仓分析
+                      </h2>
+                      <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden"
+                         style={{ background: "#ffffff" }}>
+                      <ProductDailyPnlChart
+                        height={260}
+                        prodCatMap={PROD_CAT}
+                        prodSectorMap={PROD_SECTOR}
+                        prodSubSectorMap={PROD_SUB_SECTOR}
+                        prodNameMap={PROD_NAMES}
+                      />
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4 p-3"
+                         style={{ background: "#ffffff" }}>
+                      <VarSandboxContent showPies={false} onProdMcrChange={setBriefingSandboxProdMcr} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4 mt-4">
+                      <div className="rounded border border-[#d4c9a8] overflow-hidden p-3 h-[360px]"
+                           style={{ background: "#ffffff" }}>
+                        <SandboxProductMcrPieChart height={300} prodNameMap={PROD_NAMES} mcrData={briefingSandboxProdMcr} />
+                      </div>
+                      <div className="rounded border border-[#d4c9a8] overflow-hidden p-1 h-[360px]"
+                           style={{ background: "#ffffff" }}>
+                        <PositionChangeVarMiniCard />
+                      </div>
+                    </div>
+
+                    {/* Section: 投顾分析 */}
+                    <div className="flex items-center gap-3 mt-5 mb-3">
+                      <div className="w-1 h-5 rounded-sm" style={{ background: "#1a3a5c" }} />
+                      <h2 className="text-base font-bold tracking-wide text-[#1a3a5c]"
+                          style={{ fontFamily: "'Noto Serif SC','SimHei',serif" }}>
+                        四、投顾分析
+                      </h2>
+                      <div className="flex-1 h-px" style={{ background: "linear-gradient(90deg,#c8a84b55,transparent)" }} />
+                    </div>
+                    <p className="text-sm leading-7 text-[#2a3a4a] mb-4 pl-1 border-l-4 border-[#c8a84b] bg-[#faf7ef] py-2 px-3 rounded-r">
+                      当前组合的子层操作账户数为
+                      <span className="font-bold text-[#1a3a5c]"> {briefingSubAccountCount ?? "—"} </span>
+                      个
+                    </p>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4"
+                         style={{ background: "#ffffff" }}>
+                      <AccountDailyPnlChart height={260} />
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4"
+                         style={{ background: "#ffffff" }}>
+                      <AdvisorPnlHistogramChart height={320} window="20" />
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4"
+                         style={{ background: "#ffffff" }}>
+                      <AdvisorEquityCurveChart height={420} />
+                    </div>
+                    <div className="rounded border border-[#d4c9a8] overflow-hidden mb-4"
+                         style={{ background: "#ffffff" }}>
+                      <AdvisorCorrTimeseries height={380} />
                     </div>
                   </>
                 ) : (
