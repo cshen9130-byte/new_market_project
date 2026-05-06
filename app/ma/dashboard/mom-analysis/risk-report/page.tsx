@@ -1434,15 +1434,40 @@ function IntradayContent() {
 
     fetch("/ma/api/mom-analysis/category-pnl").then(r => r.json()).then(catJson => {
       const sectorData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = catJson.sectorData ?? {}
+
+      // Find the latest date where ≥2 distinct sectors have non-zero PnL.
+      // This avoids showing a partially-imported day where only 1 sector has data
+      // (all other sectors would show pnl=0 and get filtered out).
+      const dateNonZeroCount = new Map<string, number>()
+      for (const rows of Object.values(sectorData)) {
+        for (const r of rows) {
+          if (r.pnl !== 0) dateNonZeroCount.set(r.date, (dateNonZeroCount.get(r.date) ?? 0) + 1)
+        }
+      }
+      const latestActiveDate = [...dateNonZeroCount.entries()]
+        .filter(([, count]) => count >= 2)
+        .sort(([a], [b]) => b.localeCompare(a))
+        [0]?.[0] ?? null
+
       const latest = Object.entries(sectorData)
-        .map(([sector, rows]) => ({ sector, pnl: rows.length > 0 ? rows[rows.length - 1].pnl : 0 }))
+        .map(([sector, rows]) => {
+          const row = latestActiveDate
+            ? [...rows].reverse().find(r => r.date <= latestActiveDate)
+            : rows[rows.length - 1]
+          return { sector, pnl: row?.pnl ?? 0 }
+        })
         .filter((s) => s.pnl !== 0)
         .sort((a, b) => b.pnl - a.pnl)
       setSectorLatest(latest)
 
       const productData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = catJson.productData ?? {}
       const prodList = Object.entries(productData)
-        .map(([key, rows]) => ({ key, pnl: rows.length > 0 ? rows[rows.length - 1].pnl : 0 }))
+        .map(([key, rows]) => {
+          const row = latestActiveDate
+            ? [...rows].reverse().find(r => r.date <= latestActiveDate)
+            : rows[rows.length - 1]
+          return { key, pnl: row?.pnl ?? 0 }
+        })
         .filter((p) => p.pnl !== 0)
         .sort((a, b) => b.pnl - a.pnl)
       setProdLatest(prodList)
@@ -1450,8 +1475,24 @@ function IntradayContent() {
 
     fetch("/ma/api/mom-analysis/account-daily-pnl").then(r => r.json()).then(acctJson => {
       const accountData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = acctJson.accountData ?? {}
+      // Same "latest active date" heuristic: last date where ≥2 accounts have non-zero PnL
+      const acctDateCount = new Map<string, number>()
+      for (const rows of Object.values(accountData)) {
+        for (const r of rows) {
+          if (r.pnl !== 0) acctDateCount.set(r.date, (acctDateCount.get(r.date) ?? 0) + 1)
+        }
+      }
+      const latestAcctDate = [...acctDateCount.entries()]
+        .filter(([, count]) => count >= 2)
+        .sort(([a], [b]) => b.localeCompare(a))
+        [0]?.[0] ?? null
       const acctList = Object.entries(accountData)
-        .map(([account, rows]) => ({ account, pnl: rows.length > 0 ? rows[rows.length - 1].pnl : 0 }))
+        .map(([account, rows]) => {
+          const row = latestAcctDate
+            ? [...rows].reverse().find(r => r.date <= latestAcctDate)
+            : rows[rows.length - 1]
+          return { account, pnl: row?.pnl ?? 0 }
+        })
         .filter((a) => a.pnl !== 0)
         .sort((a, b) => b.pnl - a.pnl)
       setAccountLatest(acctList)
