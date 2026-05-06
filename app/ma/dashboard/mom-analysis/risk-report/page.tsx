@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import dynamic from "next/dynamic"
 import { cn } from "@/lib/utils"
-import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw, Droplets, FileText, Printer } from "lucide-react"
+import { BarChart2, ShieldAlert, PieChart, Users, ScanSearch, AlertCircle, AlertTriangle, Info, ChevronLeft, ChevronRight, RefreshCw, Droplets, FileText, Printer, Download } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -6749,6 +6749,9 @@ export default function RiskReportNewPage() {
   const [briefingLoading, setBriefingLoading] = useState(false)
   const [briefingSandboxProdMcr, setBriefingSandboxProdMcr] = useState<{ name: string; value: number }[] | undefined>(undefined)
   const [briefingSubAccountCount, setBriefingSubAccountCount] = useState<number | null>(null)
+  const [briefingPdfDownloading, setBriefingPdfDownloading] = useState(false)
+  const [briefingImageDownloading, setBriefingImageDownloading] = useState(false)
+  const [briefingHtmlDownloading, setBriefingHtmlDownloading] = useState(false)
 
   useEffect(() => {
     if (activeTab !== "briefing") return
@@ -6807,32 +6810,667 @@ export default function RiskReportNewPage() {
     setActiveTab(key)
   }
 
-  const handleBriefingPrint = useCallback(() => {
+  const captureBriefingCanvas = useCallback(async () => {
     const el = document.getElementById("mom-briefing-printable")
-    if (!el) return
-
-    // Remember original location
-    const parent = el.parentElement!
-    const nextSibling = el.nextSibling
-
-    // Hide all other direct children of <body> so only our element is visible
-    const bodyChildren = Array.from(document.body.children) as HTMLElement[]
-    const prevDisplays = bodyChildren.map((c) => c.style.display)
-    bodyChildren.forEach((c) => { c.style.display = "none" })
-
-    // Move element into <body> at top level — no overflow containers
-    document.body.appendChild(el)
-
-    // Restore after printing (afterprint fires when dialog closes)
-    const restore = () => {
-      parent.insertBefore(el, nextSibling)
-      bodyChildren.forEach((c, i) => { c.style.display = prevDisplays[i] })
-      window.removeEventListener("afterprint", restore)
-    }
-    window.addEventListener("afterprint", restore)
-
-    window.print()
+    if (!el) return null
+    const { default: html2canvas } = await import("html2canvas-pro")
+    return html2canvas(el, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      windowWidth: el.scrollWidth,
+      windowHeight: el.scrollHeight,
+      onclone: (clonedDoc) => {
+        // Force capture-safe colors and hide action buttons in export snapshot.
+        const style = clonedDoc.createElement("style")
+        style.textContent = `
+          #mom-briefing-printable,
+          #mom-briefing-printable * {
+            color: #1f2937 !important;
+            outline: none !important;
+            outline-color: transparent !important;
+            text-shadow: none !important;
+            box-shadow: none !important;
+            border-color: #d4c9a8 !important;
+          }
+          #mom-briefing-printable {
+            background: #ffffff !important;
+          }
+          .no-print { display: none !important; }
+        `
+        clonedDoc.head.appendChild(style)
+      },
+    })
   }, [])
+
+  const buildStandaloneBriefingHtml = useCallback(async (dateStr: string) => {
+    const sourceRoot = document.getElementById("mom-briefing-printable")
+    if (!sourceRoot) return null
+
+    const quickRangeLabels = ["近一月", "近三月", "近六月", "近一年", "全部"]
+    const waitForRender = async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    }
+
+    const navChartStates: Record<string, string> = {}
+    const navTitleSource = Array.from(sourceRoot.querySelectorAll<HTMLElement>("*")).find(
+      (el) => (el.textContent ?? "").trim() === "净值曲线"
+    )
+    let navCardSource: HTMLElement | null = navTitleSource ?? null
+    while (navCardSource) {
+      const hasChartCanvas = !!navCardSource.querySelector("canvas")
+      const hasNhciSelect = Array.from(navCardSource.querySelectorAll("select")).some((selectEl) =>
+        Array.from(selectEl.options).some((opt) => (opt.textContent ?? "").includes("NHCI"))
+      )
+      const hasRangeButtons = Array.from(navCardSource.querySelectorAll("button")).some((btn) =>
+        quickRangeLabels.includes((btn.textContent ?? "").trim())
+      )
+      if (hasChartCanvas && hasNhciSelect && hasRangeButtons) break
+      navCardSource = navCardSource.parentElement
+    }
+    const navSelectSource = navCardSource
+      ? Array.from(navCardSource.querySelectorAll<HTMLSelectElement>("select")).find((selectEl) =>
+          Array.from(selectEl.options).some((opt) => (opt.textContent ?? "").includes("NHCI"))
+        )
+      : undefined
+    const navRangeButtonsSource = navCardSource
+      ? Array.from(navCardSource.querySelectorAll<HTMLButtonElement>("button")).filter((btn) =>
+          quickRangeLabels.includes((btn.textContent ?? "").trim())
+        )
+      : []
+    const navCanvasSource = navCardSource?.querySelector<HTMLCanvasElement>("canvas") ?? null
+
+    if (navSelectSource && navRangeButtonsSource.length > 0 && navCanvasSource) {
+      const originalBenchmark = navSelectSource.value
+      const originalActiveRange = navRangeButtonsSource.find((btn) => btn.className.includes("bg-primary"))
+      const originalRangeLabel = (originalActiveRange?.textContent ?? "全部").trim()
+
+      for (const benchmarkValue of ["show", "hide"]) {
+        navSelectSource.value = benchmarkValue
+        navSelectSource.dispatchEvent(new Event("change", { bubbles: true }))
+        await waitForRender()
+
+        for (const label of quickRangeLabels) {
+          const rangeBtn = navRangeButtonsSource.find((btn) => (btn.textContent ?? "").trim() === label)
+          if (!rangeBtn) continue
+          rangeBtn.click()
+          await waitForRender()
+
+          const key = `${label}|${benchmarkValue}`
+          navChartStates[key] = navCanvasSource.toDataURL("image/png")
+        }
+      }
+
+      navSelectSource.value = originalBenchmark
+      navSelectSource.dispatchEvent(new Event("change", { bubbles: true }))
+      const restoreBtn = navRangeButtonsSource.find((btn) => (btn.textContent ?? "").trim() === originalRangeLabel)
+      restoreBtn?.click()
+      await waitForRender()
+    }
+
+    const clonedRoot = sourceRoot.cloneNode(true) as HTMLElement
+    const sourceElements = [sourceRoot, ...Array.from(sourceRoot.querySelectorAll("*"))]
+    const clonedElements = [clonedRoot, ...Array.from(clonedRoot.querySelectorAll("*"))]
+
+    for (let i = 0; i < sourceElements.length; i += 1) {
+      const sourceEl = sourceElements[i]
+      const clonedEl = clonedElements[i]
+      if (!sourceEl || !clonedEl) continue
+
+      const computed = window.getComputedStyle(sourceEl)
+      let styleText = ""
+      for (let j = 0; j < computed.length; j += 1) {
+        const prop = computed.item(j)
+        styleText += `${prop}:${computed.getPropertyValue(prop)};`
+      }
+      clonedEl.setAttribute("style", styleText)
+    }
+
+    // Keep chart visuals by replacing canvas elements with equivalent embedded PNGs.
+    const sourceCanvases = Array.from(sourceRoot.querySelectorAll<HTMLCanvasElement>("canvas"))
+    const clonedCanvases = Array.from(clonedRoot.querySelectorAll<HTMLCanvasElement>("canvas"))
+    clonedCanvases.forEach((canvasEl, idx) => {
+      const sourceCanvas = sourceCanvases[idx]
+      if (!sourceCanvas) return
+      const img = document.createElement("img")
+      img.src = sourceCanvas.toDataURL("image/png")
+      img.alt = "chart"
+      img.className = `${img.className ? `${img.className} ` : ""}standalone-chart-image`
+      const canvasStyle = canvasEl.getAttribute("style")
+      if (canvasStyle) img.setAttribute("style", canvasStyle)
+      if (sourceCanvas.width > 0) img.width = sourceCanvas.width
+      if (sourceCanvas.height > 0) img.height = sourceCanvas.height
+      canvasEl.replaceWith(img)
+    })
+
+    // Mark main NAV curve chart image for standalone interactions (range/benchmark toggle).
+    const navCanvasIndex = navCanvasSource ? sourceCanvases.indexOf(navCanvasSource) : -1
+    if (navCanvasIndex >= 0) {
+      const clonedNavImg = clonedRoot.querySelectorAll<HTMLImageElement>("img.standalone-chart-image")[navCanvasIndex]
+      if (clonedNavImg) {
+        clonedNavImg.id = "standalone-nav-main-chart"
+        if (navChartStates["全部|show"]) {
+          clonedNavImg.src = navChartStates["全部|show"]
+        }
+      }
+    }
+
+    clonedRoot.querySelectorAll(".no-print").forEach((el) => el.remove())
+
+    const headingEls = Array.from(clonedRoot.querySelectorAll<HTMLElement>("h2, h3"))
+    const sections = headingEls.map((headingEl, idx) => {
+      const title = (headingEl.textContent ?? "").trim() || `章节 ${idx + 1}`
+      const id = `standalone-section-${idx + 1}`
+      headingEl.id = id
+      return { id, title }
+    })
+
+    const tableEntries = Array.from(clonedRoot.querySelectorAll<HTMLTableElement>("table")).map((table, idx) => {
+      table.setAttribute("data-standalone-table", String(idx + 1))
+      const caption = table.querySelector("caption")?.textContent?.trim() ?? `表格 ${idx + 1}`
+      const headers = Array.from(table.querySelectorAll("thead th")).map((th) => th.textContent?.trim() ?? "")
+      const rows = Array.from(table.querySelectorAll("tbody tr")).map((tr) =>
+        Array.from(tr.querySelectorAll("td,th")).map((cell) => cell.textContent?.trim() ?? "")
+      )
+      return { caption, headers, rowCount: rows.length, rows }
+    })
+
+    const reportData = {
+      reportDate: dateStr,
+      exportedAt: new Date().toISOString(),
+      sections,
+      tables: tableEntries,
+      chartCount: clonedRoot.querySelectorAll("img.standalone-chart-image").length,
+      paragraphCount: clonedRoot.querySelectorAll("p").length,
+      navChartStates,
+    }
+    const reportDataJson = JSON.stringify(reportData).replace(/</g, "\\u003c")
+
+    const htmlContent = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MOM风控简报-${dateStr}</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: linear-gradient(135deg, #0f172a 0%, #111827 55%, #0b1220 100%);
+      color: #e5e7eb;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      padding: 18px;
+      box-sizing: border-box;
+    }
+    .briefing-shell {
+      width: max-content;
+      max-width: 100%;
+      box-shadow: 0 20px 48px rgba(0, 0, 0, 0.45);
+      border-radius: 10px;
+      overflow: auto;
+    }
+    .standalone-controls {
+      position: relative;
+      z-index: 10;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.4);
+      background: rgba(15, 23, 42, 0.92);
+      backdrop-filter: blur(8px);
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .standalone-controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .standalone-controls button,
+    .standalone-controls input {
+      height: 32px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #111827;
+      color: #e2e8f0;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+    .standalone-controls button { cursor: pointer; }
+    .standalone-controls button:hover { background: #1e293b; }
+    .standalone-meta {
+      font-size: 12px;
+      color: #cbd5e1;
+      line-height: 1.55;
+      padding-left: 2px;
+    }
+    .standalone-nav-label {
+      font-size: 12px;
+      color: #e2e8f0;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding-left: 2px;
+    }
+    .standalone-nav {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      max-height: 140px;
+      overflow: auto;
+    }
+    .standalone-nav button {
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: #e2e8f0;
+      border-radius: 6px;
+      padding: 6px 8px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .standalone-nav button:hover { background: #1e293b; }
+    .section-toggle {
+      margin-left: 8px;
+      border: 1px solid #cbd5e1;
+      background: rgba(255, 255, 255, 0.85);
+      color: #334155;
+      border-radius: 4px;
+      padding: 0 6px;
+      height: 22px;
+      font-size: 11px;
+      cursor: pointer;
+      vertical-align: middle;
+    }
+    .search-hit {
+      background: #fef08a !important;
+      color: #111827 !important;
+    }
+    #chart-lightbox {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.78);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 40;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    #chart-lightbox img {
+      max-width: min(96vw, 1600px);
+      max-height: 92vh;
+      object-fit: contain;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+      background: #fff;
+      border-radius: 8px;
+    }
+    @media (max-width: 860px) {
+      body { padding: 10px; }
+      .standalone-controls-row { gap: 6px; }
+      .standalone-controls button,
+      .standalone-controls input {
+        height: 30px;
+        font-size: 11px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="briefing-shell">${clonedRoot.outerHTML}</div>
+
+  <div id="chart-lightbox"><img id="chart-lightbox-image" alt="chart zoom" /></div>
+  <script id="report-data-json" type="application/json">${reportDataJson}</script>
+  <script>
+    (function () {
+      var dataEl = document.getElementById('report-data-json');
+      var reportData = {};
+      try {
+        reportData = dataEl ? JSON.parse(dataEl.textContent || '{}') : {};
+      } catch (err) {
+        reportData = {};
+      }
+
+      var root = document.querySelector('.briefing-shell');
+      if (!root) return;
+
+      function parseBenchmarkValue(selectEl) {
+        if (!selectEl) return 'show';
+        var value = (selectEl.value || '').toLowerCase();
+        if (value === 'hide') return 'hide';
+        var selectedOption = selectEl.options && selectEl.selectedIndex >= 0 ? selectEl.options[selectEl.selectedIndex] : null;
+        var text = ((selectedOption && selectedOption.textContent) || '').toLowerCase();
+        return text.indexOf('隐藏') >= 0 ? 'hide' : 'show';
+      }
+
+      (function bindStandaloneNavChartControls() {
+        var navStates = reportData.navChartStates || {};
+        var navImg = root.querySelector('#standalone-nav-main-chart');
+        if (!navImg || Object.keys(navStates).length === 0) return;
+
+        var quickRanges = ['近一月', '近三月', '近六月', '近一年', '全部'];
+        var navScope = navImg;
+        while (navScope && navScope !== root) {
+          var scopeHasSelect = Array.prototype.slice.call(navScope.querySelectorAll('select')).some(function (selectEl) {
+            return Array.prototype.slice.call(selectEl.options || []).some(function (opt) {
+              return (opt.textContent || '').indexOf('NHCI') >= 0;
+            });
+          });
+          var scopeHasRangeButtons = Array.prototype.slice.call(navScope.querySelectorAll('button')).some(function (btn) {
+            return quickRanges.indexOf((btn.textContent || '').trim()) >= 0;
+          });
+          if (scopeHasSelect && scopeHasRangeButtons) break;
+          navScope = navScope.parentElement;
+        }
+        if (!navScope) navScope = root;
+
+        var rangeButtons = Array.prototype.slice.call(navScope.querySelectorAll('button')).filter(function (btn) {
+          return quickRanges.indexOf((btn.textContent || '').trim()) >= 0;
+        });
+        var benchmarkSelect = Array.prototype.slice.call(navScope.querySelectorAll('select')).find(function (selectEl) {
+          return Array.prototype.slice.call(selectEl.options || []).some(function (opt) {
+            return (opt.textContent || '').indexOf('NHCI') >= 0;
+          });
+        });
+
+        function setRangeButtonActive(activeBtn) {
+          rangeButtons.forEach(function (btn) {
+            btn.setAttribute('data-standalone-active', btn === activeBtn ? '1' : '0');
+            if (btn === activeBtn) {
+              if (btn.className.indexOf('bg-primary') < 0) btn.className += ' bg-primary';
+            } else {
+              btn.className = btn.className.replace(' bg-primary', '').replace('bg-primary ', '');
+            }
+          });
+        }
+
+        var activeRangeBtn = rangeButtons.find(function (btn) { return (btn.className || '').indexOf('bg-primary') >= 0; }) || rangeButtons[rangeButtons.length - 1] || null;
+        if (activeRangeBtn) setRangeButtonActive(activeRangeBtn);
+
+        function updateNavImage() {
+          var activeBtn = rangeButtons.find(function (btn) { return btn.getAttribute('data-standalone-active') === '1'; }) || rangeButtons[rangeButtons.length - 1] || null;
+          if (!activeBtn) return;
+          var rangeLabel = (activeBtn.textContent || '').trim();
+          var benchmarkMode = parseBenchmarkValue(benchmarkSelect);
+          var key = rangeLabel + '|' + benchmarkMode;
+          var fallbackKey = rangeLabel + '|show';
+          var imgSrc = navStates[key] || navStates[fallbackKey] || navStates['全部|show'];
+          if (imgSrc) navImg.src = imgSrc;
+        }
+
+        rangeButtons.forEach(function (btn) {
+          btn.addEventListener('click', function (event) {
+            event.preventDefault();
+            setRangeButtonActive(btn);
+            updateNavImage();
+          });
+        });
+
+        if (benchmarkSelect) {
+          benchmarkSelect.addEventListener('change', function () {
+            updateNavImage();
+          });
+        }
+
+        updateNavImage();
+      })();
+
+      var metaEl = document.getElementById('report-meta');
+      if (metaEl) {
+        var sectionCount = Array.isArray(reportData.sections) ? reportData.sections.length : 0;
+        var tableCount = Array.isArray(reportData.tables) ? reportData.tables.length : 0;
+        metaEl.innerHTML = [
+          '报告日期: ' + (reportData.reportDate || '-'),
+          '导出时间: ' + (reportData.exportedAt || '-'),
+          '章节数: ' + sectionCount,
+          '图表数: ' + (reportData.chartCount || 0),
+          '表格数: ' + tableCount,
+          '段落数: ' + (reportData.paragraphCount || 0),
+        ].join('<br/>');
+      }
+
+      function collectSectionNodes(heading) {
+        var nodes = [];
+        var p = heading.nextElementSibling;
+        while (p && !(p.tagName === 'H2' || p.tagName === 'H3')) {
+          nodes.push(p);
+          p = p.nextElementSibling;
+        }
+        return nodes;
+      }
+
+      var sectionState = [];
+      var headings = Array.prototype.slice.call(root.querySelectorAll('h2, h3'));
+      headings.forEach(function (heading) {
+        var nodes = collectSectionNodes(heading);
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'section-toggle';
+        btn.textContent = '折叠';
+        var collapsed = false;
+        btn.addEventListener('click', function () {
+          collapsed = !collapsed;
+          nodes.forEach(function (node) { node.style.display = collapsed ? 'none' : ''; });
+          btn.textContent = collapsed ? '展开' : '折叠';
+        });
+        heading.appendChild(btn);
+        sectionState.push({ heading: heading, nodes: nodes, button: btn });
+      });
+
+      var navEl = document.getElementById('report-nav');
+      if (navEl) {
+        sectionState.forEach(function (section, idx) {
+          var title = (section.heading.textContent || '').replace(/折叠|展开/g, '').trim() || ('章节 ' + (idx + 1));
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = title;
+          button.addEventListener('click', function () {
+            section.heading.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          });
+          navEl.appendChild(button);
+        });
+      }
+
+      var collapseAllBtn = document.getElementById('btn-collapse-all');
+      if (collapseAllBtn) {
+        collapseAllBtn.addEventListener('click', function () {
+          sectionState.forEach(function (section) {
+            section.nodes.forEach(function (node) { node.style.display = 'none'; });
+            section.button.textContent = '展开';
+          });
+        });
+      }
+
+      var expandAllBtn = document.getElementById('btn-expand-all');
+      if (expandAllBtn) {
+        expandAllBtn.addEventListener('click', function () {
+          sectionState.forEach(function (section) {
+            section.nodes.forEach(function (node) { node.style.display = ''; });
+            section.button.textContent = '折叠';
+          });
+        });
+      }
+
+      var printBtn = document.getElementById('btn-print');
+      if (printBtn) printBtn.addEventListener('click', function () { window.print(); });
+
+      var selfDownloadBtn = document.getElementById('btn-download-self');
+      if (selfDownloadBtn) {
+        selfDownloadBtn.addEventListener('click', function () {
+          var html = '<!doctype html>\\n' + document.documentElement.outerHTML;
+          var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.href = url;
+          a.download = 'MOM风控简报-' + (reportData.reportDate || 'standalone') + '.html';
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+      }
+
+      function clearHighlights() {
+        Array.prototype.slice.call(root.querySelectorAll('.search-hit')).forEach(function (el) {
+          el.classList.remove('search-hit');
+        });
+      }
+
+      var searchInput = document.getElementById('text-search');
+      if (searchInput) {
+        searchInput.addEventListener('input', function () {
+          clearHighlights();
+          var keyword = (searchInput.value || '').trim().toLowerCase();
+          if (!keyword) return;
+          var textNodes = Array.prototype.slice.call(root.querySelectorAll('h1,h2,h3,h4,p,li,td,th,span'));
+          textNodes.forEach(function (node) {
+            var text = (node.textContent || '').toLowerCase();
+            if (text.indexOf(keyword) >= 0) node.classList.add('search-hit');
+          });
+        });
+      }
+
+      var clearBtn = document.getElementById('btn-search-clear');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', function () {
+          if (searchInput) searchInput.value = '';
+          clearHighlights();
+        });
+      }
+
+      function parseValue(raw) {
+        var normalized = (raw || '').replace(/[,%￥¥\\s]/g, '');
+        var num = Number(normalized);
+        return Number.isFinite(num) ? num : null;
+      }
+
+      Array.prototype.slice.call(root.querySelectorAll('table')).forEach(function (table) {
+        var thead = table.querySelector('thead');
+        if (!thead) return;
+        Array.prototype.slice.call(thead.querySelectorAll('th')).forEach(function (th, colIdx) {
+          th.style.cursor = 'pointer';
+          var sortAsc = true;
+          th.title = '点击排序';
+          th.addEventListener('click', function () {
+            var tbody = table.querySelector('tbody');
+            if (!tbody) return;
+            var rows = Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+            rows.sort(function (a, b) {
+              var aCell = a.children[colIdx] ? a.children[colIdx].textContent || '' : '';
+              var bCell = b.children[colIdx] ? b.children[colIdx].textContent || '' : '';
+              var aNum = parseValue(aCell);
+              var bNum = parseValue(bCell);
+              if (aNum !== null && bNum !== null) return sortAsc ? (aNum - bNum) : (bNum - aNum);
+              return sortAsc ? aCell.localeCompare(bCell) : bCell.localeCompare(aCell);
+            });
+            rows.forEach(function (row) { tbody.appendChild(row); });
+            sortAsc = !sortAsc;
+          });
+        });
+      });
+
+      var lightbox = document.getElementById('chart-lightbox');
+      var lightboxImg = document.getElementById('chart-lightbox-image');
+      if (lightbox && lightboxImg) {
+        Array.prototype.slice.call(root.querySelectorAll('img.standalone-chart-image')).forEach(function (img) {
+          img.style.cursor = 'zoom-in';
+          img.addEventListener('click', function () {
+            lightboxImg.src = img.src;
+            lightbox.style.display = 'flex';
+          });
+        });
+        lightbox.addEventListener('click', function () {
+          lightbox.style.display = 'none';
+        });
+      }
+    })();
+  </script>
+</body>
+</html>`
+
+    return htmlContent
+  }, [])
+
+  const handleBriefingDownload = useCallback(async () => {
+    if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
+
+    setBriefingPdfDownloading(true)
+    try {
+      const [{ jsPDF }, canvas] = await Promise.all([
+        import("jspdf"),
+        captureBriefingCanvas(),
+      ])
+      if (!canvas) return
+
+      const imgData = canvas.toDataURL("image/png")
+      const pdf = new jsPDF("p", "mm", "a4")
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const pageHeight = pdf.internal.pageSize.getHeight()
+
+      const imgWidth = pageWidth
+      const imgHeight = canvas.height * imgWidth / canvas.width
+
+      let heightLeft = imgHeight
+      let position = 0
+
+      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight, undefined, "FAST")
+      heightLeft -= pageHeight
+
+      while (heightLeft > 0) {
+        position = heightLeft - imgHeight
+        pdf.addPage()
+        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight, undefined, "FAST")
+        heightLeft -= pageHeight
+      }
+
+      const dateStr = briefingSummary?.date ?? new Date().toISOString().slice(0, 10)
+      pdf.save(`MOM风控简报-${dateStr}.pdf`)
+    } catch (e) {
+      console.error("[briefing-pdf-download]", e)
+    } finally {
+      setBriefingPdfDownloading(false)
+    }
+  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, captureBriefingCanvas])
+
+  const handleBriefingImageDownload = useCallback(async () => {
+    if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
+
+    setBriefingImageDownloading(true)
+    try {
+      const canvas = await captureBriefingCanvas()
+      if (!canvas) return
+      const dateStr = briefingSummary?.date ?? new Date().toISOString().slice(0, 10)
+      const link = document.createElement("a")
+      link.href = canvas.toDataURL("image/png")
+      link.download = `MOM风控简报-${dateStr}.png`
+      link.click()
+    } catch (e) {
+      console.error("[briefing-image-download]", e)
+    } finally {
+      setBriefingImageDownloading(false)
+    }
+  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, captureBriefingCanvas])
+
+  const handleBriefingHtmlDownload = useCallback(async () => {
+    if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
+
+    setBriefingHtmlDownloading(true)
+    try {
+      const dateStr = briefingSummary?.date ?? new Date().toISOString().slice(0, 10)
+      const htmlContent = await buildStandaloneBriefingHtml(dateStr)
+      if (!htmlContent) return
+
+      const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = `MOM风控简报-${dateStr}.html`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error("[briefing-html-download]", e)
+    } finally {
+      setBriefingHtmlDownloading(false)
+    }
+  }, [briefingPdfDownloading, briefingImageDownloading, briefingHtmlDownloading, briefingSummary, buildStandaloneBriefingHtml])
 
   return (
     <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
@@ -6987,14 +7625,33 @@ export default function RiskReportNewPage() {
           /* ── A4 newspaper wrapper ── */
           <div className="flex justify-center py-8 px-2 min-h-full relative"
                style={{ background: "linear-gradient(135deg,#1a1f2e 0%,#0f1520 60%,#1a1228 100%)" }}>
-            {/* Print/Download button */}
-            <button
-              onClick={handleBriefingPrint}
-              className="absolute top-4 right-4 z-10 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-[#c8a84b] text-[#c8a84b] hover:bg-[#c8a84b] hover:text-[#1a1228] transition-colors no-print"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              下载简报 PDF
-            </button>
+            {/* Download buttons */}
+            <div className="absolute top-4 right-4 z-10 flex items-center gap-2 no-print">
+              <button
+                onClick={handleBriefingDownload}
+                disabled={briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-[#c8a84b] text-[#c8a84b] hover:bg-[#c8a84b] hover:text-[#1a1228] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <Printer className={`w-3.5 h-3.5 ${briefingPdfDownloading ? "animate-pulse" : ""}`} />
+                {briefingPdfDownloading ? "生成PDF..." : "下载 PDF"}
+              </button>
+              <button
+                onClick={handleBriefingImageDownload}
+                disabled={briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-[#c8a84b] text-[#c8a84b] hover:bg-[#c8a84b] hover:text-[#1a1228] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <Download className={`w-3.5 h-3.5 ${briefingImageDownloading ? "animate-pulse" : ""}`} />
+                {briefingImageDownloading ? "生成图片..." : "下载图片"}
+              </button>
+              <button
+                onClick={handleBriefingHtmlDownload}
+                disabled={briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-[#c8a84b] text-[#c8a84b] hover:bg-[#c8a84b] hover:text-[#1a1228] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <FileText className={`w-3.5 h-3.5 ${briefingHtmlDownloading ? "animate-pulse" : ""}`} />
+                {briefingHtmlDownloading ? "生成HTML..." : "下载 HTML"}
+              </button>
+            </div>
             {/* A4 paper */}
             <div id="mom-briefing-printable" className="relative w-[794px] shrink-0 shadow-2xl"
                  style={{
