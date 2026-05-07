@@ -813,14 +813,27 @@ const PROD_NAMES: Record<string, string> = {
 }
 
 // ── VaR Sandbox ──────────────────────────────────────────────────────────────
+type SbProd = { prod: string; mv: number; lots: number; sigma: number; lotMv: number }
+type SandboxExportData = {
+  products: SbProd[]
+  corrMatrix: number[][]
+  zScore: number
+  netCapital: number
+  origMaxAbsMv: number
+  prodNames: Record<string, string>
+  prodSector: Record<string, string>
+  prodCat: Record<string, string>
+}
+
 function VarSandboxContent({
   showPies = true,
   onProdMcrChange,
+  onSandboxDataChange,
 }: {
   showPies?: boolean
   onProdMcrChange?: (data: { name: string; value: number }[]) => void
+  onSandboxDataChange?: (data: SandboxExportData) => void
 }) {
-  type SbProd = { prod: string; mv: number; lots: number; sigma: number; lotMv: number }
 
   const [sbDate, setSbDate]           = useState("")
   const [sbProds, setSbProds]         = useState<SbProd[]>([])
@@ -880,6 +893,21 @@ function VarSandboxContent({
   const origMvMap = useMemo(() => new Map(sbOrigProds.map(p => [p.prod, p.mv])), [sbOrigProds])
 
   const origMaxAbsMv = useMemo(() => Math.max(...sbOrigProds.map(p => Math.abs(p.mv)), 1), [sbOrigProds])
+
+  // Emit sandbox data for HTML export
+  useEffect(() => {
+    if (!onSandboxDataChange || sbOrigProds.length === 0) return
+    onSandboxDataChange({
+      products: sbOrigProds,
+      corrMatrix: sbCorrMatrix,
+      zScore: sbZScore,
+      netCapital: sbNetCapital,
+      origMaxAbsMv,
+      prodNames: PROD_NAMES,
+      prodSector: PROD_SECTOR,
+      prodCat: PROD_CAT,
+    })
+  }, [onSandboxDataChange, sbOrigProds, sbCorrMatrix, sbZScore, sbNetCapital, origMaxAbsMv])
 
   const sbListRef = useRef<HTMLDivElement>(null)
   const fsRef = useRef<HTMLDivElement>(null)
@@ -6748,6 +6776,7 @@ export default function RiskReportNewPage() {
   const [briefingNav, setBriefingNav] = useState<{ date: string; nav: number; dailyReturn: number }[]>([])
   const [briefingLoading, setBriefingLoading] = useState(false)
   const [briefingSandboxProdMcr, setBriefingSandboxProdMcr] = useState<{ name: string; value: number }[] | undefined>(undefined)
+  const briefingSandboxDataRef = useRef<SandboxExportData | null>(null)
   const [briefingSubAccountCount, setBriefingSubAccountCount] = useState<number | null>(null)
   const [briefingPdfDownloading, setBriefingPdfDownloading] = useState(false)
   const [briefingImageDownloading, setBriefingImageDownloading] = useState(false)
@@ -7022,6 +7051,7 @@ export default function RiskReportNewPage() {
       chartCount: clonedRoot.querySelectorAll("img.standalone-chart-image").length,
       paragraphCount: clonedRoot.querySelectorAll("p").length,
       navChartStates,
+      varSandbox: briefingSandboxDataRef.current ?? null,
     }
     const reportDataJson = JSON.stringify(reportData).replace(/</g, "\\u003c")
 
@@ -7419,13 +7449,232 @@ export default function RiskReportNewPage() {
           lightbox.style.display = 'none';
         });
       }
+
+      // ── Interactive VaR Sandbox ──────────────────────────────────────────────
+      (function bindSandbox() {
+        var sb = reportData.varSandbox;
+        if (!sb || !sb.products || sb.products.length === 0) return;
+
+        var sandboxWrapper = root.querySelector('#briefing-var-sandbox-wrapper');
+        if (!sandboxWrapper) return;
+
+        // State
+        var products = sb.products.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
+        var corrMatrix = sb.corrMatrix;
+        var zScore = sb.zScore;
+        var netCapital = sb.netCapital;
+        var origMaxAbsMv = sb.origMaxAbsMv;
+        var prodNames = sb.prodNames || {};
+        var prodSector = sb.prodSector || {};
+        var prodCat = sb.prodCat || {};
+
+        function calcVaR(prods) {
+          var n = prods.length;
+          if (n === 0) return 0;
+          var fullIdx = {};
+          sb.products.forEach(function(p, i) { fullIdx[p.prod] = i; });
+          var dv = prods.map(function(p) { return p.sigma * p.mv; });
+          var portVar = 0;
+          for (var a = 0; a < n; a++) {
+            if (dv[a] === 0) continue;
+            for (var b = 0; b < n; b++) {
+              if (dv[b] === 0) continue;
+              var ia = fullIdx[prods[a].prod], ib = fullIdx[prods[b].prod];
+              portVar += dv[a] * dv[b] * ((corrMatrix[ia] && corrMatrix[ia][ib] != null) ? corrMatrix[ia][ib] : 0);
+            }
+          }
+          return portVar > 0 ? Math.round(zScore * Math.sqrt(portVar)) : 0;
+        }
+
+        function fmt(n) { return n.toLocaleString('zh-CN'); }
+
+        function updateRow(prod, newMv) {
+          var p = products.find(function(x) { return x.prod === prod; });
+          if (!p) return;
+          if (p.lotMv > 0) newMv = Math.round(newMv / p.lotMv) * p.lotMv;
+          p.mv = newMv;
+          p.lots = p.lotMv > 0 ? Math.round(newMv / p.lotMv) : p.lots;
+          renderAll();
+        }
+
+        function renderAll() {
+          var totalMv = products.reduce(function(s, p) { return s + p.mv; }, 0);
+          var var1d = calcVaR(products);
+
+          var mvEl = sandboxWrapper.querySelector('.sb-total-mv');
+          if (mvEl) mvEl.textContent = fmt(totalMv);
+          var varEl = sandboxWrapper.querySelector('.sb-var-value');
+          if (varEl) varEl.textContent = fmt(var1d);
+          if (netCapital > 0) {
+            var pctEl = sandboxWrapper.querySelector('.sb-var-pct');
+            if (pctEl) pctEl.textContent = (var1d / netCapital * 100).toFixed(2) + '%';
+          }
+
+          products.forEach(function(p) {
+            var row = sandboxWrapper.querySelector('[data-sb-prod="' + p.prod + '"]');
+            if (!row) return;
+            var pct = Math.min(Math.abs(p.mv) / origMaxAbsMv, 1);
+            var isLong = p.mv >= 0;
+            var barLong = row.querySelector('.sb-bar-long');
+            var barShort = row.querySelector('.sb-bar-short');
+            var circle = row.querySelector('.sb-bar-circle');
+            if (barLong) { barLong.style.width = (p.mv > 0 ? pct * 47 : 0) + '%'; }
+            if (barShort) { barShort.style.width = (p.mv < 0 ? pct * 47 : 0) + '%'; }
+            if (circle) {
+              circle.style.borderColor = isLong ? '#60a5fa' : '#f87171';
+              if (isLong) {
+                circle.style.left = 'calc(50% + ' + (pct * 47) + '% - 6px)';
+                circle.style.right = '';
+              } else {
+                circle.style.right = 'calc(50% + ' + (pct * 47) + '% - 6px)';
+                circle.style.left = '';
+              }
+              circle.style.display = p.mv !== 0 ? '' : 'none';
+            }
+          });
+        }
+
+        // Build UI
+        var wrapper = document.createElement('div');
+        wrapper.style.cssText = 'padding:8px;font-size:12px;font-family:sans-serif;';
+
+        // Toolbar
+        var toolbar = document.createElement('div');
+        toolbar.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;';
+
+        var searchInput = document.createElement('input');
+        searchInput.type = 'text';
+        searchInput.placeholder = '输入品种代码（如 CU）';
+        searchInput.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 6px;font-size:12px;width:140px;';
+
+        var searchBtn = document.createElement('button');
+        searchBtn.type = 'button'; searchBtn.textContent = '搜索';
+        searchBtn.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;background:#f9fafb;';
+
+        var resetBtn = document.createElement('button');
+        resetBtn.type = 'button'; resetBtn.textContent = '重置为默认';
+        resetBtn.style.cssText = searchBtn.style.cssText;
+
+        var origProducts = sb.products.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
+        resetBtn.addEventListener('click', function() {
+          products = origProducts.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
+          renderAll();
+        });
+
+        toolbar.appendChild(searchInput); toolbar.appendChild(searchBtn); toolbar.appendChild(resetBtn);
+        wrapper.appendChild(toolbar);
+
+        // List
+        var list = document.createElement('div');
+        list.style.cssText = 'border:1px solid #e5e7eb;border-radius:6px;overflow-y:auto;max-height:500px;';
+
+        products.forEach(function(p, vi) {
+          var cn = prodNames[p.prod] || '';
+          var pct = Math.min(Math.abs(p.mv) / origMaxAbsMv, 1);
+          var isLong = p.mv >= 0;
+
+          var row = document.createElement('div');
+          row.setAttribute('data-sb-prod', p.prod);
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f0f0f0;' + (vi % 2 === 0 ? '' : 'background:#f9fafb;');
+
+          var label = document.createElement('div');
+          label.style.cssText = 'width:180px;flex-shrink:0;font-size:11px;line-height:1.3;';
+          label.innerHTML = '<span style="color:#9ca3af;font-size:10px;">' + String(vi+1).padStart(2,'0') + '品种：</span><span style="font-weight:600;">' + p.prod + '</span>' + (cn ? '<span style="color:#9ca3af;">（' + cn + '）</span>' : '');
+
+          var barWrap = document.createElement('div');
+          barWrap.style.cssText = 'flex:1;position:relative;height:24px;min-width:0;user-select:none;touch-action:none;';
+
+          var centerLine = document.createElement('div');
+          centerLine.style.cssText = 'position:absolute;left:50%;top:0;bottom:0;width:1px;background:#e5e7eb;z-index:1;';
+          barWrap.appendChild(centerLine);
+
+          var barLong = document.createElement('div');
+          barLong.className = 'sb-bar-long';
+          barLong.style.cssText = 'position:absolute;left:50%;top:30%;bottom:30%;border-radius:0 3px 3px 0;pointer-events:none;background:#60a5fa;width:' + (p.mv > 0 ? pct * 47 : 0) + '%;';
+          barWrap.appendChild(barLong);
+
+          var barShort = document.createElement('div');
+          barShort.className = 'sb-bar-short';
+          barShort.style.cssText = 'position:absolute;right:50%;top:30%;bottom:30%;border-radius:3px 0 0 3px;pointer-events:none;background:#f87171;width:' + (p.mv < 0 ? pct * 47 : 0) + '%;';
+          barWrap.appendChild(barShort);
+
+          var circle = document.createElement('div');
+          circle.className = 'sb-bar-circle';
+          circle.style.cssText = 'position:absolute;width:12px;height:12px;border-radius:50%;border:2px solid ' + (isLong ? '#60a5fa' : '#f87171') + ';background:#fff;z-index:2;top:50%;transform:translateY(-50%);cursor:grab;' + (isLong ? 'left:calc(50% + ' + (pct * 47) + '% - 6px);' : 'right:calc(50% + ' + (pct * 47) + '% - 6px);');
+          if (p.mv === 0) circle.style.display = 'none';
+          barWrap.appendChild(circle);
+
+          // Drag logic
+          var dragState = null;
+          circle.addEventListener('pointerdown', function(e) {
+            e.preventDefault();
+            var rect = barWrap.getBoundingClientRect();
+            var halfW = rect.width * 0.47;
+            if (halfW < 1) return;
+            dragState = { startX: e.clientX, startMv: p.mv, halfW: halfW };
+            circle.style.cursor = 'grabbing';
+            document.body.style.cursor = 'grabbing';
+            function onMove(ev) {
+              if (!dragState) return;
+              ev.preventDefault();
+              var deltaMv = ((ev.clientX - dragState.startX) / dragState.halfW) * origMaxAbsMv;
+              var raw = dragState.startMv + deltaMv;
+              var snapped = p.lotMv > 0 ? Math.round(raw / p.lotMv) * p.lotMv : Math.round(raw);
+              // update product in list
+              var prod = products.find(function(x) { return x.prod === p.prod; });
+              if (prod) { prod.mv = snapped; prod.lots = p.lotMv > 0 ? Math.round(snapped / p.lotMv) : prod.lots; }
+              renderAll();
+            }
+            function onUp() {
+              dragState = null;
+              circle.style.cursor = 'grab';
+              document.body.style.cursor = '';
+              window.removeEventListener('pointermove', onMove);
+              window.removeEventListener('pointerup', onUp);
+            }
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+          });
+
+          row.appendChild(label);
+          row.appendChild(barWrap);
+          list.appendChild(row);
+        });
+
+        wrapper.appendChild(list);
+
+        // Summary footer
+        var footer = document.createElement('div');
+        footer.style.cssText = 'margin-top:8px;font-size:12px;line-height:2;';
+        var totalMv0 = products.reduce(function(s, p) { return s + p.mv; }, 0);
+        var var0 = calcVaR(products);
+        footer.innerHTML =
+          '组合净市值：<span class="sb-total-mv" style="font-family:monospace;font-weight:500;">' + fmt(totalMv0) + '</span><br/>' +
+          '1日VaR（置信度=0.' + String(Math.round(zScore * 100)).slice(0,2) + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>' +
+          (netCapital > 0 ? '<br/>VaR占组合累计净资本比例：<span class="sb-var-pct" style="font-family:monospace;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>' : '');
+        wrapper.appendChild(footer);
+
+        // Search handler
+        searchBtn.addEventListener('click', function() {
+          var code = searchInput.value.trim().toUpperCase();
+          var el = list.querySelector('[data-sb-prod="' + code + '"]');
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        searchInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') searchBtn.click(); });
+
+        // Replace cloned sandbox content with interactive widget
+        sandboxWrapper.innerHTML = '';
+        sandboxWrapper.appendChild(wrapper);
+      })();
+      // ────────────────────────────────────────────────────────────────────────
+
     })();
   </script>
 </body>
 </html>`
 
     return htmlContent
-  }, [])
+  }, [briefingSandboxDataRef])
 
   const handleBriefingDownload = useCallback(async () => {
     if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
@@ -7843,9 +8092,14 @@ export default function RiskReportNewPage() {
                         prodNameMap={PROD_NAMES}
                       />
                     </div>
-                    <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4 p-3"
+                    <div id="briefing-var-sandbox-wrapper"
+                         className="rounded border border-[#d4c9a8] overflow-hidden mt-4 p-3"
                          style={{ background: "#ffffff" }}>
-                      <VarSandboxContent showPies={false} onProdMcrChange={setBriefingSandboxProdMcr} />
+                      <VarSandboxContent
+                        showPies={false}
+                        onProdMcrChange={setBriefingSandboxProdMcr}
+                        onSandboxDataChange={(d) => { briefingSandboxDataRef.current = d }}
+                      />
                     </div>
                     <div className="grid grid-cols-2 gap-4 mt-4">
                       <div className="rounded border border-[#d4c9a8] overflow-hidden p-3 h-[360px]"
