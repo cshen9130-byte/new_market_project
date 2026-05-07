@@ -6998,6 +6998,26 @@ export default function RiskReportNewPage() {
     }
     let sectorCanvasSource: HTMLCanvasElement | null = sectorCard?.querySelector("canvas") ?? null
     if (sectorCard && sectorCanvasSource) {
+      // Helper: poll until a canvas with actual pixel content appears in sectorCard
+      const waitForSectorCanvas = async (): Promise<HTMLCanvasElement | null> => {
+        const deadline = Date.now() + 3000
+        while (Date.now() < deadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 80))
+          const c = sectorCard!.querySelector<HTMLCanvasElement>("canvas")
+          if (c && c.width > 0 && c.height > 0) {
+            // Verify it has non-empty pixels (chart rendered, not blank)
+            try {
+              const ctx = c.getContext("2d")
+              if (ctx) {
+                const px = ctx.getImageData(c.width >> 1, c.height >> 1, 1, 1).data
+                if (px[3] > 0) return c   // alpha > 0 means something is drawn
+              }
+            } catch { /* tainted cross-origin canvas; accept anyway */ return c }
+          }
+        }
+        return sectorCard!.querySelector<HTMLCanvasElement>("canvas")
+      }
+
       // Remember current active buttons
       const activeViewBtn = Array.from(sectorCard.querySelectorAll<HTMLButtonElement>("button"))
         .find(b => viewLabels.some(([l]) => (b.textContent ?? "").trim() === l) && b.className.includes("bg-primary"))
@@ -7008,17 +7028,16 @@ export default function RiskReportNewPage() {
         const viewBtn = Array.from(sectorCard.querySelectorAll<HTMLButtonElement>("button"))
           .find(b => (b.textContent ?? "").trim() === viewLabel)
         if (!viewBtn) continue
-        viewBtn.click(); await waitForRender()
-        // Re-query canvas after view switch (ECharts may create new canvas)
-        sectorCanvasSource = sectorCard.querySelector("canvas")
+        viewBtn.click()
+        sectorCanvasSource = await waitForSectorCanvas()
         if (!sectorCanvasSource) continue
 
         for (const [modeLabel] of modeLabels) {
           const modeBtn = Array.from(sectorCard.querySelectorAll<HTMLButtonElement>("button"))
             .find(b => (b.textContent ?? "").trim() === modeLabel)
           if (!modeBtn) continue
-          modeBtn.click(); await waitForRender()
-          sectorCanvasSource = sectorCard.querySelector("canvas")
+          modeBtn.click()
+          sectorCanvasSource = await waitForSectorCanvas()
           if (sectorCanvasSource) {
             sectorChartStates[`${viewLabel}|${modeLabel}`] = sectorCanvasSource.toDataURL("image/png")
           }
@@ -7026,7 +7045,7 @@ export default function RiskReportNewPage() {
       }
       // Restore original state
       activeViewBtn?.click(); await waitForRender()
-      activeModeBtn?.click(); await waitForRender()
+      activeModeBtn?.click(); await waitForSectorCanvas()
       sectorCanvasSource = sectorCard.querySelector("canvas")
     }
     // ────────────────────────────────────────────────────────────────────────
