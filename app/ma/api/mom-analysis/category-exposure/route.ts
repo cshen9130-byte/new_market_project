@@ -223,12 +223,14 @@ async function _GET() {
                 SUM(CASE WHEN bs='买' THEN COALESCE(position_lots,0)*COALESCE(settl_today,0) ELSE 0 END)::text AS long_mv,
                 SUM(CASE WHEN bs='卖' THEN COALESCE(position_lots,0)*COALESCE(settl_today,0) ELSE 0 END)::text AS short_mv
          FROM guosen_position_detail
-         WHERE instrument IS NOT NULL
+         WHERE settlement_date IS NOT NULL
+           AND instrument IS NOT NULL
            AND UPPER(TRIM(instrument)) !~ '[0-9][CP][0-9]'
          GROUP BY settlement_date, UPPER(TRIM(instrument))
          ORDER BY settlement_date`,
       )
       for (const r of guosenRows) {
+        if (!r.date) continue
         const prefix = getPrefix(r.contract)
         const cat = getCat(prefix)
         const sector = getSector(prefix)
@@ -253,10 +255,12 @@ async function _GET() {
       const guosenEquityRows = await query<{ date: string; equity: string }>(
         `SELECT trade_date::text AS date, COALESCE(client_equity,0)::text AS equity
          FROM guosen_account_summary
-         WHERE client_equity IS NOT NULL
+         WHERE trade_date IS NOT NULL
+           AND client_equity IS NOT NULL
          ORDER BY trade_date`,
       )
       for (const r of guosenEquityRows) {
+        if (!r.date) continue
         const v = toNum(r.equity)
         if (v > 0) equityMap.set(r.date, (equityMap.get(r.date) ?? 0) + v)
       }
@@ -266,7 +270,7 @@ async function _GET() {
 
     const cats = ["商品", "股指", "国债"]
     const series = Array.from(dateMap.entries())
-      .sort((a, b) => a[0].localeCompare(b[0]))
+      .sort((a, b) => String(a[0] ?? "").localeCompare(String(b[0] ?? "")))
       .map(([date, entry]) => {
         const longTotal = cats.reduce((s, c) => s + (entry.long[c] ?? 0), 0)
         const shortTotal = cats.reduce((s, c) => s + (entry.short[c] ?? 0), 0)
