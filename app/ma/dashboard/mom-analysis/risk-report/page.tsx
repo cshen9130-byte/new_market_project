@@ -7811,13 +7811,26 @@ export default function RiskReportNewPage() {
 
         // Summary footer
         var footer = document.createElement('div');
-        footer.style.cssText = 'margin-top:8px;font-size:12px;line-height:2;';
+        footer.style.cssText = 'margin-top:10px;font-size:12px;color:#374151;';
         var totalMv0 = products.reduce(function(s, p) { return s + p.mv; }, 0);
         var var0 = calcVaR(products);
-        footer.innerHTML =
-          '组合净市值：<span class="sb-total-mv" style="font-family:monospace;font-weight:500;">' + fmt(totalMv0) + '</span><br/>' +
-          '1日VaR（置信度=0.' + confidence + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>' +
-          (netCapital > 0 ? '<br/>VaR占组合累计净资本比例：<span class="sb-var-pct" style="font-family:monospace;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>' : '');
+        function makeFooterLine(html) {
+          var d = document.createElement('div');
+          d.style.cssText = 'margin-bottom:3px;color:#6b7280;';
+          d.innerHTML = html;
+          return d;
+        }
+        footer.appendChild(makeFooterLine(
+          '组合净市值：<span class="sb-total-mv" style="font-family:monospace;font-weight:500;color:#111827;">' + fmt(totalMv0) + '</span>'
+        ));
+        footer.appendChild(makeFooterLine(
+          '1日VaR（置信度=0.' + confidence + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>'
+        ));
+        if (netCapital > 0) {
+          footer.appendChild(makeFooterLine(
+            'VaR占组合累计净资本比例（累计净资本：' + fmt(netCapital) + '）：<span class="sb-var-pct" style="font-family:monospace;font-weight:500;color:#111827;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>'
+          ));
+        }
         wrapper.appendChild(footer);
 
         // Filter/sort change → rebuild list
@@ -7835,6 +7848,10 @@ export default function RiskReportNewPage() {
 
         // Replace cloned sandbox content with interactive widget
         sandboxWrapper.innerHTML = '';
+        sandboxWrapper.style.height = 'auto';
+        sandboxWrapper.style.maxHeight = 'none';
+        sandboxWrapper.style.minHeight = '0';
+        sandboxWrapper.style.overflow = 'visible';
         sandboxWrapper.appendChild(wrapper);
       })();
       // ────────────────────────────────────────────────────────────────────────
