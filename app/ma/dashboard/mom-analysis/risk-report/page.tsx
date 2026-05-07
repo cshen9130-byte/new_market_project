@@ -7547,10 +7547,6 @@ export default function RiskReportNewPage() {
         var wrapper = document.createElement('div');
         wrapper.style.cssText = 'padding:8px;font-size:12px;font-family:sans-serif;background:#ffffff;color:#374151;box-sizing:border-box;';
 
-        // Also reset the outer wrapper to avoid dark-mode cascaded styles
-        sandboxWrapper.style.background = '#ffffff';
-        sandboxWrapper.style.color = '#374151';
-
         // Toolbar
         var toolbar1 = document.createElement('div');
         toolbar1.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;';
@@ -7850,12 +7846,15 @@ export default function RiskReportNewPage() {
         });
         searchInput.addEventListener('keydown', function(e) { if (e.key === 'Enter') searchBtn.click(); });
 
-        // Replace cloned sandbox content with interactive widget
+        // Replace cloned sandbox content with interactive widget.
+        // Use setAttribute to fully overwrite the hundreds of baked-in dark-mode
+        // computed style properties — setting individual style.X only appends and
+        // the existing near-white color / dark backgrounds still win in some browsers.
         sandboxWrapper.innerHTML = '';
-        sandboxWrapper.style.height = 'auto';
-        sandboxWrapper.style.maxHeight = 'none';
-        sandboxWrapper.style.minHeight = '0';
-        sandboxWrapper.style.overflow = 'visible';
+        sandboxWrapper.setAttribute('style',
+          'background:#ffffff;color:#374151;border-radius:6px;border:1px solid #d4c9a8;' +
+          'padding:12px;overflow:visible;height:auto;max-height:none;min-height:0;box-sizing:border-box;'
+        );
         sandboxWrapper.appendChild(wrapper);
       })();
       // ────────────────────────────────────────────────────────────────────────
