@@ -4212,7 +4212,10 @@ function TodayPositionSection({ prodOverride, onScrollBack, dateOverride, dayRan
   )
 }
 
-function PositionContent() {
+function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
+  sectorChartCapturing: boolean
+  setSectorChartCapturing: React.Dispatch<React.SetStateAction<boolean>>
+}) {
   const [series, setSeries] = useState<ExposureRow[]>([])
   const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
   const [loading, setLoading] = useState(true)
@@ -4263,7 +4266,6 @@ function PositionContent() {
   const [varSectorSectorData, setVarSectorSectorData]     = useState<Record<string, number[]>>({})
   const [varSectorSubData, setVarSectorSubData]           = useState<Record<string, number[]>>({})
   const [varSectorLoading, setVarSectorLoading]           = useState(true)
-  const [sectorChartCapturing, setSectorChartCapturing]   = useState(false)
 
   useEffect(() => {
     fetchJsonCached("/ma/api/mom-analysis/var-sector-timeseries?corrDays=252").then(j => {
@@ -6789,6 +6791,7 @@ export default function RiskReportNewPage() {
   const [briefingPdfDownloading, setBriefingPdfDownloading] = useState(false)
   const [briefingImageDownloading, setBriefingImageDownloading] = useState(false)
   const [briefingHtmlDownloading, setBriefingHtmlDownloading] = useState(false)
+  const [sectorChartCapturing, setSectorChartCapturing] = useState(false)
 
   useEffect(() => {
     if (activeTab !== "briefing") return
@@ -8135,7 +8138,7 @@ export default function RiskReportNewPage() {
 </html>`
 
     return htmlContent
-  }, [briefingSandboxDataRef, setSectorChartCapturing])
+  }, [briefingSandboxDataRef, setSectorChartCapturing, sectorChartCapturing])
 
   const handleBriefingDownload = useCallback(async () => {
     if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
@@ -8354,7 +8357,7 @@ export default function RiskReportNewPage() {
         <h1 id="section-top" className="text-2xl font-semibold tracking-tight pt-6 mb-4">{activeItem.name}</h1>
         {activeTab === "overview" && <OverviewContent />}
         {activeTab === "intraday" && <IntradayContent />}
-        {activeTab === "position" && <PositionContent />}
+        {activeTab === "position" && <PositionContent sectorChartCapturing={sectorChartCapturing} setSectorChartCapturing={setSectorChartCapturing} />}
         {activeTab === "advisor" && <AdvisorContent />}
         {activeTab === "anomaly" && <AnomalyContent />}
         {activeTab === "briefing" && (
