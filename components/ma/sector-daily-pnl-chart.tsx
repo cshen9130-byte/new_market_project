@@ -156,9 +156,9 @@ export default function SectorDailyPnlChart({ height = 300 }: { height?: number 
         {loading ? (
           <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
         ) : sectorView === "total" ? (
-          <ReactECharts option={totalOption} style={{ height }} notMerge />
+          <ReactECharts key="total" option={totalOption} style={{ height }} notMerge />
         ) : (
-          <ReactECharts option={lsOption} style={{ height }} notMerge />
+          <ReactECharts key="ls" option={lsOption} style={{ height }} notMerge />
         )}
       </CardContent>
     </Card>
