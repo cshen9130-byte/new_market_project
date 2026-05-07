@@ -7178,7 +7178,7 @@ export default function RiskReportNewPage() {
     /* Force light-mode on sandbox widget regardless of surrounding baked-in dark styles */
     #briefing-var-sandbox-wrapper {
       background-color: #ffffff !important;
-      color: #374151 !important;
+      color: #0f0f0f !important;
       border: 1px solid #d4c9a8 !important;
     }
     @media (max-width: 860px) {
@@ -7551,7 +7551,7 @@ export default function RiskReportNewPage() {
 
         // Build UI
         var wrapper = document.createElement('div');
-        wrapper.style.cssText = 'padding:8px;font-size:12px;font-family:sans-serif;background:#ffffff;color:#374151;box-sizing:border-box;';
+        wrapper.style.cssText = 'padding:8px;font-size:12px;background:#ffffff;color:#0f0f0f;box-sizing:border-box;';
 
         // Toolbar
         var toolbar1 = document.createElement('div');
@@ -7559,14 +7559,14 @@ export default function RiskReportNewPage() {
         var toolbar2 = document.createElement('div');
         toolbar2.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;';
 
-        var btnCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;background:#f9fafb;color:#374151;';
-        var selCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;font-size:12px;background:#f9fafb;cursor:pointer;color:#374151;';
-        var lblCss = 'font-size:12px;color:#6b7280;';
+        var btnCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;background:#f9fafb;color:#0f0f0f;';
+        var selCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;font-size:12px;background:#f9fafb;cursor:pointer;color:#0f0f0f;';
+        var lblCss = 'font-size:12px;color:#737373;';
 
         var searchInput = document.createElement('input');
         searchInput.type = 'text';
         searchInput.placeholder = '输入品种代码（如 CU）';
-        searchInput.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 6px;font-size:12px;width:140px;background:#ffffff;color:#374151;';
+        searchInput.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 6px;font-size:12px;width:140px;background:#ffffff;color:#0f0f0f;';
 
         var searchBtn = document.createElement('button');
         searchBtn.type = 'button'; searchBtn.textContent = '搜索'; searchBtn.style.cssText = btnCss;
@@ -7658,7 +7658,7 @@ export default function RiskReportNewPage() {
 
         // List
         var list = document.createElement('div');
-        list.style.cssText = 'border:1px solid #e5e7eb;border-radius:6px;overflow-y:auto;max-height:500px;background:#ffffff;color:#374151;';
+        list.style.cssText = 'border:1px solid #e5e7eb;border-radius:6px;overflow-y:auto;max-height:500px;background:#ffffff;color:#0f0f0f;';
 
         function updateMv(prod, newMv) {
           var p = products.find(function(x) { return x.prod === prod; });
@@ -7699,11 +7699,11 @@ export default function RiskReportNewPage() {
 
           var row = document.createElement('div');
           row.setAttribute('data-sb-prod', p.prod);
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f0f0f0;color:#374151;' + (vi % 2 === 0 ? 'background:#ffffff;' : 'background:#f9fafb;');
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f0f0f0;color:#0f0f0f;' + (vi % 2 === 0 ? 'background:#ffffff;' : 'background:#f9fafb;');
 
           var label = document.createElement('div');
-          label.style.cssText = 'width:180px;flex-shrink:0;font-size:11px;line-height:1.3;white-space:nowrap;color:#374151;';
-          label.innerHTML = '<span style="color:#9ca3af;font-size:10px;">' + String(vi+1).padStart(2,'0') + '品种：</span><span style="font-weight:600;color:#111827;">' + p.prod + '</span>' + (cn ? '<span style="color:#9ca3af;">（' + cn + '）</span>' : '');
+          label.style.cssText = 'width:180px;flex-shrink:0;font-size:11px;line-height:1.3;white-space:nowrap;color:#0f0f0f;';
+          label.innerHTML = '<span style="color:#737373;font-size:10px;">' + String(vi+1).padStart(2,'0') + '品种：</span><span style="font-weight:600;color:#0f0f0f;">' + p.prod + '</span>' + (cn ? '<span style="color:#737373;">（' + cn + '）</span>' : '');
 
           var barWrap = document.createElement('div');
           barWrap.style.cssText = 'flex:1;position:relative;height:24px;min-width:0;user-select:none;touch-action:none;';
@@ -7817,24 +7817,24 @@ export default function RiskReportNewPage() {
 
         // Summary footer
         var footer = document.createElement('div');
-        footer.style.cssText = 'margin-top:10px;font-size:12px;color:#374151;';
+        footer.style.cssText = 'margin-top:10px;font-size:12px;color:#0f0f0f;';
         var totalMv0 = products.reduce(function(s, p) { return s + p.mv; }, 0);
         var var0 = calcVaR(products);
         function makeFooterLine(html) {
           var d = document.createElement('div');
-          d.style.cssText = 'margin-bottom:3px;color:#6b7280;';
+          d.style.cssText = 'margin-bottom:3px;color:#737373;';
           d.innerHTML = html;
           return d;
         }
         footer.appendChild(makeFooterLine(
-          '组合净市值：<span class="sb-total-mv" style="font-family:monospace;font-weight:500;color:#111827;">' + fmt(totalMv0) + '</span>'
+          '组合净市值：<span class="sb-total-mv" style="font-family:monospace;font-weight:500;color:#0f0f0f;">' + fmt(totalMv0) + '</span>'
         ));
         footer.appendChild(makeFooterLine(
           '1日VaR（置信度=0.' + confidence + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>'
         ));
         if (netCapital > 0) {
           footer.appendChild(makeFooterLine(
-            'VaR占组合累计净资本比例（累计净资本：' + fmt(netCapital) + '）：<span class="sb-var-pct" style="font-family:monospace;font-weight:500;color:#111827;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>'
+            'VaR占组合累计净资本比例（累计净资本：' + fmt(netCapital) + '）：<span class="sb-var-pct" style="font-family:monospace;font-weight:500;color:#0f0f0f;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>'
           ));
         }
         wrapper.appendChild(footer);
