@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 type SectorLatest = { sector: string; pnl: number }
 type SectorLs = { sector: string; long: number; short: number }
 
-export default function SectorDailyPnlChart({ height = 300 }: { height?: number }) {
+export default function SectorDailyPnlChart({ height = 300, capturing = false }: { height?: number; capturing?: boolean }) {
   const [loading, setLoading] = useState(true)
   const [sectorView, setSectorView] = useState<"total" | "ls">("total")
   const [sectorLatest, setSectorLatest] = useState<SectorLatest[]>([])
@@ -156,9 +156,9 @@ export default function SectorDailyPnlChart({ height = 300 }: { height?: number 
         {loading ? (
           <p className="text-sm text-muted-foreground px-4 py-6">加载中...</p>
         ) : sectorView === "total" ? (
-          <ReactECharts key="total" option={totalOption} style={{ height }} notMerge />
+          <ReactECharts key="total" option={capturing ? { ...totalOption, animation: false } : totalOption} style={{ height }} notMerge />
         ) : (
-          <ReactECharts key="ls" option={lsOption} style={{ height }} notMerge />
+          <ReactECharts key="ls" option={capturing ? { ...lsOption, animation: false } : lsOption} style={{ height }} notMerge />
         )}
       </CardContent>
     </Card>

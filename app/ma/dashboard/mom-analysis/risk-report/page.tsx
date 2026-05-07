@@ -7065,6 +7065,56 @@ export default function RiskReportNewPage() {
     }
     // ────────────────────────────────────────────────────────────────────────
 
+    // ── Capture SectorDailyPnlChart (合计 / 多空) ────────────────────────────
+    const pnlChartStates: Record<string, string> = {}
+    let pnlCanvasSource: HTMLCanvasElement | null = null
+    let pnlCard: HTMLElement | null = null
+    for (const el of Array.from(sourceRoot.querySelectorAll<HTMLElement>("*"))) {
+      if ((el.textContent ?? "").trim() === "板块当日盈亏" && el.tagName.match(/^H/i)) {
+        let parent: HTMLElement | null = el.parentElement
+        while (parent) {
+          const hasPnlBtns = Array.from(parent.querySelectorAll("button")).some(b => (b.textContent ?? "").trim() === "合计")
+            && Array.from(parent.querySelectorAll("button")).some(b => (b.textContent ?? "").trim() === "多空")
+          const hasCanvas = !!parent.querySelector("canvas")
+          if (hasPnlBtns && hasCanvas) { pnlCard = parent; break }
+          parent = parent.parentElement
+        }
+        if (pnlCard) break
+      }
+    }
+    if (pnlCard) {
+      setSectorChartCapturing(true)
+      await waitForRender()
+      const waitForPnlCanvas = async (): Promise<HTMLCanvasElement | null> => {
+        const deadline = Date.now() + 3000
+        while (Date.now() < deadline) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 60))
+          const c = pnlCard!.querySelector<HTMLCanvasElement>("canvas")
+          if (c && c.width > 0 && c.height > 0) {
+            try {
+              const ctx = c.getContext("2d")
+              if (ctx) { const px = ctx.getImageData(c.width >> 1, c.height >> 1, 1, 1).data; if (px[3] > 0) return c }
+            } catch { return c }
+          }
+        }
+        return pnlCard!.querySelector<HTMLCanvasElement>("canvas")
+      }
+      const totalBtn = Array.from(pnlCard.querySelectorAll<HTMLButtonElement>("button")).find(b => (b.textContent ?? "").trim() === "合计")
+      const lsBtn    = Array.from(pnlCard.querySelectorAll<HTMLButtonElement>("button")).find(b => (b.textContent ?? "").trim() === "多空")
+      for (const [label, btn] of [["合计", totalBtn], ["多空", lsBtn]] as [string, HTMLButtonElement | undefined][]) {
+        if (!btn) continue
+        btn.click(); await waitForRender()
+        const c = await waitForPnlCanvas()
+        if (c) pnlChartStates[label] = c.toDataURL("image/png")
+      }
+      // restore 合计
+      totalBtn?.click(); await waitForRender()
+      pnlCanvasSource = await waitForPnlCanvas()
+      setSectorChartCapturing(false)
+      await waitForRender()
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     const clonedRoot = sourceRoot.cloneNode(true) as HTMLElement
     const sourceElements = [sourceRoot, ...Array.from(sourceRoot.querySelectorAll("*"))]
     const clonedElements = [clonedRoot, ...Array.from(clonedRoot.querySelectorAll("*"))]
@@ -7118,15 +7168,26 @@ export default function RiskReportNewPage() {
       const clonedSectorImg = clonedRoot.querySelectorAll<HTMLImageElement>("img.standalone-chart-image")[sectorCanvasIndex]
       if (clonedSectorImg) {
         clonedSectorImg.id = "standalone-sector-chart"
-        // Set initial image to current view|mode (板块 is current mode since we restored)
-        // The JS binder will swap on button click
       }
-      // Mark the containing card for the JS binder to find buttons
       if (sectorCard) {
-        // Find the corresponding cloned element
         const sourceIdx = Array.from(sourceRoot.querySelectorAll("*")).indexOf(sectorCard)
         const clonedSectorCard = Array.from(clonedRoot.querySelectorAll("*"))[sourceIdx] as HTMLElement | undefined
         if (clonedSectorCard) clonedSectorCard.id = "standalone-sector-card"
+      }
+    }
+
+    // Mark pnl chart image and its container for standalone interactions.
+    const pnlCanvasIndex = pnlCanvasSource ? sourceCanvases.indexOf(pnlCanvasSource) : -1
+    if (pnlCanvasIndex >= 0) {
+      const clonedPnlImg = clonedRoot.querySelectorAll<HTMLImageElement>("img.standalone-chart-image")[pnlCanvasIndex]
+      if (clonedPnlImg) {
+        clonedPnlImg.id = "standalone-pnl-chart"
+        if (pnlChartStates["合计"]) clonedPnlImg.src = pnlChartStates["合计"]
+      }
+      if (pnlCard) {
+        const sourceIdx = Array.from(sourceRoot.querySelectorAll("*")).indexOf(pnlCard)
+        const clonedPnlCard = Array.from(clonedRoot.querySelectorAll("*"))[sourceIdx] as HTMLElement | undefined
+        if (clonedPnlCard) clonedPnlCard.id = "standalone-pnl-card"
       }
     }
 
@@ -7160,6 +7221,7 @@ export default function RiskReportNewPage() {
       navChartStates,
       varSandbox: briefingSandboxDataRef.current ?? null,
       sectorChartStates,
+      pnlChartStates,
     }
     const reportDataJson = JSON.stringify(reportData).replace(/</g, "\\u003c")
 
@@ -7610,6 +7672,37 @@ export default function RiskReportNewPage() {
           }
         });
 
+        updateActive();
+      })();
+      // ────────────────────────────────────────────────────────────────────────
+
+      // ── Sector daily PnL 合计/多空 button toggling ──────────────────────────
+      (function bindPnlChart() {
+        var chartImg = root.querySelector('#standalone-pnl-chart');
+        var card = root.querySelector('#standalone-pnl-card');
+        if (!chartImg || !card) return;
+        var states = reportData.pnlChartStates || {};
+        var activeView = '合计';
+        var allBtns = Array.prototype.slice.call(card.querySelectorAll('button'));
+        function updateActive() {
+          if (states[activeView]) { chartImg.src = states[activeView]; chartImg.style.opacity = '1'; }
+          else { chartImg.style.opacity = '0.4'; }
+          allBtns.forEach(function(btn) {
+            var t = (btn.textContent || '').trim();
+            if (t === '合计' || t === '多空') {
+              var isActive = (t === activeView);
+              btn.style.background = isActive ? '#1e293b' : '';
+              btn.style.color = isActive ? '#f1f5f9' : '';
+              btn.style.fontWeight = isActive ? '600' : '';
+            }
+          });
+        }
+        allBtns.forEach(function(btn) {
+          var t = (btn.textContent || '').trim();
+          if (t === '合计' || t === '多空') {
+            btn.addEventListener('click', function(e) { e.stopPropagation(); activeView = t; updateActive(); });
+          }
+        });
         updateActive();
       })();
       // ────────────────────────────────────────────────────────────────────────
@@ -8534,7 +8627,7 @@ export default function RiskReportNewPage() {
                     </div>
                     <div className="rounded border border-[#d4c9a8] overflow-hidden mt-4"
                          style={{ background: "#ffffff" }}>
-                      <SectorDailyPnlChart height={300} />
+                      <SectorDailyPnlChart height={300} capturing={sectorChartCapturing} />
                     </div>
 
                     {/* Section: 品种持仓分析 */}
