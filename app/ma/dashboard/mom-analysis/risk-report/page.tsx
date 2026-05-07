@@ -7545,7 +7545,11 @@ export default function RiskReportNewPage() {
 
         // Build UI
         var wrapper = document.createElement('div');
-        wrapper.style.cssText = 'padding:8px;font-size:12px;font-family:sans-serif;';
+        wrapper.style.cssText = 'padding:8px;font-size:12px;font-family:sans-serif;background:#ffffff;color:#374151;box-sizing:border-box;';
+
+        // Also reset the outer wrapper to avoid dark-mode cascaded styles
+        sandboxWrapper.style.background = '#ffffff';
+        sandboxWrapper.style.color = '#374151';
 
         // Toolbar
         var toolbar1 = document.createElement('div');
@@ -7553,14 +7557,14 @@ export default function RiskReportNewPage() {
         var toolbar2 = document.createElement('div');
         toolbar2.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;';
 
-        var btnCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;background:#f9fafb;';
-        var selCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;font-size:12px;background:#f9fafb;cursor:pointer;';
+        var btnCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;background:#f9fafb;color:#374151;';
+        var selCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;font-size:12px;background:#f9fafb;cursor:pointer;color:#374151;';
         var lblCss = 'font-size:12px;color:#6b7280;';
 
         var searchInput = document.createElement('input');
         searchInput.type = 'text';
         searchInput.placeholder = '输入品种代码（如 CU）';
-        searchInput.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 6px;font-size:12px;width:140px;';
+        searchInput.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 6px;font-size:12px;width:140px;background:#ffffff;color:#374151;';
 
         var searchBtn = document.createElement('button');
         searchBtn.type = 'button'; searchBtn.textContent = '搜索'; searchBtn.style.cssText = btnCss;
@@ -7652,7 +7656,7 @@ export default function RiskReportNewPage() {
 
         // List
         var list = document.createElement('div');
-        list.style.cssText = 'border:1px solid #e5e7eb;border-radius:6px;overflow-y:auto;max-height:500px;';
+        list.style.cssText = 'border:1px solid #e5e7eb;border-radius:6px;overflow-y:auto;max-height:500px;background:#ffffff;color:#374151;';
 
         function updateMv(prod, newMv) {
           var p = products.find(function(x) { return x.prod === prod; });
