@@ -7586,7 +7586,9 @@ export default function RiskReportNewPage() {
         var sortLbl = document.createElement('span'); sortLbl.textContent = '排序：'; sortLbl.style.cssText = lblCss;
         var sortSel = document.createElement('select'); sortSel.style.cssText = selCss;
         [['mv_abs','按持仓净市值'],['mv','按市值（多先）'],['sigma','按波动率'],['prod','按品种代码'],['marginal','按边际波动贡献']].forEach(function(opt) {
-          var o = document.createElement('option'); o.value = opt[0]; o.textContent = opt[1]; sortSel.appendChild(o);
+          var o = document.createElement('option'); o.value = opt[0]; o.textContent = opt[1];
+          if (opt[0] === 'marginal') o.selected = true;
+          sortSel.appendChild(o);
         });
 
         // Cat filter
