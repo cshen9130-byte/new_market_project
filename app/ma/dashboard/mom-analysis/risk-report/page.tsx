@@ -7539,8 +7539,14 @@ export default function RiskReportNewPage() {
         wrapper.style.cssText = 'padding:8px;font-size:12px;font-family:sans-serif;';
 
         // Toolbar
-        var toolbar = document.createElement('div');
-        toolbar.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;';
+        var toolbar1 = document.createElement('div');
+        toolbar1.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:6px;';
+        var toolbar2 = document.createElement('div');
+        toolbar2.style.cssText = 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;';
+
+        var btnCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;background:#f9fafb;';
+        var selCss = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 4px;font-size:12px;background:#f9fafb;cursor:pointer;';
+        var lblCss = 'font-size:12px;color:#6b7280;';
 
         var searchInput = document.createElement('input');
         searchInput.type = 'text';
@@ -7548,27 +7554,72 @@ export default function RiskReportNewPage() {
         searchInput.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 6px;font-size:12px;width:140px;';
 
         var searchBtn = document.createElement('button');
-        searchBtn.type = 'button'; searchBtn.textContent = '搜索';
-        searchBtn.style.cssText = 'border:1px solid #d1d5db;border-radius:4px;padding:2px 8px;font-size:12px;cursor:pointer;background:#f9fafb;';
+        searchBtn.type = 'button'; searchBtn.textContent = '搜索'; searchBtn.style.cssText = btnCss;
 
         var resetBtn = document.createElement('button');
-        resetBtn.type = 'button'; resetBtn.textContent = '重置为默认';
-        resetBtn.style.cssText = searchBtn.style.cssText;
+        resetBtn.type = 'button'; resetBtn.textContent = '重置为默认'; resetBtn.style.cssText = btnCss;
 
         var origProducts = sb.products.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
+
+        // Sort select
+        var sortLbl = document.createElement('span'); sortLbl.textContent = '排序：'; sortLbl.style.cssText = lblCss;
+        var sortSel = document.createElement('select'); sortSel.style.cssText = selCss;
+        [['mv_abs','按持仓净市值'],['mv','按市值（多先）'],['sigma','按波动率'],['prod','按品种代码']].forEach(function(opt) {
+          var o = document.createElement('option'); o.value = opt[0]; o.textContent = opt[1]; sortSel.appendChild(o);
+        });
+
+        // Cat filter
+        var catLbl = document.createElement('span'); catLbl.textContent = '类别：'; catLbl.style.cssText = lblCss;
+        var catSel = document.createElement('select'); catSel.style.cssText = selCss;
+        ['全部','商品','股指','国债'].forEach(function(c) { var o = document.createElement('option'); o.value = c; o.textContent = c; catSel.appendChild(o); });
+
+        // Sector filter
+        var secLbl = document.createElement('span'); secLbl.textContent = '板块：'; secLbl.style.cssText = lblCss;
+        var secSel = document.createElement('select'); secSel.style.cssText = selCss;
+        var allSectors = ['全部'].concat(Array.from(new Set(sb.products.map(function(p) { return prodSector[p.prod] || ''; }).filter(Boolean))));
+        allSectors.forEach(function(s) { var o = document.createElement('option'); o.value = s; o.textContent = s; secSel.appendChild(o); });
+
+        // Dir filter
+        var dirLbl = document.createElement('span'); dirLbl.textContent = '方向：'; dirLbl.style.cssText = lblCss;
+        var dirSel = document.createElement('select'); dirSel.style.cssText = selCss;
+        ['全部','多','空'].forEach(function(d) { var o = document.createElement('option'); o.value = d; o.textContent = d; dirSel.appendChild(o); });
+
+        toolbar1.appendChild(searchInput); toolbar1.appendChild(searchBtn); toolbar1.appendChild(resetBtn);
+        toolbar1.appendChild(sortLbl); toolbar1.appendChild(sortSel);
+        toolbar2.appendChild(catLbl); toolbar2.appendChild(catSel);
+        toolbar2.appendChild(secLbl); toolbar2.appendChild(secSel);
+        toolbar2.appendChild(dirLbl); toolbar2.appendChild(dirSel);
+        wrapper.appendChild(toolbar1);
+        wrapper.appendChild(toolbar2);
+
         resetBtn.addEventListener('click', function() {
           products = origProducts.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
+          renderList();
           renderAll();
         });
 
-        toolbar.appendChild(searchInput); toolbar.appendChild(searchBtn); toolbar.appendChild(resetBtn);
-        wrapper.appendChild(toolbar);
+        // Filter + sort — rebuild list rows
+        function getFilteredSorted() {
+          var cat = catSel.value, sec = secSel.value, dir = dirSel.value, srt = sortSel.value;
+          var filtered = products.filter(function(p) {
+            if (cat !== '全部' && (prodCat[p.prod] || '') !== cat) return false;
+            if (sec !== '全部' && (prodSector[p.prod] || '') !== sec) return false;
+            if (dir === '多' && p.mv <= 0) return false;
+            if (dir === '空' && p.mv >= 0) return false;
+            return true;
+          });
+          if (srt === 'mv_abs') filtered.sort(function(a,b) { return Math.abs(b.mv)-Math.abs(a.mv); });
+          else if (srt === 'mv') filtered.sort(function(a,b) { return b.mv-a.mv; });
+          else if (srt === 'sigma') filtered.sort(function(a,b) { return b.sigma-a.sigma; });
+          else if (srt === 'prod') filtered.sort(function(a,b) { return a.prod.localeCompare(b.prod); });
+          return filtered;
+        }
 
         // List
         var list = document.createElement('div');
         list.style.cssText = 'border:1px solid #e5e7eb;border-radius:6px;overflow-y:auto;max-height:500px;';
 
-        products.forEach(function(p, vi) {
+        function buildRow(p, vi) {
           var cn = prodNames[p.prod] || '';
           var pct = Math.min(Math.abs(p.mv) / origMaxAbsMv, 1);
           var isLong = p.mv >= 0;
@@ -7578,7 +7629,7 @@ export default function RiskReportNewPage() {
           row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f0f0f0;' + (vi % 2 === 0 ? '' : 'background:#f9fafb;');
 
           var label = document.createElement('div');
-          label.style.cssText = 'width:180px;flex-shrink:0;font-size:11px;line-height:1.3;';
+          label.style.cssText = 'width:180px;flex-shrink:0;font-size:11px;line-height:1.3;white-space:nowrap;';
           label.innerHTML = '<span style="color:#9ca3af;font-size:10px;">' + String(vi+1).padStart(2,'0') + '品种：</span><span style="font-weight:600;">' + p.prod + '</span>' + (cn ? '<span style="color:#9ca3af;">（' + cn + '）</span>' : '');
 
           var barWrap = document.createElement('div');
@@ -7620,9 +7671,8 @@ export default function RiskReportNewPage() {
               var deltaMv = ((ev.clientX - dragState.startX) / dragState.halfW) * origMaxAbsMv;
               var raw = dragState.startMv + deltaMv;
               var snapped = p.lotMv > 0 ? Math.round(raw / p.lotMv) * p.lotMv : Math.round(raw);
-              // update product in list
               var prod = products.find(function(x) { return x.prod === p.prod; });
-              if (prod) { prod.mv = snapped; prod.lots = p.lotMv > 0 ? Math.round(snapped / p.lotMv) : prod.lots; }
+              if (prod) { prod.mv = snapped; prod.lots = p.lotMv > 0 ? Math.round(snapped / p.lotMv) : prod.lots; p.mv = snapped; }
               renderAll();
             }
             function onUp() {
@@ -7638,9 +7688,15 @@ export default function RiskReportNewPage() {
 
           row.appendChild(label);
           row.appendChild(barWrap);
-          list.appendChild(row);
-        });
+          return row;
+        }
 
+        function renderList() {
+          list.innerHTML = '';
+          getFilteredSorted().forEach(function(p, vi) { list.appendChild(buildRow(p, vi)); });
+        }
+
+        renderList();
         wrapper.appendChild(list);
 
         // Summary footer
@@ -7653,6 +7709,11 @@ export default function RiskReportNewPage() {
           '1日VaR（置信度=0.' + String(Math.round(zScore * 100)).slice(0,2) + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>' +
           (netCapital > 0 ? '<br/>VaR占组合累计净资本比例：<span class="sb-var-pct" style="font-family:monospace;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>' : '');
         wrapper.appendChild(footer);
+
+        // Filter/sort change → rebuild list
+        [sortSel, catSel, secSel, dirSel].forEach(function(sel) {
+          sel.addEventListener('change', function() { renderList(); });
+        });
 
         // Search handler
         searchBtn.addEventListener('click', function() {
