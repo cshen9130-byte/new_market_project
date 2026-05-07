@@ -7506,6 +7506,109 @@ export default function RiskReportNewPage() {
           renderAll();
         }
 
+        // ── Pie chart helpers ────────────────────────────────────────────────
+        var PIE_COLORS = ['#5470c6','#91cc75','#fac858','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc',
+          '#48b0f1','#70d9a2','#f7a35c','#a0d8ef','#c9b4d4','#7cb5ec','#f4a460','#e4d354',
+          '#2b908f','#b0c4de','#7798bf','#aaeeee','#d4e157','#ffb74d','#80cbc4','#ce93d8','#80deea'];
+        var pieCanvas = null;
+
+        function calcMcr() {
+          var n = products.length;
+          var dv = products.map(function(p) { return p.sigma * p.mv; });
+          var fullIdx = {};
+          sb.products.forEach(function(p, i) { fullIdx[p.prod] = i; });
+          return products.map(function(p, i) {
+            var covSum = 0;
+            for (var j = 0; j < n; j++) {
+              var ia = fullIdx[p.prod], ib = fullIdx[products[j].prod];
+              covSum += dv[j] * ((corrMatrix[ia] && corrMatrix[ia][ib] != null) ? corrMatrix[ia][ib] : 0);
+            }
+            return { name: p.prod, value: Math.abs(dv[i] * covSum) };
+          }).filter(function(d) { return d.value > 0; }).sort(function(a,b) { return b.value - a.value; });
+        }
+
+        function drawPie() {
+          var cont = root.querySelector('#briefing-sandbox-pie-container');
+          if (!cont) return;
+          if (!pieCanvas) {
+            cont.innerHTML = '';
+            cont.style.cssText = 'background:#ffffff;border-radius:6px;border:1px solid #d4c9a8;padding:10px;box-sizing:border-box;height:360px;display:flex;flex-direction:column;';
+            var pieTitleEl = document.createElement('div');
+            pieTitleEl.style.cssText = 'font-size:12px;font-weight:bold;color:#0f0f0f;margin-bottom:4px;flex-shrink:0;';
+            pieTitleEl.textContent = '品种边际波动贡献占比(%)（沙盒持仓）';
+            cont.appendChild(pieTitleEl);
+            pieCanvas = document.createElement('canvas');
+            pieCanvas.style.cssText = 'flex:1;min-height:0;width:100%;';
+            cont.appendChild(pieCanvas);
+          }
+          var data = calcMcr();
+          var total = data.reduce(function(s,d) { return s + d.value; }, 0);
+          if (total <= 0 || data.length === 0) return;
+
+          var W = cont.clientWidth - 20;
+          var H = cont.clientHeight - 36;
+          if (W < 10 || H < 10) return;
+          pieCanvas.width = W;
+          pieCanvas.height = H;
+          var ctx = pieCanvas.getContext('2d');
+          ctx.clearRect(0, 0, W, H);
+
+          // Reserve bottom for legend
+          var legendH = Math.min(Math.ceil(Math.min(data.length, 12) / 2) * 18, 90);
+          var pieH = H - legendH - 8;
+          var cx = W / 2, cy = pieH / 2, r = Math.min(cx, cy) * 0.88;
+
+          var angle = -Math.PI / 2;
+          data.forEach(function(d, i) {
+            var slice = (d.value / total) * 2 * Math.PI;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy);
+            ctx.arc(cx, cy, r, angle, angle + slice);
+            ctx.closePath();
+            ctx.fillStyle = PIE_COLORS[i % PIE_COLORS.length];
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Label if slice > 5%
+            var pct = d.value / total * 100;
+            if (pct >= 5) {
+              var mid = angle + slice / 2;
+              var tx = cx + r * 0.65 * Math.cos(mid);
+              var ty = cy + r * 0.65 * Math.sin(mid);
+              ctx.fillStyle = '#fff';
+              ctx.font = 'bold 11px sans-serif';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(d.name, tx, ty - 7);
+              ctx.font = '10px sans-serif';
+              ctx.fillText(pct.toFixed(1) + '%', tx, ty + 7);
+            }
+            angle += slice;
+          });
+
+          // Legend (max 12 items, 2 columns)
+          var legendItems = data.slice(0, 12);
+          var cols = 2, rows = Math.ceil(legendItems.length / cols);
+          var itemW = W / cols, itemH = 18;
+          var ly0 = pieH + 8;
+          legendItems.forEach(function(d, i) {
+            var col = i % cols, row = Math.floor(i / cols);
+            var lx = col * itemW + 6, ly = ly0 + row * itemH;
+            ctx.fillStyle = PIE_COLORS[i % PIE_COLORS.length];
+            ctx.fillRect(lx, ly + 4, 10, 10);
+            ctx.fillStyle = '#374151';
+            ctx.font = '11px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            var name = prodNames[d.name] ? d.name + '（' + prodNames[d.name] + '）' : d.name;
+            var pct = (d.value / total * 100).toFixed(1) + '%';
+            ctx.fillText(name + ' ' + pct, lx + 14, ly + 3);
+          });
+        }
+        // ────────────────────────────────────────────────────────────────────
+
         function renderAll() {
           var totalMv = products.reduce(function(s, p) { return s + p.mv; }, 0);
           var var1d = calcVaR(products);
@@ -7547,6 +7650,8 @@ export default function RiskReportNewPage() {
               if (lotsInR && document.activeElement !== lotsInR) lotsInR.value = p.lots;
             }
           });
+
+          drawPie();
         }
 
         // Build UI
@@ -7865,6 +7970,9 @@ export default function RiskReportNewPage() {
           'padding:12px;overflow:visible;height:auto;max-height:none;min-height:0;box-sizing:border-box;'
         );
         sandboxWrapper.appendChild(wrapper);
+
+        // Draw the initial state of the live pie (deferred so the container has layout dimensions)
+        requestAnimationFrame(function() { requestAnimationFrame(drawPie); });
       })();
       // ────────────────────────────────────────────────────────────────────────
 
@@ -8302,7 +8410,8 @@ export default function RiskReportNewPage() {
                       />
                     </div>
                     <div className="grid grid-cols-2 gap-4 mt-4">
-                      <div className="rounded border border-[#d4c9a8] overflow-hidden p-3 h-[360px]"
+                      <div id="briefing-sandbox-pie-container"
+                           className="rounded border border-[#d4c9a8] overflow-hidden p-3 h-[360px]"
                            style={{ background: "#ffffff" }}>
                         <SandboxProductMcrPieChart height={300} prodNameMap={PROD_NAMES} mcrData={briefingSandboxProdMcr} />
                       </div>
