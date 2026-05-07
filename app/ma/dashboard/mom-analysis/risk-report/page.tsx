@@ -7827,14 +7827,14 @@ export default function RiskReportNewPage() {
           return d;
         }
         footer.appendChild(makeFooterLine(
-          '组合净市值：<span class="sb-total-mv" style="font-family:monospace;font-weight:500;color:#0f0f0f;">' + fmt(totalMv0) + '</span>'
+          '组合净市值：<span class="sb-total-mv" style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-weight:500;color:oklch(0.145 0 0) !important;margin-left:4px;">' + fmt(totalMv0) + '</span>'
         ));
         footer.appendChild(makeFooterLine(
-          '1日VaR（置信度=0.' + confidence + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>'
+          '1日VaR（置信度=0.' + confidence + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-weight:600;color:#f97316 !important;margin-left:4px;">' + fmt(var0) + '</span>'
         ));
         if (netCapital > 0) {
           footer.appendChild(makeFooterLine(
-            'VaR占组合累计净资本比例（累计净资本：' + fmt(netCapital) + '）：<span class="sb-var-pct" style="font-family:monospace;font-weight:500;color:#0f0f0f;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>'
+            'VaR占组合累计净资本比例（累计净资本：' + fmt(netCapital) + '）：<span class="sb-var-pct" style="font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-weight:500;color:oklch(0.145 0 0) !important;margin-left:4px;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>'
           ));
         }
         wrapper.appendChild(footer);
