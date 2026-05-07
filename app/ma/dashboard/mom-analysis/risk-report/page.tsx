@@ -5664,7 +5664,7 @@ function PositionContent() {
               ) : series.length === 0 ? (
                 <p className="text-sm text-muted-foreground px-4 py-6">暂无持仓数据</p>
               ) : (
-                <ReactECharts option={sectorWeightOption} style={{ height: 360 }} notMerge />
+                <ReactECharts key={`sectorWeight-${weightMode}-${weightCalcMode}`} option={sectorWeightOption} style={{ height: 360 }} notMerge />
               )
             ) : varWeightView === "var" ? (
               varSectorLoading ? (
@@ -5672,7 +5672,7 @@ function PositionContent() {
               ) : !sectorVarOption ? (
                 <p className="text-sm text-muted-foreground px-4 py-6">暂无VaR数据</p>
               ) : (
-                <ReactECharts option={sectorVarOption} style={{ height: 360 }} notMerge />
+                <ReactECharts key={`sectorVar-${weightMode}`} option={sectorVarOption} style={{ height: 360 }} notMerge />
               )
             ) : varWeightView === "pnl" ? (
               pnlSectorLoading ? (
@@ -5680,7 +5680,7 @@ function PositionContent() {
               ) : !sectorPnlOption ? (
                 <p className="text-sm text-muted-foreground px-4 py-6">暂无盈亏数据</p>
               ) : (
-                <ReactECharts option={sectorPnlOption} style={{ height: 360 }} notMerge />
+                <ReactECharts key={`sectorPnl-${weightMode}`} option={sectorPnlOption} style={{ height: 360 }} notMerge />
               )
             ) : varWeightView === "margvol" ? (
               margVolLoading ? (
@@ -5688,7 +5688,7 @@ function PositionContent() {
               ) : !sectorMargVolOption ? (
                 <p className="text-sm text-muted-foreground px-4 py-6">暂无边际波动率数据</p>
               ) : (
-                <ReactECharts option={sectorMargVolOption} style={{ height: 360 }} notMerge />
+                <ReactECharts key={`sectorMargVol-${weightMode}`} option={sectorMargVolOption} style={{ height: 360 }} notMerge />
               )
             ) : (
               cvarSectorLoading ? (
@@ -5696,7 +5696,7 @@ function PositionContent() {
               ) : !sectorCVarOption ? (
                 <p className="text-sm text-muted-foreground px-4 py-6">暂无CVaR数据</p>
               ) : (
-                <ReactECharts option={sectorCVarOption} style={{ height: 360 }} notMerge />
+                <ReactECharts key={`sectorCVar-${weightMode}`} option={sectorCVarOption} style={{ height: 360 }} notMerge />
               )
             )}
           </CardContent>
