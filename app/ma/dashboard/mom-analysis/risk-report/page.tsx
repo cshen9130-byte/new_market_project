@@ -4263,6 +4263,7 @@ function PositionContent() {
   const [varSectorSectorData, setVarSectorSectorData]     = useState<Record<string, number[]>>({})
   const [varSectorSubData, setVarSectorSubData]           = useState<Record<string, number[]>>({})
   const [varSectorLoading, setVarSectorLoading]           = useState(true)
+  const [sectorChartCapturing, setSectorChartCapturing]   = useState(false)
 
   useEffect(() => {
     fetchJsonCached("/ma/api/mom-analysis/var-sector-timeseries?corrDays=252").then(j => {
@@ -5137,8 +5138,9 @@ function PositionContent() {
         data: weightData[g],
         emphasis: { focus: "series" as const },
       })),
+      animation: !sectorChartCapturing,
     }
-  }, [series, dates, weightMode, weightCalcMode])
+  }, [series, dates, weightMode, weightCalcMode, sectorChartCapturing])
 
   // VaR weight timeseries chart option (same group logic as sectorWeightOption)
   const sectorVarOption = useMemo(() => {
@@ -5205,8 +5207,9 @@ function PositionContent() {
         data: rawData[g] ?? varSectorDates.map(() => 0),
         emphasis: { focus: "series" as const },
       })),
+      animation: !sectorChartCapturing,
     }
-  }, [weightMode, varSectorDates, varSectorCatData, varSectorSectorData, varSectorSubData])
+  }, [weightMode, varSectorDates, varSectorCatData, varSectorSectorData, varSectorSubData, sectorChartCapturing])
 
   // |PnL| sector timeseries chart option
   const sectorPnlOption = useMemo(() => {
@@ -5271,8 +5274,9 @@ function PositionContent() {
         data: rawData[g] ?? pnlSectorDates.map(() => 0),
         emphasis: { focus: "series" as const },
       })),
+      animation: !sectorChartCapturing,
     }
-  }, [weightMode, pnlSectorDates, pnlSectorCatData, pnlSectorSectorData, pnlSectorSubData])
+  }, [weightMode, pnlSectorDates, pnlSectorCatData, pnlSectorSectorData, pnlSectorSubData, sectorChartCapturing])
 
   // Marginal vol sector timeseries chart option
   const sectorMargVolOption = useMemo(() => {
@@ -5337,8 +5341,9 @@ function PositionContent() {
         data: rawData[g] ?? margVolDates.map(() => 0),
         emphasis: { focus: "series" as const },
       })),
+      animation: !sectorChartCapturing,
     }
-  }, [weightMode, margVolDates, margVolCatData, margVolSectorData, margVolSubData])
+  }, [weightMode, margVolDates, margVolCatData, margVolSectorData, margVolSubData, sectorChartCapturing])
 
   // CVaR sector timeseries chart option (historical simulation ES, 95% confidence)
   const sectorCVarOption = useMemo(() => {
@@ -5403,8 +5408,9 @@ function PositionContent() {
         data: rawData[g] ?? cvarSectorDates.map(() => 0),
         emphasis: { focus: "series" as const },
       })),
+      animation: !sectorChartCapturing,
     }
-  }, [weightMode, cvarSectorDates, cvarSectorCatData, cvarSectorSectorData, cvarSectorSubData])
+  }, [weightMode, cvarSectorDates, cvarSectorCatData, cvarSectorSectorData, cvarSectorSubData, sectorChartCapturing])
 
   return (
     <div className="space-y-6">
@@ -6998,21 +7004,25 @@ export default function RiskReportNewPage() {
     }
     let sectorCanvasSource: HTMLCanvasElement | null = sectorCard?.querySelector("canvas") ?? null
     if (sectorCard && sectorCanvasSource) {
-      // Helper: poll until a canvas with actual pixel content appears in sectorCard
+      // Disable ECharts animations so canvas is fully drawn immediately
+      setSectorChartCapturing(true)
+      await waitForRender()
+
+      // Helper: poll until a canvas with pixel content appears (animation is off, so this is fast)
       const waitForSectorCanvas = async (): Promise<HTMLCanvasElement | null> => {
         const deadline = Date.now() + 3000
         while (Date.now() < deadline) {
-          await new Promise<void>((resolve) => setTimeout(resolve, 80))
+          await new Promise<void>((resolve) => setTimeout(resolve, 60))
           const c = sectorCard!.querySelector<HTMLCanvasElement>("canvas")
           if (c && c.width > 0 && c.height > 0) {
-            // Verify it has non-empty pixels (chart rendered, not blank)
             try {
               const ctx = c.getContext("2d")
               if (ctx) {
+                // Animation is disabled, just check center pixel has content
                 const px = ctx.getImageData(c.width >> 1, c.height >> 1, 1, 1).data
-                if (px[3] > 0) return c   // alpha > 0 means something is drawn
+                if (px[3] > 0) return c
               }
-            } catch { /* tainted cross-origin canvas; accept anyway */ return c }
+            } catch { return c }
           }
         }
         return sectorCard!.querySelector<HTMLCanvasElement>("canvas")
@@ -7043,10 +7053,12 @@ export default function RiskReportNewPage() {
           }
         }
       }
-      // Restore original state
+      // Restore original state and re-enable animations
       activeViewBtn?.click(); await waitForRender()
       activeModeBtn?.click(); await waitForSectorCanvas()
       sectorCanvasSource = sectorCard.querySelector("canvas")
+      setSectorChartCapturing(false)
+      await waitForRender()
     }
     // ────────────────────────────────────────────────────────────────────────
 
@@ -8123,7 +8135,7 @@ export default function RiskReportNewPage() {
 </html>`
 
     return htmlContent
-  }, [briefingSandboxDataRef])
+  }, [briefingSandboxDataRef, setSectorChartCapturing])
 
   const handleBriefingDownload = useCallback(async () => {
     if (briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading) return
