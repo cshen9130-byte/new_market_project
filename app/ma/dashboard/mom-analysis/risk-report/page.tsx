@@ -7175,6 +7175,12 @@ export default function RiskReportNewPage() {
       background: #fff;
       border-radius: 8px;
     }
+    /* Force light-mode on sandbox widget regardless of surrounding baked-in dark styles */
+    #briefing-var-sandbox-wrapper {
+      background-color: #ffffff !important;
+      color: #374151 !important;
+      border: 1px solid #d4c9a8 !important;
+    }
     @media (max-width: 860px) {
       body { padding: 10px; }
       .standalone-controls-row { gap: 6px; }
@@ -7693,11 +7699,11 @@ export default function RiskReportNewPage() {
 
           var row = document.createElement('div');
           row.setAttribute('data-sb-prod', p.prod);
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f0f0f0;' + (vi % 2 === 0 ? '' : 'background:#f9fafb;');
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f0f0f0;color:#374151;' + (vi % 2 === 0 ? 'background:#ffffff;' : 'background:#f9fafb;');
 
           var label = document.createElement('div');
-          label.style.cssText = 'width:180px;flex-shrink:0;font-size:11px;line-height:1.3;white-space:nowrap;';
-          label.innerHTML = '<span style="color:#9ca3af;font-size:10px;">' + String(vi+1).padStart(2,'0') + '品种：</span><span style="font-weight:600;">' + p.prod + '</span>' + (cn ? '<span style="color:#9ca3af;">（' + cn + '）</span>' : '');
+          label.style.cssText = 'width:180px;flex-shrink:0;font-size:11px;line-height:1.3;white-space:nowrap;color:#374151;';
+          label.innerHTML = '<span style="color:#9ca3af;font-size:10px;">' + String(vi+1).padStart(2,'0') + '品种：</span><span style="font-weight:600;color:#111827;">' + p.prod + '</span>' + (cn ? '<span style="color:#9ca3af;">（' + cn + '）</span>' : '');
 
           var barWrap = document.createElement('div');
           barWrap.style.cssText = 'flex:1;position:relative;height:24px;min-width:0;user-select:none;touch-action:none;';
