@@ -818,6 +818,7 @@ type SandboxExportData = {
   products: SbProd[]
   corrMatrix: number[][]
   zScore: number
+  confidence: string
   netCapital: number
   origMaxAbsMv: number
   prodNames: Record<string, string>
@@ -901,6 +902,7 @@ function VarSandboxContent({
       products: sbOrigProds,
       corrMatrix: sbCorrMatrix,
       zScore: sbZScore,
+      confidence: sbConfidence,
       netCapital: sbNetCapital,
       origMaxAbsMv,
       prodNames: PROD_NAMES,
@@ -7462,6 +7464,7 @@ export default function RiskReportNewPage() {
         var products = sb.products.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
         var corrMatrix = sb.corrMatrix;
         var zScore = sb.zScore;
+        var confidence = sb.confidence || '95';
         var netCapital = sb.netCapital;
         var origMaxAbsMv = sb.origMaxAbsMv;
         var prodNames = sb.prodNames || {};
@@ -7813,7 +7816,7 @@ export default function RiskReportNewPage() {
         var var0 = calcVaR(products);
         footer.innerHTML =
           '组合净市值：<span class="sb-total-mv" style="font-family:monospace;font-weight:500;">' + fmt(totalMv0) + '</span><br/>' +
-          '1日VaR（置信度=0.' + String(Math.round(zScore * 100)).slice(0,2) + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>' +
+          '1日VaR（置信度=0.' + confidence + '，z=' + zScore.toFixed(4) + '）：<span class="sb-var-value" style="font-family:monospace;font-weight:600;color:#f97316;">' + fmt(var0) + '</span>' +
           (netCapital > 0 ? '<br/>VaR占组合累计净资本比例：<span class="sb-var-pct" style="font-family:monospace;">' + (var0 / netCapital * 100).toFixed(2) + '%</span>' : '');
         wrapper.appendChild(footer);
 
