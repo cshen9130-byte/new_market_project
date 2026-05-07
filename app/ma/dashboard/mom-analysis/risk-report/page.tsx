@@ -7531,6 +7531,12 @@ export default function RiskReportNewPage() {
               }
               circle.style.display = p.mv !== 0 ? '' : 'none';
             }
+            if (showEditors) {
+              var mvInR = row.querySelector('.sb-mv-input');
+              if (mvInR && document.activeElement !== mvInR) mvInR.value = fmt(p.mv);
+              var lotsInR = row.querySelector('.sb-lots-input');
+              if (lotsInR && document.activeElement !== lotsInR) lotsInR.value = p.lots;
+            }
           });
         }
 
@@ -7560,11 +7566,17 @@ export default function RiskReportNewPage() {
         resetBtn.type = 'button'; resetBtn.textContent = '重置为默认'; resetBtn.style.cssText = btnCss;
 
         var origProducts = sb.products.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
+        var origMvMap = {};
+        origProducts.forEach(function(p) { origMvMap[p.prod] = p.mv; });
+        var showEditors = false;
+
+        var editBtn = document.createElement('button');
+        editBtn.type = 'button'; editBtn.textContent = '展开编辑'; editBtn.style.cssText = btnCss;
 
         // Sort select
         var sortLbl = document.createElement('span'); sortLbl.textContent = '排序：'; sortLbl.style.cssText = lblCss;
         var sortSel = document.createElement('select'); sortSel.style.cssText = selCss;
-        [['mv_abs','按持仓净市值'],['mv','按市值（多先）'],['sigma','按波动率'],['prod','按品种代码']].forEach(function(opt) {
+        [['mv_abs','按持仓净市值'],['mv','按市值（多先）'],['sigma','按波动率'],['prod','按品种代码'],['marginal','按边际波动贡献']].forEach(function(opt) {
           var o = document.createElement('option'); o.value = opt[0]; o.textContent = opt[1]; sortSel.appendChild(o);
         });
 
@@ -7585,6 +7597,7 @@ export default function RiskReportNewPage() {
         ['全部','多','空'].forEach(function(d) { var o = document.createElement('option'); o.value = d; o.textContent = d; dirSel.appendChild(o); });
 
         toolbar1.appendChild(searchInput); toolbar1.appendChild(searchBtn); toolbar1.appendChild(resetBtn);
+        toolbar1.appendChild(editBtn);
         toolbar1.appendChild(sortLbl); toolbar1.appendChild(sortSel);
         toolbar2.appendChild(catLbl); toolbar2.appendChild(catSel);
         toolbar2.appendChild(secLbl); toolbar2.appendChild(secSel);
@@ -7596,6 +7609,12 @@ export default function RiskReportNewPage() {
           products = origProducts.map(function(p) { return { prod: p.prod, mv: p.mv, lots: p.lots, sigma: p.sigma, lotMv: p.lotMv }; });
           renderList();
           renderAll();
+        });
+
+        editBtn.addEventListener('click', function() {
+          showEditors = !showEditors;
+          editBtn.textContent = showEditors ? '收起编辑' : '展开编辑';
+          renderList();
         });
 
         // Filter + sort — rebuild list rows
@@ -7612,12 +7631,57 @@ export default function RiskReportNewPage() {
           else if (srt === 'mv') filtered.sort(function(a,b) { return b.mv-a.mv; });
           else if (srt === 'sigma') filtered.sort(function(a,b) { return b.sigma-a.sigma; });
           else if (srt === 'prod') filtered.sort(function(a,b) { return a.prod.localeCompare(b.prod); });
+          else if (srt === 'marginal') {
+            var fullIdx2 = {};
+            products.forEach(function(p, i) { fullIdx2[p.prod] = i; });
+            var allDv = products.map(function(p) { return p.sigma * p.mv; });
+            var mcrMap = {};
+            filtered.forEach(function(p) {
+              var i = fullIdx2[p.prod];
+              var covSum = 0;
+              for (var j = 0; j < allDv.length; j++) covSum += allDv[j] * ((corrMatrix[i] && corrMatrix[i][j] != null) ? corrMatrix[i][j] : 0);
+              mcrMap[p.prod] = Math.abs((p.sigma * p.mv) * covSum);
+            });
+            filtered.sort(function(a,b) { return (mcrMap[b.prod]||0) - (mcrMap[a.prod]||0); });
+          }
           return filtered;
         }
 
         // List
         var list = document.createElement('div');
         list.style.cssText = 'border:1px solid #e5e7eb;border-radius:6px;overflow-y:auto;max-height:500px;';
+
+        function updateMv(prod, newMv) {
+          var p = products.find(function(x) { return x.prod === prod; });
+          if (!p) return;
+          if (p.lotMv > 0) newMv = Math.round(newMv / p.lotMv) * p.lotMv;
+          p.mv = newMv;
+          p.lots = p.lotMv > 0 ? Math.round(newMv / p.lotMv) : p.lots;
+          var row = list.querySelector('[data-sb-prod="' + prod + '"]');
+          if (row) {
+            var mvIn = row.querySelector('.sb-mv-input');
+            if (mvIn) mvIn.value = fmt(p.mv);
+            var lotsIn = row.querySelector('.sb-lots-input');
+            if (lotsIn) lotsIn.value = p.lots;
+          }
+          renderAll();
+        }
+
+        function updateLots(prod, newLots) {
+          var p = products.find(function(x) { return x.prod === prod; });
+          if (!p) return;
+          newLots = Math.round(newLots);
+          p.lots = newLots;
+          p.mv = p.lotMv > 0 ? newLots * p.lotMv : p.mv;
+          var row = list.querySelector('[data-sb-prod="' + prod + '"]');
+          if (row) {
+            var mvIn = row.querySelector('.sb-mv-input');
+            if (mvIn) mvIn.value = fmt(p.mv);
+            var lotsIn = row.querySelector('.sb-lots-input');
+            if (lotsIn) lotsIn.value = p.lots;
+          }
+          renderAll();
+        }
 
         function buildRow(p, vi) {
           var cn = prodNames[p.prod] || '';
@@ -7688,6 +7752,49 @@ export default function RiskReportNewPage() {
 
           row.appendChild(label);
           row.appendChild(barWrap);
+
+          if (showEditors) {
+            var origMv = origMvMap[p.prod] !== undefined ? origMvMap[p.prod] : p.mv;
+            var step = Math.max(Math.round(Math.abs(origMv) / 10), 1);
+            var edCss = 'border:1px solid #d1d5db;border-radius:3px;font-family:monospace;font-size:11px;flex-shrink:0;';
+            var btnECss = 'width:18px;height:18px;border:1px solid #d1d5db;border-radius:3px;cursor:pointer;background:#f9fafb;font-size:12px;flex-shrink:0;padding:0;line-height:1;';
+
+            var mvInput = document.createElement('input');
+            mvInput.type = 'text'; mvInput.className = 'sb-mv-input';
+            mvInput.value = fmt(p.mv);
+            mvInput.style.cssText = edCss + 'width:88px;text-align:right;padding:1px 4px;';
+            (function(prod) {
+              mvInput.addEventListener('change', function() { updateMv(prod, parseInt(mvInput.value.replace(/,/g,''), 10) || 0); });
+            })(p.prod);
+
+            var mvMinus = document.createElement('button'); mvMinus.type = 'button'; mvMinus.textContent = '−'; mvMinus.style.cssText = btnECss;
+            var mvPlus  = document.createElement('button'); mvPlus.type  = 'button'; mvPlus.textContent  = '+'; mvPlus.style.cssText  = btnECss;
+            (function(prod, st) {
+              mvMinus.addEventListener('click', function() { var c = products.find(function(x){return x.prod===prod;}); if(c) updateMv(prod, c.mv - st); });
+              mvPlus.addEventListener ('click', function() { var c = products.find(function(x){return x.prod===prod;}); if(c) updateMv(prod, c.mv + st); });
+            })(p.prod, step);
+
+            var lotsLbl = document.createElement('span'); lotsLbl.textContent = '手数：'; lotsLbl.style.cssText = 'font-size:11px;color:#9ca3af;flex-shrink:0;';
+
+            var lotsInput = document.createElement('input');
+            lotsInput.type = 'number'; lotsInput.className = 'sb-lots-input';
+            lotsInput.value = p.lots;
+            lotsInput.style.cssText = edCss + 'width:52px;text-align:right;padding:1px 4px;';
+            (function(prod) {
+              lotsInput.addEventListener('change', function() { updateLots(prod, parseInt(lotsInput.value, 10) || 0); });
+            })(p.prod);
+
+            var lotsMinus = document.createElement('button'); lotsMinus.type = 'button'; lotsMinus.textContent = '−'; lotsMinus.style.cssText = btnECss;
+            var lotsPlus  = document.createElement('button'); lotsPlus.type  = 'button'; lotsPlus.textContent  = '+'; lotsPlus.style.cssText  = btnECss;
+            (function(prod) {
+              lotsMinus.addEventListener('click', function() { var c = products.find(function(x){return x.prod===prod;}); if(c) updateLots(prod, c.lots - 1); });
+              lotsPlus.addEventListener ('click', function() { var c = products.find(function(x){return x.prod===prod;}); if(c) updateLots(prod, c.lots + 1); });
+            })(p.prod);
+
+            row.appendChild(mvInput); row.appendChild(mvMinus); row.appendChild(mvPlus);
+            row.appendChild(lotsLbl); row.appendChild(lotsInput); row.appendChild(lotsMinus); row.appendChild(lotsPlus);
+          }
+
           return row;
         }
 
