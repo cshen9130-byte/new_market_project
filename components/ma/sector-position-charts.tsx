@@ -11,7 +11,7 @@ const EXPOSURE_SUB_SECTORS = ["谷物","油脂油料","软商品","林业","生�
 const WEIGHT_SECTORS = ["农产","生鲜","贵金属","有色","新能源","黑色","能源化工","航运","股指","国债","其他"] as const
 const SECTOR_COLORS: Record<string, string> = {
   农产:"#a3e635",生鲜:"#fb7185",贵金属:"#fbbf24",有色:"#fb923c",新能源:"#34d399",
-  黑色:"#60a5fa",能源化工:"#2dd4bf",航运:"#8b5cf6",股指:"#c084fc",国债:"#ef4444",其他:"#94a3b8",
+  黑色:"#60a5fa",能源化工:"#f97316",航运:"#8b5cf6",股指:"#c084fc",国债:"#ef4444",其他:"#94a3b8",
 }
 const CAT_COLORS: Record<string, string> = { 商品:"#fb923c", 股指:"#818cf8", 国债:"#ef4444" }
 const SUB_SECTOR_COLORS: Record<string, string> = {
@@ -339,8 +339,8 @@ export default function SectorPositionCharts({ height = 300 }: { height?: number
   }, [rows])
 
   const COL_LABELS: Record<SortCol, string> = {
-    sector: "板块", longMv: "多头市值(元)", longPct: "多头占比",
-    shortMv: "空头市值(元)", shortPct: "空头占比", netMv: "轧差市值(元)", netPctNorm: "轧差市值占比(归一)",
+    sector: "板块", longMv: "多头市值", longPct: "多头占比",
+    shortMv: "空头市值", shortPct: "空头占比", netMv: "轧差市值", netPctNorm: "轧差占比",
   }
 
   return (
@@ -401,7 +401,7 @@ export default function SectorPositionCharts({ height = 300 }: { height?: number
           <div className="w-full">
             <Card className="overflow-hidden">
               <CardContent className="p-0">
-                <table className="w-full text-xs">
+                <table className="w-full text-xs table-auto">
                   <thead className="sticky top-0 bg-card z-10">
                     <tr className="border-b bg-muted/40">
                       {(["sector","longMv","longPct","shortMv","shortPct","netMv","netPctNorm"] as const).map((col, ci) => {
@@ -410,7 +410,7 @@ export default function SectorPositionCharts({ height = 300 }: { height?: number
                         return (
                           <th
                             key={col}
-                            className={`${ci === 0 ? "text-left" : "text-right"} px-1.5 py-2 font-medium cursor-pointer select-none hover:bg-muted/60 leading-tight`}
+                            className={`${ci === 0 ? "text-left" : "text-right"} px-1.5 py-2 font-medium cursor-pointer select-none hover:bg-muted/60 whitespace-nowrap`}
                             onClick={() => setSort(prev =>
                               prev?.col === col ? { col, dir: prev.dir === "desc" ? "asc" : "desc" } : { col, dir: "desc" }
                             )}
@@ -422,14 +422,14 @@ export default function SectorPositionCharts({ height = 300 }: { height?: number
                           </th>
                         )
                       })}
-                      <th className="text-right px-1.5 py-2 font-medium leading-tight">市值加权<br/>波动率占比</th>
-                      <th className="text-right px-1.5 py-2 font-medium leading-tight">边际<br/>波动率占比</th>
+                      <th className="text-right px-1.5 py-2 font-medium whitespace-nowrap">加权波动率%</th>
+                      <th className="text-right px-1.5 py-2 font-medium whitespace-nowrap">边际波动率%</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {sorted.map(row => (
                       <tr key={row.sector} className="hover:bg-muted/30">
-                        <td className="px-1.5 py-1.5 font-medium">{row.sector}</td>
+                        <td className="px-1.5 py-1.5 font-medium whitespace-nowrap">{row.sector}</td>
                         <td className="px-1.5 py-1.5 text-right">{Math.round(row.longMv).toLocaleString("zh-CN")}</td>
                         <td className="px-1.5 py-1.5 text-right">{row.longPct.toFixed(1)}%</td>
                         <td className="px-1.5 py-1.5 text-right">{Math.round(row.shortMv).toLocaleString("zh-CN")}</td>

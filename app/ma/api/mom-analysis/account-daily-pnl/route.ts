@@ -64,7 +64,19 @@ async function _GET() {
       // guosen_account_summary not available — skip gracefully
     }
 
-    return NextResponse.json({ ok: true, accountData: accountMap })
+    // Count registered sub-accounts from advisor info (source of truth) + 1 for guoxin
+    let subAccountCount: number | null = null
+    try {
+      const countRow = await query<{ cnt: string }>(`SELECT COUNT(*) AS cnt FROM mom_advisor_info`)
+      const rxCount = parseInt(countRow[0]?.cnt ?? "0", 10)
+      const hasGuoxin = Object.prototype.hasOwnProperty.call(accountMap, "guoxin")
+      subAccountCount = rxCount + (hasGuoxin ? 1 : 0)
+    } catch {
+      // mom_advisor_info not available — fall back to accountData keys
+      subAccountCount = Object.keys(accountMap).length
+    }
+
+    return NextResponse.json({ ok: true, accountData: accountMap, subAccountCount })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {

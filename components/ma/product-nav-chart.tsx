@@ -1838,7 +1838,7 @@ export default function ProductNavChart({ productCode, height = 360, navCurveOnl
         { key: "有色",    color: "#a855f7" },
         { key: "新能源",  color: "#10b981" },
         { key: "黑色",    color: "#78716c" },
-        { key: "能源化工", color: "#06b6d4" },
+        { key: "能源化工", color: "#f97316" },
         { key: "航运",    color: "#0ea5e9" },
         { key: "股指",    color: "#ef4444" },
         { key: "国债",    color: "#3b82f6" },

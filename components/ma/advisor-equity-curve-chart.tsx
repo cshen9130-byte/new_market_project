@@ -456,119 +456,147 @@ export default function AdvisorEquityCurveChart({ height = 400 }: Props) {
           </div>
 
           {/* Row 2: product cascade filters */}
-          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-            <select
-              className="h-7 rounded border border-input bg-background px-2 text-xs"
-              value={catFilter}
-              onChange={(e) => {
-                const v = e.target.value as ExposureCat
-                setCatFilter(v); setSectorFilter("全部"); setSubSectorFilter("全部")
-                if (product !== "全部") {
-                  const ok = v === "全部" || (CAT_TO_SECTORS[v] ?? []).includes(PROD_SECTOR[product] ?? "")
-                  if (!ok) { setProduct("全部"); load(from, to, "全部", fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion) }
-                }
-              }}
-            >
-              {EXPOSURE_CATS.map((c) => <option key={c} value={c}>{c}</option>)}
-            </select>
+          <div className="grid grid-cols-4 gap-2 mt-1.5">
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">品种大类</span>
+              <select
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs"
+                value={catFilter}
+                onChange={(e) => {
+                  const v = e.target.value as ExposureCat
+                  setCatFilter(v); setSectorFilter("全部"); setSubSectorFilter("全部")
+                  if (product !== "全部") {
+                    const ok = v === "全部" || (CAT_TO_SECTORS[v] ?? []).includes(PROD_SECTOR[product] ?? "")
+                    if (!ok) { setProduct("全部"); load(from, to, "全部", fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion) }
+                  }
+                }}
+              >
+                {EXPOSURE_CATS.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
 
-            <select
-              className="h-7 rounded border border-input bg-background px-2 text-xs"
-              value={sectorFilter}
-              onChange={(e) => {
-                const v = e.target.value as ExposureSector
-                setSectorFilter(v); setSubSectorFilter("全部")
-                if (product !== "全部" && v !== "全部" && PROD_SECTOR[product] !== v) {
-                  setProduct("全部"); load(from, to, "全部", fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion)
-                }
-              }}
-            >
-              <option value="全部">全部板块</option>
-              {sectorOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">板块</span>
+              <select
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs"
+                value={sectorFilter}
+                onChange={(e) => {
+                  const v = e.target.value as ExposureSector
+                  setSectorFilter(v); setSubSectorFilter("全部")
+                  if (product !== "全部" && v !== "全部" && PROD_SECTOR[product] !== v) {
+                    setProduct("全部"); load(from, to, "全部", fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion)
+                  }
+                }}
+              >
+                <option value="全部">全部板块</option>
+                {sectorOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <select
-              className="h-7 rounded border border-input bg-background px-2 text-xs"
-              value={subSectorFilter}
-              onChange={(e) => {
-                const v = e.target.value as ExposureSubSector
-                setSubSectorFilter(v)
-                if (product !== "全部" && v !== "全部" && PROD_SUB_SECTOR[product] !== v) {
-                  setProduct("全部"); load(from, to, "全部", fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion)
-                }
-              }}
-            >
-              <option value="全部">全部细分</option>
-              {subSectorOptions.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">细分</span>
+              <select
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs"
+                value={subSectorFilter}
+                onChange={(e) => {
+                  const v = e.target.value as ExposureSubSector
+                  setSubSectorFilter(v)
+                  if (product !== "全部" && v !== "全部" && PROD_SUB_SECTOR[product] !== v) {
+                    setProduct("全部"); load(from, to, "全部", fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion)
+                  }
+                }}
+              >
+                <option value="全部">全部细分</option>
+                {subSectorOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <select
-              value={product}
-              onChange={(e) => { const p = e.target.value; setProduct(p); load(from, to, p, fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs"
-            >
-              <option value="全部">全部品种</option>
-              {filteredProducts.sort().map((p) => <option key={p} value={p}>{prodLabel(p)}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">品种</span>
+              <select
+                value={product}
+                onChange={(e) => { const p = e.target.value; setProduct(p); load(from, to, p, fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs"
+              >
+                <option value="全部">全部品种</option>
+                {filteredProducts.sort().map((p) => <option key={p} value={p}>{prodLabel(p)}</option>)}
+              </select>
+            </div>
           </div>
 
           {/* Row 3: advisor attribute filters */}
-          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-            <span className="text-xs text-muted-foreground">分组:</span>
-            <select value={fSector} onChange={(e) => { const v = e.target.value; setFSector(v); load(from, to, product, v, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs">
-              <option value="全部">全部分组</option>
-              {advisorSectors.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+          <div className="grid grid-cols-4 gap-2 mt-1.5">
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">分组</span>
+              <select value={fSector} onChange={(e) => { const v = e.target.value; setFSector(v); load(from, to, product, v, fBackground, fStyle, fCycle, fArbitrage, fStrength, fRegion) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs">
+                <option value="全部">全部</option>
+                {advisorSectors.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <span className="text-xs text-muted-foreground">背景:</span>
-            <select value={fBackground} onChange={(e) => { const v = e.target.value; setFBackground(v); load(from, to, product, fSector, v, fStyle, fCycle, fArbitrage, fStrength, fRegion) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs">
-              <option value="全部">全部</option>
-              {advisorBackgrounds.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">背景</span>
+              <select value={fBackground} onChange={(e) => { const v = e.target.value; setFBackground(v); load(from, to, product, fSector, v, fStyle, fCycle, fArbitrage, fStrength, fRegion) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs">
+                <option value="全部">全部</option>
+                {advisorBackgrounds.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <span className="text-xs text-muted-foreground">风格:</span>
-            <select value={fStyle} onChange={(e) => { const v = e.target.value; setFStyle(v); load(from, to, product, fSector, fBackground, v, fCycle, fArbitrage, fStrength, fRegion) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs">
-              <option value="全部">全部</option>
-              {advisorStyles.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">风格</span>
+              <select value={fStyle} onChange={(e) => { const v = e.target.value; setFStyle(v); load(from, to, product, fSector, fBackground, v, fCycle, fArbitrage, fStrength, fRegion) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs">
+                <option value="全部">全部</option>
+                {advisorStyles.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <span className="text-xs text-muted-foreground">周期:</span>
-            <select value={fCycle} onChange={(e) => { const v = e.target.value; setFCycle(v); load(from, to, product, fSector, fBackground, fStyle, v, fArbitrage, fStrength, fRegion) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs">
-              <option value="全部">全部</option>
-              {advisorCycles.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">周期</span>
+              <select value={fCycle} onChange={(e) => { const v = e.target.value; setFCycle(v); load(from, to, product, fSector, fBackground, fStyle, v, fArbitrage, fStrength, fRegion) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs">
+                <option value="全部">全部</option>
+                {advisorCycles.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <span className="text-xs text-muted-foreground">套利:</span>
-            <select value={fArbitrage} onChange={(e) => { const v = e.target.value; setFArbitrage(v); load(from, to, product, fSector, fBackground, fStyle, fCycle, v, fStrength, fRegion) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs">
-              <option value="全部">全部</option>
-              {advisorArbitrages.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">套利</span>
+              <select value={fArbitrage} onChange={(e) => { const v = e.target.value; setFArbitrage(v); load(from, to, product, fSector, fBackground, fStyle, fCycle, v, fStrength, fRegion) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs">
+                <option value="全部">全部</option>
+                {advisorArbitrages.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <span className="text-xs text-muted-foreground">主力:</span>
-            <select value={fStrength} onChange={(e) => { const v = e.target.value; setFStrength(v); load(from, to, product, fSector, fBackground, fStyle, fCycle, fArbitrage, v, fRegion) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs">
-              <option value="全部">全部</option>
-              {advisorStrengths.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">主力</span>
+              <select value={fStrength} onChange={(e) => { const v = e.target.value; setFStrength(v); load(from, to, product, fSector, fBackground, fStyle, fCycle, fArbitrage, v, fRegion) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs">
+                <option value="全部">全部</option>
+                {advisorStrengths.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <span className="text-xs text-muted-foreground">地区:</span>
-            <select value={fRegion} onChange={(e) => { const v = e.target.value; setFRegion(v); load(from, to, product, fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, v) }}
-              className="h-7 rounded border border-input bg-background px-2 text-xs">
-              <option value="全部">全部</option>
-              {advisorRegions.map((s) => <option key={s} value={s}>{s}</option>)}
-            </select>
+            <div className="flex items-center gap-1">
+              <span className="text-xs text-muted-foreground shrink-0">地区</span>
+              <select value={fRegion} onChange={(e) => { const v = e.target.value; setFRegion(v); load(from, to, product, fSector, fBackground, fStyle, fCycle, fArbitrage, fStrength, v) }}
+                className="flex-1 min-w-0 h-7 rounded border border-input bg-background px-2 text-xs">
+                <option value="全部">全部</option>
+                {advisorRegions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
 
-            <button
-              onClick={toggleAllAccounts}
-              className="h-7 rounded px-2 text-xs font-medium bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors ml-auto"
-            >
-              {allVisible ? "全隐藏" : "全显示"}
-            </button>
+            <div className="flex items-center justify-end">
+              <button
+                onClick={toggleAllAccounts}
+                className="h-7 rounded px-2 text-xs font-medium bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground transition-colors"
+              >
+                {allVisible ? "全隐藏" : "全显示"}
+              </button>
+            </div>
           </div>
         </CardHeader>
 

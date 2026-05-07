@@ -6771,28 +6771,12 @@ export default function RiskReportNewPage() {
     fetch("/ma/api/mom-analysis/account-daily-pnl")
       .then((r) => r.json())
       .then((j) => {
-        const accountData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = j.accountData ?? {}
-        const dateNonZeroCount = new Map<string, number>()
-        for (const rows of Object.values(accountData)) {
-          for (const row of rows) {
-            if (row.pnl !== 0) dateNonZeroCount.set(row.date, (dateNonZeroCount.get(row.date) ?? 0) + 1)
-          }
-        }
-
-        const latestActiveDate = [...dateNonZeroCount.entries()]
-          .filter(([, count]) => count >= 2)
-          .sort(([a], [b]) => b.localeCompare(a))[0]?.[0] ?? null
-
-        if (!latestActiveDate) {
+        if (typeof j.subAccountCount === "number") {
+          setBriefingSubAccountCount(j.subAccountCount)
+        } else {
+          const accountData: Record<string, { date: string; pnl: number; cumPnl: number }[]> = j.accountData ?? {}
           setBriefingSubAccountCount(Object.keys(accountData).length)
-          return
         }
-
-        const count = Object.values(accountData).reduce((sum, rows) => {
-          const hasData = rows.some((row) => row.date === latestActiveDate && row.pnl !== 0)
-          return sum + (hasData ? 1 : 0)
-        }, 0)
-        setBriefingSubAccountCount(count)
       })
       .catch(() => setBriefingSubAccountCount(0))
   }, [activeTab, briefingSubAccountCount])
@@ -6814,6 +6798,18 @@ export default function RiskReportNewPage() {
     const el = document.getElementById("mom-briefing-printable")
     if (!el) return null
     const { default: html2canvas } = await import("html2canvas-pro")
+
+    // Pre-snapshot every ECharts canvas from the live DOM *before* cloning.
+    // html2canvas mis-scales canvases whose attribute size differs from CSS size
+    // (device-pixel-ratio issue), showing only half the chart. Replacing them
+    // with plain <img> elements at the correct CSS size fixes this.
+    const srcCanvases = Array.from(el.querySelectorAll<HTMLCanvasElement>("canvas"))
+    const canvasSnapshots = srcCanvases.map(c => ({
+      dataUrl: c.toDataURL("image/png"),
+      w: c.offsetWidth,
+      h: c.offsetHeight,
+    }))
+
     return html2canvas(el, {
       scale: 2,
       useCORS: true,
@@ -6821,20 +6817,62 @@ export default function RiskReportNewPage() {
       windowWidth: el.scrollWidth,
       windowHeight: el.scrollHeight,
       onclone: (clonedDoc) => {
-        // Force capture-safe colors and hide action buttons in export snapshot.
+        // Replace canvas elements with pre-snapshotted imgs at CSS dimensions.
+        Array.from(clonedDoc.querySelectorAll<HTMLCanvasElement>("#mom-briefing-printable canvas"))
+          .forEach((c, i) => {
+            const snap = canvasSnapshots[i]
+            if (!snap) return
+            const img = clonedDoc.createElement("img")
+            img.src = snap.dataUrl
+            img.style.cssText = `width:${snap.w}px;height:${snap.h}px;display:block;`
+            c.replaceWith(img)
+          })
+
+        // Replace <select> elements with <span> showing selected text — html2canvas
+        // cannot reliably render native select/input value painting.
+        clonedDoc.querySelectorAll<HTMLSelectElement>("#mom-briefing-printable select").forEach((sel) => {
+          const selectedText = sel.options[sel.selectedIndex]?.text ?? sel.value
+          const span = clonedDoc.createElement("span")
+          span.textContent = selectedText
+          span.setAttribute("style", sel.getAttribute("style") ?? "")
+          span.className = sel.className
+          sel.replaceWith(span)
+        })
+        clonedDoc.querySelectorAll<HTMLInputElement>("#mom-briefing-printable input").forEach((inp) => {
+          const span = clonedDoc.createElement("span")
+          span.textContent = inp.value
+          span.setAttribute("style", inp.getAttribute("style") ?? "")
+          span.className = inp.className
+          inp.replaceWith(span)
+        })
         const style = clonedDoc.createElement("style")
         style.textContent = `
-          #mom-briefing-printable,
+          /* Reset all dark-mode CSS variables to light values on the cloned root */
+          #mom-briefing-printable {
+            --background: oklch(1 0 0);
+            --foreground: oklch(0.145 0 0);
+            --card: oklch(1 0 0);
+            --card-foreground: oklch(0.145 0 0);
+            --popover: oklch(1 0 0);
+            --popover-foreground: oklch(0.145 0 0);
+            --primary: oklch(0.205 0 0);
+            --primary-foreground: oklch(0.985 0 0);
+            --secondary: oklch(0.97 0 0);
+            --secondary-foreground: oklch(0.205 0 0);
+            --muted: oklch(0.97 0 0);
+            --muted-foreground: oklch(0.556 0 0);
+            --accent: oklch(0.97 0 0);
+            --accent-foreground: oklch(0.205 0 0);
+            --border: oklch(0.922 0 0);
+            --input: oklch(0.922 0 0);
+            --ring: oklch(0.708 0 0);
+            background: linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%) !important;
+          }
           #mom-briefing-printable * {
-            color: #1f2937 !important;
             outline: none !important;
             outline-color: transparent !important;
             text-shadow: none !important;
             box-shadow: none !important;
-            border-color: #d4c9a8 !important;
-          }
-          #mom-briefing-printable {
-            background: #ffffff !important;
           }
           .no-print { display: none !important; }
         `
@@ -7401,25 +7439,13 @@ export default function RiskReportNewPage() {
       if (!canvas) return
 
       const imgData = canvas.toDataURL("image/png")
-      const pdf = new jsPDF("p", "mm", "a4")
-      const pageWidth = pdf.internal.pageSize.getWidth()
-      const pageHeight = pdf.internal.pageSize.getHeight()
+      // Use A4 width but extend height to fit all content on one page — avoids
+      // page-boundary cuts that create gaps through charts.
+      const a4Width = 210 // mm
+      const imgHeight = canvas.height * a4Width / canvas.width
+      const pdf = new jsPDF({ orientation: "p", unit: "mm", format: [a4Width, imgHeight] })
 
-      const imgWidth = pageWidth
-      const imgHeight = canvas.height * imgWidth / canvas.width
-
-      let heightLeft = imgHeight
-      let position = 0
-
-      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight, undefined, "FAST")
-      heightLeft -= pageHeight
-
-      while (heightLeft > 0) {
-        position = heightLeft - imgHeight
-        pdf.addPage()
-        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight, undefined, "FAST")
-        heightLeft -= pageHeight
-      }
+      pdf.addImage(imgData, "PNG", 0, 0, a4Width, imgHeight, undefined, "FAST")
 
       const dateStr = briefingSummary?.date ?? new Date().toISOString().slice(0, 10)
       pdf.save(`MOM风控简报-${dateStr}.pdf`)
