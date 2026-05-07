@@ -6978,6 +6978,59 @@ export default function RiskReportNewPage() {
       await waitForRender()
     }
 
+    // ── Capture sector/view chart states ────────────────────────────────────
+    const sectorChartStates: Record<string, string> = {}
+    const viewLabels: [string, string][] = [["持仓权重","weight"],["持仓VaR","var"],["市值加权波动率","margvol"],["持仓CVaR","cvar"]]
+    const modeLabels: [string, string][] = [["大类资产","大类"],["板块","板块"],["细分板块","细分"]]
+    // Find the card that has both the view buttons and the mode buttons
+    let sectorCard: HTMLElement | null = null
+    for (const el of Array.from(sourceRoot.querySelectorAll<HTMLElement>("button"))) {
+      if ((el.textContent ?? "").trim() === "持仓VaR") {
+        let parent: HTMLElement | null = el.parentElement
+        while (parent) {
+          const hasModeBtn = Array.from(parent.querySelectorAll("button")).some(b => (b.textContent ?? "").trim() === "板块")
+          const hasCanvas = !!parent.querySelector("canvas")
+          if (hasModeBtn && hasCanvas) { sectorCard = parent; break }
+          parent = parent.parentElement
+        }
+        if (sectorCard) break
+      }
+    }
+    let sectorCanvasSource: HTMLCanvasElement | null = sectorCard?.querySelector("canvas") ?? null
+    if (sectorCard && sectorCanvasSource) {
+      // Remember current active buttons
+      const activeViewBtn = Array.from(sectorCard.querySelectorAll<HTMLButtonElement>("button"))
+        .find(b => viewLabels.some(([l]) => (b.textContent ?? "").trim() === l) && b.className.includes("bg-primary"))
+      const activeModeBtn = Array.from(sectorCard.querySelectorAll<HTMLButtonElement>("button"))
+        .find(b => modeLabels.some(([l]) => (b.textContent ?? "").trim() === l) && b.className.includes("bg-primary"))
+
+      for (const [viewLabel] of viewLabels) {
+        const viewBtn = Array.from(sectorCard.querySelectorAll<HTMLButtonElement>("button"))
+          .find(b => (b.textContent ?? "").trim() === viewLabel)
+        if (!viewBtn) continue
+        viewBtn.click(); await waitForRender()
+        // Re-query canvas after view switch (ECharts may create new canvas)
+        sectorCanvasSource = sectorCard.querySelector("canvas")
+        if (!sectorCanvasSource) continue
+
+        for (const [modeLabel] of modeLabels) {
+          const modeBtn = Array.from(sectorCard.querySelectorAll<HTMLButtonElement>("button"))
+            .find(b => (b.textContent ?? "").trim() === modeLabel)
+          if (!modeBtn) continue
+          modeBtn.click(); await waitForRender()
+          sectorCanvasSource = sectorCard.querySelector("canvas")
+          if (sectorCanvasSource) {
+            sectorChartStates[`${viewLabel}|${modeLabel}`] = sectorCanvasSource.toDataURL("image/png")
+          }
+        }
+      }
+      // Restore original state
+      activeViewBtn?.click(); await waitForRender()
+      activeModeBtn?.click(); await waitForRender()
+      sectorCanvasSource = sectorCard.querySelector("canvas")
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     const clonedRoot = sourceRoot.cloneNode(true) as HTMLElement
     const sourceElements = [sourceRoot, ...Array.from(sourceRoot.querySelectorAll("*"))]
     const clonedElements = [clonedRoot, ...Array.from(clonedRoot.querySelectorAll("*"))]
@@ -7025,6 +7078,24 @@ export default function RiskReportNewPage() {
       }
     }
 
+    // Mark sector chart image and its container for standalone interactions.
+    const sectorCanvasIndex = sectorCanvasSource ? sourceCanvases.indexOf(sectorCanvasSource) : -1
+    if (sectorCanvasIndex >= 0) {
+      const clonedSectorImg = clonedRoot.querySelectorAll<HTMLImageElement>("img.standalone-chart-image")[sectorCanvasIndex]
+      if (clonedSectorImg) {
+        clonedSectorImg.id = "standalone-sector-chart"
+        // Set initial image to current view|mode (板块 is current mode since we restored)
+        // The JS binder will swap on button click
+      }
+      // Mark the containing card for the JS binder to find buttons
+      if (sectorCard) {
+        // Find the corresponding cloned element
+        const sourceIdx = Array.from(sourceRoot.querySelectorAll("*")).indexOf(sectorCard)
+        const clonedSectorCard = Array.from(clonedRoot.querySelectorAll("*"))[sourceIdx] as HTMLElement | undefined
+        if (clonedSectorCard) clonedSectorCard.id = "standalone-sector-card"
+      }
+    }
+
     clonedRoot.querySelectorAll(".no-print").forEach((el) => el.remove())
 
     const headingEls = Array.from(clonedRoot.querySelectorAll<HTMLElement>("h2, h3"))
@@ -7054,6 +7125,7 @@ export default function RiskReportNewPage() {
       paragraphCount: clonedRoot.querySelectorAll("p").length,
       navChartStates,
       varSandbox: briefingSandboxDataRef.current ?? null,
+      sectorChartStates,
     }
     const reportDataJson = JSON.stringify(reportData).replace(/</g, "\\u003c")
 
@@ -7457,6 +7529,56 @@ export default function RiskReportNewPage() {
           lightbox.style.display = 'none';
         });
       }
+
+      // ── Sector chart view/mode button toggling ──────────────────────────────
+      (function bindSectorChart() {
+        var chartImg = root.querySelector('#standalone-sector-chart');
+        var card = root.querySelector('#standalone-sector-card');
+        if (!chartImg || !card) return;
+        var states = reportData.sectorChartStates || {};
+        var viewLabels = ['持仓权重','持仓VaR','市值加权波动率','持仓CVaR'];
+        var modeLabels = ['大类资产','板块','细分板块'];
+        var activeView = '持仓VaR', activeMode = '板块';
+
+        // Determine which view/mode was active when export was taken
+        // (restore set state back; assume the captured last-restored is the active button)
+        var allBtns = Array.prototype.slice.call(card.querySelectorAll('button'));
+        allBtns.forEach(function(btn) {
+          var t = (btn.textContent || '').trim();
+          if (viewLabels.indexOf(t) >= 0 && btn.className && btn.className.indexOf('bg-primary') >= 0) activeView = t;
+          if (modeLabels.indexOf(t) >= 0 && btn.className && btn.className.indexOf('bg-primary') >= 0) activeMode = t;
+        });
+        // Set initial image
+        var initKey = activeView + '|' + activeMode;
+        if (states[initKey]) chartImg.src = states[initKey];
+
+        function updateActive() {
+          var key = activeView + '|' + activeMode;
+          if (states[key]) { chartImg.src = states[key]; chartImg.style.opacity = '1'; }
+          else { chartImg.style.opacity = '0.4'; }
+          allBtns.forEach(function(btn) {
+            var t = (btn.textContent || '').trim();
+            if (viewLabels.indexOf(t) >= 0 || modeLabels.indexOf(t) >= 0) {
+              var isActive = (t === activeView || t === activeMode);
+              btn.style.background = isActive ? '#1e293b' : '';
+              btn.style.color = isActive ? '#f1f5f9' : '';
+              btn.style.fontWeight = isActive ? '600' : '';
+            }
+          });
+        }
+
+        allBtns.forEach(function(btn) {
+          var t = (btn.textContent || '').trim();
+          if (viewLabels.indexOf(t) >= 0) {
+            btn.addEventListener('click', function(e) { e.stopPropagation(); activeView = t; updateActive(); });
+          } else if (modeLabels.indexOf(t) >= 0) {
+            btn.addEventListener('click', function(e) { e.stopPropagation(); activeMode = t; updateActive(); });
+          }
+        });
+
+        updateActive();
+      })();
+      // ────────────────────────────────────────────────────────────────────────
 
       // ── Interactive VaR Sandbox ──────────────────────────────────────────────
       (function bindSandbox() {
