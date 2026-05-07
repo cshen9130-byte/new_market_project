@@ -37,7 +37,7 @@ interface SectorBarRow {
   netMv: number; netPctNorm: number
 }
 
-export default function SectorPositionCharts({ height = 300 }: { height?: number }) {
+export default function SectorPositionCharts({ height = 300, capturing = false }: { height?: number; capturing?: boolean }) {
   const [series,     setSeries]     = useState<ExposureRow[]>([])
   const [capitalMap, setCapitalMap] = useState<Map<string, number>>(new Map())
   const [loading,    setLoading]    = useState(true)
@@ -482,7 +482,7 @@ export default function SectorPositionCharts({ height = 300 }: { height?: number
                 <CardTitle className="text-sm">期货市值占比（市值/净资本）</CardTitle>
               </CardHeader>
               <CardContent className="p-0 pb-2">
-                <ReactECharts option={chartOption} style={{ height }} notMerge />
+                <ReactECharts option={capturing ? { ...chartOption, animation: false } : chartOption} style={{ height }} notMerge />
               </CardContent>
             </Card>
           </div>
@@ -529,7 +529,7 @@ export default function SectorPositionCharts({ height = 300 }: { height?: number
             ) : !activeVarOption ? (
               <p className="text-sm text-muted-foreground px-4 py-6">暂无数据</p>
             ) : (
-              <ReactECharts option={activeVarOption} style={{ height }} notMerge />
+              <ReactECharts option={capturing ? { ...activeVarOption, animation: false } : activeVarOption} style={{ height }} notMerge />
             )}
           </CardContent>
         </Card>
