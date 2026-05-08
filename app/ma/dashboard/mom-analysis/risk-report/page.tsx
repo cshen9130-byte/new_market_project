@@ -8306,8 +8306,8 @@ export default function RiskReportNewPage() {
 
   return (
     <div className="flex -mx-6 -mb-6" style={{ height: "calc(100% + 1.5rem)" }}>
-      {/* Secondary sidebar */}
-      <aside className="w-44 shrink-0 border-r bg-card flex flex-col">
+      {/* Secondary sidebar — hidden on briefing tab to maximise screen width */}
+      <aside className={cn("w-44 shrink-0 border-r bg-card flex flex-col", activeTab === "briefing" && "hidden")}>
         <div className="p-4 border-b">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">MOM 风控报告</p>
           <p className="text-[11px] text-muted-foreground/60 mt-0.5">新版</p>
@@ -8455,10 +8455,34 @@ export default function RiskReportNewPage() {
         {activeTab === "anomaly" && <AnomalyContent />}
         {activeTab === "briefing" && (
           /* ── A4 newspaper wrapper ── */
-          <div className="flex justify-center py-8 px-2 min-h-full relative"
+          <div className="flex flex-col min-h-full"
                style={{ background: "linear-gradient(135deg,#1a1f2e 0%,#0f1520 60%,#1a1228 100%)" }}>
-            {/* Download buttons */}
-            <div className="absolute top-4 right-4 z-10 flex items-center gap-2 no-print">
+            {/* Top bar: tab nav + download buttons */}
+            <div className="sticky top-0 z-20 flex items-center justify-between gap-2 px-3 py-2 no-print"
+                 style={{ background: "rgba(10,15,30,0.92)", backdropFilter: "blur(6px)", borderBottom: "1px solid rgba(200,168,75,0.25)" }}>
+              {/* Tab switcher */}
+              <div className="flex items-center gap-1 overflow-x-auto">
+                {subNavItems.map((item) => {
+                  const Icon = item.icon
+                  return (
+                    <button
+                      key={item.key}
+                      onClick={() => handleTabChange(item.key)}
+                      className={cn(
+                        "flex items-center gap-1.5 shrink-0 rounded px-2.5 py-1 text-xs font-medium transition-colors",
+                        activeTab === item.key
+                          ? "bg-[#c8a84b] text-[#1a1228]"
+                          : "text-[#c8a84b]/70 hover:text-[#c8a84b] hover:bg-[#c8a84b]/10",
+                      )}
+                    >
+                      <Icon className="h-3.5 w-3.5 shrink-0" />
+                      {item.name}
+                    </button>
+                  )
+                })}
+              </div>
+              {/* Download buttons */}
+              <div className="flex items-center gap-2 shrink-0">
               <button
                 onClick={handleBriefingDownload}
                 disabled={briefingPdfDownloading || briefingImageDownloading || briefingHtmlDownloading}
@@ -8483,8 +8507,10 @@ export default function RiskReportNewPage() {
                 <FileText className={`w-3.5 h-3.5 ${briefingHtmlDownloading ? "animate-pulse" : ""}`} />
                 {briefingHtmlDownloading ? "生成HTML..." : "下载 HTML"}
               </button>
+              </div>
             </div>
-            {/* A4 paper */}
+            {/* A4 paper — scrollable on narrow screens */}
+            <div className="overflow-x-auto flex justify-center py-6 px-2">
             <div id="mom-briefing-printable" className="relative w-[794px] shrink-0 shadow-2xl"
                  style={{
                    background: "linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%)",
@@ -8719,6 +8745,7 @@ export default function RiskReportNewPage() {
                 <div className="h-1.5 w-full" style={{ background: "linear-gradient(90deg,#1a3a5c,#c8a84b,#1a3a5c)" }} />
               </div>
 
+            </div>
             </div>
           </div>
         )}
