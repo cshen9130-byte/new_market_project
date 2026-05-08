@@ -6792,6 +6792,23 @@ export default function RiskReportNewPage() {
   const [briefingImageDownloading, setBriefingImageDownloading] = useState(false)
   const [briefingHtmlDownloading, setBriefingHtmlDownloading] = useState(false)
   const [sectorChartCapturing, setSectorChartCapturing] = useState(false)
+  const [briefingZoom, setBriefingZoom] = useState(1)
+  const briefingScrollRef = useRef<HTMLDivElement>(null)
+
+  // Compute zoom factor so the 794px A4 always fits the available container width
+  useEffect(() => {
+    if (activeTab !== "briefing") return
+    const el = briefingScrollRef.current
+    if (!el) return
+    const update = () => {
+      const available = el.clientWidth - 16 // 8px padding each side
+      setBriefingZoom(Math.min(1, available / 794))
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [activeTab])
 
   useEffect(() => {
     if (activeTab !== "briefing") return
@@ -8509,8 +8526,10 @@ export default function RiskReportNewPage() {
               </button>
               </div>
             </div>
-            {/* A4 paper — scrollable on narrow screens */}
-            <div className="overflow-x-auto flex justify-center py-6 px-2">
+            {/* A4 paper — zoomed to fit screen width */}
+            <div ref={briefingScrollRef} className="flex justify-center py-6 px-2">
+            {/* zoom wrapper: scales the A4 down on narrow screens without breaking the capture target */}
+            <div style={{ zoom: briefingZoom, transformOrigin: "top left" }}>
             <div id="mom-briefing-printable" className="relative w-[794px] shrink-0 shadow-2xl"
                  style={{
                    background: "linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%)",
@@ -8745,6 +8764,7 @@ export default function RiskReportNewPage() {
                 <div className="h-1.5 w-full" style={{ background: "linear-gradient(90deg,#1a3a5c,#c8a84b,#1a3a5c)" }} />
               </div>
 
+            </div>
             </div>
             </div>
           </div>
