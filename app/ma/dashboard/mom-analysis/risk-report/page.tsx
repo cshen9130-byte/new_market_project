@@ -6783,7 +6783,7 @@ export default function RiskReportNewPage() {
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
 
   // Briefing: latest daily return + YTD return from product-nav API
-  const [briefingNav, setBriefingNav] = useState<{ date: string; nav: number; dailyReturn: number }[]>([])
+  const [briefingNav, setBriefingNav] = useState<{ date: string; nav: number; dailyReturn: number; cumCapital: number }[]>([])
   const [briefingLoading, setBriefingLoading] = useState(false)
   const [briefingSandboxProdMcr, setBriefingSandboxProdMcr] = useState<{ name: string; value: number }[] | undefined>(undefined)
   const briefingSandboxDataRef = useRef<SandboxExportData | null>(null)
@@ -6792,23 +6792,7 @@ export default function RiskReportNewPage() {
   const [briefingImageDownloading, setBriefingImageDownloading] = useState(false)
   const [briefingHtmlDownloading, setBriefingHtmlDownloading] = useState(false)
   const [sectorChartCapturing, setSectorChartCapturing] = useState(false)
-  const [briefingZoom, setBriefingZoom] = useState(1)
   const briefingScrollRef = useRef<HTMLDivElement>(null)
-
-  // Compute zoom factor so the 794px A4 always fits the available container width
-  useEffect(() => {
-    if (activeTab !== "briefing") return
-    const el = briefingScrollRef.current
-    if (!el) return
-    const update = () => {
-      const available = el.clientWidth - 16 // 8px padding each side
-      setBriefingZoom(Math.min(1, available / 794))
-    }
-    update()
-    const ro = new ResizeObserver(update)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [activeTab])
 
   useEffect(() => {
     if (activeTab !== "briefing") return
@@ -6844,7 +6828,7 @@ export default function RiskReportNewPage() {
     const yearStart = `${new Date().getFullYear()}-01-01`
     const firstOfYear = briefingNav.find((p) => p.date >= yearStart) ?? briefingNav[0]
     const ytdReturn = firstOfYear.nav > 0 ? (latest.nav / firstOfYear.nav - 1) : 0
-    return { date: latest.date, dailyReturn: latest.dailyReturn, ytdReturn }
+    return { date: latest.date, dailyReturn: latest.dailyReturn, ytdReturn, cumCapital: latest.cumCapital ?? 0 }
   }, [briefingNav])
 
   const handleTabChange = (key: TabKey) => {
@@ -8526,10 +8510,8 @@ export default function RiskReportNewPage() {
               </button>
               </div>
             </div>
-            {/* A4 paper — zoomed to fit screen width */}
-            <div ref={briefingScrollRef} className="flex justify-center py-6 px-2">
-            {/* zoom wrapper: scales the A4 down on narrow screens without breaking the capture target */}
-            <div style={{ zoom: briefingZoom, transformOrigin: "top left" }}>
+            {/* A4 paper — scrollable horizontally on narrow screens */}
+            <div ref={briefingScrollRef} className="flex justify-center py-6 px-2 overflow-x-auto">
             <div id="mom-briefing-printable" className="relative w-[794px] shrink-0 shadow-2xl"
                  style={{
                    background: "linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%)",
@@ -8590,7 +8572,7 @@ export default function RiskReportNewPage() {
                   <p className="text-sm text-[#8a9aaa] py-4">加载中…</p>
                 ) : briefingSummary ? (
                   <>
-                    <div className="grid grid-cols-3 gap-4 mb-4">
+                    <div className="grid grid-cols-4 gap-4 mb-4">
                       {/* Daily return */}
                       <div className="border border-[#d4c9a8] rounded p-3 text-center"
                            style={{ background: "rgba(26,58,92,0.04)" }}>
@@ -8621,6 +8603,22 @@ export default function RiskReportNewPage() {
                         </p>
                         <p className="text-[10px] text-[#8a9aaa] mt-1">Unit NAV</p>
                       </div>
+                      {/* Total scale */}
+                      <div className="border border-[#d4c9a8] rounded p-3 text-center"
+                           style={{ background: "rgba(26,58,92,0.04)" }}>
+                        <p className="text-[10px] tracking-widest text-[#8a9aaa] uppercase mb-1">总规模</p>
+                        <p className="text-3xl font-black tabular-nums text-[#1a3a5c]"
+                           style={{ fontFamily: "monospace" }}>
+                          {briefingSummary.cumCapital >= 1e8
+                            ? `${(briefingSummary.cumCapital / 1e8).toFixed(2)}`
+                            : briefingSummary.cumCapital >= 1e4
+                              ? `${(briefingSummary.cumCapital / 1e4).toFixed(2)}`
+                              : `${briefingSummary.cumCapital.toFixed(2)}`}
+                        </p>
+                        <p className="text-[10px] text-[#8a9aaa] mt-1">
+                          {briefingSummary.cumCapital >= 1e8 ? "亿元" : briefingSummary.cumCapital >= 1e4 ? "万元" : "元"}
+                        </p>
+                      </div>
                     </div>
 
                     {/* Summary sentence */}
@@ -8633,6 +8631,14 @@ export default function RiskReportNewPage() {
                       ，当年累计收益率为&nbsp;
                       <span className={`font-bold ${briefingSummary.ytdReturn >= 0 ? "text-red-600" : "text-emerald-600"}`}>
                         {briefingSummary.ytdReturn >= 0 ? "+" : ""}{(briefingSummary.ytdReturn * 100).toFixed(2)}%
+                      </span>
+                      ，总规模&nbsp;
+                      <span className="font-bold text-[#1a3a5c]">
+                        {briefingSummary.cumCapital >= 1e8
+                          ? `${(briefingSummary.cumCapital / 1e8).toFixed(2)}亿元`
+                          : briefingSummary.cumCapital >= 1e4
+                            ? `${(briefingSummary.cumCapital / 1e4).toFixed(2)}万元`
+                            : `${briefingSummary.cumCapital.toFixed(2)}元`}
                       </span>
                       。
                     </p>
@@ -8764,7 +8770,6 @@ export default function RiskReportNewPage() {
                 <div className="h-1.5 w-full" style={{ background: "linear-gradient(90deg,#1a3a5c,#c8a84b,#1a3a5c)" }} />
               </div>
 
-            </div>
             </div>
             </div>
           </div>
