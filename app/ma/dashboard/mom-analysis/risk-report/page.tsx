@@ -6792,7 +6792,31 @@ export default function RiskReportNewPage() {
   const [briefingImageDownloading, setBriefingImageDownloading] = useState(false)
   const [briefingHtmlDownloading, setBriefingHtmlDownloading] = useState(false)
   const [sectorChartCapturing, setSectorChartCapturing] = useState(false)
+  const [briefingZoom, setBriefingZoom] = useState(1)
+  const [briefingPrintableHeight, setBriefingPrintableHeight] = useState(1123)
   const briefingScrollRef = useRef<HTMLDivElement>(null)
+  const briefingPrintableRef = useRef<HTMLDivElement>(null)
+
+  // Scale the A4 sheet to fit the container using CSS transform (not zoom).
+  // transform correctly updates getBoundingClientRect() on all browsers incl. iOS Safari,
+  // so ECharts touch→data coordinate mapping stays accurate.
+  useEffect(() => {
+    if (activeTab !== "briefing") return
+    const scrollEl = briefingScrollRef.current
+    if (!scrollEl) return
+    const updateZoom = () => {
+      const available = scrollEl.clientWidth - 16
+      setBriefingZoom(Math.min(1, available / 794))
+      const printable = briefingPrintableRef.current
+      if (printable) setBriefingPrintableHeight(printable.scrollHeight)
+    }
+    updateZoom()
+    const ro = new ResizeObserver(updateZoom)
+    ro.observe(scrollEl)
+    const printable = briefingPrintableRef.current
+    if (printable) ro.observe(printable)
+    return () => ro.disconnect()
+  }, [activeTab])
 
   useEffect(() => {
     if (activeTab !== "briefing") return
@@ -8510,9 +8534,13 @@ export default function RiskReportNewPage() {
               </button>
               </div>
             </div>
-            {/* A4 paper — scrollable horizontally on narrow screens */}
-            <div ref={briefingScrollRef} className="flex justify-center py-6 px-2 overflow-x-auto">
-            <div id="mom-briefing-printable" className="relative w-[794px] shrink-0 shadow-2xl"
+            {/* A4 paper — scaled to fit screen width; transform (not zoom) keeps ECharts touch coords accurate */}
+            <div ref={briefingScrollRef} className="flex justify-center py-6 px-2">
+            {/* Size wrapper: occupies exactly the scaled visual dimensions in layout flow */}
+            <div style={{ width: 794 * briefingZoom, height: briefingPrintableHeight * briefingZoom, flexShrink: 0 }}>
+            {/* Transform wrapper: CSS scale — getBoundingClientRect() reflects this correctly on all browsers */}
+            <div style={{ transform: `scale(${briefingZoom})`, transformOrigin: "top left", width: 794 }}>
+            <div id="mom-briefing-printable" ref={briefingPrintableRef} className="relative w-[794px] shrink-0 shadow-2xl"
                  style={{
                    background: "linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%)",
                    minHeight: 1123,
@@ -8770,6 +8798,8 @@ export default function RiskReportNewPage() {
                 <div className="h-1.5 w-full" style={{ background: "linear-gradient(90deg,#1a3a5c,#c8a84b,#1a3a5c)" }} />
               </div>
 
+            </div>
+            </div>
             </div>
             </div>
           </div>
