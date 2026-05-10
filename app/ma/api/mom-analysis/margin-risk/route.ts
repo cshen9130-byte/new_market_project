@@ -14,6 +14,18 @@ function parseNum(v: string | null | undefined): number | null {
 
 async function _GET() {
   try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS mom_manual_capital_flows (
+        id          BIGSERIAL PRIMARY KEY,
+        flow_date   DATE            NOT NULL,
+        direction   VARCHAR(8)      NOT NULL CHECK (direction IN ('in', 'out')),
+        flow_value  NUMERIC(20, 2)  NOT NULL CHECK (flow_value > 0),
+        net_flow    NUMERIC(20, 2)  NOT NULL,
+        note        VARCHAR(200),
+        created_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+      )
+    `)
+
     // Time-series: daily margin/equity + fund NAV matching product-nav formula exactly
     // (net of handling_fee + performance_fee on flows; net pnl = 当日盈亏 - 手续费 + 权利金收入 - 权利金支出)
     const tsSql = `
@@ -29,7 +41,7 @@ async function _GET() {
         FROM mom_daily_reports
         GROUP BY "交易日期"::date
       ),
-      fund_flows AS (
+      imported_flows AS (
         SELECT
           confirmation_date::date AS date,
           SUM(CASE
@@ -42,6 +54,22 @@ async function _GET() {
         FROM mom_fund_transactions
         WHERE transaction_type IN ('认购确认', '申购确认', '赎回确认')
         GROUP BY confirmation_date::date
+      ),
+      manual_flows AS (
+        SELECT
+          flow_date::date AS date,
+          SUM(net_flow) AS net_flow
+        FROM mom_manual_capital_flows
+        GROUP BY flow_date::date
+      ),
+      fund_flows AS (
+        SELECT date, SUM(net_flow) AS net_flow
+        FROM (
+          SELECT date, net_flow FROM imported_flows
+          UNION ALL
+          SELECT date, net_flow FROM manual_flows
+        ) all_flows
+        GROUP BY date
       ),
       all_nav_dates AS (SELECT date FROM daily_pnl UNION SELECT date FROM fund_flows),
       daily_change AS (

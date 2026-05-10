@@ -1,9 +1,33 @@
 import { NextResponse } from "next/server"
+import { existsSync, readdirSync, unlinkSync } from "fs"
+import { join } from "path"
 import * as XLSX from "xlsx"
 import { query } from "@/lib/db"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+const MOM_CACHE_DIR = join(process.cwd(), "data", "mom-cache")
+
+function beijingToday(): string {
+  const d = new Date(Date.now() + 8 * 3600_000)
+  return d.toISOString().slice(0, 10)
+}
+
+function clearNavCaches() {
+  if (!existsSync(MOM_CACHE_DIR)) return
+  const today = beijingToday()
+  const targets = ["_product-nav", "_margin-risk"]
+  for (const f of readdirSync(MOM_CACHE_DIR)) {
+    if (!f.startsWith(`${today}_`)) continue
+    if (!targets.some((k) => f.includes(k))) continue
+    try {
+      unlinkSync(join(MOM_CACHE_DIR, f))
+    } catch {
+      // ignore cache deletion failures
+    }
+  }
+}
 
 // Column header → expected position (0-indexed) mapping from the TA export
 const COL = {
@@ -232,6 +256,8 @@ export async function POST(request: Request) {
       )
       inserted += chunk.length
     }
+
+    clearNavCaches()
 
     return NextResponse.json({
       success: true,

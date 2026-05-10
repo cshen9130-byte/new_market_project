@@ -15,11 +15,13 @@ import {
   FileSpreadsheet,
   FolderOpen,
   Mail,
+  Pencil,
   Play,
   RefreshCw,
   RotateCcw,
   Save,
   Terminal,
+  Trash2,
   UploadCloud,
   Wand2,
   X,
@@ -98,6 +100,31 @@ export default function DataImportPage() {
     success: boolean
     message: string
   } | null>(null)
+  const [manualFlowDate, setManualFlowDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [manualFlowDirection, setManualFlowDirection] = useState<"in" | "out">("in")
+  const [manualFlowValue, setManualFlowValue] = useState("")
+  const [manualFlowNote, setManualFlowNote] = useState("")
+  const [isSavingManualFlow, setIsSavingManualFlow] = useState(false)
+  const [manualFlowResult, setManualFlowResult] = useState<{
+    success: boolean
+    message: string
+  } | null>(null)
+  const [isLoadingManualFlows, setIsLoadingManualFlows] = useState(false)
+  const [manualFlowRows, setManualFlowRows] = useState<Array<{
+    id: string
+    flow_date: string
+    direction: "in" | "out"
+    flow_value: string
+    net_flow: string
+    note: string | null
+  }>>([])
+  const [editingManualId, setEditingManualId] = useState<string | null>(null)
+  const [editManualDate, setEditManualDate] = useState("")
+  const [editManualDirection, setEditManualDirection] = useState<"in" | "out">("in")
+  const [editManualValue, setEditManualValue] = useState("")
+  const [editManualNote, setEditManualNote] = useState("")
+  const [isSavingManualEdit, setIsSavingManualEdit] = useState(false)
+  const [deletingManualId, setDeletingManualId] = useState<string | null>(null)
 
   // ── Advisor info import state ──────────────────────────────────────────────
   const advisorInfoInputRef = useRef<HTMLInputElement | null>(null)
@@ -313,6 +340,20 @@ export default function DataImportPage() {
     } catch { /* non-critical */ }
   }, [])
 
+  const loadManualFlows = useCallback(async () => {
+    setIsLoadingManualFlows(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/capital-flow/manual", { cache: "no-store" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "加载失败")
+      setManualFlowRows(Array.isArray(data.rows) ? data.rows : [])
+    } catch {
+      // non-critical, don't toast
+    } finally {
+      setIsLoadingManualFlows(false)
+    }
+  }, [])
+
   const loadSettlementFiles = useCallback(async () => {
     setIsLoadingSettlementFiles(true)
     try {
@@ -407,7 +448,7 @@ export default function DataImportPage() {
     }
   }, [loadSettlementFiles, toast])
 
-  useEffect(() => { loadFolders(); checkDates(); checkEtlStatus(); loadSettlementConfig(); loadSettlementFiles() }, [loadFolders, checkDates, checkEtlStatus, loadSettlementConfig, loadSettlementFiles])
+  useEffect(() => { loadFolders(); checkDates(); checkEtlStatus(); loadSettlementConfig(); loadSettlementFiles(); loadManualFlows() }, [loadFolders, checkDates, checkEtlStatus, loadSettlementConfig, loadSettlementFiles, loadManualFlows])
 
   async function toggleFolder(name: string) {
     if (expandedFolder === name) {
@@ -449,6 +490,104 @@ export default function DataImportPage() {
       toast({ title: "导入失败", description: msg, variant: "destructive" })
     } finally {
       setIsImportingCapitalFlow(false)
+    }
+  }
+
+  async function handleManualFlowSave() {
+    const valueNum = Number(manualFlowValue.replace(/,/g, "").trim())
+    if (!manualFlowDate) {
+      toast({ title: "请输入日期", variant: "destructive" })
+      return
+    }
+    if (!Number.isFinite(valueNum) || valueNum <= 0) {
+      toast({ title: "请输入大于 0 的金额", variant: "destructive" })
+      return
+    }
+
+    setIsSavingManualFlow(true)
+    setManualFlowResult(null)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/capital-flow/manual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          date: manualFlowDate,
+          direction: manualFlowDirection,
+          value: valueNum,
+          note: manualFlowNote,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "保存失败")
+      setManualFlowResult({ success: true, message: data.message ?? "保存成功" })
+      toast({ title: "保存成功", description: data.message ?? "已录入手工资金进出" })
+      setManualFlowValue("")
+      setManualFlowNote("")
+      await loadManualFlows()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "保存失败"
+      setManualFlowResult({ success: false, message: msg })
+      toast({ title: "保存失败", description: msg, variant: "destructive" })
+    } finally {
+      setIsSavingManualFlow(false)
+    }
+  }
+
+  function startEditManualFlow(r: { id: string; flow_date: string; direction: "in" | "out"; flow_value: string; note: string | null }) {
+    setEditingManualId(r.id)
+    setEditManualDate(r.flow_date)
+    setEditManualDirection(r.direction)
+    setEditManualValue(String(Number(r.flow_value)))
+    setEditManualNote(r.note ?? "")
+  }
+
+  async function handleManualFlowEditSave() {
+    if (!editingManualId) return
+    const valueNum = Number(editManualValue.replace(/,/g, "").trim())
+    if (!Number.isFinite(valueNum) || valueNum <= 0) {
+      toast({ title: "请输入大于 0 的金额", variant: "destructive" }); return
+    }
+    setIsSavingManualEdit(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/capital-flow/manual", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editingManualId,
+          date: editManualDate,
+          direction: editManualDirection,
+          value: valueNum,
+          note: editManualNote,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "更新失败")
+      toast({ title: "已更新记录" })
+      setEditingManualId(null)
+      await loadManualFlows()
+    } catch (e) {
+      toast({ title: "更新失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
+    } finally {
+      setIsSavingManualEdit(false)
+    }
+  }
+
+  async function handleManualFlowDelete(id: string) {
+    setDeletingManualId(id)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/capital-flow/manual", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "删除失败")
+      toast({ title: "已删除记录" })
+      await loadManualFlows()
+    } catch (e) {
+      toast({ title: "删除失败", description: e instanceof Error ? e.message : "失败", variant: "destructive" })
+    } finally {
+      setDeletingManualId(null)
     }
   }
 
@@ -1237,6 +1376,205 @@ export default function DataImportPage() {
                   ? <CheckCircle2 className="h-4 w-4 shrink-0" />
                   : <AlertCircle className="h-4 w-4 shrink-0" />}
                 {capitalFlowResult.message}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="border-border/60">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium flex items-center gap-2">
+            <Database className="h-4 w-4 text-cyan-500" />
+            手工资金进出录入
+            <span className="ml-1 text-xs font-normal text-muted-foreground">
+              在“资金进出导入”基础上追加
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            手工录入日期与金额（入金/出金），将额外叠加到总资金曲线与总 NAV 计算中，不会覆盖已导入的历史交易确认明细。
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">日期</div>
+              <Input
+                type="date"
+                className="h-8 text-xs"
+                value={manualFlowDate}
+                onChange={(e) => setManualFlowDate(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">方向</div>
+              <Select value={manualFlowDirection} onValueChange={(v) => setManualFlowDirection(v as "in" | "out")}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder="请选择" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="in" className="text-xs">入金</SelectItem>
+                  <SelectItem value="out" className="text-xs">出金</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">金额</div>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                className="h-8 text-xs"
+                placeholder="例如 1000000"
+                value={manualFlowValue}
+                onChange={(e) => setManualFlowValue(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">备注（可选）</div>
+              <Input
+                className="h-8 text-xs"
+                placeholder="例如 临时调拨"
+                value={manualFlowNote}
+                onChange={(e) => setManualFlowNote(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              disabled={isSavingManualFlow}
+              onClick={() => void handleManualFlowSave()}
+            >
+              {isSavingManualFlow ? (
+                <><RefreshCw className="mr-2 h-3.5 w-3.5 animate-spin" />保存中…</>
+              ) : (
+                <><Save className="mr-2 h-3.5 w-3.5" />保存手工记录</>
+              )}
+            </Button>
+
+            {manualFlowResult && (
+              <div className={`flex items-center gap-1.5 text-sm ${manualFlowResult.success ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>
+                {manualFlowResult.success
+                  ? <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  : <AlertCircle className="h-4 w-4 shrink-0" />}
+                {manualFlowResult.message}
+              </div>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border/60 overflow-hidden">
+            <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-muted/40 flex items-center justify-between">
+              <span>最近手工记录（最多 200 条）</span>
+              <button
+                onClick={() => void loadManualFlows()}
+                disabled={isLoadingManualFlows}
+                className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
+                title="刷新"
+              >
+                <RefreshCw className={`h-3 w-3 ${isLoadingManualFlows ? "animate-spin" : ""}`} />
+              </button>
+            </div>
+            {isLoadingManualFlows ? (
+              <div className="px-3 py-6 text-xs text-muted-foreground flex items-center gap-2">
+                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                加载中…
+              </div>
+            ) : manualFlowRows.length === 0 ? (
+              <div className="px-3 py-6 text-xs text-muted-foreground">暂无手工记录</div>
+            ) : (
+              <div className="max-h-64 overflow-y-auto divide-y divide-border/40">
+                {manualFlowRows.map((r) =>
+                  editingManualId === r.id ? (
+                    /* ── Inline edit row ── */
+                    <div key={r.id} className="grid grid-cols-[110px_70px_130px_1fr_auto] gap-1.5 px-3 py-1.5 items-center bg-muted/30">
+                      <Input
+                        type="date"
+                        className="h-7 text-xs"
+                        value={editManualDate}
+                        onChange={(e) => setEditManualDate(e.target.value)}
+                      />
+                      <Select value={editManualDirection} onValueChange={(v) => setEditManualDirection(v as "in" | "out")}>
+                        <SelectTrigger className="h-7 text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="in" className="text-xs">入金</SelectItem>
+                          <SelectItem value="out" className="text-xs">出金</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className="h-7 text-xs"
+                        value={editManualValue}
+                        onChange={(e) => setEditManualValue(e.target.value)}
+                      />
+                      <Input
+                        className="h-7 text-xs"
+                        placeholder="备注"
+                        value={editManualNote}
+                        onChange={(e) => setEditManualNote(e.target.value)}
+                      />
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => void handleManualFlowEditSave()}
+                          disabled={isSavingManualEdit}
+                          className="text-emerald-600 dark:text-emerald-400 hover:text-emerald-500 transition-colors disabled:opacity-50"
+                          title="保存"
+                        >
+                          {isSavingManualEdit
+                            ? <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            : <Save className="h-3.5 w-3.5" />}
+                        </button>
+                        <button
+                          onClick={() => setEditingManualId(null)}
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          title="取消"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    /* ── Read row ── */
+                    <div key={r.id} className="grid grid-cols-[110px_70px_140px_1fr_auto] gap-2 px-3 py-1.5 text-xs items-center">
+                      <div className="font-mono text-muted-foreground">{r.flow_date}</div>
+                      <div className={r.direction === "in" ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>
+                        {r.direction === "in" ? "入金" : "出金"}
+                      </div>
+                      <div className={`font-mono ${Number(r.net_flow) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                        {Number(r.net_flow) >= 0 ? "+" : ""}{Number(r.net_flow).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </div>
+                      <div className="truncate text-muted-foreground">{r.note ?? "-"}</div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={() => startEditManualFlow(r)}
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          title="编辑"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                        <button
+                          onClick={() => void handleManualFlowDelete(r.id)}
+                          disabled={deletingManualId === r.id}
+                          className="text-muted-foreground hover:text-destructive transition-colors disabled:opacity-50"
+                          title="删除"
+                        >
+                          {deletingManualId === r.id
+                            ? <RefreshCw className="h-3 w-3 animate-spin" />
+                            : <Trash2 className="h-3 w-3" />}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
             )}
           </div>

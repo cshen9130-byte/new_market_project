@@ -38,6 +38,18 @@ async function _GET(req: Request) {
     const productCode = searchParams.get("product_code") || null
     const normalizedProductCode = productCode?.trim().toUpperCase() || null
 
+    await query(`
+      CREATE TABLE IF NOT EXISTS mom_manual_capital_flows (
+        id          BIGSERIAL PRIMARY KEY,
+        flow_date   DATE            NOT NULL,
+        direction   VARCHAR(8)      NOT NULL CHECK (direction IN ('in', 'out')),
+        flow_value  NUMERIC(20, 2)  NOT NULL CHECK (flow_value > 0),
+        net_flow    NUMERIC(20, 2)  NOT NULL,
+        note        VARCHAR(200),
+        created_at  TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+      )
+    `)
+
     // ── 1. Capital flows from mom_fund_transactions ──────────────────────
     // Use 认购确认, 申购确认 (inflows) and 赎回确认 (outflows).
     // Exclude 认购结果 to avoid double-counting with 认购确认.
@@ -47,28 +59,44 @@ async function _GET(req: Request) {
       ? (txParams.push(productCode), `AND product_code = $${txParams.length}`)
       : ""
 
+    const includeManualFlows = !normalizedProductCode
     const capitalFlowRows = await query<{ date: string; net_flow: string }>(
-      `SELECT
-         confirmation_date::text AS date,
-         SUM(
-           CASE
-             WHEN transaction_type IN ('认购确认', '申购确认') THEN
-               COALESCE(confirmed_amount, 0)
-               - COALESCE(handling_fee, 0)
-               - COALESCE(performance_fee, 0)
-             WHEN transaction_type = '赎回确认' THEN
-               -(COALESCE(confirmed_amount, 0)
-               - COALESCE(handling_fee, 0)
-               - COALESCE(performance_fee, 0))
-             ELSE 0
-           END
-         )::text AS net_flow
-       FROM mom_fund_transactions
-       WHERE transaction_type IN ('认购确认', '申购确认', '赎回确认')
-         AND confirmation_date IS NOT NULL
-         ${txExtraWhere}
-       GROUP BY confirmation_date
-       ORDER BY confirmation_date`,
+      `WITH imported_flows AS (
+         SELECT
+           confirmation_date::date AS date,
+           SUM(
+             CASE
+               WHEN transaction_type IN ('认购确认', '申购确认') THEN
+                 COALESCE(confirmed_amount, 0)
+                 - COALESCE(handling_fee, 0)
+                 - COALESCE(performance_fee, 0)
+               WHEN transaction_type = '赎回确认' THEN
+                 -(COALESCE(confirmed_amount, 0)
+                 - COALESCE(handling_fee, 0)
+                 - COALESCE(performance_fee, 0))
+               ELSE 0
+             END
+           ) AS net_flow
+         FROM mom_fund_transactions
+         WHERE transaction_type IN ('认购确认', '申购确认', '赎回确认')
+           AND confirmation_date IS NOT NULL
+           ${txExtraWhere}
+         GROUP BY confirmation_date::date
+       )
+       ${includeManualFlows ? `, manual_flows AS (
+         SELECT flow_date::date AS date, SUM(net_flow) AS net_flow
+         FROM mom_manual_capital_flows
+         GROUP BY flow_date::date
+       )` : ""}
+       SELECT
+         date::text AS date,
+         SUM(net_flow)::text AS net_flow
+       FROM (
+         SELECT date, net_flow FROM imported_flows
+         ${includeManualFlows ? "UNION ALL SELECT date, net_flow FROM manual_flows" : ""}
+       ) flows
+       GROUP BY date
+       ORDER BY date`,
       txParams.length > 0 ? txParams : undefined,
     )
 
