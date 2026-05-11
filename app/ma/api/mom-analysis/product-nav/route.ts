@@ -51,9 +51,13 @@ async function _GET(req: Request) {
     `)
 
     // ── 1. Capital flows from mom_fund_transactions ──────────────────────
-    // Use 认购确认, 申购确认 (inflows) and 赎回确认 (outflows).
+    // Use 认购确认, 申购确认 (inflows), 赎回确认 and 分红确认 (outflows).
     // Exclude 认购结果 to avoid double-counting with 认购确认.
-    // Net amount = confirmed_amount - handling_fee - performance_fee
+    // 分红确认: confirmed_amount=0 for reinvestment (no cash flow → contributes 0);
+    //   confirmed_amount>0 for cash dividend payout (outflow from fund).
+    //   Performance fees charged at distribution time are NOT subtracted here
+    //   to avoid turning a reinvestment record into a spurious inflow.
+    //   分红方式变更 rows are excluded (admin record, all amounts zero).
     const txParams: unknown[] = []
     const txExtraWhere = productCode
       ? (txParams.push(productCode), `AND product_code = $${txParams.length}`)
@@ -74,11 +78,13 @@ async function _GET(req: Request) {
                  -(COALESCE(confirmed_amount, 0)
                  - COALESCE(handling_fee, 0)
                  - COALESCE(performance_fee, 0))
+               WHEN transaction_type = '分红确认' THEN
+                 -COALESCE(confirmed_amount, 0)
                ELSE 0
              END
            ) AS net_flow
          FROM mom_fund_transactions
-         WHERE transaction_type IN ('认购确认', '申购确认', '赎回确认')
+         WHERE transaction_type IN ('认购确认', '申购确认', '赎回确认', '分红确认')
            AND confirmation_date IS NOT NULL
            ${txExtraWhere}
          GROUP BY confirmation_date::date

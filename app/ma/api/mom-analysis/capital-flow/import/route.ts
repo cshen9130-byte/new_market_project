@@ -29,7 +29,10 @@ function clearNavCaches() {
   }
 }
 
-// Column header → expected position (0-indexed) mapping from the TA export
+// Column header → expected position (0-indexed) mapping from the TA export.
+// Supports all transaction types: 认购结果, 认购确认, 申购确认, 赎回确认,
+// 分红确认 (dividend — confirmed_amount=0 for reinvestment, >0 for cash payout),
+// 分红方式变更 (admin record, all amounts zero — stored but ignored in flows).
 const COL = {
   product_code: 0,       // 产品代码
   product_name: 1,       // 产品名称
