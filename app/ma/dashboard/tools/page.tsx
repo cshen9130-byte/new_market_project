@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { FileSpreadsheet, Mail, Wrench } from "lucide-react"
+import { FileSpreadsheet, Mail, PieChart, Wrench } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -17,6 +17,13 @@ const toolCards = [
     description: "为每位投顾配置定时发送任务，每天自动将最新逐日核算单 xlsx 附件发送至指定邮箱，支持多配置管理与手动立即发送。",
     href: "/ma/dashboard/tools/send-email",
     icon: Mail,
+    actionLabel: "打开小工具",
+  },
+  {
+    title: "估值分析",
+    description: "上传持仓估值表，自动解析持仓结构，生成多头空头分布、行业集中度、策略标签等可视化分析报告。",
+    href: "/ma/dashboard/tools/valuation",
+    icon: PieChart,
     actionLabel: "打开小工具",
   },
 ]
