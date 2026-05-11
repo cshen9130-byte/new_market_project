@@ -53,10 +53,11 @@ async function _GET(req: Request) {
     // ── 1. Capital flows from mom_fund_transactions ──────────────────────
     // Use 认购确认, 申购确认 (inflows), 赎回确认 and 分红确认 (outflows).
     // Exclude 认购结果 to avoid double-counting with 认购确认.
-    // 分红确认: confirmed_amount=0 for reinvestment (no cash flow → contributes 0);
-    //   confirmed_amount>0 for cash dividend payout (outflow from fund).
-    //   Performance fees charged at distribution time are NOT subtracted here
-    //   to avoid turning a reinvestment record into a spurious inflow.
+    // 分红确认 outflow = confirmed_amount (cash payout) + handling_fee + performance_fee.
+    //   • Reinvestment: confirmed_amount=0, only fees leave the fund.
+    //   • Cash dividend: confirmed_amount>0 also leaves the fund.
+    //   Performance fees and handling fees charged at distribution time are
+    //   real outflows (to manager / distributor) not captured in trading PnL.
     //   分红方式变更 rows are excluded (admin record, all amounts zero).
     const txParams: unknown[] = []
     const txExtraWhere = productCode
@@ -79,7 +80,9 @@ async function _GET(req: Request) {
                  - COALESCE(handling_fee, 0)
                  - COALESCE(performance_fee, 0))
                WHEN transaction_type = '分红确认' THEN
-                 -COALESCE(confirmed_amount, 0)
+                 -(COALESCE(confirmed_amount, 0)
+                 + COALESCE(handling_fee, 0)
+                 + COALESCE(performance_fee, 0))
                ELSE 0
              END
            ) AS net_flow
