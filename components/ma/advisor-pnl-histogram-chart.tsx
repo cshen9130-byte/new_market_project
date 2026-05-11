@@ -6,7 +6,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 type AdvisorPnl = { account: string; pnl: number }
 
-export default function AdvisorPnlHistogramChart({ height = 320, window = "20" }: { height?: number; window?: string }) {
+const WINDOW_OPTIONS = [
+  { label: "最新一日", value: "1" },
+  { label: "近一周",   value: "5" },
+  { label: "近两周",   value: "10" },
+  { label: "近一月",   value: "20" },
+  { label: "近三月",   value: "60" },
+]
+
+export default function AdvisorPnlHistogramChart({ height = 320 }: { height?: number; window?: string }) {
+  const [selectedWindow, setSelectedWindow] = useState("1")
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [advisorPnl, setAdvisorPnl] = useState<AdvisorPnl[]>([])
@@ -14,7 +23,7 @@ export default function AdvisorPnlHistogramChart({ height = 320, window = "20" }
   useEffect(() => {
     setLoading(true)
     setError(null)
-    fetch(`/ma/api/mom-analysis/advisor-vol?window=${window}`)
+    fetch(`/ma/api/mom-analysis/advisor-vol?window=${selectedWindow}&nocache=1`)
       .then((r) => r.json())
       .then((j) => {
         if (!j?.ok) throw new Error(j?.error || "加载失败")
@@ -22,7 +31,7 @@ export default function AdvisorPnlHistogramChart({ height = 320, window = "20" }
       })
       .catch((e) => setError(String(e?.message || "加载失败")))
       .finally(() => setLoading(false))
-  }, [window])
+  }, [selectedWindow])
 
   const option = useMemo(() => {
     if (advisorPnl.length === 0) return {}
@@ -85,8 +94,25 @@ export default function AdvisorPnlHistogramChart({ height = 320, window = "20" }
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium">投顾盈亏分布直方图</CardTitle>
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="text-sm font-medium">投顾盈亏分布直方图</CardTitle>
+          <div className="flex items-center gap-1">
+            {WINDOW_OPTIONS.map((o) => (
+              <button
+                key={o.value}
+                onClick={() => setSelectedWindow(o.value)}
+                className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
+                  selectedWindow === o.value
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-muted/80 hover:text-foreground"
+                }`}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
       </CardHeader>
       <CardContent>
         {loading ? (

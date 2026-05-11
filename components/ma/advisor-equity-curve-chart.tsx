@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 interface AccountSeries {
   account: string
-  data: { date: string; pct: number }[]
+  data: { date: string; pct: number; pnlWan?: number }[]
 }
 
 interface ApiData {
@@ -268,8 +268,8 @@ export default function AdvisorEquityCurveChart({ height = 400 }: Props) {
   const option = useMemo<object>(() => {
     if (!data || data.series.length === 0) return {}
 
-    // pct = cumPnl / 1_000_000 * 100  → cumPnl_wan = pct (since initial cap is 100万)
-    // So in pnl mode we display the same number but labelled as 万元
+    // pct  = compound daily return %  (using actual daily 客户权益 as denominator)
+    // pnlWan = cumulative PnL in 万元
     const isPnl = viewMode === "pnl"
 
     const dateSet = new Set<string>()
@@ -277,7 +277,8 @@ export default function AdvisorEquityCurveChart({ height = 400 }: Props) {
     for (const b of data.benchmark) dateSet.add(b.date)
     const allDates = [...dateSet].sort()
 
-    const seriesLookups = data.series.map((s) => new Map(s.data.map((d) => [d.date, d.pct])))
+    // Full data point lookups (for tooltip to access both pct and pnlWan)
+    const seriesLookups = data.series.map((s) => new Map(s.data.map((d) => [d.date, d])))
     const bmLookup      = new Map(data.benchmark.map((b) => [b.date, b.pct]))
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -289,7 +290,11 @@ export default function AdvisorEquityCurveChart({ height = 400 }: Props) {
         symbol: "none",
         lineStyle: { width: 1.5, color: ACCOUNT_COLORS[i % ACCOUNT_COLORS.length] },
         itemStyle: { color: ACCOUNT_COLORS[i % ACCOUNT_COLORS.length] },
-        data: allDates.map((d) => (seriesLookups[i].has(d) ? seriesLookups[i].get(d)! : null)),
+        data: allDates.map((d) => {
+          const pt = seriesLookups[i].get(d)
+          if (pt == null) return null
+          return isPnl ? (pt.pnlWan ?? pt.pct) : pt.pct
+        }),
         connectNulls: true,
       })),
       ...(data.benchmark.length > 0
@@ -322,15 +327,20 @@ export default function AdvisorEquityCurveChart({ height = 400 }: Props) {
             const v = p.value as number
             const sign = v >= 0 ? "+" : ""
             const isAccount = p.seriesIndex < accountCount
-            const extra = isAccount
-              ? isPnl
-                ? `, <span style="color:#94a3b8">${sign}${v.toFixed(2)}%</span>`
-                : `, <span style="color:#94a3b8">${sign}${v.toFixed(2)}万元</span>`
-              : ""
-            const mainVal = isPnl
-              ? `<b>${sign}${v.toFixed(2)}万元</b>`
-              : `<b>${sign}${v.toFixed(2)}%</b>`
-            html += `<div style="font-size:11px">${p.marker}${p.seriesName}: ${mainVal}${extra}</div>`
+            if (isAccount) {
+              // Look up both pct and pnlWan for this series/date
+              const pt = seriesLookups[p.seriesIndex]?.get(date)
+              const pct    = pt?.pct    ?? 0
+              const pnlWan = pt?.pnlWan ?? pt?.pct ?? 0
+              const pctSign = pct    >= 0 ? "+" : ""
+              const wanSign = pnlWan >= 0 ? "+" : ""
+              const mainVal = isPnl
+                ? `<b>${wanSign}${pnlWan.toFixed(2)}万元</b>, <span style="color:#94a3b8">${pctSign}${pct.toFixed(2)}%</span>`
+                : `<b>${pctSign}${pct.toFixed(2)}%</b>, <span style="color:#94a3b8">${wanSign}${pnlWan.toFixed(2)}万元</span>`
+              html += `<div style="font-size:11px">${p.marker}${p.seriesName}: ${mainVal}</div>`
+            } else {
+              html += `<div style="font-size:11px">${p.marker}${p.seriesName}: <b>${sign}${v.toFixed(2)}%</b></div>`
+            }
           }
           return html
         },
