@@ -51,14 +51,15 @@ async function _GET(req: Request) {
     `)
 
     // ── 1. Capital flows from mom_fund_transactions ──────────────────────
-    // Use 认购确认, 申购确认 (inflows), 赎回确认 and 分红确认 (outflows).
-    // Exclude 认购结果 to avoid double-counting with 认购确认.
-    // 分红确认 outflow = confirmed_amount (cash payout) + handling_fee + performance_fee.
-    //   • Reinvestment: confirmed_amount=0, only fees leave the fund.
-    //   • Cash dividend: confirmed_amount>0 also leaves the fund.
-    //   Performance fees and handling fees charged at distribution time are
-    //   real outflows (to manager / distributor) not captured in trading PnL.
-    //   分红方式变更 rows are excluded (admin record, all amounts zero).
+    // Inflows  (申购/认购): confirmed_amount is net investment (fees already
+    //   go to distributor before reaching fund). Subtract fees for safety in
+    //   case any TA export has confirmed_amount as gross.
+    // Outflows (赎回/分红): total money leaving fund =
+    //   confirmed_amount (to investor) + handling_fee + performance_fee (to manager)
+    //   = total_confirmed_amount. DB confirms:
+    //     赎回 row: confirmed=500000, fees=49493, total=549493
+    //     分红 row: confirmed=0,      fees=474424, total=474424
+    // 分红方式变更 rows are excluded (admin record, all amounts zero).
     const txParams: unknown[] = []
     const txExtraWhere = productCode
       ? (txParams.push(productCode), `AND product_code = $${txParams.length}`)
@@ -75,11 +76,7 @@ async function _GET(req: Request) {
                  COALESCE(confirmed_amount, 0)
                  - COALESCE(handling_fee, 0)
                  - COALESCE(performance_fee, 0)
-               WHEN transaction_type = '赎回确认' THEN
-                 -(COALESCE(confirmed_amount, 0)
-                 - COALESCE(handling_fee, 0)
-                 - COALESCE(performance_fee, 0))
-               WHEN transaction_type = '分红确认' THEN
+               WHEN transaction_type IN ('赎回确认', '分红确认') THEN
                  -(COALESCE(confirmed_amount, 0)
                  + COALESCE(handling_fee, 0)
                  + COALESCE(performance_fee, 0))
