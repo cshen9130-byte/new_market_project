@@ -35,31 +35,34 @@ async function _GET() {
       prev.push({ date: row.date, pnl, cumPnl })
     }
 
-    // Merge guosen (国信) accounts from guosen_account_summary
+    // Merge guosen (国信) account from guosen_account_summary — same filter as 业绩报酬测算
     try {
       const guosenRows = await query<{
-        client_id: string; client_name: string; trade_date: string
+        trade_date: string
         realized_pl: string; mtm_pl: string; exercise_pl: string; commission: string
       }>(
-        `SELECT client_id, client_name, trade_date::text AS trade_date,
+        `SELECT trade_date::text AS trade_date,
                 COALESCE(realized_pl, 0)::text AS realized_pl,
                 COALESCE(mtm_pl, 0)::text AS mtm_pl,
                 COALESCE(exercise_pl, 0)::text AS exercise_pl,
                 COALESCE(commission, 0)::text AS commission
          FROM guosen_account_summary
-         ORDER BY trade_date, client_id`,
+         WHERE client_id = '665300200077'
+         ORDER BY trade_date`,
       )
+      // Overwrite any existing guoxin entry (ensures single source of truth)
+      accountMap["guoxin"] = []
       for (const row of guosenRows) {
         const pnl = (parseFloat(row.realized_pl) || 0)
                   + (parseFloat(row.mtm_pl) || 0)
                   + (parseFloat(row.exercise_pl) || 0)
                   - (parseFloat(row.commission) || 0)
-        const label = "guoxin"
-        if (!accountMap[label]) accountMap[label] = []
-        const prev = accountMap[label]
+        const prev = accountMap["guoxin"]
         const cumPnl = (prev.length > 0 ? prev[prev.length - 1].cumPnl : 0) + pnl
         prev.push({ date: row.trade_date, pnl, cumPnl })
       }
+      // If no guosen data was found, remove the empty guoxin entry
+      if (accountMap["guoxin"].length === 0) delete accountMap["guoxin"]
     } catch {
       // guosen_account_summary not available — skip gracefully
     }

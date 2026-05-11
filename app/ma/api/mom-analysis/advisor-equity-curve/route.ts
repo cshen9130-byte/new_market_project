@@ -125,7 +125,7 @@ async function _GET(req: Request) {
       const params: unknown[] = [from, to]
       const accountFilter = buildAccountFilter(`UPPER(TRIM("账户"::text))`, params)
 
-      const rows = await query<{ account: string; date: string; daily_pnl: string; prev_balance: string }>(
+      const rows = await query<{ account: string; date: string; daily_pnl: string; prev_balance: string; equity: string }>(
         `SELECT UPPER(TRIM("账户"::text)) AS account,
                 "交易日期"::text AS date,
                 COALESCE(
@@ -135,7 +135,11 @@ async function _GET(req: Request) {
                 COALESCE(
                   NULLIF(REPLACE(REPLACE(COALESCE("上日结存"::text, ''), ',', ''), ' ', ''), '')::numeric,
                   0
-                )::text AS prev_balance
+                )::text AS prev_balance,
+                COALESCE(
+                  NULLIF(REPLACE(REPLACE(COALESCE("客户权益"::text, ''), ',', ''), ' ', ''), '')::numeric,
+                  0
+                )::text AS equity
          FROM mom_daily_reports
          WHERE "交易日期"::date BETWEEN $1::date AND $2::date
          ${accountFilter}
@@ -143,19 +147,20 @@ async function _GET(req: Request) {
         params,
       )
 
-      type DailyEntry = { pnl: number; prevBal: number }
+      type DailyEntry = { pnl: number; prevBal: number; equity: number }
       const dailyMap = new Map<string, Map<string, DailyEntry>>()
       for (const row of rows) {
         if (!dailyMap.has(row.account)) dailyMap.set(row.account, new Map())
         const dm = dailyMap.get(row.account)!
-        const existing = dm.get(row.date) ?? { pnl: 0, prevBal: 0 }
+        const existing = dm.get(row.date) ?? { pnl: 0, prevBal: 0, equity: 0 }
         dm.set(row.date, {
           pnl: existing.pnl + Number(row.daily_pnl || 0),
           prevBal: Math.max(existing.prevBal, Number(row.prev_balance || 0)),
+          equity: Math.max(existing.equity, Number(row.equity || 0)),
         })
       }
 
-      // Merge guoxin (guosen) daily PnL — derive prevBal from client_equity - pnl
+      // Merge guoxin (guosen) daily PnL
       try {
         const guosenRows = await query<{ date: string; daily_pnl: string; client_equity: string }>(
           `SELECT trade_date::text AS date,
@@ -172,11 +177,11 @@ async function _GET(req: Request) {
           const dm = dailyMap.get("guoxin")!
           const pnl = Number(r.daily_pnl || 0)
           const equity = Number(r.client_equity || 0)
-          const prevBal = equity - pnl  // beginning-of-day equity
-          const existing = dm.get(r.date) ?? { pnl: 0, prevBal: 0 }
+          const existing = dm.get(r.date) ?? { pnl: 0, prevBal: 0, equity: 0 }
           dm.set(r.date, {
             pnl: existing.pnl + pnl,
-            prevBal: Math.max(existing.prevBal, prevBal),
+            prevBal: Math.max(existing.prevBal, equity - pnl),
+            equity: Math.max(existing.equity, equity),
           })
         }
       } catch {
@@ -189,11 +194,11 @@ async function _GET(req: Request) {
         let cumPnl = 0
         const data = [...dailyMap.get(acc)!.entries()]
           .sort(([a], [b]) => a.localeCompare(b))
-          .map(([date, { pnl, prevBal }]) => {
+          .map(([date, { pnl, prevBal, equity }]) => {
             cumPnl += pnl
-            if (prevBal > 0) {
-              cumFactor *= (1 + pnl / prevBal)
-            }
+            // Use 上日结存 as denominator; fall back to 客户权益-pnl, then skip
+            const denom = prevBal > 0 ? prevBal : (equity - pnl > 0 ? equity - pnl : 0)
+            if (denom > 0) cumFactor *= (1 + pnl / denom)
             return {
               date,
               pct: parseFloat(((cumFactor - 1) * 100).toFixed(3)),
@@ -358,13 +363,14 @@ async function _GET(req: Request) {
       // guosen_position_detail unavailable — skip
     }
 
-    // Fetch daily 上日结存 (prev_balance) from mom_daily_reports for equity-based return
-    const equityMap = new Map<string, Map<string, number>>()
+    // Fetch daily 上日结存 + 客户权益 from mom_daily_reports for equity-based simple return
+    const equityMap = new Map<string, Map<string, { prevBal: number; equity: number }>>()
     try {
-      const equityRows = await query<{ account: string; date: string; prev_balance: number }>(
+      const equityRows = await query<{ account: string; date: string; prev_balance: number; equity: number }>(
         `SELECT UPPER(TRIM("账户"::text)) AS account,
                 "交易日期"::text AS date,
-                MAX(COALESCE(NULLIF(REPLACE(REPLACE("上日结存"::text, ',', ''), ' ', ''), '')::numeric, 0)) AS prev_balance
+                MAX(COALESCE(NULLIF(REPLACE(REPLACE("上日结存"::text, ',', ''), ' ', ''), '')::numeric, 0)) AS prev_balance,
+                MAX(COALESCE(NULLIF(REPLACE(REPLACE("客户权益"::text, ',', ''), ' ', ''), '')::numeric, 0)) AS equity
          FROM mom_daily_reports
          WHERE "交易日期"::date BETWEEN $1::date AND $2::date
          GROUP BY 1, 2`,
@@ -372,7 +378,10 @@ async function _GET(req: Request) {
       )
       for (const row of equityRows) {
         if (!equityMap.has(row.account)) equityMap.set(row.account, new Map())
-        equityMap.get(row.account)!.set(row.date, Number(row.prev_balance || 0))
+        equityMap.get(row.account)!.set(row.date, {
+          prevBal: Number(row.prev_balance || 0),
+          equity: Number(row.equity || 0),
+        })
       }
     } catch {
       // mom_daily_reports not available — fall back to INITIAL_CAPITAL
@@ -387,12 +396,12 @@ async function _GET(req: Request) {
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([date, pnl]) => {
           cumPnl += pnl
-          const prevBal = eMap?.get(date) ?? 0
-          if (prevBal > 0) {
-            cumFactor *= (1 + pnl / prevBal)
-          } else {
-            cumFactor *= (1 + pnl / INITIAL_CAPITAL)
-          }
+          const eq = eMap?.get(date)
+          const denom = eq
+            ? (eq.prevBal > 0 ? eq.prevBal : (eq.equity - pnl > 0 ? eq.equity - pnl : 0))
+            : 0
+          if (denom > 0) cumFactor *= (1 + pnl / denom)
+          else if (INITIAL_CAPITAL > 0) cumFactor *= (1 + pnl / INITIAL_CAPITAL)
           return {
             date,
             pct: parseFloat(((cumFactor - 1) * 100).toFixed(3)),

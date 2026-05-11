@@ -1997,6 +1997,17 @@ export default function DataImportPage() {
                   >
                     <ArrowDownToLine className="h-3.5 w-3.5" />
                   </a>
+                  <button
+                    className="text-muted-foreground hover:text-destructive transition-colors"
+                    title="删除"
+                    onClick={async () => {
+                      if (!confirm(`确认删除 ${f.name}？`)) return
+                      await fetch(`/ma/api/mom-analysis/settlement-email/delete?file=${encodeURIComponent(f.name)}`, { method: "DELETE" })
+                      void loadSettlementFiles()
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
                 </div>
               ))}
             </div>

@@ -108,10 +108,13 @@ export async function GET(req: Request) {
       const gConds: string[] = []
       if (from) { gParams.push(from); gConds.push(`trade_date >= $${gParams.length}::date`) }
       if (to)   { gParams.push(to);   gConds.push(`trade_date <= $${gParams.length}::date`) }
-      const gWhere = gConds.length > 0 ? "WHERE " + gConds.join(" AND ") : ""
+
+      // Add client_id = '665300200077' filter — same as 业绩报酬测算
+      const clientCond = gConds.length > 0
+        ? `WHERE client_id = '665300200077' AND ${gConds.join(" AND ")}`
+        : `WHERE client_id = '665300200077'`
 
       const gRows = await query<{
-        client_id: string; client_name: string
         first_date: string; last_date: string; trading_days: string
         period_pnl: string | null; period_fee: string | null; period_options_pnl: string | null
         close_pnl: string | null; position_pnl: string | null
@@ -119,7 +122,6 @@ export async function GET(req: Request) {
         latest_risk_ratio: string | null; latest_margin: string | null; latest_available: string | null
       }>(`
         SELECT
-          client_id, client_name,
           MIN(trade_date::text) AS first_date,
           MAX(trade_date::text) AS last_date,
           COUNT(*)::text AS trading_days,
@@ -134,9 +136,12 @@ export async function GET(req: Request) {
           (array_agg(margin_occupied ORDER BY trade_date DESC NULLS LAST))[1]::text AS latest_margin,
           (array_agg(fund_avail      ORDER BY trade_date DESC NULLS LAST))[1]::text AS latest_available
         FROM guosen_account_summary
-        ${gWhere}
-        GROUP BY client_id, client_name
+        ${clientCond}
       `, gParams.length > 0 ? gParams : undefined)
+
+      // Remove any existing guoxin entry from mom_daily_reports before merging
+      const guoxinIdx = traders.findIndex((t) => t.account === "guoxin")
+      if (guoxinIdx !== -1) traders.splice(guoxinIdx, 1)
 
       for (const r of gRows) {
         const pnl = parseNum(r.period_pnl)
