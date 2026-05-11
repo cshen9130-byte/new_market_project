@@ -484,6 +484,9 @@ export default function DataImportPage() {
       if (!res.ok) throw new Error(data.error ?? "导入失败")
       setCapitalFlowResult({ success: true, message: data.message })
       toast({ title: "导入成功", description: data.message })
+      // Pre-warm the product-nav server cache so the risk-report page
+      // immediately sees fresh data (bypasses both server & browser cache).
+      fetch("/ma/api/mom-analysis/product-nav?nocache=1").catch(() => {})
     } catch (e) {
       const msg = e instanceof Error ? e.message : "导入失败"
       setCapitalFlowResult({ success: false, message: msg })
@@ -524,6 +527,7 @@ export default function DataImportPage() {
       setManualFlowValue("")
       setManualFlowNote("")
       await loadManualFlows()
+      fetch("/ma/api/mom-analysis/product-nav?nocache=1").catch(() => {})
     } catch (e) {
       const msg = e instanceof Error ? e.message : "保存失败"
       setManualFlowResult({ success: false, message: msg })

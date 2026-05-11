@@ -66,7 +66,9 @@ export function withMomCache(
   handler: (req: Request) => Promise<NextResponse>,
 ): (req: Request) => Promise<NextResponse> {
   const cacheHeaders = {
-    "Cache-Control": "private, max-age=300, stale-while-revalidate=60",
+    // no-cache: browser always revalidates; server-side file cache still
+    // provides the performance benefit (avoids DB queries on every hit).
+    "Cache-Control": "no-cache",
   }
 
   return async (req: Request) => {
@@ -77,6 +79,7 @@ export function withMomCache(
     if (!noCache) {
       const cached = readCache(key)
       if (cached !== null) {
+        // no-cache: browser always revalidates; ETag/304 handled by Next.js
         return NextResponse.json(cached, { headers: cacheHeaders })
       }
     }
