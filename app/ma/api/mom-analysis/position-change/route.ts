@@ -8,6 +8,9 @@ export const dynamic = "force-dynamic"
 function getPrefix(contract: string): string {
   return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
 }
+function isOption(contract: string): boolean {
+  return /^[A-Z]+\d+-?[CP]-?\d+$/i.test(contract)
+}
 function toNum(v: unknown): number {
   if (v == null) return 0
   const n = parseFloat(String(v).replace(/[,%\s]/g, ""))
@@ -56,6 +59,7 @@ async function _GET() {
     const yesterdayMap = new Map<string, { mv: number; lots: number }>()
 
     for (const r of rows) {
+      if (isOption(r.contract)) continue  // exclude options — they have separate display and distort lot counts
       const prod = getPrefix(r.contract)
       const map  = r.date === today ? todayMap : yesterdayMap
       const cur  = map.get(prod) ?? { mv: 0, lots: 0 }
@@ -89,6 +93,7 @@ async function _GET() {
         yesterday ? [today, yesterday] : [today],
       )
       for (const r of guosenRows) {
+        if (isOption(r.contract)) continue  // exclude options
         const prod = getPrefix(r.contract)
         const map  = r.date === today ? todayMap : yesterdayMap
         const cur  = map.get(prod) ?? { mv: 0, lots: 0 }

@@ -322,7 +322,20 @@ export default function AdvisorEquityCurveChart({ height = 400 }: Props) {
           const date = params[0]?.axisValue as string
           let html = `<div style="font-size:11px;margin-bottom:4px;font-weight:600">${date}</div>`
           const accountCount = data.series.length
-          for (const p of params) {
+          // Sort account series by current value descending; keep benchmark series at the end
+          const sorted = [...params].sort((a, b) => {
+            const aIsAccount = a.seriesIndex < accountCount
+            const bIsAccount = b.seriesIndex < accountCount
+            if (aIsAccount && !bIsAccount) return -1
+            if (!aIsAccount && bIsAccount) return 1
+            if (aIsAccount && bIsAccount) {
+              const av = typeof a.value === "number" ? a.value : -Infinity
+              const bv = typeof b.value === "number" ? b.value : -Infinity
+              return bv - av
+            }
+            return 0
+          })
+          for (const p of sorted) {
             if (p.value == null) continue
             const v = p.value as number
             const sign = v >= 0 ? "+" : ""
