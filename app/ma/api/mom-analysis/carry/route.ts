@@ -198,7 +198,19 @@ export async function GET(req: Request) {
       // mom_carry_payments table not yet created — treat as empty
     }
 
-    return NextResponse.json({ ok: true, latestDate, selectedDate, availableDates, ...rates, accounts: mergedAccounts, payments })
+    // ── Mother-layer carry already paid (performance_fee from fund transactions) ──
+    let totalMotherPaid = 0
+    try {
+      const pfRows = await query<{ total: string | null }>(
+        `SELECT COALESCE(SUM(performance_fee), 0)::text AS total FROM mom_fund_transactions WHERE confirmation_date::date <= $1`,
+        [selectedDate]
+      )
+      totalMotherPaid = parseFloat(pfRows[0]?.total ?? "0") || 0
+    } catch {
+      // mom_fund_transactions not available — treat as 0
+    }
+
+    return NextResponse.json({ ok: true, latestDate, selectedDate, availableDates, ...rates, accounts: mergedAccounts, payments, totalMotherPaid })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {

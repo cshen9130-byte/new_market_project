@@ -48,6 +48,7 @@ interface InitialData {
   childRate: number
   accounts: Account[]
   payments: Payment[]
+  totalMotherPaid: number
   notYetRun?: boolean
   error?: string
 }
@@ -61,14 +62,15 @@ interface AccountDetail extends Account {
 
 interface CarryResult {
   accountDetails: AccountDetail[]
+  totalCumNetPnl: number
   totalAdjustedPnl: number
+  rawProfit: number
+  rawLoss: number
   totalProfit: number
   totalLoss: number
   profitLossRatio: number | null
   profitLossThreshold: number | null
-  motherCarry: number            // on remaining adjusted PnL
-  motherCarryOnExtracted: number // on past profitPortion extractions (child carry was paid but mother carry was not)
-  totalMotherCarry: number       // motherCarry + motherCarryOnExtracted
+  totalMotherCarry: number       // totalCumNetPnl * motherRate (gross, before deducting paid)
   totalProfitPortion: number
   totalPositiveAdjustedPnl: number
   childCarry: number
@@ -91,22 +93,23 @@ function computeCarry(
     return { ...a, settled, adjustedPnl: a.cumNetPnl - settled }
   })
 
+  const totalCumNetPnl           = accountDetails.reduce((s, a) => s + a.adjustedPnl + a.settled, 0) // raw sum of cumNetPnl
   const totalAdjustedPnl        = accountDetails.reduce((s, a) => s + a.adjustedPnl, 0)
+  const rawProfit                = accountDetails.filter((a) => (a.adjustedPnl + a.settled) > 0).reduce((s, a) => s + a.adjustedPnl + a.settled, 0)
+  const rawLoss                  = accountDetails.filter((a) => (a.adjustedPnl + a.settled) < 0).reduce((s, a) => s + a.adjustedPnl + a.settled, 0)
   const totalProfit              = accountDetails.filter((a) => a.adjustedPnl > 0).reduce((s, a) => s + a.adjustedPnl, 0)
   const totalLoss                = accountDetails.filter((a) => a.adjustedPnl < 0).reduce((s, a) => s + a.adjustedPnl, 0)
   const profitLossRatio          = totalLoss !== 0 ? Math.abs(totalProfit / totalLoss) : null
   // Threshold where netCarry = 0 (motherCarry = childCarry):
   // totalAdjustedPnl * motherRate = totalProfit * childRate  →  R = motherRate / (motherRate - childRate)
   const profitLossThreshold      = motherRate > childRate ? motherRate / (motherRate - childRate) : null
-  const motherCarry              = Math.max(0, totalAdjustedPnl) * motherRate
   const totalProfitPortion       = payments.reduce((s, p) => s + p.profitPortion, 0)
-  const motherCarryOnExtracted   = totalProfitPortion * motherRate  // child carry was paid on these, but mother carry was not
-  const totalMotherCarry         = motherCarry + motherCarryOnExtracted
+  const totalMotherCarry         = totalCumNetPnl * motherRate  // gross total mother carry owed
   const totalPositiveAdjustedPnl = totalProfit
   const childCarry               = totalPositiveAdjustedPnl * childRate
   const netCarry                 = totalMotherCarry - childCarry
 
-  return { accountDetails, totalAdjustedPnl, totalProfit, totalLoss, profitLossRatio, profitLossThreshold, motherCarry, motherCarryOnExtracted, totalMotherCarry, totalProfitPortion, totalPositiveAdjustedPnl, childCarry, netCarry }
+  return { accountDetails, totalCumNetPnl, totalAdjustedPnl, rawProfit, rawLoss, totalProfit, totalLoss, profitLossRatio, profitLossThreshold, totalMotherCarry, totalProfitPortion, totalPositiveAdjustedPnl, childCarry, netCarry }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -200,6 +203,7 @@ export default function CarryCalcPage() {
   const [latestDate, setLatestDate] = useState<string | null>(null)
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [availableDates, setAvailableDates] = useState<string[]>([])
+  const [totalMotherPaid, setTotalMotherPaid] = useState<number>(0)
   const [loading, setLoading]     = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [notYetRun, setNotYetRun] = useState(false)
@@ -232,6 +236,7 @@ export default function CarryCalcPage() {
       setNotYetRun(false)
       setAccounts(data.accounts ?? [])
       setPayments(data.payments ?? [])
+      setTotalMotherPaid(data.totalMotherPaid ?? 0)
       setLatestDate(data.latestDate ?? null)
       setSelectedDate(data.selectedDate ?? data.latestDate ?? null)
       setAvailableDates(data.availableDates ?? [])
@@ -561,6 +566,33 @@ export default function CarryCalcPage() {
                         </td>
                       </tr>
                     ))}
+                    {(() => {
+                      const d = carry.accountDetails
+                      const sumLatestEquity   = d.reduce((s, a) => s + (a.latestEquity ?? 0), 0)
+                      const sumCumPnl         = d.reduce((s, a) => s + a.cumPnl, 0)
+                      const sumCumCommission  = d.reduce((s, a) => s + a.cumCommission, 0)
+                      const sumOptionsPnl     = d.reduce((s, a) => s + (a.optionsPnl ?? 0), 0)
+                      const sumCumNetPnl      = d.reduce((s, a) => s + a.cumNetPnl, 0)
+                      const sumCumDeposit     = d.reduce((s, a) => s + (a.cumDeposit ?? 0), 0)
+                      const sumCumWithdrawal  = d.reduce((s, a) => s + (a.cumWithdrawal ?? 0), 0)
+                      const sumSettled        = d.reduce((s, a) => s + a.settled, 0)
+                      const sumAdjustedPnl    = d.reduce((s, a) => s + a.adjustedPnl, 0)
+                      return (
+                        <tr className="bg-muted/40 border-t-2 border-border font-semibold">
+                          <td className="px-4 py-2 text-xs font-semibold">合计</td>
+                          <td className="px-4 py-2 text-right tabular-nums">{fmt(sumLatestEquity)}</td>
+                          <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(sumCumPnl)}`}>{fmt(sumCumPnl)}</td>
+                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumCommission)}</td>
+                          <td className={`px-4 py-2 text-right tabular-nums text-xs ${pnlClass(sumOptionsPnl)}`}>{fmt(sumOptionsPnl)}</td>
+                          <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(sumCumNetPnl)}`}>{fmt(sumCumNetPnl)}</td>
+                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumDeposit)}</td>
+                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumWithdrawal)}</td>
+                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{sumSettled > 0 ? `−${fmt(sumSettled)}` : "—"}</td>
+                          <td className={`px-4 py-2 text-right tabular-nums font-bold ${pnlClass(sumAdjustedPnl)}`}>{fmt(sumAdjustedPnl)}</td>
+                          <td className="px-4 py-2 text-center text-xs text-muted-foreground">{d.filter((a) => a.adjustedPnl > 0).length}&nbsp;个</td>
+                        </tr>
+                      )
+                    })()}
                   </tbody>
                 </table>
               </div>
@@ -568,42 +600,52 @@ export default function CarryCalcPage() {
           </Card>
 
           {/* ── carry result ───────────────────────────────────────────────── */}
-          <Card>
-            <CardHeader className="pb-1 flex flex-row items-center justify-between">
-              <CardTitle className="text-base font-semibold">计算结果</CardTitle>
-              <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={() => void load(selectedDate)} disabled={loading}>
-                <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />刷新
-              </Button>
-            </CardHeader>
-            <CardContent className="pt-2">
-              <div className="divide-y divide-border text-sm">
-                {/* 盈亏统计 */}
-                <div className="pb-3 space-y-1">
-                  <p className="font-medium">盈亏统计（调整后盈亏）</p>
-                  <div className="grid grid-cols-3 gap-x-4 text-xs font-mono">
-                    <div>
-                      <span className="text-muted-foreground">总盈利&nbsp;</span>
-                      <span className="font-semibold text-red-600 dark:text-red-400">{fmt(carry.totalProfit)}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">总亏损&nbsp;</span>
-                      <span className="font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.totalLoss)}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">盈亏比&nbsp;</span>
-                      <span className={`font-semibold ${
-                        carry.profitLossRatio !== null && carry.profitLossThreshold !== null
-                          ? carry.profitLossRatio >= carry.profitLossThreshold
-                            ? "text-red-600 dark:text-red-400"
-                            : "text-emerald-600 dark:text-emerald-400"
-                          : ""
-                      }`}>
-                        {carry.profitLossRatio !== null ? carry.profitLossRatio.toFixed(2) : "—"}
-                      </span>
-                    </div>
-                  </div>
+          <div className="grid grid-cols-3 gap-4">
+            {/* col 1: 盈亏统计 */}
+            <Card className="flex flex-col">
+              <CardHeader className="pb-2 pt-4 px-6">
+                <CardTitle className="text-sm font-semibold">盈亏统计</CardTitle>
+              </CardHeader>
+              <CardContent className="px-6 pb-6 pt-0 flex-1 flex flex-col justify-center gap-3">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="pb-3 text-left text-sm font-medium text-muted-foreground w-20"></th>
+                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">总盈利</th>
+                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">总亏损</th>
+                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">净盈亏</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    <tr className="hover:bg-muted/30">
+                      <td className="py-4 text-sm font-medium">调整前</td>
+                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-red-600 dark:text-red-400">{fmt(carry.rawProfit)}</td>
+                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.rawLoss)}</td>
+                      <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(carry.rawProfit + carry.rawLoss)}`}>{fmt(carry.rawProfit + carry.rawLoss)}</td>
+                    </tr>
+                    <tr className="hover:bg-muted/30">
+                      <td className="py-4 text-sm font-medium">调整后</td>
+                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-red-600 dark:text-red-400">{fmt(carry.totalProfit)}</td>
+                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.totalLoss)}</td>
+                      <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(carry.totalAdjustedPnl)}`}>{fmt(carry.totalAdjustedPnl)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div className="text-xs font-mono space-y-1">
+                  <p>
+                    <span className="text-muted-foreground">盈亏比&nbsp;</span>
+                    <span className={`font-semibold ${
+                      carry.profitLossRatio !== null && carry.profitLossThreshold !== null
+                        ? carry.profitLossRatio >= carry.profitLossThreshold
+                          ? "text-red-600 dark:text-red-400"
+                          : "text-emerald-600 dark:text-emerald-400"
+                        : ""
+                    }`}>
+                      {carry.profitLossRatio !== null ? carry.profitLossRatio.toFixed(2) : "—"}
+                    </span>
+                  </p>
                   {carry.profitLossThreshold !== null && (
-                    <p className="text-xs font-mono text-muted-foreground mt-1">
+                    <p className="text-muted-foreground">
                       盈亏比盈亏平衡阈值&nbsp;
                       <span className="font-semibold text-foreground">{carry.profitLossThreshold.toFixed(2)}</span>
                       &nbsp;（母层{(motherRate * 100).toFixed(1)}%&nbsp;÷&nbsp;净差{((motherRate - childRate) * 100).toFixed(1)}%）
@@ -616,49 +658,117 @@ export default function CarryCalcPage() {
                     </p>
                   )}
                 </div>
+              </CardContent>
+            </Card>
+
+            {/* col 2: 待付计算结果 */}
+            <Card>
+              <CardHeader className="pb-1 flex flex-row items-center justify-between">
+                <CardTitle className="text-base font-semibold">待付计算结果</CardTitle>
+                <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs" onClick={() => void load(selectedDate)} disabled={loading}>
+                  <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />刷新
+                </Button>
+              </CardHeader>
+              <CardContent className="pt-2">
+              <div className="divide-y divide-border text-sm">
                 {/* 母层 */}
                 <div className="pb-3 space-y-1">
-                  <p className="font-medium">母层业绩报酬</p>
-                  <p className="text-xs text-muted-foreground font-mono">
-                    调整后总盈亏&nbsp;{fmt(carry.totalAdjustedPnl)}&nbsp;×&nbsp;{(motherRate * 100).toFixed(1)}%&nbsp;=&nbsp;
-                    <span className={`font-semibold ${pnlClass(carry.motherCarry)}`}>{fmt(carry.motherCarry)}</span>
-                  </p>
-                  {carry.totalProfitPortion > 0 && (
-                    <p className="text-xs text-muted-foreground font-mono">
-                      已提盈（实付carry未结母层）&nbsp;{fmt(carry.totalProfitPortion)}&nbsp;×&nbsp;{(motherRate * 100).toFixed(1)}%&nbsp;=&nbsp;
-                      <span className="font-semibold text-amber-600 dark:text-amber-400">{fmt(carry.motherCarryOnExtracted)}</span>
-                    </p>
-                  )}
-                  {carry.totalProfitPortion > 0 && (
-                    <p className="text-xs font-mono">
-                      <span className="text-muted-foreground">母层合计&nbsp;=&nbsp;</span>
-                      <span className={`font-semibold ${pnlClass(carry.totalMotherCarry)}`}>{fmt(carry.totalMotherCarry)}</span>
-                    </p>
-                  )}
+                  <p className="font-medium">母层业绩报酬（待付）</p>
+                  {(() => {
+                    const motherPendingCarry = (carry.totalCumNetPnl - totalMotherPaid / motherRate) * motherRate
+                    return (
+                      <p className="text-xs text-muted-foreground font-mono">
+                        （累计净盈亏&nbsp;{fmt(carry.totalCumNetPnl)}&nbsp;−&nbsp;母层已付&nbsp;{fmt(totalMotherPaid)}&nbsp;/&nbsp;{(motherRate * 100).toFixed(1)}%）&nbsp;×&nbsp;{(motherRate * 100).toFixed(1)}%&nbsp;=&nbsp;
+                        <span className={`font-semibold ${pnlClass(motherPendingCarry)}`}>{fmt(motherPendingCarry)}</span>
+                      </p>
+                    )
+                  })()}
                 </div>
                 {/* 子层 */}
                 <div className="py-3 space-y-1">
-                  <p className="font-medium">子层业绩报酬（盈利账户）</p>
-                  <p className="text-xs text-muted-foreground font-mono">
-                    盈利账户调整后总盈亏&nbsp;{fmt(carry.totalPositiveAdjustedPnl)}&nbsp;
-                    （共&nbsp;{carry.accountDetails.filter((a) => a.adjustedPnl > 0).length}&nbsp;个）&nbsp;
-                    ×&nbsp;{(childRate * 100).toFixed(1)}%&nbsp;=&nbsp;
-                    <span className={`font-semibold ${pnlClass(carry.childCarry)}`}>{fmt(carry.childCarry)}</span>
-                  </p>
+                  <p className="font-medium">子层业绩报酬（盈利账户，待付）</p>
+                  {(() => {
+                    return (
+                      <p className="text-xs text-muted-foreground font-mono">
+                        盈利账户调整后总盈利&nbsp;{fmt(carry.totalPositiveAdjustedPnl)}&nbsp;
+                        （共&nbsp;{carry.accountDetails.filter((a) => a.adjustedPnl > 0).length}&nbsp;个）&nbsp;
+                        ×&nbsp;{(childRate * 100).toFixed(1)}%&nbsp;=&nbsp;
+                        <span className={`font-semibold ${pnlClass(carry.childCarry)}`}>{fmt(carry.childCarry)}</span>
+                      </p>
+                    )
+                  })()}
                 </div>
                 {/* net */}
                 <div className="pt-3 space-y-1 bg-muted/20 rounded px-3 -mx-3">
-                  <p className="font-medium">净业绩报酬</p>
-                  <p className="text-xs font-mono">
-                    <span className="text-muted-foreground">
-                      母层合计&nbsp;{fmt(carry.totalMotherCarry)}&nbsp;−&nbsp;子层&nbsp;{fmt(carry.childCarry)}&nbsp;=&nbsp;
-                    </span>
-                    <span className={`text-base font-bold ${pnlClass(carry.netCarry)}`}>{fmt(carry.netCarry)}</span>
-                  </p>
+                  <p className="font-medium">净业绩报酬（待付）</p>
+                  {(() => {
+                    const motherPendingCarry = (carry.totalCumNetPnl - totalMotherPaid / motherRate) * motherRate
+                    const childPendingCarry  = carry.childCarry
+                    const netPending         = motherPendingCarry - childPendingCarry
+                    return (
+                      <p className="text-xs font-mono">
+                        <span className="text-muted-foreground">
+                          母层待付&nbsp;{fmt(motherPendingCarry)}&nbsp;−&nbsp;子层待付&nbsp;{fmt(childPendingCarry)}&nbsp;=&nbsp;
+                        </span>
+                        <span className={`text-base font-bold ${pnlClass(netPending)}`}>{fmt(netPending)}</span>
+                      </p>
+                    )
+                  })()}
                 </div>
               </div>
             </CardContent>
           </Card>
+
+            {/* col 3: 报酬汇总 */}
+            <Card className="flex flex-col">
+              <CardHeader className="pb-2 pt-4 px-6">
+                <CardTitle className="text-base font-semibold">报酬汇总</CardTitle>
+              </CardHeader>
+              <CardContent className="px-6 pb-6 pt-0 flex-1 flex flex-col justify-center">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="pb-3 text-left text-sm font-medium text-muted-foreground w-20"></th>
+                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">母层</th>
+                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">子层</th>
+                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">净业报</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/60">
+                    {(() => {
+                      const childPaid = payments.reduce((s, p) => s + p.paidChildCarry, 0)
+                      const motherPending = (carry.totalCumNetPnl - totalMotherPaid / motherRate) * motherRate
+                      const childPending  = carry.childCarry
+                      const motherTotal = totalMotherPaid + motherPending
+                      const childTotal  = childPaid + childPending
+                      return (
+                        <>
+                          <tr className="hover:bg-muted/30">
+                            <td className="py-4 text-sm font-medium">总计</td>
+                            <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(motherTotal)}`}>{fmt(motherTotal)}</td>
+                            <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(childTotal)}`}>{fmt(childTotal)}</td>
+                            <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(motherTotal - childTotal)}`}>{fmt(motherTotal - childTotal)}</td>
+                          </tr>
+                          <tr className="hover:bg-muted/30">
+                            <td className="py-4 text-sm font-medium">已付</td>
+                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(totalMotherPaid)}`}>{fmt(totalMotherPaid)}</td>
+                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(childPaid)}`}>{fmt(childPaid)}</td>
+                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(totalMotherPaid - childPaid)}`}>{fmt(totalMotherPaid - childPaid)}</td>
+                          </tr>
+                          <tr className="hover:bg-muted/30">
+                            <td className="py-4 text-sm font-medium">待付</td>
+                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(motherPending)}`}>{fmt(motherPending)}</td>
+                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(childPending)}`}>{fmt(childPending)}</td>
+                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(motherPending - childPending)}`}>{fmt(motherPending - childPending)}</td>
+                          </tr>
+                        </>
+                      )
+                    })()}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          </div>
         </>
       )}
     </div>
