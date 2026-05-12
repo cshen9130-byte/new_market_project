@@ -525,8 +525,8 @@ export default function CarryCalcPage() {
               </Button>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="overflow-hidden rounded-b-lg">
-                <table className="w-full text-sm">
+              <div className="overflow-x-auto rounded-b-lg">
+                <table className="min-w-[900px] w-full text-sm">
                   <thead>
                     <tr className="bg-muted/50 border-b">
                       <th className="px-4 py-2 text-left font-medium text-muted-foreground">账户</th>
@@ -600,7 +600,7 @@ export default function CarryCalcPage() {
           </Card>
 
           {/* ── carry result ───────────────────────────────────────────────── */}
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* col 1: 盈亏统计 */}
             <Card className="flex flex-col">
               <CardHeader className="pb-2 pt-4 px-6">
