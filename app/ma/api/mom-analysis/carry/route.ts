@@ -104,33 +104,32 @@ export async function GET(req: Request) {
     let fundFlowMap = new Map<string, { cumDeposit: number; cumWithdrawal: number }>()
     try {
       const ffRows = await query<{ account: string; cum_deposit: string | null; cum_withdrawal: string | null }>(
-        // Use gross per-row amounts from mom_daily_report_fund_flows, but ONLY for days where
-        // mom_daily_reports.当日存取合计 is non-zero.  On days where the net is 0 (e.g. a
-        // same-day round-trip like 20M out + 20M in), the broker already netted them to 0 in
-        // 当日存取合计 — those are internal/structural transfers that should not count as real
-        // deposits or withdrawals.  Days with a non-zero net (e.g. 10M in + 500K out = 9.5M)
-        // DO have real gross flows that we want to split out individually.
-        `SELECT
-           ff."账户" AS account,
-           SUM(
-             CASE WHEN ff."方向" = '转入'
-             THEN (NULLIF(REPLACE(REPLACE(COALESCE(ff."最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
-             ELSE 0 END
-           )::text AS cum_deposit,
-           (-SUM(
-             CASE WHEN ff."方向" = '转出'
-             THEN (NULLIF(REPLACE(REPLACE(COALESCE(ff."最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
-             ELSE 0 END
-           ))::text AS cum_withdrawal
-         FROM mom_daily_report_fund_flows ff
-         WHERE ff."交易日期" <= $1
-           AND EXISTS (
-             SELECT 1 FROM mom_daily_reports dr
-             WHERE dr."账户" = ff."账户"
-               AND dr."交易日期"::date = ff."交易日期"
-               AND (NULLIF(REPLACE(REPLACE(COALESCE(dr."当日存取合计", ''), ',', ''), ' ', ''), ''))::numeric != 0
-           )
-         GROUP BY ff."账户"`,
+        // Compute the NET per day per account from mom_daily_report_fund_flows (转入 positive,
+        // 转出 negative), then sum across days: positive net days → cumDeposit, negative net
+        // days → cumWithdrawal.
+        // Using the NET per day (rather than gross) prevents double-counting on days where both
+        // a 转入 and a 转出 occurred as part of an account-setup/restructuring transfer (e.g. a
+        // 5M out + 10M in where the 5M is an internal reallocation, not a real client withdrawal).
+        `WITH daily_net AS (
+           SELECT
+             "账户",
+             "交易日期",
+             SUM(
+               CASE WHEN "方向" = '转入'
+               THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+               ELSE -(NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+               END
+             ) AS net_amount
+           FROM mom_daily_report_fund_flows
+           WHERE "交易日期" <= $1
+           GROUP BY "账户", "交易日期"
+         )
+         SELECT
+           "账户" AS account,
+           SUM(CASE WHEN net_amount > 0 THEN net_amount ELSE 0 END)::text  AS cum_deposit,
+           SUM(CASE WHEN net_amount < 0 THEN net_amount ELSE 0 END)::text  AS cum_withdrawal
+         FROM daily_net
+         GROUP BY "账户"`,
         [selectedDate]
       )
       fundFlowMap = new Map(ffRows.map((r) => [
