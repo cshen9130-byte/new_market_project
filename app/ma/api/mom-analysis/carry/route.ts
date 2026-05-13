@@ -104,21 +104,33 @@ export async function GET(req: Request) {
     let fundFlowMap = new Map<string, { cumDeposit: number; cumWithdrawal: number }>()
     try {
       const ffRows = await query<{ account: string; cum_deposit: string | null; cum_withdrawal: string | null }>(
+        // Use gross per-row amounts from mom_daily_report_fund_flows, but ONLY for days where
+        // mom_daily_reports.当日存取合计 is non-zero.  On days where the net is 0 (e.g. a
+        // same-day round-trip like 20M out + 20M in), the broker already netted them to 0 in
+        // 当日存取合计 — those are internal/structural transfers that should not count as real
+        // deposits or withdrawals.  Days with a non-zero net (e.g. 10M in + 500K out = 9.5M)
+        // DO have real gross flows that we want to split out individually.
         `SELECT
-           "账户" AS account,
+           ff."账户" AS account,
            SUM(
-             CASE WHEN "方向" = '转入'
-             THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+             CASE WHEN ff."方向" = '转入'
+             THEN (NULLIF(REPLACE(REPLACE(COALESCE(ff."最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
              ELSE 0 END
            )::text AS cum_deposit,
            (-SUM(
-             CASE WHEN "方向" = '转出'
-             THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+             CASE WHEN ff."方向" = '转出'
+             THEN (NULLIF(REPLACE(REPLACE(COALESCE(ff."最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
              ELSE 0 END
            ))::text AS cum_withdrawal
-         FROM mom_daily_report_fund_flows
-         WHERE "交易日期" <= $1
-         GROUP BY "账户"`,
+         FROM mom_daily_report_fund_flows ff
+         WHERE ff."交易日期" <= $1
+           AND EXISTS (
+             SELECT 1 FROM mom_daily_reports dr
+             WHERE dr."账户" = ff."账户"
+               AND dr."交易日期"::date = ff."交易日期"
+               AND (NULLIF(REPLACE(REPLACE(COALESCE(dr."当日存取合计", ''), ',', ''), ' ', ''), ''))::numeric != 0
+           )
+         GROUP BY ff."账户"`,
         [selectedDate]
       )
       fundFlowMap = new Map(ffRows.map((r) => [
