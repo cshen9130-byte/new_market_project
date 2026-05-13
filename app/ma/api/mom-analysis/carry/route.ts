@@ -287,9 +287,9 @@ export async function GET(req: Request) {
     }
 
     // ── Fund-flow withdrawal events (for verification table) ──────────────────
-    let fundFlowWithdrawals: Array<{ account: string; date: string; amount: number; label: string }> = []
+    let fundFlowWithdrawals: Array<{ account: string; date: string; amount: number; label: string; equityOnDate: number | null; cumNetPnlOnDate: number | null; firstDate: string | null }> = []
     try {
-      const fwRows = await query<{ account: string; date: string; amount: string; label: string }>(
+      const fwRows = await query<{ account: string; date: string; amount: string; label: string; equity_on_date: string | null; cum_net_pnl_on_date: string | null; first_date: string | null }>(
         `WITH
          amounts AS (
            SELECT
@@ -315,7 +315,30 @@ export async function GET(req: Request) {
            a."账户" AS account,
            a."交易日期"::text AS date,
            a.amount::text AS amount,
-           a."说明" AS label
+           a."说明" AS label,
+           (
+             SELECT (array_agg(
+               (NULLIF(REPLACE(REPLACE(COALESCE(r."客户权益",''),',',''),' ',''),''))::numeric
+               ORDER BY r."交易日期" DESC NULLS LAST
+             ))[1]::text
+             FROM mom_daily_reports r
+             WHERE r."账户" = a."账户" AND r."交易日期"::date <= a."交易日期"::date
+           ) AS equity_on_date,
+           (
+             SELECT (
+               COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE(r."当日盈亏",''),',',''),' ',''),''))::numeric), 0)
+               - COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE(r."当日手续费",''),',',''),' ',''),''))::numeric), 0)
+               + COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE(r."权利金收入",''),',',''),' ',''),''))::numeric), 0)
+               - COALESCE(SUM((NULLIF(REPLACE(REPLACE(COALESCE(r."权利金支出",''),',',''),' ',''),''))::numeric), 0)
+             )::text
+             FROM mom_daily_reports r
+             WHERE r."账户" = a."账户" AND r."交易日期"::date <= a."交易日期"::date
+           ) AS cum_net_pnl_on_date,
+           (
+             SELECT MIN(r."交易日期")::text
+             FROM mom_daily_reports r
+             WHERE r."账户" = a."账户"
+           ) AS first_date
          FROM amounts a
          LEFT JOIN labeled_structural_out lso
            ON lso."账户" = a."账户" AND lso."交易日期" = a."交易日期" AND lso.amount = a.amount
@@ -324,13 +347,17 @@ export async function GET(req: Request) {
            AND lso."账户" IS NULL
            AND a.amount > 1000
          ORDER BY a."交易日期", a."账户"`,
+
         [selectedDate]
       )
       fundFlowWithdrawals = fwRows.map((r) => ({
-        account: r.account,
-        date:    r.date,
-        amount:  parseFloat(r.amount),
-        label:   r.label,
+        account:         r.account,
+        date:            r.date,
+        amount:          parseFloat(r.amount),
+        label:           r.label,
+        equityOnDate:    r.equity_on_date    ? parseFloat(r.equity_on_date)    : null,
+        cumNetPnlOnDate: r.cum_net_pnl_on_date ? parseFloat(r.cum_net_pnl_on_date) : null,
+        firstDate:       r.first_date ?? null,
       }))
     } catch {
       // fund flow table not available — skip

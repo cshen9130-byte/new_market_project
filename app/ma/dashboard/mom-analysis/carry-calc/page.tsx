@@ -44,6 +44,9 @@ interface FundFlowWithdrawal {
   date: string
   amount: number
   label: string
+  equityOnDate: number | null
+  cumNetPnlOnDate: number | null
+  firstDate: string | null
 }
 
 interface InitialData {
@@ -521,7 +524,6 @@ export default function CarryCalcPage() {
                     </thead>
                     <tbody className="divide-y divide-border">
                       {fundFlowWithdrawals.map((fw, i) => {
-                        const acct = carry.accountDetails.find((a) => a.account === fw.account)
                         const paidChildCarry = fw.amount * childRate
                         const manualMatch = payments.find(
                           (p) => p.account === fw.account && p.carryDate === fw.date
@@ -529,26 +531,24 @@ export default function CarryCalcPage() {
                         const diff = manualMatch ? Math.abs(manualMatch.profitPortion - fw.amount) : null
                         const match = diff !== null && diff < 1
                         return (
-                          <tr key={i} className={`hover:bg-muted/30 transition-colors ${diff !== null && !match ? "bg-red-50/40 dark:bg-red-950/20" : diff === null ? "bg-yellow-50/30 dark:bg-yellow-950/10" : ""}`}>
+                          <tr key={i} className={`hover:bg-muted/30 transition-colors ${diff !== null && !match ? "bg-red-50/40 dark:bg-red-950/20" : ""}`}>
                             <td className="px-3 py-2 font-mono text-xs">
                               {fw.account}
                               {fw.label && fw.label !== "【出入金】" && (
                                 <span className="ml-1 text-muted-foreground">{fw.label.replace("【出入金】", "")}</span>
                               )}
                             </td>
-                            <td className="px-3 py-2 text-xs text-right text-muted-foreground">{manualMatch?.startDate ?? "—"}</td>
+                            <td className="px-3 py-2 text-xs text-right text-muted-foreground">{fw.firstDate ?? "—"}</td>
                             <td className="px-3 py-2 text-xs text-right text-muted-foreground">{fw.date}</td>
                             <td className="px-3 py-2 text-right text-xs">{manualMatch?.operatingDays ?? "—"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-xs">{acct ? fmt(acct.latestEquity) : "—"}</td>
-                            <td className="px-3 py-2 text-right tabular-nums text-xs">{acct ? fmt(acct.cumNetPnl) : "—"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-xs">{fw.equityOnDate != null ? fmt(fw.equityOnDate) : "—"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-xs">{fw.cumNetPnlOnDate != null ? fmt(fw.cumNetPnlOnDate) : "—"}</td>
                             <td className="px-3 py-2 text-right tabular-nums font-medium text-orange-600 dark:text-orange-400">{fmt(fw.amount)}</td>
                             <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">{fmt(paidChildCarry)}</td>
                             <td className="px-3 py-2 text-left text-xs">
-                              {diff === null
-                                ? <span className="text-yellow-600 dark:text-yellow-400">未录入</span>
-                                : match
-                                  ? <span className="text-green-600 dark:text-green-400 font-bold">✓</span>
-                                  : <span className="text-red-600 dark:text-red-400 font-bold">✗ 差额&nbsp;{fmt(diff)}</span>}
+                              {diff !== null && !match
+                                ? <span className="text-red-600 dark:text-red-400 font-bold">✗ 差额&nbsp;{fmt(diff)}</span>
+                                : <span className="text-green-600 dark:text-green-400 font-bold">✓</span>}
                             </td>
                           </tr>
                         )
