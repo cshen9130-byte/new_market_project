@@ -96,10 +96,48 @@ export async function GET(req: Request) {
       , [selectedDate]
     )
 
+    // Override cum_deposit / cum_withdrawal with gross fund-flow data from mom_daily_report_fund_flows.
+    // That table records each individual 转入/转出 transaction, so it correctly separates
+    // days where both a deposit and a withdrawal occurred (net 当日存取合计 would otherwise
+    // misclassify the net as purely a deposit or purely a withdrawal).
+    // Falls back to the 当日存取合计-based numbers if the table is unavailable.
+    let fundFlowMap = new Map<string, { cumDeposit: number; cumWithdrawal: number }>()
+    try {
+      const ffRows = await query<{ account: string; cum_deposit: string | null; cum_withdrawal: string | null }>(
+        `SELECT
+           "账户" AS account,
+           SUM(
+             CASE WHEN "方向" = '转入'
+             THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+             ELSE 0 END
+           )::text AS cum_deposit,
+           (-SUM(
+             CASE WHEN "方向" = '转出'
+             THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+             ELSE 0 END
+           ))::text AS cum_withdrawal
+         FROM mom_daily_report_fund_flows
+         WHERE "交易日期" <= $1
+         GROUP BY "账户"`,
+        [selectedDate]
+      )
+      fundFlowMap = new Map(ffRows.map((r) => [
+        r.account,
+        {
+          cumDeposit:    parseNum(r.cum_deposit)    ?? 0,
+          cumWithdrawal: parseNum(r.cum_withdrawal) ?? 0,
+        }
+      ]))
+    } catch {
+      // mom_daily_report_fund_flows not available — fall back to 当日存取合计
+    }
+
     const accounts = pnlRows.map((r) => {
       const cumPnl        = parseNum(r.cum_pnl)        ?? 0
       const cumCommission = parseNum(r.cum_commission) ?? 0
       const optionsPnl    = parseNum(r.options_pnl)   ?? 0
+      // Use gross fund-flow figures when available, otherwise fall back to net 当日存取合计
+      const ff = fundFlowMap.get(r.account)
       return {
         account:       r.account,
         cumPnl,
@@ -107,8 +145,8 @@ export async function GET(req: Request) {
         optionsPnl,
           cumNetPnl:     cumPnl - cumCommission + optionsPnl,
         latestEquity:  parseNum(r.latest_equity) ?? null,
-        cumDeposit:    parseNum(r.cum_deposit)   ?? 0,
-        cumWithdrawal: parseNum(r.cum_withdrawal) ?? 0,
+        cumDeposit:    ff ? ff.cumDeposit    : (parseNum(r.cum_deposit)   ?? 0),
+        cumWithdrawal: ff ? ff.cumWithdrawal : (parseNum(r.cum_withdrawal) ?? 0),
         source: undefined as "guosen" | undefined,
         latestDataDate: undefined as string | undefined,
       }
