@@ -104,31 +104,50 @@ export async function GET(req: Request) {
     let fundFlowMap = new Map<string, { cumDeposit: number; cumWithdrawal: number }>()
     try {
       const ffRows = await query<{ account: string; cum_deposit: string | null; cum_withdrawal: string | null }>(
-        // Compute the NET per day per account from mom_daily_report_fund_flows (转入 positive,
-        // 转出 negative), then sum across days: positive net days → cumDeposit, negative net
-        // days → cumWithdrawal.
-        // Using the NET per day (rather than gross) prevents double-counting on days where both
-        // a 转入 and a 转出 occurred as part of an account-setup/restructuring transfer (e.g. a
-        // 5M out + 10M in where the 5M is an internal reallocation, not a real client withdrawal).
-        `WITH daily_net AS (
+        // Logic for gross vs structural transfers:
+        //
+        // 转出 entries fall into two categories, identified by the 说明 field:
+        //   - 说明 = '【出入金】' exactly (no suffix): structural transfer — capital being
+        //     reshuffled between sub-accounts or round-tripped. Treated as structural_out
+        //     and netted against 转入 on the same day. If net > 0 → deposit; if net = 0
+        //     → excluded entirely. Example: rx085 Sep18 20M out+in (round-trip),
+        //     rx315 Nov10 5M out alongside 10M in (account restructuring).
+        //   - 说明 has a specific label (e.g. '【出入金】投顾提盈'): real client cash
+        //     outflow. Counted as gross withdrawal independently of the 转入 on that day.
+        //     Example: rx085 Apr15 500K out ('投顾提盈' = carry performance withdrawal).
+        //
+        // For 转入: always gross, but the structural_out is subtracted first; if the
+        // resulting net_amount <= 0 (e.g., pure round-trip day), that day adds nothing.
+        `WITH daily_flow AS (
            SELECT
              "账户",
              "交易日期",
+             -- net_amount = 转入 minus structural 转出 (说明 = '【出入金】' exactly)
              SUM(
                CASE WHEN "方向" = '转入'
                THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
-               ELSE -(NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
-               END
-             ) AS net_amount
+               ELSE 0 END
+             ) -
+             SUM(
+               CASE WHEN "方向" = '转出' AND COALESCE("说明", '') = '【出入金】'
+               THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+               ELSE 0 END
+             ) AS net_amount,
+             -- real_withdrawal = 转出 with a specific label (genuine client cash outflow)
+             SUM(
+               CASE WHEN "方向" = '转出' AND COALESCE("说明", '') != '【出入金】'
+               THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
+               ELSE 0 END
+             ) AS real_withdrawal_amount
            FROM mom_daily_report_fund_flows
            WHERE "交易日期" <= $1
            GROUP BY "账户", "交易日期"
          )
          SELECT
            "账户" AS account,
-           SUM(CASE WHEN net_amount > 0 THEN net_amount ELSE 0 END)::text  AS cum_deposit,
-           SUM(CASE WHEN net_amount < 0 THEN net_amount ELSE 0 END)::text  AS cum_withdrawal
-         FROM daily_net
+           SUM(CASE WHEN net_amount > 0 THEN net_amount ELSE 0 END)::text AS cum_deposit,
+           (-SUM(real_withdrawal_amount))::text AS cum_withdrawal
+         FROM daily_flow
          GROUP BY "账户"`,
         [selectedDate]
       )
