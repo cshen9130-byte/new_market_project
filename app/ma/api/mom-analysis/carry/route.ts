@@ -286,6 +286,38 @@ export async function GET(req: Request) {
       // mom_fund_transactions not available — treat as 0
     }
 
+    // ── Mother-layer carry payment records ────────────────────────────────────
+    let motherPayments: Array<{
+      id: number
+      clientName: string
+      clientType: string | null
+      direction: string | null
+      confirmDate: string
+      paidCarry: number
+      note: string | null
+    }> = []
+    try {
+      const mpRows = await query<Record<string, string | null>>(
+        `SELECT id, client_name, client_type, direction,
+                confirm_date::text, paid_carry::text, note
+         FROM mom_carry_mother_payments
+         WHERE confirm_date::date <= $1
+         ORDER BY confirm_date, client_name`,
+        [selectedDate]
+      )
+      motherPayments = mpRows.map((r) => ({
+        id:          parseInt(r.id as string, 10),
+        clientName:  r.client_name as string,
+        clientType:  r.client_type ?? null,
+        direction:   r.direction   ?? null,
+        confirmDate: r.confirm_date as string,
+        paidCarry:   parseFloat(r.paid_carry as string),
+        note:        r.note ?? null,
+      }))
+    } catch {
+      // table not yet created — treat as empty
+    }
+
     // ── Fund-flow withdrawal events (for verification table) ──────────────────
     let fundFlowWithdrawals: Array<{ account: string; date: string; amount: number; label: string; equityOnDate: number | null; cumNetPnlOnDate: number | null; firstDate: string | null }> = []
     try {
@@ -363,7 +395,7 @@ export async function GET(req: Request) {
       // fund flow table not available — skip
     }
 
-    return NextResponse.json({ ok: true, latestDate, selectedDate, availableDates, ...rates, accounts: mergedAccounts, payments, totalMotherPaid, fundFlowWithdrawals })
+    return NextResponse.json({ ok: true, latestDate, selectedDate, availableDates, ...rates, accounts: mergedAccounts, payments, motherPayments, totalMotherPaid, fundFlowWithdrawals })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {

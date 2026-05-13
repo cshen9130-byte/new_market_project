@@ -39,6 +39,22 @@ interface Payment {
 
 type PaymentDraft = Omit<Payment, "id">
 
+interface MotherPayment {
+  id: number
+  clientName: string
+  clientType: string | null
+  direction: string | null   // 认购/赎回
+  confirmDate: string
+  paidCarry: number
+  note: string | null
+}
+
+type MotherPaymentDraft = Omit<MotherPayment, "id">
+
+const EMPTY_MOTHER_DRAFT: MotherPaymentDraft = {
+  clientName: "", clientType: "", direction: "", confirmDate: "", paidCarry: 0, note: "",
+}
+
 interface FundFlowWithdrawal {
   account: string
   date: string
@@ -59,6 +75,7 @@ interface InitialData {
   accounts: Account[]
   payments: Payment[]
   totalMotherPaid: number
+  motherPayments?: MotherPayment[]
   fundFlowWithdrawals?: FundFlowWithdrawal[]
   notYetRun?: boolean
   error?: string
@@ -172,13 +189,14 @@ function RateInput({
 }
 
 function PaymentFormRow({
-  draft, onChange, onSave, onCancel, saving,
+  draft, onChange, onSave, onCancel, saving, carryLabel = "实付carry",
 }: {
   draft: PaymentDraft
   onChange: (field: keyof PaymentDraft, val: string) => void
   onSave: () => void
   onCancel: () => void
   saving: boolean
+  carryLabel?: string
 }) {
   const field = (k: keyof PaymentDraft) => (draft[k] === null || draft[k] === undefined ? "" : String(draft[k]))
   const set   = (k: keyof PaymentDraft, v: string) => onChange(k, v)
@@ -192,7 +210,39 @@ function PaymentFormRow({
       <td className="px-2 py-1"><Input className={inputCls} type="number" placeholder="当日结存" value={field("balance")} onChange={(e) => set("balance", e.target.value)} /></td>
       <td className="px-2 py-1"><Input className={inputCls} type="number" placeholder="总盈亏" value={field("totalProfit")} onChange={(e) => set("totalProfit", e.target.value)} /></td>
       <td className="px-2 py-1"><Input className={inputCls} type="number" placeholder="提盈部分*" value={field("profitPortion")} onChange={(e) => set("profitPortion", e.target.value)} /></td>
-      <td className="px-2 py-1"><Input className={inputCls} type="number" placeholder="实付carry*" value={field("paidChildCarry")} onChange={(e) => set("paidChildCarry", e.target.value)} /></td>
+      <td className="px-2 py-1"><Input className={inputCls} type="number" placeholder={`${carryLabel}*`} value={field("paidChildCarry")} onChange={(e) => set("paidChildCarry", e.target.value)} /></td>
+      <td className="px-2 py-1 text-right space-x-1 whitespace-nowrap">
+        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onSave} disabled={saving} title="保存">
+          <Check className="h-3.5 w-3.5 text-green-600" />
+        </Button>
+        <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onCancel} title="取消">
+          <X className="h-3.5 w-3.5 text-muted-foreground" />
+        </Button>
+      </td>
+    </tr>
+  )
+}
+
+function MotherPaymentFormRow({
+  draft, onChange, onSave, onCancel, saving,
+}: {
+  draft: MotherPaymentDraft
+  onChange: (field: keyof MotherPaymentDraft, val: string) => void
+  onSave: () => void
+  onCancel: () => void
+  saving: boolean
+}) {
+  const field = (k: keyof MotherPaymentDraft) => (draft[k] === null || draft[k] === undefined ? "" : String(draft[k]))
+  const set   = (k: keyof MotherPaymentDraft, v: string) => onChange(k, v)
+  const inputCls = "h-7 text-xs"
+  return (
+    <tr className="bg-blue-50/50 dark:bg-blue-950/20">
+      <td className="px-2 py-1"><Input className={inputCls} placeholder="客户名称*" value={field("clientName")} onChange={(e) => set("clientName", e.target.value)} /></td>
+      <td className="px-2 py-1"><Input className={inputCls} placeholder="客户类别" value={field("clientType") ?? ""} onChange={(e) => set("clientType", e.target.value)} /></td>
+      <td className="px-2 py-1"><Input className={inputCls} placeholder="认购/赎回" value={field("direction") ?? ""} onChange={(e) => set("direction", e.target.value)} /></td>
+      <td className="px-2 py-1"><Input className={inputCls} type="date" value={field("confirmDate")} onChange={(e) => set("confirmDate", e.target.value)} /></td>
+      <td className="px-2 py-1"><Input className={inputCls} type="number" placeholder="已提业报*" value={field("paidCarry")} onChange={(e) => set("paidCarry", e.target.value)} /></td>
+      <td className="px-2 py-1"><Input className={inputCls} placeholder="备注" value={field("note") ?? ""} onChange={(e) => set("note", e.target.value)} /></td>
       <td className="px-2 py-1 text-right space-x-1 whitespace-nowrap">
         <Button size="icon" variant="ghost" className="h-6 w-6" onClick={onSave} disabled={saving} title="保存">
           <Check className="h-3.5 w-3.5 text-green-600" />
@@ -227,7 +277,7 @@ export default function CarryCalcPage() {
   const [ratesSaved, setRatesSaved]       = useState(false)
   const [ratesError, setRatesError]       = useState<string | null>(null)
 
-  // ── payment CRUD state ────────────────────────────────────────────────────
+  // ── child payment CRUD state ──────────────────────────────────────────────
   const [addingPayment, setAddingPayment]     = useState(false)
   const [newDraft, setNewDraft]               = useState<PaymentDraft>(EMPTY_DRAFT)
   const [savingNew, setSavingNew]             = useState(false)
@@ -235,6 +285,16 @@ export default function CarryCalcPage() {
   const [editDraft, setEditDraft]             = useState<PaymentDraft>(EMPTY_DRAFT)
   const [savingEdit, setSavingEdit]           = useState(false)
   const [deletingId, setDeletingId]           = useState<number | null>(null)
+
+  // ── mother payment CRUD state ─────────────────────────────────────────────
+  const [motherPayments, setMotherPayments]         = useState<MotherPayment[]>([])
+  const [addingMotherPayment, setAddingMotherPayment] = useState(false)
+  const [newMotherDraft, setNewMotherDraft]           = useState<MotherPaymentDraft>(EMPTY_MOTHER_DRAFT)
+  const [savingMotherNew, setSavingMotherNew]         = useState(false)
+  const [editingMotherId, setEditingMotherId]         = useState<number | null>(null)
+  const [editMotherDraft, setEditMotherDraft]         = useState<MotherPaymentDraft>(EMPTY_MOTHER_DRAFT)
+  const [savingMotherEdit, setSavingMotherEdit]       = useState(false)
+  const [deletingMotherId, setDeletingMotherId]       = useState<number | null>(null)
 
   // ── load ──────────────────────────────────────────────────────────────────
   const load = useCallback(async (date?: string | null) => {
@@ -249,6 +309,7 @@ export default function CarryCalcPage() {
       setAccounts(data.accounts ?? [])
       setPayments(data.payments ?? [])
       setTotalMotherPaid(data.totalMotherPaid ?? 0)
+      setMotherPayments(data.motherPayments ?? [])
       setFundFlowWithdrawals(data.fundFlowWithdrawals ?? [])
       setLatestDate(data.latestDate ?? null)
       setSelectedDate(data.selectedDate ?? data.latestDate ?? null)
@@ -299,6 +360,11 @@ export default function CarryCalcPage() {
     if (numFields.includes(field)) {
       return { ...draft, [field]: val === "" ? null : Number(val) }
     }
+    return { ...draft, [field]: val === "" ? null : val }
+  }
+
+  const applyMotherDraftChange = (draft: MotherPaymentDraft, field: keyof MotherPaymentDraft, val: string): MotherPaymentDraft => {
+    if (field === "paidCarry") return { ...draft, paidCarry: val === "" ? 0 : Number(val) }
     return { ...draft, [field]: val === "" ? null : val }
   }
 
@@ -362,6 +428,67 @@ export default function CarryCalcPage() {
       alert(e instanceof Error ? e.message : "删除失败")
     } finally {
       setDeletingId(null)
+    }
+  }
+
+  // ── mother payment CRUD ───────────────────────────────────────────────────
+  const saveMotherNew = async () => {
+    if (!newMotherDraft.clientName || !newMotherDraft.confirmDate) return
+    setSavingMotherNew(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/carry-mother-payments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newMotherDraft),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? "保存失败")
+      setNewMotherDraft(EMPTY_MOTHER_DRAFT); setAddingMotherPayment(false)
+      await load(selectedDate)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "保存失败")
+    } finally {
+      setSavingMotherNew(false)
+    }
+  }
+
+  const startMotherEdit = (p: MotherPayment) => {
+    setEditingMotherId(p.id)
+    const { id: _id, ...rest } = p
+    setEditMotherDraft(rest)
+  }
+
+  const saveMotherEdit = async () => {
+    if (editingMotherId === null) return
+    setSavingMotherEdit(true)
+    try {
+      const res = await fetch(`/ma/api/mom-analysis/carry-mother-payments/${editingMotherId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editMotherDraft),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? "保存失败")
+      setEditingMotherId(null)
+      await load(selectedDate)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "保存失败")
+    } finally {
+      setSavingMotherEdit(false)
+    }
+  }
+
+  const deleteMotherPayment = async (id: number) => {
+    if (!confirm("确认删除此条已付记录？")) return
+    setDeletingMotherId(id)
+    try {
+      const res = await fetch(`/ma/api/mom-analysis/carry-mother-payments/${id}`, { method: "DELETE" })
+      if (!res.ok) throw new Error("删除失败")
+      await load(selectedDate)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "删除失败")
+    } finally {
+      setDeletingMotherId(null)
     }
   }
 
@@ -859,6 +986,94 @@ export default function CarryCalcPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* ── 母层历史已付业绩报酬记录 ──────────────────────────────────── */}
+          <Card>
+            <CardHeader className="pb-2 flex flex-row items-center justify-between">
+              <CardTitle className="text-sm font-semibold">母层历史已付业绩报酬记录</CardTitle>
+              <Button
+                size="sm" variant="outline" className="h-7 gap-1 text-xs"
+                onClick={() => { setAddingMotherPayment(true); setNewMotherDraft(EMPTY_MOTHER_DRAFT) }}
+                disabled={addingMotherPayment}
+              >
+                <Plus className="h-3.5 w-3.5" />添加
+              </Button>
+            </CardHeader>
+            <CardContent className="p-0">
+              <div className="overflow-x-auto rounded-b-lg">
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col className="w-[160px]" />
+                    <col className="w-[100px]" />
+                    <col className="w-[90px]" />
+                    <col className="w-[110px]" />
+                    <col className="w-[120px]" />
+                    <col className="w-[140px]" />
+                    <col className="w-[72px]" />
+                  </colgroup>
+                  <thead>
+                    <tr className="bg-muted/50 border-b">
+                      {["客户名称", "客户类别", "认购/赎回", "申请确认日", "已提业报", "备注", ""].map((h, i) => (
+                        <th key={i} className={`px-3 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap ${i >= 4 && i < 5 ? "text-right" : i === 6 ? "text-right" : "text-left"}`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {addingMotherPayment && (
+                      <MotherPaymentFormRow
+                        draft={newMotherDraft}
+                        onChange={(f, v) => setNewMotherDraft((d) => applyMotherDraftChange(d, f, v))}
+                        onSave={saveMotherNew}
+                        onCancel={() => setAddingMotherPayment(false)}
+                        saving={savingMotherNew}
+                      />
+                    )}
+                    {motherPayments.map((p) =>
+                      editingMotherId === p.id ? (
+                        <MotherPaymentFormRow
+                          key={p.id}
+                          draft={editMotherDraft}
+                          onChange={(f, v) => setEditMotherDraft((d) => applyMotherDraftChange(d, f, v))}
+                          onSave={saveMotherEdit}
+                          onCancel={() => setEditingMotherId(null)}
+                          saving={savingMotherEdit}
+                        />
+                      ) : (
+                        <tr key={p.id} className="hover:bg-muted/30 transition-colors">
+                          <td className="px-3 py-2 text-xs">{p.clientName}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">{p.clientType ?? "—"}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">{p.direction ?? "—"}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground">{p.confirmDate}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-medium text-orange-600 dark:text-orange-400">{fmt(p.paidCarry)}</td>
+                          <td className="px-3 py-2 text-xs text-muted-foreground truncate">{p.note ?? "—"}</td>
+                          <td className="px-3 py-2 text-right whitespace-nowrap">
+                            <Button size="icon" variant="ghost" className="h-6 w-6" onClick={() => startMotherEdit(p)} title="编辑">
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                            <Button size="icon" variant="ghost" className="h-6 w-6 text-destructive" onClick={() => deleteMotherPayment(p.id)} disabled={deletingMotherId === p.id} title="删除">
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </td>
+                        </tr>
+                      )
+                    )}
+                    {motherPayments.length === 0 && !addingMotherPayment && (
+                      <tr><td colSpan={7} className="px-3 py-4 text-center text-xs text-muted-foreground">暂无记录</td></tr>
+                    )}
+                    {motherPayments.length > 0 && (
+                      <tr className="bg-muted/40 border-t-2 border-border font-semibold">
+                        <td colSpan={4} className="px-3 py-2 text-xs font-semibold">合计</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">
+                          {fmt(motherPayments.reduce((s, p) => s + p.paidCarry, 0))}
+                        </td>
+                        <td colSpan={2} />
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
         </>
       )}
     </div>
