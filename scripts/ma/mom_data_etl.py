@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Incremental MOM trade-detail ETL
 ================================
@@ -203,6 +203,21 @@ DAILY_REPORT_COL_ORDER: List[Tuple[str, str]] = [
     ("I23", "持仓盈亏"),
 ]
 DAILY_REPORT_SQL_COLS = [f'"{col}"' for _, col in DAILY_REPORT_COL_ORDER]
+
+DAILY_REPORT_FUND_FLOW_SECTION_TITLE = "期货期权账户出入金明细（单位：人民币）"
+DAILY_REPORT_FUND_FLOW_TITLE_ROW = 25
+DAILY_REPORT_FUND_FLOW_HEADER_ROW = 26
+DAILY_REPORT_FUND_FLOW_DATA_START_ROW = 27
+DAILY_REPORT_FUND_FLOW_FIRST_COLUMN = 2  # B
+DAILY_REPORT_FUND_FLOW_LAST_COLUMN = 6   # F
+DAILY_REPORT_FUND_FLOW_COLUMNS: List[Tuple[str, str]] = [
+    ("发生日期", "发生日期"),
+    ("方向", "方向"),
+    ("最大允许亏损金额", "最大允许亏损金额"),
+    ("不可亏损金额", "不可亏损金额"),
+    ("说明", "说明"),
+]
+DAILY_REPORT_FUND_FLOW_SQL_COLS = ['"账户"', '"交易日期"'] + [f'"{sql}"' for _, sql in DAILY_REPORT_FUND_FLOW_COLUMNS]
 
 def load_env_files() -> None:
     """Walk up and load .env/.env.local without overriding existing env vars."""
@@ -894,6 +909,71 @@ def parse_daily_report_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, sha
     return values
 
 
+def parse_daily_report_fund_flow_rows(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str]) -> List[List[str]]:
+    """Read the B26:F* 出入金子表 from 客户交易核算日报.
+
+    The table starts with a title at B25, headers at B26:F26, data at row 27,
+    and must stop at the first contiguous blank row or the first "合计" row so
+    later sections in the same sheet are ignored.
+    """
+    rows: List[List[str]] = []
+    saw_section_title = False
+    headers_found = False
+    width = DAILY_REPORT_FUND_FLOW_LAST_COLUMN - DAILY_REPORT_FUND_FLOW_FIRST_COLUMN + 1
+
+    with workbook_zip.open(sheet_path) as sheet_file:
+        for _, element in ET.iterparse(sheet_file, events=("end",)):
+            if element.tag != f"{{{MAIN_NS}}}row":
+                continue
+
+            row_number = int(element.attrib.get("r", "0"))
+            if row_number < DAILY_REPORT_FUND_FLOW_TITLE_ROW:
+                element.clear()
+                continue
+
+            row_values = [""] * width
+            for cell in element.findall(f"{{{MAIN_NS}}}c"):
+                ref = cell.attrib.get("r", "")
+                col_idx, _ = split_cell_reference(ref)
+                if col_idx is None or col_idx < DAILY_REPORT_FUND_FLOW_FIRST_COLUMN or col_idx > DAILY_REPORT_FUND_FLOW_LAST_COLUMN:
+                    continue
+                row_values[col_idx - DAILY_REPORT_FUND_FLOW_FIRST_COLUMN] = str(clean_cell(extract_cell_value(cell, shared_strings))).strip()
+
+            if row_number == DAILY_REPORT_FUND_FLOW_TITLE_ROW:
+                saw_section_title = DAILY_REPORT_FUND_FLOW_SECTION_TITLE in (row_values[0] or "")
+                element.clear()
+                continue
+
+            if row_number == DAILY_REPORT_FUND_FLOW_HEADER_ROW:
+                headers_found = any(row_values)
+                if not headers_found and not saw_section_title:
+                    element.clear()
+                    break
+                element.clear()
+                continue
+
+            if row_number < DAILY_REPORT_FUND_FLOW_DATA_START_ROW:
+                element.clear()
+                continue
+
+            if not headers_found:
+                element.clear()
+                break
+
+            if not any(v != "" for v in row_values):
+                element.clear()
+                break
+
+            if str(row_values[0]).strip() == "合计":
+                element.clear()
+                break
+
+            rows.append(row_values)
+            element.clear()
+
+    return rows
+
+
 def parse_detail_sheet(workbook_zip: zipfile.ZipFile, sheet_path: str, shared_strings: List[str], last_col: int | None = None) -> Tuple[List[str], List[List[str]]]:
     headers: List[str] = []
     rows: List[List[str]] = []
@@ -981,6 +1061,7 @@ def drop_tables(conn) -> None:
         cur.execute("DROP TABLE IF EXISTS mom_order_details CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_summary_details CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_daily_reports CASCADE")
+        cur.execute("DROP TABLE IF EXISTS mom_daily_report_fund_flows CASCADE")
         cur.execute("DROP TABLE IF EXISTS mom_trade_detail_file_state CASCADE")
     conn.commit()
 
@@ -995,6 +1076,7 @@ def ensure_tables(conn) -> None:
     daily_report_non_key_cols = "\n".join(
         f'  "{col}" TEXT,' for _, col in DAILY_REPORT_COL_ORDER if col not in ("账户", "交易日期")
     )
+    daily_report_fund_flow_col_defs = "\n".join(f'  "{sql}" TEXT,' for _, sql in DAILY_REPORT_FUND_FLOW_COLUMNS)
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -1065,7 +1147,7 @@ def ensure_tables(conn) -> None:
             )
             """
         )
-        for col in ("futures_row_count", "options_row_count", "close_row_count", "position_row_count", "options_position_row_count", "futures_position_row_count", "order_row_count", "summary_row_count", "daily_report_count"):
+        for col in ("futures_row_count", "options_row_count", "close_row_count", "position_row_count", "options_position_row_count", "futures_position_row_count", "order_row_count", "summary_row_count", "daily_report_count", "daily_report_fund_flow_row_count"):
             cur.execute(
                 f"""
                 ALTER TABLE mom_trade_detail_file_state
@@ -1209,10 +1291,29 @@ def ensure_tables(conn) -> None:
               ON mom_daily_reports ("账户", "交易日期")
             """
         )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS mom_daily_report_fund_flows (
+              id              BIGSERIAL PRIMARY KEY,
+              "账户"          TEXT NOT NULL,
+              "交易日期"      DATE,
+{daily_report_fund_flow_col_defs}
+              source_file_rel TEXT NOT NULL,
+              row_hash        TEXT NOT NULL,
+              UNIQUE (row_hash)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mom_daily_report_fund_flows_account_date
+              ON mom_daily_report_fund_flows ("账户", "交易日期")
+            """
+        )
     conn.commit()
 
 
-def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[datetime, int]]:
+def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[datetime, int, str]]:
     rels = [str(p.relative_to(base_dir)).replace("\\", "/") for p in files]
     if not rels:
         return {}
@@ -1220,7 +1321,7 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT source_file_rel, source_mtime, source_size
+            SELECT source_file_rel, source_mtime, source_size, status
             FROM mom_trade_detail_file_state
             WHERE source_file_rel = ANY(%s)
             """,
@@ -1228,19 +1329,19 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
         )
         rows = cur.fetchall()
 
-    state: Dict[str, Tuple[datetime, int]] = {}
-    for file_rel, mtime, size in rows:
-        state[file_rel] = (mtime, int(size))
+    state: Dict[str, Tuple[datetime, int, str]] = {}
+    for file_rel, mtime, size, status in rows:
+        state[file_rel] = (mtime, int(size), str(status or ""))
     return state
 
 
-def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, account: str, trade_date: str, row_count: int, futures_row_count: int, options_row_count: int, close_row_count: int, position_row_count: int, options_position_row_count: int, futures_position_row_count: int, order_row_count: int, summary_row_count: int, daily_report_count: int, status: str, error_message: str | None) -> None:
+def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, account: str, trade_date: str, row_count: int, futures_row_count: int, options_row_count: int, close_row_count: int, position_row_count: int, options_position_row_count: int, futures_position_row_count: int, order_row_count: int, summary_row_count: int, daily_report_count: int, daily_report_fund_flow_row_count: int, status: str, error_message: str | None) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO mom_trade_detail_file_state
-              (source_file_rel, source_mtime, source_size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, daily_report_count, status, error_message, processed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                            (source_file_rel, source_mtime, source_size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, daily_report_count, daily_report_fund_flow_row_count, status, error_message, processed_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
             ON CONFLICT (source_file_rel) DO UPDATE SET
               source_mtime                = EXCLUDED.source_mtime,
               source_size                 = EXCLUDED.source_size,
@@ -1256,11 +1357,12 @@ def upsert_file_state(conn, file_rel: str, mtime_dt: datetime, size: int, accoun
               order_row_count             = EXCLUDED.order_row_count,
               summary_row_count           = EXCLUDED.summary_row_count,
               daily_report_count          = EXCLUDED.daily_report_count,
+                            daily_report_fund_flow_row_count = EXCLUDED.daily_report_fund_flow_row_count,
               status                      = EXCLUDED.status,
               error_message               = EXCLUDED.error_message,
               processed_at                = NOW()
             """,
-            (file_rel, mtime_dt, size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, daily_report_count, status, error_message),
+                        (file_rel, mtime_dt, size, account, trade_date, row_count, futures_row_count, options_row_count, close_row_count, position_row_count, options_position_row_count, futures_position_row_count, order_row_count, summary_row_count, daily_report_count, daily_report_fund_flow_row_count, status, error_message),
         )
 
 
@@ -1280,7 +1382,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
         with zipfile.ZipFile(file_path) as workbook_zip:
             sheet_paths = get_sheet_paths(workbook_zip)
             if SUMMARY_SHEET_NAME not in sheet_paths or DETAIL_SHEET_NAME not in sheet_paths:
-                upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing required sheet")
+                upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing required sheet")
                 conn.commit()
                 return False, f"missing sheet: {rel}"
 
@@ -1392,6 +1494,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
 
             # 客户交易核算日报 sheet — reads specific cells from rows 6 and 11-23.
             daily_report_row: dict | None = None
+            daily_report_fund_flow_rows: list = []
             dr_account = ""
             dr_date_raw = ""
             if DAILY_REPORT_SHEET_NAME in sheet_paths:
@@ -1401,10 +1504,13 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 dr_account = daily_cells.get("D6", "")
                 dr_date_raw = daily_cells.get("I6", "")
                 daily_report_row = daily_cells
+                daily_report_fund_flow_rows = parse_daily_report_fund_flow_rows(
+                    workbook_zip, sheet_paths[DAILY_REPORT_SHEET_NAME], shared_strings
+                )
 
         trade_date = normalize_trade_date(trade_date_raw)
         if not account or not trade_date:
-            upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing account/date in summary")
+            upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", "Missing account/date in summary")
             conn.commit()
             return False, f"missing account/date: {rel}"
 
@@ -1621,14 +1727,30 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
             daily_report_count = 1 if daily_report_row is not None else 0
 
-        upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, len(rows), len(futures_rows), len(options_rows), len(close_rows), len(position_rows), len(options_position_rows), len(futures_position_rows), len(order_rows), len(summary_detail_rows), daily_report_count, "ok", None)
+            # ── 客户交易核算日报 / 期货期权账户出入金明细 ───────────────────────
+            cur.execute('DELETE FROM mom_daily_report_fund_flows WHERE "账户" = %s AND "交易日期" = %s', (dr_account, dr_date_iso))
+            daily_report_fund_flow_insert_cols = ", ".join(DAILY_REPORT_FUND_FLOW_SQL_COLS) + ", source_file_rel, row_hash"
+            dffvalues = []
+            for ri, rv in enumerate(daily_report_fund_flow_rows):
+                detail_vals = [rv[pos] if pos < len(rv) else "" for pos in range(len(DAILY_REPORT_FUND_FLOW_COLUMNS))]
+                rh = row_hash(rel + "#daily-fund-flow", dr_account, dr_date, rv, ri)
+                dffvalues.append(tuple([dr_account, dr_date_iso] + detail_vals + [rel, rh]))
+            if dffvalues:
+                execute_values(
+                    cur,
+                    f"INSERT INTO mom_daily_report_fund_flows ({daily_report_fund_flow_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
+                    dffvalues, page_size=1000,
+                )
+            daily_report_fund_flow_count = len(daily_report_fund_flow_rows)
+
+        upsert_file_state(conn, rel, mtime_dt, size, account, trade_date, len(rows), len(futures_rows), len(options_rows), len(close_rows), len(position_rows), len(options_position_rows), len(futures_position_rows), len(order_rows), len(summary_detail_rows), daily_report_count, daily_report_fund_flow_count, "ok", None)
         conn.commit()
-        return True, f"ok: {rel} rows={len(rows)} futures={len(futures_rows)} options={len(options_rows)} close={len(close_rows)} pos={len(position_rows)} optpos={len(options_position_rows)} futpos={len(futures_position_rows)} ord={len(order_rows)} sum={len(summary_detail_rows)} daily={daily_report_count}"
+        return True, f"ok: {rel} rows={len(rows)} futures={len(futures_rows)} options={len(options_rows)} close={len(close_rows)} pos={len(position_rows)} optpos={len(options_position_rows)} futpos={len(futures_position_rows)} ord={len(order_rows)} sum={len(summary_detail_rows)} daily={daily_report_count} fundflow={daily_report_fund_flow_count}"
 
     except Exception as exc:
         conn.rollback()
         try:
-            upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", str(exc))
+            upsert_file_state(conn, rel, mtime_dt, size, "", "", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "error", str(exc))
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1662,6 +1784,7 @@ def _dedup_all_tables(conn) -> None:
         "mom_futures_position_details",
         "mom_order_details",
         "mom_summary_details",
+        "mom_daily_report_fund_flows",
     ):
         _dedup_detail_table(conn, table, '"账户"', '"交易日期"')
 
@@ -1763,7 +1886,11 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
             if not old:
                 changed.append(p)
                 continue
-            old_mtime, old_size = old
+            old_mtime, old_size, old_status = old
+            # Always retry files that were previously marked as error, even if unchanged.
+            if old_status.lower() != "ok":
+                changed.append(p)
+                continue
             if int(old_mtime.timestamp()) != int(mtime_dt.timestamp()) or int(old_size) != size:
                 changed.append(p)
 
@@ -1773,6 +1900,13 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
 
         for fp in progress(changed, desc="处理文件", total=len(changed)):
             ok, msg = process_file(conn, base_dir, fp)
+            # Deadlocks are transient under concurrent ETL; retry the same file quickly.
+            if (not ok) and ("deadlock detected" in msg.lower()):
+                log.warning("Deadlock on %s; retrying once.", fp)
+                ok, msg = process_file(conn, base_dir, fp)
+                if (not ok) and ("deadlock detected" in msg.lower()):
+                    log.warning("Deadlock persisted on %s; retrying one final time.", fp)
+                    ok, msg = process_file(conn, base_dir, fp)
             messages.append(msg)
             if ok:
                 ok_count += 1
