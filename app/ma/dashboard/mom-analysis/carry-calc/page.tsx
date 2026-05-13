@@ -447,7 +447,18 @@ export default function CarryCalcPage() {
             </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col className="w-[130px]" />
+                    <col className="w-[92px]" />
+                    <col className="w-[92px]" />
+                    <col className="w-[72px]" />
+                    <col className="w-[110px]" />
+                    <col className="w-[110px]" />
+                    <col className="w-[110px]" />
+                    <col className="w-[110px]" />
+                    <col className="w-[72px]" />
+                  </colgroup>
                   <thead>
                     <tr className="bg-muted/50 border-b">
                       {colHeaders.map((h, i) => (
@@ -514,7 +525,18 @@ export default function CarryCalcPage() {
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto rounded-b-lg">
-                  <table className="w-full text-sm">
+                  <table className="w-full text-sm table-fixed">
+                    <colgroup>
+                      <col className="w-[130px]" />
+                      <col className="w-[92px]" />
+                      <col className="w-[92px]" />
+                      <col className="w-[72px]" />
+                      <col className="w-[110px]" />
+                      <col className="w-[110px]" />
+                      <col className="w-[110px]" />
+                      <col className="w-[110px]" />
+                      <col className="w-[72px]" />
+                    </colgroup>
                     <thead>
                       <tr className="bg-muted/50 border-b">
                         {colHeaders.map((h, i) => (
@@ -540,7 +562,7 @@ export default function CarryCalcPage() {
                             </td>
                             <td className="px-3 py-2 text-xs text-right text-muted-foreground">{fw.firstDate ?? "—"}</td>
                             <td className="px-3 py-2 text-xs text-right text-muted-foreground">{fw.date}</td>
-                            <td className="px-3 py-2 text-right text-xs">{manualMatch?.operatingDays ?? "—"}</td>
+                            <td className="px-3 py-2 text-right text-xs">{fw.firstDate ? Math.round((new Date(fw.date).getTime() - new Date(fw.firstDate).getTime()) / 86400000) : "—"}</td>
                             <td className="px-3 py-2 text-right tabular-nums text-xs">{fw.equityOnDate != null ? fmt(fw.equityOnDate) : "—"}</td>
                             <td className="px-3 py-2 text-right tabular-nums text-xs">{fw.cumNetPnlOnDate != null ? fmt(fw.cumNetPnlOnDate) : "—"}</td>
                             <td className="px-3 py-2 text-right tabular-nums font-medium text-orange-600 dark:text-orange-400">{fmt(fw.amount)}</td>
