@@ -104,44 +104,52 @@ export async function GET(req: Request) {
     let fundFlowMap = new Map<string, { cumDeposit: number; cumWithdrawal: number }>()
     try {
       const ffRows = await query<{ account: string; cum_deposit: string | null; cum_withdrawal: string | null }>(
-        // Logic for gross vs structural transfers:
-        //
-        // 转出 entries fall into two categories, identified by the 说明 field:
-        //   - 说明 = '【出入金】' exactly (no suffix): structural transfer — capital being
-        //     reshuffled between sub-accounts or round-tripped. Treated as structural_out
-        //     and netted against 转入 on the same day. If net > 0 → deposit; if net = 0
-        //     → excluded entirely. Example: rx085 Sep18 20M out+in (round-trip),
-        //     rx315 Nov10 5M out alongside 10M in (account restructuring).
-        //   - 说明 has a specific label (e.g. '【出入金】投顾提盈'): real client cash
-        //     outflow. Counted as gross withdrawal independently of the 转入 on that day.
-        //     Example: rx085 Apr15 500K out ('投顾提盈' = carry performance withdrawal).
-        //
-        // For 转入: always gross, but the structural_out is subtracted first; if the
-        // resulting net_amount <= 0 (e.g., pure round-trip day), that day adds nothing.
-        `WITH daily_flow AS (
+        // A labeled 转出 is structural (cancel against 转入) if a 转入 of the exact same
+        // amount exists on the same day for the same account.  This handles:
+        //   - 缩减规模 10M out + 新增规模 10M in → net 0, excluded ✓
+        //   - 投顾提盈/提盈 500K out, no matching 转入 → real withdrawal ✓
+        //   - 申报费 small amounts, no matching 转入 → real fee withdrawal ✓
+        // Exact '【出入金】' 转出 (no suffix) are always structural — subtracted from gross
+        // 转入 to give the net deposit for that day.
+        `WITH
+         amounts AS (
            SELECT
-             "账户",
-             "交易日期",
-             -- net_amount = 转入 minus structural 转出 (说明 = '【出入金】' exactly)
-             SUM(
-               CASE WHEN "方向" = '转入'
-               THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
-               ELSE 0 END
-             ) -
-             SUM(
-               CASE WHEN "方向" = '转出' AND COALESCE("说明", '') = '【出入金】'
-               THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
-               ELSE 0 END
-             ) AS net_amount,
-             -- real_withdrawal = 转出 with a specific label (genuine client cash outflow)
-             SUM(
-               CASE WHEN "方向" = '转出' AND COALESCE("说明", '') != '【出入金】'
-               THEN (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额", ''), ',', ''), ' ', ''), ''))::numeric
-               ELSE 0 END
-             ) AS real_withdrawal_amount
+             "账户", "交易日期", "方向", "说明",
+             (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额",''),',',''),' ',''),''))::numeric AS amount
            FROM mom_daily_report_fund_flows
            WHERE "交易日期" <= $1
-           GROUP BY "账户", "交易日期"
+         ),
+         labeled_structural_out AS (
+           SELECT DISTINCT lo."账户", lo."交易日期", lo.amount
+           FROM amounts lo
+           WHERE lo."方向" = '转出'
+             AND COALESCE(lo."说明",'') != '【出入金】'
+             AND EXISTS (
+               SELECT 1 FROM amounts i
+               WHERE i."账户" = lo."账户"
+                 AND i."交易日期" = lo."交易日期"
+                 AND i."方向" = '转入'
+                 AND i.amount = lo.amount
+             )
+         ),
+         daily_flow AS (
+           SELECT
+             a."账户", a."交易日期",
+             SUM(CASE WHEN a."方向" = '转入' THEN a.amount ELSE 0 END)
+             - SUM(CASE WHEN a."方向" = '转出' AND COALESCE(a."说明",'') = '【出入金】' THEN a.amount ELSE 0 END)
+             - COALESCE((
+                 SELECT SUM(lso.amount) FROM labeled_structural_out lso
+                 WHERE lso."账户" = a."账户" AND lso."交易日期" = a."交易日期"
+               ), 0)
+             AS net_amount,
+             SUM(CASE WHEN a."方向" = '转出' AND COALESCE(a."说明",'') != '【出入金】' THEN a.amount ELSE 0 END)
+             - COALESCE((
+                 SELECT SUM(lso.amount) FROM labeled_structural_out lso
+                 WHERE lso."账户" = a."账户" AND lso."交易日期" = a."交易日期"
+               ), 0)
+             AS real_withdrawal_amount
+           FROM amounts a
+           GROUP BY a."账户", a."交易日期"
          )
          SELECT
            "账户" AS account,
