@@ -323,7 +323,7 @@ export async function GET(req: Request) {
            AND COALESCE(a."说明",'') != '【出入金】'
            AND lso."账户" IS NULL
            AND a.amount > 1000
-         ORDER BY a."账户", a."交易日期"`,
+         ORDER BY a."交易日期", a."账户"`,
         [selectedDate]
       )
       fundFlowWithdrawals = fwRows.map((r) => ({
