@@ -274,16 +274,18 @@ export async function GET(req: Request) {
       // mom_carry_payments table not yet created — treat as empty
     }
 
-    // ── Mother-layer carry already paid (performance_fee from fund transactions) ──
+    // ── Mother-layer carry already paid (sum of mom_carry_mother_payments) ──
     let totalMotherPaid = 0
     try {
       const pfRows = await query<{ total: string | null }>(
-        `SELECT COALESCE(SUM(performance_fee), 0)::text AS total FROM mom_fund_transactions WHERE confirmation_date::date <= $1`,
+        `SELECT COALESCE(SUM(paid_carry), 0)::text AS total
+         FROM mom_carry_mother_payments
+         WHERE confirm_date IS NULL OR confirm_date::date <= $1`,
         [selectedDate]
       )
       totalMotherPaid = parseFloat(pfRows[0]?.total ?? "0") || 0
     } catch {
-      // mom_fund_transactions not available — treat as 0
+      // mom_carry_mother_payments not available — treat as 0
     }
 
     // ── Mother-layer carry payment records ────────────────────────────────────

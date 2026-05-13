@@ -496,22 +496,22 @@ export default function CarryCalcPage() {
   const colHeaders = ["账户", "起始日", "提盈日", "运作天数", "当日结存", "总盈亏", "提盈部分", "实付carry", ""]
 
   return (
-    <div className="space-y-6 pt-6">
+    <div className="space-y-4 sm:space-y-6 pt-4 sm:pt-6 min-w-0">
       {/* header */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-start gap-3">
         <Link href="/ma/dashboard/mom-analysis">
-          <Button variant="ghost" size="icon" className="h-8 w-8">
+          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 mt-0.5">
             <ArrowLeft className="h-4 w-4" />
           </Button>
         </Link>
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">业绩报酬测算</h1>
-          <div className="mt-1 flex flex-wrap items-center gap-3 text-sm">
-            <p className="text-muted-foreground">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">业绩报酬测算</h1>
+          <div className="mt-1 flex flex-wrap items-center gap-2 sm:gap-3 text-sm">
+            <p className="text-muted-foreground text-xs sm:text-sm">
               截至交易日{selectedDate ? <span className="font-medium text-foreground">（{selectedDate}）</span> : ""}
             </p>
             <div className="flex items-center gap-2">
-              <span className="text-muted-foreground">筛选日期</span>
+              <span className="text-muted-foreground text-xs sm:text-sm whitespace-nowrap">筛选日期</span>
               <Select
                 value={selectedDate ?? undefined}
                 onValueChange={(value) => {
@@ -520,7 +520,7 @@ export default function CarryCalcPage() {
                 }}
                 disabled={loading || availableDates.length === 0}
               >
-                <SelectTrigger className="h-8 min-w-40">
+                <SelectTrigger className="h-8 min-w-36 sm:min-w-40">
                   <SelectValue placeholder="选择交易日" />
                 </SelectTrigger>
                 <SelectContent>
@@ -743,40 +743,40 @@ export default function CarryCalcPage() {
             </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto rounded-b-lg">
-                <table className="min-w-[900px] w-full text-sm">
+                <table className="min-w-max w-full text-sm">
                   <thead>
                     <tr className="bg-muted/50 border-b">
-                      <th className="px-4 py-2 text-left font-medium text-muted-foreground">账户</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">最新客户权益</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计期货盈亏</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计手续费</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计期权盈亏</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计净盈亏</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计存入</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">累计取出</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">已计提盈</th>
-                      <th className="px-4 py-2 text-right font-medium text-muted-foreground">调整后盈亏</th>
-                      <th className="px-4 py-2 text-center font-medium text-muted-foreground">计入子层</th>
+                      <th className="px-2 md:px-4 py-2 text-left font-medium text-muted-foreground whitespace-nowrap">账户</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">最新客户权益</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">累计期货盈亏</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">累计手续费</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">累计期权盈亏</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">累计净盈亏</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">累计存入</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">累计取出</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">已计提盈</th>
+                      <th className="px-2 md:px-4 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">调整后盈亏</th>
+                      <th className="px-2 md:px-4 py-2 text-center font-medium text-muted-foreground whitespace-nowrap">计入子层</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
                     {carry.accountDetails.map((a) => (
                       <tr key={a.account} className={`hover:bg-muted/30 transition-colors ${a.source === "guosen" ? "bg-blue-50/40 dark:bg-blue-950/20" : ""}`}>
-                        <td className="px-4 py-2 font-mono text-xs">
+                        <td className="px-2 md:px-4 py-2 font-mono text-xs whitespace-nowrap">
                           {a.account}
                         </td>
-                        <td className="px-4 py-2 text-right tabular-nums">{fmt(a.latestEquity)}</td>
-                        <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(a.cumPnl)}`}>{fmt(a.cumPnl)}</td>
-                        <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(a.cumCommission)}</td>
-                        <td className={`px-4 py-2 text-right tabular-nums text-xs ${a.optionsPnl ? pnlClass(a.optionsPnl) : "text-muted-foreground"}`}>{a.optionsPnl ? fmt(a.optionsPnl) : "\u2014"}</td>
-                        <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(a.cumNetPnl)}`}>{fmt(a.cumNetPnl)}</td>
-                        <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumDeposit ? fmt(a.cumDeposit) : "\u2014"}</td>
-                        <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumWithdrawal ? fmt(a.cumWithdrawal) : "\u2014"}</td>
-                        <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">
+                        <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs">{fmt(a.latestEquity)}</td>
+                        <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs ${pnlClass(a.cumPnl)}`}>{fmt(a.cumPnl)}</td>
+                        <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(a.cumCommission)}</td>
+                        <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs ${a.optionsPnl ? pnlClass(a.optionsPnl) : "text-muted-foreground"}`}>{a.optionsPnl ? fmt(a.optionsPnl) : "\u2014"}</td>
+                        <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs ${pnlClass(a.cumNetPnl)}`}>{fmt(a.cumNetPnl)}</td>
+                        <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumDeposit ? fmt(a.cumDeposit) : "\u2014"}</td>
+                        <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{a.cumWithdrawal ? fmt(a.cumWithdrawal) : "\u2014"}</td>
+                        <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">
                           {a.settled > 0 ? `−${fmt(a.settled)}` : "—"}
                         </td>
-                        <td className={`px-4 py-2 text-right tabular-nums font-medium ${pnlClass(a.adjustedPnl)}`}>{fmt(a.adjustedPnl)}</td>
-                        <td className="px-4 py-2 text-center">
+                        <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs font-medium ${pnlClass(a.adjustedPnl)}`}>{fmt(a.adjustedPnl)}</td>
+                        <td className="px-2 md:px-4 py-2 text-center">
                           {a.adjustedPnl > 0
                             ? <span className="text-red-600 dark:text-red-400 font-medium">✓</span>
                             : <span className="text-muted-foreground">—</span>}
@@ -796,17 +796,17 @@ export default function CarryCalcPage() {
                       const sumAdjustedPnl    = d.reduce((s, a) => s + a.adjustedPnl, 0)
                       return (
                         <tr className="bg-muted/40 border-t-2 border-border font-semibold">
-                          <td className="px-4 py-2 text-xs font-semibold">合计</td>
-                          <td className="px-4 py-2 text-right tabular-nums">{fmt(sumLatestEquity)}</td>
-                          <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(sumCumPnl)}`}>{fmt(sumCumPnl)}</td>
-                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumCommission)}</td>
-                          <td className={`px-4 py-2 text-right tabular-nums text-xs ${pnlClass(sumOptionsPnl)}`}>{fmt(sumOptionsPnl)}</td>
-                          <td className={`px-4 py-2 text-right tabular-nums ${pnlClass(sumCumNetPnl)}`}>{fmt(sumCumNetPnl)}</td>
-                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumDeposit)}</td>
-                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumWithdrawal)}</td>
-                          <td className="px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{sumSettled > 0 ? `−${fmt(sumSettled)}` : "—"}</td>
-                          <td className={`px-4 py-2 text-right tabular-nums font-bold ${pnlClass(sumAdjustedPnl)}`}>{fmt(sumAdjustedPnl)}</td>
-                          <td className="px-4 py-2 text-center text-xs text-muted-foreground">{d.filter((a) => a.adjustedPnl > 0).length}&nbsp;个</td>
+                          <td className="px-2 md:px-4 py-2 text-xs font-semibold">合计</td>
+                          <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs">{fmt(sumLatestEquity)}</td>
+                          <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs ${pnlClass(sumCumPnl)}`}>{fmt(sumCumPnl)}</td>
+                          <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumCommission)}</td>
+                          <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs ${pnlClass(sumOptionsPnl)}`}>{fmt(sumOptionsPnl)}</td>
+                          <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs ${pnlClass(sumCumNetPnl)}`}>{fmt(sumCumNetPnl)}</td>
+                          <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumDeposit)}</td>
+                          <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{fmt(sumCumWithdrawal)}</td>
+                          <td className="px-2 md:px-4 py-2 text-right tabular-nums text-xs text-muted-foreground">{sumSettled > 0 ? `−${fmt(sumSettled)}` : "—"}</td>
+                          <td className={`px-2 md:px-4 py-2 text-right tabular-nums text-xs font-bold ${pnlClass(sumAdjustedPnl)}`}>{fmt(sumAdjustedPnl)}</td>
+                          <td className="px-2 md:px-4 py-2 text-center text-xs text-muted-foreground">{d.filter((a) => a.adjustedPnl > 0).length}&nbsp;个</td>
                         </tr>
                       )
                     })()}
@@ -817,37 +817,39 @@ export default function CarryCalcPage() {
           </Card>
 
           {/* ── carry result ───────────────────────────────────────────────── */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {/* col 1: 盈亏统计 */}
             <Card className="flex flex-col">
-              <CardHeader className="pb-2 pt-4 px-6">
+              <CardHeader className="pb-2 pt-4 px-4 lg:px-6">
                 <CardTitle className="text-sm font-semibold">盈亏统计</CardTitle>
               </CardHeader>
-              <CardContent className="px-6 pb-6 pt-0 flex-1 flex flex-col justify-center gap-3">
-                <table className="w-full">
+              <CardContent className="px-3 sm:px-4 lg:px-6 pb-4 lg:pb-6 pt-0 flex-1 flex flex-col justify-center gap-3">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[260px]">
                   <thead>
                     <tr className="border-b">
-                      <th className="pb-3 text-left text-sm font-medium text-muted-foreground w-20"></th>
-                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">总盈利</th>
-                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">总亏损</th>
-                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">净盈亏</th>
+                      <th className="pb-3 text-left text-xs font-medium text-muted-foreground w-16"></th>
+                      <th className="pb-3 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">总盈利</th>
+                      <th className="pb-3 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">总亏损</th>
+                      <th className="pb-3 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">净盈亏</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
                     <tr className="hover:bg-muted/30">
-                      <td className="py-4 text-sm font-medium">调整前</td>
-                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-red-600 dark:text-red-400">{fmt(carry.rawProfit)}</td>
-                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.rawLoss)}</td>
-                      <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(carry.rawProfit + carry.rawLoss)}`}>{fmt(carry.rawProfit + carry.rawLoss)}</td>
+                      <td className="py-3 text-xs font-medium">调整前</td>
+                      <td className="py-3 text-right tabular-nums text-xs font-semibold text-red-600 dark:text-red-400">{fmt(carry.rawProfit)}</td>
+                      <td className="py-3 text-right tabular-nums text-xs font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.rawLoss)}</td>
+                      <td className={`py-3 text-right tabular-nums text-xs font-semibold ${pnlClass(carry.rawProfit + carry.rawLoss)}`}>{fmt(carry.rawProfit + carry.rawLoss)}</td>
                     </tr>
                     <tr className="hover:bg-muted/30">
-                      <td className="py-4 text-sm font-medium">调整后</td>
-                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-red-600 dark:text-red-400">{fmt(carry.totalProfit)}</td>
-                      <td className="py-4 text-right tabular-nums text-sm font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.totalLoss)}</td>
-                      <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(carry.totalAdjustedPnl)}`}>{fmt(carry.totalAdjustedPnl)}</td>
+                      <td className="py-3 text-xs font-medium">调整后</td>
+                      <td className="py-3 text-right tabular-nums text-xs font-semibold text-red-600 dark:text-red-400">{fmt(carry.totalProfit)}</td>
+                      <td className="py-3 text-right tabular-nums text-xs font-semibold text-emerald-600 dark:text-emerald-400">{fmt(carry.totalLoss)}</td>
+                      <td className={`py-3 text-right tabular-nums text-xs font-semibold ${pnlClass(carry.totalAdjustedPnl)}`}>{fmt(carry.totalAdjustedPnl)}</td>
                     </tr>
                   </tbody>
                 </table>
+                </div>
                 <div className="text-xs font-mono space-y-1">
                   <p>
                     <span className="text-muted-foreground">盈亏比&nbsp;</span>
@@ -938,17 +940,18 @@ export default function CarryCalcPage() {
 
             {/* col 3: 报酬汇总 */}
             <Card className="flex flex-col">
-              <CardHeader className="pb-2 pt-4 px-6">
+              <CardHeader className="pb-2 pt-4 px-4 lg:px-6">
                 <CardTitle className="text-base font-semibold">报酬汇总</CardTitle>
               </CardHeader>
-              <CardContent className="px-6 pb-6 pt-0 flex-1 flex flex-col justify-center">
-                <table className="w-full">
+              <CardContent className="px-3 sm:px-4 lg:px-6 pb-4 lg:pb-6 pt-0 flex-1 flex flex-col justify-center">
+                <div className="overflow-x-auto">
+                <table className="w-full min-w-[260px]">
                   <thead>
                     <tr className="border-b">
-                      <th className="pb-3 text-left text-sm font-medium text-muted-foreground w-20"></th>
-                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">母层</th>
-                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">子层</th>
-                      <th className="pb-3 text-right text-sm font-medium text-muted-foreground">净业报</th>
+                      <th className="pb-3 text-left text-xs font-medium text-muted-foreground w-16"></th>
+                      <th className="pb-3 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">母层</th>
+                      <th className="pb-3 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">子层</th>
+                      <th className="pb-3 text-right text-xs font-medium text-muted-foreground whitespace-nowrap">净业报</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border/60">
@@ -961,28 +964,29 @@ export default function CarryCalcPage() {
                       return (
                         <>
                           <tr className="hover:bg-muted/30">
-                            <td className="py-4 text-sm font-medium">总计</td>
-                            <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(motherTotal)}`}>{fmt(motherTotal)}</td>
-                            <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(childTotal)}`}>{fmt(childTotal)}</td>
-                            <td className={`py-4 text-right tabular-nums text-sm font-semibold ${pnlClass(motherTotal - childTotal)}`}>{fmt(motherTotal - childTotal)}</td>
+                            <td className="py-3 text-xs font-medium">总计</td>
+                            <td className={`py-3 text-right tabular-nums text-xs font-semibold ${pnlClass(motherTotal)}`}>{fmt(motherTotal)}</td>
+                            <td className={`py-3 text-right tabular-nums text-xs font-semibold ${pnlClass(childTotal)}`}>{fmt(childTotal)}</td>
+                            <td className={`py-3 text-right tabular-nums text-xs font-semibold ${pnlClass(motherTotal - childTotal)}`}>{fmt(motherTotal - childTotal)}</td>
                           </tr>
                           <tr className="hover:bg-muted/30">
-                            <td className="py-4 text-sm font-medium">已付</td>
-                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(totalMotherPaid)}`}>{fmt(totalMotherPaid)}</td>
-                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(childPaid)}`}>{fmt(childPaid)}</td>
-                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(totalMotherPaid - childPaid)}`}>{fmt(totalMotherPaid - childPaid)}</td>
+                            <td className="py-3 text-xs font-medium">已付</td>
+                            <td className={`py-3 text-right tabular-nums text-xs ${pnlClass(totalMotherPaid)}`}>{fmt(totalMotherPaid)}</td>
+                            <td className={`py-3 text-right tabular-nums text-xs ${pnlClass(childPaid)}`}>{fmt(childPaid)}</td>
+                            <td className={`py-3 text-right tabular-nums text-xs ${pnlClass(totalMotherPaid - childPaid)}`}>{fmt(totalMotherPaid - childPaid)}</td>
                           </tr>
                           <tr className="hover:bg-muted/30">
-                            <td className="py-4 text-sm font-medium">待付</td>
-                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(motherPending)}`}>{fmt(motherPending)}</td>
-                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(childPending)}`}>{fmt(childPending)}</td>
-                            <td className={`py-4 text-right tabular-nums text-sm ${pnlClass(motherPending - childPending)}`}>{fmt(motherPending - childPending)}</td>
+                            <td className="py-3 text-xs font-medium">待付</td>
+                            <td className={`py-3 text-right tabular-nums text-xs ${pnlClass(motherPending)}`}>{fmt(motherPending)}</td>
+                            <td className={`py-3 text-right tabular-nums text-xs ${pnlClass(childPending)}`}>{fmt(childPending)}</td>
+                            <td className={`py-3 text-right tabular-nums text-xs ${pnlClass(motherPending - childPending)}`}>{fmt(motherPending - childPending)}</td>
                           </tr>
                         </>
                       )
                     })()}
                   </tbody>
                 </table>
+                </div>
               </CardContent>
             </Card>
           </div>
