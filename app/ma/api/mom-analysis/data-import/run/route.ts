@@ -36,15 +36,18 @@ export async function POST(request: Request) {
 
   let skipDedup = false
   let skipMarketData = false
+  let reset = false
   try {
     const body = await request.json()
     if (body?.skipDedup) skipDedup = true
     if (body?.skipMarketData) skipMarketData = true
+    if (body?.reset) reset = true
   } catch { /* no body or not JSON — use defaults */ }
 
   const args = [script]
   if (skipDedup) args.push("--skip-dedup")
   if (skipMarketData) args.push("--skip-market-data")
+  if (reset) args.push("--reset")
 
   const { readConfig, fetchSettlementFiles } = await import("@/lib/server/settlement-email")
   const settlementCfg = readConfig()

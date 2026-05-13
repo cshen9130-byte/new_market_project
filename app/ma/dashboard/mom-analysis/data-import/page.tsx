@@ -226,7 +226,7 @@ export default function DataImportPage() {
     }
   }, [])
 
-  const runEtl = useCallback(async (opts?: { skipDedup?: boolean; skipMarketData?: boolean }) => {
+  const runEtl = useCallback(async (opts?: { skipDedup?: boolean; skipMarketData?: boolean; reset?: boolean }) => {
     setIsRunningEtl(true)
     setEtlLog([])
     setShowEtlLog(true)
@@ -235,7 +235,7 @@ export default function DataImportPage() {
       const res = await fetch("/ma/api/mom-analysis/data-import/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skipDedup: opts?.skipDedup ?? false, skipMarketData: opts?.skipMarketData ?? false }),
+        body: JSON.stringify({ skipDedup: opts?.skipDedup ?? false, skipMarketData: opts?.skipMarketData ?? false, reset: opts?.reset ?? false }),
       })
       if (!res.body) throw new Error("无响应流")
 
@@ -816,6 +816,18 @@ export default function DataImportPage() {
             ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
             : <Play className="mr-2 h-4 w-4" />}
           {isRunningEtl ? "运行中…" : "运行ETL"}
+        </Button>
+
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isRunningEtl || isUploading}
+          onClick={() => void runEtl({ reset: true, skipMarketData: true })}
+        >
+          {isRunningEtl
+            ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+            : <RefreshCw className="mr-2 h-4 w-4" />}
+          {isRunningEtl ? "运行中…" : "重置并重跑ETL"}
         </Button>
 
         <Button variant="ghost" size="sm" disabled={isLoading} onClick={() => { setFolderFiles({}); setExpandedFolder(null); loadFolders(); checkDates() }}>
