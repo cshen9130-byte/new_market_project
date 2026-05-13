@@ -436,7 +436,7 @@ export default function CarryCalcPage() {
           {/* ── payments CRUD ─────────────────────────────────────────────── */}
           <Card>
             <CardHeader className="pb-2 flex flex-row items-center justify-between">
-              <CardTitle className="text-sm font-semibold">历史已付业绩报酬记录</CardTitle>
+              <CardTitle className="text-sm font-semibold">子层历史已付业绩报酬记录</CardTitle>
               <Button
                 size="sm" variant="outline" className="h-7 gap-1 text-xs"
                 onClick={() => { setAddingPayment(true); setNewDraft(EMPTY_DRAFT) }}
@@ -521,7 +521,7 @@ export default function CarryCalcPage() {
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-semibold">提盈验证（出入金明细中的提盈记录）</CardTitle>
-                <p className="text-xs text-muted-foreground mt-0.5">从出入金明细自动计算，以累计取出作为提盈部分，用于核对下方历史已付业绩报酬记录是否匹配</p>
+                <p className="text-xs text-muted-foreground mt-0.5">从出入金明细自动计算，以累计取出作为提盈部分，用于核对下方子层历史已付业绩报酬记录是否匹配</p>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto rounded-b-lg">
