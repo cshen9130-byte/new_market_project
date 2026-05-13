@@ -286,7 +286,57 @@ export async function GET(req: Request) {
       // mom_fund_transactions not available — treat as 0
     }
 
-    return NextResponse.json({ ok: true, latestDate, selectedDate, availableDates, ...rates, accounts: mergedAccounts, payments, totalMotherPaid })
+    // ── Fund-flow withdrawal events (for verification table) ──────────────────
+    let fundFlowWithdrawals: Array<{ account: string; date: string; amount: number; label: string }> = []
+    try {
+      const fwRows = await query<{ account: string; date: string; amount: string; label: string }>(
+        `WITH
+         amounts AS (
+           SELECT
+             "账户", "交易日期", "方向", "说明",
+             (NULLIF(REPLACE(REPLACE(COALESCE("最大允许亏损金额",''),',',''),' ',''),''))::numeric AS amount
+           FROM mom_daily_report_fund_flows
+           WHERE "交易日期" <= $1
+         ),
+         labeled_structural_out AS (
+           SELECT DISTINCT lo."账户", lo."交易日期", lo.amount
+           FROM amounts lo
+           WHERE lo."方向" = '转出'
+             AND COALESCE(lo."说明",'') != '【出入金】'
+             AND EXISTS (
+               SELECT 1 FROM amounts i
+               WHERE i."账户" = lo."账户"
+                 AND i."交易日期" = lo."交易日期"
+                 AND i."方向" = '转入'
+                 AND i.amount = lo.amount
+             )
+         )
+         SELECT
+           a."账户" AS account,
+           a."交易日期"::text AS date,
+           a.amount::text AS amount,
+           a."说明" AS label
+         FROM amounts a
+         LEFT JOIN labeled_structural_out lso
+           ON lso."账户" = a."账户" AND lso."交易日期" = a."交易日期" AND lso.amount = a.amount
+         WHERE a."方向" = '转出'
+           AND COALESCE(a."说明",'') != '【出入金】'
+           AND lso."账户" IS NULL
+           AND a.amount > 1000
+         ORDER BY a."账户", a."交易日期"`,
+        [selectedDate]
+      )
+      fundFlowWithdrawals = fwRows.map((r) => ({
+        account: r.account,
+        date:    r.date,
+        amount:  parseFloat(r.amount),
+        label:   r.label,
+      }))
+    } catch {
+      // fund flow table not available — skip
+    }
+
+    return NextResponse.json({ ok: true, latestDate, selectedDate, availableDates, ...rates, accounts: mergedAccounts, payments, totalMotherPaid, fundFlowWithdrawals })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes("mom_daily_reports") || msg.includes("does not exist")) {

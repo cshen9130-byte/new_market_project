@@ -39,6 +39,13 @@ interface Payment {
 
 type PaymentDraft = Omit<Payment, "id">
 
+interface FundFlowWithdrawal {
+  account: string
+  date: string
+  amount: number
+  label: string
+}
+
 interface InitialData {
   ok: boolean
   latestDate: string | null
@@ -49,6 +56,7 @@ interface InitialData {
   accounts: Account[]
   payments: Payment[]
   totalMotherPaid: number
+  fundFlowWithdrawals?: FundFlowWithdrawal[]
   notYetRun?: boolean
   error?: string
 }
@@ -204,6 +212,7 @@ export default function CarryCalcPage() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null)
   const [availableDates, setAvailableDates] = useState<string[]>([])
   const [totalMotherPaid, setTotalMotherPaid] = useState<number>(0)
+  const [fundFlowWithdrawals, setFundFlowWithdrawals] = useState<FundFlowWithdrawal[]>([])
   const [loading, setLoading]     = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [notYetRun, setNotYetRun] = useState(false)
@@ -237,6 +246,7 @@ export default function CarryCalcPage() {
       setAccounts(data.accounts ?? [])
       setPayments(data.payments ?? [])
       setTotalMotherPaid(data.totalMotherPaid ?? 0)
+      setFundFlowWithdrawals(data.fundFlowWithdrawals ?? [])
       setLatestDate(data.latestDate ?? null)
       setSelectedDate(data.selectedDate ?? data.latestDate ?? null)
       setAvailableDates(data.availableDates ?? [])
@@ -491,6 +501,64 @@ export default function CarryCalcPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* ── 提盈验证 ────────────────────────────────────────────────────── */}
+          {fundFlowWithdrawals.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-semibold">提盈验证（出入金明细中的提盈记录）</CardTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">从出入金明细自动计算，以累计取出作为提盈部分，用于核对下方历史已付业绩报酬记录是否匹配</p>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="overflow-x-auto rounded-b-lg">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-muted/50 border-b">
+                        {colHeaders.map((h, i) => (
+                          <th key={i} className={`px-3 py-2 text-xs font-medium text-muted-foreground whitespace-nowrap ${i > 0 && i < colHeaders.length - 1 ? "text-right" : "text-left"}`}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {fundFlowWithdrawals.map((fw, i) => {
+                        const acct = carry.accountDetails.find((a) => a.account === fw.account)
+                        const paidChildCarry = fw.amount * childRate
+                        const manualMatch = payments.find(
+                          (p) => p.account === fw.account && p.carryDate === fw.date
+                        )
+                        const diff = manualMatch ? Math.abs(manualMatch.profitPortion - fw.amount) : null
+                        const match = diff !== null && diff < 1
+                        return (
+                          <tr key={i} className={`hover:bg-muted/30 transition-colors ${diff !== null && !match ? "bg-red-50/40 dark:bg-red-950/20" : diff === null ? "bg-yellow-50/30 dark:bg-yellow-950/10" : ""}`}>
+                            <td className="px-3 py-2 font-mono text-xs">
+                              {fw.account}
+                              {fw.label && fw.label !== "【出入金】" && (
+                                <span className="ml-1 text-muted-foreground">{fw.label.replace("【出入金】", "")}</span>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-xs text-right text-muted-foreground">{manualMatch?.startDate ?? "—"}</td>
+                            <td className="px-3 py-2 text-xs text-right text-muted-foreground">{fw.date}</td>
+                            <td className="px-3 py-2 text-right text-xs">{manualMatch?.operatingDays ?? "—"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-xs">{acct ? fmt(acct.latestEquity) : "—"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-xs">{acct ? fmt(acct.cumNetPnl) : "—"}</td>
+                            <td className="px-3 py-2 text-right tabular-nums font-medium text-orange-600 dark:text-orange-400">{fmt(fw.amount)}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-orange-600 dark:text-orange-400">{fmt(paidChildCarry)}</td>
+                            <td className="px-3 py-2 text-left text-xs">
+                              {diff === null
+                                ? <span className="text-yellow-600 dark:text-yellow-400">未录入</span>
+                                : match
+                                  ? <span className="text-green-600 dark:text-green-400 font-bold">✓</span>
+                                  : <span className="text-red-600 dark:text-red-400 font-bold">✗ 差额&nbsp;{fmt(diff)}</span>}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* ── account breakdown ──────────────────────────────────────────── */}
           <Card>
