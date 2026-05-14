@@ -60,6 +60,29 @@ function stdDev(xs: number[]): number {
   return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - 1))
 }
 
+/**
+ * Filter out contract-rollover spikes from a return series using a rolling MAD
+ * heuristic (same logic as detectRolloverDatesFallback in futures/vol-corr-scatter).
+ * Any return exceeding max(6%, median_abs + 12 * MAD * 1.4826) in a 40-bar
+ * rolling window is treated as a rollover artifact and removed.
+ */
+function filterRolloverSpikes(rets: number[]): number[] {
+  if (rets.length < 2) return rets
+  const MIN_THRESHOLD = 0.06
+  const K = 12
+  const LOOKBACK = 40
+  const keep = rets.map(() => true)
+  for (let i = LOOKBACK; i < rets.length; i++) {
+    const window = rets.slice(i - LOOKBACK, i).map(Math.abs).sort((a, b) => a - b)
+    const medianAbs = window[Math.floor(window.length / 2)]
+    const deviations = window.map((v) => Math.abs(v - medianAbs)).sort((a, b) => a - b)
+    const mad = deviations[Math.floor(deviations.length / 2)]
+    const threshold = Math.max(MIN_THRESHOLD, medianAbs + K * mad * 1.4826)
+    if (Math.abs(rets[i]) > threshold) keep[i] = false
+  }
+  return rets.filter((_, i) => keep[i])
+}
+
 function pearsonCorr(x: number[], y: number[]): number {
   const n = x.length
   if (n < 3) return 0
@@ -207,14 +230,18 @@ async function _GET(req: Request) {
       const netMV = Math.abs(signedMV)
       if (netMV < 1000) continue
 
-      // Volatility: market return std dev over window
+      // Volatility: market return std dev over window — with rollover spike filtering.
+      // allMktDates covers full DB history (sufficient lookback for the 40-bar MAD window).
+      // mktRets (aligned to lastMktDates) is kept separate for MVC correlation math.
       const code = AKSHARE_CODE[prod]
       const mktRets = code
         ? lastMktDates.map((dt) => pctByCode.get(code)?.get(dt) ?? 0)
         : []
       const nonZeroRets = mktRets.filter((r) => r !== 0)
       if (nonZeroRets.length < 3) continue
-      const vol = Math.round(stdDev(nonZeroRets) * 10000) / 100  // daily vol as %
+      const allRets = code ? allMktDates.map((dt) => pctByCode.get(code)?.get(dt) ?? 0) : []
+      const cleanedRets = filterRolloverSpikes(allRets).filter((r) => r !== 0).slice(-WINDOW)
+      const vol = Math.round(stdDev(cleanedRets.length >= 3 ? cleanedRets : nonZeroRets) * 10000) / 100
 
       // Correlation: cumulative PnL path vs portfolio cumulative PnL path
       const prodPnl = lastDates.map((dt) => prodPnlMap.get(prod)?.get(dt) ?? 0)
