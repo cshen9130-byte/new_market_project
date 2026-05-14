@@ -107,6 +107,25 @@ function stdDev(xs: number[]): number {
   return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - 1))
 }
 
+/**
+ * Zero out contract-rollover spike returns so .filter(r=>r!==0) excludes them.
+ * Uses rolling MAD: excludes returns > max(6%, median_abs + 12*MAD*1.4826).
+ */
+function zeroRolloverSpikes(rets: number[]): number[] {
+  if (rets.length < 2) return [...rets]
+  const MIN_THRESHOLD = 0.06, K = 12, LOOKBACK = 40
+  const out = [...rets]
+  for (let i = LOOKBACK; i < rets.length; i++) {
+    const win = rets.slice(i - LOOKBACK, i).map(Math.abs).sort((a, b) => a - b)
+    const med = win[Math.floor(win.length / 2)]
+    const devs = win.map(v => Math.abs(v - med)).sort((a, b) => a - b)
+    const mad = devs[Math.floor(devs.length / 2)]
+    const thr = Math.max(MIN_THRESHOLD, med + K * mad * 1.4826)
+    if (Math.abs(rets[i]) > thr) out[i] = 0
+  }
+  return out
+}
+
 function pearsonCorr(x: number[], y: number[]): number {
   const n = x.length
   if (n < 3) return 0
@@ -194,6 +213,13 @@ async function _GET(req: Request) {
     const allMktDates = [...new Set(pctRows.map(r => r.date))].sort()
     const neededHistory = Math.max(volDays, corrDays)
 
+    // Precompute rollover-cleaned return series per code (same indices as allMktDates)
+    const cleanPctByCode = new Map<string, number[]>()
+    for (const code of akCodes) {
+      const m = pctMap.get(code)
+      cleanPctByCode.set(code, zeroRolloverSpikes(allMktDates.map(d => m?.get(d) ?? 0)))
+    }
+
     // 3. For each trading date compute sector-level MCR proportions
     //    MCR formula (same as VaR sandbox pie chart):
     //      dv[i] = sigma[i] * mv[i]  (signed dollar vol)
@@ -224,11 +250,11 @@ async function _GET(req: Request) {
 
       const N = prodMvs.length
 
-      // Compute sigma per product (rolling volDays window)
+      // Compute sigma per product (rolling volDays window, rollover spikes excluded)
       const sigmas = prodMvs.map(({ prod }) => {
         const code = AKSHARE_CODE[prod]
-        const m = pctMap.get(code ?? "")
-        const rets = volDatesArr.map(d => m?.get(d) ?? 0)
+        const cleanRets = cleanPctByCode.get(code ?? "") ?? []
+        const rets = cleanRets.slice(mktIdx - volDays, mktIdx).filter(r => r !== 0)
         return stdDev(rets)
       })
 

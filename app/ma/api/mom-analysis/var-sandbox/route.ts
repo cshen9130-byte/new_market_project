@@ -53,6 +53,26 @@ function pearsonCorr(x: number[], y: number[]): number {
   return denom < 1e-10 ? 0 : num / denom
 }
 
+/**
+ * Zero out contract-rollover spike returns in-place so the existing
+ * .filter(r => r !== 0) step excludes them without changing array indices.
+ * Uses rolling MAD: excludes returns > max(6%, median_abs + 12*MAD*1.4826).
+ */
+function zeroRolloverSpikes(rets: number[]): number[] {
+  if (rets.length < 2) return [...rets]
+  const MIN_THRESHOLD = 0.06, K = 12, LOOKBACK = 40
+  const out = [...rets]
+  for (let i = LOOKBACK; i < rets.length; i++) {
+    const win = rets.slice(i - LOOKBACK, i).map(Math.abs).sort((a, b) => a - b)
+    const med = win[Math.floor(win.length / 2)]
+    const devs = win.map(v => Math.abs(v - med)).sort((a, b) => a - b)
+    const mad = devs[Math.floor(devs.length / 2)]
+    const thr = Math.max(MIN_THRESHOLD, med + K * mad * 1.4826)
+    if (Math.abs(rets[i]) > thr) out[i] = 0
+  }
+  return out
+}
+
 const Z_TABLE:        Record<string, number> = { "90": 1.282,  "95": 1.6449, "99": 2.326 }
 const T6_TABLE:       Record<string, number> = { "90": 1.440,  "95": 1.943,  "99": 3.143 }
 const LAPLACE_TABLE:  Record<string, number> = { "90": 1.138,  "95": 1.629,  "99": 2.767 }
@@ -137,6 +157,13 @@ async function _GET(req: Request) {
     const volDatesArr  = allMktDates.slice(-volDays)
     const corrDatesArr = allMktDates.slice(-corrDays)
 
+    // Precompute rollover-cleaned return series per code (same indices as allMktDates)
+    const cleanPctByCode = new Map<string, number[]>()
+    for (const code of akCodes) {
+      const m = pctMap.get(code)
+      cleanPctByCode.set(code, zeroRolloverSpikes(allMktDates.map(d => m?.get(d) ?? 0)))
+    }
+
     // 5. Correlation matrix (same order as activeProds)
     const retSeries = activeProds.map(prod => {
       const code = AKSHARE_CODE[prod]
@@ -161,8 +188,8 @@ async function _GET(req: Request) {
         : Math.abs(mv)   // fallback: treat whole position as 1 lot
 
       const code = AKSHARE_CODE[prod]
-      const m    = pctMap.get(code ?? "")
-      const rets = volDatesArr.map(d => m?.get(d) ?? 0).filter(r => r !== 0)
+      const cleanRets = cleanPctByCode.get(code ?? "") ?? []
+      const rets = cleanRets.slice(-volDays).filter(r => r !== 0)
       const sigma = stdDev(rets)
 
       return {
