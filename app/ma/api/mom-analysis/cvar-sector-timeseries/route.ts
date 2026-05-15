@@ -101,6 +101,25 @@ const PROD_SUB_SECTOR: Record<string, string> = {
   TS:"国债",TF:"国债",T:"国债",TL:"国债",
 }
 
+/**
+ * Zero out contract-rollover spike returns so they don't inflate CVaR tail.
+ * Uses rolling MAD: excludes returns > max(6%, median_abs + 12*MAD*1.4826).
+ */
+function zeroRolloverSpikes(rets: number[]): number[] {
+  if (rets.length < 2) return [...rets]
+  const MIN_THRESHOLD = 0.06, K = 12, LOOKBACK = 40
+  const out = [...rets]
+  for (let i = LOOKBACK; i < rets.length; i++) {
+    const win = rets.slice(i - LOOKBACK, i).map(Math.abs).sort((a, b) => a - b)
+    const med = win[Math.floor(win.length / 2)]
+    const devs = win.map(v => Math.abs(v - med)).sort((a, b) => a - b)
+    const mad = devs[Math.floor(devs.length / 2)]
+    const thr = Math.max(MIN_THRESHOLD, med + K * mad * 1.4826)
+    if (Math.abs(rets[i]) > thr) out[i] = 0
+  }
+  return out
+}
+
 /** Binary search: last index i such that arr[i] <= target, or -1 if none */
 function floorIndex(arr: string[], target: string): number {
   let lo = 0, hi = arr.length - 1, idx = -1
@@ -200,6 +219,15 @@ async function _GET(req: Request) {
     }
 
     const allMktDates = [...new Set(pctRows.map(r => r.date))].sort()
+
+    // Clean rollover spikes from each product's return series in-place
+    for (const code of akCodes) {
+      const m = pctMap.get(code)
+      if (!m) continue
+      const arr = allMktDates.map(d => m.get(d) ?? 0)
+      const cleaned = zeroRolloverSpikes(arr)
+      allMktDates.forEach((d, i) => { if (cleaned[i] !== arr[i]) m.set(d, cleaned[i]) })
+    }
 
     // 3. For each trading date compute historical-simulation CVaR sector contributions
     //    Component CVaR_i = -E[mv_i × r_{i,t} | portfolio P&L in tail]
