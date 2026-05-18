@@ -228,6 +228,7 @@ async function _GET(req: Request) {
                 SUM(COALESCE(mtm_pl, 0))::text AS pnl
          FROM guosen_position_detail
          WHERE instrument IS NOT NULL
+           AND settlement_date IS NOT NULL
          GROUP BY settlement_date, UPPER(TRIM(instrument))
          ORDER BY settlement_date`,
       )
@@ -250,6 +251,7 @@ async function _GET(req: Request) {
                 SUM(COALESCE(realized_pl, 0))::text AS pnl
          FROM guosen_position_closed
          WHERE instrument IS NOT NULL
+           AND settlement_date IS NOT NULL
          GROUP BY settlement_date, UPPER(TRIM(instrument))
          ORDER BY settlement_date`,
       )
