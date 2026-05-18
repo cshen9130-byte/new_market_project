@@ -1038,16 +1038,23 @@ function VarSandboxContent({
     onProdMcrChange?.(prodMcrData)
   }, [onProdMcrChange, prodMcrData])
 
-  // Per-account marginal VaR contribution = sum of MCR of all products in that account
+  // Per-account marginal VaR contribution when that account's multiplier goes 1×→2×
+  // = Σ_prod (acct_mv_prod / total_mv_prod) * prodMCR_prod
+  // i.e. the fraction of each product owned by this account times that product's MCR
   const acctMcrMap = useMemo(() => {
-    const mcrByProd = new Map(prodMcrData.map(d => [d.name, d.value]))
+    const mcrByProd     = new Map(prodMcrData.map(d => [d.name, d.value]))
+    const totalMvByProd = new Map(sbProds.map(p => [p.prod, Math.abs(p.mv)]))
     const map = new Map<string, number>()
     for (const acct of sbAccounts) {
-      const total = acct.prodContribs.reduce((s, { prod }) => s + (mcrByProd.get(prod) ?? 0), 0)
+      const total = acct.prodContribs.reduce((s, { prod, mv }) => {
+        const totalMv = totalMvByProd.get(prod) ?? 0
+        const mcr     = mcrByProd.get(prod) ?? 0
+        return s + (totalMv > 0 ? (Math.abs(mv) / totalMv) * mcr : 0)
+      }, 0)
       map.set(acct.account, total)
     }
     return map
-  }, [prodMcrData, sbAccounts])
+  }, [prodMcrData, sbAccounts, sbProds])
 
   // Sorted + filtered account list for account view
   const displayAccounts = useMemo(() => {
