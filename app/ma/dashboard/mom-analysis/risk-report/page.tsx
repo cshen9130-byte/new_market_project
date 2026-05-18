@@ -814,6 +814,7 @@ const PROD_NAMES: Record<string, string> = {
 
 // ── VaR Sandbox ──────────────────────────────────────────────────────────────
 type SbProd = { prod: string; mv: number; lots: number; sigma: number; lotMv: number }
+type SbAcct = { account: string; marginUsed: number; prodContribs: { prod: string; mv: number }[] }
 type SandboxExportData = {
   products: SbProd[]
   corrMatrix: number[][]
@@ -851,6 +852,9 @@ function VarSandboxContent({
   const [sbSectorFilter, setSbSectorFilter] = useState("全部")
   const [sbDirFilter, setSbDirFilter] = useState("全部")
   const [sbShowEditors, setSbShowEditors] = useState(true)
+  const [sbViewMode, setSbViewMode]       = useState<"product" | "account">("product")
+  const [sbAccounts, setSbAccounts]       = useState<SbAcct[]>([])
+  const [sbAcctMult, setSbAcctMult]       = useState<Map<string, number>>(new Map())
 
   useEffect(() => {
     let doneCount = 0
@@ -864,6 +868,8 @@ function VarSandboxContent({
         setSbCorrMatrix(j.corrMatrix ?? [])
         setSbZScore(j.zScore ?? 1.6449)
         setSbConfidence(j.confidence ?? "95")
+        setSbAccounts(j.accounts ?? [])
+        setSbAcctMult(new Map((j.accounts ?? []).map((a: SbAcct) => [a.account, 1.0])))
       }
     }).catch(() => {}).finally(maybeFinish)
 
@@ -895,6 +901,35 @@ function VarSandboxContent({
 
   const origMaxAbsMv = useMemo(() => Math.max(...sbOrigProds.map(p => Math.abs(p.mv)), 1), [sbOrigProds])
 
+  // ── Account view helpers ─────────────────────────────────────────────────
+  const acctMaxMargin = useMemo(
+    () => Math.max(...sbAccounts.map(a => a.marginUsed), 1),
+    [sbAccounts],
+  )
+
+  const applyAcctMultipliers = useCallback((multMap: Map<string, number>) => {
+    // Recompute each product's mv as sum of (account_contrib × account_multiplier)
+    const prodNewMv = new Map<string, number>()
+    for (const acct of sbAccounts) {
+      const mult = multMap.get(acct.account) ?? 1
+      for (const { prod, mv } of acct.prodContribs) {
+        prodNewMv.set(prod, (prodNewMv.get(prod) ?? 0) + mv * mult)
+      }
+    }
+    setSbProds(prev => prev.map(p => {
+      const newMv = Math.round(prodNewMv.get(p.prod) ?? p.mv)
+      const lots  = p.lotMv > 0 ? Math.round(newMv / p.lotMv) : p.lots
+      return { ...p, mv: newMv, lots }
+    }))
+  }, [sbAccounts])
+
+  // Sync product positions whenever account multipliers change (in account-view)
+  useEffect(() => {
+    if (sbAccounts.length === 0 || sbViewMode !== "account") return
+    applyAcctMultipliers(sbAcctMult)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sbAcctMult])  // intentionally omit applyAcctMultipliers to avoid loop on sbAccounts change
+
   // Emit sandbox data for HTML export
   useEffect(() => {
     if (!onSandboxDataChange || sbOrigProds.length === 0) return
@@ -915,6 +950,7 @@ function VarSandboxContent({
   const fsRef = useRef<HTMLDivElement>(null)
   const [isFs, setIsFs] = useState(false)
   const barDragRef = useRef<{ prod: string; startX: number; startMv: number; lotMv: number; halfW: number } | null>(null)
+  const acctDragRef = useRef<{ account: string; startX: number; startMult: number; halfW: number } | null>(null)
 
   useEffect(() => {
     const onFsChange = () => setIsFs(!!document.fullscreenElement)
@@ -1042,11 +1078,53 @@ function VarSandboxContent({
     window.addEventListener("pointerup", handleDragEnd)
   }, [handleDragMove, handleDragEnd])
 
-  // Cleanup drag listeners on unmount
+  // Cleanup product drag listeners on unmount
   useEffect(() => () => {
     window.removeEventListener("pointermove", handleDragMove)
     window.removeEventListener("pointerup", handleDragEnd)
   }, [handleDragMove, handleDragEnd])
+
+  // ── Account drag handlers ────────────────────────────────────────────────
+  const handleAcctDragMove = useCallback((e: PointerEvent) => {
+    const drag = acctDragRef.current
+    if (!drag) return
+    e.preventDefault()
+    const deltaX   = e.clientX - drag.startX
+    // halfW maps to a 3× multiplier range: drag across full half → +3×
+    const deltaMult = (deltaX / drag.halfW) * 3
+    const newMult   = Math.max(0, Math.min(5, drag.startMult + deltaMult))
+    const rounded   = Math.round(newMult * 10) / 10
+    setSbAcctMult(prev => {
+      const next = new Map(prev)
+      next.set(drag.account, rounded)
+      return next
+    })
+  }, [])
+
+  const handleAcctDragEnd = useCallback(() => {
+    acctDragRef.current = null
+    document.body.style.cursor = ""
+    window.removeEventListener("pointermove", handleAcctDragMove)
+    window.removeEventListener("pointerup", handleAcctDragEnd)
+  }, [handleAcctDragMove])
+
+  const onAcctBarPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>, account: string, mult: number) => {
+    e.preventDefault()
+    const barEl = e.currentTarget.parentElement!
+    const rect  = barEl.getBoundingClientRect()
+    const halfW = rect.width * 0.9
+    if (halfW < 1) return
+    acctDragRef.current = { account, startX: e.clientX, startMult: mult, halfW }
+    document.body.style.cursor = "grabbing"
+    window.addEventListener("pointermove", handleAcctDragMove)
+    window.addEventListener("pointerup", handleAcctDragEnd)
+  }, [handleAcctDragMove, handleAcctDragEnd])
+
+  // Cleanup account drag listeners on unmount
+  useEffect(() => () => {
+    window.removeEventListener("pointermove", handleAcctDragMove)
+    window.removeEventListener("pointerup", handleAcctDragEnd)
+  }, [handleAcctDragMove, handleAcctDragEnd])
 
   const doSearch = (code: string) => {
     setSbSearch(code)
@@ -1126,12 +1204,25 @@ function VarSandboxContent({
             setSbCatFilter("全部")
             setSbSectorFilter("全部")
             setSbDirFilter("全部")
+            setSbAcctMult(new Map(sbAccounts.map(a => [a.account, 1.0])))
           }}
         >重置为默认</button>
         <button
           className="text-xs px-2.5 py-1 rounded border border-border hover:bg-muted transition-colors"
           onClick={() => setSbShowEditors(v => !v)}
         >{sbShowEditors ? "收起编辑" : "展开编辑"}</button>
+        <button
+          className={`text-xs px-2.5 py-1 rounded border transition-colors ${
+            sbViewMode === "account"
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border hover:bg-muted"
+          }`}
+          onClick={() => {
+            const next = sbViewMode === "product" ? "account" : "product"
+            if (next === "product") setSbProds(sbOrigProds.map(p => ({ ...p })))
+            setSbViewMode(next)
+          }}
+        >{sbViewMode === "account" ? "📊 按账户" : "按账户"}</button>
         <span className="text-xs text-muted-foreground ml-1">排序：</span>
         <select
           className="text-xs border rounded px-1 py-0.5 bg-background"
@@ -1174,6 +1265,7 @@ function VarSandboxContent({
       </div>
 
       {/* Product list */}
+      {sbViewMode === "product" && (
       <div ref={sbListRef} className="border rounded-lg bg-card overflow-y-auto" style={{ maxHeight: 520 }}>
         {displayProds.map((p, vi) => {
           // Always use origMaxAbsMv for scale — stable, never changes during drag
@@ -1280,6 +1372,93 @@ function VarSandboxContent({
           )
         })}
       </div>
+      )}
+
+      {/* Account view */}
+      {sbViewMode === "account" && (
+      <div className="border rounded-lg bg-card overflow-y-auto" style={{ maxHeight: 520 }}>
+        {sbAccounts.length === 0
+          ? <p className="text-xs text-muted-foreground p-3">暂无账户保证金数据</p>
+          : sbAccounts.map((a, ai) => {
+            const mult    = sbAcctMult.get(a.account) ?? 1
+            const scaledMargin = a.marginUsed * mult
+            // bar width proportional to max account margin (at 1×), scaled by multiplier
+            // max at 3× (so a 3× drag fills the bar)
+            const pct = Math.min(scaledMargin / (acctMaxMargin * 3), 1)
+            const isModified = Math.abs(mult - 1) > 0.05
+            return (
+              <div
+                key={a.account}
+                className={`flex items-center gap-2 px-3 py-1.5 border-b last:border-b-0 ${
+                  ai % 2 === 0 ? "" : "bg-muted/20"
+                }`}
+              >
+                {/* Label */}
+                <div className="w-52 shrink-0 text-xs leading-tight">
+                  <span className="text-muted-foreground text-[10px]">{String(ai + 1).padStart(2, "0")}账户：</span>
+                  <span className="font-semibold truncate">{a.account}</span>
+                </div>
+
+                {/* Bar — drag to set multiplier */}
+                <div
+                  className="flex-1 relative h-6 min-w-0 select-none"
+                  style={{ touchAction: "none" }}
+                >
+                  {/* Track */}
+                  <div className="absolute inset-y-0 left-0 right-0 rounded bg-muted/30" />
+                  {/* Filled bar */}
+                  <div
+                    className="absolute left-0 rounded pointer-events-none"
+                    style={{
+                      width:  `${pct * 100}%`,
+                      top:    "30%",
+                      bottom: "30%",
+                      backgroundColor: isModified ? "#f59e0b" : "#60a5fa",
+                    }}
+                  />
+                  {/* 1× marker */}
+                  <div
+                    className="absolute top-0 bottom-0 w-px bg-border/80 z-10"
+                    style={{ left: `${(1 / 3) * 100}%` }}
+                    title="1×（原始持仓）"
+                  />
+                  {/* Drag handle */}
+                  <div
+                    className="absolute w-3 h-3 rounded-full border-2 bg-card z-20"
+                    style={{
+                      cursor:      "grab",
+                      borderColor: isModified ? "#f59e0b" : "#60a5fa",
+                      top:         "50%",
+                      transform:   "translateY(-50%)",
+                      left:        `calc(${pct * 100}% - 6px)`,
+                    }}
+                    onPointerDown={e => onAcctBarPointerDown(e, a.account, mult)}
+                  />
+                </div>
+
+                {/* Multiplier badge + margin display */}
+                <div className="text-xs font-mono shrink-0 w-28 text-right text-muted-foreground">
+                  <span className={`font-semibold mr-1 ${isModified ? "text-amber-500" : "text-foreground"}`}>
+                    {mult.toFixed(1)}×
+                  </span>
+                  {Math.round(scaledMargin).toLocaleString("zh-CN")}
+                </div>
+
+                {/* +/- buttons */}
+                <button
+                  className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                  onClick={() => setSbAcctMult(prev => { const n=new Map(prev); n.set(a.account, Math.max(0, Math.round((mult-0.1)*10)/10)); return n })}
+                >−</button>
+                <button
+                  className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
+                  onClick={() => setSbAcctMult(prev => { const n=new Map(prev); n.set(a.account, Math.min(5, Math.round((mult+0.1)*10)/10)); return n })}
+                >+</button>
+              </div>
+            )
+          })
+        }
+      </div>
+      )}
 
       {/* Summary footer */}
       <div className="mt-3 text-sm space-y-1">

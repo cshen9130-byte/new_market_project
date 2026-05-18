@@ -198,10 +198,48 @@ async function _GET(req: Request) {
       }
     })
 
+    // 7. Per-account position breakdown for account-view VaR sandbox
+    const acctPosRows = await query<{ account: string; contract: string; mv: string; margin: string }>(
+      `SELECT UPPER(TRIM("账户")) AS account,
+              UPPER(TRIM("合约")) AS contract,
+              SUM(
+                CASE WHEN ${numExpr("买持仓")} > 0
+                     THEN  ${numExpr("持仓市値")}
+                     ELSE -${numExpr("持仓市値")}
+                END
+              )::text AS mv,
+              SUM(${numExpr("保证金")})::text AS margin
+       FROM mom_position_details
+       WHERE "交易日期" = (SELECT MAX("交易日期") FROM mom_position_details WHERE "交易日期" IS NOT NULL)
+         AND "账户" IS NOT NULL
+         AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
+         AND TRIM("合约") NOT LIKE '%-%-%'
+       GROUP BY UPPER(TRIM("账户")), UPPER(TRIM("合约"))`,
+    )
+    const acctProdMvMap = new Map<string, Map<string, number>>()
+    const acctMarginMap = new Map<string, number>()
+    for (const r of acctPosRows) {
+      if (!r.account) continue
+      const prod = getPrefix(r.contract)
+      if (!acctProdMvMap.has(r.account)) acctProdMvMap.set(r.account, new Map())
+      acctProdMvMap.get(r.account)!.set(prod, (acctProdMvMap.get(r.account)!.get(prod) ?? 0) + toNum(r.mv))
+      acctMarginMap.set(r.account, (acctMarginMap.get(r.account) ?? 0) + toNum(r.margin))
+    }
+    const accounts = [...acctMarginMap.entries()]
+      .filter(([, m]) => m > 1000)
+      .sort((a, b) => b[1] - a[1])
+      .map(([account, marginUsed]) => ({
+        account,
+        marginUsed: Math.round(marginUsed),
+        prodContribs: [...(acctProdMvMap.get(account) ?? new Map()).entries()]
+          .map(([prod, mv]) => ({ prod, mv: Math.round(mv) })),
+      }))
+
     return NextResponse.json({
       ok: true,
       date: latestDate,
       products,
+      accounts,
       corrMatrix,
       zScore: Z_SCORE,
       confidence,
