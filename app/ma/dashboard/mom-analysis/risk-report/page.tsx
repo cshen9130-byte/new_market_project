@@ -1230,11 +1230,33 @@ function VarSandboxContent({
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm">VaR沙盒 &mdash; {sbDate}</CardTitle>
-          <button
-            onClick={toggleFs}
-            className="text-xs px-2 py-1 rounded border border-border hover:bg-muted transition-colors shrink-0"
-            title={isFs ? "退出全屏" : "全屏"}
-          >{isFs ? "✕ 退出全屏" : "⛶ 全屏"}</button>
+          <div className="flex items-center gap-2">
+            {/* View mode toggle */}
+            <div className="flex items-center rounded-md border border-border overflow-hidden shrink-0 text-xs font-medium">
+              <button
+                className={`px-2.5 py-1 transition-colors ${
+                  sbViewMode === "product"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-background text-muted-foreground hover:bg-muted"
+                }`}
+                onClick={() => { if (sbViewMode !== "product") { setSbProds(sbOrigProds.map(p => ({ ...p }))); setSbViewMode("product") } }}
+              >📋 按品种</button>
+              <div className="w-px self-stretch bg-border" />
+              <button
+                className={`px-2.5 py-1 transition-colors ${
+                  sbViewMode === "account"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-background text-muted-foreground hover:bg-muted"
+                }`}
+                onClick={() => { if (sbViewMode !== "account") setSbViewMode("account") }}
+              >📊 按账户</button>
+            </div>
+            <button
+              onClick={toggleFs}
+              className="text-xs px-2 py-1 rounded border border-border hover:bg-muted transition-colors shrink-0"
+              title={isFs ? "退出全屏" : "全屏"}
+            >{isFs ? "✕ 退出全屏" : "⛶ 全屏"}</button>
+          </div>
         </div>
         <p className="text-xs text-muted-foreground">
           搜索定位品种使用滑块或数值输入调整持仓，VaR实时更新。
@@ -1271,19 +1293,6 @@ function VarSandboxContent({
           className="text-xs px-2.5 py-1 rounded border border-border hover:bg-muted transition-colors"
           onClick={() => setSbShowEditors(v => !v)}
         >{sbShowEditors ? "收起编辑" : "展开编辑"}</button>
-        <button
-          className={`text-xs px-2.5 py-1 rounded border transition-colors ${
-            sbViewMode === "account"
-              ? "border-primary bg-primary/10 text-primary"
-              : "border-border hover:bg-muted"
-          }`}
-          onClick={() => {
-            const next = sbViewMode === "product" ? "account" : "product"
-            if (next === "product") setSbProds(sbOrigProds.map(p => ({ ...p })))
-            setSbViewMode(next)
-          }}
-        >{sbViewMode === "account" ? "📊 按账户" : "按账户"}</button>
-
         {/* ── Product-view filters ── */}
         {sbViewMode === "product" && (<>
         <span className="text-xs text-muted-foreground ml-1">排序：</span>
