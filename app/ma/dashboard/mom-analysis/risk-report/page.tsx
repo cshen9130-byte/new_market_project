@@ -846,11 +846,11 @@ function VarSandboxContent({
   const [sbLoading, setSbLoading]     = useState(true)
   const [sbSearchInput, setSbSearchInput] = useState("")
   const [sbSearch, setSbSearch]       = useState("")
-  const [sbSort, setSbSort]           = useState("mv_abs")
+  const [sbSort, setSbSort]           = useState("marginal")
   const [sbCatFilter, setSbCatFilter] = useState("全部")
   const [sbSectorFilter, setSbSectorFilter] = useState("全部")
   const [sbDirFilter, setSbDirFilter] = useState("全部")
-  const [sbShowEditors, setSbShowEditors] = useState(false)
+  const [sbShowEditors, setSbShowEditors] = useState(true)
 
   useEffect(() => {
     let doneCount = 0
@@ -3299,7 +3299,7 @@ function PositionChangeChart({
     const fmtWan = (v: number) => `${v > 0 ? "+" : ""}${(v / 10000).toFixed(1)}万`
 
     const fmtVarWan = (v: number) => `${v > 0 ? "+" : ""}${(v / 10000).toFixed(2)}万`
-    const visibleCount = compactMode ? 16 : 12
+    const visibleCount = compactMode ? 8 : 12
 
     return {
       title: {

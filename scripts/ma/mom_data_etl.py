@@ -1313,7 +1313,7 @@ def ensure_tables(conn) -> None:
     conn.commit()
 
 
-def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[datetime, int, str]]:
+def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[datetime, int]]:
     rels = [str(p.relative_to(base_dir)).replace("\\", "/") for p in files]
     if not rels:
         return {}
@@ -1321,7 +1321,7 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT source_file_rel, source_mtime, source_size, status
+            SELECT source_file_rel, source_mtime, source_size
             FROM mom_trade_detail_file_state
             WHERE source_file_rel = ANY(%s)
             """,
@@ -1329,9 +1329,9 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
         )
         rows = cur.fetchall()
 
-    state: Dict[str, Tuple[datetime, int, str]] = {}
-    for file_rel, mtime, size, status in rows:
-        state[file_rel] = (mtime, int(size), str(status or ""))
+    state: Dict[str, Tuple[datetime, int]] = {}
+    for file_rel, mtime, size in rows:
+        state[file_rel] = (mtime, int(size))
     return state
 
 
@@ -1886,11 +1886,7 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
             if not old:
                 changed.append(p)
                 continue
-            old_mtime, old_size, old_status = old
-            # Always retry files that were previously marked as error, even if unchanged.
-            if old_status.lower() != "ok":
-                changed.append(p)
-                continue
+            old_mtime, old_size = old
             if int(old_mtime.timestamp()) != int(mtime_dt.timestamp()) or int(old_size) != size:
                 changed.append(p)
 
@@ -1900,13 +1896,6 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
 
         for fp in progress(changed, desc="处理文件", total=len(changed)):
             ok, msg = process_file(conn, base_dir, fp)
-            # Deadlocks are transient under concurrent ETL; retry the same file quickly.
-            if (not ok) and ("deadlock detected" in msg.lower()):
-                log.warning("Deadlock on %s; retrying once.", fp)
-                ok, msg = process_file(conn, base_dir, fp)
-                if (not ok) and ("deadlock detected" in msg.lower()):
-                    log.warning("Deadlock persisted on %s; retrying one final time.", fp)
-                    ok, msg = process_file(conn, base_dir, fp)
             messages.append(msg)
             if ok:
                 ok_count += 1
