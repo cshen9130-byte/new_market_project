@@ -1497,7 +1497,7 @@ function VarSandboxContent({
                 {/* Multiplier badge + margin display */}
                 <div className="text-xs font-mono shrink-0 w-36 text-right text-muted-foreground">
                   <span className={`font-semibold mr-1 ${isModified ? "text-amber-500" : "text-foreground"}`}>
-                    {mult.toFixed(1)}×
+                    {Number.isInteger(mult) ? mult : mult.toFixed(1)}×
                   </span>
                   <span className="text-[10px]">保{Math.round(scaledMargin).toLocaleString("zh-CN")}</span>
                 </div>
@@ -1505,11 +1505,11 @@ function VarSandboxContent({
                 {/* +/- buttons */}
                 <button
                   className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
-                  onClick={() => setSbAcctMult(prev => { const n=new Map(prev); n.set(a.account, Math.max(0, Math.round((mult-0.1)*10)/10)); return n })}
+                  onClick={() => setSbAcctMult(prev => { const n=new Map(prev); n.set(a.account, Math.max(0, Math.round(mult) - 1)); return n })}
                 >−</button>
                 <button
                   className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
-                  onClick={() => setSbAcctMult(prev => { const n=new Map(prev); n.set(a.account, Math.min(5, Math.round((mult+0.1)*10)/10)); return n })}
+                  onClick={() => setSbAcctMult(prev => { const n=new Map(prev); n.set(a.account, Math.min(5, Math.round(mult) + 1)); return n })}
                 >+</button>
               </div>
             )
