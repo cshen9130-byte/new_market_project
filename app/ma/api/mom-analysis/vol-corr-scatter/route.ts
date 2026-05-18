@@ -80,6 +80,26 @@ function filterRolloverSpikes(rets: number[]): number[] {
   return rets.filter((_, i) => keep[i])
 }
 
+/**
+ * Zero out contract-rollover spike returns in place, keeping array length fixed.
+ * Used for MVC σ and ρ computations so mktRets arrays stay index-aligned with portMktRet.
+ * Uses the same rolling-MAD threshold as filterRolloverSpikes.
+ */
+function zeroRolloverSpikes(rets: number[]): number[] {
+  if (rets.length < 2) return [...rets]
+  const MIN_THRESHOLD = 0.06, K = 12, LOOKBACK = 40
+  const out = [...rets]
+  for (let i = LOOKBACK; i < rets.length; i++) {
+    const win = rets.slice(i - LOOKBACK, i).map(Math.abs).sort((a, b) => a - b)
+    const med = win[Math.floor(win.length / 2)]
+    const devs = win.map(v => Math.abs(v - med)).sort((a, b) => a - b)
+    const mad = devs[Math.floor(devs.length / 2)]
+    const thr = Math.max(MIN_THRESHOLD, med + K * mad * 1.4826)
+    if (Math.abs(rets[i]) > thr) out[i] = 0
+  }
+  return out
+}
+
 function pearsonCorr(x: number[], y: number[]): number {
   const n = x.length
   if (n < 3) return 0
@@ -202,17 +222,29 @@ async function _GET(req: Request) {
     const allMktDates = [...new Set(pctRows.map((r) => r.date))].sort()
     const lastMktDates = allMktDates.slice(-WINDOW)
 
+    // Precompute rollover-cleaned return series (zeros out spikes, preserves indices)
+    // so that MVC σ and ρ are not distorted by contract-rollover events (e.g. JD monthly rolls).
+    const cleanPctByCode = new Map<string, Map<string, number>>()
+    for (const code of akCodes) {
+      const m = pctByCode.get(code)
+      const allRetsArr = allMktDates.map((d) => m?.get(d) ?? 0)
+      const cleanedArr = zeroRolloverSpikes(allRetsArr)
+      const cleanMap = new Map<string, number>()
+      allMktDates.forEach((d, idx) => cleanMap.set(d, cleanedArr[idx]))
+      cleanPctByCode.set(code, cleanMap)
+    }
+
     // 4. Build signed-weight portfolio market return series for MVC
     // w_i = signedNetMV_i / totalAbsMV  (positive = net long, negative = net short)
     const totalAbsMV = [...prodMV.values()].reduce((s, v) => s + Math.abs(v), 0)
-    // portfolio market return on each mkt date = sum of w_i * r_i_t
+    // portfolio market return on each mkt date = sum of w_i * r_i_t (rollover-cleaned)
     const portMktRet = lastMktDates.map((dt) => {
       let ret = 0
       for (const prod of activeProds) {
         const code = AKSHARE_CODE[prod]
         if (!code) continue
         const w = (prodMV.get(prod) ?? 0) / totalAbsMV   // signed weight
-        ret += w * (pctByCode.get(code)?.get(dt) ?? 0)
+        ret += w * (cleanPctByCode.get(code)?.get(dt) ?? 0)
       }
       return ret
     })
@@ -232,7 +264,7 @@ async function _GET(req: Request) {
       // mktRets (aligned to lastMktDates) is kept separate for MVC correlation math.
       const code = AKSHARE_CODE[prod]
       const mktRets = code
-        ? lastMktDates.map((dt) => pctByCode.get(code)?.get(dt) ?? 0)
+        ? lastMktDates.map((dt) => cleanPctByCode.get(code)?.get(dt) ?? 0)
         : []
       const nonZeroRets = mktRets.filter((r) => r !== 0)
       if (nonZeroRets.length < 3) continue
