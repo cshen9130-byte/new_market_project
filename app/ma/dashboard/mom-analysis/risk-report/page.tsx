@@ -855,6 +855,8 @@ function VarSandboxContent({
   const [sbViewMode, setSbViewMode]       = useState<"product" | "account">("product")
   const [sbAccounts, setSbAccounts]       = useState<SbAcct[]>([])
   const [sbAcctMult, setSbAcctMult]       = useState<Map<string, number>>(new Map())
+  const [sbAcctSort, setSbAcctSort]       = useState("acct_marginal")
+  const [sbAcctSearch, setSbAcctSearch]   = useState("")
 
   useEffect(() => {
     let doneCount = 0
@@ -1035,6 +1037,31 @@ function VarSandboxContent({
   useEffect(() => {
     onProdMcrChange?.(prodMcrData)
   }, [onProdMcrChange, prodMcrData])
+
+  // Per-account marginal VaR contribution = sum of MCR of all products in that account
+  const acctMcrMap = useMemo(() => {
+    const mcrByProd = new Map(prodMcrData.map(d => [d.name, d.value]))
+    const map = new Map<string, number>()
+    for (const acct of sbAccounts) {
+      const total = acct.prodContribs.reduce((s, { prod }) => s + (mcrByProd.get(prod) ?? 0), 0)
+      map.set(acct.account, total)
+    }
+    return map
+  }, [prodMcrData, sbAccounts])
+
+  // Sorted + filtered account list for account view
+  const displayAccounts = useMemo(() => {
+    let list = sbAccounts
+    if (sbAcctSearch) {
+      const q = sbAcctSearch.toUpperCase()
+      list = list.filter(a => a.account.toUpperCase().includes(q))
+    }
+    const sorted = [...list]
+    if      (sbAcctSort === "acct_marginal") sorted.sort((a, b) => (acctMcrMap.get(b.account) ?? 0) - (acctMcrMap.get(a.account) ?? 0))
+    else if (sbAcctSort === "acct_margin")   sorted.sort((a, b) => b.marginUsed - a.marginUsed)
+    else if (sbAcctSort === "acct_name")     sorted.sort((a, b) => a.account.localeCompare(b.account))
+    return sorted
+  }, [sbAccounts, sbAcctSort, sbAcctSearch, acctMcrMap])
 
   // Marginal vol contribution per sector
   const sectorMcrData = useMemo(() => {
@@ -1223,6 +1250,9 @@ function VarSandboxContent({
             setSbViewMode(next)
           }}
         >{sbViewMode === "account" ? "📊 按账户" : "按账户"}</button>
+
+        {/* ── Product-view filters ── */}
+        {sbViewMode === "product" && (<>
         <span className="text-xs text-muted-foreground ml-1">排序：</span>
         <select
           className="text-xs border rounded px-1 py-0.5 bg-background"
@@ -1262,6 +1292,28 @@ function VarSandboxContent({
           <option value="多">多</option>
           <option value="空">空</option>
         </select>
+        </>)}
+
+        {/* ── Account-view filters ── */}
+        {sbViewMode === "account" && (<>
+        <span className="text-xs text-muted-foreground ml-1">排序：</span>
+        <select
+          className="text-xs border rounded px-1 py-0.5 bg-background"
+          value={sbAcctSort}
+          onChange={e => setSbAcctSort(e.target.value)}
+        >
+          <option value="acct_marginal">按账户边际贡献</option>
+          <option value="acct_margin">按保证金占用</option>
+          <option value="acct_name">账户名</option>
+        </select>
+        <span className="text-xs text-muted-foreground">账户筛选：</span>
+        <input
+          className="text-xs border rounded px-2 py-0.5 bg-background w-32"
+          placeholder="搜索账户名"
+          value={sbAcctSearch}
+          onChange={e => setSbAcctSearch(e.target.value)}
+        />
+        </>)}
       </div>
 
       {/* Product list */}
@@ -1379,11 +1431,12 @@ function VarSandboxContent({
       <div className="border rounded-lg bg-card overflow-y-auto" style={{ maxHeight: 520 }}>
         {sbAccounts.length === 0
           ? <p className="text-xs text-muted-foreground p-3">暂无账户保证金数据</p>
-          : sbAccounts.map((a, ai) => {
-            const mult    = sbAcctMult.get(a.account) ?? 1
+          : displayAccounts.map((a, ai) => {
+            const mult         = sbAcctMult.get(a.account) ?? 1
             const scaledMargin = a.marginUsed * mult
-            // bar width proportional to max account margin (at 1×), scaled by multiplier
-            // max at 3× (so a 3× drag fills the bar)
+            const mcr          = acctMcrMap.get(a.account) ?? 0
+            const mcrTotal     = [...acctMcrMap.values()].reduce((s, v) => s + v, 0)
+            // bar width: max = 3× of largest account margin
             const pct = Math.min(scaledMargin / (acctMaxMargin * 3), 1)
             const isModified = Math.abs(mult - 1) > 0.05
             return (
@@ -1397,6 +1450,11 @@ function VarSandboxContent({
                 <div className="w-52 shrink-0 text-xs leading-tight">
                   <span className="text-muted-foreground text-[10px]">{String(ai + 1).padStart(2, "0")}账户：</span>
                   <span className="font-semibold truncate">{a.account}</span>
+                  {mcr > 0 && mcrTotal > 0 && (
+                    <span className="ml-1 text-[10px] text-orange-500 font-mono">
+                      边际{(mcr / mcrTotal * 100).toFixed(1)}%
+                    </span>
+                  )}
                 </div>
 
                 {/* Bar — drag to set multiplier */}
@@ -1437,11 +1495,11 @@ function VarSandboxContent({
                 </div>
 
                 {/* Multiplier badge + margin display */}
-                <div className="text-xs font-mono shrink-0 w-28 text-right text-muted-foreground">
+                <div className="text-xs font-mono shrink-0 w-36 text-right text-muted-foreground">
                   <span className={`font-semibold mr-1 ${isModified ? "text-amber-500" : "text-foreground"}`}>
                     {mult.toFixed(1)}×
                   </span>
-                  {Math.round(scaledMargin).toLocaleString("zh-CN")}
+                  <span className="text-[10px]">保{Math.round(scaledMargin).toLocaleString("zh-CN")}</span>
                 </div>
 
                 {/* +/- buttons */}
