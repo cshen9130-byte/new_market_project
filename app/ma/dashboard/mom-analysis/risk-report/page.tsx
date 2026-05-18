@@ -1041,6 +1041,7 @@ function VarSandboxContent({
   // Per-account marginal VaR contribution when that account's multiplier goes 1×→2×
   // = Σ_prod (acct_mv_prod / total_mv_prod) * prodMCR_prod
   // i.e. the fraction of each product owned by this account times that product's MCR
+  // Used for live % badge display only — sort order uses acctSortScores below
   const acctMcrMap = useMemo(() => {
     const mcrByProd     = new Map(prodMcrData.map(d => [d.name, d.value]))
     const totalMvByProd = new Map(sbProds.map(p => [p.prod, Math.abs(p.mv)]))
@@ -1056,6 +1057,31 @@ function VarSandboxContent({
     return map
   }, [prodMcrData, sbAccounts, sbProds])
 
+  // Stable sort scores — captured once when sbAccounts loads, NOT updated when
+  // multipliers change (so clicking +/- doesn't re-order the list)
+  const [acctSortScores, setAcctSortScores] = useState<Map<string, number>>(new Map())
+  useEffect(() => {
+    if (sbAccounts.length === 0 || prodMcrData.length === 0) return
+    const totalMvByProd = new Map<string, number>()
+    for (const acct of sbAccounts) {
+      for (const { prod, mv } of acct.prodContribs) {
+        totalMvByProd.set(prod, (totalMvByProd.get(prod) ?? 0) + Math.abs(mv))
+      }
+    }
+    const mcrByProd = new Map(prodMcrData.map(d => [d.name, d.value]))
+    const newMap = new Map<string, number>()
+    for (const acct of sbAccounts) {
+      const score = acct.prodContribs.reduce((s, { prod, mv }) => {
+        const totalMv = totalMvByProd.get(prod) ?? 0
+        const mcr     = mcrByProd.get(prod) ?? 0
+        return s + (totalMv > 0 ? (Math.abs(mv) / totalMv) * mcr : 0)
+      }, 0)
+      newMap.set(acct.account, score)
+    }
+    setAcctSortScores(newMap)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sbAccounts]) // intentionally omit prodMcrData — scores frozen at load time
+
   // Sorted + filtered account list for account view
   const displayAccounts = useMemo(() => {
     let list = sbAccounts
@@ -1064,11 +1090,11 @@ function VarSandboxContent({
       list = list.filter(a => a.account.toUpperCase().includes(q))
     }
     const sorted = [...list]
-    if      (sbAcctSort === "acct_marginal") sorted.sort((a, b) => (acctMcrMap.get(b.account) ?? 0) - (acctMcrMap.get(a.account) ?? 0))
+    if      (sbAcctSort === "acct_marginal") sorted.sort((a, b) => (acctSortScores.get(b.account) ?? 0) - (acctSortScores.get(a.account) ?? 0))
     else if (sbAcctSort === "acct_margin")   sorted.sort((a, b) => b.marginUsed - a.marginUsed)
     else if (sbAcctSort === "acct_name")     sorted.sort((a, b) => a.account.localeCompare(b.account))
     return sorted
-  }, [sbAccounts, sbAcctSort, sbAcctSearch, acctMcrMap])
+  }, [sbAccounts, sbAcctSort, sbAcctSearch, acctSortScores])
 
   // Marginal vol contribution per sector
   const sectorMcrData = useMemo(() => {
