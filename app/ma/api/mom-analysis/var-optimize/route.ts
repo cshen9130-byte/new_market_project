@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { getPrefix } from "@/lib/server/prod-utils"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-function getPrefix(contract: string): string {
-  return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
-}
 function toNum(v: unknown): number {
   if (v == null) return 0
   const n = parseFloat(String(v).replace(/[,%\s]/g, ""))

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { getPrefix } from "@/lib/server/prod-utils"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -9,10 +10,6 @@ export const dynamic = "force-dynamic"
 // Extract LEADING letters only so options (e.g. AP610C2501) correctly map to their underlying (AP)
 const STOCK_INDEX = new Set(["IH", "IF", "IC", "IM", "MO"])
 const BOND = new Set(["TS", "TF", "T", "TL"])
-
-function getPrefix(contract: string): string {
-  return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
-}
 
 function getCategory(contract: string): "股指" | "国债" | "商品" {
   const prefix = getPrefix(contract)
@@ -227,11 +224,11 @@ async function _GET(req: Request) {
       // Holding PnL from open positions (daily MTM per product)
       const guosenPosRows = await query<{ date: string; product: string; pnl: string }>(
         `SELECT settlement_date::text AS date,
-                UPPER(TRIM(product)) AS product,
+                UPPER(TRIM(instrument)) AS product,
                 SUM(COALESCE(mtm_pl, 0))::text AS pnl
          FROM guosen_position_detail
-         WHERE product IS NOT NULL
-         GROUP BY settlement_date, UPPER(TRIM(product))
+         WHERE instrument IS NOT NULL
+         GROUP BY settlement_date, UPPER(TRIM(instrument))
          ORDER BY settlement_date`,
       )
       for (const row of guosenPosRows) {
@@ -249,11 +246,11 @@ async function _GET(req: Request) {
       // Closed PnL from settled positions (realized PnL per product per settlement date)
       const guosenCloseRows = await query<{ date: string; product: string; pnl: string }>(
         `SELECT settlement_date::text AS date,
-                UPPER(TRIM(product)) AS product,
+                UPPER(TRIM(instrument)) AS product,
                 SUM(COALESCE(realized_pl, 0))::text AS pnl
          FROM guosen_position_closed
-         WHERE product IS NOT NULL
-         GROUP BY settlement_date, UPPER(TRIM(product))
+         WHERE instrument IS NOT NULL
+         GROUP BY settlement_date, UPPER(TRIM(instrument))
          ORDER BY settlement_date`,
       )
       for (const row of guosenCloseRows) {

@@ -1,13 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { getPrefix } from "@/lib/server/prod-utils"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-
-function getPrefix(contract: string): string {
-  return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
-}
 function isOption(contract: string): boolean {
   return /^[A-Z]+\d+-?[CP]-?\d+$/i.test(contract)
 }

@@ -1,13 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { withMomCache } from "@/lib/server/mom-cache"
+import { getPrefix } from "@/lib/server/prod-utils"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-
-function getPrefix(contract: string): string {
-  return (contract.match(/^[A-Z]+/i)?.[0] ?? contract).toUpperCase()
-}
 
 const SECTOR_MAP: Record<string, string> = {
   C:"农产",CS:"农产",WH:"农产",PM:"农产",RR:"农产",RI:"农产",JR:"农产",LR:"农产",
@@ -146,13 +143,13 @@ async function _GET() {
     // Add guosen long/short position PnL — gracefully skipped if unavailable
     try {
       const guosenLsRows = await query<{ product: string; bs: string; pnl: string }>(
-        `SELECT UPPER(TRIM(product)) AS product,
+        `SELECT UPPER(TRIM(instrument)) AS product,
                 bs,
                 SUM(COALESCE(mtm_pl, 0))::text AS pnl
          FROM guosen_position_detail
          WHERE settlement_date = (SELECT MAX(settlement_date) FROM guosen_position_detail)
-           AND product IS NOT NULL
-         GROUP BY UPPER(TRIM(product)), bs`,
+           AND instrument IS NOT NULL
+         GROUP BY UPPER(TRIM(instrument)), bs`,
       )
       for (const row of guosenLsRows) {
         const side: "long" | "short" = row.bs === "B" ? "long" : "short"
