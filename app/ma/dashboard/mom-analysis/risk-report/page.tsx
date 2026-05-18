@@ -1527,7 +1527,8 @@ function VarSandboxContent({
                   />
                 </div>
 
-                {/* Multiplier badge + margin display */}
+                {/* Multiplier badge + margin display + +/- buttons — hidden when editors collapsed */}
+                {sbShowEditors && (<>
                 <div className="text-xs font-mono shrink-0 w-36 text-right text-muted-foreground">
                   <span className={`font-semibold mr-1 ${isModified ? "text-amber-500" : "text-foreground"}`}>
                     {Number.isInteger(mult) ? mult : mult.toFixed(1)}×
@@ -1544,6 +1545,7 @@ function VarSandboxContent({
                   className="text-xs w-5 h-5 rounded border border-border hover:bg-muted flex items-center justify-center shrink-0"
                   onClick={() => setSbAcctMult(prev => { const n=new Map(prev); n.set(a.account, Math.min(5, Math.round(mult) + 1)); return n })}
                 >+</button>
+                </>)}
               </div>
             )
           })
