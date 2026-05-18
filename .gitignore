@@ -49,6 +49,11 @@ yarn-error.log*
 !.env.production.example
 /.choice_env.sh
 
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
 # Server-only vendor assets
 EMQuantAPI_Python/
 
