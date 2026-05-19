@@ -3,20 +3,9 @@ import { Download, FileText, Upload, Users, Calculator } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 
-const momReportUrl = (process.env.NEXT_PUBLIC_MOM_REPORT_URL || "/mom_report/report.html?v=debug") as string
-const downloadHref = "/mom_report/report.html"
-
 const functions = [
   {
-    title: "MOM 风控报告",
-    description: "查看最新 MOM 月度风控报告，支持在线浏览与下载。",
-    href: momReportUrl,
-    downloadHref,
-    icon: FileText,
-    openInNewTab: true,
-  },
-  {
-    title: "MOM 风控报告（新版）",
+    title: "MOM 每日风控",
     description: "查看新版 MOM 风控报告。",
     href: "/ma/dashboard/mom-analysis/risk-report",
     downloadHref: null,
@@ -24,15 +13,7 @@ const functions = [
     openInNewTab: false,
   },
   {
-    title: "数据导入",
-    description: "上传逐日核算 ZIP 包，自动解压、标准化命名并检查交易日覆盖情况。",
-    href: "/ma/dashboard/mom-analysis/data-import",
-    downloadHref: null,
-    icon: Upload,
-    openInNewTab: false,
-  },
-  {
-    title: "盘手分析",
+    title: "盘手历史交易复盘",
     description: "基于客户交易核算日报，按账户汇总期间盈亏、手续费、权益等绩效指标。",
     href: "/ma/dashboard/mom-analysis/trader-analysis",
     downloadHref: null,
@@ -45,6 +26,14 @@ const functions = [
     href: "/ma/dashboard/mom-analysis/carry-calc",
     downloadHref: null,
     icon: Calculator,
+    openInNewTab: false,
+  },
+  {
+    title: "数据导入",
+    description: "上传逐日核算 ZIP 包，自动解压、标准化命名并检查交易日覆盖情况。",
+    href: "/ma/dashboard/mom-analysis/data-import",
+    downloadHref: null,
+    icon: Upload,
     openInNewTab: false,
   },
 ]

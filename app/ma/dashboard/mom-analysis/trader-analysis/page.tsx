@@ -357,7 +357,7 @@ export default function TraderAnalysisPage() {
           </Button>
         </Link>
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">盘手分析</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">盘手历史交易复盘</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             基于客户交易核算日报，按账户汇总期间绩效指标。
           </p>
