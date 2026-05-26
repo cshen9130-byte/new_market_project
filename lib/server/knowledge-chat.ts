@@ -459,15 +459,29 @@ async function getOrBuildVectorStore(
         })
         const chunks = await splitter.splitDocuments([fileDoc])
         if (chunks.length > 0) {
-          try {
-            const partStore = await MemoryVectorStore.fromDocuments(chunks, embeddingsModel)
-            const newRows = (partStore as any).memoryVectors as MemoryVectorRow[]
-            await pgUpsertFileChunks(scopeKey, doc.relativePath, newRows, nextFiles[doc.relativePath], getEmbeddingModel())
-          } catch (err: any) {
-            throw classifyApiError(err)
+          // Retry once on 429 with a 60-second backoff before giving up
+          let attempt = 0
+          while (true) {
+            try {
+              const partStore = await MemoryVectorStore.fromDocuments(chunks, embeddingsModel)
+              const newRows = (partStore as any).memoryVectors as MemoryVectorRow[]
+              await pgUpsertFileChunks(scopeKey, doc.relativePath, newRows, nextFiles[doc.relativePath], getEmbeddingModel())
+              break
+            } catch (err: any) {
+              const classified = classifyApiError(err)
+              const is429 = classified.message.includes("429") || classified.message.includes("频率超限")
+              if (is429 && attempt === 0) {
+                attempt++
+                await new Promise((r) => setTimeout(r, 60_000))
+                continue
+              }
+              throw classified
+            }
           }
         }
         onProgress?.(i + 1, changedDocs.length, doc.relativePath)
+        // Small inter-file pause to reduce sustained API pressure
+        if (i < changedDocs.length - 1) await new Promise((r) => setTimeout(r, 300))
       }
     }
 
