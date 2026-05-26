@@ -1719,6 +1719,36 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  const [deduping, setDeduping] = useState(false)
+
+  async function handleDedup() {
+    if (deduping) return
+    const scope = selectedFolder || ""
+    const label = scope || "全部资料"
+    if (!window.confirm(`确认对「${label}」去重？\n将扫描所有文件，删除内容完全相同的重复文件，只保留最新版本。`)) return
+    setDeduping(true)
+    try {
+      const res = await fetch("/api/knowledge-base/dedup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ folderPath: scope || null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || res.statusText)
+      const msg = data.deleted > 0
+        ? `去重完成：扫描 ${data.scanned} 个文件，删除 ${data.deleted} 个重复文件，保留 ${data.kept} 个。`
+        : `去重完成：扫描 ${data.scanned} 个文件，未发现重复。`
+      setChatMessages((c) => [...c, { role: "assistant", content: msg }])
+      if (data.deleted > 0) void refreshTree()
+      // Refresh index info if panel is open
+      void handleCheckIndexCoverage()
+    } catch (e: any) {
+      alert(`去重失败：${e?.message || e}`)
+    } finally {
+      setDeduping(false)
+    }
+  }
+
   function handleDownloadConversation() {
     const userMessages = chatMessages.filter((m) => m.role === "user")
     if (userMessages.length === 0) return
@@ -3366,6 +3396,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         向量化
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleDedup()}
+                      disabled={deduping}
+                      title={`扫描「${selectedFolder || "全部资料"}」并删除内容相同的重复文件`}
+                      className="mt-1.5 w-full rounded border px-2 py-1.5 text-xs transition-colors hover:bg-muted disabled:opacity-50"
+                    >
+                      {deduping ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />去重中...</> : "去重（删除重复文件）"}
+                    </button>
                     {indexInfo && (
                       <div className="mt-2 space-y-1.5 text-[11px]">
                         {indexInfo.diskIndex.exists ? (
@@ -3845,6 +3884,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         向量化
                       </button>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleDedup()}
+                      disabled={deduping}
+                      title={`扫描「${selectedFolder || "全部资料"}」并删除内容相同的重复文件`}
+                      className="mt-1 w-full rounded-lg border border-cyan-500/20 bg-black/20 px-2 py-1.5 text-xs text-cyan-300/70 transition-colors hover:bg-cyan-500/10 disabled:opacity-50"
+                    >
+                      {deduping ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />去重中...</> : "去重（删除重复文件）"}
+                    </button>
                     {indexInfo && (
                       <div className="space-y-1 text-[11px]">
                         {indexInfo.diskIndex.exists ? (

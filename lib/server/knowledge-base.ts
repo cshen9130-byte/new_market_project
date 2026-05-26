@@ -1,5 +1,6 @@
 import { execFile } from "child_process"
-import { promises as fs } from "fs"
+import { createHash } from "crypto"
+import { createReadStream, promises as fs } from "fs"
 import os from "os"
 import path from "path"
 import { promisify } from "util"
@@ -607,6 +608,96 @@ export async function deleteKnowledgeBaseFile(relativePath: string, actorUserId:
   await fs.unlink(target)
   await removeKnowledgeBaseFileOwner(normalizedPath)
   await removeEmptyKnowledgeBaseDirectories(path.posix.dirname(normalizedPath) === "." ? "" : path.posix.dirname(normalizedPath))
+}
+
+/** Stream a file and return its SHA-256 hex digest without loading it entirely into memory. */
+async function hashFile(absolutePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256")
+    const stream = createReadStream(absolutePath)
+    stream.on("data", (chunk) => hash.update(chunk))
+    stream.on("end", () => resolve(hash.digest("hex")))
+    stream.on("error", reject)
+  })
+}
+
+type DedupEntry = { relativePath: string; absolutePath: string; mtime: number; hash: string }
+
+async function collectFilesForDedup(absoluteDir: string, relativeDir: string, results: DedupEntry[]) {
+  let entries
+  try {
+    entries = await fs.readdir(absoluteDir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    const absolutePath = path.join(absoluteDir, entry.name)
+    const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      await collectFilesForDedup(absolutePath, relativePath, results)
+    } else if (entry.isFile()) {
+      try {
+        const stat = await fs.stat(absolutePath)
+        const hash = await hashFile(absolutePath)
+        results.push({ relativePath, absolutePath, mtime: stat.mtimeMs, hash })
+      } catch {
+        // skip unreadable files
+      }
+    }
+  }
+}
+
+export type DedupResult = {
+  scanned: number
+  deleted: string[]
+  kept: string[]
+}
+
+/** Scan a folder recursively, detect content-identical files, keep the newest, delete the rest. */
+export async function deduplicateKnowledgeBaseFolder(folderPath: string): Promise<DedupResult> {
+  const { target, normalized } = await resolveKnowledgeBasePath(folderPath)
+
+  const entries: DedupEntry[] = []
+  await collectFilesForDedup(target, normalized, entries)
+
+  // Group files by SHA-256 hash
+  const byHash = new Map<string, DedupEntry[]>()
+  for (const entry of entries) {
+    const group = byHash.get(entry.hash) ?? []
+    group.push(entry)
+    byHash.set(entry.hash, group)
+  }
+
+  const deleted: string[] = []
+  const kept: string[] = []
+
+  for (const group of byHash.values()) {
+    if (group.length <= 1) continue
+    // Keep the file with the newest mtime; delete the rest
+    group.sort((a, b) => b.mtime - a.mtime)
+    kept.push(group[0].relativePath)
+    for (const dup of group.slice(1)) {
+      try {
+        await fs.unlink(dup.absolutePath)
+        await removeKnowledgeBaseFileOwner(dup.relativePath)
+        deleted.push(dup.relativePath)
+      } catch {
+        // ignore individual delete failures
+      }
+    }
+  }
+
+  // Clean up any directories that are now empty
+  const dirsToCheck = new Set<string>()
+  for (const p of deleted) {
+    const dir = path.posix.dirname(p)
+    if (dir && dir !== ".") dirsToCheck.add(dir)
+  }
+  for (const dir of dirsToCheck) {
+    await removeEmptyKnowledgeBaseDirectories(dir)
+  }
+
+  return { scanned: entries.length, deleted, kept }
 }
 
 async function ensurePathNotExists(absolutePath: string) {
