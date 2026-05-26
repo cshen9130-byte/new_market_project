@@ -992,6 +992,36 @@ export function getEmbedJobStatus(folderPath?: string | null): EmbedJobStatus | 
   return getEmbedJobMap().get(key) ?? null
 }
 
+export type DiskIndexInfo = {
+  exists: boolean
+  scope: string
+  indexedDocuments: number
+  indexedChunks: number
+  updatedAt: string | null
+  model: string | null
+  /** relative file paths that are in the disk index */
+  indexedFiles: string[]
+}
+
+/** Read the persisted disk index metadata for a scope without loading vectors. */
+export function getDiskIndexInfo(folderPath?: string | null): DiskIndexInfo {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const key = normalized || "__root__"
+  const disk = loadDiskIndex(key)
+  if (!disk) {
+    return { exists: false, scope: normalized || "", indexedDocuments: 0, indexedChunks: 0, updatedAt: null, model: null, indexedFiles: [] }
+  }
+  return {
+    exists: true,
+    scope: disk.scope,
+    indexedDocuments: disk.indexedDocuments,
+    indexedChunks: disk.indexedChunks,
+    updatedAt: disk.updatedAt,
+    model: disk.model,
+    indexedFiles: Object.keys(disk.files ?? {}),
+  }
+}
+
 /**
  * Start background embedding for a scope and track progress in globalThis.
  * Returns immediately; poll getEmbedJobStatus() to monitor progress.

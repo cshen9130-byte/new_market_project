@@ -1675,6 +1675,33 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  // ── Index coverage check ───────────────────────────────────────────────────
+  type IndexInfoResult = {
+    scope: string
+    diskIndex: { exists: boolean; indexedDocuments: number; indexedChunks: number; updatedAt: string | null; model: string | null }
+    coverage: { totalOnDisk: number; indexed: number; notIndexed: number; stale: number; percentIndexed: number }
+    notIndexedFiles: string[]
+    staleFiles: string[]
+  }
+  const [indexInfo, setIndexInfo] = useState<IndexInfoResult | null>(null)
+  const [indexInfoLoading, setIndexInfoLoading] = useState(false)
+
+  async function handleCheckIndexCoverage() {
+    if (indexInfoLoading) return
+    setIndexInfoLoading(true)
+    try {
+      const scope = selectedFolder || ""
+      const res = await fetch(`/api/knowledge-base/index-info?scope=${encodeURIComponent(scope)}`, { headers: getKnowledgeBaseAuthHeaders() })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText)
+      setIndexInfo(await res.json())
+    } catch (e: any) {
+      setIndexInfo(null)
+      alert(`检查失败：${e?.message || e}`)
+    } finally {
+      setIndexInfoLoading(false)
+    }
+  }
+
   function handleDownloadConversation() {
     const userMessages = chatMessages.filter((m) => m.role === "user")
     if (userMessages.length === 0) return
@@ -3302,6 +3329,59 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     </div>
                     <p className="mt-2 text-[11px] text-muted-foreground">自动：默认标准模式（qwen-plus）；快速：qwen-turbo（更快，质量略低）。</p>
                   </div>
+                  <div className="rounded-md border p-3">
+                    <div className="mb-2 text-xs font-medium text-muted-foreground">索引覆盖检查</div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCheckIndexCoverage()}
+                      disabled={indexInfoLoading}
+                      className="w-full rounded border px-2 py-1.5 text-xs transition-colors hover:bg-muted disabled:opacity-50"
+                    >
+                      {indexInfoLoading ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />检查中...</> : "检查嵌入状态"}
+                    </button>
+                    {indexInfo && (
+                      <div className="mt-2 space-y-1.5 text-[11px]">
+                        {indexInfo.diskIndex.exists ? (
+                          <>
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">覆盖率</span>
+                              <span className={cn("font-semibold", indexInfo.coverage.percentIndexed === 100 ? "text-green-600" : "text-amber-600")}>
+                                {indexInfo.coverage.percentIndexed}%
+                              </span>
+                            </div>
+                            <Progress value={indexInfo.coverage.percentIndexed} className="h-1.5" />
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>已嵌入 {indexInfo.coverage.indexed} / {indexInfo.coverage.totalOnDisk} 文件</span>
+                              {indexInfo.coverage.notIndexed > 0 && <span className="text-amber-600">{indexInfo.coverage.notIndexed} 未索引</span>}
+                            </div>
+                            <div className="text-muted-foreground">
+                              向量块 {indexInfo.diskIndex.indexedChunks}
+                            </div>
+                            {indexInfo.diskIndex.updatedAt && (
+                              <div className="text-muted-foreground truncate" title={indexInfo.diskIndex.updatedAt}>
+                                更新于 {new Date(indexInfo.diskIndex.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                              </div>
+                            )}
+                            {indexInfo.coverage.notIndexed > 0 && (
+                              <details className="mt-1">
+                                <summary className="cursor-pointer text-amber-600">未嵌入文件 ({indexInfo.coverage.notIndexed})</summary>
+                                <ul className="mt-1 max-h-32 overflow-y-auto space-y-0.5 text-muted-foreground">
+                                  {indexInfo.notIndexedFiles.map((f) => (
+                                    <li key={f} className="truncate" title={f}>· {f.split("/").pop()}</li>
+                                  ))}
+                                  {indexInfo.coverage.notIndexed > indexInfo.notIndexedFiles.length && (
+                                    <li className="text-muted-foreground">...还有 {indexInfo.coverage.notIndexed - indexInfo.notIndexedFiles.length} 个</li>
+                                  )}
+                                </ul>
+                              </details>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-amber-600">尚无索引缓存，请先发送一条问题或点击"嵌入"以触发向量化。</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -3719,6 +3799,52 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>快速 ⚡</button>
                     </div>
                     <p className="text-[11px] text-cyan-300/60">自动：默认标准模式（qwen-plus）；快速：qwen-turbo（更快，质量略低）。</p>
+                    <div className="mt-1 text-xs font-medium text-cyan-300/80">索引覆盖检查</div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCheckIndexCoverage()}
+                      disabled={indexInfoLoading}
+                      className="w-full rounded-lg border border-cyan-500/20 bg-black/20 px-2 py-1.5 text-xs text-cyan-300/80 transition-colors hover:bg-cyan-500/10 disabled:opacity-50"
+                    >
+                      {indexInfoLoading ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />检查中...</> : "检查嵌入状态"}
+                    </button>
+                    {indexInfo && (
+                      <div className="space-y-1 text-[11px]">
+                        {indexInfo.diskIndex.exists ? (
+                          <>
+                            <div className="flex items-center justify-between">
+                              <span className="text-cyan-300/60">覆盖率</span>
+                              <span className={cn("font-semibold", indexInfo.coverage.percentIndexed === 100 ? "text-green-400" : "text-amber-400")}>
+                                {indexInfo.coverage.percentIndexed}%
+                              </span>
+                            </div>
+                            <Progress value={indexInfo.coverage.percentIndexed} className="h-1.5" />
+                            <div className="flex justify-between text-cyan-300/60">
+                              <span>{indexInfo.coverage.indexed}/{indexInfo.coverage.totalOnDisk} 文件</span>
+                              {indexInfo.coverage.notIndexed > 0 && <span className="text-amber-400">{indexInfo.coverage.notIndexed} 未索引</span>}
+                            </div>
+                            <div className="text-cyan-300/60">向量块 {indexInfo.diskIndex.indexedChunks}</div>
+                            {indexInfo.diskIndex.updatedAt && (
+                              <div className="truncate text-cyan-300/50" title={indexInfo.diskIndex.updatedAt}>
+                                {new Date(indexInfo.diskIndex.updatedAt).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                              </div>
+                            )}
+                            {indexInfo.coverage.notIndexed > 0 && (
+                              <details className="mt-0.5">
+                                <summary className="cursor-pointer text-amber-400">未嵌入 ({indexInfo.coverage.notIndexed})</summary>
+                                <ul className="mt-1 max-h-28 overflow-y-auto space-y-0.5 text-cyan-300/50">
+                                  {indexInfo.notIndexedFiles.map((f) => (
+                                    <li key={f} className="truncate" title={f}>· {f.split("/").pop()}</li>
+                                  ))}
+                                </ul>
+                              </details>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-amber-400">尚无索引缓存，发送问题后触发向量化。</p>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
