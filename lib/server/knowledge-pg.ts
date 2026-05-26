@@ -293,7 +293,7 @@ export async function pgUpsertFileChunks(
       values.push(
         scope,
         source,
-        row.content,
+        row.content.replace(/\x00/g, ""),
         vecToString(row.embedding),
         row.metadata,
         fp.size,
