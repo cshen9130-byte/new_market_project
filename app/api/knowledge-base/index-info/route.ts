@@ -59,7 +59,7 @@ export async function GET(req: Request) {
     const allFiles: { relativePath: string; size: number }[] = []
     await scanIndexableFiles(targetDir, normalized || "", allFiles)
 
-    const diskInfo = getDiskIndexInfo(normalized)
+    const diskInfo = await getDiskIndexInfo(normalized)
     const indexedSet = new Set(diskInfo.indexedFiles)
 
     const notIndexed = allFiles.filter((f) => !indexedSet.has(f.relativePath)).map((f) => f.relativePath)

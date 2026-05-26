@@ -820,6 +820,39 @@ export async function renameKnowledgeBaseFolder(relativePath: string, newName: s
   return { relativePath: nextPath, name: path.posix.basename(nextPath) }
 }
 
+export async function moveKnowledgeBaseFolder(sourcePath: string, destinationParentPath: string, actorUserId: string, isAdmin = false) {
+  const normalizedSource = normalizeKnowledgeBasePath(sourcePath)
+  if (!normalizedSource) throw new Error("缺少源文件夹路径")
+  if (!actorUserId) throw new Error("缺少用户信息")
+
+  const folderName = path.posix.basename(normalizedSource)
+  const normalizedDest = normalizeKnowledgeBasePath(destinationParentPath)
+  const targetPath = normalizedDest ? `${normalizedDest}/${folderName}` : folderName
+
+  if (targetPath === normalizedSource) throw new Error("不能移动到当前位置")
+  if (targetPath.startsWith(`${normalizedSource}/`)) throw new Error("不能将文件夹移动到自身子目录中")
+
+  if (!isAdmin) {
+    const ownershipMap = await getOwnershipMap()
+    const ownership = ownershipMap.get(normalizedSource)
+    if (!ownership || ownership.ownerId !== actorUserId) {
+      throw new Error("只有创建者或管理员可以移动该文件夹")
+    }
+  }
+
+  const { target: sourceTarget } = await resolveKnowledgeBasePath(normalizedSource)
+  const sourceStat = await fs.stat(sourceTarget)
+  if (!sourceStat.isDirectory()) throw new Error("目标不是文件夹")
+
+  const { target: destTarget } = await resolveKnowledgeBasePath(targetPath)
+  await ensurePathNotExists(destTarget)
+  await fs.mkdir(path.dirname(destTarget), { recursive: true })
+  await fs.rename(sourceTarget, destTarget)
+  await renameOwnershipPath(normalizedSource, targetPath, "folder")
+
+  return { relativePath: targetPath, name: folderName }
+}
+
 export async function getKnowledgeBaseFile(relativePath: string) {
   const { target, normalized } = await resolveKnowledgeBasePath(relativePath)
   const stat = await fs.stat(target)

@@ -16,7 +16,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}))
     const folderPath: string | null = body?.folderPath ?? null
 
-    invalidateVectorStoreCache(folderPath)
+    await invalidateVectorStoreCache(folderPath)
 
     return NextResponse.json({ ok: true, clearedFolder: folderPath || "全部资料" })
   } catch (e: any) {

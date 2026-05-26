@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, normalizeKnowledgeBasePath, renameKnowledgeBaseFolder } from "@/lib/server/knowledge-base"
+import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, moveKnowledgeBaseFolder, normalizeKnowledgeBasePath, renameKnowledgeBaseFolder } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
 import { invalidateVectorStoreCache, syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
 
@@ -48,7 +48,7 @@ export async function DELETE(req: Request) {
     await deleteKnowledgeBaseFolder(relativePath, currentUser.id, currentUser.role === "admin")
 
     // Folder deletion can affect multiple nested scopes; clear all caches then warm root.
-    invalidateVectorStoreCache()
+    await invalidateVectorStoreCache()
     void syncVectorStoreForScope("")
 
     return NextResponse.json({ ok: true })
@@ -78,10 +78,40 @@ export async function PATCH(req: Request) {
 
     const renamed = await renameKnowledgeBaseFolder(relativePath, newName, currentUser.id, currentUser.role === "admin")
 
-    invalidateVectorStoreCache()
+    await invalidateVectorStoreCache()
     void syncVectorStoreForScope("")
 
     return NextResponse.json({ ok: true, folder: renamed })
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const userId = String(req.headers.get("x-market-user-id") || "").trim()
+    const currentUser = userId ? await getUserById(userId) : null
+    if (!currentUser) {
+      return NextResponse.json({ ok: false, error: "请先登录后再移动文件夹" }, { status: 401 })
+    }
+
+    const body = await req.json().catch(() => ({}))
+    const sourcePath = normalizeKnowledgeBasePath(body?.path)
+    const destinationParent = body?.destinationParent == null ? null : normalizeKnowledgeBasePath(String(body.destinationParent))
+
+    if (!sourcePath) {
+      return NextResponse.json({ ok: false, error: "请提供文件夹路径" }, { status: 400 })
+    }
+    if (destinationParent === undefined) {
+      return NextResponse.json({ ok: false, error: "请提供目标文件夹路径" }, { status: 400 })
+    }
+
+    const moved = await moveKnowledgeBaseFolder(sourcePath, destinationParent ?? "", currentUser.id, currentUser.role === "admin")
+
+    await invalidateVectorStoreCache()
+    void syncVectorStoreForScope("")
+
+    return NextResponse.json({ ok: true, folder: moved })
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
   }

@@ -6,7 +6,7 @@ import {
   saveKnowledgeBaseFileWithRelativePath,
   deduplicateKnowledgeBaseFolder,
 } from "@/lib/server/knowledge-base"
-import { syncVectorStoreForScope, startEmbedJob, invalidateVectorStoreCache } from "@/lib/server/knowledge-chat"
+import { startEmbedJob } from "@/lib/server/knowledge-chat"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -39,11 +39,10 @@ export async function POST(req: Request) {
         ),
       )
 
-      // Deduplicate the folder after saving — remove content-identical files
+      // Deduplicate the folder after saving — remove content-identical files.
+      // No cache invalidation needed: getOrBuildVectorStore handles deleted files
+      // incrementally (it filters removed files from baseRows using the deleted set).
       const dedup = await deduplicateKnowledgeBaseFolder(folderPath || "")
-      if (dedup.deleted.length > 0) {
-        invalidateVectorStoreCache(folderPath || null)
-      }
 
       // Start tracked background embedding for the target folder only.
       // Root scope is rebuilt lazily (incrementally) on next chat query.

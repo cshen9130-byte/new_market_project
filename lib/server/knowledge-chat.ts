@@ -3,10 +3,34 @@ import { ChatOpenAI, OpenAIEmbeddings } from "@langchain/openai"
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters"
 import { MemoryVectorStore } from "@langchain/classic/vectorstores/memory"
 import { collectKnowledgeBaseDocuments, getKnowledgeBaseFile, readFileDocumentText, normalizeKnowledgeBasePath } from "@/lib/server/knowledge-base"
-import { createHash } from "crypto"
-import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from "fs"
-import path from "path"
-import { getServerStoragePath } from "@/lib/server/storage"
+import {
+  type FileFingerprint,
+  type MemoryVectorRow,
+  type Bm25PreIndex,
+  type GraphIndex,
+  EMPTY_BM25_INDEX,
+  EMPTY_GRAPH_INDEX,
+  PG_VECTOR_IN_MEM_MAX,
+  PG_BM25_MAX,
+  PG_GRAPH_MAX,
+  pgLoadFingerprints,
+  pgCountChunks,
+  pgLoadRows,
+  pgDeleteChunksBySource,
+  pgDeleteScopeChunks,
+  pgUpsertFileChunks,
+  pgVectorSearch,
+  pgGetIndexInfo,
+  pgLoadBm25Index,
+  pgSaveBm25Index,
+  pgDeleteBm25Index,
+  pgLoadGraphIndex,
+  pgSaveGraphIndex,
+  pgDeleteGraphIndex,
+  pgLoadLLMEntityCache,
+  pgSaveLLMEntityEntries,
+  pgDeleteLLMEntityCache,
+} from "@/lib/server/knowledge-pg"
 
 type KnowledgeBaseIndexCacheEntry = {
   signature: string
@@ -15,78 +39,6 @@ type KnowledgeBaseIndexCacheEntry = {
   indexedChunks: number
   bm25Index: Bm25PreIndex
   graphIndex: GraphIndex
-}
-
-// ── Knowledge Graph types ─────────────────────────────────────────────────────
-
-type GraphIndex = {
-  version: 1
-  signature: string
-  /** term → list of chunk indices that contain it */
-  termChunks: Record<string, number[]>
-  /** chunk index → relevant terms for graph linking (IDF-filtered) */
-  chunkTerms: string[][]
-  numChunks: number
-  updatedAt: string
-}
-
-// ── Disk persistence for vector index ────────────────────────────────────────
-
-type FileFingerprint = {
-  size: number
-  updatedAt: string
-}
-
-type MemoryVectorRow = {
-  content: string
-  embedding: number[]
-  metadata: Record<string, unknown>
-}
-
-type DiskIndexEntry = {
-  version: 2
-  scope: string
-  model: string
-  splitter: {
-    chunkSize: number
-    chunkOverlap: number
-  }
-  files: Record<string, FileFingerprint>
-  indexedDocuments: number
-  indexedChunks: number
-  memoryVectors: MemoryVectorRow[]
-  bm25Index?: Bm25PreIndex
-  updatedAt: string
-}
-
-// ── Graph index disk helpers ──────────────────────────────────────────────────
-
-function getGraphCacheDir() {
-  return getServerStoragePath("kb_graph_index")
-}
-
-function graphCacheFilePath(cacheKey: string) {
-  const hash = createHash("sha256").update(cacheKey + "_graph").digest("hex").slice(0, 24)
-  return path.join(getGraphCacheDir(), `${hash}.json`)
-}
-
-function loadGraphIndexFromDisk(cacheKey: string): GraphIndex | null {
-  try {
-    const file = graphCacheFilePath(cacheKey)
-    if (!existsSync(file)) return null
-    const data = JSON.parse(readFileSync(file, "utf-8"))
-    if (data?.version !== 1 || !data.termChunks || !Array.isArray(data.chunkTerms)) return null
-    return data as GraphIndex
-  } catch {
-    return null
-  }
-}
-
-function saveGraphIndexToDisk(cacheKey: string, entry: GraphIndex) {
-  try {
-    mkdirSync(getGraphCacheDir(), { recursive: true })
-    writeFileSync(graphCacheFilePath(cacheKey), JSON.stringify(entry))
-  } catch {}
 }
 
 // ── Graph term extraction ─────────────────────────────────────────────────────
@@ -277,71 +229,6 @@ function graphExpandContext(
 
 // ── BM25 pre-computed inverted index ─────────────────────────────────────────
 
-type Bm25PreIndex = {
-  /** term → list of docIndices that contain the term */
-  postings: Record<string, number[]>
-  /** docIdx → { term → raw TF count } */
-  docTermFreqs: Record<string, number>[]
-  /** docIdx → total term count */
-  docLengths: number[]
-  /** average document length across all docs */
-  avgdl: number
-}
-
-function getIndexCacheDir() {
-  return getServerStoragePath("kb_index")
-}
-
-function indexCacheFilePath(cacheKey: string) {
-  const hash = createHash("sha256").update(cacheKey).digest("hex").slice(0, 24)
-  return path.join(getIndexCacheDir(), `${hash}.json`)
-}
-
-function normalizeLoadedDiskEntry(cacheKey: string, data: any): DiskIndexEntry | null {
-  // Backward compatibility for v1 single-signature cache format
-  if (data && data.signature && Array.isArray(data.memoryVectors)) {
-    return {
-      version: 2,
-      scope: cacheKey === "__root__" ? "" : cacheKey,
-      model: getEmbeddingModel(),
-      splitter: { chunkSize: 1200, chunkOverlap: 180 },
-      files: {},
-      indexedDocuments: Number(data.indexedDocuments ?? 0),
-      indexedChunks: Number(data.indexedChunks ?? 0),
-      memoryVectors: data.memoryVectors,
-      updatedAt: new Date().toISOString(),
-    }
-  }
-  if (!data || data.version !== 2 || !Array.isArray(data.memoryVectors) || typeof data.files !== "object") {
-    return null
-  }
-  return data as DiskIndexEntry
-}
-
-function loadDiskIndex(cacheKey: string): DiskIndexEntry | null {
-  try {
-    const file = indexCacheFilePath(cacheKey)
-    if (!existsSync(file)) return null
-    const raw = JSON.parse(readFileSync(file, "utf-8"))
-    return normalizeLoadedDiskEntry(cacheKey, raw)
-  } catch {
-    return null
-  }
-}
-
-function saveDiskIndex(cacheKey: string, entry: DiskIndexEntry) {
-  try {
-    mkdirSync(getIndexCacheDir(), { recursive: true })
-    writeFileSync(indexCacheFilePath(cacheKey), JSON.stringify(entry))
-  } catch {}
-}
-
-function deleteDiskIndex(cacheKey: string) {
-  try {
-    const file = indexCacheFilePath(cacheKey)
-    if (existsSync(file)) rmSync(file)
-  } catch {}
-}
 
 function computeSignatureFromFiles(files: Record<string, FileFingerprint>) {
   return Object.entries(files)
@@ -350,37 +237,27 @@ function computeSignatureFromFiles(files: Record<string, FileFingerprint>) {
     .join("|")
 }
 
-/** Clear both in-memory and on-disk vector index for a folder (or all if folderPath is null). */
-export function invalidateVectorStoreCache(folderPath?: string | null) {
+/** Clear in-memory cache and PG-stored indexes for a folder (or all scopes if folderPath is null). */
+export async function invalidateVectorStoreCache(folderPath?: string | null): Promise<void> {
   const normalized = normalizeKnowledgeBasePath(folderPath)
   const cache = getKnowledgeBaseIndexCache()
   if (!normalized) {
     cache.clear()
-    try {
-      const dir = getIndexCacheDir()
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-    } catch {}
-    try {
-      const gdir = getGraphCacheDir()
-      if (existsSync(gdir)) rmSync(gdir, { recursive: true, force: true })
-    } catch {}
-    try {
-      const ldir = getLLMEntityCacheDir()
-      if (existsSync(ldir)) rmSync(ldir, { recursive: true, force: true })
-    } catch {}
+    await Promise.allSettled([
+      pgDeleteScopeChunks(null),
+      pgDeleteBm25Index(null),
+      pgDeleteGraphIndex(null),
+      pgDeleteLLMEntityCache(null),
+    ])
     return
   }
-
-  const cacheKey = normalized || "__root__"
-  cache.delete(cacheKey)
-  deleteDiskIndex(cacheKey)
-  // Also remove graph index so it rebuilds on next request
-  try {
-    const gfile = graphCacheFilePath(cacheKey)
-    if (existsSync(gfile)) rmSync(gfile)
-  } catch {}
-  // Also invalidate LLM entity cache
-  deleteLLMEntityCache(cacheKey)
+  cache.delete(normalized)
+  await Promise.allSettled([
+    pgDeleteScopeChunks(normalized),
+    pgDeleteBm25Index(normalized),
+    pgDeleteGraphIndex(normalized),
+    pgDeleteLLMEntityCache(normalized),
+  ])
 }
 
 const DASHSCOPE_EMBEDDING_BATCH_SIZE = 5
@@ -522,6 +399,7 @@ async function getOrBuildVectorStore(
 ) {
   const normalizedFolderPath = normalizeKnowledgeBasePath(folderPath)
   const cacheKey = normalizedFolderPath || "__root__"
+  const scopeKey = normalizedFolderPath || ""
 
   return withScopeLock(cacheKey, async () => {
     const sourceDocuments = await collectKnowledgeBaseDocuments(normalizedFolderPath)
@@ -543,8 +421,8 @@ async function getOrBuildVectorStore(
       chunkOverlap: 180,
     })
 
-    const disk = loadDiskIndex(cacheKey)
-    const prevFiles = disk?.files ?? {}
+    // Load file fingerprints from PG (replaces JSON disk index)
+    const prevFiles = await pgLoadFingerprints(scopeKey)
 
     const updatedOrAdded: string[] = []
     for (const [relativePath, fp] of Object.entries(nextFiles)) {
@@ -560,20 +438,18 @@ async function getOrBuildVectorStore(
       }
     }
 
-    const changed = new Set<string>([...updatedOrAdded, ...deleted])
-    const baseRows = (disk?.memoryVectors ?? []).filter((row) => {
-      const src = String(row?.metadata?.source || "")
-      return src && !changed.has(src)
-    })
+    // Remove deleted files from PG
+    if (deleted.size > 0) {
+      await pgDeleteChunksBySource(scopeKey, [...deleted])
+    }
 
-    let appendedRows: MemoryVectorRow[] = []
+    // Embed updated/added files and upsert chunks into PG
     if (updatedOrAdded.length > 0) {
       const docMap = new Map(sourceDocuments.map((doc) => [doc.relativePath, doc]))
       const changedDocs = updatedOrAdded
         .map((p) => docMap.get(p))
         .filter((doc): doc is NonNullable<typeof docMap extends Map<any, infer V> ? V : never> => Boolean(doc))
 
-      // Process one file at a time so onProgress fires after each file
       const embeddingsModel = createIndexEmbeddingsModel()
       for (let i = 0; i < changedDocs.length; i++) {
         const doc = changedDocs[i]
@@ -585,7 +461,8 @@ async function getOrBuildVectorStore(
         if (chunks.length > 0) {
           try {
             const partStore = await MemoryVectorStore.fromDocuments(chunks, embeddingsModel)
-            appendedRows.push(...((partStore as any).memoryVectors ?? []) as MemoryVectorRow[])
+            const newRows = (partStore as any).memoryVectors as MemoryVectorRow[]
+            await pgUpsertFileChunks(scopeKey, doc.relativePath, newRows, nextFiles[doc.relativePath], getEmbeddingModel())
           } catch (err: any) {
             throw classifyApiError(err)
           }
@@ -594,46 +471,67 @@ async function getOrBuildVectorStore(
       }
     }
 
-    const mergedRows = [...baseRows, ...appendedRows]
-    const vectorStore = createVectorStoreFromRows(mergedRows)
+    const changed = new Set<string>([...updatedOrAdded, ...deleted])
 
-    // Reuse pre-built BM25 index from disk when content is unchanged; otherwise rebuild.
-    const bm25Index = (changed.size === 0 && disk?.bm25Index)
-      ? disk.bm25Index
-      : buildBm25Index(mergedRows)
+    // Determine total chunk count after all updates
+    const totalChunks = await pgCountChunks(scopeKey)
 
-    // Build or load graph index (IDF-filtered term co-occurrence for Graph RAG).
-    const diskGraph = loadGraphIndexFromDisk(cacheKey)
-    const graphIndex = (diskGraph?.signature === nextSignature)
-      ? diskGraph
-      : buildGraphIndex(mergedRows, nextSignature)
-    if (diskGraph?.signature !== nextSignature) {
-      saveGraphIndexToDisk(cacheKey, graphIndex)
+    // Small scopes: load embeddings into RAM → MemoryVectorStore for fast in-process search
+    // Large scopes: skip loading vectors into Node.js → PG HNSW handles vector queries
+    const needEmbeddings = totalChunks <= PG_VECTOR_IN_MEM_MAX
+    // Mid-size scopes still need text content for BM25 and graph RAG
+    const needContentRows = totalChunks <= Math.max(PG_BM25_MAX, PG_GRAPH_MAX)
+
+    let mergedRows: MemoryVectorRow[] = []
+    if (needEmbeddings) {
+      mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: true })
+    } else if (needContentRows) {
+      mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: false })
+    }
+
+    // Empty MemoryVectorStore signals: use PG HNSW for vector search
+    const vectorStore = needEmbeddings
+      ? createVectorStoreFromRows(mergedRows)
+      : createVectorStoreFromRows([])
+
+    // BM25 index — only built/loaded for scopes within threshold
+    let bm25Index: Bm25PreIndex
+    if (totalChunks <= PG_BM25_MAX) {
+      if (changed.size > 0) {
+        const rowsForBm25 = mergedRows.length > 0 ? mergedRows : await pgLoadRows(scopeKey, { includeEmbeddings: false })
+        bm25Index = buildBm25Index(rowsForBm25)
+        await pgSaveBm25Index(scopeKey, bm25Index)
+      } else {
+        bm25Index = (await pgLoadBm25Index(scopeKey)) ?? buildBm25Index(mergedRows)
+      }
+    } else {
+      bm25Index = EMPTY_BM25_INDEX
+    }
+
+    // Graph RAG index — only built/loaded for scopes within threshold
+    let graphIndex: GraphIndex
+    if (totalChunks <= PG_GRAPH_MAX) {
+      const pgGraph = await pgLoadGraphIndex(scopeKey)
+      if (pgGraph?.signature !== nextSignature) {
+        const rowsForGraph = mergedRows.length > 0 ? mergedRows : await pgLoadRows(scopeKey, { includeEmbeddings: false })
+        graphIndex = buildGraphIndex(rowsForGraph, nextSignature)
+        await pgSaveGraphIndex(scopeKey, graphIndex)
+      } else {
+        graphIndex = pgGraph
+      }
+    } else {
+      graphIndex = EMPTY_GRAPH_INDEX
     }
 
     const nextValue: KnowledgeBaseIndexCacheEntry = {
       signature: nextSignature,
       vectorStore,
       indexedDocuments: sourceDocuments.length,
-      indexedChunks: mergedRows.length,
+      indexedChunks: totalChunks,
       bm25Index,
       graphIndex,
     }
     cache.set(cacheKey, nextValue)
-
-    saveDiskIndex(cacheKey, {
-      version: 2,
-      scope: normalizedFolderPath,
-      model: getEmbeddingModel(),
-      splitter: { chunkSize: 1200, chunkOverlap: 180 },
-      files: nextFiles,
-      indexedDocuments: sourceDocuments.length,
-      indexedChunks: mergedRows.length,
-      memoryVectors: mergedRows,
-      bm25Index,
-      updatedAt: new Date().toISOString(),
-    })
-
     return nextValue
   })
 }
@@ -726,47 +624,6 @@ export type FundDocumentEntities = {
   team: Array<{ name: string; role: string }>
 }
 
-type LLMEntityCacheEntry = {
-  version: 1
-  scope: string
-  files: Record<string, { size: number; updatedAt: string; entities: FundDocumentEntities }>
-  updatedAt: string
-}
-
-function getLLMEntityCacheDir() {
-  return getServerStoragePath("kb_llm_entities")
-}
-
-function llmEntityCacheFilePath(cacheKey: string) {
-  const hash = createHash("sha256").update(cacheKey + "_llm").digest("hex").slice(0, 24)
-  return path.join(getLLMEntityCacheDir(), `${hash}.json`)
-}
-
-function loadLLMEntityCache(cacheKey: string): LLMEntityCacheEntry | null {
-  try {
-    const file = llmEntityCacheFilePath(cacheKey)
-    if (!existsSync(file)) return null
-    const data = JSON.parse(readFileSync(file, "utf-8"))
-    if (data?.version !== 1 || typeof data.files !== "object") return null
-    return data as LLMEntityCacheEntry
-  } catch {
-    return null
-  }
-}
-
-function saveLLMEntityCache(cacheKey: string, entry: LLMEntityCacheEntry) {
-  try {
-    mkdirSync(getLLMEntityCacheDir(), { recursive: true })
-    writeFileSync(llmEntityCacheFilePath(cacheKey), JSON.stringify(entry))
-  } catch {}
-}
-
-function deleteLLMEntityCache(cacheKey: string) {
-  try {
-    const file = llmEntityCacheFilePath(cacheKey)
-    if (existsSync(file)) rmSync(file)
-  } catch {}
-}
 
 const ENTITY_EXTRACTION_PROMPT = `你是一个私募基金信息提取引擎，专门处理中文私募基金路演/介绍材料。
 
@@ -851,7 +708,7 @@ export async function getGraphVizDataLLM(
   onProgress?: (done: number, total: number, file: string) => void,
 ): Promise<LLMGraphVizData> {
   const normalized = normalizeKnowledgeBasePath(folderPath)
-  const cacheKey = normalized || "__root__"
+  const scopeKey = normalized || ""
 
   // Load all documents in scope
   const sourceDocs = await collectKnowledgeBaseDocuments(normalized)
@@ -859,10 +716,9 @@ export async function getGraphVizDataLLM(
     return { nodes: [], links: [], docResults: [] }
   }
 
-  const diskCache = loadLLMEntityCache(cacheKey)
-  const cachedFiles = diskCache?.files ?? {}
+  const cachedFiles = await pgLoadLLMEntityCache(scopeKey)
 
-  const updatedCache: LLMEntityCacheEntry["files"] = {}
+  const updatedCache: Record<string, { size: number; updatedAt: string; entities: FundDocumentEntities }> = {}
   const docResults: Array<{ relativePath: string; entities: FundDocumentEntities }> = []
 
   for (let i = 0; i < sourceDocs.length; i++) {
@@ -887,12 +743,7 @@ export async function getGraphVizDataLLM(
   onProgress?.(sourceDocs.length, sourceDocs.length, "")
 
   // Persist updated cache
-  saveLLMEntityCache(cacheKey, {
-    version: 1,
-    scope: normalized || "",
-    files: updatedCache,
-    updatedAt: new Date().toISOString(),
-  })
+  await pgSaveLLMEntityEntries(scopeKey, updatedCache)
 
   // ── Build graph ─────────────────────────────────────────────────────────────
   const nodes: LLMGraphVizNode[] = []
@@ -956,17 +807,10 @@ export async function getGraphVizDataLLM(
   return { nodes, links, docResults }
 }
 
-/** Invalidate LLM entity cache for a scope (called from invalidateVectorStoreCache). */
-export function invalidateLLMEntityCache(folderPath?: string | null) {
+/** Invalidate LLM entity cache for a scope. */
+export async function invalidateLLMEntityCache(folderPath?: string | null): Promise<void> {
   const normalized = normalizeKnowledgeBasePath(folderPath)
-  if (!normalized) {
-    try {
-      const dir = getLLMEntityCacheDir()
-      if (existsSync(dir)) rmSync(dir, { recursive: true, force: true })
-    } catch {}
-    return
-  }
-  deleteLLMEntityCache(normalized || "__root__")
+  await pgDeleteLLMEntityCache(normalized || null)
 }
 
 export type EmbedJobStatus = {
@@ -999,27 +843,16 @@ export type DiskIndexInfo = {
   indexedChunks: number
   updatedAt: string | null
   model: string | null
-  /** relative file paths that are in the disk index */
+  /** relative file paths that are in the index */
   indexedFiles: string[]
 }
 
-/** Read the persisted disk index metadata for a scope without loading vectors. */
-export function getDiskIndexInfo(folderPath?: string | null): DiskIndexInfo {
+/** Read the persisted index metadata for a scope without loading any vectors. */
+export async function getDiskIndexInfo(folderPath?: string | null): Promise<DiskIndexInfo> {
   const normalized = normalizeKnowledgeBasePath(folderPath)
-  const key = normalized || "__root__"
-  const disk = loadDiskIndex(key)
-  if (!disk) {
-    return { exists: false, scope: normalized || "", indexedDocuments: 0, indexedChunks: 0, updatedAt: null, model: null, indexedFiles: [] }
-  }
-  return {
-    exists: true,
-    scope: disk.scope,
-    indexedDocuments: disk.indexedDocuments,
-    indexedChunks: disk.indexedChunks,
-    updatedAt: disk.updatedAt,
-    model: disk.model,
-    indexedFiles: Object.keys(disk.files ?? {}),
-  }
+  const scopeKey = normalized || ""
+  const info = await pgGetIndexInfo(scopeKey)
+  return { ...info, scope: normalized || "" }
 }
 
 /**
@@ -1213,6 +1046,23 @@ type RetrievalContext = {
   indexedChunks: number
 }
 
+/** Embed a question and run PG HNSW similarity search. Used for large scopes where vectors aren't in RAM. */
+async function pgVectorSearchDocs(
+  folderPath: string | null | undefined,
+  question: string,
+  embeddingsModel: OpenAIEmbeddings,
+  topK: number,
+): Promise<Document[]> {
+  const scope = normalizeKnowledgeBasePath(folderPath) || ""
+  try {
+    const queryVec = await embeddingsModel.embedQuery(question)
+    const rows = await pgVectorSearch(scope, queryVec, topK)
+    return rows.map((r) => new Document({ pageContent: r.content, metadata: r.metadata }))
+  } catch {
+    return []
+  }
+}
+
 async function buildRetrievalContext(input: {
   question: string
   folderPath?: string | null
@@ -1257,8 +1107,10 @@ async function buildRetrievalContext(input: {
 
   try {
     index = await getOrBuildVectorStore(folderPath)
-    const denseMatches = await index.vectorStore.similaritySearch(question, 4)
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
+    const denseMatches = rows.length > 0
+      ? await index.vectorStore.similaritySearch(question, 4)
+      : await pgVectorSearchDocs(folderPath, question, createIndexEmbeddingsModel(), 4)
     const bm25Matches = enableBm25 ? bm25RankChunks(question, rows, index.bm25Index, 4) : []
     const seedDocs = [...denseMatches, ...bm25Matches]
 

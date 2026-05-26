@@ -104,7 +104,7 @@ export async function PATCH(req: Request) {
     const renamed = await renameKnowledgeBaseFile(relativePath, newName, currentUser.id, currentUser.role === "admin")
 
     // Rename can invalidate existing chunk paths; clear caches and warm root incrementally.
-    invalidateVectorStoreCache()
+    await invalidateVectorStoreCache()
     void syncVectorStoreForScope("")
 
     return NextResponse.json({ ok: true, file: renamed })

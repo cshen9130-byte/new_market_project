@@ -32,6 +32,7 @@ import {
   MoreHorizontal,
   Maximize2,
   Minimize2,
+  MoveRight,
   Network,
   Pencil,
   Plus,
@@ -505,6 +506,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [newFolderName, setNewFolderName] = useState("")
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [uploadTargetFolder, setUploadTargetFolder] = useState<string | null>(null)
+  const [uploadFolderBrowsePath, setUploadFolderBrowsePath] = useState("")
   const [isDragOver, setIsDragOver] = useState(false)
   const [batchUploading, setBatchUploading] = useState(false)
   const [batchUploadProgress, setBatchUploadProgress] = useState(0)
@@ -963,6 +965,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         singleUploadInputRef.current.value = ""
       }
       setUploadTargetFolder(null)
+      setUploadFolderBrowsePath("")
       await refreshTree()
       // Start tracked background embedding
       startEmbedTracking(uploadedScope)
@@ -1749,6 +1752,96 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  // ── Move folder ─────────────────────────────────────────────────────────────
+  const [moveFolderSource, setMoveFolderSource] = useState<FolderNode | null>(null)
+  const [moveFolderTarget, setMoveFolderTarget] = useState<string | null>(null)
+  const [moveFolderExpanded, setMoveFolderExpanded] = useState<Set<string>>(new Set())
+  const [moveFolderLoading, setMoveFolderLoading] = useState(false)
+
+  function openMoveFolderDialog(folder: FolderNode) {
+    setMoveFolderSource(folder)
+    setMoveFolderTarget(null)
+    setMoveFolderExpanded(new Set())
+  }
+
+  async function confirmMoveFolder() {
+    if (!moveFolderSource || moveFolderLoading) return
+    const dest = moveFolderTarget ?? ""
+    if (dest === moveFolderSource.relativePath || dest.startsWith(`${moveFolderSource.relativePath}/`)) {
+      alert("不能将文件夹移动到自身或其子目录中")
+      return
+    }
+    const parentOfSource = moveFolderSource.relativePath.includes("/")
+      ? moveFolderSource.relativePath.slice(0, moveFolderSource.relativePath.lastIndexOf("/"))
+      : ""
+    if (dest === parentOfSource) {
+      alert("已在该目录中，无需移动")
+      return
+    }
+    setMoveFolderLoading(true)
+    try {
+      const res = await fetch("/api/knowledge-base/folders", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ path: moveFolderSource.relativePath, destinationParent: dest }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+
+      const newPath = String(data?.folder?.relativePath || "")
+      if (newPath && newPath !== moveFolderSource.relativePath) {
+        if (selectedFolder === moveFolderSource.relativePath || selectedFolder.startsWith(`${moveFolderSource.relativePath}/`)) {
+          setSelectedFolder((current) => replacePathPrefix(current, moveFolderSource!.relativePath, newPath))
+        }
+        setSelectedExplorerEntry((current) => {
+          if (!current) return current
+          if (current.relativePath === moveFolderSource!.relativePath || current.relativePath.startsWith(`${moveFolderSource!.relativePath}/`)) {
+            return { ...current, relativePath: replacePathPrefix(current.relativePath, moveFolderSource!.relativePath, newPath) }
+          }
+          return current
+        })
+      }
+      setMoveFolderSource(null)
+      await refreshTree()
+    } catch (e: any) {
+      alert(`移动失败：${e?.message || e}`)
+    } finally {
+      setMoveFolderLoading(false)
+    }
+  }
+
+  function handleMoveTargetToggle(folderPath: string) {
+    setMoveFolderExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(folderPath)) next.delete(folderPath)
+      else next.add(folderPath)
+      return next
+    })
+  }
+
+  function handleDownloadFolderZip(folder: FolderNode) {
+    const url = `/api/knowledge-base/download-zip?path=${encodeURIComponent(folder.relativePath)}`
+    const headers = getKnowledgeBaseAuthHeaders()
+    if (headers && headers["x-market-user-id"]) {
+      fetch(url, { headers }).then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          alert(`下载失败：${data?.error || res.statusText}`)
+          return
+        }
+        const blob = await res.blob()
+        const objectUrl = URL.createObjectURL(blob)
+        const link = document.createElement("a")
+        link.href = objectUrl
+        link.download = `${folder.name}.zip`
+        link.click()
+        URL.revokeObjectURL(objectUrl)
+      }).catch((e: any) => alert(`下载失败：${e?.message || e}`))
+    } else {
+      window.open(url, "_blank")
+    }
+  }
+
   function handleDownloadConversation() {
     const userMessages = chatMessages.filter((m) => m.role === "user")
     if (userMessages.length === 0) return
@@ -2160,6 +2253,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
                                   <Pencil className="h-4 w-4" />重命名
                                 </ContextMenuItem>
+                                <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => openMoveFolderDialog(entry.folder)}>
+                                  <MoveRight className="h-4 w-4" />移动到...
+                                </ContextMenuItem>
+                                <ContextMenuItem onClick={() => handleDownloadFolderZip(entry.folder)}>
+                                  <FileArchive className="h-4 w-4" />下载为 ZIP
+                                </ContextMenuItem>
                                 <ContextMenuSeparator />
                                 <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
                                   <Trash2 className="h-4 w-4" />删除
@@ -2239,6 +2338,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   </ContextMenuItem>
                                   <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
                                     <Pencil className="h-4 w-4" />重命名
+                                  </ContextMenuItem>
+                                  <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => openMoveFolderDialog(entry.folder)}>
+                                    <MoveRight className="h-4 w-4" />移动到...
+                                  </ContextMenuItem>
+                                  <ContextMenuItem onClick={() => handleDownloadFolderZip(entry.folder)}>
+                                    <FileArchive className="h-4 w-4" />下载为 ZIP
                                   </ContextMenuItem>
                                   <ContextMenuSeparator />
                                   <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
@@ -2483,19 +2588,66 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                 {traditionalPanel === "upload" && (
                   <div className="space-y-4">
-                    {/* Target folder selector */}
+                    {/* Target folder selector — drill-down picker */}
                     <div className="space-y-1.5">
                       <label className="text-sm font-medium">目标目录</label>
-                      <select
-                        value={uploadTargetFolder ?? "__unset__"}
-                        onChange={(e) => setUploadTargetFolder(e.target.value === "__unset__" ? null : e.target.value)}
-                        className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                      >
-                        <option value="__unset__" disabled>— 请选择目标目录 —</option>
-                        {folderOptions.map((opt) => (
-                          <option key={opt.value} value={opt.value}>{opt.label}</option>
-                        ))}
-                      </select>
+                      {/* Breadcrumb navigation */}
+                      <div className="flex flex-wrap items-center gap-0.5 rounded-md border border-input bg-muted/30 px-2 py-1.5 text-xs">
+                        <button
+                          type="button"
+                          className={cn("rounded px-1 py-0.5 hover:bg-accent hover:text-foreground", !uploadFolderBrowsePath ? "font-semibold text-foreground" : "text-muted-foreground")}
+                          onClick={() => { setUploadFolderBrowsePath(""); setUploadTargetFolder("") }}
+                        >
+                          全部资料
+                        </button>
+                        {uploadFolderBrowsePath.split("/").filter(Boolean).map((seg, i, arr) => {
+                          const segPath = arr.slice(0, i + 1).join("/")
+                          return (
+                            <span key={segPath} className="flex items-center gap-0.5">
+                              <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                              <button
+                                type="button"
+                                className={cn("rounded px-1 py-0.5 hover:bg-accent hover:text-foreground", segPath === uploadFolderBrowsePath ? "font-semibold text-foreground" : "text-muted-foreground")}
+                                onClick={() => { setUploadFolderBrowsePath(segPath); setUploadTargetFolder(segPath) }}
+                              >
+                                {seg}
+                              </button>
+                            </span>
+                          )
+                        })}
+                      </div>
+                      {/* Child folder list for current level */}
+                      <div className="max-h-36 overflow-y-auto rounded-md border border-input bg-background">
+                        {(() => {
+                          const currentNode = tree ? findFolderByPath(tree, uploadFolderBrowsePath) : null
+                          if (!currentNode) return <div className="px-3 py-2 text-xs text-muted-foreground">正在加载...</div>
+                          if (currentNode.folders.length === 0) {
+                            return <div className="px-3 py-2 text-xs text-muted-foreground">当前目录无子文件夹</div>
+                          }
+                          return currentNode.folders.map((child) => (
+                            <button
+                              key={child.relativePath}
+                              type="button"
+                              className={cn(
+                                "flex w-full items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-muted/60",
+                                uploadTargetFolder === child.relativePath && "bg-primary/8 font-medium",
+                              )}
+                              onClick={() => { setUploadFolderBrowsePath(child.relativePath); setUploadTargetFolder(child.relativePath) }}
+                            >
+                              <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+                              <span className="flex-1 truncate text-left">{child.name}</span>
+                              {child.folders.length > 0 && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                            </button>
+                          ))
+                        })()}
+                      </div>
+                      {/* Selected folder indicator */}
+                      <div className="flex items-center gap-1 text-xs">
+                        <span className="text-muted-foreground">已选目录：</span>
+                        <span className={cn("font-medium", uploadTargetFolder === null ? "text-destructive" : "text-foreground")}>
+                          {uploadTargetFolder === null ? "（请点击上方选择目录）" : uploadTargetFolder === "" ? "全部资料（根目录）" : uploadTargetFolder}
+                        </span>
+                      </div>
                     </div>
 
                     {/* Drag-and-drop zone */}
@@ -3205,6 +3357,35 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               </DialogContent>
             </Dialog>
 
+            {/* Move Folder Dialog */}
+            <Dialog open={!!moveFolderSource} onOpenChange={(open) => { if (!open) setMoveFolderSource(null) }}>
+              <DialogContent className="flex max-h-[80vh] max-w-sm flex-col gap-0 p-0">
+                <DialogHeader className="px-4 pb-2 pt-4">
+                  <DialogTitle>移动文件夹「{moveFolderSource?.name}」到...</DialogTitle>
+                </DialogHeader>
+                <ScrollArea className="flex-1 overflow-auto border-y px-2 py-2" style={{ maxHeight: "50vh" }}>
+                  {tree && (
+                    <ServerFolderBrowserTree
+                      node={tree}
+                      depth={0}
+                      selectedPath={moveFolderTarget}
+                      onSelect={(path) => setMoveFolderTarget(path)}
+                      expanded={moveFolderExpanded}
+                      onToggle={handleMoveTargetToggle}
+                    />
+                  )}
+                </ScrollArea>
+                <DialogFooter className="px-4 py-3">
+                  <Button size="sm" variant="outline" onClick={() => setMoveFolderSource(null)} disabled={moveFolderLoading}>
+                    取消
+                  </Button>
+                  <Button size="sm" disabled={moveFolderLoading || moveFolderTarget === null} onClick={() => void confirmMoveFolder()}>
+                    {moveFolderLoading ? <><LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />移动中...</> : "确认移动"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
             </section>
           </ResizablePanel>
 
@@ -3517,6 +3698,35 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             </section>
           </ResizablePanel>
         </ResizablePanelGroup>
+
+        {/* Move Folder Dialog */}
+        <Dialog open={!!moveFolderSource} onOpenChange={(open) => { if (!open) setMoveFolderSource(null) }}>
+          <DialogContent className="flex max-h-[80vh] max-w-sm flex-col gap-0 p-0">
+            <DialogHeader className="px-4 pb-2 pt-4">
+              <DialogTitle>移动文件夹「{moveFolderSource?.name}」到...</DialogTitle>
+            </DialogHeader>
+            <ScrollArea className="flex-1 overflow-auto border-y px-2 py-2" style={{ maxHeight: "50vh" }}>
+              {tree && (
+                <ServerFolderBrowserTree
+                  node={tree}
+                  depth={0}
+                  selectedPath={moveFolderTarget}
+                  onSelect={(path) => setMoveFolderTarget(path)}
+                  expanded={moveFolderExpanded}
+                  onToggle={handleMoveTargetToggle}
+                />
+              )}
+            </ScrollArea>
+            <DialogFooter className="px-4 py-3">
+              <Button size="sm" variant="outline" onClick={() => setMoveFolderSource(null)} disabled={moveFolderLoading}>
+                取消
+              </Button>
+              <Button size="sm" disabled={moveFolderLoading || moveFolderTarget === null} onClick={() => void confirmMoveFolder()}>
+                {moveFolderLoading ? <><LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />移动中...</> : "确认移动"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     )
   }

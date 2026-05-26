@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
 import { normalizeKnowledgeBasePath, deduplicateKnowledgeBaseFolder } from "@/lib/server/knowledge-base"
-import { invalidateVectorStoreCache } from "@/lib/server/knowledge-chat"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -19,11 +18,9 @@ export async function POST(req: Request) {
 
     const result = await deduplicateKnowledgeBaseFolder(folderPath || "")
 
-    // Invalidate vector store cache for the affected scope so it rebuilds without deleted files
-    if (result.deleted.length > 0) {
-      invalidateVectorStoreCache(folderPath || null)
-      if (folderPath) invalidateVectorStoreCache(null) // also invalidate root
-    }
+    // No cache invalidation needed: getOrBuildVectorStore handles deleted files
+    // incrementally. It compares fingerprints and filters deleted files from baseRows,
+    // so only truly new/changed files get re-embedded on the next chat query or embed job.
 
     return NextResponse.json({
       ok: true,
