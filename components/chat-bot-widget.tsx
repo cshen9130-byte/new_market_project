@@ -13,8 +13,12 @@ function getPageContext(path: string): string {
     return "当前页面：【自动发邮件】小工具。功能：为每位投顾配置定时发送任务，每天自动将最新逐日核算单 xlsx 附件发送至指定邮箱。支持多发送配置管理（可分别配置收件人、发送时间、邮件主题/正文、附件占位符[日期]/[投顾代码]/[文件名]）以及 SMTP 发件账号管理（支持腾讯企业邮箱/QQ/163/126/Gmail/Outlook 等）。"
   if (path.includes("/tools/nav-cleaner"))
     return "当前页面：【NAV 净值清洗】小工具。功能：上传基金净值 Excel/CSV 文件，自动检测异常数据、修正格式并导出标准化净值表。"
+  if (path.includes("/tools/valuation"))
+    return "当前页面：【估值分析】小工具。功能：上传持仓估值表，自动解析持仓结构，输出多空分布、行业集中度、策略标签等分析结果。"
+  if (path.includes("/tools/settlement-analysis"))
+    return "当前页面：【结算单分析】小工具。功能：上传交易结算单(盯市)，自动分析持仓敞口、板块分布、多空结构，并推断可能的交易风格。"
   if (path.includes("/tools"))
-    return "当前页面：【小工具集合】。包含：①自动发邮件（定时将投顾逐日核算单 xlsx 发送给指定收件人）；②NAV 净值清洗（上传并标准化基金净值数据）。"
+    return "当前页面：【小工具集合】。包含：①自动发邮件（定时将投顾逐日核算单 xlsx 发送给指定收件人）；②NAV 净值清洗（上传并标准化基金净值数据）；③估值分析（上传估值表并输出持仓结构分析）；④结算单分析（上传结算单并输出持仓与策略分析）。"
   if (path.includes("/mom-analysis/carry-calc"))
     return "当前页面：【业绩报酬测算】。根据最新交易日累计盈亏，计算母层与子层业绩报酬及私募基金净业绩报酬。"
   if (path.includes("/mom-analysis/trader-analysis"))

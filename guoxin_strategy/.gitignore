@@ -1,0 +1,14 @@
+# Python virtual environment
+.venv/
+
+# Generated report output
+report_output/
+
+# Market data disk cache
+*.pkl
+
+# Raw CSV trade data (sensitive)
+guosen_*.csv
+
+# Temporary test scripts
+_test_*.py

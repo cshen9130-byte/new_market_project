@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { FileSpreadsheet, Mail, PieChart, Wrench } from "lucide-react"
+import { FileSpreadsheet, FileText, Mail, PieChart, Wrench } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -24,6 +24,13 @@ const toolCards = [
     description: "上传持仓估值表，自动解析持仓结构，生成多头空头分布、行业集中度、策略标签等可视化分析报告。",
     href: "/ma/dashboard/tools/valuation",
     icon: PieChart,
+    actionLabel: "打开小工具",
+  },
+  {
+    title: "结算单分析",
+    description: "上传交易结算单(盯市)后，自动分析持仓敞口、板块分布、多空结构，并推断可能的交易风格。",
+    href: "/ma/dashboard/tools/settlement-analysis",
+    icon: FileText,
     actionLabel: "打开小工具",
   },
 ]

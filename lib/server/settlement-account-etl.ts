@@ -1400,3 +1400,676 @@ export async function runSettlementFilesETL(mode: "full" | "incremental"): Promi
   ])
   return { accountSummary, transactions, positions, positionSummary, positionClosed }
 }
+
+export type SettlementAnalysisPosition = {
+  symbol: string
+  productCode: string
+  productName: string
+  instrument: string
+  exchange: string
+  sector: string
+  longLots: number
+  shortLots: number
+  longMarketValue: number
+  shortMarketValue: number
+  grossMarketValue: number
+  netMarketValue: number
+  mtmPl: number
+  marginOccupied: number
+}
+
+export type SettlementAnalysisChartItem = {
+  label: string
+  value: number
+  netValue?: number
+  mtmPl?: number
+}
+
+export type SettlementAnalysisSectorItem = {
+  sector: string
+  longValue: number
+  shortValue: number
+  grossValue: number
+  netValue: number
+  mtmPl: number
+}
+
+export type SettlementStrategyInference = {
+  primaryStrategy: string
+  candidateStrategies: string[]
+  confidence: "high" | "medium" | "low"
+  bias: "long" | "short" | "neutral"
+  signals: string[]
+  risks: string[]
+}
+
+export type SettlementWorkbookAnalysis = {
+  sourceFileName: string
+  summary: {
+    clientId: string
+    clientName: string
+    tradeDate: string
+    dateRangeRaw: string
+    clientEquity: number | null
+    balanceCf: number | null
+    marginOccupied: number | null
+    fundAvailable: number | null
+    riskDegreeRatio: number | null
+    realizedPl: number | null
+    mtmPl: number | null
+    longMarketValue: number
+    shortMarketValue: number
+    grossExposure: number
+    netExposure: number
+    grossLeverage: number | null
+    netExposureRatio: number | null
+    positionCount: number
+    detailRowCount: number
+    sectorCount: number
+    topPositionName: string | null
+    topPositionShare: number | null
+    topSectorName: string | null
+    topSectorShare: number | null
+  }
+  charts: {
+    holdings: SettlementAnalysisChartItem[]
+    sectors: SettlementAnalysisSectorItem[]
+    directions: SettlementAnalysisChartItem[]
+    exchanges: SettlementAnalysisChartItem[]
+  }
+  positions: SettlementAnalysisPosition[]
+  strategyInference: SettlementStrategyInference
+  warnings: string[]
+}
+
+const SETTLEMENT_PRODUCT_NAME_MAP: Record<string, string> = {
+  AU: "黄金",
+  AG: "白银",
+  CU: "沪铜",
+  AL: "沪铝",
+  ZN: "沪锌",
+  PB: "沪铅",
+  NI: "沪镍",
+  SN: "沪锡",
+  AO: "氧化铝",
+  I: "铁矿",
+  RB: "螺纹钢",
+  HC: "热卷",
+  SS: "不锈钢",
+  JM: "焦煤",
+  J: "焦炭",
+  FG: "玻璃",
+  SF: "硅铁",
+  SM: "锰硅",
+  ZC: "动力煤",
+  SC: "原油",
+  FU: "燃料油",
+  LU: "低硫燃油",
+  PG: "液化气",
+  BU: "沥青",
+  TA: "PTA",
+  EG: "乙二醇",
+  MA: "甲醇",
+  PP: "聚丙烯",
+  L: "塑料",
+  V: "PVC",
+  RU: "橡胶",
+  BR: "丁苯橡胶",
+  NR: "20号胶",
+  SA: "纯碱",
+  UR: "尿素",
+  PX: "PX",
+  EB: "苯乙烯",
+  LC: "碳酸锂",
+  SI: "工业硅",
+  IF: "沪深300",
+  IH: "上证50",
+  IC: "中证500",
+  IM: "中证1000",
+  TS: "2年国债",
+  TF: "5年国债",
+  T: "10年国债",
+  TL: "30年国债",
+  C: "玉米",
+  CS: "淀粉",
+  A: "豆一",
+  B: "豆二",
+  M: "豆粕",
+  Y: "豆油",
+  RM: "菜粕",
+  OI: "菜油",
+  P: "棕榈油",
+  SR: "白糖",
+  CF: "棉花",
+  CY: "棉纱",
+  AP: "苹果",
+  CJ: "红枣",
+  JD: "鸡蛋",
+  LH: "生猪",
+  EC: "集运指数",
+}
+
+const SETTLEMENT_SECTOR_RULES: Record<string, Set<string>> = {
+  农产: new Set(["C", "CS", "A", "B", "M", "Y", "RM", "OI", "P", "SR", "CF", "CY", "AP", "CJ", "JD", "LH", "WH", "PM", "RI", "JR", "LR", "GN", "PK"]),
+  贵金属: new Set(["AU", "AG"]),
+  有色: new Set(["CU", "AL", "ZN", "PB", "NI", "SN", "AO", "BC"]),
+  新能源: new Set(["LC", "SI", "PS"]),
+  黑色: new Set(["I", "RB", "HC", "SS", "JM", "J", "FG", "SF", "SM", "ZC"]),
+  能源化工: new Set(["SC", "FU", "LU", "PG", "BU", "TA", "EG", "MA", "PP", "L", "V", "RU", "BR", "NR", "SA", "UR", "PX", "EB", "SP", "PF"]),
+  股指: new Set(["IF", "IH", "IC", "IM"]),
+  国债: new Set(["TS", "TF", "T", "TL"]),
+  航运: new Set(["EC", "SW"]),
+}
+
+// Chinese product name → standard exchange product code
+// Used as fallback when TradingCode is numeric (e.g., internal contract IDs)
+const CHINESE_PRODUCT_NAME_TO_CODE: Record<string, string> = {
+  // 农产
+  "玉米": "C", "淀粉": "CS", "玉米淀粉": "CS",
+  "大豆": "A", "大豆一号": "A", "黄大豆一号": "A", "大豆二号": "B", "黄大豆二号": "B",
+  "豆粕": "M", "豆油": "Y", "菜粕": "RM", "菜籽粕": "RM", "菜油": "OI", "菜籽油": "OI",
+  "棕榈油": "P", "白糖": "SR", "棉花": "CF", "棉纱": "CY",
+  "苹果": "AP", "红枣": "CJ", "鸡蛋": "JD", "鲜鸡蛋": "JD", "生猪": "LH", "花生": "PK", "花生仁": "PK",
+  "强麦": "WH", "硬冬小麦": "WH", "普麦": "PM",
+  "早籼稻": "RI", "粳稻": "JR", "晚籼稻": "LR",
+  // 贵金属
+  "黄金": "AU", "白银": "AG",
+  // 有色
+  "铜": "CU", "铝": "AL", "锌": "ZN", "铅": "PB",
+  "镍": "NI", "锡": "SN", "氧化铝": "AO",
+  // 新能源
+  "碳酸锂": "LC", "工业硅": "SI", "多晶硅": "PS",
+  // 黑色
+  "铁矿石": "I", "铁矿": "I", "螺纹钢": "RB", "热轧卷板": "HC", "不锈钢": "SS",
+  "焦煤": "JM", "焦炭": "J", "玻璃": "FG", "硅铁": "SF", "锰硅": "SM", "动力煤": "ZC",
+  // 能源化工
+  "原油": "SC", "燃料油": "FU", "低硫燃料油": "LU",
+  "液化石油气": "PG", "LPG": "PG", "沥青": "BU",
+  "精对苯二甲酸": "TA", "PTA": "TA",
+  "乙二醇": "EG", "甲醇": "MA", "聚丙烯": "PP",
+  "线型低密度聚乙烯": "L", "聚乙烯": "L",
+  "聚氯乙烯": "V", "PVC": "V",
+  "天然橡胶": "RU", "合成橡胶": "BR", "20号胶": "NR",
+  "纯碱": "SA", "尿素": "UR",
+  "对二甲苯": "PX", "苯乙烯": "EB",
+  "纸浆": "SP", "短纤": "PF", "涤纶短纤": "PF",
+  // 股指
+  "沪深300": "IF", "上证50": "IH", "中证500": "IC", "中证1000": "IM",
+  // 国债
+  "2年期国债": "TS", "5年期国债": "TF", "10年期国债": "T", "30年期国债": "TL",
+  // 航运
+  "集运指数": "EC", "集运欧线": "EC",
+}
+
+function finiteNumber(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
+
+function absNumber(value: number | null | undefined): number {
+  return Math.abs(finiteNumber(value))
+}
+
+function normalizeRiskDegree(value: number | null): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  if (value > 1 && value <= 100) return value / 100
+  if (value < 0) return null
+  return value
+}
+
+function formatPct(ratio: number): string {
+  return `${(ratio * 100).toFixed(1)}%`
+}
+
+function extractSettlementProductCode(...candidates: Array<string | null | undefined>): string {
+  for (const candidate of candidates) {
+    const raw = String(candidate ?? "").trim()
+    if (!raw) continue
+    // Try leading ASCII letters (e.g., "RU2506" → "RU", "rb2506" → "RB")
+    const upper = raw.toUpperCase()
+    const match = upper.match(/^[A-Z]{1,3}/)
+    if (match) return match[0]
+    // Try Chinese product name lookup (e.g., 品种 column value like "天然橡胶")
+    const byName = CHINESE_PRODUCT_NAME_TO_CODE[raw]
+    if (byName) return byName
+  }
+  return ""
+}
+
+function getSettlementSector(productCode: string, instrument: string, productName?: string): string {
+  const code = productCode.toUpperCase()
+
+  // 1. Direct product code lookup (works for both futures AND options on that commodity)
+  if (code) {
+    for (const [sector, codes] of Object.entries(SETTLEMENT_SECTOR_RULES)) {
+      if (codes.has(code)) return sector
+    }
+  }
+
+  // 2. Partial Chinese name match — handles "天然橡胶期权".includes("天然橡胶") → RU → 能源化工
+  const nameCandidates = [productName, instrument].filter(Boolean) as string[]
+  for (const name of nameCandidates) {
+    for (const [cn, code2] of Object.entries(CHINESE_PRODUCT_NAME_TO_CODE)) {
+      if (name.includes(cn)) {
+        for (const [sector, codes] of Object.entries(SETTLEMENT_SECTOR_RULES)) {
+          if (codes.has(code2)) return sector
+        }
+      }
+    }
+  }
+
+  // 3. If still unclassified and clearly an option with no identifiable underlying → generic bucket
+  const allText = [productName, instrument].filter(Boolean).join(" ")
+  if (/期权/.test(allText)) return "期权"
+
+  return "其他"
+}
+
+function getSettlementProductName(productCode: string, instrument: string, symbol: string): string {
+  if (SETTLEMENT_PRODUCT_NAME_MAP[productCode]) return SETTLEMENT_PRODUCT_NAME_MAP[productCode]
+  if (instrument.trim()) return instrument.trim()
+  if (symbol.trim()) return symbol.trim()
+  return productCode || "未识别品种"
+}
+
+function inferSettlementStrategy(params: {
+  grossExposure: number
+  netExposure: number
+  longExposure: number
+  shortExposure: number
+  grossLeverage: number | null
+  riskDegreeRatio: number | null
+  fundAvailable: number | null
+  clientEquity: number | null
+  topPositionShare: number
+  topSectorShare: number
+  topSectorName: string | null
+  hedgedSectorCount: number
+  commodityShare: number
+  equityIndexShare: number
+  treasuryShare: number
+  optionShare: number
+}): SettlementStrategyInference {
+  const {
+    grossExposure,
+    netExposure,
+    longExposure,
+    shortExposure,
+    grossLeverage,
+    riskDegreeRatio,
+    fundAvailable,
+    clientEquity,
+    topPositionShare,
+    topSectorShare,
+    topSectorName,
+    hedgedSectorCount,
+    commodityShare,
+    equityIndexShare,
+    treasuryShare,
+    optionShare,
+  } = params
+
+  if (grossExposure <= 0) {
+    return {
+      primaryStrategy: "空仓 / 低持仓观察",
+      candidateStrategies: ["空仓 / 低持仓观察"],
+      confidence: "medium",
+      bias: "neutral",
+      signals: ["结算单中未识别到有效持仓敞口，当前更接近空仓或轻仓状态。"],
+      risks: ["若这是盘后结算单但页面为空仓，需确认文件是否为完整版本。"],
+    }
+  }
+
+  const netRatio = grossExposure > 0 ? Math.abs(netExposure) / grossExposure : 0
+  const bias: "long" | "short" | "neutral" = netExposure > grossExposure * 0.15
+    ? "long"
+    : netExposure < -grossExposure * 0.15
+      ? "short"
+      : "neutral"
+
+  let primaryStrategy = "多品种配置 / 混合交易"
+  let confidence: "high" | "medium" | "low" = "low"
+  const candidates: string[] = []
+  const signals: string[] = [
+    `总敞口 ${grossExposure.toFixed(0)}，净敞口 ${netExposure.toFixed(0)}，净敞口占总敞口 ${formatPct(netRatio)}。`,
+  ]
+  const risks: string[] = []
+
+  if (grossLeverage != null) {
+    signals.push(`总敞口约为客户权益的 ${grossLeverage.toFixed(2)}x。`)
+  }
+  if (topSectorName) {
+    signals.push(`最大板块为 ${topSectorName}，占总敞口 ${formatPct(topSectorShare)}。`)
+  }
+  if (hedgedSectorCount > 0) {
+    signals.push(`存在 ${hedgedSectorCount} 个同时持有多空头寸的板块。`)
+  }
+
+  if (treasuryShare >= 0.55) {
+    primaryStrategy = "利率方向 / 国债期货策略"
+    confidence = treasuryShare >= 0.75 ? "high" : "medium"
+    candidates.push(primaryStrategy, "宏观利率交易", "久期管理 / 对冲")
+  } else if (equityIndexShare >= 0.45 && shortExposure > longExposure * 1.1) {
+    primaryStrategy = "股指对冲 / 贝塔保护"
+    confidence = equityIndexShare >= 0.65 ? "high" : "medium"
+    candidates.push(primaryStrategy, "指数择时", "股票套保")
+  } else if (optionShare >= 0.25) {
+    primaryStrategy = "期权波动率 / 保护性策略"
+    confidence = optionShare >= 0.45 ? "high" : "medium"
+    candidates.push(primaryStrategy, "保护性对冲", "波动率交易")
+  } else if (netRatio <= 0.2 && longExposure > 0 && shortExposure > 0 && hedgedSectorCount >= 2) {
+    primaryStrategy = "跨品种对冲 / 市场中性"
+    confidence = hedgedSectorCount >= 3 ? "high" : "medium"
+    candidates.push(primaryStrategy, "价差 / 对冲交易", "板块内对冲")
+  } else if (commodityShare >= 0.6 && netRatio >= 0.45) {
+    primaryStrategy = `商品趋势 CTA（${bias === "short" ? "偏空" : "偏多"}）`
+    confidence = commodityShare >= 0.8 ? "high" : "medium"
+    candidates.push(primaryStrategy, "商品事件驱动", `${topSectorName ?? "商品"}方向交易`)
+  } else if (topSectorShare >= 0.45 && topSectorName) {
+    primaryStrategy = `${topSectorName}板块主题交易`
+    confidence = topSectorShare >= 0.6 ? "high" : "medium"
+    candidates.push(primaryStrategy, "集中仓位交易", "主题轮动")
+  } else if (grossLeverage != null && grossLeverage >= 2 && netRatio >= 0.35) {
+    primaryStrategy = `高杠杆方向交易（${bias === "short" ? "偏空" : "偏多"}）`
+    confidence = grossLeverage >= 3 ? "high" : "medium"
+    candidates.push(primaryStrategy, "方向性交易")
+  } else if (netRatio >= 0.35) {
+    primaryStrategy = `方向性多品种交易（${bias === "short" ? "偏空" : "偏多"}）`
+    confidence = "medium"
+    candidates.push(primaryStrategy, "宏观主观交易")
+  } else {
+    candidates.push(primaryStrategy, "多板块配置")
+  }
+
+  if (commodityShare >= 0.4) candidates.push("商品配置 / CTA")
+  if (equityIndexShare >= 0.25) candidates.push("股指管理 / 对冲")
+  if (treasuryShare >= 0.25) candidates.push("利率交易")
+  if (hedgedSectorCount >= 1) candidates.push("板块对冲")
+
+  if (grossLeverage != null && grossLeverage >= 2) {
+    risks.push(`总敞口已达客户权益的 ${grossLeverage.toFixed(2)}x，杠杆敏感度偏高。`)
+  }
+  if (riskDegreeRatio != null && riskDegreeRatio >= 0.75) {
+    risks.push(`风险度约 ${formatPct(riskDegreeRatio)}，需关注保证金与波动冲击。`)
+  }
+  if (topSectorShare >= 0.35 && topSectorName) {
+    risks.push(`${topSectorName} 板块集中度达到 ${formatPct(topSectorShare)}，板块单边波动会显著影响组合。`)
+  }
+  if (topPositionShare >= 0.18) {
+    risks.push(`最大单合约敞口占总敞口 ${formatPct(topPositionShare)}，单一持仓集中度偏高。`)
+  }
+  if (clientEquity != null && fundAvailable != null && clientEquity > 0 && fundAvailable / clientEquity <= 0.12) {
+    risks.push("可用资金占客户权益比例偏低，后续追保和加仓弹性有限。")
+  }
+  if (risks.length === 0) {
+    risks.push("当前仓位结构未出现单一极端风险，但仍需结合成交记录与历史净值进一步验证策略稳定性。")
+  }
+
+  return {
+    primaryStrategy,
+    candidateStrategies: Array.from(new Set(candidates.filter(Boolean))),
+    confidence,
+    bias,
+    signals,
+    risks,
+  }
+}
+
+export function analyzeSettlementWorkbook(buffer: Buffer, sourceFileName: string): SettlementWorkbookAnalysis {
+  const summary = parseAccountSummary(buffer, sourceFileName)
+  if (!summary) {
+    throw new Error("请上传包含“交易结算单(盯市)”内容的国信结算单文件。")
+  }
+
+  const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true })
+  const worksheet = workbook.Sheets[workbook.SheetNames[0]]
+  if (!worksheet || !worksheet["!ref"]) {
+    throw new Error("无法读取结算单工作表。")
+  }
+
+  const range = XLSX.utils.decode_range(worksheet["!ref"])
+  const positionSummaryRows = parsePositionSummary(worksheet, range)
+  if (positionSummaryRows === null) {
+    throw new Error("未找到“持仓汇总”区域。")
+  }
+
+  const positionDetailRows = parsePositionDetail(worksheet, range)
+  const warnings: string[] = []
+  if (positionDetailRows === null) {
+    warnings.push("未找到“持仓明细”区域，本次分析仅使用持仓汇总数据。")
+  }
+
+  // Build a market-value lookup from detail section (持仓明细).
+  // 持仓汇总 leaves MarketValue columns blank for futures rows; the detail
+  // section has market_val per individual open position with B/S direction.
+  const detailMVMap = new Map<string, { longMV: number; shortMV: number }>()
+  if (positionDetailRows) {
+    warnings.push(`[DBG] detailRows count=${positionDetailRows.length}`)
+    positionDetailRows.slice(0, 5).forEach((drow, i) => {
+      warnings.push(`[DBG] drow${i} inst=${drow.instrument} bs=${JSON.stringify(drow.bs)} mv=${drow.market_val}`)
+    })
+    for (const drow of positionDetailRows) {
+      const inst = String(drow.instrument ?? '').trim().toLowerCase()
+      const key = inst || String(drow.product ?? '').trim().toLowerCase()
+      if (!key) continue
+      const mv = finiteNumber(drow.market_val)
+      if (mv === 0) continue
+      const entry = detailMVMap.get(key) ?? { longMV: 0, shortMV: 0 }
+      const isBuy = drow.bs?.includes('\u4e70') || drow.bs === 'B' || drow.bs === 'b'
+      if (isBuy) entry.longMV += Math.abs(mv)
+      else entry.shortMV += Math.abs(mv)
+      detailMVMap.set(key, entry)
+    }
+    warnings.push(`[DBG] detailMVMap size=${detailMVMap.size} keys=${JSON.stringify([...detailMVMap.keys()].slice(0,5))}`)
+  } else {
+    warnings.push('[DBG] positionDetailRows is NULL')
+  }
+
+  // Debug: show first 3 summary rows to verify long_pos/short_pos/margin data
+  positionSummaryRows.slice(0, 3).forEach((r2, i) => {
+    warnings.push(`[SUM${i}] inst=${r2.instrument} L=${r2.long_pos} S=${r2.short_pos} margin=${r2.margin_occupied} mvL=${r2.market_val_long} mvS=${r2.market_val_short} settl=${r2.settl_today}`)
+  })
+
+  const positions: SettlementAnalysisPosition[] = positionSummaryRows
+    .map((row) => {
+      const symbol = String(row.trading_code ?? "").trim().toUpperCase()
+      const productCode = extractSettlementProductCode(row.trading_code, row.product, row.instrument)
+      const instrument = String(row.instrument ?? "").trim()
+      const productName = getSettlementProductName(productCode, instrument, symbol)
+      const sector = getSettlementSector(productCode, instrument, String(row.product ?? "").trim())
+      const longLots = finiteNumber(row.long_pos)
+      const shortLots = finiteNumber(row.short_pos)
+      const marginOccupied = absNumber(row.margin_occupied)
+      // Priority 1: market values from 持仓汇总 (populated for options)
+      let longMarketValue = absNumber(row.market_val_long)
+      let shortMarketValue = absNumber(row.market_val_short)
+      // Priority 2: aggregated market_val from 持仓明细 (if MarketVal column exists)
+      if (longMarketValue === 0 && shortMarketValue === 0) {
+        const detailKey = String(row.instrument ?? "").trim().toLowerCase() || String(row.product ?? "").trim().toLowerCase()
+        const detailMV = detailMVMap.get(detailKey)
+        if (detailMV) {
+          longMarketValue = detailMV.longMV
+          shortMarketValue = detailMV.shortMV
+        }
+      }
+      // Priority 3: settl_today * lots as notional proxy (consistent within each product)
+      if (longMarketValue === 0 && shortMarketValue === 0) {
+        const settl = finiteNumber(row.settl_today)
+        if (settl > 0) {
+          longMarketValue = longLots * settl
+          shortMarketValue = shortLots * settl
+        }
+      }
+      // Priority 4: margin_occupied split by lot ratio (last resort)
+      if (longMarketValue === 0 && shortMarketValue === 0 && marginOccupied > 0) {
+        const totalLots = longLots + shortLots
+        if (totalLots > 0) {
+          longMarketValue = marginOccupied * (longLots / totalLots)
+          shortMarketValue = marginOccupied * (shortLots / totalLots)
+        } else if (longLots > 0) {
+          longMarketValue = marginOccupied
+        } else if (shortLots > 0) {
+          shortMarketValue = marginOccupied
+        }
+      }
+      const grossMarketValue = longMarketValue + shortMarketValue
+      const netMarketValue = longMarketValue - shortMarketValue
+
+      return {
+        symbol: symbol || productCode || productName,
+        productCode,
+        productName,
+        instrument,
+        exchange: String(row.exchange ?? "").trim() || "\u672a\u77e5\u4ea4\u6613\u6240",
+        sector,
+        longLots,
+        shortLots,
+        longMarketValue,
+        shortMarketValue,
+        grossMarketValue,
+        netMarketValue,
+        mtmPl: finiteNumber(row.mtm_pl),
+        marginOccupied,
+      }
+    })
+    .filter((row) => row.grossMarketValue > 0 || row.longLots > 0 || row.shortLots > 0 || row.mtmPl !== 0)
+    .sort((a, b) => b.grossMarketValue - a.grossMarketValue || Math.abs(b.mtmPl) - Math.abs(a.mtmPl))
+
+  const longMarketValue = positions.reduce((sum, row) => sum + row.longMarketValue, 0)
+  const shortMarketValue = positions.reduce((sum, row) => sum + row.shortMarketValue, 0)
+  const grossExposure = longMarketValue + shortMarketValue
+  const netExposure = longMarketValue - shortMarketValue
+  const clientEquity = summary.client_equity
+  const grossLeverage = clientEquity && clientEquity > 0 ? grossExposure / clientEquity : null
+  const netExposureRatio = clientEquity && clientEquity > 0 ? netExposure / clientEquity : null
+  const riskDegreeRatio = normalizeRiskDegree(summary.risk_degree)
+
+  const sectorMap = new Map<string, SettlementAnalysisSectorItem>()
+  const exchangeMap = new Map<string, number>()
+
+  for (const position of positions) {
+    const sectorBucket = sectorMap.get(position.sector) ?? {
+      sector: position.sector,
+      longValue: 0,
+      shortValue: 0,
+      grossValue: 0,
+      netValue: 0,
+      mtmPl: 0,
+    }
+    sectorBucket.longValue += position.longMarketValue
+    sectorBucket.shortValue += position.shortMarketValue
+    sectorBucket.grossValue += position.grossMarketValue
+    sectorBucket.netValue += position.netMarketValue
+    sectorBucket.mtmPl += position.mtmPl
+    sectorMap.set(position.sector, sectorBucket)
+
+    const exchangeGross = exchangeMap.get(position.exchange) ?? 0
+    exchangeMap.set(position.exchange, exchangeGross + position.grossMarketValue)
+  }
+
+  const sectorItems = [...sectorMap.values()].sort((a, b) => b.grossValue - a.grossValue)
+  const exchangeItems = [...exchangeMap.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((a, b) => b.value - a.value)
+
+  const holdings = positions.slice(0, 12).map((position) => ({
+    label: position.symbol || position.productName,
+    value: position.grossMarketValue,
+    netValue: position.netMarketValue,
+    mtmPl: position.mtmPl,
+  }))
+
+  const directions = [
+    { label: "多头敞口", value: longMarketValue },
+    { label: "空头敞口", value: shortMarketValue },
+  ].filter((item) => item.value > 0)
+
+  const topPositionShare = grossExposure > 0 && positions[0]
+    ? positions[0].grossMarketValue / grossExposure
+    : 0
+  const topSectorShare = grossExposure > 0 && sectorItems[0]
+    ? sectorItems[0].grossValue / grossExposure
+    : 0
+  const hedgedSectorCount = sectorItems.filter((item) => {
+    if (item.longValue <= 0 || item.shortValue <= 0) return false
+    const larger = Math.max(item.longValue, item.shortValue)
+    const smaller = Math.min(item.longValue, item.shortValue)
+    return larger > 0 && smaller / larger >= 0.2
+  }).length
+  const commodityShare = grossExposure > 0
+    ? sectorItems
+        .filter((item) => ["农产", "贵金属", "有色", "新能源", "黑色", "能源化工", "航运"].includes(item.sector))
+        .reduce((sum, item) => sum + item.grossValue, 0) / grossExposure
+    : 0
+  const equityIndexShare = grossExposure > 0
+    ? sectorItems.filter((item) => item.sector === "股指").reduce((sum, item) => sum + item.grossValue, 0) / grossExposure
+    : 0
+  const treasuryShare = grossExposure > 0
+    ? sectorItems.filter((item) => item.sector === "国债").reduce((sum, item) => sum + item.grossValue, 0) / grossExposure
+    : 0
+  const optionShare = grossExposure > 0
+    ? sectorItems.filter((item) => item.sector === "期权").reduce((sum, item) => sum + item.grossValue, 0) / grossExposure
+    : 0
+
+  if (positions.length === 0) {
+    warnings.push("持仓汇总区域已识别，但当前结算单未提取到有效持仓。")
+  }
+  if (riskDegreeRatio == null) {
+    warnings.push("风险度字段未识别，风控提示主要依据敞口和权益比。")
+  }
+
+  return {
+    sourceFileName,
+    summary: {
+      clientId: summary.client_id,
+      clientName: summary.client_name,
+      tradeDate: summary.trade_date,
+      dateRangeRaw: summary.date_range_raw,
+      clientEquity: summary.client_equity,
+      balanceCf: summary.balance_cf,
+      marginOccupied: summary.margin_occupied,
+      fundAvailable: summary.fund_avail,
+      riskDegreeRatio,
+      realizedPl: summary.realized_pl,
+      mtmPl: summary.mtm_pl,
+      longMarketValue,
+      shortMarketValue,
+      grossExposure,
+      netExposure,
+      grossLeverage,
+      netExposureRatio,
+      positionCount: positions.length,
+      detailRowCount: positionDetailRows?.length ?? 0,
+      sectorCount: sectorItems.length,
+      topPositionName: positions[0]?.symbol ?? null,
+      topPositionShare: positions[0] && grossExposure > 0 ? topPositionShare : null,
+      topSectorName: sectorItems[0]?.sector ?? null,
+      topSectorShare: sectorItems[0] && grossExposure > 0 ? topSectorShare : null,
+    },
+    charts: {
+      holdings,
+      sectors: sectorItems,
+      directions,
+      exchanges: exchangeItems,
+    },
+    positions,
+    strategyInference: inferSettlementStrategy({
+      grossExposure,
+      netExposure,
+      longExposure: longMarketValue,
+      shortExposure: shortMarketValue,
+      grossLeverage,
+      riskDegreeRatio,
+      fundAvailable: summary.fund_avail,
+      clientEquity: summary.client_equity,
+      topPositionShare,
+      topSectorShare,
+      topSectorName: sectorItems[0]?.sector ?? null,
+      hedgedSectorCount,
+      commodityShare,
+      equityIndexShare,
+      treasuryShare,
+      optionShare,
+    }),
+    warnings,
+  }
+}
