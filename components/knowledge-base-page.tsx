@@ -606,9 +606,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null)
   const [showConvSidebar, setShowConvSidebar] = useState(false)
   const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
-  const [useBm25, setUseBm25] = useState(true)
+  const [useBm25, setUseBm25] = useState(false)
   const [useGraphRag, setUseGraphRag] = useState(false)
-  const [modelMode, setModelMode] = useState<"auto" | "plus" | "turbo">("auto")
+  const [queryMode, setQueryMode] = useState<"superfast" | "accurate">("superfast")
   const abortControllerRef = useRef<AbortController | null>(null)
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState("")
@@ -1920,7 +1920,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           useBm25,
           useGraphRag,
           stream: true,
-          modelMode,
+          modelMode: queryMode === "superfast" ? "turbo" : "plus",
           conversationId: convId,
           title: selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料"),
           fileName: selectedDocument?.name,
@@ -3554,13 +3554,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <p className="mt-2 text-[11px] text-muted-foreground">开启后通过知识图谱实体关联扩展检索上下文，适合跨文档关联查询。</p>
                   </div>
                   <div className="rounded-md border p-3">
-                    <div className="mb-2 text-xs font-medium text-muted-foreground">模型选择</div>
+                    <div className="mb-2 text-xs font-medium text-muted-foreground">速度模式</div>
                     <div className="grid grid-cols-2 gap-1">
-                      <button type="button" onClick={() => setModelMode("auto")} className={cn("col-span-2 rounded px-2 py-1 text-xs transition-colors", modelMode === "auto" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🤖 自动（推荐）</button>
-                      <button type="button" onClick={() => setModelMode("plus")} className={cn("rounded px-2 py-1 text-xs transition-colors", modelMode === "plus" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>标准</button>
-                      <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>快速 ⚡</button>
+                      <button type="button" onClick={() => { setQueryMode("superfast"); setUseBm25(false); setUseGraphRag(false); }} className={cn("rounded px-2 py-1 text-xs transition-colors", queryMode === "superfast" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>⚡ 超速（默认）</button>
+                      <button type="button" onClick={() => { setQueryMode("accurate"); setUseBm25(true); }} className={cn("rounded px-2 py-1 text-xs transition-colors", queryMode === "accurate" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🎯 精准 (~10s)</button>
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">自动：默认标准模式（qwen-plus）；快速：qwen-turbo（更快，质量略低）。</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground">超速：turbo + 纯向量检索，3-5秒；精准：plus + BM25混合检索，约10秒。</p>
                   </div>
                   <div className="rounded-md border p-3">
                     <div className="mb-2 text-xs font-medium text-muted-foreground">索引覆盖检查</div>
@@ -4078,13 +4077,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <Switch checked={useGraphRag} onCheckedChange={setUseGraphRag} />
                     </div>
                     <p className="text-[11px] text-cyan-300/60">开启后通过知识图谱实体关联扩展检索上下文，适合跨文档关联查询。</p>
-                    <div className="mt-1 text-xs font-medium text-cyan-300/80">模型选择</div>
+                    <div className="mt-1 text-xs font-medium text-cyan-300/80">速度模式</div>
                     <div className="grid grid-cols-2 gap-1">
-                      <button type="button" onClick={() => setModelMode("auto")} className={cn("col-span-2 rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "auto" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🤖 自动（推荐）</button>
-                      <button type="button" onClick={() => setModelMode("plus")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "plus" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>标准</button>
-                      <button type="button" onClick={() => setModelMode("turbo")} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", modelMode === "turbo" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>快速 ⚡</button>
+                      <button type="button" onClick={() => { setQueryMode("superfast"); setUseBm25(false); setUseGraphRag(false); }} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", queryMode === "superfast" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>⚡ 超速（默认）</button>
+                      <button type="button" onClick={() => { setQueryMode("accurate"); setUseBm25(true); }} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", queryMode === "accurate" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🎯 精准 (~10s)</button>
                     </div>
-                    <p className="text-[11px] text-cyan-300/60">自动：默认标准模式（qwen-plus）；快速：qwen-turbo（更快，质量略低）。</p>
+                    <p className="text-[11px] text-cyan-300/60">超速：turbo + 纯向量检索，3-5秒；精准：plus + BM25混合检索，约10秒。</p>
                     <div className="mt-1 text-xs font-medium text-cyan-300/80">索引覆盖检查</div>
                     <div className="flex gap-1.5">
                       <button
