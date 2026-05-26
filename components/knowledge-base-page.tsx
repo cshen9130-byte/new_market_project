@@ -1702,6 +1702,23 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  async function handleStartEmbed() {
+    const scope = selectedFolder || ""
+    try {
+      const res = await fetch("/api/knowledge-base/embed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ folderPath: scope || null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || res.statusText)
+      // Start polling embed status progress bar
+      startEmbedTracking(scope)
+    } catch (e: any) {
+      alert(`向量化启动失败：${e?.message || e}`)
+    }
+  }
+
   function handleDownloadConversation() {
     const userMessages = chatMessages.filter((m) => m.role === "user")
     if (userMessages.length === 0) return
@@ -3331,14 +3348,24 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   </div>
                   <div className="rounded-md border p-3">
                     <div className="mb-2 text-xs font-medium text-muted-foreground">索引覆盖检查</div>
-                    <button
-                      type="button"
-                      onClick={() => void handleCheckIndexCoverage()}
-                      disabled={indexInfoLoading}
-                      className="w-full rounded border px-2 py-1.5 text-xs transition-colors hover:bg-muted disabled:opacity-50"
-                    >
-                      {indexInfoLoading ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />检查中...</> : "检查嵌入状态"}
-                    </button>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void handleCheckIndexCoverage()}
+                        disabled={indexInfoLoading}
+                        className="flex-1 rounded border px-2 py-1.5 text-xs transition-colors hover:bg-muted disabled:opacity-50"
+                      >
+                        {indexInfoLoading ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />检查中...</> : "检查状态"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleStartEmbed()}
+                        title={`向量化「${selectedFolder || "全部资料"}」`}
+                        className="flex-1 rounded border border-primary/40 bg-primary/5 px-2 py-1.5 text-xs text-primary transition-colors hover:bg-primary/10"
+                      >
+                        向量化
+                      </button>
+                    </div>
                     {indexInfo && (
                       <div className="mt-2 space-y-1.5 text-[11px]">
                         {indexInfo.diskIndex.exists ? (
@@ -3800,14 +3827,24 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     </div>
                     <p className="text-[11px] text-cyan-300/60">自动：默认标准模式（qwen-plus）；快速：qwen-turbo（更快，质量略低）。</p>
                     <div className="mt-1 text-xs font-medium text-cyan-300/80">索引覆盖检查</div>
-                    <button
-                      type="button"
-                      onClick={() => void handleCheckIndexCoverage()}
-                      disabled={indexInfoLoading}
-                      className="w-full rounded-lg border border-cyan-500/20 bg-black/20 px-2 py-1.5 text-xs text-cyan-300/80 transition-colors hover:bg-cyan-500/10 disabled:opacity-50"
-                    >
-                      {indexInfoLoading ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />检查中...</> : "检查嵌入状态"}
-                    </button>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => void handleCheckIndexCoverage()}
+                        disabled={indexInfoLoading}
+                        className="flex-1 rounded-lg border border-cyan-500/20 bg-black/20 px-2 py-1.5 text-xs text-cyan-300/80 transition-colors hover:bg-cyan-500/10 disabled:opacity-50"
+                      >
+                        {indexInfoLoading ? <><LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />检查中...</> : "检查状态"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleStartEmbed()}
+                        title={`向量化「${selectedFolder || "全部资料"}」`}
+                        className="flex-1 rounded-lg border border-cyan-400/40 bg-cyan-500/10 px-2 py-1.5 text-xs text-cyan-300 transition-colors hover:bg-cyan-500/20"
+                      >
+                        向量化
+                      </button>
+                    </div>
                     {indexInfo && (
                       <div className="space-y-1 text-[11px]">
                         {indexInfo.diskIndex.exists ? (

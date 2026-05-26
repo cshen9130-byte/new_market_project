@@ -38,9 +38,9 @@ export async function POST(req: Request) {
         ),
       )
 
-      // Start tracked background embedding (both folder scope and root)
+      // Start tracked background embedding for the target folder only.
+      // Root scope is rebuilt lazily (incrementally) on next chat query.
       startEmbedJob(folderPath)
-      if (folderPath) startEmbedJob("")
 
       return NextResponse.json({ ok: true, files: savedFiles })
     }
@@ -56,9 +56,9 @@ export async function POST(req: Request) {
       ownerName: currentUser.name,
       ownerEmail: currentUser.email,
     })
-    // Start tracked background embedding (both folder scope and root)
+    // Start tracked background embedding for the target folder only.
+    // Root scope is rebuilt lazily (incrementally) on next chat query.
     startEmbedJob(folderPath)
-    if (folderPath) startEmbedJob("")
     return NextResponse.json({ ok: true, file: savedFile })
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
