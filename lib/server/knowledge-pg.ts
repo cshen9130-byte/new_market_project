@@ -191,13 +191,16 @@ function parseVec(v: unknown): number[] {
 
 // ── Chunk CRUD ────────────────────────────────────────────────────────────────
 
-/** Load file fingerprints (size + updatedAt) for all distinct sources in a scope. */
+/** Load file fingerprints (size + updatedAt) for all distinct sources in a scope.
+ * When scope is '' (root), aggregates across ALL scopes so root queries see every indexed file. */
 export async function pgLoadFingerprints(scope: string): Promise<Record<string, FileFingerprint>> {
   await pgEnsureSchema()
+  const isRoot = scope === ''
   const rows = await dbQuery<{ source: string; file_size: string; file_updated_at: string }>(
-    `SELECT DISTINCT ON (source) source, file_size, file_updated_at
-       FROM kb_chunks WHERE scope = $1`,
-    [scope],
+    isRoot
+      ? `SELECT DISTINCT ON (source) source, file_size, file_updated_at FROM kb_chunks ORDER BY source, id DESC`
+      : `SELECT DISTINCT ON (source) source, file_size, file_updated_at FROM kb_chunks WHERE scope = $1`,
+    isRoot ? [] : [scope],
   )
   const map: Record<string, FileFingerprint> = {}
   for (const row of rows) {
@@ -206,12 +209,16 @@ export async function pgLoadFingerprints(scope: string): Promise<Record<string, 
   return map
 }
 
-/** Count total chunks in a scope. */
+/** Count total chunks in a scope.
+ * When scope is '' (root), counts across ALL scopes. */
 export async function pgCountChunks(scope: string): Promise<number> {
   await pgEnsureSchema()
+  const isRoot = scope === ''
   const rows = await dbQuery<{ n: string }>(
-    `SELECT COUNT(*) AS n FROM kb_chunks WHERE scope = $1`,
-    [scope],
+    isRoot
+      ? `SELECT COUNT(*) AS n FROM kb_chunks`
+      : `SELECT COUNT(*) AS n FROM kb_chunks WHERE scope = $1`,
+    isRoot ? [] : [scope],
   )
   return Number(rows[0]?.n ?? 0)
 }
@@ -226,10 +233,13 @@ export async function pgLoadRows(
 ): Promise<MemoryVectorRow[]> {
   await pgEnsureSchema()
   const withVec = opts?.includeEmbeddings !== false
+  const isRoot = scope === ''
   const cols = withVec ? "content, metadata, embedding" : "content, metadata"
   const rows = await dbQuery<{ content: string; metadata: Record<string, unknown>; embedding?: unknown }>(
-    `SELECT ${cols} FROM kb_chunks WHERE scope = $1 ORDER BY id`,
-    [scope],
+    isRoot
+      ? `SELECT ${cols} FROM kb_chunks ORDER BY id`
+      : `SELECT ${cols} FROM kb_chunks WHERE scope = $1 ORDER BY id`,
+    isRoot ? [] : [scope],
   )
   return rows.map((r) => ({
     content: r.content,
@@ -310,20 +320,27 @@ export async function pgUpsertFileChunks(
   }
 }
 
-/** PG HNSW cosine-similarity search. Returns top-k chunks closest to the query vector. */
+/** PG HNSW cosine-similarity search. Returns top-k chunks closest to the query vector.
+ * When scope is '' (root), searches across ALL scopes. */
 export async function pgVectorSearch(
   scope: string,
   queryVector: number[],
   topK: number,
 ): Promise<Array<{ content: string; metadata: Record<string, unknown>; score: number }>> {
   await pgEnsureSchema()
+  const isRoot = scope === ''
   const rows = await dbQuery<{ content: string; metadata: Record<string, unknown>; score: string }>(
-    `SELECT content, metadata, (1 - (embedding <=> $1::vector)) AS score
-       FROM kb_chunks
-      WHERE scope = $2
-      ORDER BY embedding <=> $1::vector
-      LIMIT $3`,
-    [vecToString(queryVector), scope, topK],
+    isRoot
+      ? `SELECT content, metadata, (1 - (embedding <=> $1::vector)) AS score
+           FROM kb_chunks
+          ORDER BY embedding <=> $1::vector
+          LIMIT $2`
+      : `SELECT content, metadata, (1 - (embedding <=> $1::vector)) AS score
+           FROM kb_chunks
+          WHERE scope = $2
+          ORDER BY embedding <=> $1::vector
+          LIMIT $3`,
+    isRoot ? [vecToString(queryVector), topK] : [vecToString(queryVector), scope, topK],
   )
   return rows.map((r) => ({
     content: r.content,
@@ -332,7 +349,8 @@ export async function pgVectorSearch(
   }))
 }
 
-/** Return index metadata for a scope without loading any vector data. */
+/** Return index metadata for a scope without loading any vector data.
+ * When scope is '' (root), aggregates stats across ALL scopes. */
 export async function pgGetIndexInfo(scope: string): Promise<{
   exists: boolean
   indexedDocuments: number
@@ -342,12 +360,14 @@ export async function pgGetIndexInfo(scope: string): Promise<{
   indexedFiles: string[]
 }> {
   await pgEnsureSchema()
+  const isRoot = scope === ''
 
   // Get overall stats
   const stats = await dbQuery<{ n: string; updated_at: string; model: string }>(
-    `SELECT COUNT(*) AS n, MAX(created_at)::text AS updated_at, MIN(model) AS model
-       FROM kb_chunks WHERE scope = $1`,
-    [scope],
+    isRoot
+      ? `SELECT COUNT(*) AS n, MAX(created_at)::text AS updated_at, MIN(model) AS model FROM kb_chunks`
+      : `SELECT COUNT(*) AS n, MAX(created_at)::text AS updated_at, MIN(model) AS model FROM kb_chunks WHERE scope = $1`,
+    isRoot ? [] : [scope],
   )
   const total = Number(stats[0]?.n ?? 0)
   if (!total) {
@@ -356,8 +376,10 @@ export async function pgGetIndexInfo(scope: string): Promise<{
 
   // Get distinct source list
   const sources = await dbQuery<{ source: string }>(
-    `SELECT DISTINCT source FROM kb_chunks WHERE scope = $1 ORDER BY source`,
-    [scope],
+    isRoot
+      ? `SELECT DISTINCT source FROM kb_chunks ORDER BY source`
+      : `SELECT DISTINCT source FROM kb_chunks WHERE scope = $1 ORDER BY source`,
+    isRoot ? [] : [scope],
   )
 
   return {
