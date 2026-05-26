@@ -472,7 +472,7 @@ async function getOrBuildVectorStore(
               const is429 = classified.message.includes("429") || classified.message.includes("频率超限")
               if (is429 && attempt === 0) {
                 attempt++
-                await new Promise((r) => setTimeout(r, 60_000))
+                await new Promise((r) => setTimeout(r, 30_000))
                 continue
               }
               throw classified
@@ -481,7 +481,7 @@ async function getOrBuildVectorStore(
         }
         onProgress?.(i + 1, changedDocs.length, doc.relativePath)
         // Small inter-file pause to reduce sustained API pressure
-        if (i < changedDocs.length - 1) await new Promise((r) => setTimeout(r, 300))
+        if (i < changedDocs.length - 1) await new Promise((r) => setTimeout(r, 100))
       }
     }
 
@@ -888,6 +888,8 @@ export function startEmbedJob(folderPath?: string | null) {
   }
   jobs.set(key, job)
   void (async () => {
+    job.status = "running"
+    job.message = "正在读取文件..."
     try {
       const result = await getOrBuildVectorStore(normalized, (done, total, file) => {
         job.status = "running"
