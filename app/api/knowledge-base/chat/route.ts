@@ -42,6 +42,7 @@ export async function POST(req: Request) {
               useBm25: body?.useBm25 !== false,
               useGraphRag: body?.useGraphRag === true,
               modelMode,
+              deepSearch: body?.deepSearch === true,
             })
             for await (const event of gen) {
               if (event.type === "text") {
@@ -100,6 +101,7 @@ export async function POST(req: Request) {
       useBm25: body?.useBm25 !== false,
       useGraphRag: body?.useGraphRag === true,
       modelMode,
+      deepSearch: body?.deepSearch === true,
     })
 
     if (effectiveConversationId && user) {

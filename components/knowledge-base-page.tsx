@@ -608,7 +608,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [showSettingsSidebar, setShowSettingsSidebar] = useState(false)
   const [useBm25, setUseBm25] = useState(false)
   const [useGraphRag, setUseGraphRag] = useState(false)
-  const [queryMode, setQueryMode] = useState<"superfast" | "accurate">("superfast")
+  const [queryMode, setQueryMode] = useState<"superfast" | "accurate" | "deep">("superfast")
   const abortControllerRef = useRef<AbortController | null>(null)
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState("")
@@ -1921,6 +1921,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           useGraphRag,
           stream: true,
           modelMode: queryMode === "superfast" ? "turbo" : "plus",
+          deepSearch: queryMode === "deep",
           conversationId: convId,
           title: selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料"),
           fileName: selectedDocument?.name,
@@ -3555,11 +3556,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   </div>
                   <div className="rounded-md border p-3">
                     <div className="mb-2 text-xs font-medium text-muted-foreground">速度模式</div>
-                    <div className="grid grid-cols-2 gap-1">
+                    <div className="grid grid-cols-3 gap-1">
                       <button type="button" onClick={() => { setQueryMode("superfast"); setUseBm25(false); setUseGraphRag(false); }} className={cn("rounded px-2 py-1 text-xs transition-colors", queryMode === "superfast" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>⚡ 超速（默认）</button>
                       <button type="button" onClick={() => { setQueryMode("accurate"); setUseBm25(true); }} className={cn("rounded px-2 py-1 text-xs transition-colors", queryMode === "accurate" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🎯 精准 (~10s)</button>
+                      <button type="button" onClick={() => { setQueryMode("deep"); setUseBm25(true); }} className={cn("rounded px-2 py-1 text-xs transition-colors", queryMode === "deep" ? "bg-primary text-primary-foreground" : "border hover:bg-muted")}>🔬 全面扫描</button>
                     </div>
-                    <p className="mt-2 text-[11px] text-muted-foreground">超速：turbo + 纯向量检索，3-5秒；精准：plus + BM25混合检索，约10秒。</p>
+                    <p className="mt-2 text-[11px] text-muted-foreground">超速：turbo+纯向量，3-5秒；精准：plus+BM25，约10秒；全面扫描：深度top-20检索，适合"列举全部"。</p>
                   </div>
                   <div className="rounded-md border p-3">
                     <div className="mb-2 text-xs font-medium text-muted-foreground">索引覆盖检查</div>
@@ -4078,11 +4080,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     </div>
                     <p className="text-[11px] text-cyan-300/60">开启后通过知识图谱实体关联扩展检索上下文，适合跨文档关联查询。</p>
                     <div className="mt-1 text-xs font-medium text-cyan-300/80">速度模式</div>
-                    <div className="grid grid-cols-2 gap-1">
+                    <div className="grid grid-cols-3 gap-1">
                       <button type="button" onClick={() => { setQueryMode("superfast"); setUseBm25(false); setUseGraphRag(false); }} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", queryMode === "superfast" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>⚡ 超速（默认）</button>
                       <button type="button" onClick={() => { setQueryMode("accurate"); setUseBm25(true); }} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", queryMode === "accurate" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🎯 精准 (~10s)</button>
+                      <button type="button" onClick={() => { setQueryMode("deep"); setUseBm25(true); }} className={cn("rounded-lg border px-2 py-1 text-xs transition-colors", queryMode === "deep" ? "border-cyan-400/60 bg-cyan-500/20 text-cyan-100" : "border-cyan-500/20 bg-black/20 text-cyan-300/60 hover:bg-cyan-500/10")}>🔬 全面扫描</button>
                     </div>
-                    <p className="text-[11px] text-cyan-300/60">超速：turbo + 纯向量检索，3-5秒；精准：plus + BM25混合检索，约10秒。</p>
+                    <p className="text-[11px] text-cyan-300/60">超速：turbo+纯向量，3-5秒；精准：plus+BM25，约10秒；全面扫描：深度top-20检索，适合"列举全部"。</p>
                     <div className="mt-1 text-xs font-medium text-cyan-300/80">索引覆盖检查</div>
                     <div className="flex gap-1.5">
                       <button

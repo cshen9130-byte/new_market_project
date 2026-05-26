@@ -1141,10 +1141,13 @@ async function buildRetrievalContext(input: {
   filePath?: string | null
   useBm25?: boolean
   useGraphRag?: boolean
+  deepSearch?: boolean
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
   const enableBm25 = input.useBm25 !== false
   const enableGraphRag = input.useGraphRag === true
+  const topK = input.deepSearch ? 20 : 4
+  const matchCap = input.deepSearch ? 30 : 8
 
   // ── Single-file mode ──
   if (input.filePath) {
@@ -1181,10 +1184,10 @@ async function buildRetrievalContext(input: {
     index = await getOrBuildVectorStore(folderPath, undefined, { queryOnly: true })
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
     const denseMatches = rows.length > 0
-      ? await index.vectorStore.similaritySearch(question, 4)
-      : await pgVectorSearchDocs(folderPath, question, createIndexEmbeddingsModel(), 4)
+      ? await index.vectorStore.similaritySearch(question, topK)
+      : await pgVectorSearchDocs(folderPath, question, createIndexEmbeddingsModel(), topK)
     const useBm25 = enableBm25 && index.indexedChunks <= KB_QUERY_BM25_MAX_CHUNKS
-    const bm25Matches = useBm25 ? bm25RankChunks(question, rows, index.bm25Index, 4) : []
+    const bm25Matches = useBm25 ? bm25RankChunks(question, rows, index.bm25Index, topK) : []
     const seedDocs = [...denseMatches, ...bm25Matches]
 
     // Collect seed chunk indices (positions in the rows array) for graph expansion
@@ -1201,7 +1204,7 @@ async function buildRetrievalContext(input: {
     const merged = [...seedDocs]
     // Graph RAG expansion: 1-hop traversal via shared entities
     if (enableGraphRag && seedIndices.length > 0) {
-      const graphExpanded = graphExpandContext(question, rows, seedIndices, index.graphIndex, 4)
+      const graphExpanded = graphExpandContext(question, rows, seedIndices, index.graphIndex, topK)
       merged.push(...graphExpanded)
     }
 
@@ -1212,7 +1215,7 @@ async function buildRetrievalContext(input: {
       if (seen.has(key)) continue
       seen.add(key)
       matches.push(m)
-      if (matches.length >= 8) break
+      if (matches.length >= matchCap) break
     }
   } catch (error: any) {
     const msg = String(error?.message || error)
@@ -1265,6 +1268,7 @@ export async function askKnowledgeBaseQuestion(input: {
   useBm25?: boolean
   useGraphRag?: boolean
   modelMode?: KbModelMode
+  deepSearch?: boolean
 }) {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
@@ -1295,6 +1299,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
   useBm25?: boolean
   useGraphRag?: boolean
   modelMode?: KbModelMode
+  deepSearch?: boolean
 }): AsyncGenerator<
   | { type: "phase"; phase: "searching" | "generating" }
   | { type: "text"; delta: string; modelId?: string }
