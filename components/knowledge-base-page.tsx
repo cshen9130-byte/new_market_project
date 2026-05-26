@@ -519,6 +519,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [question, setQuestion] = useState("")
   const [chatLoading, setChatLoading] = useState(false)
   const [chatElapsed, setChatElapsed] = useState(0)
+  const [chatPhase, setChatPhase] = useState<"searching" | "generating" | null>(null)
   const chatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const userScrolledRef = useRef(false)
   const [previewScrollToken, setPreviewScrollToken] = useState(0)
@@ -1896,6 +1897,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     setQuestion("")
     userScrolledRef.current = false
     setChatElapsed(0)
+    setChatPhase(null)
     setChatLoading(true)
     chatTimerRef.current = setInterval(() => setChatElapsed(s => s + 1), 1000)
 
@@ -1955,7 +1957,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           let event: { type: string; delta?: string; modelId?: string; model?: string; sources?: string[]; conversationId?: string; message?: string } | null = null
           try { event = JSON.parse(jsonStr) } catch { continue }
           if (!event) continue
-          if (event.type === "text" && event.delta) {
+          if (event.type === "phase") {
+            setChatPhase((event as any).phase)
+          } else if (event.type === "text" && event.delta) {
             if (event.modelId && !capturedModel) {
               capturedModel = event.modelId
             }
@@ -2002,6 +2006,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     } finally {
       if (chatTimerRef.current) { clearInterval(chatTimerRef.current); chatTimerRef.current = null }
       setChatLoading(false)
+      setChatPhase(null)
       abortControllerRef.current = null
     }
   }
@@ -3663,8 +3668,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   {chatLoading && !(chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === "assistant") && (
                     <div className="rounded-lg bg-muted/30 px-4 py-3 text-sm text-muted-foreground shadow-sm">
                       <LoaderCircle className="mr-2 inline h-4 w-4 animate-spin" />
-                      正在检索文档并生成回答...
+                      {chatPhase === "searching" ? "正在检索本地知识库..." : chatPhase === "generating" ? "正在生成回答..." : "正在检索文档并生成回答..."}
                       <span className="ml-2 tabular-nums">{chatElapsed}s</span>
+                      {chatPhase && (
+                        <span className="ml-2 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                          {chatPhase === "searching" ? "🔍 本地检索" : "☁️ 云端生成"}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -4169,8 +4179,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     {chatLoading && !(chatMessages.length > 0 && chatMessages[chatMessages.length - 1].role === "assistant") && (
                       <div className="rounded-2xl border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-50">
                         <LoaderCircle className="mr-2 inline h-4 w-4 animate-spin" />
-                        正在检索文档并生成回答...
+                        {chatPhase === "searching" ? "正在检索本地知识库..." : chatPhase === "generating" ? "正在生成回答..." : "正在检索文档并生成回答..."}
                         <span className="ml-2 tabular-nums opacity-70">{chatElapsed}s</span>
+                        {chatPhase && (
+                          <span className="ml-2 rounded-full bg-cyan-500/20 px-2 py-0.5 text-xs font-medium text-cyan-300">
+                            {chatPhase === "searching" ? "🔍 本地检索" : "☁️ 云端生成"}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>

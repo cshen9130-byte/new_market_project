@@ -15,6 +15,7 @@ import {
   PG_GRAPH_MAX,
   pgLoadFingerprints,
   pgCountChunks,
+  pgCountDocuments,
   pgLoadRows,
   pgDeleteChunksBySource,
   pgDeleteScopeChunks,
@@ -292,9 +293,13 @@ const MODEL_IDS: Record<Exclude<KbModelMode, "auto">, string> = {
   turbo: "qwen-turbo",
 }
 
+const KB_QUERY_BM25_MAX_CHUNKS = Number(process.env.KB_QUERY_BM25_MAX_CHUNKS || 12000)
+const KB_AUTO_TURBO_CHUNK_THRESHOLD = Number(process.env.KB_AUTO_TURBO_CHUNKS || 12000)
+
 /** Returns the DashScope model ID to use given the mode. */
-export function selectModelForQuestion(mode: KbModelMode): string {
+export function selectModelForQuestion(mode: KbModelMode, indexedChunks = 0): string {
   if (mode === "turbo") return MODEL_IDS.turbo
+  if (mode === "auto" && indexedChunks >= KB_AUTO_TURBO_CHUNK_THRESHOLD) return MODEL_IDS.turbo
   return MODEL_IDS.plus
 }
 
@@ -396,12 +401,65 @@ function fingerprintChanged(next: FileFingerprint | undefined, prev: FileFingerp
 async function getOrBuildVectorStore(
   folderPath: string,
   onProgress?: (done: number, total: number, file: string) => void,
+  options?: { queryOnly?: boolean },
 ) {
   const normalizedFolderPath = normalizeKnowledgeBasePath(folderPath)
   const cacheKey = normalizedFolderPath || "__root__"
   const scopeKey = normalizedFolderPath || ""
 
   return withScopeLock(cacheKey, async () => {
+    const cache = getKnowledgeBaseIndexCache()
+    const inMemory = cache.get(cacheKey)
+
+    // Query path: avoid re-reading every source file on each question.
+    // We trust explicit sync/vectorize actions to refresh PG data.
+    if (options?.queryOnly) {
+      if (inMemory) return inMemory
+
+      const totalChunks = await pgCountChunks(scopeKey)
+      if (!totalChunks) {
+        throw new Error("当前文件夹没有可用于问答的文档。支持 txt、md、json、csv、html、pdf。")
+      }
+
+      const needEmbeddings = totalChunks <= PG_VECTOR_IN_MEM_MAX
+      const needContentRows = totalChunks <= Math.max(PG_BM25_MAX, PG_GRAPH_MAX)
+
+      let mergedRows: MemoryVectorRow[] = []
+      if (needEmbeddings) {
+        mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: true })
+      } else if (needContentRows) {
+        mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: false })
+      }
+
+      const vectorStore = needEmbeddings
+        ? createVectorStoreFromRows(mergedRows)
+        : createVectorStoreFromRows([])
+
+      let bm25Index: Bm25PreIndex
+      if (totalChunks <= PG_BM25_MAX) {
+        bm25Index = (await pgLoadBm25Index(scopeKey)) ?? (mergedRows.length > 0 ? buildBm25Index(mergedRows) : EMPTY_BM25_INDEX)
+      } else {
+        bm25Index = EMPTY_BM25_INDEX
+      }
+
+      const graphIndex = totalChunks <= PG_GRAPH_MAX
+        ? ((await pgLoadGraphIndex(scopeKey)) ?? EMPTY_GRAPH_INDEX)
+        : EMPTY_GRAPH_INDEX
+
+      const indexedDocuments = await pgCountDocuments(scopeKey)
+
+      const nextValue: KnowledgeBaseIndexCacheEntry = {
+        signature: `pg:${scopeKey}:${indexedDocuments}:${totalChunks}`,
+        vectorStore,
+        indexedDocuments,
+        indexedChunks: totalChunks,
+        bm25Index,
+        graphIndex,
+      }
+      cache.set(cacheKey, nextValue)
+      return nextValue
+    }
+
     const sourceDocuments = await collectKnowledgeBaseDocuments(normalizedFolderPath)
 
     if (!sourceDocuments.length) {
@@ -410,8 +468,6 @@ async function getOrBuildVectorStore(
 
     const nextFiles = buildFileFingerprintMap(sourceDocuments)
     const nextSignature = computeSignatureFromFiles(nextFiles)
-    const cache = getKnowledgeBaseIndexCache()
-    const inMemory = cache.get(cacheKey)
     if (inMemory && inMemory.signature === nextSignature) {
       return inMemory
     }
@@ -459,7 +515,7 @@ async function getOrBuildVectorStore(
         })
         const chunks = await splitter.splitDocuments([fileDoc])
         if (chunks.length > 0) {
-          // Retry once on 429 with a 60-second backoff before giving up
+          // Retry once on 429 with a short backoff before giving up
           let attempt = 0
           while (true) {
             try {
@@ -1122,12 +1178,13 @@ async function buildRetrievalContext(input: {
   const matches: Document[] = []
 
   try {
-    index = await getOrBuildVectorStore(folderPath)
+    index = await getOrBuildVectorStore(folderPath, undefined, { queryOnly: true })
     const rows = (((index.vectorStore as any).memoryVectors || []) as MemoryVectorRow[])
     const denseMatches = rows.length > 0
       ? await index.vectorStore.similaritySearch(question, 4)
       : await pgVectorSearchDocs(folderPath, question, createIndexEmbeddingsModel(), 4)
-    const bm25Matches = enableBm25 ? bm25RankChunks(question, rows, index.bm25Index, 4) : []
+    const useBm25 = enableBm25 && index.indexedChunks <= KB_QUERY_BM25_MAX_CHUNKS
+    const bm25Matches = useBm25 ? bm25RankChunks(question, rows, index.bm25Index, 4) : []
     const seedDocs = [...denseMatches, ...bm25Matches]
 
     // Collect seed chunk indices (positions in the rows array) for graph expansion
@@ -1212,7 +1269,7 @@ export async function askKnowledgeBaseQuestion(input: {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
   const ctx = await buildRetrievalContext(input)
-  const modelId = selectModelForQuestion(input.modelMode ?? "auto")
+  const modelId = selectModelForQuestion(input.modelMode ?? "auto", ctx.indexedChunks)
   const model = createChatModel(modelId)
   const response = await model.invoke(ctx.messages)
   return {
@@ -1239,6 +1296,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
   useGraphRag?: boolean
   modelMode?: KbModelMode
 }): AsyncGenerator<
+  | { type: "phase"; phase: "searching" | "generating" }
   | { type: "text"; delta: string; modelId?: string }
   | { type: "done"; sources: string[]; indexedDocuments: number; indexedChunks: number; model: string; tokenUsage?: TokenUsage }
 > {
@@ -1247,8 +1305,10 @@ export async function* streamKnowledgeBaseAnswer(input: {
     yield { type: "done", sources: [], indexedDocuments: 0, indexedChunks: 0, model: MODEL_IDS.plus }
     return
   }
+  yield { type: "phase", phase: "searching" }
   const ctx = await buildRetrievalContext(input)
-  const modelId = selectModelForQuestion(input.modelMode ?? "auto")
+  yield { type: "phase", phase: "generating" }
+  const modelId = selectModelForQuestion(input.modelMode ?? "auto", ctx.indexedChunks)
   const model = createChatModel(modelId)
   let capturedUsage: TokenUsage | undefined
 

@@ -223,6 +223,20 @@ export async function pgCountChunks(scope: string): Promise<number> {
   return Number(rows[0]?.n ?? 0)
 }
 
+/** Count distinct indexed source files in a scope.
+ * When scope is '' (root), counts across ALL scopes. */
+export async function pgCountDocuments(scope: string): Promise<number> {
+  await pgEnsureSchema()
+  const isRoot = scope === ''
+  const rows = await dbQuery<{ n: string }>(
+    isRoot
+      ? `SELECT COUNT(DISTINCT source) AS n FROM kb_chunks`
+      : `SELECT COUNT(DISTINCT source) AS n FROM kb_chunks WHERE scope = $1`,
+    isRoot ? [] : [scope],
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
 /**
  * Load all rows for a scope.
  * Pass `{ includeEmbeddings: false }` to skip loading vector data (saves RAM for BM25/Graph).
