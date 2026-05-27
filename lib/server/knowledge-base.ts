@@ -13,6 +13,14 @@ import { getServerStoragePath } from "@/lib/server/storage"
 
 const execFileAsync = promisify(execFile)
 
+/** Race a promise against a timeout; rejects with an Error on timeout. */
+function withExtractTimeout<T>(promise: Promise<T>, ms = 20_000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`文件解析超时 (${ms / 1000}s)`)), ms)),
+  ])
+}
+
 PDFParse.setWorker(getData())
 
 export type KnowledgeBaseDocumentNode = {
@@ -1120,6 +1128,7 @@ async function collectChatDocumentsInDirectory(
   absoluteDir: string,
   relativeDir: string,
   documents: KnowledgeBaseChatDocument[],
+  onScan?: (file: string) => void,
 ) {
   const entries = await fs.readdir(absoluteDir, { withFileTypes: true })
 
@@ -1128,7 +1137,7 @@ async function collectChatDocumentsInDirectory(
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
 
     if (entry.isDirectory()) {
-      await collectChatDocumentsInDirectory(absolutePath, relativePath, documents)
+      await collectChatDocumentsInDirectory(absolutePath, relativePath, documents, onScan)
       continue
     }
 
@@ -1146,11 +1155,13 @@ async function collectChatDocumentsInDirectory(
       continue
     }
 
+    onScan?.(relativePath)
+
     let text: string
     try {
-      text = await readChatDocumentText(absolutePath, extension)
+      text = await withExtractTimeout(readChatDocumentText(absolutePath, extension), 20_000)
     } catch {
-      // Skip unreadable files so the rest of the folder can still be indexed
+      // Skip unreadable or timed-out files so the rest of the folder can still be indexed
       continue
     }
     if (!text.trim()) {
@@ -1166,7 +1177,7 @@ async function collectChatDocumentsInDirectory(
   }
 }
 
-export async function collectKnowledgeBaseDocuments(folderPath = "") {
+export async function collectKnowledgeBaseDocuments(folderPath = "", onScan?: (file: string) => void) {
   const { target } = await resolveKnowledgeBasePath(folderPath)
   const stat = await fs.stat(target)
   if (!stat.isDirectory()) {
@@ -1174,7 +1185,7 @@ export async function collectKnowledgeBaseDocuments(folderPath = "") {
   }
 
   const documents: KnowledgeBaseChatDocument[] = []
-  await collectChatDocumentsInDirectory(target, normalizeKnowledgeBasePath(folderPath), documents)
+  await collectChatDocumentsInDirectory(target, normalizeKnowledgeBasePath(folderPath), documents, onScan)
   documents.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
   return documents
 }

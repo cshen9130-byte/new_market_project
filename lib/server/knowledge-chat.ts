@@ -460,7 +460,9 @@ async function getOrBuildVectorStore(
       return nextValue
     }
 
-    const sourceDocuments = await collectKnowledgeBaseDocuments(normalizedFolderPath)
+    const sourceDocuments = await collectKnowledgeBaseDocuments(normalizedFolderPath, (file) => {
+      onProgress?.(-1, 0, file)
+    })
 
     if (!sourceDocuments.length) {
       throw new Error("当前文件夹没有可用于问答的文档。支持 txt、md、json、csv、html、pdf。")
@@ -949,6 +951,10 @@ export function startEmbedJob(folderPath?: string | null) {
     try {
       const result = await getOrBuildVectorStore(normalized, (done, total, file) => {
         job.status = "running"
+        if (done === -1) {
+          job.message = `正在读取文件: ${file.split("/").pop() ?? file}`
+          return
+        }
         job.totalFiles = total
         job.processedFiles = done
         job.currentFile = file
