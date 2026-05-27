@@ -95,7 +95,7 @@ async function migrateChunkIndex(
 
     // Normalise legacy v1 format (single signature, no files map)
     const scope = data.scope ?? ""
-    const model = data.model ?? process.env.DASHSCOPE_EMBEDDING_MODEL ?? "text-embedding-v3"
+    const model = data.model ?? process.env.DASHSCOPE_EMBEDDING_MODEL ?? "text-embedding-v4"
     const filesMap: Record<string, FileFingerprint> = data.files ?? {}
     const vectors: MemoryVectorRow[] = data.memoryVectors ?? []
 

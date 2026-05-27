@@ -39,7 +39,7 @@ module.exports = {
         DASHSCOPE_BASE_URL:
           process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
         DASHSCOPE_CHAT_MODEL: process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
-        DASHSCOPE_EMBEDDING_MODEL: process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v3",
+        DASHSCOPE_EMBEDDING_MODEL: process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v4",
 
         // PostgreSQL connection string (set by setup_db.sh → .env)
         DATABASE_URL: process.env.DATABASE_URL || "",

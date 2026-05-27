@@ -280,7 +280,7 @@ function getChatModel() {
 }
 
 function getEmbeddingModel() {
-  return process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v3"
+  return process.env.DASHSCOPE_EMBEDDING_MODEL || "text-embedding-v4"
 }
 
 // ── Model catalogue ───────────────────────────────────────────────────────────
