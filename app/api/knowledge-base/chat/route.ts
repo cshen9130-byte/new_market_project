@@ -25,7 +25,7 @@ export async function POST(req: Request) {
       effectiveConversationId = created.id
     }
 
-    const validModes: KbModelMode[] = ["auto", "plus", "turbo", "reasoning"]
+    const validModes: KbModelMode[] = ["auto", "plus", "turbo", "max"]
     const modelMode: KbModelMode = validModes.includes(body?.modelMode) ? body.modelMode : "auto"
 
     // ── Streaming path (SSE) ───────────────────────────────────────────
@@ -43,6 +43,7 @@ export async function POST(req: Request) {
               useGraphRag: body?.useGraphRag === true,
               modelMode,
               deepSearch: body?.deepSearch === true,
+              thinkingSearch: body?.thinkingSearch === true,
             })
             for await (const event of gen) {
               if (event.type === "text") {
@@ -102,6 +103,7 @@ export async function POST(req: Request) {
       useGraphRag: body?.useGraphRag === true,
       modelMode,
       deepSearch: body?.deepSearch === true,
+      thinkingSearch: body?.thinkingSearch === true,
     })
 
     if (effectiveConversationId && user) {

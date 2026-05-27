@@ -286,11 +286,12 @@ function getEmbeddingModel() {
 // ── Model catalogue ───────────────────────────────────────────────────────────
 
 /** Canonical IDs accepted by both frontend and API route. */
-export type KbModelMode = "auto" | "plus" | "turbo"
+export type KbModelMode = "auto" | "plus" | "turbo" | "max"
 
 const MODEL_IDS: Record<Exclude<KbModelMode, "auto">, string> = {
   plus: "qwen-plus",
   turbo: "qwen-turbo",
+  max: "qwen-max",
 }
 
 const KB_QUERY_BM25_MAX_CHUNKS = Number(process.env.KB_QUERY_BM25_MAX_CHUNKS || 12000)
@@ -298,6 +299,7 @@ const KB_AUTO_TURBO_CHUNK_THRESHOLD = Number(process.env.KB_AUTO_TURBO_CHUNKS ||
 
 /** Returns the DashScope model ID to use given the mode. */
 export function selectModelForQuestion(mode: KbModelMode, indexedChunks = 0): string {
+  if (mode === "max") return MODEL_IDS.max
   if (mode === "turbo") return MODEL_IDS.turbo
   if (mode === "auto" && indexedChunks >= KB_AUTO_TURBO_CHUNK_THRESHOLD) return MODEL_IDS.turbo
   return MODEL_IDS.plus
@@ -1148,12 +1150,13 @@ async function buildRetrievalContext(input: {
   useBm25?: boolean
   useGraphRag?: boolean
   deepSearch?: boolean
+  thinkingSearch?: boolean
 }): Promise<RetrievalContext> {
   const question = input.question.trim()
   const enableBm25 = input.useBm25 !== false
   const enableGraphRag = input.useGraphRag === true
-  const topK = input.deepSearch ? 20 : 4
-  const matchCap = input.deepSearch ? 30 : 8
+  const topK = input.thinkingSearch ? 40 : input.deepSearch ? 20 : 4
+  const matchCap = input.thinkingSearch ? 60 : input.deepSearch ? 30 : 8
 
   // ── Single-file mode ──
   if (input.filePath) {
@@ -1275,6 +1278,7 @@ export async function askKnowledgeBaseQuestion(input: {
   useGraphRag?: boolean
   modelMode?: KbModelMode
   deepSearch?: boolean
+  thinkingSearch?: boolean
 }) {
   const question = input.question.trim()
   if (!question) throw new Error("请输入问题")
@@ -1306,6 +1310,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
   useGraphRag?: boolean
   modelMode?: KbModelMode
   deepSearch?: boolean
+  thinkingSearch?: boolean
 }): AsyncGenerator<
   | { type: "phase"; phase: "searching" | "generating" }
   | { type: "text"; delta: string; modelId?: string }
@@ -1313,7 +1318,7 @@ export async function* streamKnowledgeBaseAnswer(input: {
 > {
   const question = input.question.trim()
   if (!question) {
-    yield { type: "done", sources: [], indexedDocuments: 0, indexedChunks: 0, model: MODEL_IDS.plus }
+    yield { type: "done", sources: [], indexedDocuments: 0, indexedChunks: 0, model: selectModelForQuestion(input.modelMode ?? "auto", 0) }
     return
   }
   yield { type: "phase", phase: "searching" }
