@@ -21,7 +21,7 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, error: "缺少文件路径" }, { status: 400 })
     }
 
-    await setKnowledgeBaseEntryLocked(relativePath, locked, currentUser.id, currentUser.role === "admin")
+    await setKnowledgeBaseEntryLocked(relativePath, locked, currentUser.id, currentUser.role === "admin", { name: currentUser.name, email: currentUser.email })
 
     return NextResponse.json({ ok: true, locked })
   } catch (error: any) {

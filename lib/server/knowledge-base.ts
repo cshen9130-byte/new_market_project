@@ -1199,7 +1199,13 @@ export async function collectKnowledgeBaseDocuments(folderPath = "", onScan?: (f
   return documents
 }
 
-export async function setKnowledgeBaseEntryLocked(relativePath: string, locked: boolean, actorUserId: string, isAdmin = false) {
+export async function setKnowledgeBaseEntryLocked(
+  relativePath: string,
+  locked: boolean,
+  actorUserId: string,
+  isAdmin = false,
+  actorMeta?: { name?: string; email?: string },
+) {
   const normalizedPath = normalizeKnowledgeBasePath(relativePath)
   if (!normalizedPath) {
     throw new Error("缺少路径")
@@ -1219,7 +1225,19 @@ export async function setKnowledgeBaseEntryLocked(relativePath: string, locked: 
   }
 
   if (!existing) {
-    throw new Error("无法锁定没有归属信息的文件")
+    // No ownership record yet — create one on the fly so the lock can be applied
+    const newRecord: KnowledgeBaseOwnershipRecord = {
+      relativePath: normalizedPath,
+      entryType: normalizedPath.includes(".") ? "file" : "folder",
+      ownerId: actorUserId,
+      ownerName: actorMeta?.name ?? actorUserId,
+      ownerEmail: actorMeta?.email,
+      uploadedAt: new Date().toISOString(),
+      locked,
+    }
+    records.push(newRecord)
+    await writeOwnershipRecords(records)
+    return
   }
 
   records[existingIndex] = { ...existing, locked }
