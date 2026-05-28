@@ -184,6 +184,13 @@ type KnowledgeBaseUploadResponse = {
   files?: DocumentNode[]
 }
 
+type BatchUploadIssue = {
+  relativePath: string
+  reason: string
+}
+
+const BATCH_UPLOAD_MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024 // 1 GB
+
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
@@ -216,6 +223,17 @@ function formatEta(seconds: number | null) {
   const minutes = Math.floor(seconds / 60)
   const remainSeconds = Math.ceil(seconds % 60)
   return `${minutes} 分 ${remainSeconds} 秒`
+}
+
+function normalizeUploadErrorMessage(errorLike: unknown) {
+  const text = String((errorLike as any)?.message || errorLike || "上传失败")
+  if (/413|Request Entity Too Large/i.test(text)) {
+    return "文件过大，超过服务器允许上传大小"
+  }
+  if (/401|403/.test(text)) {
+    return "没有上传权限，请重新登录后重试"
+  }
+  return text
 }
 
 function truncateMiddle(value: string, maxLength = 44) {
@@ -525,6 +543,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [batchUploadSummary, setBatchUploadSummary] = useState("")
   const [batchUploadSpeedMBps, setBatchUploadSpeedMBps] = useState(0)
   const [batchUploadEtaSeconds, setBatchUploadEtaSeconds] = useState<number | null>(null)
+  const [batchUploadIssues, setBatchUploadIssues] = useState<BatchUploadIssue[]>([])
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   type ExplorerSortKey = "name" | "updatedAt" | "typeLabel" | "size" | "ownerName"
@@ -1035,6 +1054,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       return
     }
 
+    const issues: BatchUploadIssue[] = []
+    setBatchUploadIssues([])
+
     const serverFileMap = new Map<string, number>(
       collectDocumentsInFolder(findFolderByPath(tree, resolvedTarget)).map((sf) => {
         const relPath = sf.relativePath.startsWith(resolvedTarget + "/")
@@ -1053,6 +1075,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     if (duplicateEntries.length > 0) {
       const duplicateKeySet = new Set(duplicateEntries.map((entry) => `${entry.relativePath}::${entry.file.size}`))
       uploadEntries = entries.filter((entry) => !duplicateKeySet.has(`${entry.relativePath}::${entry.file.size}`))
+      for (const entry of duplicateEntries) {
+        issues.push({ relativePath: entry.relativePath, reason: "重复文件（同路径且大小一致），已跳过" })
+      }
       const duplicatePreview = duplicateEntries
         .slice(0, 6)
         .map((entry) => `- ${entry.relativePath}`)
@@ -1069,11 +1094,37 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       }
     }
 
+    const oversizedEntries = uploadEntries.filter((entry) => entry.file.size > BATCH_UPLOAD_MAX_FILE_SIZE_BYTES)
+    if (oversizedEntries.length > 0) {
+      const oversizedPreview = oversizedEntries
+        .slice(0, 6)
+        .map((entry) => `- ${entry.relativePath} (${formatFileSize(entry.file.size)})`)
+        .join("\n")
+      const previewTail = oversizedEntries.length > 6 ? `\n- ... 还有 ${oversizedEntries.length - 6} 个` : ""
+      const confirmedSkipOversized = window.confirm(
+        `检测到 ${oversizedEntries.length} 个文件超过单文件大小限制（${formatFileSize(BATCH_UPLOAD_MAX_FILE_SIZE_BYTES)}）。\n\n${oversizedPreview}${previewTail}\n\n是否跳过这些文件并继续上传其他文件？`,
+      )
+      if (!confirmedSkipOversized) {
+        setBatchUploadSummary("已取消上传：存在超大文件")
+        setBatchUploadProgress(0)
+        return
+      }
+      const oversizedKeySet = new Set(oversizedEntries.map((entry) => `${entry.relativePath}::${entry.file.size}`))
+      uploadEntries = uploadEntries.filter((entry) => !oversizedKeySet.has(`${entry.relativePath}::${entry.file.size}`))
+      for (const entry of oversizedEntries) {
+        issues.push({
+          relativePath: entry.relativePath,
+          reason: `文件过大（>${formatFileSize(BATCH_UPLOAD_MAX_FILE_SIZE_BYTES)}），已跳过`,
+        })
+      }
+    }
+
     if (!uploadEntries.length) {
-      setBatchUploadSummary(`检测到 ${duplicateEntries.length} 个重复文件，已全部跳过`)
+      setBatchUploadSummary(`没有可上传文件（已跳过 ${issues.length} 个）`)
       setBatchUploadProgress(100)
       setBatchUploadSpeedMBps(0)
       setBatchUploadEtaSeconds(0)
+      setBatchUploadIssues(issues)
       setTimeout(() => {
         setBatchUploadProgress(0)
         setBatchUploadSummary("")
@@ -1091,8 +1142,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       const totalBytes = uploadEntries.reduce((sum, entry) => sum + Math.max(entry.file.size, 1), 0)
       let uploadedBytes = 0
+      let successCount = 0
       const startedAt = Date.now()
-      const preflightHint = duplicateEntries.length > 0 ? `（已跳过重复 ${duplicateEntries.length} 个）` : ""
+      const preflightHint = issues.length > 0 ? `（预先跳过 ${issues.length} 个）` : ""
       updateUploadTelemetry(0, totalBytes, startedAt, `准备上传 ${uploadEntries.length} 个文件${preflightHint}`)
 
       for (let index = 0; index < uploadEntries.length; index += 1) {
@@ -1103,19 +1155,35 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         form.append("relativePaths", entry.relativePath)
         form.append("skipDedup", "true")
 
-        await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
-          const currentLoaded = uploadedBytes + Math.min(loaded, Math.max(entry.file.size, 1))
-          updateUploadTelemetry(currentLoaded, totalBytes, startedAt, `正在上传 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
-        })
+        try {
+          await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
+            const currentLoaded = uploadedBytes + Math.min(loaded, Math.max(entry.file.size, 1))
+            updateUploadTelemetry(currentLoaded, totalBytes, startedAt, `正在上传 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
+          })
+          successCount += 1
+        } catch (uploadError: any) {
+          const reason = normalizeUploadErrorMessage(uploadError)
+          const shouldSkip = window.confirm(
+            `文件上传失败：${entry.relativePath}\n原因：${reason}\n\n是否跳过该文件并继续上传其余文件？`,
+          )
+          if (!shouldSkip) {
+            throw uploadError
+          }
+          issues.push({ relativePath: entry.relativePath, reason: `${reason}（已跳过）` })
+        }
 
         uploadedBytes += Math.max(entry.file.size, 1)
-        updateUploadTelemetry(uploadedBytes, totalBytes, startedAt, `正在上传 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
+        updateUploadTelemetry(uploadedBytes, totalBytes, startedAt, `正在处理 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
       }
 
-      const doneHint = duplicateEntries.length > 0 ? `（已跳过重复 ${duplicateEntries.length} 个）` : ""
-      updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${uploadEntries.length} 个文件${doneHint}，请手动点击“向量化”`)
+      const issueHint = issues.length > 0 ? `，跳过 ${issues.length} 个` : ""
+      updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${successCount} 个文件${issueHint}，请手动点击“向量化”`)
+      setBatchUploadIssues(issues)
       await refreshTree()
     } catch (requestError: any) {
+      if (issues.length > 0) {
+        setBatchUploadIssues(issues)
+      }
       setError(requestError?.message || String(requestError))
     } finally {
       setBatchUploading(false)
@@ -2819,6 +2887,20 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         <div className="text-xs text-muted-foreground">{batchUploadSummary} · {batchUploadProgress}%</div>
                         <div className="text-[11px] text-muted-foreground">
                           上传速度 {batchUploadSpeedMBps.toFixed(2)} MB/s · 预计剩余 {formatEta(batchUploadEtaSeconds)}
+                        </div>
+                      </div>
+                    )}
+                    {batchUploadIssues.length > 0 && (
+                      <div className="space-y-2 rounded-md border border-amber-300/40 bg-amber-50/50 p-3">
+                        <div className="text-xs font-medium text-amber-900">
+                          以下 {batchUploadIssues.length} 个文件未上传（已跳过）
+                        </div>
+                        <div className="max-h-36 space-y-1 overflow-y-auto text-xs text-amber-900">
+                          {batchUploadIssues.map((item, index) => (
+                            <div key={`${item.relativePath}-${index}`} className="break-all">
+                              {index + 1}. {item.relativePath}：{item.reason}
+                            </div>
+                          ))}
                         </div>
                       </div>
                     )}
