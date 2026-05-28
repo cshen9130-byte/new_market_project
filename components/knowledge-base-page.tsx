@@ -2441,11 +2441,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     ]
 
     return (
-      <div className="min-h-[calc(100vh-8rem)]">
+      <div className="min-h-[calc(100vh-8rem)] overflow-x-auto">
         {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div>}
 
-        <ResizablePanelGroup direction="horizontal" className="min-h-[calc(100vh-8rem)] items-start gap-0">
-          <ResizablePanel defaultSize={42} minSize={28} className="min-w-[360px]">
+        <ResizablePanelGroup direction="horizontal" className="min-h-[calc(100vh-8rem)] min-w-[640px] items-start gap-0">
+          <ResizablePanel defaultSize={42} minSize={25} className="min-w-[260px]">
             <section className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden pr-4 lg:pr-6">
             <div ref={traditionalOperationsScrollRef} className="min-h-0 flex-1 overflow-y-auto pr-3">
               <div className="space-y-6 pb-4">
@@ -3398,13 +3398,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
           <ResizableHandle withHandle className="mx-1" />
 
-          <ResizablePanel defaultSize={58} minSize={30}>
+          <ResizablePanel defaultSize={58} minSize={25}>
             <section className="sticky top-0 flex h-[calc(100vh-8rem)] flex-col overflow-hidden pl-4 lg:pl-6">
             {/* Chat panel header */}
             <div className="space-y-2 pb-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold">知识库问答</h2>
-              <div className="flex items-center gap-1">
+              <div className="flex flex-wrap items-center gap-1">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -3465,7 +3465,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
               {/* Conversation history sidebar */}
               {showConvSidebar && (
-                <div className="flex w-52 shrink-0 flex-col gap-2 overflow-hidden border-r pr-3">
+                <div className="flex w-44 xl:w-52 shrink-0 flex-col gap-2 overflow-y-auto border-r pr-3">
                   <Button
                     variant="outline"
                     size="sm"
@@ -3541,7 +3541,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               )}
 
               {showSettingsSidebar && (
-                <div className="flex w-52 shrink-0 flex-col gap-2 overflow-hidden border-r pr-3">
+                <div className="flex w-44 xl:w-52 shrink-0 flex-col gap-2 overflow-y-auto border-r pr-3">
                   <div className="rounded-md border p-3">
                     <div className="mb-2 text-xs font-medium text-muted-foreground">检索设置</div>
                     <div className="flex items-center justify-between gap-2">
@@ -3855,7 +3855,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   当前问答范围：{selectedFolder || "全部资料"}
                 </div>
 
-                <ScrollArea className="h-[460px] rounded-xl border border-cyan-500/15 bg-black/20 p-3">
+                <ScrollArea className="h-[280px] md:h-[380px] xl:h-[460px] rounded-xl border border-cyan-500/15 bg-black/20 p-3">
                   <div className="space-y-3 pr-3">{tree ? renderExplorer("cyber") : <div className="text-sm text-cyan-400/70">暂无资料</div>}</div>
                 </ScrollArea>
               </CardContent>
@@ -3883,7 +3883,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="min-h-[360px] rounded-2xl border border-cyan-500/15 bg-black/30 p-4">
+                <div className="min-h-[260px] lg:min-h-[360px] rounded-2xl border border-cyan-500/15 bg-black/30 p-4">
                   {previewLoading && (
                     <div className="flex h-[320px] items-center justify-center text-cyan-300">
                       <LoaderCircle className="mr-3 h-5 w-5 animate-spin" />
@@ -3892,7 +3892,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   )}
 
                   {!previewLoading && previewMode === "text" && (
-                    <ScrollArea className="h-[320px] rounded-lg bg-black/30 p-3">
+                    <ScrollArea className="h-[200px] lg:h-[280px] rounded-lg bg-black/30 p-3">
                       <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-cyan-100">{previewContent}</pre>
                     </ScrollArea>
                   )}
@@ -3900,14 +3900,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       {!previewLoading && previewMode === "html" && (
                         <iframe
                           srcDoc={previewContent}
-                          className="h-[320px] w-full rounded-lg border border-cyan-500/15 bg-white"
+                          className="h-[200px] lg:h-[280px] w-full rounded-lg border border-cyan-500/15 bg-white"
                           title={selectedDocument?.name || "文档预览"}
                           sandbox=""
                         />
                       )}
 
                   {!previewLoading && previewMode === "image" && selectedDocument && (
-                    <div className="flex h-[320px] items-center justify-center overflow-hidden rounded-lg bg-black/30 p-3">
+                    <div className="flex h-[200px] lg:h-[280px] items-center justify-center overflow-hidden rounded-lg bg-black/30 p-3">
                       <img src={buildFileUrl(selectedDocument.relativePath)} alt={selectedDocument.name} className="max-h-full max-w-full object-contain" />
                     </div>
                   )}
@@ -3916,13 +3916,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <iframe
                       key={selectedDocument.relativePath}
                       src={buildFileUrl(selectedDocument.relativePath)}
-                      className="h-[320px] w-full rounded-lg border border-cyan-500/15 bg-white"
+                      className="h-[200px] lg:h-[280px] w-full rounded-lg border border-cyan-500/15 bg-white"
                       title={selectedDocument.name}
                     />
                   )}
 
                   {!previewLoading && previewMode === "empty" && (
-                    <div className="flex h-[320px] items-center justify-center text-sm text-cyan-400/70">
+                    <div className="flex h-[200px] lg:h-[280px] items-center justify-center text-sm text-cyan-400/70">
                       暂无预览内容。txt、csv、json、Word、Excel 支持文本预览；图片支持直接查看；html、pdf 使用内嵌查看。
                     </div>
                   )}
@@ -3933,47 +3933,49 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
           <Card className="border-cyan-500/20 bg-black/45 shadow-none">
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
                   <CardTitle>知识库问答</CardTitle>
                   <CardDescription>
                     基于 LangChain 检索结构 + DashScope Qwen 聊天模型与 Embeddings。请先在服务器配置 DASHSCOPE_API_KEY。
                   </CardDescription>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
-                  onClick={handleToggleSettingsSidebar}
-                  title="检索设置"
-                >
-                  <Settings2 className="h-4 w-4" />
-                  设置
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
-                  onClick={() => void handleToggleConvSidebar()}
-                  title="对话历史"
-                >
-                  <History className="h-4 w-4" />
-                  历史记录
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
-                  onClick={handleDownloadConversation}
-                  disabled={!chatMessages.some((m) => m.role === "user")}
-                  title="下载当前对话为文本文件"
-                >
-                  <Download className="h-4 w-4" />
-                  分享
-                </Button>
+                <div className="flex flex-wrap items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
+                    onClick={handleToggleSettingsSidebar}
+                    title="检索设置"
+                  >
+                    <Settings2 className="h-4 w-4" />
+                    设置
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
+                    onClick={() => void handleToggleConvSidebar()}
+                    title="对话历史"
+                  >
+                    <History className="h-4 w-4" />
+                    历史记录
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
+                    onClick={handleDownloadConversation}
+                    disabled={!chatMessages.some((m) => m.role === "user")}
+                    title="下载当前对话为文本文件"
+                  >
+                    <Download className="h-4 w-4" />
+                    分享
+                  </Button>
+                </div>
               </div>
             </CardHeader>
-            <CardContent className="flex h-[calc(100vh-15rem)] min-h-[720px] flex-col gap-4">
+            <CardContent className="flex h-[calc(100vh-15rem)] min-h-[480px] lg:min-h-[700px] flex-col gap-4">
               {/* Embed in-progress warning in chat area */}
               {embedJob && (embedJob.status === "queued" || embedJob.status === "running") && (
                 <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-950/20 px-4 py-2.5 text-xs text-amber-300">
@@ -3993,7 +3995,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               {/* Conversation history sidebar + messages */}
               <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
                 {showConvSidebar && (
-                  <div className="flex w-52 shrink-0 flex-col gap-2 overflow-hidden rounded-xl border border-cyan-500/15 bg-black/25 p-2">
+                  <div className="flex w-44 xl:w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-xl border border-cyan-500/15 bg-black/25 p-2">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -4069,7 +4071,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 )}
 
                 {showSettingsSidebar && (
-                  <div className="flex w-52 shrink-0 flex-col gap-2 overflow-hidden rounded-xl border border-cyan-500/15 bg-black/25 p-3">
+                  <div className="flex w-44 xl:w-52 shrink-0 flex-col gap-2 overflow-y-auto rounded-xl border border-cyan-500/15 bg-black/25 p-3">
                     <div className="text-xs font-medium text-cyan-300/80">检索设置</div>
                     <div className="flex items-center justify-between gap-2 rounded-lg border border-cyan-500/20 bg-black/20 px-2 py-2 text-xs">
                       <span>启用 BM25</span>
