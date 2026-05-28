@@ -188,6 +188,7 @@ type KnowledgeBaseUploadResponse = {
   error?: string
   file?: DocumentNode
   files?: DocumentNode[]
+  extractedSkipped?: Array<{ name: string; reason: string }>
 }
 
 type BatchUploadIssue = {
@@ -558,6 +559,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     resolve: (action: UploadFailureAction) => void
   } | null>(null)
   const speedSamplesRef = useRef<Array<{ time: number; bytes: number }>>([])  // sliding-window speed samples
+  const batchUploadAbortRef = useRef(false)  // set to true by the Stop button to cancel ongoing batch upload
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   type ExplorerSortKey = "name" | "updatedAt" | "typeLabel" | "size" | "ownerName"
@@ -1203,7 +1205,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       }
     }
 
-    const oversizedEntries = uploadEntries.filter((entry) => entry.file.size > BATCH_UPLOAD_MAX_FILE_SIZE_BYTES)
+    // ZIP files are treated as containers — their own size doesn't matter, the server
+    // checks each extracted file individually. Exclude ZIPs from the oversized check.
+    const oversizedEntries = uploadEntries.filter(
+      (entry) => entry.file.size > BATCH_UPLOAD_MAX_FILE_SIZE_BYTES && !entry.file.name.toLowerCase().endsWith(".zip"),
+    )
     if (oversizedEntries.length > 0) {
       const oversizedPreview = oversizedEntries
         .slice(0, 6)
@@ -1264,13 +1270,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       // Serializes failure dialogs so they appear one at a time
       let confirmLock = Promise.resolve()
       speedSamplesRef.current = []  // reset sliding window for new upload session
+      batchUploadAbortRef.current = false  // clear any previous cancellation
       const activeNames: string[] = []
 
       async function uploadWorker() {
         while (true) {
           // JS is single-threaded; this increment is safe across async workers
           const index = nextIndex++
-          if (index >= uploadEntries.length || abortError) break
+          if (index >= uploadEntries.length || abortError || batchUploadAbortRef.current) break
           const entry = uploadEntries[index]
           const form = new FormData()
           form.append("folderPath", resolvedTarget)
@@ -1278,8 +1285,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           form.append("relativePaths", entry.relativePath)
           form.append("skipDedup", "true")
           activeNames.push(entry.relativePath)
+          const isZip = entry.file.name.toLowerCase().endsWith(".zip")
           try {
-            await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
+            const response = await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
               fileProgress[index] = Math.min(loaded, Math.max(entry.file.size, 1))
               const totalLoaded = fileProgress.reduce((s, b) => s + b, 0)
               updateUploadTelemetry(totalLoaded, totalBytes, startedAt,
@@ -1287,26 +1295,38 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             })
             successCount += 1
             fileProgress[index] = Math.max(entry.file.size, 1)
+            // For ZIP uploads, fold any server-reported skipped extracted files into issues
+            if (isZip && response.extractedSkipped?.length) {
+              for (const skipped of response.extractedSkipped) {
+                issues.push({ relativePath: skipped.name, reason: skipped.reason })
+              }
+            }
           } catch (uploadError: any) {
             fileProgress[index] = Math.max(entry.file.size, 1)
             const reason = normalizeUploadErrorMessage(uploadError)
-            // Chain onto confirm lock so dialogs appear one at a time
-            await (confirmLock = confirmLock.then(async () => {
-              if (skipAllErrors) {
-                issues.push({ relativePath: entry.relativePath, reason: `${reason}（自动跳过）` })
-                return
-              }
-              const action = await new Promise<UploadFailureAction>((resolve) => {
-                setUploadFailureDialog({ relativePath: entry.relativePath, reason, resolve })
-              })
-              setUploadFailureDialog(null)
-              if (action === "abort") {
-                abortError = uploadError
-              } else {
-                if (action === "skipAll") skipAllErrors = true
-                issues.push({ relativePath: entry.relativePath, reason: `${reason}（已跳过）` })
-              }
-            }))
+            if (isZip) {
+              // ZIP upload failures go directly to issues — no interactive dialog.
+              // The skip-all flow is intended for individual files, not ZIP containers.
+              issues.push({ relativePath: entry.relativePath, reason: `${reason}（ZIP 上传失败）` })
+            } else {
+              // Chain onto confirm lock so dialogs appear one at a time
+              await (confirmLock = confirmLock.then(async () => {
+                if (skipAllErrors) {
+                  issues.push({ relativePath: entry.relativePath, reason: `${reason}（自动跳过）` })
+                  return
+                }
+                const action = await new Promise<UploadFailureAction>((resolve) => {
+                  setUploadFailureDialog({ relativePath: entry.relativePath, reason, resolve })
+                })
+                setUploadFailureDialog(null)
+                if (action === "abort") {
+                  abortError = uploadError
+                } else {
+                  if (action === "skipAll") skipAllErrors = true
+                  issues.push({ relativePath: entry.relativePath, reason: `${reason}（已跳过）` })
+                }
+              }))
+            }
           } finally {
             const i = activeNames.indexOf(entry.relativePath)
             if (i >= 0) activeNames.splice(i, 1)
@@ -1321,6 +1341,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       await Promise.all(Array.from({ length: CONCURRENCY }, () => uploadWorker()))
 
       if (abortError) throw abortError
+
+      if (batchUploadAbortRef.current) {
+        const cancelHint = successCount > 0 ? `，已完成 ${successCount} 个文件` : ""
+        updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已取消上传${cancelHint}`)
+        if (issues.length > 0) setBatchUploadIssues(issues)
+        await refreshTree()
+        return
+      }
 
       const issueHint = issues.length > 0 ? `，跳过 ${issues.length} 个` : ""
       updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${successCount} 个文件${issueHint}，请手动点击"向量化"`)
@@ -1779,6 +1807,33 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     }
+  }
+
+  async function handleLockMultiple(entries: ExplorerEntry[], locked: boolean) {
+    const lockable = entries.filter((e) => (e.kind === "file" ? e.document.canLock : e.folder.canLock))
+    if (!lockable.length) {
+      setError("没有可操作的项目（需要是上传者或管理员）")
+      return
+    }
+    const action = locked ? "锁定" : "解锁"
+    const confirmed = window.confirm(`确定${action}选中的 ${lockable.length} 个项目吗？`)
+    if (!confirmed) return
+    for (const entry of lockable) {
+      try {
+        const res = await fetch("/api/knowledge-base/lock", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getKnowledgeBaseAuthHeaders() },
+          body: JSON.stringify({ path: entry.relativePath, locked }),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          console.warn(`${action}失败 ${entry.relativePath}:`, data?.error)
+        }
+      } catch {
+        // skip individual failures
+      }
+    }
+    await refreshTree()
   }
 
   async function handleDeleteMultiple(entries: ExplorerEntry[]) {
@@ -2693,6 +2748,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   <Download className="h-4 w-4" />下载选中文件 ({sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key) && en.kind === "file").length} 个)
                                 </ContextMenuItem>
                                 <ContextMenuSeparator />
+                                <ContextMenuItem disabled={busy} onClick={() => void handleLockMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)), true)}>
+                                  <Lock className="h-4 w-4" />锁定选中 {selectedExplorerKeys.size} 个项目
+                                </ContextMenuItem>
+                                <ContextMenuItem disabled={busy} onClick={() => void handleLockMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)), false)}>
+                                  <LockOpen className="h-4 w-4" />解锁选中 {selectedExplorerKeys.size} 个项目
+                                </ContextMenuItem>
+                                <ContextMenuSeparator />
                                 <ContextMenuItem
                                   variant="destructive"
                                   disabled={busy}
@@ -2838,6 +2900,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                     onClick={() => handleDownloadMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)))}
                                   >
                                     <Download className="h-4 w-4" />下载选中文件 ({sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key) && en.kind === "file").length} 个)
+                                  </ContextMenuItem>
+                                  <ContextMenuSeparator />
+                                  <ContextMenuItem disabled={busy} onClick={() => void handleLockMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)), true)}>
+                                    <Lock className="h-4 w-4" />锁定选中 {selectedExplorerKeys.size} 个项目
+                                  </ContextMenuItem>
+                                  <ContextMenuItem disabled={busy} onClick={() => void handleLockMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)), false)}>
+                                    <LockOpen className="h-4 w-4" />解锁选中 {selectedExplorerKeys.size} 个项目
                                   </ContextMenuItem>
                                   <ContextMenuSeparator />
                                   <ContextMenuItem
@@ -3270,7 +3339,20 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                     {(uploading || batchUploading) && (
                       <div className="space-y-2">
-                        <Progress value={batchUploadProgress} className="h-2" />
+                        <div className="flex items-center gap-2">
+                          <Progress value={batchUploadProgress} className="h-2 flex-1" />
+                          {batchUploading && (
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              className="h-6 shrink-0 px-2 text-xs"
+                              onClick={() => { batchUploadAbortRef.current = true }}
+                            >
+                              停止
+                            </Button>
+                          )}
+                        </div>
                         <div className="text-xs text-muted-foreground">{batchUploadSummary} · {batchUploadProgress}%</div>
                         <div className="text-[11px] text-muted-foreground">
                           上传速度 {batchUploadSpeedMBps.toFixed(2)} MB/s · 预计剩余 {formatEta(batchUploadEtaSeconds)}
@@ -4389,7 +4471,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                 {batchUploading && (
                   <div className="space-y-2">
-                    <Progress value={batchUploadProgress} className="h-2 bg-cyan-500/15" />
+                    <div className="flex items-center gap-2">
+                      <Progress value={batchUploadProgress} className="h-2 flex-1 bg-cyan-500/15" />
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        className="h-6 shrink-0 px-2 text-xs"
+                        onClick={() => { batchUploadAbortRef.current = true }}
+                      >
+                        停止
+                      </Button>
+                    </div>
                     <div className="text-xs text-cyan-300/75">{batchUploadSummary} · {batchUploadProgress}%</div>
                   </div>
                 )}
