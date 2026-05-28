@@ -199,6 +199,9 @@ type BatchUploadIssue = {
 type UploadFailureAction = "skip" | "skipAll" | "abort"
 
 const BATCH_UPLOAD_MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024 // 1 GB
+/** Files larger than this are split into CHUNK_SIZE pieces to bypass server body-size limits */
+const CHUNK_THRESHOLD = 10 * 1024 * 1024 // 10 MB
+const CHUNK_SIZE = 8 * 1024 * 1024 // 8 MB per chunk
 
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`
@@ -803,6 +806,53 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     })
   }
 
+  /** Splits a large file into CHUNK_SIZE pieces and uploads each to the same endpoint.
+   *  The server reassembles them on the final chunk and processes normally. */
+  async function uploadLargeFileInChunks(
+    file: File,
+    relativePath: string,
+    resolvedTarget: string,
+    onBytesUploaded: (uploaded: number) => void,
+    signal?: AbortSignal,
+  ): Promise<KnowledgeBaseUploadResponse> {
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
+    const sessionId = crypto.randomUUID()
+    let uploadedBytes = 0
+    let lastResponse: KnowledgeBaseUploadResponse = { ok: true }
+
+    for (let i = 0; i < totalChunks; i++) {
+      if (signal?.aborted) throw new DOMException("上传已取消", "AbortError")
+
+      const start = i * CHUNK_SIZE
+      const end = Math.min(start + CHUNK_SIZE, file.size)
+      const chunkBlob = file.slice(start, end)
+      const chunkSize = end - start
+
+      const form = new FormData()
+      form.append("folderPath", resolvedTarget)
+      form.append("files", new File([chunkBlob], file.name))
+      form.append("relativePaths", relativePath)
+      form.append("skipDedup", "true")
+      form.append("chunkSessionId", sessionId)
+      form.append("chunkIndex", String(i))
+      form.append("totalChunks", String(totalChunks))
+      form.append("originalFileName", file.name)
+
+      const bytesBeforeChunk = uploadedBytes
+      lastResponse = await uploadKnowledgeBaseFormDataWithProgress(
+        form,
+        (loaded) => onBytesUploaded(bytesBeforeChunk + loaded),
+        signal,
+      )
+
+      if (!lastResponse.ok && !(lastResponse as Record<string, unknown>).partial) {
+        throw new Error(lastResponse.error || "分块上传失败")
+      }
+      uploadedBytes += chunkSize
+    }
+    return lastResponse
+  }
+
   function updateUploadTelemetry(
     loadedBytes: number,
     totalBytes: number,
@@ -1292,20 +1342,30 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           const index = nextIndex++
           if (index >= uploadEntries.length || abortError || batchUploadAbortRef.current) break
           const entry = uploadEntries[index]
-          const form = new FormData()
-          form.append("folderPath", resolvedTarget)
-          form.append("files", entry.file)
-          form.append("relativePaths", entry.relativePath)
-          form.append("skipDedup", "true")
           activeNames.push(entry.relativePath)
           const isZip = entry.file.name.toLowerCase().endsWith(".zip")
+          const needsChunking = entry.file.size > CHUNK_THRESHOLD
           try {
-            const response = await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
+            const onProgress = (loaded: number) => {
               fileProgress[index] = Math.min(loaded, Math.max(entry.file.size, 1))
               const totalLoaded = fileProgress.reduce((s, b) => s + b, 0)
               updateUploadTelemetry(totalLoaded, totalBytes, startedAt,
                 `正在上传 (${activeNames.length} 并发): ${activeNames[activeNames.length - 1]}`)
-            }, batchUploadAbortControllerRef.current?.signal)
+            }
+            const signal = batchUploadAbortControllerRef.current?.signal
+            let response: KnowledgeBaseUploadResponse
+            if (needsChunking) {
+              response = await uploadLargeFileInChunks(
+                entry.file, entry.relativePath, resolvedTarget, onProgress, signal,
+              )
+            } else {
+              const form = new FormData()
+              form.append("folderPath", resolvedTarget)
+              form.append("files", entry.file)
+              form.append("relativePaths", entry.relativePath)
+              form.append("skipDedup", "true")
+              response = await uploadKnowledgeBaseFormDataWithProgress(form, onProgress, signal)
+            }
             successCount += 1
             fileProgress[index] = Math.max(entry.file.size, 1)
             // For ZIP uploads, fold any server-reported skipped extracted files into issues
