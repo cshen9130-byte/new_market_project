@@ -46,6 +46,7 @@ import {
   Trash2,
   Upload,
   Hand,
+  UserCog,
   ZoomIn,
   ZoomOut,
 } from "lucide-react"
@@ -566,6 +567,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const batchUploadAbortControllerRef = useRef<AbortController | null>(null)  // aborts in-flight XHRs on stop
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
+  const [reassignOwnerTarget, setReassignOwnerTarget] = useState<{ relativePath: string; name: string } | null>(null)
+  const [reassignOwnerUsers, setReassignOwnerUsers] = useState<Array<{ id: string; name: string; email: string }>>([])
+  const [reassignOwnerSelectedId, setReassignOwnerSelectedId] = useState("")
+  const [reassignOwnerBusy, setReassignOwnerBusy] = useState(false)
   type ExplorerSortKey = "name" | "updatedAt" | "typeLabel" | "size" | "ownerName"
   const [explorerSort, setExplorerSort] = useState<{ key: ExplorerSortKey; dir: "asc" | "desc" }>({ key: "updatedAt", dir: "desc" })
   const [uploading, setUploading] = useState(false)
@@ -1911,6 +1916,41 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     await refreshTree()
   }
 
+  async function openReassignOwnerDialog(relativePath: string, name: string) {
+    setReassignOwnerTarget({ relativePath, name })
+    setReassignOwnerSelectedId("")
+    setReassignOwnerBusy(false)
+    if (reassignOwnerUsers.length === 0) {
+      try {
+        const res = await fetch("/api/admin/users", { headers: getKnowledgeBaseAuthHeaders() })
+        const data = await res.json()
+        if (data.ok && Array.isArray(data.users)) setReassignOwnerUsers(data.users)
+      } catch { /* ignore */ }
+    }
+  }
+
+  async function confirmReassignOwner() {
+    if (!reassignOwnerTarget || !reassignOwnerSelectedId) return
+    const user = reassignOwnerUsers.find((u) => u.id === reassignOwnerSelectedId)
+    if (!user) return
+    setReassignOwnerBusy(true)
+    try {
+      const res = await fetch("/api/knowledge-base/owner", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getKnowledgeBaseAuthHeaders() },
+        body: JSON.stringify({ path: reassignOwnerTarget.relativePath, newOwnerId: user.id, newOwnerName: user.name, newOwnerEmail: user.email }),
+      })
+      const data = await res.json()
+      if (!data.ok) throw new Error(data.error || "操作失败")
+      setReassignOwnerTarget(null)
+      await refreshTree()
+    } catch (e: any) {
+      alert(e?.message || "操作失败")
+    } finally {
+      setReassignOwnerBusy(false)
+    }
+  }
+
   async function handleDeleteMultiple(entries: ExplorerEntry[]) {
     const deletableFiles = entries.filter(
       (e): e is ExplorerEntry & { kind: "file" } => e.kind === "file" && e.document.canDelete,
@@ -2860,6 +2900,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   {entry.folder.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                                   {entry.folder.locked ? "解锁" : "锁定"}
                                 </ContextMenuItem>
+                                {currentUser?.role === "admin" && (
+                                  <ContextMenuItem onClick={() => void openReassignOwnerDialog(entry.folder.relativePath, entry.folder.name)}>
+                                    <UserCog className="h-4 w-4" />编辑归属
+                                  </ContextMenuItem>
+                                )}
                                 <ContextMenuSeparator />
                                 <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
                                   <Trash2 className="h-4 w-4" />删除
@@ -2880,6 +2925,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   {entry.document.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                                   {entry.document.locked ? "解锁" : "锁定"}
                                 </ContextMenuItem>
+                                {currentUser?.role === "admin" && (
+                                  <ContextMenuItem onClick={() => void openReassignOwnerDialog(entry.document.relativePath, entry.document.name)}>
+                                    <UserCog className="h-4 w-4" />编辑归属
+                                  </ContextMenuItem>
+                                )}
                                 <ContextMenuSeparator />
                                 <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
                                   <Trash2 className="h-4 w-4" />删除
@@ -3014,6 +3064,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                     {entry.folder.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                                     {entry.folder.locked ? "解锁" : "锁定"}
                                   </ContextMenuItem>
+                                  {currentUser?.role === "admin" && (
+                                    <ContextMenuItem onClick={() => void openReassignOwnerDialog(entry.folder.relativePath, entry.folder.name)}>
+                                      <UserCog className="h-4 w-4" />编辑归属
+                                    </ContextMenuItem>
+                                  )}
                                   <ContextMenuSeparator />
                                   <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
                                     <Trash2 className="h-4 w-4" />删除
@@ -3034,6 +3089,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                     {entry.document.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
                                     {entry.document.locked ? "解锁" : "锁定"}
                                   </ContextMenuItem>
+                                  {currentUser?.role === "admin" && (
+                                    <ContextMenuItem onClick={() => void openReassignOwnerDialog(entry.document.relativePath, entry.document.name)}>
+                                      <UserCog className="h-4 w-4" />编辑归属
+                                    </ContextMenuItem>
+                                  )}
                                   <ContextMenuSeparator />
                                   <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
                                     <Trash2 className="h-4 w-4" />删除
@@ -4143,6 +4203,34 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               </DialogContent>
             </Dialog>
 
+            {/* Reassign owner dialog */}
+            <Dialog open={!!reassignOwnerTarget} onOpenChange={(open) => { if (!open) setReassignOwnerTarget(null) }}>
+              <DialogContent className="sm:max-w-sm">
+                <DialogHeader>
+                  <DialogTitle>编辑归属 — 「{reassignOwnerTarget?.name}」</DialogTitle>
+                </DialogHeader>
+                <div className="py-2">
+                  <p className="mb-3 text-sm text-muted-foreground">选择新的归属用户（上传者）：</p>
+                  <select
+                    className="w-full rounded border bg-background px-3 py-2 text-sm"
+                    value={reassignOwnerSelectedId}
+                    onChange={(e) => setReassignOwnerSelectedId(e.target.value)}
+                  >
+                    <option value="">— 请选择用户 —</option>
+                    {reassignOwnerUsers.map((u) => (
+                      <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+                    ))}
+                  </select>
+                </div>
+                <DialogFooter>
+                  <Button size="sm" variant="outline" onClick={() => setReassignOwnerTarget(null)} disabled={reassignOwnerBusy}>取消</Button>
+                  <Button size="sm" disabled={!reassignOwnerSelectedId || reassignOwnerBusy} onClick={() => void confirmReassignOwner()}>
+                    {reassignOwnerBusy ? <><LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />保存中...</> : "确认修改"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
             </section>
           </ResizablePanel>
 
@@ -4475,6 +4563,34 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               </Button>
               <Button size="sm" disabled={moveFolderLoading || moveFolderTarget === null} onClick={() => void confirmMoveFolder()}>
                 {moveFolderLoading ? <><LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />移动中...</> : "确认移动"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Reassign owner dialog (cyber) */}
+        <Dialog open={!!reassignOwnerTarget} onOpenChange={(open) => { if (!open) setReassignOwnerTarget(null) }}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>编辑归属 — 「{reassignOwnerTarget?.name}」</DialogTitle>
+            </DialogHeader>
+            <div className="py-2">
+              <p className="mb-3 text-sm text-muted-foreground">选择新的归属用户（上传者）：</p>
+              <select
+                className="w-full rounded border bg-background px-3 py-2 text-sm"
+                value={reassignOwnerSelectedId}
+                onChange={(e) => setReassignOwnerSelectedId(e.target.value)}
+              >
+                <option value="">— 请选择用户 —</option>
+                {reassignOwnerUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.name} ({u.email})</option>
+                ))}
+              </select>
+            </div>
+            <DialogFooter>
+              <Button size="sm" variant="outline" onClick={() => setReassignOwnerTarget(null)} disabled={reassignOwnerBusy}>取消</Button>
+              <Button size="sm" disabled={!reassignOwnerSelectedId || reassignOwnerBusy} onClick={() => void confirmReassignOwner()}>
+                {reassignOwnerBusy ? <><LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />保存中...</> : "确认修改"}
               </Button>
             </DialogFooter>
           </DialogContent>

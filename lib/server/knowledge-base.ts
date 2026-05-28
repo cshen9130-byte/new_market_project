@@ -140,6 +140,26 @@ async function writeOwnershipRecords(records: KnowledgeBaseOwnershipRecord[]) {
   await fs.writeFile(OWNERSHIP_FILE, JSON.stringify(records, null, 2), "utf8")
 }
 
+/**
+ * Mutex for ownership file read-modify-write operations.
+ * With CONCURRENCY=5 parallel uploads each calling setKnowledgeBaseOwnershipRecord,
+ * concurrent reads all see the old state and overwrite each other — losing records.
+ * Chaining all mutating operations through this lock serialises them.
+ */
+let _ownershipMutex: Promise<void> = Promise.resolve()
+
+async function withOwnershipLock<T>(fn: () => Promise<T>): Promise<T> {
+  let release!: () => void
+  const prev = _ownershipMutex
+  _ownershipMutex = new Promise<void>((res) => { release = res })
+  await prev
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
 async function getOwnershipMap() {
   const records = await readOwnershipRecords()
   return new Map(records.map((record) => [record.relativePath, record]))
@@ -156,26 +176,28 @@ async function setKnowledgeBaseOwnershipRecord(
     return null
   }
 
-  const records = await readOwnershipRecords()
-  const existing = records.find((record) => record.relativePath === normalizedPath)
-  if (existing && !overwrite) {
-    return existing
-  }
+  return withOwnershipLock(async () => {
+    const records = await readOwnershipRecords()
+    const existing = records.find((record) => record.relativePath === normalizedPath)
+    if (existing && !overwrite) {
+      return existing
+    }
 
-  const uploadedAt = new Date().toISOString()
-  const nextRecord: KnowledgeBaseOwnershipRecord = {
-    relativePath: normalizedPath,
-    entryType,
-    ownerId: owner.ownerId,
-    ownerName: owner.ownerName,
-    ownerEmail: owner.ownerEmail,
-    uploadedAt,
-  }
-  const next = records.filter((record) => record.relativePath !== normalizedPath)
-  next.push(nextRecord)
-  next.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
-  await writeOwnershipRecords(next)
-  return nextRecord
+    const uploadedAt = new Date().toISOString()
+    const nextRecord: KnowledgeBaseOwnershipRecord = {
+      relativePath: normalizedPath,
+      entryType,
+      ownerId: owner.ownerId,
+      ownerName: owner.ownerName,
+      ownerEmail: owner.ownerEmail,
+      uploadedAt,
+    }
+    const next = records.filter((record) => record.relativePath !== normalizedPath)
+    next.push(nextRecord)
+    next.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
+    await writeOwnershipRecords(next)
+    return nextRecord
+  })
 }
 
 async function setKnowledgeBaseFileOwner(relativePath: string, owner: KnowledgeBaseFileOwner) {
@@ -197,9 +219,11 @@ async function ensureKnowledgeBaseFolderOwner(relativePath: string, owner: Knowl
 
 async function removeKnowledgeBaseFileOwner(relativePath: string) {
   const normalizedPath = normalizeKnowledgeBasePath(relativePath)
-  const records = await readOwnershipRecords()
-  const next = records.filter((record) => record.relativePath !== normalizedPath)
-  await writeOwnershipRecords(next)
+  return withOwnershipLock(async () => {
+    const records = await readOwnershipRecords()
+    const next = records.filter((record) => record.relativePath !== normalizedPath)
+    await writeOwnershipRecords(next)
+  })
 }
 
 function buildKnowledgeBaseDocumentNode(
@@ -732,25 +756,27 @@ async function ensurePathNotExists(absolutePath: string) {
 }
 
 async function renameOwnershipPath(oldPath: string, newPath: string, entryType: "file" | "folder") {
-  const records = await readOwnershipRecords()
-  const prefix = `${oldPath}/`
-  const next = records.map((record) => {
-    if (record.relativePath === oldPath) {
-      return { ...record, relativePath: newPath, entryType: record.entryType || entryType }
-    }
-
-    if (entryType === "folder" && record.relativePath.startsWith(prefix)) {
-      return {
-        ...record,
-        relativePath: `${newPath}/${record.relativePath.slice(prefix.length)}`,
+  return withOwnershipLock(async () => {
+    const records = await readOwnershipRecords()
+    const prefix = `${oldPath}/`
+    const next = records.map((record) => {
+      if (record.relativePath === oldPath) {
+        return { ...record, relativePath: newPath, entryType: record.entryType || entryType }
       }
-    }
 
-    return record
+      if (entryType === "folder" && record.relativePath.startsWith(prefix)) {
+        return {
+          ...record,
+          relativePath: `${newPath}/${record.relativePath.slice(prefix.length)}`,
+        }
+      }
+
+      return record
+    })
+
+    next.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
+    await writeOwnershipRecords(next)
   })
-
-  next.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
-  await writeOwnershipRecords(next)
 }
 
 export async function renameKnowledgeBaseFile(relativePath: string, newName: string, actorUserId: string, isAdmin = false) {
@@ -1214,32 +1240,68 @@ export async function setKnowledgeBaseEntryLocked(
     throw new Error("缺少用户信息")
   }
 
-  const records = await readOwnershipRecords()
-  const existingIndex = records.findIndex((r) => r.relativePath === normalizedPath)
-  const existing = existingIndex >= 0 ? records[existingIndex] : null
+  return withOwnershipLock(async () => {
+    const records = await readOwnershipRecords()
+    const existingIndex = records.findIndex((r) => r.relativePath === normalizedPath)
+    const existing = existingIndex >= 0 ? records[existingIndex] : null
 
-  if (!isAdmin) {
-    if (!existing || existing.ownerId !== actorUserId) {
-      throw new Error("只有上传者或管理员可以修改锁定状态")
+    if (!isAdmin) {
+      if (!existing || existing.ownerId !== actorUserId) {
+        throw new Error("只有上传者或管理员可以修改锁定状态")
+      }
     }
-  }
 
-  if (!existing) {
-    // No ownership record yet — create one on the fly so the lock can be applied
-    const newRecord: KnowledgeBaseOwnershipRecord = {
-      relativePath: normalizedPath,
-      entryType: normalizedPath.includes(".") ? "file" : "folder",
-      ownerId: actorUserId,
-      ownerName: actorMeta?.name ?? actorUserId,
-      ownerEmail: actorMeta?.email,
-      uploadedAt: new Date().toISOString(),
-      locked,
+    if (!existing) {
+      // No ownership record yet — create one on the fly so the lock can be applied
+      const newRecord: KnowledgeBaseOwnershipRecord = {
+        relativePath: normalizedPath,
+        entryType: normalizedPath.includes(".") ? "file" : "folder",
+        ownerId: actorUserId,
+        ownerName: actorMeta?.name ?? actorUserId,
+        ownerEmail: actorMeta?.email,
+        uploadedAt: new Date().toISOString(),
+        locked,
+      }
+      records.push(newRecord)
+      await writeOwnershipRecords(records)
+      return
     }
-    records.push(newRecord)
+
+    records[existingIndex] = { ...existing, locked }
     await writeOwnershipRecords(records)
-    return
-  }
+  })
+}
 
-  records[existingIndex] = { ...existing, locked }
-  await writeOwnershipRecords(records)
+export async function setKnowledgeBaseEntryOwner(
+  relativePath: string,
+  newOwner: { ownerId: string; ownerName: string; ownerEmail?: string },
+) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) throw new Error("缺少路径")
+
+  return withOwnershipLock(async () => {
+    const records = await readOwnershipRecords()
+    const existingIndex = records.findIndex((r) => r.relativePath === normalizedPath)
+
+    if (existingIndex >= 0) {
+      records[existingIndex] = {
+        ...records[existingIndex],
+        ownerId: newOwner.ownerId,
+        ownerName: newOwner.ownerName,
+        ownerEmail: newOwner.ownerEmail,
+      }
+    } else {
+      records.push({
+        relativePath: normalizedPath,
+        entryType: normalizedPath.includes(".") ? "file" : "folder",
+        ownerId: newOwner.ownerId,
+        ownerName: newOwner.ownerName,
+        ownerEmail: newOwner.ownerEmail,
+        uploadedAt: new Date().toISOString(),
+      })
+    }
+
+    records.sort((a, b) => a.relativePath.localeCompare(b.relativePath, "zh-CN"))
+    await writeOwnershipRecords(records)
+  })
 }
