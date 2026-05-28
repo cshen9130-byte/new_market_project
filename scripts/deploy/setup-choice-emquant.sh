@@ -7,7 +7,8 @@ set -euo pipefail
 #     --project-root /root/new_market_project \
 #     --emq-username "<EMQ_USERNAME>" \
 #     --emq-password "<EMQ_PASSWORD>" \
-#     --tushare-token "<TUSHARE_TOKEN>"
+#     --tushare-token "<TUSHARE_TOKEN>" \
+#     --database-url "postgresql://user:pass@host:5432/dbname"
 # Optional:
 #   --python-exe /root/new_market_project/.venv/bin/python3
 #   --login-type 2
@@ -26,6 +27,7 @@ DASHSCOPE_API_KEY="${DASHSCOPE_API_KEY:-}"
 DASHSCOPE_BASE_URL="${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
 DASHSCOPE_CHAT_MODEL="${DASHSCOPE_CHAT_MODEL:-qwen-plus}"
 DASHSCOPE_EMBEDDING_MODEL="${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}"
+DATABASE_URL="${DATABASE_URL:-}"
 BUILD_MEMORY_MB="1024"
 TEMP_SWAP_GB="4"
 DEBUG_BUILD="0"
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
     --debug-build) DEBUG_BUILD="1"; shift ;;
     --build-debug-interval-sec) BUILD_DEBUG_INTERVAL_SEC="$2"; shift 2 ;;
+    --database-url) DATABASE_URL="$2"; shift 2 ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -269,14 +272,31 @@ else
   CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
 fi
 
-# 7) PM2 start (ecosystem.config.js should read env vars)
+# 7) Persist credentials to .env so DATABASE_URL survives future pm2 restarts
+# Write/update DATABASE_URL in .env if provided on the command line
+ENV_FILE="$PROJECT_ROOT/.env"
+if [[ -n "$DATABASE_URL" ]]; then
+  if [[ -f "$ENV_FILE" ]]; then
+    # Remove any existing DATABASE_URL line then append the new value
+    sed -i '/^DATABASE_URL=/d' "$ENV_FILE"
+  fi
+  echo "DATABASE_URL=${DATABASE_URL}" >> "$ENV_FILE"
+  echo "DATABASE_URL written to $ENV_FILE"
+fi
+
 # Source .env so DATABASE_URL is visible to ecosystem.config.js at pm2 start time
-if [[ -f "$PROJECT_ROOT/.env" ]]; then
+if [[ -f "$ENV_FILE" ]]; then
   set -o allexport
   # shellcheck disable=SC1091
-  source "$PROJECT_ROOT/.env"
+  source "$ENV_FILE"
   set +o allexport
 fi
+
+if [[ -z "${DATABASE_URL:-}" ]]; then
+  echo "WARNING: DATABASE_URL is not set. PostgreSQL features will fail."
+  echo "Pass --database-url <connection-string> to fix this."
+fi
+
 pm2 stop "$PM2_APP_NAME" || true
 pm2 start ecosystem.config.js --update-env
 pm2 save
