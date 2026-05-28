@@ -1255,12 +1255,18 @@ async function buildRetrievalContext(input: {
   }
 
   const hasGraphExpanded = matches.some((m) => m.metadata?.graphExpanded)
-  const context = matches
+  // qwen-max has a ~30720-token context window; Chinese ≈1 char/token.
+  // Reserve ~800 chars for system prompt + question prefix; cap context at 28000 chars.
+  const MAX_CONTEXT_CHARS = 28000
+  let contextRaw = matches
     .map((m, i) => {
       const tag = m.metadata?.graphExpanded ? "[图谱扩展]" : ""
       return `资料 ${i + 1}${tag} (${String(m.metadata?.source || "未知来源")})\n${m.pageContent}`
     })
     .join("\n\n")
+  const context = contextRaw.length > MAX_CONTEXT_CHARS
+    ? contextRaw.slice(0, MAX_CONTEXT_CHARS) + "\n\n[…内容过长，已截断]"
+    : contextRaw
 
   const sources = Array.from(
     new Set(matches.map((m) => String(m.metadata?.source || "")).filter(Boolean)),
