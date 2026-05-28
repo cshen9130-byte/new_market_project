@@ -1140,44 +1140,73 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setBatchUploading(true)
       setError(null)
 
+      const CONCURRENCY = 5
       const totalBytes = uploadEntries.reduce((sum, entry) => sum + Math.max(entry.file.size, 1), 0)
-      let uploadedBytes = 0
+      // Track per-file uploaded bytes for accurate parallel progress
+      const fileProgress = new Array(uploadEntries.length).fill(0)
       let successCount = 0
       const startedAt = Date.now()
       const preflightHint = issues.length > 0 ? `（预先跳过 ${issues.length} 个）` : ""
       updateUploadTelemetry(0, totalBytes, startedAt, `准备上传 ${uploadEntries.length} 个文件${preflightHint}`)
 
-      for (let index = 0; index < uploadEntries.length; index += 1) {
-        const entry = uploadEntries[index]
-        const form = new FormData()
-        form.append("folderPath", resolvedTarget)
-        form.append("files", entry.file)
-        form.append("relativePaths", entry.relativePath)
-        form.append("skipDedup", "true")
+      let abortError: unknown = null
+      let nextIndex = 0
+      // Serializes window.confirm so dialogs never stack
+      let confirmLock = Promise.resolve()
+      const activeNames: string[] = []
 
-        try {
-          await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
-            const currentLoaded = uploadedBytes + Math.min(loaded, Math.max(entry.file.size, 1))
-            updateUploadTelemetry(currentLoaded, totalBytes, startedAt, `正在上传 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
-          })
-          successCount += 1
-        } catch (uploadError: any) {
-          const reason = normalizeUploadErrorMessage(uploadError)
-          const shouldSkip = window.confirm(
-            `文件上传失败：${entry.relativePath}\n原因：${reason}\n\n是否跳过该文件并继续上传其余文件？`,
-          )
-          if (!shouldSkip) {
-            throw uploadError
+      async function uploadWorker() {
+        while (true) {
+          // JS is single-threaded; this increment is safe across async workers
+          const index = nextIndex++
+          if (index >= uploadEntries.length || abortError) break
+          const entry = uploadEntries[index]
+          const form = new FormData()
+          form.append("folderPath", resolvedTarget)
+          form.append("files", entry.file)
+          form.append("relativePaths", entry.relativePath)
+          form.append("skipDedup", "true")
+          activeNames.push(entry.relativePath)
+          try {
+            await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
+              fileProgress[index] = Math.min(loaded, Math.max(entry.file.size, 1))
+              const totalLoaded = fileProgress.reduce((s, b) => s + b, 0)
+              updateUploadTelemetry(totalLoaded, totalBytes, startedAt,
+                `正在上传 (${activeNames.length} 并发): ${activeNames[activeNames.length - 1]}`)
+            })
+            successCount += 1
+            fileProgress[index] = Math.max(entry.file.size, 1)
+          } catch (uploadError: any) {
+            fileProgress[index] = Math.max(entry.file.size, 1)
+            const reason = normalizeUploadErrorMessage(uploadError)
+            // Chain onto the confirm lock so dialogs appear one at a time
+            await (confirmLock = confirmLock.then(async () => {
+              const shouldSkip = window.confirm(
+                `文件上传失败：${entry.relativePath}\n原因：${reason}\n\n是否跳过该文件并继续上传其余文件？`,
+              )
+              if (!shouldSkip) {
+                abortError = uploadError
+              } else {
+                issues.push({ relativePath: entry.relativePath, reason: `${reason}（已跳过）` })
+              }
+            }))
+          } finally {
+            const i = activeNames.indexOf(entry.relativePath)
+            if (i >= 0) activeNames.splice(i, 1)
+            const totalLoaded = fileProgress.reduce((s, b) => s + b, 0)
+            updateUploadTelemetry(totalLoaded, totalBytes, startedAt,
+              `正在上传 (${activeNames.length} 并发, ${successCount}/${uploadEntries.length} 完成)`)
           }
-          issues.push({ relativePath: entry.relativePath, reason: `${reason}（已跳过）` })
         }
-
-        uploadedBytes += Math.max(entry.file.size, 1)
-        updateUploadTelemetry(uploadedBytes, totalBytes, startedAt, `正在处理 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
       }
 
+      // Run CONCURRENCY workers draining from the shared queue
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => uploadWorker()))
+
+      if (abortError) throw abortError
+
       const issueHint = issues.length > 0 ? `，跳过 ${issues.length} 个` : ""
-      updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${successCount} 个文件${issueHint}，请手动点击“向量化”`)
+      updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${successCount} 个文件${issueHint}，请手动点击"向量化"`)
       setBatchUploadIssues(issues)
       await refreshTree()
     } catch (requestError: any) {
