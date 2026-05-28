@@ -211,6 +211,20 @@ export async function pgLoadFingerprints(scope: string): Promise<Record<string, 
 
 /** Count total chunks in a scope.
  * When scope is '' (root), counts across ALL scopes. */
+export async function pgGetScopeEmbeddingModel(scope: string): Promise<string | null> {
+  await pgEnsureSchema()
+  const isRoot = scope === ''
+  const rows = await dbQuery<{ model: string }>(
+    isRoot
+      ? `SELECT model FROM kb_chunks WHERE model <> '' LIMIT 1`
+      : `SELECT model FROM kb_chunks WHERE scope = $1 AND model <> '' LIMIT 1`,
+    isRoot ? [] : [scope],
+  )
+  return rows[0]?.model ?? null
+}
+
+/** Count total chunks in a scope.
+ * When scope is '' (root), counts across ALL scopes. */
 export async function pgCountChunks(scope: string): Promise<number> {
   await pgEnsureSchema()
   const isRoot = scope === ''

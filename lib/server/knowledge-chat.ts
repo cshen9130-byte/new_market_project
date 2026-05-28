@@ -14,6 +14,7 @@ import {
   PG_BM25_MAX,
   PG_GRAPH_MAX,
   pgLoadFingerprints,
+  pgGetScopeEmbeddingModel,
   pgCountChunks,
   pgCountDocuments,
   pgLoadRows,
@@ -484,6 +485,21 @@ async function getOrBuildVectorStore(
     // Load file fingerprints from PG (replaces JSON disk index)
     const prevFiles = await pgLoadFingerprints(scopeKey)
 
+    // Auto-detect embedding model mismatch: if the stored index was built with a
+    // different model, treat every file as new so the whole scope is re-embedded.
+    const currentModel = getEmbeddingModel()
+    const storedModel = Object.keys(prevFiles).length > 0
+      ? await pgGetScopeEmbeddingModel(scopeKey)
+      : null
+    const modelChanged = storedModel !== null && storedModel !== currentModel
+
+    if (modelChanged) {
+      console.log(`[knowledge-chat] Embedding model changed (${storedModel} → ${currentModel}), clearing scope index for re-embed.`)
+      await invalidateVectorStoreCache(normalizedFolderPath)
+      // All files must be re-embedded; reset prevFiles to empty
+      Object.keys(prevFiles).forEach((k) => delete prevFiles[k])
+    }
+
     const updatedOrAdded: string[] = []
     for (const [relativePath, fp] of Object.entries(nextFiles)) {
       if (fingerprintChanged(fp, prevFiles[relativePath])) {
@@ -933,7 +949,7 @@ export async function getDiskIndexInfo(folderPath?: string | null): Promise<Disk
  * Start background embedding for a scope and track progress in globalThis.
  * Returns immediately; poll getEmbedJobStatus() to monitor progress.
  */
-export function startEmbedJob(folderPath?: string | null) {
+export function startEmbedJob(folderPath?: string | null, force = false) {
   const normalized = normalizeKnowledgeBasePath(folderPath)
   const key = normalized || "__root__"
   const jobs = getEmbedJobMap()
@@ -951,6 +967,10 @@ export function startEmbedJob(folderPath?: string | null) {
     job.status = "running"
     job.message = "正在读取文件..."
     try {
+      if (force) {
+        job.message = "清除旧索引..."
+        await invalidateVectorStoreCache(normalized)
+      }
       const result = await getOrBuildVectorStore(normalized, (done, total, file) => {
         job.status = "running"
         if (done === -1) {
