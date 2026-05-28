@@ -2843,7 +2843,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
                                   <FolderOpen className="h-4 w-4" />打开
                                 </ContextMenuItem>
-                                <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath)}>
+                                <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath.split("/").slice(0, -1).join("/"))}>
                                   <FolderPlus className="h-4 w-4" />新建文件夹
                                 </ContextMenuItem>
                                 <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
@@ -2997,7 +2997,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
                                     <FolderOpen className="h-4 w-4" />打开
                                   </ContextMenuItem>
-                                  <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath)}>
+                                  <ContextMenuItem onClick={() => void handleCreateFolderInline(entry.folder.relativePath.split("/").slice(0, -1).join("/"))}>
                                     <FolderPlus className="h-4 w-4" />新建文件夹
                                   </ContextMenuItem>
                                   <ContextMenuItem disabled={!entry.folder.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
