@@ -206,6 +206,18 @@ function formatDocumentType(extension: string) {
   return `${extension.replace(/^\./, "").toUpperCase()} 文件`
 }
 
+function formatEta(seconds: number | null) {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) {
+    return "--"
+  }
+  if (seconds < 60) {
+    return `${Math.max(1, Math.ceil(seconds))} 秒`
+  }
+  const minutes = Math.floor(seconds / 60)
+  const remainSeconds = Math.ceil(seconds % 60)
+  return `${minutes} 分 ${remainSeconds} 秒`
+}
+
 function truncateMiddle(value: string, maxLength = 44) {
   if (value.length <= maxLength) {
     return value
@@ -511,6 +523,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [batchUploading, setBatchUploading] = useState(false)
   const [batchUploadProgress, setBatchUploadProgress] = useState(0)
   const [batchUploadSummary, setBatchUploadSummary] = useState("")
+  const [batchUploadSpeedMBps, setBatchUploadSpeedMBps] = useState(0)
+  const [batchUploadEtaSeconds, setBatchUploadEtaSeconds] = useState<number | null>(null)
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   type ExplorerSortKey = "name" | "updatedAt" | "typeLabel" | "size" | "ownerName"
@@ -690,7 +704,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
   function uploadKnowledgeBaseFormDataWithProgress(
     form: FormData,
-    onProgress?: (loaded: number) => void,
+    onProgress?: (loaded: number, total: number) => void,
   ): Promise<KnowledgeBaseUploadResponse> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest()
@@ -707,7 +721,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
-          onProgress?.(event.loaded)
+          onProgress?.(event.loaded, event.total)
         }
       }
 
@@ -736,6 +750,26 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       xhr.send(form)
     })
+  }
+
+  function updateUploadTelemetry(
+    loadedBytes: number,
+    totalBytes: number,
+    startedAt: number,
+    summary: string,
+  ) {
+    const safeTotal = Math.max(totalBytes, 1)
+    const safeLoaded = Math.max(0, Math.min(loadedBytes, safeTotal))
+    const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001)
+    const speedBytesPerSecond = safeLoaded / elapsedSeconds
+    const etaSeconds = speedBytesPerSecond > 0
+      ? (safeTotal - safeLoaded) / speedBytesPerSecond
+      : null
+
+    setBatchUploadSummary(summary)
+    setBatchUploadProgress(Math.min(100, Math.round((safeLoaded / safeTotal) * 100)))
+    setBatchUploadSpeedMBps(speedBytesPerSecond / (1024 * 1024))
+    setBatchUploadEtaSeconds(etaSeconds)
   }
 
   async function refreshTree(initial = false, user: User | null = currentUser) {
@@ -946,21 +980,24 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     try {
       setUploading(true)
       setError(null)
+      const fileName = pendingFile.name
+      const totalBytes = Math.max(pendingFile.size, 1)
+      const startedAt = Date.now()
+      updateUploadTelemetry(0, totalBytes, startedAt, `准备上传: ${fileName}`)
+
       const form = new FormData()
       form.append("file", pendingFile)
       form.append("folderPath", uploadTargetFolder)
 
-      const res = await fetch("/api/knowledge-base/upload", {
-        method: "POST",
-        headers: getKnowledgeBaseAuthHeaders(),
-        body: form,
+      const data = await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
+        const currentLoaded = Math.min(loaded, totalBytes)
+        updateUploadTelemetry(currentLoaded, totalBytes, startedAt, `正在上传: ${fileName}`)
       })
-      const data = await readJsonResponse<KnowledgeBaseUploadResponse>(res)
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || res.statusText)
+      if (!data?.ok) {
+        throw new Error(data?.error || "上传失败")
       }
 
-      const uploadedScope = uploadTargetFolder ?? ""
+      updateUploadTelemetry(totalBytes, totalBytes, startedAt, "已完成上传 1 个文件，请手动点击“向量化”")
       setPendingFile(null)
       if (singleUploadInputRef.current) {
         singleUploadInputRef.current.value = ""
@@ -968,12 +1005,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setUploadTargetFolder(null)
       setUploadFolderBrowsePath("")
       await refreshTree()
-      // Start tracked background embedding
-      startEmbedTracking(uploadedScope)
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     } finally {
       setUploading(false)
+      setTimeout(() => {
+        setBatchUploadProgress(0)
+        setBatchUploadSummary("")
+        setBatchUploadSpeedMBps(0)
+        setBatchUploadEtaSeconds(null)
+      }, 1800)
     }
   }
 
@@ -996,12 +1037,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
     try {
       setBatchUploading(true)
-      setBatchUploadProgress(0)
-      setBatchUploadSummary(`准备上传 ${entries.length} 个文件`)
       setError(null)
 
       const totalBytes = entries.reduce((sum, entry) => sum + Math.max(entry.file.size, 1), 0)
       let uploadedBytes = 0
+      const startedAt = Date.now()
+      updateUploadTelemetry(0, totalBytes, startedAt, `准备上传 ${entries.length} 个文件`)
 
       for (let index = 0; index < entries.length; index += 1) {
         const entry = entries[index]
@@ -1009,22 +1050,19 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         form.append("folderPath", resolvedTarget)
         form.append("files", entry.file)
         form.append("relativePaths", entry.relativePath)
-
-        setBatchUploadSummary(`正在上传 ${index + 1}/${entries.length}: ${entry.relativePath}`)
+        form.append("skipDedup", "true")
 
         await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
           const currentLoaded = uploadedBytes + Math.min(loaded, Math.max(entry.file.size, 1))
-          setBatchUploadProgress(Math.min(100, Math.round((currentLoaded / totalBytes) * 100)))
+          updateUploadTelemetry(currentLoaded, totalBytes, startedAt, `正在上传 ${index + 1}/${entries.length}: ${entry.relativePath}`)
         })
 
         uploadedBytes += Math.max(entry.file.size, 1)
-        setBatchUploadProgress(Math.min(100, Math.round((uploadedBytes / totalBytes) * 100)))
+        updateUploadTelemetry(uploadedBytes, totalBytes, startedAt, `正在上传 ${index + 1}/${entries.length}: ${entry.relativePath}`)
       }
 
-      setBatchUploadSummary(`已完成上传 ${entries.length} 个文件`)
+      updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${entries.length} 个文件，请手动点击“向量化”`)
       await refreshTree()
-      // Start tracked background embedding
-      startEmbedTracking(resolvedTarget)
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     } finally {
@@ -1032,6 +1070,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setTimeout(() => {
         setBatchUploadProgress(0)
         setBatchUploadSummary("")
+        setBatchUploadSpeedMBps(0)
+        setBatchUploadEtaSeconds(null)
       }, 1200)
       if (batchUploadInputRef.current) {
         batchUploadInputRef.current.value = ""
@@ -1175,6 +1215,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         form.append("folderPath", syncServerFolder)
         form.append("files", file)
         form.append("relativePaths", strippedPath)
+        form.append("skipDedup", "true")
         setSyncSummary(`正在上传 ${i + 1}/${syncPendingFiles.length}: ${strippedPath}`)
         await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
           const current = uploadedBytes + Math.min(loaded, Math.max(file.size, 1))
@@ -2720,10 +2761,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       </Button>
                     </div>
 
-                    {batchUploading && (
+                    {(uploading || batchUploading) && (
                       <div className="space-y-2">
                         <Progress value={batchUploadProgress} className="h-2" />
                         <div className="text-xs text-muted-foreground">{batchUploadSummary} · {batchUploadProgress}%</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          上传速度 {batchUploadSpeedMBps.toFixed(2)} MB/s · 预计剩余 {formatEta(batchUploadEtaSeconds)}
+                        </div>
                       </div>
                     )}
                     <div className="text-xs text-muted-foreground">批量上传会保留所选文件夹的层级结构，统一导入到目标目录下。</div>
@@ -3405,17 +3449,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold">知识库问答</h2>
               <div className="flex flex-wrap items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={() => void handleReindex()}
-                  disabled={reindexing}
-                  title="清除索引缓存，下次提问时重新嵌入"
-                >
-                  <RefreshCw className={cn("h-4 w-4", reindexing && "animate-spin")} />
-                  {reindexing ? "索引中..." : "重新索引"}
-                </Button>
                 <Button
                   variant="ghost"
                   size="sm"

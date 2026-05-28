@@ -6,7 +6,6 @@ import {
   saveKnowledgeBaseFileWithRelativePath,
   deduplicateKnowledgeBaseFolder,
 } from "@/lib/server/knowledge-base"
-import { startEmbedJob } from "@/lib/server/knowledge-chat"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -23,6 +22,7 @@ export async function POST(req: Request) {
     const folderPath = normalizeKnowledgeBasePath(String(form.get("folderPath") || ""))
     const files = form.getAll("files").filter((entry): entry is File => entry instanceof File)
     const relativePaths = form.getAll("relativePaths").map((entry) => String(entry || ""))
+    const skipDedup = String(form.get("skipDedup") || "").toLowerCase() === "true"
 
     if (files.length > 0) {
       if (relativePaths.length !== files.length) {
@@ -39,16 +39,15 @@ export async function POST(req: Request) {
         ),
       )
 
-      // Deduplicate the folder after saving — remove content-identical files.
-      // No cache invalidation needed: getOrBuildVectorStore handles deleted files
-      // incrementally (it filters removed files from baseRows using the deleted set).
-      const dedup = await deduplicateKnowledgeBaseFolder(folderPath || "")
+      let dedupDeleted = 0
+      if (!skipDedup && files.length > 1) {
+        // Deduplicate only for true multi-file uploads to avoid O(n) folder scans
+        // on each per-file sequential upload request.
+        const dedup = await deduplicateKnowledgeBaseFolder(folderPath || "")
+        dedupDeleted = dedup.deleted.length
+      }
 
-      // Start tracked background embedding for the target folder only.
-      // Root scope is rebuilt lazily (incrementally) on next chat query.
-      startEmbedJob(folderPath)
-
-      return NextResponse.json({ ok: true, files: savedFiles, dedupDeleted: dedup.deleted.length })
+      return NextResponse.json({ ok: true, files: savedFiles, dedupDeleted })
     }
 
     const file = form.get("file")
@@ -62,9 +61,6 @@ export async function POST(req: Request) {
       ownerName: currentUser.name,
       ownerEmail: currentUser.email,
     })
-    // Start tracked background embedding for the target folder only.
-    // Root scope is rebuilt lazily (incrementally) on next chat query.
-    startEmbedJob(folderPath)
     return NextResponse.json({ ok: true, file: savedFile })
   } catch (error: any) {
     return NextResponse.json({ ok: false, error: error?.message || String(error) }, { status: 500 })
