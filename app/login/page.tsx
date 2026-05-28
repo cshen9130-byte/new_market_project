@@ -71,7 +71,7 @@ export default function LoginPage() {
 
       <Card className="relative z-10 w-full max-w-md mx-4 bg-black/80 backdrop-blur-sm border-emerald-500/30">
         <CardHeader className="space-y-1">
-          <CardTitle className="text-2xl font-bold text-center text-emerald-400">市场环境监测系统</CardTitle>
+          <CardTitle className="text-2xl font-bold text-center text-emerald-400">母基金AI投研系统</CardTitle>
         </CardHeader>
         <CardContent>
               <form onSubmit={handleLogin} className="space-y-4">

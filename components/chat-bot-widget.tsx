@@ -42,7 +42,7 @@ function getPageContext(path: string): string {
   // ── dashboard root / fallback ─────────────────────────────────────────────
   if (path.includes("/ma/dashboard"))
     return "当前页面：【市场总览】仪表盘首页。展示快速导航卡片，入口包括：期货市场、宏观市场、股票市场、期权市场、私募基金、MOM分析、小工具、AI知识库。"
-  return "当前页面：市场环境监测系统（MOM 市场监控看板）。"
+  return "当前页面：母基金AI投研系统（MOM 市场监控看板）。"
 }
 // ── Identify element under cursor (for pin tool) ─────────────────────────────
 function identifyElementAt(x: number, y: number): { label: string; el: HTMLElement | null } {

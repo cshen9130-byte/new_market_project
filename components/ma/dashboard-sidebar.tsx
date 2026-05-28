@@ -66,7 +66,7 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
           </Link>
         ) : (
           <>
-            <h2 className="text-lg font-semibold">市场监控</h2>
+            <h2 className="text-lg font-semibold">母基金AI投研系统</h2>
             <p className="text-sm text-muted-foreground">分析看板（传统风格）</p>
           </>
         )}
@@ -149,7 +149,7 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
               <X className="h-5 w-5" />
             </button>
             <div className="p-6 border-b">
-              <h2 className="text-lg font-semibold">市场监控</h2>
+              <h2 className="text-lg font-semibold">母基金AI投研系统</h2>
               <p className="text-sm text-muted-foreground">分析看板（传统风格）</p>
             </div>
             <nav className="flex-1 p-4 space-y-1 overflow-y-auto">

@@ -8,8 +8,8 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6 pt-6">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight">市场总览</h1>
-        <p className="text-muted-foreground mt-2">欢迎使用市场监控看板</p>
+        <h1 className="text-3xl font-semibold tracking-tight">母基金AI投研系统总览</h1>
+        <p className="text-muted-foreground mt-2">欢迎使用监控看板</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

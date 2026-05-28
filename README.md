@@ -1,4 +1,4 @@
-# 市场环境监测系统（Next.js）
+# 母基金AI投研系统（Next.js）
 
 本仓库包含主站（赛博风格）以及可选的经典风格子站代码（位于 `market-analysis-website/`）。
 

@@ -71,7 +71,7 @@ export default function DashboardPage() {
       </div>
 
       <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-0 text-center">
-          <h1 className="text-4xl font-bold text-cyan-400 mb-2 font-mono">市场环境监测系统</h1>
+          <h1 className="text-4xl font-bold text-cyan-400 mb-2 font-mono">母基金AI投研系统</h1>
         <p className="text-cyan-300/60 text-sm">点击神经元以查看市场数据</p>
       </div>
 

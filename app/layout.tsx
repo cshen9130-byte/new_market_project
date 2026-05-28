@@ -10,7 +10,7 @@ const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "市场环境监测系统",
+  title: "母基金AI投研系统",
   description: "现代化的市场环境监测与分析平台",
   generator: "v0.app",
   icons: {
