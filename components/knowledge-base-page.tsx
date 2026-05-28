@@ -189,6 +189,8 @@ type BatchUploadIssue = {
   reason: string
 }
 
+type UploadFailureAction = "skip" | "skipAll" | "abort"
+
 const BATCH_UPLOAD_MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024 // 1 GB
 
 function formatFileSize(size: number) {
@@ -544,6 +546,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [batchUploadSpeedMBps, setBatchUploadSpeedMBps] = useState(0)
   const [batchUploadEtaSeconds, setBatchUploadEtaSeconds] = useState<number | null>(null)
   const [batchUploadIssues, setBatchUploadIssues] = useState<BatchUploadIssue[]>([])
+  const [uploadFailureDialog, setUploadFailureDialog] = useState<{
+    relativePath: string
+    reason: string
+    resolve: (action: UploadFailureAction) => void
+  } | null>(null)
+  const speedSamplesRef = useRef<Array<{ time: number; bytes: number }>>([])  // sliding-window speed samples
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   type ExplorerSortKey = "name" | "updatedAt" | "typeLabel" | "size" | "ownerName"
@@ -779,8 +787,28 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   ) {
     const safeTotal = Math.max(totalBytes, 1)
     const safeLoaded = Math.max(0, Math.min(loadedBytes, safeTotal))
-    const elapsedSeconds = Math.max((Date.now() - startedAt) / 1000, 0.001)
-    const speedBytesPerSecond = safeLoaded / elapsedSeconds
+    const now = Date.now()
+
+    // Sliding-window speed: keep only samples from the last 8 seconds
+    const WINDOW_MS = 8000
+    const samples = speedSamplesRef.current
+    samples.push({ time: now, bytes: safeLoaded })
+    // Remove samples outside the window
+    while (samples.length > 1 && now - samples[0].time > WINDOW_MS) {
+      samples.shift()
+    }
+
+    let speedBytesPerSecond = 0
+    if (samples.length >= 2) {
+      const dt = (samples[samples.length - 1].time - samples[0].time) / 1000
+      const db = samples[samples.length - 1].bytes - samples[0].bytes
+      speedBytesPerSecond = dt > 0 ? Math.max(0, db / dt) : 0
+    } else {
+      // Fallback to cumulative when window has only 1 sample
+      const elapsed = Math.max((now - startedAt) / 1000, 0.001)
+      speedBytesPerSecond = safeLoaded / elapsed
+    }
+
     const etaSeconds = speedBytesPerSecond > 0
       ? (safeTotal - safeLoaded) / speedBytesPerSecond
       : null
@@ -1150,9 +1178,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       updateUploadTelemetry(0, totalBytes, startedAt, `准备上传 ${uploadEntries.length} 个文件${preflightHint}`)
 
       let abortError: unknown = null
+      let skipAllErrors = false
       let nextIndex = 0
-      // Serializes window.confirm so dialogs never stack
+      // Serializes failure dialogs so they appear one at a time
       let confirmLock = Promise.resolve()
+      speedSamplesRef.current = []  // reset sliding window for new upload session
       const activeNames: string[] = []
 
       async function uploadWorker() {
@@ -1179,14 +1209,20 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           } catch (uploadError: any) {
             fileProgress[index] = Math.max(entry.file.size, 1)
             const reason = normalizeUploadErrorMessage(uploadError)
-            // Chain onto the confirm lock so dialogs appear one at a time
+            // Chain onto confirm lock so dialogs appear one at a time
             await (confirmLock = confirmLock.then(async () => {
-              const shouldSkip = window.confirm(
-                `文件上传失败：${entry.relativePath}\n原因：${reason}\n\n是否跳过该文件并继续上传其余文件？`,
-              )
-              if (!shouldSkip) {
+              if (skipAllErrors) {
+                issues.push({ relativePath: entry.relativePath, reason: `${reason}（自动跳过）` })
+                return
+              }
+              const action = await new Promise<UploadFailureAction>((resolve) => {
+                setUploadFailureDialog({ relativePath: entry.relativePath, reason, resolve })
+              })
+              setUploadFailureDialog(null)
+              if (action === "abort") {
                 abortError = uploadError
               } else {
+                if (action === "skipAll") skipAllErrors = true
                 issues.push({ relativePath: entry.relativePath, reason: `${reason}（已跳过）` })
               }
             }))
@@ -3521,6 +3557,31 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 )}
               </div>
             </div>
+
+            {/* Upload Failure Dialog – skip / skip-all / abort */}
+            <Dialog open={!!uploadFailureDialog} onOpenChange={(open) => { if (!open) uploadFailureDialog?.resolve("abort") }}>
+              <DialogContent className="max-w-sm">
+                <DialogHeader>
+                  <DialogTitle>文件上传失败</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-2 py-1 text-sm">
+                  <p className="break-all font-medium">{uploadFailureDialog?.relativePath}</p>
+                  <p className="text-muted-foreground">原因：{uploadFailureDialog?.reason}</p>
+                  <p className="text-muted-foreground">如何处理此文件及后续失败文件？</p>
+                </div>
+                <DialogFooter className="flex-col gap-2 sm:flex-col">
+                  <Button size="sm" variant="outline" className="w-full justify-start" onClick={() => uploadFailureDialog?.resolve("skip")}>
+                    跳过此文件，继续上传其余文件
+                  </Button>
+                  <Button size="sm" variant="outline" className="w-full justify-start text-amber-600 hover:text-amber-700" onClick={() => uploadFailureDialog?.resolve("skipAll")}>
+                    跳过全部失败文件（后续不再询问）
+                  </Button>
+                  <Button size="sm" variant="destructive" className="w-full justify-start" onClick={() => uploadFailureDialog?.resolve("abort")}>
+                    取消整个上传任务
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             {/* Server Folder Browser Dialog */}
             <Dialog open={showServerBrowser} onOpenChange={setShowServerBrowser}>
