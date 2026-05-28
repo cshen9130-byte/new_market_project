@@ -26,6 +26,8 @@ import {
   LayoutGrid,
   LayoutList,
   LoaderCircle,
+  Lock,
+  LockOpen,
   CheckCircle2,
   AlertCircle,
   MessageSquare,
@@ -124,6 +126,8 @@ type DocumentNode = {
   canPreview: boolean
   canChat: boolean
   canDelete: boolean
+  locked: boolean
+  canLock: boolean
 }
 
 type FolderNode = {
@@ -134,6 +138,8 @@ type FolderNode = {
   ownerName: string
   uploadedAt: string | null
   canDelete: boolean
+  locked: boolean
+  canLock: boolean
   folders: FolderNode[]
   documents: DocumentNode[]
 }
@@ -565,6 +571,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const userScrolledRef = useRef(false)
   const [previewScrollToken, setPreviewScrollToken] = useState(0)
   const [selectedExplorerEntry, setSelectedExplorerEntry] = useState<{ kind: "folder" | "file"; relativePath: string } | null>(null)
+  const [selectedExplorerKeys, setSelectedExplorerKeys] = useState<Set<string>>(new Set())
+  const lastClickedKeyRef = useRef<string | null>(null)
   const [traditionalPanel, setTraditionalPanel] = useState<"library" | "preview" | "upload" | "folder" | "sync" | "graph">("library")
   const [graphVizData, setGraphVizData] = useState<{ nodes: Array<{ id: string; name: string; category: "document" | "term"; value: number }>; links: Array<{ source: string; target: string; value: number }> } | null>(null)
   const [graphVizLoading, setGraphVizLoading] = useState(false)
@@ -599,6 +607,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [syncComparing, setSyncComparing] = useState(false)
   const syncCompareSeqRef = useRef(0)
   const [explorerView, setExplorerView] = useState<"list" | "icon">("list")
+  const [notIndexedSet, setNotIndexedSet] = useState<Set<string>>(new Set())
 
   // ── Embed job tracking ──────────────────────────────────────────────────────
   type EmbedJobStatus = {
@@ -977,6 +986,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }, [activeExplorerEntry, selectedExplorerEntry])
 
+  // Clear multi-selection whenever the user navigates to a different folder
+  useEffect(() => {
+    setSelectedExplorerKeys(new Set())
+    lastClickedKeyRef.current = null
+  }, [selectedFolder])
+
   useEffect(() => {
     if (currentUser) void loadConversations()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1078,18 +1093,71 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
-  async function handleBatchUpload(files: FileList | File[], targetFolder?: string) {
+  async function traverseFsEntry(
+    entry: FileSystemEntry,
+    pathPrefix: string,
+  ): Promise<Array<{ file: File; relativePath: string }>> {
+    if (entry.isFile) {
+      const file = await new Promise<File>((resolve, reject) => {
+        ;(entry as FileSystemFileEntry).file(resolve, reject)
+      })
+      const relPath = pathPrefix ? `${pathPrefix}/${entry.name}` : entry.name
+      return [{ file, relativePath: relPath }]
+    }
+    if (entry.isDirectory) {
+      const dirPath = pathPrefix ? `${pathPrefix}/${entry.name}` : entry.name
+      const reader = (entry as FileSystemDirectoryEntry).createReader()
+      const allResults: Array<{ file: File; relativePath: string }> = []
+      const readBatch = (): Promise<void> =>
+        new Promise((resolve, reject) => {
+          reader.readEntries(async (batch) => {
+            if (!batch.length) {
+              resolve()
+              return
+            }
+            try {
+              for (const child of batch) {
+                allResults.push(...(await traverseFsEntry(child, dirPath)))
+              }
+              resolve(readBatch())
+            } catch (e) {
+              reject(e)
+            }
+          }, reject)
+        })
+      await readBatch()
+      return allResults
+    }
+    return []
+  }
+
+  async function handleBatchUpload(
+    input: FileList | File[] | Array<{ file: File; relativePath: string }>,
+    targetFolder?: string,
+  ) {
     const resolvedTarget = targetFolder ?? (uploadTargetFolder ?? null)
     if (resolvedTarget === null) {
       setError("请先选择目标目录")
       return
     }
-    const entries = Array.from(files)
-      .map((file) => {
-        const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
-        return { file, relativePath }
-      })
-      .filter((entry) => entry.file.size > 0 || entry.relativePath)
+
+    // Accept pre-built entries (from folder drag) or build from FileList/File[]
+    let entries: Array<{ file: File; relativePath: string }>
+    if (
+      Array.isArray(input) &&
+      input.length > 0 &&
+      typeof (input[0] as { file?: unknown }).file !== "undefined" &&
+      !((input[0] as unknown) instanceof File)
+    ) {
+      entries = (input as Array<{ file: File; relativePath: string }>).filter((e) => e.file.size > 0)
+    } else {
+      entries = Array.from(input as FileList | File[])
+        .map((file) => {
+          const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name
+          return { file, relativePath }
+        })
+        .filter((entry) => entry.file.size > 0 || entry.relativePath)
+    }
 
     if (!entries.length) {
       return
@@ -1687,6 +1755,92 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  async function handleToggleLock(entry: ExplorerEntry) {
+    const node = entry.kind === "file" ? entry.document : entry.folder
+    if (!node.canLock) {
+      setError("只有上传者或管理员可以修改锁定状态")
+      return
+    }
+    const nextLocked = !node.locked
+    const label = entry.kind === "file" ? `文件"${entry.name}"` : `文件夹"${entry.name}"`
+    const action = nextLocked ? "锁定" : "解锁"
+    const confirmed = window.confirm(`确定${action}${label}吗？`)
+    if (!confirmed) return
+
+    try {
+      const res = await fetch("/api/knowledge-base/lock", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", ...getKnowledgeBaseAuthHeaders() },
+        body: JSON.stringify({ path: entry.relativePath, locked: nextLocked }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data?.error || res.statusText)
+      await refreshTree()
+    } catch (requestError: any) {
+      setError(requestError?.message || String(requestError))
+    }
+  }
+
+  async function handleDeleteMultiple(entries: ExplorerEntry[]) {
+    const deletableFiles = entries.filter(
+      (e): e is ExplorerEntry & { kind: "file" } => e.kind === "file" && e.document.canDelete,
+    )
+    const deletableFolders = entries.filter(
+      (e): e is ExplorerEntry & { kind: "folder" } => e.kind === "folder" && e.folder.canDelete,
+    )
+    const total = deletableFiles.length + deletableFolders.length
+    if (!total) {
+      setError("选中项目中没有你有权限删除的文件或文件夹")
+      return
+    }
+    const skipped = entries.length - total
+    const skippedNote = skipped > 0 ? `\n（另有 ${skipped} 个无权限删除的项目将被跳过）` : ""
+    const confirmed = window.confirm(
+      `确定删除选中的 ${total} 个项目？此操作不可撤销。${skippedNote}`,
+    )
+    if (!confirmed) return
+    try {
+      setError(null)
+      for (const entry of deletableFiles) {
+        setDeletingPath(entry.document.relativePath)
+        const res = await fetch(buildFileUrl(entry.document.relativePath), {
+          method: "DELETE",
+          headers: getKnowledgeBaseAuthHeaders(),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      }
+      for (const entry of deletableFolders) {
+        setDeletingPath(entry.folder.relativePath)
+        const res = await fetch("/api/knowledge-base/folders", {
+          method: "DELETE",
+          headers: { ...getKnowledgeBaseAuthHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ path: entry.folder.relativePath }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      }
+      setSelectedExplorerKeys(new Set())
+      setSelectedExplorerEntry(null)
+      setSelectedDocument(null)
+      await refreshTree()
+    } catch (requestError: any) {
+      setError(requestError?.message || String(requestError))
+    } finally {
+      setDeletingPath(null)
+    }
+  }
+
+  function handleDownloadMultiple(entries: ExplorerEntry[]) {
+    const files = entries.filter((e): e is ExplorerEntry & { kind: "file" } => e.kind === "file")
+    for (const entry of files) {
+      const a = document.createElement("a")
+      a.href = buildFileUrl(entry.document.relativePath, true)
+      a.download = entry.name
+      a.click()
+    }
+  }
+
   async function handleRenameEntry(entry: ExplorerEntry) {
     const canRename = entry.kind === "folder" ? entry.folder.canDelete : entry.document.canDelete
     if (!canRename) {
@@ -1928,7 +2082,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
   const [indexInfo, setIndexInfo] = useState<IndexInfoResult | null>(null)
   const [indexInfoLoading, setIndexInfoLoading] = useState(false)
-  const [notIndexedSet, setNotIndexedSet] = useState<Set<string>>(new Set())
 
   async function refreshEmbedStatus() {
     try {
@@ -2461,17 +2614,45 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 <div>
                   {sortedExplorerEntries.length > 0 ? (
                     sortedExplorerEntries.map((entry) => {
-                      const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
+                      const selected = selectedExplorerKeys.has(entry.key)
                       const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
                       const notIndexed = entry.kind === "file" ? notIndexedSet.has(entry.relativePath) : notIndexedFolderSet.has(entry.relativePath)
+                      const multiSelected = selectedExplorerKeys.size > 1 && selected
                       return (
                         <ContextMenu key={entry.key}>
                           <ContextMenuTrigger asChild>
                             <button
                               type="button"
-                              onClick={() => {
-                                setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
-                                if (entry.kind === "file") setSelectedDocument(entry.document)
+                              onClick={(e) => {
+                                if (e.ctrlKey || e.metaKey) {
+                                  setSelectedExplorerKeys((prev) => {
+                                    const next = new Set(prev)
+                                    next.has(entry.key) ? next.delete(entry.key) : next.add(entry.key)
+                                    return next
+                                  })
+                                  lastClickedKeyRef.current = entry.key
+                                } else if (e.shiftKey && lastClickedKeyRef.current) {
+                                  const keys = sortedExplorerEntries.map((en) => en.key)
+                                  const si = keys.indexOf(lastClickedKeyRef.current)
+                                  const ei = keys.indexOf(entry.key)
+                                  if (si !== -1 && ei !== -1) {
+                                    const [lo, hi] = si < ei ? [si, ei] : [ei, si]
+                                    setSelectedExplorerKeys(new Set(keys.slice(lo, hi + 1)))
+                                  }
+                                } else {
+                                  setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
+                                  if (entry.kind === "file") setSelectedDocument(entry.document)
+                                  setSelectedExplorerKeys(new Set([entry.key]))
+                                  lastClickedKeyRef.current = entry.key
+                                }
+                              }}
+                              onContextMenu={() => {
+                                if (!selectedExplorerKeys.has(entry.key)) {
+                                  setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
+                                  if (entry.kind === "file") setSelectedDocument(entry.document)
+                                  setSelectedExplorerKeys(new Set([entry.key]))
+                                  lastClickedKeyRef.current = entry.key
+                                }
                               }}
                               onDoubleClick={() => handleExplorerEntryOpen(entry)}
                               className={cn(
@@ -2493,6 +2674,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   return <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fi.className, notIndexed && !selected && "opacity-40")}><fi.icon className="h-4 w-4" /></span>
                                 })()}
                                 <span className={cn("truncate", notIndexed && !selected && "text-muted-foreground/70")}>{entry.name}</span>
+                                {(entry.kind === "file" ? entry.document.locked : entry.folder.locked) && (
+                                  <Lock className="ml-0.5 h-3 w-3 shrink-0 text-amber-500" />
+                                )}
                               </div>
                               <div className="truncate">{formatDateTime(entry.updatedAt)}</div>
                               <div className="truncate">{entry.typeLabel}</div>
@@ -2500,8 +2684,24 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               <div className="truncate">{entry.ownerName}</div>
                             </button>
                           </ContextMenuTrigger>
-                          <ContextMenuContent className="w-48">
-                            {entry.kind === "folder" ? (
+                          <ContextMenuContent className="w-56">
+                            {multiSelected ? (
+                              <>
+                                <ContextMenuItem
+                                  onClick={() => handleDownloadMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)))}
+                                >
+                                  <Download className="h-4 w-4" />下载选中文件 ({sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key) && en.kind === "file").length} 个)
+                                </ContextMenuItem>
+                                <ContextMenuSeparator />
+                                <ContextMenuItem
+                                  variant="destructive"
+                                  disabled={busy}
+                                  onClick={() => void handleDeleteMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)))}
+                                >
+                                  <Trash2 className="h-4 w-4" />删除选中 {selectedExplorerKeys.size} 个项目
+                                </ContextMenuItem>
+                              </>
+                            ) : entry.kind === "folder" ? (
                               <>
                                 <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
                                   <FolderOpen className="h-4 w-4" />打开
@@ -2519,6 +2719,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   <FileArchive className="h-4 w-4" />下载为 ZIP
                                 </ContextMenuItem>
                                 <ContextMenuSeparator />
+                                <ContextMenuItem disabled={!entry.folder.canLock || busy} onClick={() => void handleToggleLock(entry)}>
+                                  {entry.folder.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                                  {entry.folder.locked ? "解锁" : "锁定"}
+                                </ContextMenuItem>
+                                <ContextMenuSeparator />
                                 <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
                                   <Trash2 className="h-4 w-4" />删除
                                 </ContextMenuItem>
@@ -2533,6 +2738,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 </ContextMenuItem>
                                 <ContextMenuItem disabled={!entry.document.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
                                   <Pencil className="h-4 w-4" />重命名
+                                </ContextMenuItem>
+                                <ContextMenuItem disabled={!entry.document.canLock || busy} onClick={() => void handleToggleLock(entry)}>
+                                  {entry.document.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                                  {entry.document.locked ? "解锁" : "锁定"}
                                 </ContextMenuItem>
                                 <ContextMenuSeparator />
                                 <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
@@ -2554,17 +2763,45 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   {sortedExplorerEntries.length > 0 ? (
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(88px,1fr))] gap-2">
                       {sortedExplorerEntries.map((entry) => {
-                        const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
+                        const selected = selectedExplorerKeys.has(entry.key)
                         const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
                         const notIndexed = entry.kind === "file" ? notIndexedSet.has(entry.relativePath) : notIndexedFolderSet.has(entry.relativePath)
+                        const multiSelected = selectedExplorerKeys.size > 1 && selected
                         return (
                           <ContextMenu key={entry.key}>
                             <ContextMenuTrigger asChild>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
-                                  if (entry.kind === "file") setSelectedDocument(entry.document)
+                                onClick={(e) => {
+                                  if (e.ctrlKey || e.metaKey) {
+                                    setSelectedExplorerKeys((prev) => {
+                                      const next = new Set(prev)
+                                      next.has(entry.key) ? next.delete(entry.key) : next.add(entry.key)
+                                      return next
+                                    })
+                                    lastClickedKeyRef.current = entry.key
+                                  } else if (e.shiftKey && lastClickedKeyRef.current) {
+                                    const keys = sortedExplorerEntries.map((en) => en.key)
+                                    const si = keys.indexOf(lastClickedKeyRef.current)
+                                    const ei = keys.indexOf(entry.key)
+                                    if (si !== -1 && ei !== -1) {
+                                      const [lo, hi] = si < ei ? [si, ei] : [ei, si]
+                                      setSelectedExplorerKeys(new Set(keys.slice(lo, hi + 1)))
+                                    }
+                                  } else {
+                                    setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
+                                    if (entry.kind === "file") setSelectedDocument(entry.document)
+                                    setSelectedExplorerKeys(new Set([entry.key]))
+                                    lastClickedKeyRef.current = entry.key
+                                  }
+                                }}
+                                onContextMenu={() => {
+                                  if (!selectedExplorerKeys.has(entry.key)) {
+                                    setSelectedExplorerEntry({ kind: entry.kind, relativePath: entry.relativePath })
+                                    if (entry.kind === "file") setSelectedDocument(entry.document)
+                                    setSelectedExplorerKeys(new Set([entry.key]))
+                                    lastClickedKeyRef.current = entry.key
+                                  }
                                 }}
                                 onDoubleClick={() => handleExplorerEntryOpen(entry)}
                                 disabled={busy}
@@ -2576,19 +2813,42 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                     : selected ? "bg-primary/8 text-foreground ring-1 ring-primary/30" : "text-foreground hover:bg-muted/60",
                                 )}
                               >
-                                {entry.kind === "folder" ? (
-                                  <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600", notIndexed && !selected && "opacity-40")}>
-                                    <FolderOpen className="h-7 w-7" />
-                                  </span>
-                                ) : (() => {
-                                  const fi = getExplorerFileIcon(entry.document.extension)
-                                  return <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", fi.className, notIndexed && !selected && "opacity-40")}><fi.icon className="h-7 w-7" /></span>
-                                })()}
+                                <div className="relative">
+                                  {entry.kind === "folder" ? (
+                                    <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600", notIndexed && !selected && "opacity-40")}>
+                                      <FolderOpen className="h-7 w-7" />
+                                    </span>
+                                  ) : (() => {
+                                    const fi = getExplorerFileIcon(entry.document.extension)
+                                    return <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", fi.className, notIndexed && !selected && "opacity-40")}><fi.icon className="h-7 w-7" /></span>
+                                  })()}
+                                  {(entry.kind === "file" ? entry.document.locked : entry.folder.locked) && (
+                                    <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-amber-500 text-white ring-1 ring-background">
+                                      <Lock className="h-2.5 w-2.5" />
+                                    </span>
+                                  )}
+                                </div>
                                 <span className={cn("line-clamp-2 w-full break-all text-xs leading-tight", notIndexed && !selected && "text-muted-foreground/70")}>{entry.name}</span>
                               </button>
                             </ContextMenuTrigger>
-                            <ContextMenuContent className="w-48">
-                              {entry.kind === "folder" ? (
+                            <ContextMenuContent className="w-56">
+                              {multiSelected ? (
+                                <>
+                                  <ContextMenuItem
+                                    onClick={() => handleDownloadMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)))}
+                                  >
+                                    <Download className="h-4 w-4" />下载选中文件 ({sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key) && en.kind === "file").length} 个)
+                                  </ContextMenuItem>
+                                  <ContextMenuSeparator />
+                                  <ContextMenuItem
+                                    variant="destructive"
+                                    disabled={busy}
+                                    onClick={() => void handleDeleteMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)))}
+                                  >
+                                    <Trash2 className="h-4 w-4" />删除选中 {selectedExplorerKeys.size} 个项目
+                                  </ContextMenuItem>
+                                </>
+                              ) : entry.kind === "folder" ? (
                                 <>
                                   <ContextMenuItem onClick={() => handleExplorerEntryOpen(entry)}>
                                     <FolderOpen className="h-4 w-4" />打开
@@ -2606,6 +2866,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                     <FileArchive className="h-4 w-4" />下载为 ZIP
                                   </ContextMenuItem>
                                   <ContextMenuSeparator />
+                                  <ContextMenuItem disabled={!entry.folder.canLock || busy} onClick={() => void handleToggleLock(entry)}>
+                                    {entry.folder.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                                    {entry.folder.locked ? "解锁" : "锁定"}
+                                  </ContextMenuItem>
+                                  <ContextMenuSeparator />
                                   <ContextMenuItem variant="destructive" disabled={!entry.folder.canDelete || busy} onClick={() => void handleDeleteFolder(entry.folder)}>
                                     <Trash2 className="h-4 w-4" />删除
                                   </ContextMenuItem>
@@ -2620,6 +2885,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   </ContextMenuItem>
                                   <ContextMenuItem disabled={!entry.document.canDelete || busy} onClick={() => void handleRenameEntry(entry)}>
                                     <Pencil className="h-4 w-4" />重命名
+                                  </ContextMenuItem>
+                                  <ContextMenuItem disabled={!entry.document.canLock || busy} onClick={() => void handleToggleLock(entry)}>
+                                    {entry.document.locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+                                    {entry.document.locked ? "解锁" : "锁定"}
                                   </ContextMenuItem>
                                   <ContextMenuSeparator />
                                   <ContextMenuItem variant="destructive" disabled={!entry.document.canDelete || busy} onClick={() => void handleDelete(entry.document)}>
@@ -2907,6 +3176,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         <span className={cn("font-medium", uploadTargetFolder === null ? "text-destructive" : "text-foreground")}>
                           {uploadTargetFolder === null ? "（请点击上方选择目录）" : uploadTargetFolder === "" ? "全部资料（根目录）" : uploadTargetFolder}
                         </span>
+                        {uploadTargetFolder !== null && (
+                          <button
+                            type="button"
+                            className="ml-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+                            onClick={() => { setUploadTargetFolder(null); setUploadFolderBrowsePath("") }}
+                          >
+                            重选
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -2914,16 +3192,33 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <div
                       onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
                       onDragLeave={() => setIsDragOver(false)}
-                      onDrop={(e) => {
+                      onDrop={async (e) => {
                         e.preventDefault()
                         setIsDragOver(false)
                         if (uploadTargetFolder === null) {
                           setError("请先选择目标目录")
                           return
                         }
+                        // Use DataTransferItem API to support folder drag
+                        const items = Array.from(e.dataTransfer.items).filter((i) => i.kind === "file")
+                        const hasDirectory = items.some((item) => item.webkitGetAsEntry?.()?.isDirectory)
+                        if (hasDirectory) {
+                          const allEntries: Array<{ file: File; relativePath: string }> = []
+                          for (const item of items) {
+                            const entry = item.webkitGetAsEntry?.()
+                            if (entry) allEntries.push(...(await traverseFsEntry(entry, "")))
+                          }
+                          const valid = allEntries.filter((en) => en.file.size > 0)
+                          if (valid.length) void handleBatchUpload(valid, uploadTargetFolder)
+                          return
+                        }
                         const droppedFiles = Array.from(e.dataTransfer.files).filter((f) => f.size > 0)
                         if (!droppedFiles.length) return
-                        if (droppedFiles.length === 1) {
+                        // ZIP files or multi-file drops go straight to batch upload
+                        const isSingleNonZip =
+                          droppedFiles.length === 1 &&
+                          !droppedFiles[0].name.toLowerCase().endsWith(".zip")
+                        if (isSingleNonZip) {
                           setPendingFile(droppedFiles[0])
                           if (singleUploadInputRef.current) singleUploadInputRef.current.value = ""
                         } else {
@@ -2941,9 +3236,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <Upload className="h-6 w-6" />
                       {pendingFile
                         ? <span className="font-medium text-foreground">{pendingFile.name}</span>
-                        : <span>拖拽文件到此处，或点击选择文件</span>
+                        : <span>拖拽文件、文件夹或 ZIP 到此处，或点击选择文件</span>
                       }
-                      <span className="text-xs">支持图片、Word、Excel、CSV、PDF、TXT 等文件</span>
+                      <span className="text-xs">支持图片、Word、Excel、CSV、PDF、TXT 等文件；拖入 ZIP 自动解压</span>
                     </div>
 
                     <input

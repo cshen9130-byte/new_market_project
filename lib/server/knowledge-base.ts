@@ -35,6 +35,8 @@ export type KnowledgeBaseDocumentNode = {
   canPreview: boolean
   canChat: boolean
   canDelete: boolean
+  locked: boolean
+  canLock: boolean
 }
 
 export type KnowledgeBaseFolderNode = {
@@ -45,6 +47,8 @@ export type KnowledgeBaseFolderNode = {
   ownerName: string
   uploadedAt: string | null
   canDelete: boolean
+  locked: boolean
+  canLock: boolean
   folders: KnowledgeBaseFolderNode[]
   documents: KnowledgeBaseDocumentNode[]
 }
@@ -69,6 +73,7 @@ type KnowledgeBaseOwnershipRecord = {
   ownerName: string
   ownerEmail?: string
   uploadedAt: string
+  locked?: boolean
 }
 
 const DEFAULT_STORAGE_ROOT = getServerStoragePath("ai-knowledge-base")
@@ -210,6 +215,8 @@ function buildKnowledgeBaseDocumentNode(
 ): KnowledgeBaseDocumentNode {
   const extension = getExtension(input.name)
   const ownership = ownershipMap.get(input.relativePath)
+  const locked = ownership?.locked === true
+  const isOwner = Boolean(viewerUserId && ownership?.ownerId && ownership.ownerId === viewerUserId)
 
   return {
     name: input.name,
@@ -222,7 +229,9 @@ function buildKnowledgeBaseDocumentNode(
     uploadedAt: ownership?.uploadedAt || null,
     canPreview: isKnowledgeBasePreviewable(extension),
     canChat: isKnowledgeBaseChatSupported(extension),
-    canDelete: isAdmin || Boolean(viewerUserId && ownership?.ownerId && ownership.ownerId === viewerUserId),
+    canDelete: isAdmin || (locked ? isOwner : true),
+    locked,
+    canLock: isAdmin || isOwner,
   }
 }
 
@@ -408,6 +417,9 @@ async function buildFolderTree(
     considerCandidate({ ownerId: folder.ownerId, ownerName: folder.ownerName, uploadedAt: folder.uploadedAt })
   }
 
+  const folderLocked = explicitOwner?.locked === true
+  const isFolderOwner = Boolean(viewerUserId && (explicitOwner?.ownerId || fallbackOwnerId) && (explicitOwner?.ownerId ?? fallbackOwnerId) === viewerUserId)
+
   return {
     name: relativeDir ? path.basename(relativeDir) : "全部资料",
     relativePath: relativeDir,
@@ -415,8 +427,11 @@ async function buildFolderTree(
     ownerId: explicitOwner?.ownerId || fallbackOwnerId,
     ownerName: explicitOwner?.ownerName || fallbackOwnerName || "-",
     uploadedAt: explicitOwner?.uploadedAt || fallbackUploadedAt,
-    // A folder can be deleted by its owner or by an admin; root folder ("") is never deletable
-    canDelete: Boolean(relativeDir) && (isAdmin || Boolean(viewerUserId && (explicitOwner?.ownerId || fallbackOwnerId) && (explicitOwner?.ownerId ?? fallbackOwnerId) === viewerUserId)),
+    // A folder can be deleted by its owner or by an admin; root folder ("") is never deletable.
+    // If locked, only owner/admin can delete/rename/move; if unlocked, anyone can.
+    canDelete: Boolean(relativeDir) && (isAdmin || (folderLocked ? isFolderOwner : true)),
+    locked: folderLocked,
+    canLock: isAdmin || isFolderOwner,
     folders,
     documents,
   }
@@ -440,7 +455,7 @@ export async function deleteKnowledgeBaseFolder(relativePath: string, actorUserI
   if (!isAdmin) {
     const ownershipMap = await getOwnershipMap()
     const ownership = ownershipMap.get(normalizedPath)
-    if (!ownership || ownership.ownerId !== actorUserId) {
+    if (ownership?.locked === true && ownership.ownerId !== actorUserId) {
       throw new Error("只有创建者或管理员可以删除该文件夹")
     }
   }
@@ -599,10 +614,7 @@ export async function deleteKnowledgeBaseFile(relativePath: string, actorUserId:
   if (!isAdmin) {
     const ownershipMap = await getOwnershipMap()
     const ownership = ownershipMap.get(normalizedPath)
-    if (!ownership) {
-      throw new Error("文件缺少归属信息，无法删除")
-    }
-    if (ownership.ownerId !== actorUserId) {
+    if (ownership?.locked === true && ownership.ownerId !== actorUserId) {
       throw new Error("只有上传者可以删除该文件")
     }
   }
@@ -763,10 +775,7 @@ export async function renameKnowledgeBaseFile(relativePath: string, newName: str
   if (!isAdmin) {
     const ownershipMap = await getOwnershipMap()
     const ownership = ownershipMap.get(normalizedPath)
-    if (!ownership) {
-      throw new Error("文件缺少归属信息，无法重命名")
-    }
-    if (ownership.ownerId !== actorUserId) {
+    if (ownership?.locked === true && ownership.ownerId !== actorUserId) {
       throw new Error("只有上传者可以重命名该文件")
     }
   }
@@ -808,7 +817,7 @@ export async function renameKnowledgeBaseFolder(relativePath: string, newName: s
   if (!isAdmin) {
     const ownershipMap = await getOwnershipMap()
     const ownership = ownershipMap.get(normalizedPath)
-    if (!ownership || ownership.ownerId !== actorUserId) {
+    if (ownership?.locked === true && ownership.ownerId !== actorUserId) {
       throw new Error("只有创建者或管理员可以重命名该文件夹")
     }
   }
@@ -843,7 +852,7 @@ export async function moveKnowledgeBaseFolder(sourcePath: string, destinationPar
   if (!isAdmin) {
     const ownershipMap = await getOwnershipMap()
     const ownership = ownershipMap.get(normalizedSource)
-    if (!ownership || ownership.ownerId !== actorUserId) {
+    if (ownership?.locked === true && ownership.ownerId !== actorUserId) {
       throw new Error("只有创建者或管理员可以移动该文件夹")
     }
   }
@@ -1188,4 +1197,31 @@ export async function collectKnowledgeBaseDocuments(folderPath = "", onScan?: (f
   await collectChatDocumentsInDirectory(target, normalizeKnowledgeBasePath(folderPath), documents, onScan)
   documents.sort((left, right) => left.relativePath.localeCompare(right.relativePath, "zh-CN"))
   return documents
+}
+
+export async function setKnowledgeBaseEntryLocked(relativePath: string, locked: boolean, actorUserId: string, isAdmin = false) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    throw new Error("缺少路径")
+  }
+  if (!actorUserId) {
+    throw new Error("缺少用户信息")
+  }
+
+  const records = await readOwnershipRecords()
+  const existingIndex = records.findIndex((r) => r.relativePath === normalizedPath)
+  const existing = existingIndex >= 0 ? records[existingIndex] : null
+
+  if (!isAdmin) {
+    if (!existing || existing.ownerId !== actorUserId) {
+      throw new Error("只有上传者或管理员可以修改锁定状态")
+    }
+  }
+
+  if (!existing) {
+    throw new Error("无法锁定没有归属信息的文件")
+  }
+
+  records[existingIndex] = { ...existing, locked }
+  await writeOwnershipRecords(records)
 }
