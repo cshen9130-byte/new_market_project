@@ -488,10 +488,13 @@ async function getOrBuildVectorStore(
     // Auto-detect embedding model mismatch: if the stored index was built with a
     // different model, treat every file as new so the whole scope is re-embedded.
     const currentModel = getEmbeddingModel()
-    const storedModel = Object.keys(prevFiles).length > 0
+    const hasIndexedFiles = Object.keys(prevFiles).length > 0
+    const storedModel = hasIndexedFiles
       ? await pgGetScopeEmbeddingModel(scopeKey)
       : null
-    const modelChanged = storedModel !== null && storedModel !== currentModel
+    // Legacy rows may have empty model; treat that as mismatch so we can
+    // migrate old indexes to the current embedding model in one pass.
+    const modelChanged = hasIndexedFiles && (storedModel === null || storedModel !== currentModel)
 
     if (modelChanged) {
       console.log(`[knowledge-chat] Embedding model changed (${storedModel} → ${currentModel}), clearing scope index for re-embed.`)
