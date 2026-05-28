@@ -626,6 +626,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         setEmbedJob(data)
         if (data.status === "done" || data.status === "error") {
           clearInterval(embedPollRef.current!)
+          if (data.status === "done") void refreshEmbedStatus()
           setTimeout(() => setEmbedJob(null), 5_000)
         }
       } catch {
@@ -839,6 +840,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       setTree(data.tree)
       setStorageRoot(data.rootPath || "")
+      void refreshEmbedStatus()
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
     } finally {
@@ -848,6 +850,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
 
   const folderOptions = useMemo(() => (tree ? flattenFolders(tree) : [{ label: "全部资料", value: "" }]), [tree])
+  // Derive parent-folder paths for any not-indexed file so folders also get dimmed
+  const notIndexedFolderSet = useMemo(() => {
+    const set = new Set<string>()
+    for (const filePath of notIndexedSet) {
+      const parts = filePath.split("/")
+      for (let i = 1; i < parts.length; i++) {
+        set.add(parts.slice(0, i).join("/"))
+      }
+    }
+    return set
+  }, [notIndexedSet])
   const totalDocuments = useMemo(() => countDocuments(tree), [tree])
   const currentFolderNode = useMemo(() => findFolderByPath(tree, selectedFolder), [selectedFolder, tree])
   const syncServerFiles = useMemo(() => {
@@ -1915,6 +1928,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
   const [indexInfo, setIndexInfo] = useState<IndexInfoResult | null>(null)
   const [indexInfoLoading, setIndexInfoLoading] = useState(false)
+  const [notIndexedSet, setNotIndexedSet] = useState<Set<string>>(new Set())
+
+  async function refreshEmbedStatus() {
+    try {
+      const res = await fetch("/api/knowledge-base/index-info?scope=", { headers: getKnowledgeBaseAuthHeaders() })
+      if (!res.ok) return
+      const data: IndexInfoResult = await res.json()
+      setNotIndexedSet(new Set(data.notIndexedFiles))
+    } catch {
+      // non-critical – don't block the UI
+    }
+  }
 
   async function handleCheckIndexCoverage() {
     if (indexInfoLoading) return
@@ -2438,6 +2463,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     sortedExplorerEntries.map((entry) => {
                       const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
                       const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
+                      const notIndexed = entry.kind === "file" ? notIndexedSet.has(entry.relativePath) : notIndexedFolderSet.has(entry.relativePath)
                       return (
                         <ContextMenu key={entry.key}>
                           <ContextMenuTrigger asChild>
@@ -2459,14 +2485,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                             >
                               <div className="flex min-w-0 items-center gap-2">
                                 {entry.kind === "folder" ? (
-                                  <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600")}>
+                                  <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600", notIndexed && !selected && "opacity-40")}>
                                     <FolderOpen className="h-4 w-4" />
                                   </span>
                                 ) : (() => {
                                   const fi = getExplorerFileIcon(entry.document.extension)
-                                  return <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fi.className)}><fi.icon className="h-4 w-4" /></span>
+                                  return <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fi.className, notIndexed && !selected && "opacity-40")}><fi.icon className="h-4 w-4" /></span>
                                 })()}
-                                <span className="truncate">{entry.name}</span>
+                                <span className={cn("truncate", notIndexed && !selected && "text-muted-foreground/70")}>{entry.name}</span>
                               </div>
                               <div className="truncate">{formatDateTime(entry.updatedAt)}</div>
                               <div className="truncate">{entry.typeLabel}</div>
@@ -2530,6 +2556,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       {sortedExplorerEntries.map((entry) => {
                         const selected = activeExplorerEntry?.kind === entry.kind && activeExplorerEntry.relativePath === entry.relativePath
                         const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
+                        const notIndexed = entry.kind === "file" ? notIndexedSet.has(entry.relativePath) : notIndexedFolderSet.has(entry.relativePath)
                         return (
                           <ContextMenu key={entry.key}>
                             <ContextMenuTrigger asChild>
@@ -2550,14 +2577,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 )}
                               >
                                 {entry.kind === "folder" ? (
-                                  <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600")}>
+                                  <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", isCyber ? "bg-cyan-500/15 text-cyan-300" : "bg-amber-500/15 text-amber-600", notIndexed && !selected && "opacity-40")}>
                                     <FolderOpen className="h-7 w-7" />
                                   </span>
                                 ) : (() => {
                                   const fi = getExplorerFileIcon(entry.document.extension)
-                                  return <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", fi.className)}><fi.icon className="h-7 w-7" /></span>
+                                  return <span className={cn("flex h-12 w-12 items-center justify-center rounded-lg", fi.className, notIndexed && !selected && "opacity-40")}><fi.icon className="h-7 w-7" /></span>
                                 })()}
-                                <span className="line-clamp-2 w-full break-all text-xs leading-tight">{entry.name}</span>
+                                <span className={cn("line-clamp-2 w-full break-all text-xs leading-tight", notIndexed && !selected && "text-muted-foreground/70")}>{entry.name}</span>
                               </button>
                             </ContextMenuTrigger>
                             <ContextMenuContent className="w-48">
