@@ -82,7 +82,8 @@ export async function GET(req: Request) {
         stale: stale.length,
         percentIndexed: allFiles.length > 0 ? Math.round((indexed.length / allFiles.length) * 100) : 0,
       },
-      notIndexedFiles: notIndexed.slice(0, 200),
+      // Return full list so UI can correctly gray out all non-embedded files/folders.
+      notIndexedFiles: notIndexed,
       staleFiles: stale.slice(0, 50),
     })
   } catch (e: any) {

@@ -567,7 +567,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const batchUploadAbortControllerRef = useRef<AbortController | null>(null)  // aborts in-flight XHRs on stop
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
-  const [reassignOwnerTarget, setReassignOwnerTarget] = useState<{ relativePath: string; name: string } | null>(null)
+  const [reassignOwnerTarget, setReassignOwnerTarget] = useState<{ relativePaths: string[]; name: string } | null>(null)
   const [reassignOwnerUsers, setReassignOwnerUsers] = useState<Array<{ id: string; name: string; email: string }>>([])
   const [reassignOwnerSelectedId, setReassignOwnerSelectedId] = useState("")
   const [reassignOwnerBusy, setReassignOwnerBusy] = useState(false)
@@ -1916,17 +1916,34 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     await refreshTree()
   }
 
+  async function ensureReassignOwnerUsersLoaded() {
+    if (reassignOwnerUsers.length > 0) return
+    try {
+      const res = await fetch("/api/admin/users", { headers: getKnowledgeBaseAuthHeaders() })
+      const data = await res.json()
+      if (data.ok && Array.isArray(data.users)) setReassignOwnerUsers(data.users)
+    } catch {
+      // ignore
+    }
+  }
+
   async function openReassignOwnerDialog(relativePath: string, name: string) {
-    setReassignOwnerTarget({ relativePath, name })
+    setReassignOwnerTarget({ relativePaths: [relativePath], name })
     setReassignOwnerSelectedId("")
     setReassignOwnerBusy(false)
-    if (reassignOwnerUsers.length === 0) {
-      try {
-        const res = await fetch("/api/admin/users", { headers: getKnowledgeBaseAuthHeaders() })
-        const data = await res.json()
-        if (data.ok && Array.isArray(data.users)) setReassignOwnerUsers(data.users)
-      } catch { /* ignore */ }
-    }
+    await ensureReassignOwnerUsersLoaded()
+  }
+
+  async function openReassignOwnerDialogForMultiple(entries: ExplorerEntry[]) {
+    const uniquePaths = Array.from(new Set(entries.map((entry) => entry.relativePath)))
+    if (!uniquePaths.length) return
+    setReassignOwnerTarget({
+      relativePaths: uniquePaths,
+      name: uniquePaths.length === 1 ? entries[0]?.name || uniquePaths[0] : `批量编辑（${uniquePaths.length} 项）`,
+    })
+    setReassignOwnerSelectedId("")
+    setReassignOwnerBusy(false)
+    await ensureReassignOwnerUsersLoaded()
   }
 
   async function confirmReassignOwner() {
@@ -1935,15 +1952,27 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     if (!user) return
     setReassignOwnerBusy(true)
     try {
-      const res = await fetch("/api/knowledge-base/owner", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", ...getKnowledgeBaseAuthHeaders() },
-        body: JSON.stringify({ path: reassignOwnerTarget.relativePath, newOwnerId: user.id, newOwnerName: user.name, newOwnerEmail: user.email }),
-      })
-      const data = await res.json()
-      if (!data.ok) throw new Error(data.error || "操作失败")
-      setReassignOwnerTarget(null)
+      const failed: string[] = []
+      for (const relativePath of reassignOwnerTarget.relativePaths) {
+        const res = await fetch("/api/knowledge-base/owner", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", ...getKnowledgeBaseAuthHeaders() },
+          body: JSON.stringify({ path: relativePath, newOwnerId: user.id, newOwnerName: user.name, newOwnerEmail: user.email }),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok || !data?.ok) {
+          failed.push(relativePath)
+        }
+      }
+
+      if (failed.length === 0) {
+        setReassignOwnerTarget(null)
+      }
       await refreshTree()
+
+      if (failed.length > 0) {
+        throw new Error(`已成功修改 ${reassignOwnerTarget.relativePaths.length - failed.length}/${reassignOwnerTarget.relativePaths.length} 项，失败 ${failed.length} 项`)
+      }
     } catch (e: any) {
       alert(e?.message || "操作失败")
     } finally {
@@ -2787,6 +2816,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       const selected = selectedExplorerKeys.has(entry.key)
                       const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
                       const notIndexed = entry.kind === "file" ? notIndexedSet.has(entry.relativePath) : notIndexedFolderSet.has(entry.relativePath)
+                      const dimmedNotIndexed = notIndexed && !selected
                       const multiSelected = selectedExplorerKeys.size > 1 && selected
                       return (
                         <ContextMenu key={entry.key}>
@@ -2828,8 +2858,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               className={cn(
                                 "grid w-full grid-cols-[minmax(0,2fr)_minmax(140px,1.1fr)_minmax(100px,0.9fr)_minmax(100px,0.8fr)_minmax(90px,0.9fr)] gap-3 border-b px-3 py-2 text-left text-sm transition-colors last:border-b-0",
                                 isCyber
-                                  ? selected ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-50" : "border-cyan-500/10 text-cyan-100 hover:bg-cyan-500/5"
-                                  : selected ? "border-border bg-primary/5 text-foreground" : "border-border text-foreground hover:bg-muted/50",
+                                  ? selected
+                                    ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-50"
+                                    : dimmedNotIndexed
+                                      ? "border-cyan-500/10 text-cyan-300/45 hover:bg-cyan-500/3"
+                                      : "border-cyan-500/10 text-cyan-100 hover:bg-cyan-500/5"
+                                  : selected
+                                    ? "border-border bg-primary/5 text-foreground"
+                                    : dimmedNotIndexed
+                                      ? "border-border text-muted-foreground hover:bg-muted/35"
+                                      : "border-border text-foreground hover:bg-muted/50",
                               )}
                               title={entry.relativePath}
                               disabled={busy}
@@ -2843,7 +2881,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   const fi = getExplorerFileIcon(entry.document.extension)
                                   return <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fi.className, notIndexed && !selected && "opacity-40")}><fi.icon className="h-4 w-4" /></span>
                                 })()}
-                                <span className={cn("truncate", notIndexed && !selected && "text-muted-foreground/70")}>{entry.name}</span>
+                                <span className={cn("truncate", dimmedNotIndexed && "text-muted-foreground")}>{entry.name}</span>
                                 {(entry.kind === "file" ? entry.document.locked : entry.folder.locked) && (
                                   <Lock className="ml-0.5 h-3 w-3 shrink-0 text-amber-500" />
                                 )}
@@ -2851,7 +2889,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               <div className="truncate">{formatDateTime(entry.updatedAt)}</div>
                               <div className="truncate">{entry.typeLabel}</div>
                               <div className="truncate">{entry.kind === "file" ? formatFileSize(entry.document.size) : formatFileSize(getFolderTotalSize(entry.folder))}</div>
-                              <div className="truncate">{entry.ownerName}</div>
+                              <div className={cn("truncate", dimmedNotIndexed && "text-muted-foreground")}>{entry.ownerName}</div>
                             </button>
                           </ContextMenuTrigger>
                           <ContextMenuContent className="w-56">
@@ -2869,6 +2907,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 <ContextMenuItem disabled={busy} onClick={() => void handleLockMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)), false)}>
                                   <LockOpen className="h-4 w-4" />解锁选中 {selectedExplorerKeys.size} 个项目
                                 </ContextMenuItem>
+                                {currentUser?.role === "admin" && (
+                                  <ContextMenuItem disabled={busy} onClick={() => void openReassignOwnerDialogForMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)))}>
+                                    <UserCog className="h-4 w-4" />编辑归属（选中 {selectedExplorerKeys.size} 项）
+                                  </ContextMenuItem>
+                                )}
                                 <ContextMenuSeparator />
                                 <ContextMenuItem
                                   variant="destructive"
@@ -2953,6 +2996,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         const selected = selectedExplorerKeys.has(entry.key)
                         const busy = deletingPath === entry.relativePath || renamingPath === entry.relativePath
                         const notIndexed = entry.kind === "file" ? notIndexedSet.has(entry.relativePath) : notIndexedFolderSet.has(entry.relativePath)
+                        const dimmedNotIndexed = notIndexed && !selected
                         const multiSelected = selectedExplorerKeys.size > 1 && selected
                         return (
                           <ContextMenu key={entry.key}>
@@ -2996,8 +3040,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                 className={cn(
                                   "flex flex-col items-center gap-1.5 rounded-lg p-2 text-center transition-colors",
                                   isCyber
-                                    ? selected ? "bg-cyan-500/15 text-cyan-50 ring-1 ring-cyan-400/40" : "text-cyan-100 hover:bg-cyan-500/8"
-                                    : selected ? "bg-primary/8 text-foreground ring-1 ring-primary/30" : "text-foreground hover:bg-muted/60",
+                                    ? selected
+                                      ? "bg-cyan-500/15 text-cyan-50 ring-1 ring-cyan-400/40"
+                                      : dimmedNotIndexed
+                                        ? "text-cyan-300/45 hover:bg-cyan-500/5"
+                                        : "text-cyan-100 hover:bg-cyan-500/8"
+                                    : selected
+                                      ? "bg-primary/8 text-foreground ring-1 ring-primary/30"
+                                      : dimmedNotIndexed
+                                        ? "text-muted-foreground hover:bg-muted/45"
+                                        : "text-foreground hover:bg-muted/60",
                                 )}
                               >
                                 <div className="relative">
@@ -3015,7 +3067,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                     </span>
                                   )}
                                 </div>
-                                <span className={cn("line-clamp-2 w-full break-all text-xs leading-tight", notIndexed && !selected && "text-muted-foreground/70")}>{entry.name}</span>
+                                <span className={cn("line-clamp-2 w-full break-all text-xs leading-tight", dimmedNotIndexed && "text-muted-foreground")}>{entry.name}</span>
                               </button>
                             </ContextMenuTrigger>
                             <ContextMenuContent className="w-56">
@@ -3033,6 +3085,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   <ContextMenuItem disabled={busy} onClick={() => void handleLockMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)), false)}>
                                     <LockOpen className="h-4 w-4" />解锁选中 {selectedExplorerKeys.size} 个项目
                                   </ContextMenuItem>
+                                  {currentUser?.role === "admin" && (
+                                    <ContextMenuItem disabled={busy} onClick={() => void openReassignOwnerDialogForMultiple(sortedExplorerEntries.filter((en) => selectedExplorerKeys.has(en.key)))}>
+                                      <UserCog className="h-4 w-4" />编辑归属（选中 {selectedExplorerKeys.size} 项）
+                                    </ContextMenuItem>
+                                  )}
                                   <ContextMenuSeparator />
                                   <ContextMenuItem
                                     variant="destructive"
@@ -4210,7 +4267,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <DialogTitle>编辑归属 — 「{reassignOwnerTarget?.name}」</DialogTitle>
                 </DialogHeader>
                 <div className="py-2">
-                  <p className="mb-3 text-sm text-muted-foreground">选择新的归属用户（上传者）：</p>
+                  <p className="mb-3 text-sm text-muted-foreground">选择新的归属用户（上传者）：共 {reassignOwnerTarget?.relativePaths.length ?? 0} 项</p>
                   <select
                     className="w-full rounded border bg-background px-3 py-2 text-sm"
                     value={reassignOwnerSelectedId}
@@ -4575,7 +4632,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               <DialogTitle>编辑归属 — 「{reassignOwnerTarget?.name}」</DialogTitle>
             </DialogHeader>
             <div className="py-2">
-              <p className="mb-3 text-sm text-muted-foreground">选择新的归属用户（上传者）：</p>
+              <p className="mb-3 text-sm text-muted-foreground">选择新的归属用户（上传者）：共 {reassignOwnerTarget?.relativePaths.length ?? 0} 项</p>
               <select
                 className="w-full rounded border bg-background px-3 py-2 text-sm"
                 value={reassignOwnerSelectedId}
