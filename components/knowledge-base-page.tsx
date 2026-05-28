@@ -1035,17 +1035,68 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       return
     }
 
+    const serverFileMap = new Map<string, number>(
+      collectDocumentsInFolder(findFolderByPath(tree, resolvedTarget)).map((sf) => {
+        const relPath = sf.relativePath.startsWith(resolvedTarget + "/")
+          ? sf.relativePath.slice(resolvedTarget.length + 1)
+          : sf.relativePath
+        return [relPath, sf.size]
+      }),
+    )
+
+    const duplicateEntries = entries.filter((entry) => {
+      const existingSize = serverFileMap.get(entry.relativePath)
+      return existingSize !== undefined && existingSize === entry.file.size
+    })
+    let uploadEntries = entries
+
+    if (duplicateEntries.length > 0) {
+      const duplicateKeySet = new Set(duplicateEntries.map((entry) => `${entry.relativePath}::${entry.file.size}`))
+      uploadEntries = entries.filter((entry) => !duplicateKeySet.has(`${entry.relativePath}::${entry.file.size}`))
+      const duplicatePreview = duplicateEntries
+        .slice(0, 6)
+        .map((entry) => `- ${entry.relativePath}`)
+        .join("\n")
+      const previewTail = duplicateEntries.length > 6 ? `\n- ... 还有 ${duplicateEntries.length - 6} 个` : ""
+
+      const confirmed = window.confirm(
+        `检测到 ${duplicateEntries.length} 个重复文件（同路径且大小一致）。\n将仅上传非重复文件 ${uploadEntries.length} 个。\n\n重复文件示例:\n${duplicatePreview}${previewTail}\n\n是否继续？`,
+      )
+      if (!confirmed) {
+        setBatchUploadSummary(`已取消上传：检测到 ${duplicateEntries.length} 个重复文件`)
+        setBatchUploadProgress(0)
+        return
+      }
+    }
+
+    if (!uploadEntries.length) {
+      setBatchUploadSummary(`检测到 ${duplicateEntries.length} 个重复文件，已全部跳过`)
+      setBatchUploadProgress(100)
+      setBatchUploadSpeedMBps(0)
+      setBatchUploadEtaSeconds(0)
+      setTimeout(() => {
+        setBatchUploadProgress(0)
+        setBatchUploadSummary("")
+        setBatchUploadEtaSeconds(null)
+      }, 1500)
+      if (batchUploadInputRef.current) {
+        batchUploadInputRef.current.value = ""
+      }
+      return
+    }
+
     try {
       setBatchUploading(true)
       setError(null)
 
-      const totalBytes = entries.reduce((sum, entry) => sum + Math.max(entry.file.size, 1), 0)
+      const totalBytes = uploadEntries.reduce((sum, entry) => sum + Math.max(entry.file.size, 1), 0)
       let uploadedBytes = 0
       const startedAt = Date.now()
-      updateUploadTelemetry(0, totalBytes, startedAt, `准备上传 ${entries.length} 个文件`)
+      const preflightHint = duplicateEntries.length > 0 ? `（已跳过重复 ${duplicateEntries.length} 个）` : ""
+      updateUploadTelemetry(0, totalBytes, startedAt, `准备上传 ${uploadEntries.length} 个文件${preflightHint}`)
 
-      for (let index = 0; index < entries.length; index += 1) {
-        const entry = entries[index]
+      for (let index = 0; index < uploadEntries.length; index += 1) {
+        const entry = uploadEntries[index]
         const form = new FormData()
         form.append("folderPath", resolvedTarget)
         form.append("files", entry.file)
@@ -1054,14 +1105,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
         await uploadKnowledgeBaseFormDataWithProgress(form, (loaded) => {
           const currentLoaded = uploadedBytes + Math.min(loaded, Math.max(entry.file.size, 1))
-          updateUploadTelemetry(currentLoaded, totalBytes, startedAt, `正在上传 ${index + 1}/${entries.length}: ${entry.relativePath}`)
+          updateUploadTelemetry(currentLoaded, totalBytes, startedAt, `正在上传 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
         })
 
         uploadedBytes += Math.max(entry.file.size, 1)
-        updateUploadTelemetry(uploadedBytes, totalBytes, startedAt, `正在上传 ${index + 1}/${entries.length}: ${entry.relativePath}`)
+        updateUploadTelemetry(uploadedBytes, totalBytes, startedAt, `正在上传 ${index + 1}/${uploadEntries.length}: ${entry.relativePath}`)
       }
 
-      updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${entries.length} 个文件，请手动点击“向量化”`)
+      const doneHint = duplicateEntries.length > 0 ? `（已跳过重复 ${duplicateEntries.length} 个）` : ""
+      updateUploadTelemetry(totalBytes, totalBytes, startedAt, `已完成上传 ${uploadEntries.length} 个文件${doneHint}，请手动点击“向量化”`)
       await refreshTree()
     } catch (requestError: any) {
       setError(requestError?.message || String(requestError))
@@ -2770,7 +2822,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         </div>
                       </div>
                     )}
-                    <div className="text-xs text-muted-foreground">批量上传会保留所选文件夹的层级结构，统一导入到目标目录下。</div>
+                    <div className="text-xs text-muted-foreground">批量上传会先检测重复文件并让你确认，仅上传非重复文件；目录层级结构会保留并导入到目标目录。</div>
                   </div>
                 )}
 
