@@ -560,6 +560,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   } | null>(null)
   const speedSamplesRef = useRef<Array<{ time: number; bytes: number }>>([])  // sliding-window speed samples
   const batchUploadAbortRef = useRef(false)  // set to true by the Stop button to cancel ongoing batch upload
+  const batchUploadAbortControllerRef = useRef<AbortController | null>(null)  // aborts in-flight XHRs on stop
   const [deletingPath, setDeletingPath] = useState<string | null>(null)
   const [renamingPath, setRenamingPath] = useState<string | null>(null)
   type ExplorerSortKey = "name" | "updatedAt" | "typeLabel" | "size" | "ownerName"
@@ -744,6 +745,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   function uploadKnowledgeBaseFormDataWithProgress(
     form: FormData,
     onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<KnowledgeBaseUploadResponse> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest()
@@ -765,6 +767,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       }
 
       xhr.onerror = () => reject(new Error("上传请求失败，请检查网络连接或稍后重试"))
+      xhr.onabort = () => reject(new DOMException("上传已取消", "AbortError"))
+
+      // Wire up the AbortSignal so stop-button can cancel in-flight XHRs
+      if (signal) {
+        if (signal.aborted) {
+          xhr.abort()
+        } else {
+          signal.addEventListener("abort", () => xhr.abort(), { once: true })
+        }
+      }
 
       xhr.onload = () => {
         const responseText = typeof xhr.responseText === "string" ? xhr.responseText : ""
@@ -1271,6 +1283,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       let confirmLock = Promise.resolve()
       speedSamplesRef.current = []  // reset sliding window for new upload session
       batchUploadAbortRef.current = false  // clear any previous cancellation
+      batchUploadAbortControllerRef.current = new AbortController()
       const activeNames: string[] = []
 
       async function uploadWorker() {
@@ -1292,7 +1305,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               const totalLoaded = fileProgress.reduce((s, b) => s + b, 0)
               updateUploadTelemetry(totalLoaded, totalBytes, startedAt,
                 `正在上传 (${activeNames.length} 并发): ${activeNames[activeNames.length - 1]}`)
-            })
+            }, batchUploadAbortControllerRef.current?.signal)
             successCount += 1
             fileProgress[index] = Math.max(entry.file.size, 1)
             // For ZIP uploads, fold any server-reported skipped extracted files into issues
@@ -1303,6 +1316,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             }
           } catch (uploadError: any) {
             fileProgress[index] = Math.max(entry.file.size, 1)
+            // If the user clicked Stop, the XHR was aborted — exit worker silently
+            if (uploadError?.name === "AbortError" || batchUploadAbortRef.current) return
             const reason = normalizeUploadErrorMessage(uploadError)
             if (isZip) {
               // ZIP upload failures go directly to issues — no interactive dialog.
@@ -3347,7 +3362,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               variant="destructive"
                               size="sm"
                               className="h-6 shrink-0 px-2 text-xs"
-                              onClick={() => { batchUploadAbortRef.current = true }}
+                              onClick={() => {
+                              batchUploadAbortRef.current = true
+                              batchUploadAbortControllerRef.current?.abort()
+                            }}
                             >
                               停止
                             </Button>
@@ -4478,7 +4496,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         variant="destructive"
                         size="sm"
                         className="h-6 shrink-0 px-2 text-xs"
-                        onClick={() => { batchUploadAbortRef.current = true }}
+                        onClick={() => {
+                          batchUploadAbortRef.current = true
+                          batchUploadAbortControllerRef.current?.abort()
+                        }}
                       >
                         停止
                       </Button>
