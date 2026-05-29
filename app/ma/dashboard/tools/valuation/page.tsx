@@ -6,6 +6,7 @@ import * as echarts from 'echarts';
 // 定义新的数据接口
 interface ValuationPosition {
   // 基础标识
+  code?: string;              // 原始科目代码，如 '3102I201PS2606'
   symbol: string;           // 合约代码，如 'IC2606', 'AU2604'
   name: string;             // 品种名称，如 '中证500股指期货', '黄金期货'
   exchange: string;         // 交易所：'CFFEX', 'SHFE', 'DCE', 'CZCE', 'INE', 'GFEX'
@@ -25,6 +26,10 @@ interface ValuationPosition {
   // 风险指标（可选）
   margin_usage?: number;    // 保证金占用
   weight?: number;          // 占净资产比例
+  row_kind?: string;         // 后端标准化行类型
+  is_leaf?: boolean;         // 是否叶子明细
+  include_in_detail?: boolean;   // 是否进入明细展示
+  include_in_analysis?: boolean; // 是否进入概览/分析
 }
 
 // 定义后端返回的汇总信息接口
@@ -39,6 +44,8 @@ interface ValuationSummary {
 // 定义分析结果接口
 interface AnalysisResult {
   total_value: number;       // 总名义市值
+  total_contract_count: number;
+  netting_value: number;
   total_margin: number;      // 总保证金
   leverage: number;          // 杠杆倍数
   net_exposure: number;      // 净敞口
@@ -335,8 +342,10 @@ export default function ValuationTool() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState<React.ReactNode | null>(null);
   const [portfolioData, setPortfolioData] = useState<ValuationPosition[]>([]);
+  const [holdingDetailData, setHoldingDetailData] = useState<ValuationPosition[]>([]);
   const [summaryData, setSummaryData] = useState<ValuationSummary | null>(null);
   const [allRawData, setAllRawData] = useState<any[]>([]);
+  const [holdingSearch, setHoldingSearch] = useState('');
   
   const assetClassChartRef = useRef<HTMLDivElement>(null);
   const sectorChartRef = useRef<HTMLDivElement>(null);
@@ -494,8 +503,11 @@ export default function ValuationTool() {
     let totalValue = 0;
     // 使用外部传入的保证金值，如果没有则累加持仓的 margin_usage
     let totalMargin = externalMargin > 0 ? externalMargin : 0;
+    let totalContractCount = 0;
     let longValue = 0;
     let shortValue = 0;
+    let nettingLongValue = 0;
+    let nettingShortValue = 0;
     const assetClassDistribution: { [key: string]: number } = {};
     const industryDistribution: { [key: string]: number } = {};  // 细分板块分布
     const categoryDistribution: { [key: string]: number } = {};   // 大类分布（总）
@@ -537,6 +549,18 @@ export default function ValuationTool() {
         }
       }
 
+      const contractText = `${item.symbol || ''} ${item.name || ''}`;
+      const hasContractCodeForCount = /[A-Za-z]{1,4}\d{2,5}/.test(contractText);
+      if (hasContractCodeForCount && assetClass !== '货币基金') {
+        totalContractCount += Math.abs(item.volume || 0);
+      }
+
+      if (item.direction === 'long') {
+        nettingLongValue += value;
+      } else if (item.direction === 'short') {
+        nettingShortValue += value;
+      }
+
       assetClassDistribution[assetClass] = (assetClassDistribution[assetClass] || 0) + value;
 
       // 交易所分布
@@ -555,8 +579,11 @@ export default function ValuationTool() {
     // 计算杠杆（总名义市值 / 净资产）
     const leverage = nav > 0 ? totalValue / nav : 0;
 
-    // 计算净敞口
-    const netExposure = nav > 0 ? (longValue - shortValue) / nav * 100 : 0;
+    const portfolioTotalAssets = totalValue;
+    const signedNettingValue = nettingLongValue - nettingShortValue;
+
+    // 净敞口按投资组合总资产口径计算：(多头 - 空头) / (多头 + 空头)
+    const netExposure = portfolioTotalAssets > 0 ? signedNettingValue / portfolioTotalAssets * 100 : 0;
 
     // 计算多空比例
     const longShortRatio = shortValue > 0 ? longValue / shortValue : Infinity;
@@ -610,7 +637,7 @@ export default function ValuationTool() {
           items: data.items
         };
       })
-      .sort((a, b) => b.notional_value - a.notional_value)
+      .sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight))
       .slice(0, 10);
 
     // 计算集中度（前十大持仓占比）
@@ -794,7 +821,9 @@ export default function ValuationTool() {
 
     return {
       total_value: totalValue,
+      netting_value: Math.abs(signedNettingValue),
       total_margin: totalMargin,
+      total_contract_count: totalContractCount,
       leverage,
       net_exposure: netExposure,
       long_short_ratio: longShortRatio,
@@ -1633,52 +1662,49 @@ export default function ValuationTool() {
       
       // console.log(`最终净资产值: ${nav}`);
       
-      // ✅ 提取所有保证金（优化版）
-      const marginRows = rawPortfolioData.filter((item: any) => {
-        const code = (item.code || '').toString().trim();
-        const name = (item.name || '').toString();
-        // 匹配保证金相关名称
-        const nameMatch = /存出保证金|期货保证金|期权保证金|保证金占用|保证金余额|交易保证金|初始保证金|维持保证金/i.test(name);
-        // 排除不相关的行
-        const excludeMatch = /应计利息|应计|合计|小计|总计|估值增值|冲抵|冲销/i.test(name);
-        // 科目代码匹配（保证金相关科目）
-        const codeMatch = code.startsWith('1031') || code.startsWith('103') || code.startsWith('3103');
-        return (codeMatch || nameMatch) && !excludeMatch;
-      });
-
-      // console.log('\n=== 保证金数据提取 ===');
-      // console.log('匹配到的保证金行数:', marginRows.length);
-      if (marginRows.length > 0) {
-        // console.log('保证金行详情:');
-        marginRows.forEach((item: any, index: number) => {
-          const mv = getFieldValue(item, 'marketValue');
-          const cost = Number(item.cost) || 0;
-          const margin = getFieldValue(item, 'margin');
-        });
-      }
-
-      let tableTotalMargin = 0;
-      marginRows.forEach((item: any) => {
-        // 使用统一字段提取函数获取保证金值，尝试多种字段
+      const getMarginAmount = (item: any): number => {
         const marginVal = getFieldValue(item, 'margin');
-        const marketVal = getFieldValue(item, 'marketValue');
         const costVal = Number(item.cost) || 0;
+        const marketVal = getFieldValue(item, 'marketValue');
         const amountVal = Number(item.amount) || 0;
-        
-        // 优先使用保证金专用字段，其次使用其他数值字段
-        let val = 0;
-        if (marginVal > 0 && marginVal < 1e12) {
-          val = marginVal;
-        } else if (costVal > 0 && costVal < 1e12) {
-          val = costVal;
-        } else if (marketVal > 0 && marketVal < 1e12) {
-          val = marketVal;
-        } else if (amountVal > 0 && amountVal < 1e12) {
-          val = amountVal;
-        }
-        
-        tableTotalMargin += Math.abs(val);
+        const val = [marginVal, costVal, marketVal, amountVal].find(v => v > 0 && v < 1e12) || 0;
+        return Math.abs(val);
+      };
+
+      const normalizeMarginCode = (value: unknown): string => {
+        return (value || '').toString().trim().replace(/\s+/g, '').replace(/\./g, '');
+      };
+
+      const isMarginRow = (item: any): boolean => {
+        const code = normalizeMarginCode(item.code);
+        const name = (item.name || '').toString();
+        const nameMatch = /存出保证金|期货保证金|期权保证金|保证金占用|保证金余额|交易保证金|初始保证金|维持保证金/i.test(name);
+        const excludeMatch = /应计利息|应计|合计|小计|总计|估值增值|冲抵|冲销/i.test(name);
+        const codeMatch = code.startsWith('1031') || code.startsWith('3103');
+        return (codeMatch || nameMatch) && !excludeMatch && getMarginAmount(item) > 0;
+      };
+
+      const marginRows = rawPortfolioData.filter(isMarginRow);
+      const exactTotalMarginRows = marginRows.filter((item: any) => {
+        const code = normalizeMarginCode(item.code);
+        return code === '1031' || code === '3103';
       });
+
+      let tableTotalMargin = exactTotalMarginRows.reduce((sum: number, item: any) => {
+        return sum + getMarginAmount(item);
+      }, 0);
+
+      if (tableTotalMargin <= 0) {
+        const marginCodes = marginRows.map((item: any) => normalizeMarginCode(item.code));
+        const leafMarginRows = marginRows.filter((item: any) => {
+          const code = normalizeMarginCode(item.code);
+          return !marginCodes.some((other: string) => other !== code && other.startsWith(code));
+        });
+
+        tableTotalMargin = leafMarginRows.reduce((sum: number, item: any) => {
+          return sum + getMarginAmount(item);
+        }, 0);
+      }
 
       // console.log('从保证金行提取的总保证金:', tableTotalMargin);
       
@@ -1708,8 +1734,8 @@ export default function ValuationTool() {
           return false;
         }
 
-        // 只处理风险资产科目
-        if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1105') && !code.startsWith('3102')) {
+        // 只处理交易性风险持仓；现金、保证金、清算款等只进入明细，不进入概览分析
+        if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1102') && !code.startsWith('1108') && !code.startsWith('3102')) {
           // console.log(`排除：非风险资产科目 - code=${code}, name=${name}`);
           return false;
         }
@@ -1748,6 +1774,42 @@ export default function ValuationTool() {
         
         return true;
       };
+
+      const normalizeDetailCode = (value: unknown): string => {
+        return (value || '').toString().trim().replace(/\s+/g, '').replace(/\./g, '');
+      };
+
+      const isSummaryMetricRow = (item: any): boolean => {
+        const code = normalizeDetailCode(item.code);
+        const name = (item.name || '').toString().replace(/\s/g, '');
+        if (!code || code.length < 4) return true;
+        if (/单位净值|净值.*增长率|已实现收益|可分配利润|累计派现|现金类占净值比/.test(code + name)) return true;
+        if (/合计|小计|总计|基金资产净值|资产净值|资产类合计|负债类合计/.test(name)) return true;
+        if (/冲抵|冲销|估值增值|应计利息/.test(name)) return true;
+        return false;
+      };
+
+      const isDisplayableDetailRow = (item: any): boolean => {
+        if (isSummaryMetricRow(item)) return false;
+        const code = normalizeDetailCode(item.code);
+        const name = (item.name || '').toString();
+        if (code.startsWith('3102') && /初始合约价值/.test(name) && !/[A-Za-z]{1,4}\d{2,5}/.test(`${code}${name}`)) return false;
+
+        const mv = Math.abs(getFieldValue(item, 'marketValue'));
+        const cost = Math.abs(Number(item.cost || item.signed_cost || 0));
+        const volume = Math.abs(getFieldValue(item, 'volume'));
+        return mv > 0 || cost > 0 || volume > 0;
+      };
+
+      const detailCandidateRows = rawPortfolioData.filter(isDisplayableDetailRow);
+      const detailCodes = detailCandidateRows.map((item: any) => normalizeDetailCode(item.code));
+      const hasBackendRowTags = rawPortfolioData.some((item: any) => typeof item.include_in_detail === 'boolean' || typeof item.include_in_analysis === 'boolean');
+      const detailLeafRows = hasBackendRowTags ? rawPortfolioData.filter((item: any) => item.include_in_detail === true) : detailCandidateRows.filter((item: any) => {
+        const code = normalizeDetailCode(item.code);
+        const hasContract = /[A-Za-z]{1,4}\d{2,5}/.test(`${code}${item.name || ''}`);
+        if (hasContract) return true;
+        return !detailCodes.some((other: string) => other !== code && other.startsWith(code));
+      });
       
       // 调试：先检查原始数据
       // console.log('=== 原始数据详细分析 ===');
@@ -1761,7 +1823,9 @@ export default function ValuationTool() {
         // console.log(`${item.code} | ${item.name} | position=${item.position} | market_value=${item.market_value} | 有合约代码: ${hasContract}`);
       });
       
-      const filteredData = rawPortfolioData.filter(isValidPosition);
+      const filteredData = hasBackendRowTags
+        ? rawPortfolioData.filter((item: any) => item.include_in_analysis === true)
+        : rawPortfolioData.filter(isValidPosition);
       
       // ✅ 如果严格过滤结果为空，尝试宽松模式
       let finalFilteredData = filteredData;
@@ -1776,8 +1840,8 @@ export default function ValuationTool() {
           // 必须有科目代码
           if (!code || code.length < 4) return false;
           
-          // 只处理风险资产科目
-          if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1105') && !code.startsWith('3102')) {
+          // 只处理交易性风险持仓
+          if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1102') && !code.startsWith('1108') && !code.startsWith('3102')) {
             return false;
           }
           
@@ -1792,6 +1856,9 @@ export default function ValuationTool() {
           
           // 排除明显的会计处理行（保留"初始合约价值"行）
           if (/冲抵|冲销|估值增值|应计利息|合计|小计|总计/.test(name)) {
+            return false;
+          }
+          if (/初始合约价值/.test(name) && !/[A-Za-z]{1,4}\d{2,5}/.test(name)) {
             return false;
           }
           
@@ -1811,6 +1878,16 @@ export default function ValuationTool() {
         if (finalFilteredData.length > 0) {
           // console.log('宽松模式生效，使用宽松过滤结果');
         }
+      }
+
+      if (!hasBackendRowTags) {
+        const analysisCodes = finalFilteredData.map((item: any) => normalizeDetailCode(item.code));
+        finalFilteredData = finalFilteredData.filter((item: any) => {
+          const code = normalizeDetailCode(item.code);
+          const hasContract = code.startsWith('3102') && /[A-Za-z]{1,4}\d{2,5}/.test(`${code}${item.name || ''}`);
+          if (hasContract) return true;
+          return !analysisCodes.some((other: string) => other !== code && other.startsWith(code));
+        });
       }
       
       // ✅ 调试验证：打印过滤后前几条数据
@@ -1997,31 +2074,31 @@ export default function ValuationTool() {
         const code = (item.code || '').toString().trim();
         const name = item.name || '';
 
-        // 提取合约代码：先从code中提取，再从name中提取
+        // 提取合约代码：仅衍生品行提取，避免现金/保证金账户号被误识别为合约
         let symbol = '';
         
-        // 1. 尝试从code中提取（字母+数字模式，如 IC2512、AL2601、T2606、RB2610）
-        const codeMatch = code.match(/[A-Za-z]{1,4}\d{2,4}/);
-        if (codeMatch) {
-          symbol = codeMatch[0];
-        } else {
-          // 2. 尝试从name中提取合约代码
-          const nameMatch = name.match(/([A-Za-z]{1,4}\d{2,4})/);
-          if (nameMatch) {
-            symbol = nameMatch[0];
+        if (code.startsWith('3102')) {
+          const codeMatch = code.match(/[A-Za-z]{1,4}\d{2,5}/);
+          if (codeMatch) {
+            symbol = codeMatch[0];
           } else {
-            // 3. 兜底：尝试从name中提取品种代码（如"沪铝2601" -> "AL2601"）
-            const productMatch = name.match(/([\u4e00-\u9fa5]{2,3})(\d{4})/);
-            if (productMatch) {
-              // 尝试将中文名映射到代码
-              const productName = productMatch[1];
-              const month = productMatch[2];
-              const reverseMap = Object.entries(PRODUCT_NAME_MAP).find(([, v]) => v === productName);
-              if (reverseMap) {
-                symbol = reverseMap[0] + month;
+            const nameMatch = name.match(/([A-Za-z]{1,4}\d{2,5})/);
+            if (nameMatch) {
+              symbol = nameMatch[0];
+            } else {
+              const productMatch = name.match(/([\u4e00-\u9fa5]{2,3})(\d{4})/);
+              if (productMatch) {
+                const productName = productMatch[1];
+                const month = productMatch[2];
+                const reverseMap = Object.entries(PRODUCT_NAME_MAP).find(([, v]) => v === productName);
+                if (reverseMap) {
+                  symbol = reverseMap[0] + month;
+                }
               }
             }
           }
+        } else {
+          symbol = code;
         }
         
         // 最终兜底：如果还是没有提取到合约代码，使用简短名称
@@ -2038,13 +2115,48 @@ export default function ValuationTool() {
           assetClass = '股票';
           direction = 'long';
           exchange = code.includes('SH') ? '上交所' : code.includes('SZ') ? '深交所' : '股票';
+        } else if (code.startsWith('1002')) {
+          assetClass = '银行存款';
+          direction = 'long';
+          exchange = '现金账户';
+        } else if (code.startsWith('1021')) {
+          assetClass = '清算备付金';
+          direction = 'long';
+          exchange = '清算账户';
+        } else if (code.startsWith('1031')) {
+          assetClass = '保证金';
+          direction = 'long';
+          exchange = '保证金账户';
+        } else if (code.startsWith('1202')) {
+          assetClass = '买入返售证券';
+          direction = 'long';
+          exchange = '场外';
+        } else if (code.startsWith('1203') || code.startsWith('1207')) {
+          assetClass = '应收款项';
+          direction = 'long';
+          exchange = '应收';
         } else if (code.startsWith('1101')) {
           assetClass = '债券';
           direction = 'long';
+        } else if (code.startsWith('1102')) {
+          assetClass = '股票/基金';
+          direction = 'long';
+        } else if (code.startsWith('1108')) {
+          assetClass = '私募基金';
+          direction = 'long';
+          exchange = '场外';
         } else if (code.startsWith('1105')) {
           if (name.includes('货币')) assetClass = '货币基金';
           else assetClass = '基金';
           direction = 'long';
+        } else if (code.startsWith('3003')) {
+          assetClass = '证券清算款';
+          direction = 'long';
+          exchange = '清算账户';
+        } else if (/^22/.test(code)) {
+          assetClass = '负债/应付款项';
+          direction = 'short';
+          exchange = '负债';
         } else if (code.startsWith('3102')) {
           const sub = code.substring(4, 6);
           // 中金所
@@ -2112,6 +2224,10 @@ export default function ValuationTool() {
 
         // ✅ 数值提取逻辑：优先使用后端返回的字段
         // 手数 = 后端返回的 position 字段
+        if (item.asset_class) assetClass = item.asset_class;
+        if (item.exchange) exchange = item.exchange;
+        if (item.direction === 'long' || item.direction === 'short') direction = item.direction;
+
         let volume = Math.abs(item.position || 0);
         
         // 如果后端没有返回，尝试从其他字段获取
@@ -2119,8 +2235,8 @@ export default function ValuationTool() {
           volume = Math.abs(getFieldValue(item, 'volume'));
         }
         
-        // 兜底为1（仅当所有字段均无值时）
-        if (volume <= 0) volume = 1;
+        // 非合约类明细允许数量为空，避免现金/保证金行被显示成 1 手。
+        if (volume <= 0) volume = 0;
         
         // 单位成本 = 后端返回的 unit_cost 字段（开仓均价）
         let finalUnitCost = Math.abs(item.unit_cost || 0);
@@ -2138,8 +2254,19 @@ export default function ValuationTool() {
           finalPrice = Math.abs(getFieldValue(item, 'price'));
         }
         
-        // 市值 = 后端返回的 notional_value 字段
-        const notionalValue = Math.abs(item.notional_value || getFieldValue(item, 'marketValue'));
+        const marketValueCandidates = [
+          item.signed_market_value,
+          item.market_value,
+          item.notional_value,
+          item.marketValue,
+          item.notionalValue,
+        ];
+        const rawMarketValue = marketValueCandidates
+          .map((value) => typeof value === 'number' ? value : Number(String(value ?? '').replace(/,/g, '')))
+          .find((value) => Number.isFinite(value) && Math.abs(value) > 0);
+
+        // 名义市值优先取估值表中的市值/本币市值字段，避免误用数量、成本或市值占比。
+        const notionalValue = Math.abs(rawMarketValue || getFieldValue(item, 'marketValue'));
         
         // 盈亏和保证金
         const pnl = getFieldValue(item, 'pnl');
@@ -2161,6 +2288,7 @@ export default function ValuationTool() {
         const displayName = chineseName ? `${symbol} ${chineseName}` : (name || symbol);
         
         return {
+          code: code,
           symbol: symbol,
           name: displayName,
           exchange: exchange,
@@ -2172,11 +2300,18 @@ export default function ValuationTool() {
           notional_value: notionalValue,
           unrealized_pnl: pnl,
           margin_usage: margin,
-          weight: defaultNav > 0 ? (notionalValue / defaultNav) * 100 : 0
+          weight: defaultNav > 0 ? (notionalValue / defaultNav) * 100 : 0,
+          row_kind: item.row_kind,
+          is_leaf: item.is_leaf,
+          include_in_detail: item.include_in_detail,
+          include_in_analysis: item.include_in_analysis
         };
       };
       
       const mappedPortfolioData: ValuationPosition[] = finalFilteredData.map((item: any) => {
+        return enrichPortfolioItem(item, 1);
+      });
+      const mappedHoldingDetailData: ValuationPosition[] = detailLeafRows.map((item: any) => {
         return enrichPortfolioItem(item, 1);
       });
 
@@ -2228,6 +2363,9 @@ export default function ValuationTool() {
         mappedPortfolioData.forEach(it => {
           it.weight = (it.notional_value / detectedNav) * 100;
         });
+        mappedHoldingDetailData.forEach(it => {
+          it.weight = (it.notional_value / detectedNav) * 100;
+        });
       }
       
       // ✅ 如果使用了兜底值，显示警告
@@ -2274,8 +2412,10 @@ export default function ValuationTool() {
       // console.log('分析结果详细结构:', analysis);
       
       setPortfolioData(mappedPortfolioData);
+      setHoldingDetailData(mappedHoldingDetailData);
       setSummaryData(summary);
       setAnalysisResult(analysis);
+      setHoldingSearch('');
       // console.log('分析结果设置完成');
       // 图表将在 analysisResult 更新后的 useEffect 中初始化
     } catch (error) {
@@ -2432,28 +2572,34 @@ ${rowsText}`;
           {/* 投资组合概览 */}
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
             <h2 className="text-2xl font-semibold text-gray-900 mb-4">投资组合概览</h2>
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
               <div className="border rounded-lg p-4">
                 <div className="text-sm text-gray-500">基金净资产</div>
                 <div className="text-2xl font-bold">{(summaryData.nav / 10000).toFixed(2)} 万</div>
               </div>
               <div className="border rounded-lg p-4">
-                <div className="text-sm text-gray-500">总名义市值</div>
-                <div className="text-2xl font-bold">{(analysisResult.total_value / 10000).toFixed(2)} 万</div>
+                <div className="text-sm text-gray-500">总名义市值（交易持仓）</div>
+                <div className="text-xl font-bold sm:text-2xl">{(analysisResult.total_value / 10000).toFixed(2)} 万</div>
               </div>
               <div className="border rounded-lg p-4">
                 <div className="text-sm text-gray-500">杠杆倍数</div>
-                <div className="text-2xl font-bold">{analysisResult.leverage.toFixed(2)}x</div>
+                <div className="text-xl font-bold sm:text-2xl">{analysisResult.leverage.toFixed(2)}x</div>
               </div>
               <div className="border rounded-lg p-4">
-                <div className="text-sm text-gray-500">净敞口</div>
-                <div className="text-2xl font-bold">{analysisResult.net_exposure.toFixed(2)}%</div>
+                <div className="text-sm text-gray-500">净敞口（占总名义）</div>
+                <div className="text-xl font-bold sm:text-2xl">{analysisResult.net_exposure.toFixed(2)}%</div>
+              </div>
+              <div className="border rounded-lg p-4">
+                <div className="text-sm text-gray-500">轧差</div>
+                <div className="text-xl font-bold sm:text-2xl">{(analysisResult.netting_value / 10000).toFixed(2)} 万</div>
               </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="border rounded-lg p-4">
                 <div className="text-sm text-gray-500">多空比例</div>
-                <div className="text-2xl font-bold">{analysisResult.long_short_ratio.toFixed(2)}:1</div>
+                <div className="text-xl font-bold sm:text-2xl">
+                  {Number.isFinite(analysisResult.long_short_ratio) ? `${analysisResult.long_short_ratio.toFixed(2)}:1` : '仅多头'}
+                </div>
               </div>
               <div className="border rounded-lg p-4">
                 <div className="text-sm text-gray-500">集中度</div>
@@ -2464,6 +2610,43 @@ ${rowsText}`;
                 <div className="text-2xl font-bold">{(analysisResult.total_margin / 10000).toFixed(2)} 万</div>
               </div>
             </div>
+            <details className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <summary className="cursor-pointer text-sm font-semibold text-amber-900">
+                轧差校验明细：多头 {(analysisResult.long_value / 10000).toFixed(2)} 万，
+                空头 {(analysisResult.short_value / 10000).toFixed(2)} 万，
+                净额 {((analysisResult.long_value - analysisResult.short_value) / 10000).toFixed(2)} 万
+              </summary>
+              <div className="mt-3 max-h-72 overflow-auto rounded border border-amber-100 bg-white">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="sticky top-0 bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">代码</th>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">名称</th>
+                      <th className="px-3 py-2 text-left font-medium text-gray-600">方向</th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">数量</th>
+                      <th className="px-3 py-2 text-right font-medium text-gray-600">名义市值</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {[...portfolioData]
+                      .sort((a, b) => (b.notional_value || 0) - (a.notional_value || 0))
+                      .map((item, index) => (
+                        <tr key={`${item.code || item.symbol}-${index}`}>
+                          <td className="px-3 py-2 font-mono text-gray-700">{item.code || item.symbol}</td>
+                          <td className="px-3 py-2 text-gray-700">{item.name}</td>
+                          <td className="px-3 py-2">
+                            <span className={item.direction === 'long' ? 'text-green-700' : 'text-red-700'}>
+                              {item.direction === 'long' ? '多头' : '空头'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-right text-gray-700">{item.volume.toFixed(2)}</td>
+                          <td className="px-3 py-2 text-right text-gray-700">{item.notional_value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
           </div>
 
           {/* 策略分析研究 */}
@@ -2536,6 +2719,20 @@ ${rowsText}`;
           {/* 持仓分析 */}
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
             <h2 className="text-2xl font-semibold text-gray-900 mb-4">持仓分析</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              <div className="border rounded-lg p-4">
+                <div className="text-sm text-gray-500">总合约数量</div>
+                <div className="text-2xl font-bold">{analysisResult.total_contract_count.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+              </div>
+              <div className="border rounded-lg p-4">
+                <div className="text-sm text-gray-500">多头名义市值</div>
+                <div className="text-2xl font-bold">{(analysisResult.long_value / 10000).toFixed(2)} 万</div>
+              </div>
+              <div className="border rounded-lg p-4">
+                <div className="text-sm text-gray-500">空头名义市值</div>
+                <div className="text-2xl font-bold">{(analysisResult.short_value / 10000).toFixed(2)} 万</div>
+              </div>
+            </div>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div>
                 <h3 className="text-lg font-medium text-gray-900 mb-3">资产类别分布</h3>
@@ -2562,7 +2759,21 @@ ${rowsText}`;
 
           {/* 持仓明细 */}
           <div className="bg-white rounded-lg shadow-md p-6">
-            <h2 className="text-2xl font-semibold text-gray-900 mb-4">持仓明细</h2>
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-2xl font-semibold text-gray-900">持仓明细</h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  共 {(holdingDetailData.length > 0 ? holdingDetailData : portfolioData).length} 条明细
+                </p>
+              </div>
+              <input
+                type="search"
+                value={holdingSearch}
+                onChange={(event) => setHoldingSearch(event.target.value)}
+                placeholder="搜索合约/名称，如 PS2606 或 多晶硅"
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 sm:w-80"
+              />
+            </div>
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
@@ -2583,31 +2794,38 @@ ${rowsText}`;
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {(() => {
-                    const derivativeRows = portfolioData.filter(item => item.asset_class !== '货币基金');
-                    const moneyFundItems = portfolioData.filter(item => item.asset_class === '货币基金');
-                    const moneyFundTotalNotional = moneyFundItems.reduce((sum, item) => sum + item.notional_value, 0);
-                    const moneyFundTotalWeight = summaryData.nav > 0 ? (moneyFundTotalNotional / summaryData.nav * 100) : 0;
-                    const moneyFundTotalMargin = moneyFundItems.reduce((sum, item) => sum + (item.margin_usage || 0), 0);
+                    const detailRows = holdingDetailData.length > 0 ? holdingDetailData : portfolioData;
+                    const searchText = holdingSearch.trim().toLowerCase();
+                    const filteredRows = searchText
+                      ? detailRows.filter(item =>
+                          [
+                            item.code,
+                            item.symbol,
+                            item.name,
+                            item.exchange,
+                            item.asset_class,
+                            item.direction === 'long' ? '多头' : '空头'
+                          ].some(value => String(value || '').toLowerCase().includes(searchText))
+                        )
+                      : detailRows;
                     
-                    // 按品种代码分组，将相同合约的持仓集中在一起
-                    const groupedRows = derivativeRows.sort((a, b) => {
-                      // 先按交易所排序
-                      const exchangeOrder = { 'SHFE': 1, 'DCE': 2, 'CZCE': 3, 'CFFEX': 4, 'INE': 5, 'GFEX': 6 };
-                      const aExchangeOrder = exchangeOrder[a.exchange] || 99;
-                      const bExchangeOrder = exchangeOrder[b.exchange] || 99;
-                      if (aExchangeOrder !== bExchangeOrder) return aExchangeOrder - bExchangeOrder;
-                      
-                      // 再按品种代码排序（去掉月份后比较）
-                      const aProduct = a.symbol.replace(/\d+$/, '');
-                      const bProduct = b.symbol.replace(/\d+$/, '');
-                      if (aProduct !== bProduct) return aProduct.localeCompare(bProduct);
-                      
-                      // 最后按合约月份排序
-                      return a.symbol.localeCompare(b.symbol);
+                    // 按持仓比例排序，搜索后只展示匹配的明细行
+                    const groupedRows = [...filteredRows].sort((a, b) => {
+                      const aWeight = Math.abs(a.weight || 0);
+                      const bWeight = Math.abs(b.weight || 0);
+                      if (aWeight !== bWeight) return bWeight - aWeight;
+                      return (b.notional_value || 0) - (a.notional_value || 0);
                     });
                     
                     return (
                       <>
+                        {holdingSearch.trim() && (
+                          <tr>
+                            <td colSpan={12} className="bg-blue-50 px-6 py-3 text-sm text-blue-700">
+                              当前显示 {groupedRows.length} 条匹配持仓
+                            </td>
+                          </tr>
+                        )}
                         {groupedRows.map((item, index) => (
                           <tr key={index}>
                             <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.symbol}</td>
@@ -2636,6 +2854,13 @@ ${rowsText}`;
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.weight.toFixed(2)}%</td>
                           </tr>
                         ))}
+                        {groupedRows.length === 0 && (
+                          <tr>
+                            <td colSpan={12} className="px-6 py-8 text-center text-sm text-gray-500">
+                              未找到匹配的持仓
+                            </td>
+                          </tr>
+                        )}
                       </>
                     );
                   })()}

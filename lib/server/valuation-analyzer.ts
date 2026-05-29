@@ -19,204 +19,449 @@ export interface ValuationAnalysis {
   summary: ValuationSummary
 }
 
-// 科目代码列候选表头名
-const CODE_HEADER_PATTERNS = [
-  /^科目代码$|^代码$|^合约代码$|^证券代码$|^code$/i,
-]
+type HeaderRole =
+  | "code"
+  | "name"
+  | "currency"
+  | "fx_rate"
+  | "quantity"
+  | "unit_cost"
+  | "cost"
+  | "cost_weight"
+  | "price"
+  | "market_value"
+  | "market_weight"
+  | "unrealized_pnl"
+  | "suspension_info"
+  | "rights_info"
+  | "unknown"
 
-// 科目名称列候选表头名
-const NAME_HEADER_PATTERNS = [
-  /^科目名称$|^名称$|^合约名称$|^证券名称$|^品种名称$|^name$/i,
-]
+interface ColumnMeta {
+  index: number
+  label: string
+  role: HeaderRole
+}
+
+const CODE_PATTERN = /^(科目代码|代码|合约代码|证券代码|code)$/i
+const NAME_PATTERN = /^(科目名称|名称|合约名称|证券名称|品种名称|name)$/i
 
 function cellToString(value: unknown): string {
   if (value == null) return ""
-  if (value instanceof Date) {
-    return value.toISOString().split("T")[0]
-  }
+  if (value instanceof Date) return value.toISOString().split("T")[0]
   return String(value).trim()
 }
 
-function normalizeHeader(value: unknown): string {
-  return cellToString(value)
-    .replace(/[\s\u3000\t\r\n]/g, "")
+function normalizeText(value: unknown): string {
+  return cellToString(value).replace(/[\s\u3000\t\r\n:：]/g, "")
 }
 
-function matchesAny(header: string, patterns: RegExp[]): boolean {
-  const norm = normalizeHeader(header)
-  return patterns.some((p) => p.test(norm))
+function parseNumber(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (value == null) return 0
+
+  let text = cellToString(value)
+  if (!text) return 0
+
+  let negative = false
+  if (/^\(.*\)$/.test(text)) {
+    negative = true
+    text = text.slice(1, -1)
+  }
+
+  text = text
+    .replace(/,/g, "")
+    .replace(/%/g, "")
+    .replace(/\s/g, "")
+
+  const num = Number(text)
+  if (!Number.isFinite(num)) return 0
+  return negative ? -num : num
 }
 
-/**
- * Find the 0-based row index of the header row.
- * Looks for the row containing a code-like and name-like header.
- * Searches only within the first 30 rows.
- */
+function parseDateText(value: unknown): string {
+  const text = cellToString(value)
+  const compactMatch = text.match(/(\d{4})[-/.年]?(\d{1,2})[-/.月]?(\d{1,2})/)
+  if (compactMatch) {
+    const [, year, month, day] = compactMatch
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
+  }
+
+  const date = new Date(text)
+  if (!Number.isNaN(date.getTime())) return date.toISOString().split("T")[0]
+  return ""
+}
+
 function findHeaderRow(rows: unknown[][]): number {
-  for (let i = 0; i < Math.min(rows.length, 30); i++) {
-    const row = rows[i]
-    if (!row) continue
-    const hasCode = row.some((cell) => matchesAny(cellToString(cell), CODE_HEADER_PATTERNS))
-    const hasName = row.some((cell) => matchesAny(cellToString(cell), NAME_HEADER_PATTERNS))
-    if (hasCode && hasName) return i
+  for (let i = 0; i < Math.min(rows.length, 40); i++) {
+    const cells = (rows[i] || []).map(normalizeText)
+    const hasCode = cells.some((cell) => CODE_PATTERN.test(cell))
+    const hasName = cells.some((cell) => NAME_PATTERN.test(cell))
+    const hasValue = cells.some((cell) => /市值|成本|数量|行情|估值增值|market/i.test(cell))
+    if (hasCode && hasName && hasValue) return i
   }
-  // Fallback: find first row with >= 4 non-empty cells that looks like headers
-  for (let i = 0; i < Math.min(rows.length, 30); i++) {
-    const row = rows[i]
-    if (!row) continue
-    const nonEmpty = row.filter((c) => cellToString(c).length > 0)
-    if (nonEmpty.length >= 4) return i
+
+  for (let i = 0; i < Math.min(rows.length, 40); i++) {
+    const nonEmpty = (rows[i] || []).filter((cell) => cellToString(cell).length > 0)
+    if (nonEmpty.length >= 6) return i
   }
+
   return 0
 }
 
-/**
- * Extract summary metadata from the rows above the header row.
- * Tries to find fund name, valuation date, nav, total assets, total liabilities.
- */
-function extractSummaryFromTopRows(rows: unknown[][], headerRow: number): ValuationSummary {
+function countHeaderRows(rows: unknown[][], headerRowIndex: number): number {
+  let count = 1
+
+  for (let i = headerRowIndex + 1; i < Math.min(rows.length, headerRowIndex + 4); i++) {
+    const cells = (rows[i] || []).map(normalizeText)
+    const first = cells[0] || ""
+    const headerLikeCount = cells.filter((cell) =>
+      /科目代码|科目名称|原币|本币|成本占比|市值占比|十亿千百|停牌信息|权益信息/.test(cell),
+    ).length
+
+    if (CODE_PATTERN.test(first) || headerLikeCount >= 3) count += 1
+    else break
+  }
+
+  return count
+}
+
+function roleFromHeader(base: string, sub: string, colIdx: number, duplicateOrdinal: number): HeaderRole {
+  const joined = normalizeText(`${base}${sub}`)
+  const baseNorm = normalizeText(base)
+  const subNorm = normalizeText(sub)
+
+  if (CODE_PATTERN.test(baseNorm)) return "code"
+  if (NAME_PATTERN.test(baseNorm)) return "name"
+  if (/^币种$/.test(baseNorm)) return "currency"
+  if (/^汇率$/.test(baseNorm)) return "fx_rate"
+  if (/^数量$|持仓数量|手数|合约数|quantity|volume|position/i.test(baseNorm)) return "quantity"
+  if (/单位成本|开仓均价|持仓均价|unitcost|avgcost/i.test(joined)) return "unit_cost"
+  if (/成本占/.test(joined)) return "cost_weight"
+  if (/市值占/.test(joined)) return "market_weight"
+  if (/市价|行情|结算价|最新价|现价|price/i.test(baseNorm)) return "price"
+  if (/估值增值|浮动盈亏|未实现盈亏|valuation|pnl/i.test(baseNorm)) return "unrealized_pnl"
+  if (/停牌/.test(baseNorm)) return "suspension_info"
+  if (/权益/.test(baseNorm)) return "rights_info"
+
+  if (/^成本$/.test(baseNorm)) {
+    if (/本币/.test(subNorm)) return "cost"
+    if (/原币/.test(subNorm)) return "unknown"
+    return duplicateOrdinal === 1 ? "cost" : "unknown"
+  }
+
+  if (/^市值$|市场价值|公允价值|持仓市值|估值|marketvalue/i.test(baseNorm)) {
+    if (/本币/.test(subNorm)) return "market_value"
+    if (/原币/.test(subNorm)) return "unknown"
+    return duplicateOrdinal === 1 ? "market_value" : "unknown"
+  }
+
+  return colIdx === 0 ? "code" : colIdx === 1 ? "name" : "unknown"
+}
+
+function buildColumnMeta(rows: unknown[][], headerRowIndex: number, headerRowCount: number): ColumnMeta[] {
+  const headerRows = rows.slice(headerRowIndex, headerRowIndex + headerRowCount)
+  const maxCols = Math.max(...headerRows.map((row) => row.length))
+  const seenBase = new Map<string, number>()
+  const columns: ColumnMeta[] = []
+
+  for (let col = 0; col < maxCols; col++) {
+    const base = cellToString(headerRows[0]?.[col])
+    const sub = headerRows
+      .slice(1)
+      .map((row) => cellToString(row?.[col]))
+      .filter(Boolean)
+      .join("_")
+
+    const baseKey = normalizeText(base)
+    const ordinal = (seenBase.get(baseKey) || 0) + 1
+    seenBase.set(baseKey, ordinal)
+
+    columns.push({
+      index: col,
+      label: [base, sub].filter(Boolean).join("_"),
+      role: roleFromHeader(base, sub, col, ordinal),
+    })
+  }
+
+  return columns
+}
+
+function extractFundName(rows: unknown[][], headerRowIndex: number, filename: string): string {
+  for (let i = 0; i < Math.min(headerRowIndex, 8); i++) {
+    const joined = (rows[i] || []).map(cellToString).filter(Boolean).join(" ")
+    const parts = joined.split(/___|__|_/).map((part) => part.trim()).filter(Boolean)
+    const fund = parts.find((part) => /基金/.test(part) && !/估值表|专用表|证券投资基金估值/.test(part))
+    if (fund) return fund.replace(/专用表$/, "")
+  }
+
+  const fileFund = filename.match(/(?:^|_)([^_]*基金[^_]*)_/)
+  return fileFund?.[1] || "未知基金"
+}
+
+function extractSummary(rows: unknown[][], headerRowIndex: number, columns: ColumnMeta[], filename: string): ValuationSummary {
   const summary: ValuationSummary = {
-    fund_name: "未知基金",
+    fund_name: extractFundName(rows, headerRowIndex, filename),
     valuation_date: new Date().toISOString().split("T")[0],
     nav: 0,
     total_asset: 0,
     total_liability: 0,
   }
 
-  const FUND_NAME_PATTERN = /基金名称|产品名称|客户名称|fund.?name/i
-  const DATE_PATTERN = /估值日期|日期|valuation.?date|date/i
-  const NAV_PATTERN = /资产净值|净资产|基金净值/
-  const ASSET_PATTERN = /总资产|资产总计|资产合计/
-  const LIABILITY_PATTERN = /总负债|负债总计|负债合计/
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || []
+    const joined = row.map(cellToString).join("|")
 
-  for (let i = 0; i < headerRow; i++) {
-    const row = rows[i]
-    if (!row) continue
-    const cells = row.map(cellToString)
-    const joined = cells.join("")
-
-    if (FUND_NAME_PATTERN.test(joined)) {
-      const idx = cells.findIndex((c) => FUND_NAME_PATTERN.test(c))
-      if (idx >= 0) {
-        const val = cells[idx + 1] || cells[idx + 2] || ""
-        if (val && val.length > 0) summary.fund_name = val
-      }
+    if (i < headerRowIndex) {
+      const dateMatch = joined.match(/(?:估值日期|日期)\s*[：:]?\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
+      const parsedDate = dateMatch ? parseDateText(dateMatch[1]) : ""
+      if (parsedDate) summary.valuation_date = parsedDate
     }
 
-    if (DATE_PATTERN.test(joined)) {
-      const idx = cells.findIndex((c) => DATE_PATTERN.test(c))
-      if (idx >= 0) {
-        const val = cells[idx + 1] || cells[idx + 2] || ""
-        if (val && val.length > 0) {
-          // Try to parse as date
-          const d = new Date(val)
-          if (!isNaN(d.getTime())) {
-            summary.valuation_date = d.toISOString().split("T")[0]
-          } else {
-            summary.valuation_date = val
-          }
-        }
-      }
+    const code = cellToString(row[columns.find((col) => col.role === "code")?.index ?? 0])
+    const name = normalizeText(row[columns.find((col) => col.role === "name")?.index ?? 1])
+    const label = name || normalizeText(code)
+    const cost = parseNumber(row[columns.find((col) => col.role === "cost")?.index ?? -1])
+    const marketValue = parseNumber(row[columns.find((col) => col.role === "market_value")?.index ?? -1])
+    const value = marketValue || cost
+
+    if (!label) {
+      continue
     }
 
-    for (const cell of cells) {
-      if (NAV_PATTERN.test(cell)) {
-        const nextIdx = cells.indexOf(cell) + 1
-        const val = Number(cells[nextIdx] || cells[nextIdx + 1] || "")
-        if (!isNaN(val) && val > 0) summary.nav = val
-      }
-      if (ASSET_PATTERN.test(cell)) {
-        const nextIdx = cells.indexOf(cell) + 1
-        const val = Number(cells[nextIdx] || cells[nextIdx + 1] || "")
-        if (!isNaN(val) && val > 0) summary.total_asset = val
-      }
-      if (LIABILITY_PATTERN.test(cell)) {
-        const nextIdx = cells.indexOf(cell) + 1
-        const val = Number(cells[nextIdx] || cells[nextIdx + 1] || "")
-        if (!isNaN(val) && val > 0) summary.total_liability = val
-      }
+    if (/^(基金)?资产净值$/.test(label) || /^基金资产净值$/.test(label)) {
+      summary.nav = value || summary.nav
+    } else if (/^(资产类合计|资产合计|资产总值)$/.test(label)) {
+      summary.total_asset = value || summary.total_asset
+    } else if (/^(负债类合计|负债合计|负债总值)$/.test(label)) {
+      summary.total_liability = Math.abs(value) || summary.total_liability
     }
+  }
+
+  if (!summary.valuation_date) {
+    const fileDate = filename.match(/(20\d{2})[-_]?(\d{2})[-_]?(\d{2})/)
+    if (fileDate) summary.valuation_date = `${fileDate[1]}-${fileDate[2]}-${fileDate[3]}`
+  }
+
+  if (!summary.nav && summary.total_asset && summary.total_liability) {
+    summary.nav = summary.total_asset - summary.total_liability
   }
 
   return summary
 }
 
-/**
- * Map a raw 2D array of spreadsheet rows into an array of row objects,
- * using the header row to determine field names.
- *
- * Column names are preserved as-is so the client-side field detection logic
- * in valuation_page.tsx can still do its own matching.  We additionally
- * inject normalised aliases for the most common Chinese column names so the
- * client's FIELD_CANDIDATES lookup has something to hit.
- */
-function rowsToObjects(rows: unknown[][], headerRowIndex: number): ValuationRow[] {
-  const headers = (rows[headerRowIndex] || []).map(cellToString)
+function normalizeSubjectCode(code: string): string {
+  return code.replace(/\s+/g, "").replace(/\./g, "")
+}
 
+function extractContractSymbol(code: string, name: string): string {
+  const matches = `${code} ${name}`.match(/[A-Za-z]{1,4}\d{2,5}/g) || []
+  return (
+    matches.find((match) => !/^(DD|DE|DF|DG)\d/i.test(match) && !/^[A-Za-z]\d01$/i.test(match))?.toUpperCase() ||
+    matches[0]?.toUpperCase() ||
+    ""
+  )
+}
+
+function inferExchange(code: string, symbol: string): string {
+  if (/\bCFX\b/i.test(code)) return "CFFEX"
+  if (/\bCZC\b/i.test(code)) return "CZCE"
+  if (/\bDCE\b/i.test(code)) return "DCE"
+  if (/\bGEX\b/i.test(code)) return "GFEX"
+  if (/\bSC\b/i.test(code)) return "INE"
+  if (/\bSQ\b/i.test(code)) return "SHFE"
+
+  const sub = normalizeSubjectCode(code).substring(4, 6)
+  if (["03", "04", "01", "02"].includes(sub) && /^(IF|IH|IC|IM|T|TF|TS|TL)/.test(symbol)) return "CFFEX"
+  if (["05", "06", "21", "22", "DD", "DE", "DF", "DG"].includes(sub)) return "SHFE"
+  if (["07", "08"].includes(sub)) return "DCE"
+  if (["31", "32"].includes(sub)) return "CZCE"
+  if (["41", "42"].includes(sub)) return "DCE"
+  if (["25", "26"].includes(sub)) return "GFEX"
+  if (["74", "75", "A8", "A9"].includes(sub)) return "INE"
+  if (/^(LC|SI|PS)/.test(symbol)) return "GFEX"
+  if (/^(SC|NR|LU|EC)/.test(symbol)) return "INE"
+
+  return "未知"
+}
+
+function inferAssetClass(symbol: string, name: string): string {
+  if (/期权/.test(name)) return "期权"
+  if (/^(IF|IH|IC|IM)/.test(symbol)) return "股指期货"
+  if (/^(T|TF|TS|TL)/.test(symbol)) return "国债期货"
+  if (symbol) return "商品期货"
+  return "其他"
+}
+
+function inferRowKind(code: string, name: string): string {
+  const compactCode = normalizeSubjectCode(code)
+  if (compactCode.startsWith("3102")) return "derivative"
+  if (compactCode.startsWith("1001")) return "stock"
+  if (compactCode.startsWith("1002")) return "bank_deposit"
+  if (compactCode.startsWith("1021")) return "settlement_reserve"
+  if (compactCode.startsWith("1031")) return "margin_deposit"
+  if (compactCode.startsWith("1101")) return "bond"
+  if (compactCode.startsWith("1102")) return "fund_or_stock"
+  if (compactCode.startsWith("1105")) return /货币/.test(name) ? "money_fund" : "fund"
+  if (compactCode.startsWith("1108")) return "private_fund"
+  if (compactCode.startsWith("1202")) return "repo"
+  if (compactCode.startsWith("1203") || compactCode.startsWith("1207")) return "receivable"
+  if (compactCode.startsWith("3003")) return "clearing"
+  if (/^22/.test(compactCode)) return "payable"
+  return "other"
+}
+
+function hasEconomicValue(row: ValuationRow): boolean {
+  return (
+    Math.abs(Number(row.position || 0)) > 0 ||
+    Math.abs(Number(row.market_value || 0)) > 0 ||
+    Math.abs(Number(row.cost || 0)) > 0 ||
+    Math.abs(Number(row.unrealized_pnl || 0)) > 0
+  )
+}
+
+function isOffsetOrSummaryRow(code: string, name: string): boolean {
+  const compactCode = code.replace(/\s+/g, "")
+  const normalizedName = normalizeText(name)
+  const hasContractInName = /[A-Za-z]{1,4}\d{2,5}/.test(name)
+
+  if (!code || !name) return true
+  if (!/^\d/.test(compactCode)) return true
+  if (/合计|小计|总计|净值|单位净值|打印日期|声明/.test(normalizedName)) return true
+  if (/增长率|已实现收益|可分配利润|累计派现|现金类占净值比/.test(normalizedName)) return true
+  if (/冲销|冲抵|估值增值|应计利息/.test(normalizedName)) return true
+  if (compactCode.startsWith("3102") && /初始合约价值/.test(name) && !hasContractInName) return true
+  if (/^3102\.[^.]+\.(02)\./.test(compactCode)) return true
+  if (compactCode.startsWith("3102") && !/[A-Za-z]{1,4}\d{2,4}/.test(`${compactCode}${name}`)) return true
+
+  return false
+}
+
+function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount: number, columns: ColumnMeta[]): ValuationRow[] {
+  const startRow = headerRowIndex + headerRowCount
   const result: ValuationRow[] = []
 
-  for (let i = headerRowIndex + 1; i < rows.length; i++) {
-    const row = rows[i]
-    if (!row) continue
-
-    // Skip fully-empty rows
-    const nonEmpty = row.filter((c) => cellToString(c).length > 0)
-    if (nonEmpty.length === 0) continue
+  for (let rowIdx = startRow; rowIdx < rows.length; rowIdx++) {
+    const row = rows[rowIdx]
+    if (!row || row.every((cell) => cellToString(cell).length === 0)) continue
 
     const obj: ValuationRow = { code: "", name: "" }
 
-    headers.forEach((header, colIdx) => {
-      const rawVal = row[colIdx] ?? null
-      const strVal = cellToString(rawVal)
-      const numVal = Number(strVal)
-      const value = !isNaN(numVal) && isFinite(numVal) && strVal !== "" ? numVal : strVal
+    for (const col of columns) {
+      const rawValue = row[col.index] ?? null
+      const stringValue = cellToString(rawValue)
+      const numberValue = parseNumber(rawValue)
+      const value = stringValue !== "" && Number.isFinite(numberValue) && /^[-(]?\s*[\d,.]+%?\)?$/.test(stringValue)
+        ? numberValue
+        : stringValue
 
-      // Store under original header name
-      if (header) obj[header] = value
+      if (col.label) obj[col.label] = value
 
-      // Inject normalised aliases for client-side detection
-      const norm = normalizeHeader(header)
-      if (/^科目代码$|^代码$|^合约代码$|^证券代码$/i.test(norm)) {
-        obj.code = strVal
-      } else if (/^科目名称$|^名称$|^合约名称$|^证券名称$|^品种名称$/i.test(norm)) {
-        obj.name = strVal
-      } else if (/^数量$|^持仓数量$|^手数$|^合约数$/.test(norm)) {
-        if (typeof value === "number") obj["数量"] = value
-      } else if (/^市值$|^公允价值$|^估值$|^名义市值$/.test(norm)) {
-        if (typeof value === "number") obj["market_value"] = value
-      } else if (/^市价$|^结算价$|^最新价$|^现价$/.test(norm)) {
-        if (typeof value === "number") obj["current_price"] = value
-      } else if (/^成本$|^持仓成本$/.test(norm)) {
-        if (typeof value === "number") obj["cost"] = value
-      } else if (/^单位成本$|^开仓均价$/.test(norm)) {
-        if (typeof value === "number") obj["unit_cost"] = value
-      } else if (/^估值增值$/.test(norm)) {
-        if (typeof value === "number") obj["unrealized_pnl"] = value
-      } else if (/^保证金$|^保证金占用$/.test(norm)) {
-        if (typeof value === "number") obj["margin_usage"] = value
+      switch (col.role) {
+        case "code":
+          obj.code = stringValue
+          obj.original_code = stringValue
+          break
+        case "name":
+          obj.name = stringValue
+          break
+        case "currency":
+          obj.currency = stringValue
+          break
+        case "fx_rate":
+          obj.fx_rate = numberValue
+          break
+        case "quantity":
+          obj.position = Math.abs(numberValue)
+          obj.volume = Math.abs(numberValue)
+          obj.quantity = Math.abs(numberValue)
+          break
+        case "unit_cost":
+          obj.unit_cost = Math.abs(numberValue)
+          break
+        case "cost":
+          obj.cost = Math.abs(numberValue)
+          obj.signed_cost = numberValue
+          break
+        case "cost_weight":
+          obj.cost_weight = numberValue
+          break
+        case "price":
+          obj.current_price = Math.abs(numberValue)
+          obj.price = Math.abs(numberValue)
+          break
+        case "market_value":
+          obj.market_value = Math.abs(numberValue)
+          obj.notional_value = Math.abs(numberValue)
+          obj.signed_market_value = numberValue
+          break
+        case "market_weight":
+          obj.market_weight = numberValue
+          break
+        case "unrealized_pnl":
+          obj.unrealized_pnl = numberValue
+          obj.net_value_change = numberValue
+          break
       }
-    })
+    }
+
+    if (isOffsetOrSummaryRow(obj.code, obj.name)) {
+      continue
+    }
+
+    if (normalizeSubjectCode(obj.code).startsWith("3102") && !(Number(obj.position) > 0)) {
+      continue
+    }
+
+    const symbol = extractContractSymbol(obj.code, obj.name)
+    if (symbol) obj.symbol = symbol
+
+    if (normalizeSubjectCode(obj.code).startsWith("3102")) {
+      obj.direction = Number(obj.signed_market_value ?? obj.signed_cost ?? 0) < 0 ? "short" : "long"
+      obj.exchange = inferExchange(obj.original_code as string, symbol)
+      obj.asset_class = inferAssetClass(symbol, obj.name)
+    }
+
+    obj.code = normalizeSubjectCode(obj.code)
 
     result.push(obj)
+  }
+
+  const codes = result.map((row) => normalizeSubjectCode(row.code))
+
+  for (const row of result) {
+    const code = normalizeSubjectCode(row.code)
+    const hasContract = code.startsWith("3102") && /[A-Za-z]{1,4}\d{2,5}/.test(`${code}${row.name || ""}`)
+    const isLeaf = hasContract || !codes.some((other) => other !== code && other.startsWith(code))
+    const rowKind = inferRowKind(code, row.name)
+
+    row.row_kind = rowKind
+    row.is_leaf = isLeaf
+    if (!row.direction) {
+      row.direction = Number(row.signed_market_value ?? row.signed_cost ?? 0) < 0 || rowKind === "payable" ? "short" : "long"
+    }
+    row.include_in_detail = isLeaf && hasEconomicValue(row)
+    row.include_in_analysis = Boolean(
+      row.include_in_detail &&
+      (
+        rowKind === "derivative" ||
+        rowKind === "stock" ||
+        rowKind === "bond" ||
+        rowKind === "fund_or_stock" ||
+        rowKind === "private_fund"
+      ),
+    )
   }
 
   return result
 }
 
-/**
- * Parse a valuation workbook buffer and return structured portfolio data.
- */
 export function parseValuationWorkbook(buffer: Buffer, filename: string): ValuationAnalysis {
   const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true })
-
-  // Prefer a sheet whose name contains "估值" or "持仓", otherwise use the first sheet
   const sheetName =
-    workbook.SheetNames.find((n) => /估值|持仓|portfolio|valuation/i.test(n)) ??
+    workbook.SheetNames.find((name) => /估值|持仓|valuation|portfolio/i.test(name)) ??
     workbook.SheetNames[0]
 
-  if (!sheetName) {
-    throw new Error("工作簿中没有可用的工作表")
-  }
+  if (!sheetName) throw new Error("工作簿中没有可用的工作表。")
 
   const sheet = workbook.Sheets[sheetName]
   const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, {
@@ -226,20 +471,10 @@ export function parseValuationWorkbook(buffer: Buffer, filename: string): Valuat
   })
 
   const headerRowIndex = findHeaderRow(rows)
-  const summary = extractSummaryFromTopRows(rows, headerRowIndex)
-  const portfolioData = rowsToObjects(rows, headerRowIndex)
-
-  // Post-process: also try to extract nav/assets from portfolio data rows
-  if (summary.nav === 0) {
-    const navRow = portfolioData.find((item) => {
-      const n = (item.name || "").replace(/\s/g, "")
-      return /^(基金)?资产净值$|^净资产$|^基金净值$|^资产总值$/.test(n)
-    })
-    if (navRow) {
-      const mv = Number(navRow["market_value"] ?? navRow["market_value"] ?? 0)
-      if (mv > 0) summary.nav = mv
-    }
-  }
+  const headerRowCount = countHeaderRows(rows, headerRowIndex)
+  const columns = buildColumnMeta(rows, headerRowIndex, headerRowCount)
+  const summary = extractSummary(rows, headerRowIndex, columns, filename)
+  const portfolioData = rowsToObjects(rows, headerRowIndex, headerRowCount, columns)
 
   return { portfolio_data: portfolioData, summary }
 }
