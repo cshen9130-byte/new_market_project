@@ -786,7 +786,7 @@ function PrivateFundTable({
   const [showTemplates, setShowTemplates] = useState(false)
 
   return (
-    <div className="flex-1 min-h-0 flex flex-col">
+    <div className="flex flex-col">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-1 py-1.5 mb-1 flex-shrink-0">
         <div className="flex items-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400">
@@ -849,7 +849,7 @@ function PrivateFundTable({
           </button>
         </div>
       </div>
-      <div className="flex-1 min-h-0 overflow-auto rounded-lg border">
+      <div className="overflow-x-auto rounded-lg border">
         <table className="text-sm border-collapse w-full" style={{ minWidth: 1480 }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
@@ -1084,7 +1084,7 @@ function PrivateFundView() {
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0">
+    <div className="flex flex-col">
       <FundFilterPanel filters={filters} onChange={(f) => setFilters((p) => ({ ...p, ...f }))} onSave={handleSaveTemplate} />
       <PrivateFundTable
         strategyFilters={filters.strategyFilters}
@@ -1109,7 +1109,7 @@ export default function PrivateFundsPage() {
   const sidebarItems = sidebarMap[activeTab] ?? []
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col">
       {/* Top menu bar */}
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
         <nav className="flex items-center gap-1 px-6 h-12">
@@ -1131,7 +1131,7 @@ export default function PrivateFundsPage() {
       </div>
 
       {/* Body: sidebar + content */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex">
         {sidebarItems.length > 0 && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <nav className="flex flex-col gap-0.5 p-3 pt-4">
@@ -1154,7 +1154,7 @@ export default function PrivateFundsPage() {
         )}
 
         {/* Page content area */}
-        <div className="flex-1 min-h-0 p-5 flex flex-col">
+        <div className="flex-1 p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
         </div>
       </div>
