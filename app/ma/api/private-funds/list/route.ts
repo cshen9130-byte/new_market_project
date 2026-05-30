@@ -4,6 +4,30 @@ import { query } from "@/lib/db"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
+// ---------------------------------------------------------------------------
+// Module-level latest-NAV cache (avoids scanning 3.7M rows on every request)
+// ---------------------------------------------------------------------------
+interface NavEntry { nav: string; price_date: string }
+const _navCache = new Map<string, { map: Map<string, NavEntry>; ts: number }>()
+const NAV_CACHE_TTL = 5 * 60 * 1000 // 5 min
+
+async function getLatestNavMap(cutoffDate: string | null): Promise<Map<string, NavEntry>> {
+  const key = cutoffDate ?? "__latest__"
+  const hit = _navCache.get(key)
+  if (hit && Date.now() - hit.ts < NAV_CACHE_TTL) return hit.map
+
+  const rows = await query<{ beian_hao: string; nav: string; price_date: string }>(
+    `SELECT DISTINCT ON (beian_hao)
+       beian_hao, nav::text AS nav, price_date::text AS price_date
+     FROM private_fund_nav
+     ${cutoffDate ? `WHERE price_date <= '${cutoffDate}'` : ""}
+     ORDER BY beian_hao, price_date DESC`
+  )
+  const map = new Map(rows.map((r) => [r.beian_hao, { nav: r.nav, price_date: r.price_date }]))
+  _navCache.set(key, { map, ts: Date.now() })
+  return map
+}
+
 const ALLOWED_SORT: Record<string, string> = {
   product_name: "i.product_name",
   latest_nav:   "fn.nav",
@@ -197,7 +221,7 @@ export async function GET(req: Request) {
   const pOffset = filterParams.length + 2
 
   try {
-    const [rows, countRow] = await Promise.all([
+    const [rows, countRow, navMap] = await Promise.all([
       query<{
         beian_hao:      string
         product_name:   string
@@ -212,19 +236,8 @@ export async function GET(req: Request) {
         ret_1y:         string | null
         sharpe_1y:      string | null
         calmar_1y:      string | null
-        latest_nav:     string | null
-        latest_nav_date: string | null
       }>(
-        `WITH fn AS (
-           SELECT DISTINCT ON (beian_hao)
-             beian_hao,
-             nav::text        AS nav,
-             price_date::text AS price_date
-           FROM private_fund_nav
-           ${cutoffDate ? `WHERE price_date <= '${cutoffDate}'` : ""}
-           ORDER BY beian_hao, price_date DESC
-         )
-         SELECT
+        `SELECT
            i.beian_hao,
            i.product_name,
            i.strategy_l1,
@@ -237,11 +250,8 @@ export async function GET(req: Request) {
            i.ret_6m,
            i.ret_1y,
            i.sharpe_1y,
-           i.calmar_1y,
-           fn.nav            AS latest_nav,
-           fn.price_date     AS latest_nav_date
+           i.calmar_1y
          FROM private_fund_info i
-         LEFT JOIN fn USING (beian_hao)
          ${whereClause}
          ORDER BY ${orderSql}
          LIMIT $${pLimit} OFFSET $${pOffset}`,
@@ -251,7 +261,18 @@ export async function GET(req: Request) {
         `SELECT COUNT(*) AS total FROM private_fund_info i ${whereClause}`,
         filterParams
       ),
+      getLatestNavMap(cutoffDate),
     ])
+
+    // Merge cached NAV data into rows (zero extra DB query)
+    const data = rows.map((r) => {
+      const nav = navMap.get(r.beian_hao)
+      return {
+        ...r,
+        latest_nav:      nav?.nav      ?? null,
+        latest_nav_date: nav?.price_date ?? null,
+      }
+    })
 
     const total = parseInt(countRow[0]?.total ?? "0")
     return NextResponse.json({
@@ -259,7 +280,7 @@ export async function GET(req: Request) {
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: rows,
+      data,
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
