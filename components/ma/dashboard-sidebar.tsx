@@ -59,7 +59,7 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
   }, [shouldAutoCollapse])
 
   const sidebarContent = (
-    <aside className={cn("border-r bg-card flex flex-col transition-all duration-200 h-full", isCollapsed ? "w-12" : "w-40")}>
+    <aside className={cn("border-r bg-card flex flex-col transition-all duration-200 h-full", isCollapsed ? "w-12" : "w-56")}>
       <div className={cn("border-b", isCollapsed ? "px-2 py-5" : "px-4 py-5")}>
         {isCollapsed ? (
           <Link href="/ma/dashboard" title="返回主页" className="flex flex-col items-center gap-1 hover:text-primary transition-colors">
