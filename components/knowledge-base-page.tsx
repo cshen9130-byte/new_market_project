@@ -49,10 +49,13 @@ import {
   UserCog,
   ZoomIn,
   ZoomOut,
+  Table2,
+  StopCircle,
 } from "lucide-react"
 import { authService, type User } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -674,6 +677,21 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const abortControllerRef = useRef<AbortController | null>(null)
   const [renamingConvId, setRenamingConvId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState("")
+
+  // ── Table Fill state ──────────────────────────────────────────────────────
+  const [showTableFillSetup, setShowTableFillSetup] = useState(false)
+  const [tableFillTitleInput, setTableFillTitleInput] = useState("打板策略横向比较表")
+  const [tableFillColumnsInput, setTableFillColumnsInput] = useState("")
+  const [tableFillRowsInput, setTableFillRowsInput] = useState("")
+  const [tableFillActive, setTableFillActive] = useState(false)
+  const [tableFillCols, setTableFillCols] = useState<string[]>([])
+  const [tableFillRowNames, setTableFillRowNames] = useState<string[]>([])
+  const [tableFillData, setTableFillData] = useState<Record<string, string>>({})
+  const [tableFillCurrentCell, setTableFillCurrentCell] = useState<{ rowIdx: number; colIdx: number } | null>(null)
+  const [tableFillDone, setTableFillDone] = useState(false)
+  const [tableFillView, setTableFillView] = useState(false)
+  const [tableFillTitle, setTableFillTitle] = useState("")
+  const tableFillAbortRef = useRef(false)
 
   useEffect(() => {
     authService.init()
@@ -2616,6 +2634,140 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
+  function parseTableNames(raw: string): string[] {
+    return raw.split(/[\n\t,，]+/).map((s) => s.trim()).filter(Boolean)
+  }
+
+  async function handleTableFill(cols: string[], rows: string[], title: string) {
+    setTableFillCols(cols)
+    setTableFillRowNames(rows)
+    setTableFillData({})
+    setTableFillCurrentCell(null)
+    setTableFillDone(false)
+    setTableFillActive(true)
+    setTableFillView(true)
+    setTableFillTitle(title)
+    tableFillAbortRef.current = false
+    setShowTableFillSetup(false)
+
+    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+      for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+        if (tableFillAbortRef.current) break
+
+        const rowName = rows[rowIdx]
+        const colName = cols[colIdx]
+        const cellKey = `${rowIdx}||${colIdx}`
+
+        setTableFillCurrentCell({ rowIdx, colIdx })
+
+        const q = title
+          ? `关于「${title}」，请根据知识库资料，查找「${colName}」这个基金/产品/策略在「${rowName}」维度的信息，简洁作答（1-3句话，支持数字/日期/关键词）。如果知识库中没有相关信息，请直接回答"暂无数据"。`
+          : `请根据知识库资料，查找「${colName}」在「${rowName}」维度的信息，简洁作答（1-3句话）。如果知识库中没有相关信息，请直接回答"暂无数据"。`
+
+        try {
+          const res = await fetch("/api/knowledge-base/chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+            body: JSON.stringify({
+              question: q,
+              folderPath: selectedFolder,
+              filePath: selectedDocument?.relativePath ?? null,
+              useBm25: true,
+              useGraphRag: false,
+              stream: true,
+              modelMode: "turbo",
+              deepSearch: false,
+              thinkingSearch: false,
+            }),
+          })
+
+          if (!res.ok) {
+            setTableFillData((prev) => ({ ...prev, [cellKey]: "查询失败" }))
+            continue
+          }
+
+          const reader = res.body!.getReader()
+          const decoder = new TextDecoder()
+          let sseBuffer = ""
+          let fullContent = ""
+
+          // eslint-disable-next-line no-labels
+          outer: while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            sseBuffer += decoder.decode(value, { stream: true })
+            const parts = sseBuffer.split("\n\n")
+            sseBuffer = parts.pop() ?? ""
+            for (const part of parts) {
+              if (!part.startsWith("data: ")) continue
+              const jsonStr = part.slice(6).trim()
+              if (jsonStr === "[DONE]") continue
+              let event: { type: string; delta?: string } | null = null
+              try { event = JSON.parse(jsonStr) } catch { continue }
+              if (!event) continue
+              if (event.type === "text" && event.delta) {
+                fullContent += event.delta
+                setTableFillData((prev) => ({ ...prev, [cellKey]: fullContent }))
+              }
+              // eslint-disable-next-line no-labels
+              if (tableFillAbortRef.current) { void reader.cancel(); break outer }
+            }
+          }
+
+          if (!fullContent) {
+            setTableFillData((prev) => ({ ...prev, [cellKey]: "暂无数据" }))
+          }
+        } catch {
+          if (tableFillAbortRef.current) break
+          setTableFillData((prev) => ({ ...prev, [cellKey]: "查询失败" }))
+        }
+      }
+      if (tableFillAbortRef.current) break
+    }
+
+    setTableFillActive(false)
+    setTableFillCurrentCell(null)
+    setTableFillDone(true)
+  }
+
+  function handleTableFillStop() {
+    tableFillAbortRef.current = true
+  }
+
+  function handleDownloadTableCSV(cols: string[], rows: string[], data: Record<string, string>, title: string) {
+    const header = ["", ...cols].map((c) => `"${c.replace(/"/g, '""')}"`).join(",")
+    const bodyRows = rows.map((rowName, rowIdx) => {
+      const cells = cols.map((_, colIdx) => {
+        const val = data[`${rowIdx}||${colIdx}`] ?? ""
+        return `"${val.replace(/"/g, '""')}"`
+      })
+      return [`"${rowName.replace(/"/g, '""')}"`, ...cells].join(",")
+    })
+    const csv = [header, ...bodyRows].join("\n")
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `${(title || "表格").replace(/[/\\:*?"<>|]/g, "_")}_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleDownloadTableXLSX(cols: string[], rows: string[], data: Record<string, string>, title: string) {
+    const { utils, writeFile } = await import("xlsx")
+    const wsData: string[][] = [
+      ["", ...cols],
+      ...rows.map((rowName, rowIdx) => [
+        rowName,
+        ...cols.map((_, colIdx) => data[`${rowIdx}||${colIdx}`] ?? ""),
+      ]),
+    ]
+    const ws = utils.aoa_to_sheet(wsData)
+    const wb = utils.book_new()
+    utils.book_append_sheet(wb, ws, title.slice(0, 31) || "Sheet1")
+    writeFile(wb, `${(title || "表格").replace(/[/\\:*?"<>|]/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
   function handleQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey) {
       return
@@ -4331,6 +4483,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <History className="h-4 w-4" />
                   历史记录
                 </Button>
+                <Button
+                  variant={tableFillView ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => tableFillView ? setTableFillView(false) : setShowTableFillSetup(true)}
+                  title="AI自动填表"
+                >
+                  <Table2 className="h-4 w-4" />
+                  填表助手
+                </Button>
               </div>
               </div>
               <div className="flex items-center justify-between text-sm text-muted-foreground">
@@ -4524,7 +4686,76 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 </div>
               )}
 
-              {/* Chat messages */}
+              {/* Chat messages OR Table Fill view */}
+              {tableFillView ? (
+                <div className="min-h-0 flex-1 overflow-auto">
+                  {/* Table fill header info */}
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="text-sm font-medium">{tableFillTitle || "填表助手"}</div>
+                    <div className="flex items-center gap-2">
+                      {tableFillActive && (
+                        <span className="text-xs text-muted-foreground">
+                          <LoaderCircle className="mr-1 inline h-3 w-3 animate-spin" />
+                          {tableFillCurrentCell
+                            ? `正在填写：${tableFillCols[tableFillCurrentCell.colIdx]} / ${tableFillRowNames[tableFillCurrentCell.rowIdx]}`
+                            : "准备中..."}
+                        </span>
+                      )}
+                      {tableFillDone && !tableFillActive && (
+                        <span className="text-xs text-green-600 font-medium">✓ 填写完成</span>
+                      )}
+                    </div>
+                  </div>
+                  {/* Table */}
+                  {tableFillCols.length > 0 && tableFillRowNames.length > 0 && (
+                    <div className="overflow-x-auto rounded-md border text-xs">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="sticky left-0 z-10 min-w-[7rem] bg-muted/80 font-semibold text-foreground"></TableHead>
+                            {tableFillCols.map((col, ci) => (
+                              <TableHead key={ci} className="min-w-[9rem] whitespace-nowrap font-semibold text-foreground">{col}</TableHead>
+                            ))}
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {tableFillRowNames.map((rowName, rowIdx) => (
+                            <TableRow key={rowIdx}>
+                              <TableCell className="sticky left-0 z-10 bg-muted/50 font-medium text-foreground whitespace-nowrap">{rowName}</TableCell>
+                              {tableFillCols.map((_, colIdx) => {
+                                const cellKey = `${rowIdx}||${colIdx}`
+                                const isCurrent = tableFillCurrentCell?.rowIdx === rowIdx && tableFillCurrentCell?.colIdx === colIdx
+                                const val = tableFillData[cellKey]
+                                return (
+                                  <TableCell
+                                    key={colIdx}
+                                    className={cn(
+                                      "align-top transition-colors",
+                                      isCurrent && "bg-primary/10 ring-1 ring-inset ring-primary/30",
+                                      val === "暂无数据" && "text-muted-foreground italic",
+                                    )}
+                                  >
+                                    {isCurrent && !val ? (
+                                      <LoaderCircle className="h-3 w-3 animate-spin text-primary" />
+                                    ) : (
+                                      <span className="whitespace-pre-wrap leading-relaxed">{val ?? ""}</span>
+                                    )}
+                                  </TableCell>
+                                )
+                              })}
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                  {tableFillCols.length === 0 && (
+                    <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                      点击"新建表格"开始配置。
+                    </div>
+                  )}
+                </div>
+              ) : (
               <div
                 ref={traditionalChatScrollRef}
                 className="min-h-0 flex-1 overflow-y-auto pr-1"
@@ -4566,9 +4797,67 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   )}
                 </div>
               </div>
+              )}
             </div>
 
             <div className="shrink-0 border-t bg-background pt-4">
+              {tableFillView ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                    onClick={() => setShowTableFillSetup(true)}
+                    disabled={tableFillActive}
+                  >
+                    <Table2 className="h-3.5 w-3.5" />
+                    新建表格
+                  </Button>
+                  {tableFillActive ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 border-red-400/60 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20"
+                      onClick={handleTableFillStop}
+                    >
+                      <StopCircle className="h-3.5 w-3.5" />
+                      停止
+                    </Button>
+                  ) : null}
+                  {tableFillCols.length > 0 && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        disabled={tableFillActive}
+                        onClick={() => handleDownloadTableCSV(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle)}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                        CSV
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5"
+                        disabled={tableFillActive}
+                        onClick={() => void handleDownloadTableXLSX(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle)}
+                      >
+                        <FileSpreadsheet className="h-3.5 w-3.5" />
+                        Excel
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="ml-auto gap-1.5 text-muted-foreground"
+                    onClick={() => setTableFillView(false)}
+                  >
+                    ← 返回对话
+                  </Button>
+                </div>
+              ) : (
               <div className="space-y-3">
                 <Textarea
                   value={question}
@@ -4591,10 +4880,80 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   )}
                 </div>
               </div>
+              )}
             </div>
             </section>
           </ResizablePanel>
         </ResizablePanelGroup>
+
+        {/* Table Fill Setup Dialog */}
+        <Dialog open={showTableFillSetup} onOpenChange={(open) => { if (!open) setShowTableFillSetup(false) }}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Table2 className="h-4 w-4" />
+                AI 自动填表助手
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-2">
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">表格名称（上下文提示）</label>
+                <Input
+                  value={tableFillTitleInput}
+                  onChange={(e) => setTableFillTitleInput(e.target.value)}
+                  placeholder="例如：打板策略横向比较表"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">列名（每行一个，或用逗号/Tab分隔）</label>
+                <Textarea
+                  value={tableFillColumnsInput}
+                  onChange={(e) => setTableFillColumnsInput(e.target.value)}
+                  placeholder={"量桥\n量道\n六妙星\n瀛岳\n衡颐\n均泰\n致燧\n具力\n钜融"}
+                  className="min-h-24 font-mono text-xs"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  将作为表格的<strong>列标题</strong>（通常是各基金/产品名称）
+                </p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">行名（每行一个，或用逗号/Tab分隔）</label>
+                <Textarea
+                  value={tableFillRowsInput}
+                  onChange={(e) => setTableFillRowsInput(e.target.value)}
+                  placeholder={"代表产品\n基金经理\n细分策略\n团队背景\n策略原理\n历年收益\n回撤情况\n胜率/赔率"}
+                  className="min-h-28 font-mono text-xs"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  将作为表格的<strong>行标题</strong>（通常是各维度/属性），共 {parseTableNames(tableFillRowsInput).length} 行
+                </p>
+              </div>
+              {parseTableNames(tableFillColumnsInput).length > 0 && parseTableNames(tableFillRowsInput).length > 0 && (
+                <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  共 <strong>{parseTableNames(tableFillColumnsInput).length}</strong> 列 ×{" "}
+                  <strong>{parseTableNames(tableFillRowsInput).length}</strong> 行 ={" "}
+                  <strong>{parseTableNames(tableFillColumnsInput).length * parseTableNames(tableFillRowsInput).length}</strong> 个单元格，AI 将逐一检索填写。
+                  每格约 3-8 秒，预计总耗时约{" "}
+                  <strong>{Math.round(parseTableNames(tableFillColumnsInput).length * parseTableNames(tableFillRowsInput).length * 5 / 60)}</strong> 分钟。
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setShowTableFillSetup(false)}>取消</Button>
+              <Button
+                disabled={parseTableNames(tableFillColumnsInput).length === 0 || parseTableNames(tableFillRowsInput).length === 0}
+                onClick={() => void handleTableFill(
+                  parseTableNames(tableFillColumnsInput),
+                  parseTableNames(tableFillRowsInput),
+                  tableFillTitleInput.trim(),
+                )}
+              >
+                <Table2 className="mr-1.5 h-4 w-4" />
+                开始填写
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Move Folder Dialog */}
         <Dialog open={!!moveFolderSource} onOpenChange={(open) => { if (!open) setMoveFolderSource(null) }}>
