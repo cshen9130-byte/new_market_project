@@ -244,22 +244,90 @@ export default function PrivateFundDetailPage() {
 
   const [chartMode, setChartMode] = useState<"nav" | "return">("nav")
 
+  // ─── Filter state ────────────────────────────────────────────────────────
+  const inceptionDate = data?.info.inception_date?.slice(0, 10) ?? ""
+  const todayStr = new Date().toISOString().slice(0, 10)
+
+  const [filterPeriod,   setFilterPeriod]   = useState<string>("成立以来")
+  const [filterFrom,     setFilterFrom]     = useState<string>("")
+  const [filterTo,       setFilterTo]       = useState<string>("")
+  const [filterNavType,  setFilterNavType]  = useState<string>("复权净值")
+  const [filterFreq,     setFilterFreq]     = useState<string>("全部")
+  const [filterBench,    setFilterBench]    = useState<string>("")
+  // Applied values (only updated on 开始分析)
+  const [appliedFrom,    setAppliedFrom]    = useState<string>("")
+  const [appliedTo,      setAppliedTo]      = useState<string>("")
+
+  // When data loads, seed benchmark and dates
+  useEffect(() => {
+    if (!data) return
+    const inc = data.info.inception_date?.slice(0, 10) ?? ""
+    const last = data.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
+    setFilterFrom(inc)
+    setFilterTo(last)
+    setFilterBench(data.info.benchmark ?? "")
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data])
+
+  const PERIOD_OPTIONS = ["成立以来", "近1年", "近3年", "近5年", "今年以来", "自定义"]
+  function applyPeriod(p: string) {
+    setFilterPeriod(p)
+    if (!data) return
+    const last = data.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
+    const inc  = data.info.inception_date?.slice(0, 10) ?? last
+    let from = inc
+    if (p === "近1年")  from = sub(last, 1, "year")
+    else if (p === "近3年")  from = sub(last, 3, "year")
+    else if (p === "近5年")  from = sub(last, 5, "year")
+    else if (p === "今年以来") from = last.slice(0, 4) + "-01-01"
+    setFilterFrom(from)
+    setFilterTo(last)
+  }
+  function sub(dateStr: string, n: number, unit: "year"): string {
+    const d = new Date(dateStr)
+    d.setFullYear(d.getFullYear() - n)
+    return d.toISOString().slice(0, 10)
+  }
+  function handleApply() {
+    setAppliedFrom(filterFrom)
+    setAppliedTo(filterTo)
+  }
+  function handleReset() {
+    const inc  = inceptionDate
+    const last = data?.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
+    setFilterPeriod("成立以来")
+    setFilterFrom(inc)
+    setFilterTo(last)
+    setFilterNavType("复权净值")
+    setFilterFreq("全部")
+    setFilterBench(data?.info.benchmark ?? "")
+    setAppliedFrom("")
+    setAppliedTo("")
+  }
+
+  // Active date range for chart/table
+  const activeFrom = appliedFrom || filterFrom
+  const activeTo   = appliedTo   || filterTo
+
   const chartData = useMemo(() => {
     if (!data) return []
-    return downsample(data.nav_series).map((r) => ({
+    const rows = data.nav_series.filter(r => (!activeFrom || r.price_date >= activeFrom) && (!activeTo || r.price_date <= activeTo))
+    return downsample(rows).map((r) => ({
       date: r.price_date,
       value: parseFloat(r.cumulative_nav),
     }))
-  }, [data])
+  }, [data, activeFrom, activeTo])
 
   const returnChartData = useMemo(() => {
     if (!data || !data.nav_series.length) return []
-    const firstNav = parseFloat(data.nav_series[0].cumulative_nav)
-    return downsample(data.nav_series).map((r) => ({
+    const rows = data.nav_series.filter(r => (!activeFrom || r.price_date >= activeFrom) && (!activeTo || r.price_date <= activeTo))
+    if (!rows.length) return []
+    const firstNav = parseFloat(rows[0].cumulative_nav)
+    return downsample(rows).map((r) => ({
       date: r.price_date,
       value: firstNav > 0 ? +((parseFloat(r.cumulative_nav) / firstNav - 1) * 100).toFixed(4) : 0,
     }))
-  }, [data])
+  }, [data, activeFrom, activeTo])
 
   const activeChartData = chartMode === "nav" ? chartData : returnChartData
 
@@ -485,6 +553,89 @@ export default function PrivateFundDetailPage() {
         </div>
       </div>
 
+      {/* ── Filter bar ─────────────────────────────────── */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 mb-4 rounded-lg border border-zinc-100 bg-zinc-50 text-xs">
+
+        {/* 统计区间 */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-zinc-500 whitespace-nowrap">统计区间：</span>
+          <select
+            value={filterPeriod}
+            onChange={e => applyPeriod(e.target.value)}
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
+          >
+            {PERIOD_OPTIONS.map(o => <option key={o}>{o}</option>)}
+          </select>
+        </div>
+
+        {/* Date from */}
+        <input
+          type="date"
+          value={filterFrom}
+          onChange={e => { setFilterFrom(e.target.value); setFilterPeriod("自定义") }}
+          className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
+        />
+        <span className="text-zinc-400">～</span>
+        {/* Date to */}
+        <input
+          type="date"
+          value={filterTo}
+          onChange={e => { setFilterTo(e.target.value); setFilterPeriod("自定义") }}
+          className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
+        />
+
+        {/* 净值类型 */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-zinc-500 whitespace-nowrap">净值类型：</span>
+          <select
+            value={filterNavType}
+            onChange={e => setFilterNavType(e.target.value)}
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
+          >
+            {["复权净值", "单位净值", "累计净值"].map(o => <option key={o}>{o}</option>)}
+          </select>
+        </div>
+
+        {/* 净值频率 */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-zinc-500 whitespace-nowrap">净值频率：</span>
+          <select
+            value={filterFreq}
+            onChange={e => setFilterFreq(e.target.value)}
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
+          >
+            {["全部", "日频", "周频", "月频"].map(o => <option key={o}>{o}</option>)}
+          </select>
+        </div>
+
+        {/* 业绩基准 */}
+        <div className="flex items-center gap-1.5">
+          <span className="text-zinc-500 whitespace-nowrap">业绩基准：</span>
+          <input
+            type="text"
+            value={filterBench}
+            onChange={e => setFilterBench(e.target.value)}
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none w-32"
+          />
+        </div>
+
+        {/* Buttons */}
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={handleReset}
+            className="px-3 py-1.5 rounded border border-red-500 text-red-500 hover:bg-red-50 font-medium transition-colors"
+          >
+            重置
+          </button>
+          <button
+            onClick={handleApply}
+            className="px-3 py-1.5 rounded bg-red-500 text-white hover:bg-red-600 font-medium transition-colors"
+          >
+            开始分析
+          </button>
+        </div>
+      </div>
+
       {/* ── Chart + Table side by side ─────────────────── */}
       <div className="flex flex-col xl:flex-row gap-4">
       {activeChartData.length > 1 && (
@@ -559,7 +710,7 @@ export default function PrivateFundDetailPage() {
       {/* ── NAV Table ─────────────────────────────────────── */}
       <div className="xl:w-[480px] flex-shrink-0 rounded-xl border border-zinc-100 bg-white p-5">
         <div className="text-sm font-semibold text-zinc-700 mb-3">净值数据</div>
-        <NavTable rows={nav_series} />
+        <NavTable rows={nav_series.filter(r => (!activeFrom || r.price_date >= activeFrom) && (!activeTo || r.price_date <= activeTo))} />
       </div>
       </div>{/* end flex chart+table */}
     </div>
