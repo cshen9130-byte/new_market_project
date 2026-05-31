@@ -468,14 +468,30 @@ export async function pgGetIndexInfo(scope: string): Promise<{
   await pgEnsureSchema()
   const isRoot = scope === ''
 
-  // Get overall stats
+  // Get overall stats — try exact scope match first
   const stats = await dbQuery<{ n: string; updated_at: string; model: string }>(
     isRoot
       ? `SELECT COUNT(*) AS n, MAX(created_at)::text AS updated_at, MIN(model) AS model FROM kb_chunks`
       : `SELECT COUNT(*) AS n, MAX(created_at)::text AS updated_at, MIN(model) AS model FROM kb_chunks WHERE scope = $1`,
     isRoot ? [] : [scope],
   )
-  const total = Number(stats[0]?.n ?? 0)
+  let total = Number(stats[0]?.n ?? 0)
+
+  // If no chunks in this exact scope, fall back to source-prefix match across all scopes.
+  // This handles the case where data was indexed at root scope (e.g. after a recovery job).
+  let usePrefix = false
+  if (!total && !isRoot) {
+    const prefixStats = await dbQuery<{ n: string; updated_at: string; model: string }>(
+      `SELECT COUNT(*) AS n, MAX(created_at)::text AS updated_at, MIN(model) AS model FROM kb_chunks WHERE source LIKE $1 ESCAPE '\\'`,
+      [`${escapeSourcePrefix(scope)}/%`],
+    )
+    total = Number(prefixStats[0]?.n ?? 0)
+    if (total) {
+      usePrefix = true
+      stats[0] = prefixStats[0]
+    }
+  }
+
   if (!total) {
     return { exists: false, indexedDocuments: 0, indexedChunks: 0, updatedAt: null, model: null, indexedFiles: [] }
   }
@@ -484,8 +500,10 @@ export async function pgGetIndexInfo(scope: string): Promise<{
   const sources = await dbQuery<{ source: string }>(
     isRoot
       ? `SELECT DISTINCT source FROM kb_chunks ORDER BY source`
-      : `SELECT DISTINCT source FROM kb_chunks WHERE scope = $1 ORDER BY source`,
-    isRoot ? [] : [scope],
+      : usePrefix
+        ? `SELECT DISTINCT source FROM kb_chunks WHERE source LIKE $1 ESCAPE '\\' ORDER BY source`
+        : `SELECT DISTINCT source FROM kb_chunks WHERE scope = $1 ORDER BY source`,
+    isRoot ? [] : usePrefix ? [`${escapeSourcePrefix(scope)}/%`] : [scope],
   )
 
   return {
