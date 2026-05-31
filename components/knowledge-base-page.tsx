@@ -3471,7 +3471,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   const fi = getExplorerFileIcon(entry.document.extension)
                                   return <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-sm", fi.className, notIndexed && !selected && "opacity-40")}><fi.icon className="h-4 w-4" /></span>
                                 })()}
-                                <span className={cn("truncate", dimmedNotIndexed && "text-muted-foreground")}>{entry.name}</span>
+                                <span className={cn("truncate", dimmedNotIndexed && "text-muted-foreground")} title={entry.name}>
+                                  {entry.name.includes("-") ? entry.name.slice(entry.name.indexOf("-") + 1) : entry.name}
+                                </span>
                                 {(entry.kind === "file" ? entry.document.locked : entry.folder.locked) && (
                                   <Lock className="ml-0.5 h-3 w-3 shrink-0 text-amber-500" />
                                 )}
