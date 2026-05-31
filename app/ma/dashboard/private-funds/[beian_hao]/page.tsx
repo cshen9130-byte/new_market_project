@@ -64,6 +64,7 @@ interface Metrics {
   ann_ret:                   string | null
   ytd_ret:                   string | null
   max_drawdown:              string | null
+  sharpe_since_inception:    string | null
 }
 
 interface DetailData {
@@ -434,21 +435,18 @@ export default function PrivateFundDetailPage() {
           <span className="text-xs text-zinc-500">成立以来最大回撤</span>
         </div>
 
-        {/* 夏普比率 */}
-        {info.sharpe_1y && (
+        {/* 夏普比率 – computed since inception */}
+        {metrics.sharpe_since_inception && (
           <div className="flex flex-col items-start gap-0.5">
             <span className="text-[1.4rem] font-bold tabular-nums text-zinc-800">
-              {parseFloat(info.sharpe_1y).toFixed(2)}
+              {metrics.sharpe_since_inception}
             </span>
             <span className="text-xs text-zinc-500">成立以来夏普比率</span>
           </div>
         )}
 
-        {/* Spacer pushes the fund info to the right */}
-        <div className="flex-1" />
-
-        {/* 备案 / 管理人 info block */}
-        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-zinc-500 self-center">
+        {/* 备案 / 管理人 info block – pushed to far right with ml-auto */}
+        <div className="ml-auto grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-zinc-500 self-center">
           <span>备案编号：</span>
           <span className="font-medium text-zinc-800">{info.beian_hao}</span>
           <span>产品成立时间：</span>
@@ -462,21 +460,6 @@ export default function PrivateFundDetailPage() {
             </>
           )}
         </div>
-      </div>
-
-      {/* ── Secondary period-return pills ─────────────────── */}
-      <div className="flex flex-wrap gap-2 mb-6">
-        <RetPill label="近1周" pct={pct1w} />
-        <RetPill label="近1月" pct={pct1m} />
-        <RetPill label="近3月" pct={pct3m} />
-        <RetPill label="近6月" pct={pct6m} />
-        <RetPill label="近1年" pct={pct1y} />
-        {info.calmar_1y && (
-          <div className="flex flex-col items-center gap-0.5 px-3 py-2 rounded bg-zinc-50 border border-zinc-100">
-            <span className="text-[10px] text-zinc-400 font-medium">卡玛(1Y)</span>
-            <span className="text-sm font-bold tabular-nums text-zinc-800">{parseFloat(info.calmar_1y).toFixed(2)}</span>
-          </div>
-        )}
       </div>
 
       {/* ── Chart + Table side by side ─────────────────── */}

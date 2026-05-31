@@ -86,14 +86,28 @@ export async function GET(
       ? parseFloat(latest.cumulative_nav) / parseFloat(ytdBase.cumulative_nav) - 1
       : null
 
-  // Max drawdown (from cumulative_nav / reinvested series)
+  // Max drawdown + daily returns for Sharpe (from cumulative_nav reinvested series)
   let peak = -Infinity
   let maxDrawdown = 0
-  for (const r of nav_series) {
-    const v = parseFloat(r.cumulative_nav)
+  const dailyReturns: number[] = []
+  for (let i = 0; i < nav_series.length; i++) {
+    const v = parseFloat(nav_series[i].cumulative_nav)
     if (v > peak) peak = v
     const dd = peak > 0 ? (peak - v) / peak : 0
     if (dd > maxDrawdown) maxDrawdown = dd
+    if (i > 0) {
+      const prev = parseFloat(nav_series[i - 1].cumulative_nav)
+      if (prev > 0) dailyReturns.push(v / prev - 1)
+    }
+  }
+
+  // Since-inception Sharpe = annualised return / annualised volatility (rf = 0)
+  let sharpe_since_inception: string | null = null
+  if (ann_ret !== null && dailyReturns.length > 1) {
+    const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
+    const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length
+    const annVol = Math.sqrt(variance) * Math.sqrt(252)
+    if (annVol > 0) sharpe_since_inception = (ann_ret / annVol).toFixed(2)
   }
 
   return NextResponse.json({
@@ -108,6 +122,7 @@ export async function GET(
       ann_ret:             ann_ret             !== null ? (ann_ret             * 100).toFixed(2) : null,
       ytd_ret:             ytd_ret             !== null ? (ytd_ret             * 100).toFixed(2) : null,
       max_drawdown:        maxDrawdown > 0               ? (maxDrawdown        * 100).toFixed(2) : null,
+      sharpe_since_inception,
     },
   })
 }
