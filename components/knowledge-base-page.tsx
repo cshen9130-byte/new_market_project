@@ -13,7 +13,7 @@ import {
   Download,
   FileArchive,
   FileCode,
-  File,
+  File as FileIcon,
   Folder,
   FileImage,
   FileJson,
@@ -65,7 +65,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import ReactECharts from "echarts-for-react"
 
 function GraphToolbar({
@@ -182,6 +182,17 @@ type KnowledgeBasePageProps = {
   variant?: "cyber" | "traditional"
 }
 
+type SharedNoteMeta = {
+  relativePath: string
+  title: string
+  createdBy: string
+  createdByName: string
+  createdAt: string
+  updatedBy: string
+  updatedByName: string
+  updatedAt: string
+}
+
 const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".doc", ".docx", ".xls", ".xlsx"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
 const FRAME_PREVIEW_EXTENSIONS = new Set([".html", ".htm", ".pdf"])
@@ -290,7 +301,7 @@ function getExplorerFileIcon(extension: string) {
     return { icon: FileText, className: "bg-rose-500/15 text-rose-400" }
   }
 
-  return { icon: File, className: "bg-slate-500/15 text-slate-300" }
+  return { icon: FileIcon, className: "bg-slate-500/15 text-slate-300" }
 }
 
 function collectDocumentsInFolder(folder: FolderNode | null): DocumentNode[] {
@@ -587,7 +598,30 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [selectedExplorerEntry, setSelectedExplorerEntry] = useState<{ kind: "folder" | "file"; relativePath: string } | null>(null)
   const [selectedExplorerKeys, setSelectedExplorerKeys] = useState<Set<string>>(new Set())
   const lastClickedKeyRef = useRef<string | null>(null)
-  const [traditionalPanel, setTraditionalPanel] = useState<"library" | "preview" | "upload" | "folder" | "sync" | "graph">("library")
+  const [traditionalPanel, setTraditionalPanel] = useState<"library" | "preview" | "upload" | "folder" | "sync" | "graph" | "notes">("library")
+  const [noteContent, setNoteContent] = useState("")
+  const [noteLoading, setNoteLoading] = useState(false)
+  const [noteSaving, setNoteSaving] = useState(false)
+  const [noteSaveError, setNoteSaveError] = useState<string | null>(null)
+  const [noteUpdatedAt, setNoteUpdatedAt] = useState<string | null>(null)
+  const [noteDirty, setNoteDirty] = useState(false)
+  const noteSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const noteSaveSeqRef = useRef(0)
+  // ── Shared (online) notes state ──────────────────────────────────────────────
+  const [notesTab, setNotesTab] = useState<"private" | "shared">("private")
+  const [sharedNotesList, setSharedNotesList] = useState<SharedNoteMeta[]>([])
+  const [sharedNotesListLoading, setSharedNotesListLoading] = useState(false)
+  const [sharedNotesView, setSharedNotesView] = useState<"list" | "edit">("list")
+  const [sharedNoteTitle, setSharedNoteTitle] = useState("")
+  const [sharedNoteContent, setSharedNoteContent] = useState("")
+  const [sharedNoteLoading, setSharedNoteLoading] = useState(false)
+  const [sharedNoteSaving, setSharedNoteSaving] = useState(false)
+  const [sharedNoteError, setSharedNoteError] = useState<string | null>(null)
+  const [sharedNoteEditPath, setSharedNoteEditPath] = useState<string | null>(null)
+  const [publishTitle, setPublishTitle] = useState("")
+  const [publishSaving, setPublishSaving] = useState(false)
+  const [publishError, setPublishError] = useState<string | null>(null)
+  const [publishSuccess, setPublishSuccess] = useState<string | null>(null)
   const [graphVizData, setGraphVizData] = useState<{ nodes: Array<{ id: string; name: string; category: "document" | "term"; value: number }>; links: Array<{ source: string; target: string; value: number }> } | null>(null)
   const [graphVizLoading, setGraphVizLoading] = useState(false)
   const [graphVizError, setGraphVizError] = useState<string | null>(null)
@@ -690,6 +724,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [tableFillColumnSources, setTableFillColumnSources] = useState<Record<string, string[]>>({})
   const [tableFillCurrentCell, setTableFillCurrentCell] = useState<{ rowIdx: number; colIdx: number } | null>(null)
   const [tableFillDone, setTableFillDone] = useState(false)
+  const [shareStatus, setShareStatus] = useState<"idle" | "copied" | "shared">("idle")
+  const [wechatHint, setWechatHint] = useState(false)
   const [tableFillView, setTableFillView] = useState(false)
   const [tableFillTitle, setTableFillTitle] = useState("")
   const [tableFillMode, setTableFillMode] = useState<"fast" | "deep">("fast")
@@ -708,7 +744,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     setCurrentUser(currentUser)
     setAuthorized(true)
     void refreshTree(true, currentUser)
+    void refreshNote(currentUser)
+    void loadSharedNotesList(currentUser)
   }, [router])
+
+  useEffect(() => {
+    return () => {
+      if (noteSaveTimerRef.current) {
+        clearTimeout(noteSaveTimerRef.current)
+        noteSaveTimerRef.current = null
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (variant !== "traditional" || userScrolledRef.current) {
@@ -857,7 +904,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       const form = new FormData()
       form.append("folderPath", resolvedTarget)
-      form.append("files", new File([chunkBlob], file.name))
+      form.append("files", new FileIcon([chunkBlob], file.name))
       form.append("relativePaths", relativePath)
       form.append("skipDedup", "true")
       form.append("chunkSessionId", sessionId)
@@ -946,6 +993,219 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     } finally {
       setLoading(false)
       setRefreshing(false)
+    }
+  }
+
+  async function refreshNote(user: User | null = currentUser) {
+    try {
+      setNoteSaveError(null)
+      setNoteLoading(true)
+      const res = await fetch("/api/knowledge-base/notes", {
+        cache: "no-store",
+        headers: getKnowledgeBaseAuthHeaders(user),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
+      }
+
+      setNoteContent(String(data?.note?.content || ""))
+      setNoteUpdatedAt(data?.note?.updatedAt || null)
+      setNoteDirty(false)
+    } catch (requestError: any) {
+      setNoteSaveError(requestError?.message || String(requestError))
+    } finally {
+      setNoteLoading(false)
+    }
+  }
+
+  async function saveNote(content: string, user: User | null = currentUser) {
+    const requestSeq = noteSaveSeqRef.current + 1
+    noteSaveSeqRef.current = requestSeq
+
+    try {
+      setNoteSaveError(null)
+      setNoteSaving(true)
+
+      const normalizedContent = String(content ?? "").replace(/\r\n/g, "\n")
+      const res = await fetch("/api/knowledge-base/notes", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(getKnowledgeBaseAuthHeaders(user) ?? {}),
+        },
+        body: JSON.stringify({ content: normalizedContent }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
+      }
+
+      if (requestSeq !== noteSaveSeqRef.current) {
+        return
+      }
+
+      setNoteContent(String(data?.note?.content ?? normalizedContent))
+      setNoteUpdatedAt(data?.note?.updatedAt || null)
+      setNoteDirty(false)
+    } catch (requestError: any) {
+      if (requestSeq === noteSaveSeqRef.current) {
+        setNoteSaveError(requestError?.message || String(requestError))
+      }
+    } finally {
+      if (requestSeq === noteSaveSeqRef.current) {
+        setNoteSaving(false)
+      }
+    }
+  }
+
+  function queueNoteSave(nextContent: string) {
+    setNoteContent(nextContent)
+    setNoteDirty(true)
+    setNoteSaveError(null)
+
+    if (noteSaveTimerRef.current) {
+      clearTimeout(noteSaveTimerRef.current)
+      noteSaveTimerRef.current = null
+    }
+
+    noteSaveTimerRef.current = setTimeout(() => {
+      noteSaveTimerRef.current = null
+      void saveNote(nextContent)
+    }, 700)
+  }
+
+  function flushNoteSave() {
+    if (noteSaveTimerRef.current) {
+      clearTimeout(noteSaveTimerRef.current)
+      noteSaveTimerRef.current = null
+    }
+    if (!noteDirty) {
+      return
+    }
+    void saveNote(noteContent)
+  }
+
+  function clearNote() {
+    if (noteSaveTimerRef.current) {
+      clearTimeout(noteSaveTimerRef.current)
+      noteSaveTimerRef.current = null
+    }
+    setNoteContent("")
+    setNoteDirty(true)
+    setNoteSaveError(null)
+    void saveNote("")
+  }
+
+  async function loadSharedNotesList(user: typeof currentUser = currentUser) {
+    try {
+      setSharedNotesListLoading(true)
+      setSharedNoteError(null)
+      const res = await fetch("/api/knowledge-base/shared-note?list=1", {
+        cache: "no-store",
+        headers: getKnowledgeBaseAuthHeaders(user),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      setSharedNotesList((data.notes as SharedNoteMeta[]) ?? [])
+    } catch (e: any) {
+      setSharedNoteError(e?.message || String(e))
+    } finally {
+      setSharedNotesListLoading(false)
+    }
+  }
+
+  async function openSharedNote(meta: SharedNoteMeta) {
+    try {
+      setSharedNoteTitle(meta.title)
+      setSharedNoteEditPath(meta.relativePath)
+      setSharedNoteContent("")
+      setSharedNoteLoading(true)
+      setSharedNoteError(null)
+      setSharedNotesView("edit")
+      const res = await fetch(
+        `/api/knowledge-base/shared-note?relativePath=${encodeURIComponent(meta.relativePath)}`,
+        { cache: "no-store", headers: getKnowledgeBaseAuthHeaders() },
+      )
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      setSharedNoteContent(String(data.content ?? ""))
+    } catch (e: any) {
+      setSharedNoteError(e?.message || String(e))
+    } finally {
+      setSharedNoteLoading(false)
+    }
+  }
+
+  async function saveSharedNote() {
+    if (!sharedNoteTitle.trim()) {
+      setSharedNoteError("请先填写笔记标题")
+      return
+    }
+    try {
+      setSharedNoteSaving(true)
+      setSharedNoteError(null)
+      const res = await fetch("/api/knowledge-base/shared-note", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ title: sharedNoteTitle.trim(), content: sharedNoteContent }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      setSharedNoteEditPath(data.relativePath)
+      // Refresh list
+      await loadSharedNotesList()
+      void refreshTree()
+    } catch (e: any) {
+      setSharedNoteError(e?.message || String(e))
+    } finally {
+      setSharedNoteSaving(false)
+    }
+  }
+
+  async function deleteSharedNote(relativePath: string) {
+    if (!window.confirm("确定删除此在线笔记？此操作不可撤销。")) return
+    try {
+      setSharedNoteError(null)
+      const res = await fetch(
+        `/api/knowledge-base/shared-note?relativePath=${encodeURIComponent(relativePath)}`,
+        { method: "DELETE", headers: getKnowledgeBaseAuthHeaders() },
+      )
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      setSharedNotesList((prev) => prev.filter((n) => n.relativePath !== relativePath))
+      if (sharedNoteEditPath === relativePath) {
+        setSharedNotesView("list")
+        setSharedNoteEditPath(null)
+      }
+      void refreshTree()
+    } catch (e: any) {
+      setSharedNoteError(e?.message || String(e))
+    }
+  }
+
+  async function publishToSharedNotes() {
+    const title = publishTitle.trim()
+    if (!title) { setPublishError("请填写标题"); return }
+    try {
+      setPublishSaving(true)
+      setPublishError(null)
+      setPublishSuccess(null)
+      const res = await fetch("/api/knowledge-base/shared-note", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+        body: JSON.stringify({ title, content: noteContent }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      setPublishSuccess(`已保存到「在线笔记/${data.title}.md」`)
+      setPublishTitle("")
+      await loadSharedNotesList()
+      void refreshTree()
+    } catch (e: any) {
+      setPublishError(e?.message || String(e))
+    } finally {
+      setPublishSaving(false)
     }
   }
 
@@ -1238,7 +1498,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       Array.isArray(input) &&
       input.length > 0 &&
       typeof (input[0] as { file?: unknown }).file !== "undefined" &&
-      !((input[0] as unknown) instanceof File)
+      !((input[0] as unknown) instanceof FileIcon)
     ) {
       entries = (input as Array<{ file: File; relativePath: string }>).filter((e) => e.file.size > 0)
     } else {
@@ -2468,15 +2728,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
-  function handleDownloadConversation() {
-    const userMessages = chatMessages.filter((m) => m.role === "user")
-    if (userMessages.length === 0) return
-
+  function buildConversationText() {
     const scope = selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料")
     const activeConv = conversations.find((c) => c.id === activeConversationId)
     const title = activeConv?.title || "知识库对话"
     const dateStr = new Date().toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
-
     const lines: string[] = [
       `📚 ${title}`,
       `检索范围：${scope}`,
@@ -2484,7 +2740,6 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       "─".repeat(40),
       "",
     ]
-
     for (const msg of chatMessages) {
       if (msg.role === "user") {
         lines.push(`🙋 我：`)
@@ -2498,8 +2753,73 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       }
       lines.push("")
     }
+    return { text: lines.join("\n"), title }
+  }
 
-    const text = lines.join("\n")
+  async function handleShareToWechat() {
+    const userMessages = chatMessages.filter((m) => m.role === "user")
+    if (userMessages.length === 0) return
+    const { text, title } = buildConversationText()
+
+    // On mobile: use native share sheet — WeChat appears there and handles the content
+    const isMobile = typeof navigator !== "undefined" && /android|iphone|ipad|ipod/i.test(navigator.userAgent)
+    if (isMobile && navigator.share) {
+      try {
+        await navigator.share({ title, text })
+        setShareStatus("shared")
+        setTimeout(() => setShareStatus("idle"), 3000)
+      } catch (e: any) {
+        if (e?.name !== "AbortError") {
+          // Fall through to clipboard
+          await navigator.clipboard.writeText(text).catch(() => {})
+          setShareStatus("copied")
+          setTimeout(() => setShareStatus("idle"), 3000)
+        }
+      }
+      return
+    }
+
+    // On desktop (PC WeChat): the Windows share sheet → "发送给朋友" does not pass
+    // content from browser correctly. Best approach: copy to clipboard so the user
+    // can paste directly in any WeChat chat window.
+    try {
+      await navigator.clipboard.writeText(text)
+      setShareStatus("copied")
+      setTimeout(() => setShareStatus("idle"), 3000)
+      setWechatHint(true)
+      setTimeout(() => setWechatHint(false), 6000)
+    } catch {
+      alert("复制失败，请手动选择对话内容后在微信中粘贴。")
+    }
+  }
+
+  async function handleCopyConversation() {
+    const userMessages = chatMessages.filter((m) => m.role === "user")
+    if (userMessages.length === 0) return
+    const { text } = buildConversationText()
+    try {
+      await navigator.clipboard.writeText(text)
+      setShareStatus("copied")
+      setTimeout(() => setShareStatus("idle"), 3000)
+    } catch {
+      // fallback: nothing
+    }
+  }
+
+  async function handleShareTableFile(format: "csv" | "xlsx") {
+    if (!tableFillCols.length) return
+    if (format === "csv") {
+      handleDownloadTableCSV(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle, tableFillColumnSources)
+    } else {
+      await handleDownloadTableXLSX(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle, tableFillColumnSources)
+    }
+  }
+
+  function handleDownloadConversation() {
+    const userMessages = chatMessages.filter((m) => m.role === "user")
+    if (userMessages.length === 0) return
+
+    const { text, title } = buildConversationText()
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -3476,6 +3796,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         icon: RefreshCw,
       },
       {
+        key: "notes" as const,
+        title: "笔记",
+        description: "粘贴并编辑微信文章或研究摘录。",
+        icon: Pencil,
+      },
+      {
         key: "graph" as const,
         title: "知识图谱",
         description: "可视化文档与实体的关联网络。",
@@ -3949,6 +4275,211 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                           <div className="text-xs text-muted-foreground">{syncSummary}</div>
                         )}
                       </div>
+                    )}
+                  </div>
+                )}
+
+                {traditionalPanel === "notes" && (
+                  <div className="space-y-3">
+                    {/* Tab switcher */}
+                    <div className="flex rounded-md border text-xs overflow-hidden">
+                      <button
+                        className={cn("flex-1 px-3 py-1.5 transition-colors", notesTab === "private" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
+                        onClick={() => setNotesTab("private")}
+                      >
+                        私人草稿
+                      </button>
+                      <button
+                        className={cn("flex-1 px-3 py-1.5 transition-colors", notesTab === "shared" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
+                        onClick={() => { setNotesTab("shared"); void loadSharedNotesList() }}
+                      >
+                        在线笔记
+                      </button>
+                    </div>
+
+                    {/* ── Private notes tab ── */}
+                    {notesTab === "private" && (
+                      <div className="space-y-4">
+                        <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                          可直接复制微信文章或研究资料到下方文本框。支持自由编辑，离开输入框后自动保存。
+                        </div>
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <div className="text-muted-foreground">笔记仅对当前账号可见</div>
+                          <div className={cn("font-medium", noteSaveError ? "text-destructive" : "text-muted-foreground")}>
+                            {noteLoading
+                              ? "正在加载笔记..."
+                              : noteSaving
+                                ? "正在保存..."
+                                : noteDirty
+                                  ? "有未保存修改"
+                                  : noteUpdatedAt
+                                    ? `上次保存：${formatDateTime(noteUpdatedAt)}`
+                                    : "尚未保存"}
+                          </div>
+                        </div>
+                        <Textarea
+                          value={noteContent}
+                          onChange={(event) => queueNoteSave(event.target.value)}
+                          onBlur={() => flushNoteSave()}
+                          placeholder="例如：把公众号文章原文粘贴在这里，补充你的摘要、观点和待验证结论。"
+                          className="min-h-[calc(100vh-30rem)] text-sm leading-6"
+                          disabled={noteLoading}
+                        />
+                        <div className="flex items-center gap-2">
+                          <Button size="sm" onClick={() => flushNoteSave()} disabled={noteLoading || noteSaving || !noteDirty}>
+                            保存笔记
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => clearNote()} disabled={noteLoading || noteSaving || (!noteContent && !noteDirty)}>
+                            清空内容
+                          </Button>
+                        </div>
+                        {noteSaveError && (
+                          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                            {noteSaveError}
+                          </div>
+                        )}
+                        {/* Publish section */}
+                        <div className="rounded-md border border-dashed px-3 py-3 space-y-2">
+                          <div className="text-xs font-medium text-muted-foreground">发布到在线笔记</div>
+                          <div className="flex gap-2">
+                            <Input
+                              value={publishTitle}
+                              onChange={(e) => { setPublishTitle(e.target.value); setPublishError(null); setPublishSuccess(null) }}
+                              placeholder="笔记标题（必填）"
+                              className="text-sm h-8"
+                            />
+                            <Button
+                              size="sm"
+                              onClick={() => void publishToSharedNotes()}
+                              disabled={publishSaving || !noteContent.trim() || !publishTitle.trim()}
+                            >
+                              {publishSaving ? "发布中..." : "发布"}
+                            </Button>
+                          </div>
+                          {publishError && (
+                            <div className="text-xs text-destructive">{publishError}</div>
+                          )}
+                          {publishSuccess && (
+                            <div className="text-xs text-green-600">{publishSuccess}</div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ── Shared notes tab ── */}
+                    {notesTab === "shared" && (
+                      sharedNotesView === "list" ? (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-muted-foreground">
+                              {sharedNotesListLoading ? "加载中…" : `共 ${sharedNotesList.length} 篇`}
+                            </span>
+                            <div className="flex gap-1">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void loadSharedNotesList()}
+                                disabled={sharedNotesListLoading}
+                                className="h-7 text-xs"
+                              >
+                                刷新
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  setSharedNoteTitle("")
+                                  setSharedNoteContent("")
+                                  setSharedNoteEditPath(null)
+                                  setSharedNoteError(null)
+                                  setSharedNotesView("edit")
+                                }}
+                                className="h-7 text-xs"
+                              >
+                                + 新建
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="space-y-1 max-h-[calc(100vh-24rem)] overflow-y-auto pr-0.5">
+                            {sharedNotesList.length === 0 && !sharedNotesListLoading && (
+                              <div className="text-center text-sm text-muted-foreground py-8">暂无在线笔记</div>
+                            )}
+                            {sharedNotesList.map((note) => (
+                              <button
+                                key={note.relativePath}
+                                onClick={() => void openSharedNote(note)}
+                                className="w-full text-left px-3 py-2 rounded-md border hover:bg-muted/60 transition-colors"
+                              >
+                                <div className="text-sm font-medium truncate">{note.title}</div>
+                                <div className="text-xs text-muted-foreground mt-0.5">
+                                  {note.updatedByName} 编辑 · {formatDateTime(note.updatedAt)}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                          {sharedNoteError && (
+                            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                              {sharedNoteError}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => { setSharedNotesView("list"); setSharedNoteError(null) }}
+                              className="h-7 text-xs px-2"
+                            >
+                              ← 返回列表
+                            </Button>
+                            <span className="text-xs text-muted-foreground">
+                              {sharedNoteEditPath ? "编辑在线笔记" : "新建在线笔记"}
+                            </span>
+                          </div>
+                          <Input
+                            value={sharedNoteTitle}
+                            onChange={(e) => setSharedNoteTitle(e.target.value)}
+                            placeholder="笔记标题（必填）"
+                            className="text-sm"
+                            disabled={sharedNoteLoading}
+                          />
+                          <Textarea
+                            value={sharedNoteContent}
+                            onChange={(e) => setSharedNoteContent(e.target.value)}
+                            placeholder="笔记内容，支持 Markdown 格式…"
+                            className="min-h-[calc(100vh-30rem)] text-sm leading-6"
+                            disabled={sharedNoteLoading}
+                          />
+                          {sharedNoteError && (
+                            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                              {sharedNoteError}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              onClick={() => void saveSharedNote()}
+                              disabled={sharedNoteSaving || sharedNoteLoading || !sharedNoteTitle.trim()}
+                            >
+                              {sharedNoteSaving ? "保存中..." : "保存"}
+                            </Button>
+                            {sharedNoteEditPath && (
+                              sharedNotesList.find((n) => n.relativePath === sharedNoteEditPath)?.createdBy === currentUser?.id ||
+                              currentUser?.role === "admin"
+                            ) && (
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => sharedNoteEditPath && void deleteSharedNote(sharedNoteEditPath)}
+                                disabled={sharedNoteSaving || sharedNoteLoading}
+                              >
+                                删除
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )
                     )}
                   </div>
                 )}
@@ -4559,18 +5090,52 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             <div className="space-y-2 pb-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold">知识库问答</h2>
-              <div className="flex flex-wrap items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={handleDownloadConversation}
-                  disabled={!chatMessages.some((m) => m.role === "user")}
-                  title="下载当前对话"
-                >
-                  <Download className="h-4 w-4" />
-                  分享
-                </Button>
+              <div className="relative flex flex-wrap items-center gap-1">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 gap-1 px-2 text-xs text-muted-foreground hover:text-foreground"
+                      disabled={!chatMessages.some((m) => m.role === "user")}
+                    >
+                      <Download className="h-4 w-4" />
+                      {shareStatus === "copied" ? "已复制" : shareStatus === "shared" ? "已分享" : "分享"}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => void handleShareToWechat()}>
+                      <span className="mr-2 text-green-600">微信</span>
+                      分享到微信（复制后粘贴）
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => void handleCopyConversation()}>
+                      <Download className="mr-2 h-4 w-4" />
+                      复制文字
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleDownloadConversation}>
+                      <Download className="mr-2 h-4 w-4" />
+                      下载对话文件
+                    </DropdownMenuItem>
+                    {tableFillView && tableFillCols.length > 0 && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={() => void handleShareTableFile("csv")}>
+                          <Download className="mr-2 h-4 w-4" />
+                          下载表格 CSV
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => void handleShareTableFile("xlsx")}>
+                          <FileSpreadsheet className="mr-2 h-4 w-4" />
+                          下载表格 Excel
+                        </DropdownMenuItem>
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                {wechatHint && (
+                  <div className="absolute right-0 top-8 z-50 rounded-md border bg-popover px-3 py-2 text-xs shadow-md">
+                    内容已复制，请在微信聊天窗口按 <kbd className="rounded border px-1 font-mono">Ctrl+V</kbd> 粘贴发送
+                  </div>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -5422,7 +5987,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     基于 LangChain 检索结构 + DashScope Qwen 聊天模型与 Embeddings。请先在服务器配置 DASHSCOPE_API_KEY。
                   </CardDescription>
                 </div>
-                <div className="flex flex-wrap items-center gap-1">
+                <div className="relative flex flex-wrap items-center gap-1">
                   <Button
                     variant="ghost"
                     size="sm"
@@ -5443,17 +6008,51 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <History className="h-4 w-4" />
                     历史记录
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
-                    onClick={handleDownloadConversation}
-                    disabled={!chatMessages.some((m) => m.role === "user")}
-                    title="下载当前对话为文本文件"
-                  >
-                    <Download className="h-4 w-4" />
-                    分享
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="gap-1 text-xs text-cyan-400/70 hover:text-cyan-300"
+                        disabled={!chatMessages.some((m) => m.role === "user")}
+                      >
+                        <Download className="h-4 w-4" />
+                        {shareStatus === "copied" ? "已复制" : shareStatus === "shared" ? "已分享" : "分享"}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => void handleShareToWechat()}>
+                        <span className="mr-2 text-green-600">微信</span>
+                        分享到微信（复制后粘贴）
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => void handleCopyConversation()}>
+                        <Download className="mr-2 h-4 w-4" />
+                        复制文字
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleDownloadConversation}>
+                        <Download className="mr-2 h-4 w-4" />
+                        下载对话文件
+                      </DropdownMenuItem>
+                      {tableFillView && tableFillCols.length > 0 && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => void handleShareTableFile("csv")}>
+                            <Download className="mr-2 h-4 w-4" />
+                            下载表格 CSV
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => void handleShareTableFile("xlsx")}>
+                            <FileSpreadsheet className="mr-2 h-4 w-4" />
+                            下载表格 Excel
+                          </DropdownMenuItem>
+                        </>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  {wechatHint && (
+                    <div className="absolute right-0 top-8 z-50 rounded-md border bg-popover px-3 py-2 text-xs shadow-md">
+                      内容已复制，请在微信聊天窗口按 <kbd className="rounded border px-1 font-mono">Ctrl+V</kbd> 粘贴发送
+                    </div>
+                  )}
                 </div>
               </div>
             </CardHeader>
