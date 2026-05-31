@@ -129,43 +129,37 @@ function StatCard({ label, value, sub }: { label: string; value: React.ReactNode
   )
 }
 
-// ─── NAV Table (paginated) ──────────────────────────────────────────────────
-
-const NAV_PAGE = 20
+// ─── NAV Table (scrollable, no pagination) ──────────────────────────────────
 
 function NavTable({ rows }: { rows: NavRow[] }) {
-  const [page, setPage] = useState(1)
   // Show newest first
   const reversed = useMemo(() => [...rows].reverse(), [rows])
-  const totalPages = Math.ceil(reversed.length / NAV_PAGE)
-  const slice = reversed.slice((page - 1) * NAV_PAGE, page * NAV_PAGE)
 
   return (
-    <div>
-      <div className="overflow-x-auto rounded-lg border border-zinc-100">
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="overflow-y-auto flex-1 rounded-lg border border-zinc-100">
         <table className="w-full text-sm">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="bg-zinc-50 border-b border-zinc-100">
-              <th className="px-4 py-2.5 text-left font-medium text-zinc-500 text-xs">日期</th>
-              <th className="px-4 py-2.5 text-right font-medium text-zinc-500 text-xs">单位净值</th>
-              <th className="px-4 py-2.5 text-right font-medium text-zinc-500 text-xs">累计净值</th>
-              <th className="px-4 py-2.5 text-right font-medium text-zinc-500 text-xs">复权净值</th>
-              <th className="px-4 py-2.5 text-right font-medium text-zinc-500 text-xs">涨跌幅</th>
+              <th className="px-3 py-2.5 text-left font-medium text-zinc-500 text-xs">日期</th>
+              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">单位净值</th>
+              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">累计净值</th>
+              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">复权净值</th>
+              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">涨跌幅</th>
             </tr>
           </thead>
           <tbody>
-            {slice.map((r) => {
+            {reversed.map((r) => {
               const chg = parseFloat(r.price_change)
               const chgPct = isNaN(chg) ? null : (chg * 100).toFixed(2)
-              const chgColor = isNaN(chg) ? "text-zinc-500" : chg > 0 ? "" : chg < 0 ? "" : "text-zinc-500"
               const chgStyle = isNaN(chg) ? {} : chg > 0 ? { color: RED } : chg < 0 ? { color: GREEN } : {}
               return (
                 <tr key={r.price_date} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
-                  <td className="px-4 py-2.5 text-zinc-700">{r.price_date}</td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-zinc-900 font-medium">{fmt(r.nav, 4)}</td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-zinc-700">{fmt(r.cum_nav_withdrawal, 4)}</td>
-                  <td className="px-4 py-2.5 text-right tabular-nums text-zinc-700">{fmt(r.cumulative_nav, 4)}</td>
-                  <td className={`px-4 py-2.5 text-right tabular-nums font-medium ${chgColor}`} style={chgStyle}>
+                  <td className="px-3 py-2 text-zinc-700 text-xs">{r.price_date}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-zinc-900 font-medium text-xs">{fmt(r.nav, 4)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-zinc-700 text-xs">{fmt(r.cum_nav_withdrawal, 4)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums text-zinc-700 text-xs">{fmt(r.cumulative_nav, 4)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-medium text-xs" style={chgStyle}>
                     {chgPct !== null ? (parseFloat(chgPct) > 0 ? "+" : "") + chgPct + "%" : "—"}
                   </td>
                 </tr>
@@ -174,30 +168,10 @@ function NavTable({ rows }: { rows: NavRow[] }) {
           </tbody>
         </table>
       </div>
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-1 mt-3">
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="px-3 py-1.5 text-xs rounded border border-zinc-200 disabled:opacity-40 hover:bg-zinc-50"
-          >
-            上一页
-          </button>
-          <span className="px-3 text-xs text-zinc-500">
-            第 {page} / {totalPages} 页（共 {rows.length} 条）
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
-            className="px-3 py-1.5 text-xs rounded border border-zinc-200 disabled:opacity-40 hover:bg-zinc-50"
-          >
-            下一页
-          </button>
-        </div>
-      )}
+      <div className="text-[11px] text-zinc-400 mt-2 text-right">共 {rows.length} 条</div>
     </div>
   )
+}
 }
 
 // ─── Custom Tooltip ───────────────────────────────────────────────────────────
@@ -637,10 +611,10 @@ export default function PrivateFundDetailPage() {
       </div>
 
       {/* ── Chart + Table side by side ─────────────────── */}
-      <div className="flex flex-col xl:flex-row gap-4">
+      <div className="flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
       {activeChartData.length > 1 && (
-        <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5">
-          <div className="flex items-center justify-between mb-3">
+        <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
+          <div className="flex items-center justify-between mb-3 flex-shrink-0">
             <div className="text-sm font-semibold text-zinc-700">
               {chartMode === "nav" ? "净值走势（复权净值）" : "收益曲线（成立以来收益率）"}
             </div>
@@ -667,7 +641,8 @@ export default function PrivateFundDetailPage() {
               </button>
             </div>
           </div>
-          <ResponsiveContainer width="100%" height={340}>
+          <div className="flex-1 min-h-0">
+          <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={activeChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
               <defs>
                 <linearGradient id="navGrad" x1="0" y1="0" x2="0" y2="1">
@@ -704,12 +679,13 @@ export default function PrivateFundDetailPage() {
               />
             </AreaChart>
           </ResponsiveContainer>
+          </div>
         </div>
       )}
 
       {/* ── NAV Table ─────────────────────────────────────── */}
-      <div className="xl:w-[480px] flex-shrink-0 rounded-xl border border-zinc-100 bg-white p-5">
-        <div className="text-sm font-semibold text-zinc-700 mb-3">净值数据</div>
+      <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
+        <div className="text-sm font-semibold text-zinc-700 mb-3 flex-shrink-0">净值数据</div>
         <NavTable rows={nav_series.filter(r => (!activeFrom || r.price_date >= activeFrom) && (!activeTo || r.price_date <= activeTo))} />
       </div>
       </div>{/* end flex chart+table */}
