@@ -53,9 +53,21 @@ export async function GET() {
     return NextResponse.json({ error: "Python 报告脚本不存在" }, { status: 500 })
   }
 
-  // Pre-flight: verify SSH tunnel is up before spending time loading Python
+  // Pre-flight: verify the database port is reachable before spawning Python.
+  // Derive host/port from DATABASE_URL so this works both locally (SSH tunnel
+  // on 5433) and on the server (direct PostgreSQL on 5432).
+  let dbHost = "127.0.0.1"
+  let dbPort = 5433
+  const dbUrl = process.env.DATABASE_URL ?? ""
+  if (dbUrl) {
+    try {
+      const u = new URL(dbUrl)
+      if (u.hostname) dbHost = u.hostname
+      if (u.port) dbPort = parseInt(u.port, 10)
+    } catch { /* ignore malformed URL */ }
+  }
   const tunnelUp = await new Promise<boolean>((resolve) => {
-    const sock = createConnection({ host: "127.0.0.1", port: 5433 })
+    const sock = createConnection({ host: dbHost, port: dbPort })
     sock.setTimeout(2000)
     sock.on("connect", () => { sock.destroy(); resolve(true) })
     sock.on("error", () => resolve(false))
@@ -63,7 +75,7 @@ export async function GET() {
   })
   if (!tunnelUp) {
     return NextResponse.json(
-      { error: "数据库隧道未就绪，请先启动 SSH 隧道：ssh -L 5433:127.0.0.1:5432 root@8.154.33.143 -N -i ~/.ssh/id_ed25519_server" },
+      { error: `数据库端口 ${dbHost}:${dbPort} 不可达，请确认数据库或 SSH 隧道已启动` },
       { status: 503 },
     )
   }
