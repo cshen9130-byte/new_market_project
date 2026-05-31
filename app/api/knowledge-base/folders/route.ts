@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, moveKnowledgeBaseFolder, normalizeKnowledgeBasePath, renameKnowledgeBaseFolder } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
 import { invalidateVectorStoreCache, syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { pgRenamePathPrefix } from "@/lib/server/knowledge-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -78,8 +79,11 @@ export async function PATCH(req: Request) {
 
     const renamed = await renameKnowledgeBaseFolder(relativePath, newName, currentUser.id, currentUser.role === "admin")
 
-    await invalidateVectorStoreCache()
-    void syncVectorStoreForScope("")
+    // Migrate all PG index rows to the new path in-place (preserves embeddings).
+    // Then evict only the affected in-memory scopes so they reload from PG on next query.
+    await pgRenamePathPrefix(relativePath, renamed.relativePath)
+    await invalidateVectorStoreCache(relativePath)
+    await invalidateVectorStoreCache(renamed.relativePath)
 
     return NextResponse.json({ ok: true, folder: renamed })
   } catch (error: any) {

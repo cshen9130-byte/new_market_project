@@ -533,3 +533,80 @@ export async function pgDeleteLLMEntityCache(scope?: string | null): Promise<voi
     await rawQuery(`DELETE FROM kb_llm_entities WHERE scope = $1`, [scope])
   }
 }
+
+/**
+ * Rename a folder path prefix across all PG knowledge-base tables in-place.
+ * Called after a folder rename so existing embeddings stay valid without re-indexing.
+ * Handles scope and source columns in kb_chunks / kb_llm_entities, and the
+ * scope primary-key in kb_bm25_index / kb_graph_index.
+ */
+export async function pgRenamePathPrefix(oldPath: string, newPath: string): Promise<void> {
+  if (!oldPath || !newPath || oldPath === newPath) return
+  await pgEnsureSchema()
+
+  // Escape % and _ so they are treated as literals in LIKE patterns
+  const escapedOld = oldPath.replace(/%/g, "\\%").replace(/_/g, "\\_")
+  const likePrefix = escapedOld + "/%"
+
+  // kb_chunks — update scope and source
+  await rawQuery(
+    `UPDATE kb_chunks
+     SET
+       scope  = CASE
+                  WHEN scope  = $1                       THEN $2
+                  WHEN scope  LIKE $3 ESCAPE '\\'        THEN $2 || substring(scope  FROM length($1)+1)
+                  ELSE scope
+                END,
+       source = CASE
+                  WHEN source = $1                       THEN $2
+                  WHEN source LIKE $3 ESCAPE '\\'        THEN $2 || substring(source FROM length($1)+1)
+                  ELSE source
+                END
+     WHERE scope = $1 OR scope LIKE $3 ESCAPE '\\'
+        OR source = $1 OR source LIKE $3 ESCAPE '\\'`,
+    [oldPath, newPath, likePrefix],
+  )
+
+  // kb_bm25_index — scope is primary key; rename matching rows
+  await rawQuery(
+    `UPDATE kb_bm25_index
+     SET scope = CASE
+                   WHEN scope = $1                THEN $2
+                   WHEN scope LIKE $3 ESCAPE '\\' THEN $2 || substring(scope FROM length($1)+1)
+                   ELSE scope
+                 END
+     WHERE scope = $1 OR scope LIKE $3 ESCAPE '\\'`,
+    [oldPath, newPath, likePrefix],
+  )
+
+  // kb_graph_index — scope is primary key; rename matching rows
+  await rawQuery(
+    `UPDATE kb_graph_index
+     SET scope = CASE
+                   WHEN scope = $1                THEN $2
+                   WHEN scope LIKE $3 ESCAPE '\\' THEN $2 || substring(scope FROM length($1)+1)
+                   ELSE scope
+                 END
+     WHERE scope = $1 OR scope LIKE $3 ESCAPE '\\'`,
+    [oldPath, newPath, likePrefix],
+  )
+
+  // kb_llm_entities — (scope, source) is primary key; rename matching rows
+  await rawQuery(
+    `UPDATE kb_llm_entities
+     SET
+       scope  = CASE
+                  WHEN scope  = $1                       THEN $2
+                  WHEN scope  LIKE $3 ESCAPE '\\'        THEN $2 || substring(scope  FROM length($1)+1)
+                  ELSE scope
+                END,
+       source = CASE
+                  WHEN source = $1                       THEN $2
+                  WHEN source LIKE $3 ESCAPE '\\'        THEN $2 || substring(source FROM length($1)+1)
+                  ELSE source
+                END
+     WHERE scope = $1 OR scope LIKE $3 ESCAPE '\\'
+        OR source = $1 OR source LIKE $3 ESCAPE '\\'`,
+    [oldPath, newPath, likePrefix],
+  )
+}
