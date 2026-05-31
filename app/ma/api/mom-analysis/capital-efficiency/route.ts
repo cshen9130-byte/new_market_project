@@ -21,7 +21,7 @@ async function _GET(req: Request) {
     : null
 
   try {
-    const [rows, advisorRows, guosenCapRows] = await Promise.all([
+    const [rows, advisorRows] = await Promise.all([
       query<{ account: string; date: string; daily_pnl: string; equity: string; margin: string }>(
         `SELECT
            "账户" AS account,
@@ -43,21 +43,11 @@ async function _GET(req: Request) {
                 COALESCE(equity_wan::text, '0') AS equity_wan
          FROM mom_advisor_info`,
       ).catch(() => [] as { account: string; sector: string; equity_wan: string }[]),
-      query<{ date: string; daily_pnl: string; equity: string; margin: string }>(
-        `SELECT trade_date::text AS date,
-                (realized_pl + mtm_pl + exercise_pl - commission)::text AS daily_pnl,
-                client_equity::text AS equity,
-                margin_occupied::text AS margin
-         FROM guosen_account_summary
-         WHERE client_id = '665300200077'
-         ORDER BY trade_date`,
-      ).catch(() => [] as { date: string; daily_pnl: string; equity: string; margin: string }[]),
     ])
 
     const advisorMap = new Map(
       advisorRows.map((r) => [r.account, { sector: r.sector, equityWan: toNum(r.equity_wan) }]),
     )
-    advisorMap.set("guoxin", { sector: "商品", equityWan: 1000 })
 
     const allDatesSet = new Set<string>()
     const accountData: Record<
@@ -75,19 +65,6 @@ async function _GET(req: Request) {
       accountData[row.account].dates.push(row.date)
       accountData[row.account].pnlRates.push(equity > 0 ? pnl / equity : 0)
       accountData[row.account].marginRates.push(equity > 0 ? margin / equity : 0)
-    }
-
-    // Add guoxin (guosen account 665300200077)
-    if (!accountData["guoxin"])
-      accountData["guoxin"] = { dates: [], pnlRates: [], marginRates: [] }
-    for (const r of guosenCapRows) {
-      const pnl    = toNum(r.daily_pnl)
-      const equity = toNum(r.equity)
-      const margin = toNum(r.margin)
-      allDatesSet.add(r.date)
-      accountData["guoxin"].dates.push(r.date)
-      accountData["guoxin"].pnlRates.push(equity > 0 ? pnl / equity : 0)
-      accountData["guoxin"].marginRates.push(equity > 0 ? margin / equity : 0)
     }
 
     const allDates = [...allDatesSet].sort()

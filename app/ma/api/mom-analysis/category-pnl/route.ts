@@ -137,6 +137,11 @@ async function _GET(req: Request) {
        FROM mom_futures_trade_details
        WHERE "交易日期" IS NOT NULL
          AND "合约" IS NOT NULL
+         AND COALESCE(TRIM("账户"::text), '') <> ''
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
          ${accountFilter}
        GROUP BY "交易日期", UPPER(TRIM("合约"))
        ORDER BY 1`,
@@ -151,6 +156,11 @@ async function _GET(req: Request) {
        FROM mom_position_details
        WHERE "交易日期" IS NOT NULL
          AND "合约" IS NOT NULL
+         AND COALESCE(TRIM("账户"::text), '') <> ''
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
          ${accountFilter}
        GROUP BY "交易日期", UPPER(TRIM("合约"))
        ORDER BY 1`,
@@ -170,6 +180,11 @@ async function _GET(req: Request) {
        FROM mom_trade_details
        WHERE trade_date IS NOT NULL
          AND "合约" IS NOT NULL
+         AND COALESCE(TRIM(account::text), '') <> ''
+         AND UPPER(TRIM(account::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM(account::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM(account::text) NOT LIKE '%国信%'
+         AND TRIM(account::text) <> '665300200077'
          ${tradeAccountFilter}
        GROUP BY trade_date, UPPER(TRIM("合约"))
        ORDER BY 1`,
@@ -216,58 +231,6 @@ async function _GET(req: Request) {
       subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) - toNum(row.fee) + toNum(row.premium))
       const prod = getPrefix(row.contract)
       productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) - toNum(row.fee) + toNum(row.premium))
-    }
-
-    // ── Add guosen product-level PnL ─────────────────────────────────
-    // Gracefully skipped if guosen tables are unavailable.
-    try {
-      // Holding PnL from open positions (daily MTM per product)
-      const guosenPosRows = await query<{ date: string; product: string; pnl: string }>(
-        `SELECT settlement_date::text AS date,
-                UPPER(TRIM(instrument)) AS product,
-                SUM(COALESCE(mtm_pl, 0))::text AS pnl
-         FROM guosen_position_detail
-         WHERE instrument IS NOT NULL
-           AND settlement_date IS NOT NULL
-         GROUP BY settlement_date, UPPER(TRIM(instrument))
-         ORDER BY settlement_date`,
-      )
-      for (const row of guosenPosRows) {
-        const pnl = toNum(row.pnl)
-        const cat = getCategory(row.product)
-        const sec = getSector(row.product)
-        const sub = getSubSector(row.product)
-        const prod = getPrefix(row.product)
-        dayMap.set(`${row.date}|${cat}`, (dayMap.get(`${row.date}|${cat}`) ?? 0) + pnl)
-        sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) + pnl)
-        subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) + pnl)
-        productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) + pnl)
-      }
-
-      // Closed PnL from settled positions (realized PnL per product per settlement date)
-      const guosenCloseRows = await query<{ date: string; product: string; pnl: string }>(
-        `SELECT settlement_date::text AS date,
-                UPPER(TRIM(instrument)) AS product,
-                SUM(COALESCE(realized_pl, 0))::text AS pnl
-         FROM guosen_position_closed
-         WHERE instrument IS NOT NULL
-           AND settlement_date IS NOT NULL
-         GROUP BY settlement_date, UPPER(TRIM(instrument))
-         ORDER BY settlement_date`,
-      )
-      for (const row of guosenCloseRows) {
-        const pnl = toNum(row.pnl)
-        const cat = getCategory(row.product)
-        const sec = getSector(row.product)
-        const sub = getSubSector(row.product)
-        const prod = getPrefix(row.product)
-        dayMap.set(`${row.date}|${cat}`, (dayMap.get(`${row.date}|${cat}`) ?? 0) + pnl)
-        sectorDayMap.set(`${row.date}|${sec}`, (sectorDayMap.get(`${row.date}|${sec}`) ?? 0) + pnl)
-        subSectorDayMap.set(`${row.date}|${sub}`, (subSectorDayMap.get(`${row.date}|${sub}`) ?? 0) + pnl)
-        productDayMap.set(`${row.date}|${prod}`, (productDayMap.get(`${row.date}|${prod}`) ?? 0) + pnl)
-      }
-    } catch {
-      // guosen tables not available — skip
     }
 
     // ── Build sorted series per category ─────────────────────────────

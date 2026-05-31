@@ -89,6 +89,10 @@ async function _GET(_req: Request) {
               SUM(${numExpr("持仓盈亏")})::text AS pnl
        FROM mom_position_details
        WHERE "交易日期" IS NOT NULL AND "合约" IS NOT NULL
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
          AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
          AND TRIM("合约") NOT LIKE '%-%-%'
        GROUP BY "交易日期", UPPER(TRIM("合约"))

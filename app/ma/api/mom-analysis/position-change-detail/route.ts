@@ -22,6 +22,10 @@ async function _GET(_req: Request) {
       `SELECT DISTINCT "交易日期"::date::text AS dt
        FROM mom_position_details
        WHERE "交易日期" IS NOT NULL
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+        AND TRIM("账户"::text) NOT LIKE '%国信%'
+        AND TRIM("账户"::text) <> '665300200077'
        ORDER BY dt DESC LIMIT 2`,
     )
     if (dateRows.length === 0) {
@@ -49,6 +53,10 @@ async function _GET(_req: Request) {
          )::text AS net_lots
        FROM mom_position_details
        WHERE "交易日期"::date IN ($1::date${yesterday ? ", $2::date" : ""})
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
        GROUP BY UPPER(TRIM("合约")), "账户", "交易日期"::date`,
       yesterday ? [today, yesterday] : [today],
     )
@@ -66,44 +74,6 @@ async function _GET(_req: Request) {
       cur.mv   += toNum(r.signed_mv)
       cur.lots += Math.round(toNum(r.net_lots))
       map.set(k, cur)
-    }
-
-    // Merge guoxin (guosen) positions for the same two dates
-    try {
-      const guosenRows = await query<{ contract: string; date: string; signed_mv: string; net_lots: string }>(
-        `SELECT
-           UPPER(TRIM(instrument)) AS contract,
-           settlement_date::text   AS date,
-           SUM(
-             CASE WHEN bs='买'
-                  THEN  COALESCE(position_lots,0) * COALESCE(settl_today,0)
-                  ELSE -COALESCE(position_lots,0) * COALESCE(settl_today,0)
-             END
-           )::text AS signed_mv,
-           SUM(
-             CASE WHEN bs='买'
-                  THEN  COALESCE(position_lots,0)
-                  ELSE -COALESCE(position_lots,0)
-             END
-           )::text AS net_lots
-         FROM guosen_position_detail
-         WHERE instrument IS NOT NULL
-           AND settlement_date IN ($1::date${yesterday ? ", $2::date" : ""})
-         GROUP BY UPPER(TRIM(instrument)), settlement_date`,
-        yesterday ? [today, yesterday] : [today],
-      )
-      for (const r of guosenRows) {
-        const prod = (r.contract.match(/^[A-Z]+/i)?.[0] ?? r.contract).toUpperCase()
-        const opt  = isOption(r.contract)
-        const k    = `${prod}||guoxin||${opt}`
-        const map  = r.date === today ? todayMap : yesterdayMap
-        const cur  = map.get(k) ?? { mv: 0, lots: 0 }
-        cur.mv   += toNum(r.signed_mv)
-        cur.lots += Math.round(toNum(r.net_lots))
-        map.set(k, cur)
-      }
-    } catch {
-      // guosen_position_detail unavailable — skip
     }
 
     const allKeys = new Set([...todayMap.keys(), ...yesterdayMap.keys()])

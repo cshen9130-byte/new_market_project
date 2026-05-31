@@ -96,28 +96,6 @@ async function _GET(req: Request) {
       dateEquity[row.date] = (dateEquity[row.date] ?? 0) + equity
     }
 
-    // Merge guoxin (guosen) daily data
-    try {
-      const guosenRows = await query<{ date: string; daily_pnl: string; equity: string }>(
-        `SELECT trade_date::text AS date,
-                (realized_pl + mtm_pl + exercise_pl - commission)::text AS daily_pnl,
-                client_equity::text AS equity
-         FROM guosen_account_summary
-         WHERE client_id = '665300200077'
-         ORDER BY trade_date`,
-      )
-      if (!accountMap["guoxin"]) accountMap["guoxin"] = []
-      for (const r of guosenRows) {
-        const pnl = toNum(r.daily_pnl)
-        const equity = toNum(r.equity)
-        accountMap["guoxin"].push({ date: r.date, pnl, equity })
-        datePnl[r.date] = (datePnl[r.date] ?? 0) + pnl
-        dateEquity[r.date] = (dateEquity[r.date] ?? 0) + equity
-      }
-    } catch {
-      // guosen_account_summary unavailable — skip
-    }
-
     // All dates sorted (unsliced — needed to reach back for prev period)
     const allDates = Object.keys(datePnl).sort()
     const curDates = allDates.slice(-WINDOW)

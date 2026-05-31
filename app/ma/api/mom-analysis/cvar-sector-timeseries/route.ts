@@ -146,6 +146,10 @@ async function _GET(req: Request) {
               )::text AS mv
        FROM mom_position_details
        WHERE "交易日期" IS NOT NULL AND "合约" IS NOT NULL
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
          AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
          AND TRIM("合约") NOT LIKE '%-%-%'
        GROUP BY "交易日期", UPPER(TRIM("合约"))
@@ -163,33 +167,6 @@ async function _GET(req: Request) {
       if (!prodMvByDate.has(prod)) prodMvByDate.set(prod, new Map())
       const m = prodMvByDate.get(prod)!
       m.set(r.date, (m.get(r.date) ?? 0) + toNum(r.mv))
-    }
-
-    // Merge guoxin (guosen) positions: signed MV = lots * settl_today, sign by bs
-    try {
-      const guosenMvRows = await query<{ date: string; contract: string; mv: string }>(
-        `SELECT settlement_date::text AS date,
-                UPPER(TRIM(instrument)) AS contract,
-                SUM(
-                  CASE WHEN bs='买'
-                       THEN  COALESCE(position_lots,0) * COALESCE(settl_today,0)
-                       ELSE -COALESCE(position_lots,0) * COALESCE(settl_today,0)
-                  END
-                )::text AS mv
-         FROM guosen_position_detail
-         WHERE instrument IS NOT NULL
-           AND UPPER(TRIM(instrument)) !~ '[0-9][CP][0-9]'
-         GROUP BY settlement_date, UPPER(TRIM(instrument))
-         ORDER BY 1`,
-      )
-      for (const r of guosenMvRows) {
-        const prod = getPrefix(r.contract)
-        if (!prodMvByDate.has(prod)) prodMvByDate.set(prod, new Map())
-        const m = prodMvByDate.get(prod)!
-        m.set(r.date, (m.get(r.date) ?? 0) + toNum(r.mv))
-      }
-    } catch {
-      // guosen_position_detail unavailable — skip
     }
 
     const tradingDates = [...new Set([...prodMvByDate.values()].flatMap(m => [...m.keys()]))].sort()

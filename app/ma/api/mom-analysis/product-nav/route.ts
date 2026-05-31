@@ -189,20 +189,27 @@ async function _GET(req: Request) {
       equityMap.set(row.date, parseNum(row.daily_equity))
     }
 
-    // Add guosen (国信) daily PnL — gracefully skipped if table unavailable
+    // Exclude guoxin (guosen account 665300200077) from total NAV/pnl/equity.
+    // We subtract daily guoxin pnl from the aggregated pnl and use guoxin equity
+    // as a daily capital offset so the displayed total capital excludes guoxin.
+    const guoxinPnlMap = new Map<string, number>()
+    const guoxinEquityMap = new Map<string, number>()
     try {
-      const guosenPnlRows = await query<{ trade_date: string; daily_pnl: string }>(
-        `SELECT trade_date::text AS trade_date,
-                SUM(COALESCE(realized_pl, 0) + COALESCE(mtm_pl, 0))::text AS daily_pnl
+      const guoxinRows = await query<{ date: string; daily_pnl: string; equity: string }>(
+        `SELECT
+           trade_date::text AS date,
+           (COALESCE(realized_pl, 0) + COALESCE(mtm_pl, 0) + COALESCE(exercise_pl, 0) - COALESCE(commission, 0))::text AS daily_pnl,
+           COALESCE(client_equity, 0)::text AS equity
          FROM guosen_account_summary
-         GROUP BY trade_date
+         WHERE client_id = '665300200077'
          ORDER BY trade_date`,
       )
-      for (const row of guosenPnlRows) {
-        pnlMap.set(row.trade_date, (pnlMap.get(row.trade_date) ?? 0) + parseNum(row.daily_pnl))
+      for (const row of guoxinRows) {
+        guoxinPnlMap.set(row.date, parseNum(row.daily_pnl))
+        guoxinEquityMap.set(row.date, parseNum(row.equity))
       }
     } catch {
-      // guosen_account_summary not available — skip
+      // guosen_account_summary not available — skip exclusion
     }
 
     const turnoverMap = new Map<string, number>()
@@ -211,6 +218,7 @@ async function _GET(req: Request) {
     }
 
     const allDates = Array.from(new Set([...flowMap.keys(), ...pnlMap.keys()])).sort()
+    const guoxinCapitalOffset = normalizedProductCode ? 0 : 10_000_000
 
     let cumulativeCapital = 0
     let nav = 1.0
@@ -219,8 +227,12 @@ async function _GET(req: Request) {
 
     for (const date of allDates) {
       const netFlow = flowMap.get(date) ?? 0
-      const pnl = pnlMap.get(date) ?? 0
-      const equity = equityMap.get(date) ?? 0
+      const rawPnl = pnlMap.get(date) ?? 0
+      const guoxinPnl = guoxinPnlMap.get(date) ?? 0
+      const pnl = rawPnl - guoxinPnl
+      const rawEquity = equityMap.get(date) ?? 0
+      const guoxinEquity = guoxinEquityMap.get(date) ?? 0
+      const equity = Math.max(0, rawEquity - guoxinEquity)
       const turnoverAmount = turnoverMap.get(date) ?? 0
 
       // Daily return = pnl / previous capital (as specified by user)
@@ -229,11 +241,12 @@ async function _GET(req: Request) {
 
       nav = nav * (1 + dailyReturn)
       cumulativeCapital = cumulativeCapital + netFlow + pnl
+      const reportedCumCapital = cumulativeCapital - guoxinCapitalOffset
 
       data.push({
         date,
         nav: Math.round(nav * 1e6) / 1e6,
-        cumCapital: Math.round(cumulativeCapital),
+        cumCapital: Math.round(reportedCumCapital),
         dailyReturn: Math.round(dailyReturn * 1e6) / 1e6,
         netFlow: Math.round(netFlow),
         pnl: Math.round(pnl),

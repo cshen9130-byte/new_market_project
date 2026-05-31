@@ -39,6 +39,11 @@ async function _GET() {
             - COALESCE(NULLIF(REPLACE(REPLACE(COALESCE("权利金支出",  ''), ',', ''), ' ', ''), '')::numeric, 0)
           ) AS day_pnl
         FROM mom_daily_reports
+        WHERE COALESCE(TRIM("账户"::text), '') <> ''
+          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+          AND TRIM("账户"::text) NOT LIKE '%国信%'
+          AND TRIM("账户"::text) <> '665300200077'
         GROUP BY "交易日期"::date
       ),
       imported_flows AS (
@@ -91,6 +96,11 @@ async function _GET() {
           SUM((NULLIF(REPLACE(REPLACE(COALESCE("客户权益",   ''), ',', ''), ' ', ''), ''))::numeric) AS equity,
           SUM((NULLIF(REPLACE(REPLACE(COALESCE("可用资金",   ''), ',', ''), ' ', ''), ''))::numeric) AS available
         FROM mom_daily_reports
+        WHERE COALESCE(TRIM("账户"::text), '') <> ''
+          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+          AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+          AND TRIM("账户"::text) NOT LIKE '%国信%'
+          AND TRIM("账户"::text) <> '665300200077'
         GROUP BY "交易日期"::date
       )
       SELECT
@@ -111,6 +121,11 @@ async function _GET() {
         SUM(CASE WHEN "买持仓"::numeric > 0 THEN "保证金"::numeric ELSE 0 END) AS long_margin,
         SUM(CASE WHEN "卖持仓"::numeric > 0 THEN "保证金"::numeric ELSE 0 END) AS short_margin
       FROM mom_futures_position_details
+      WHERE COALESCE(TRIM("账户"::text), '') <> ''
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+        AND TRIM("账户"::text) NOT LIKE '%国信%'
+        AND TRIM("账户"::text) <> '665300200077'
       GROUP BY "交易日期"::date
       ORDER BY "交易日期"::date ASC
     `
@@ -125,6 +140,11 @@ async function _GET() {
         (NULLIF(REPLACE(REPLACE(COALESCE("客户权益",   ''), ',', ''), ' ', ''), ''))::numeric  AS equity,
         (NULLIF(REPLACE(REPLACE(COALESCE("可用资金",   ''), ',', ''), ' ', ''), ''))::numeric  AS available
       FROM mom_daily_reports
+      WHERE COALESCE(TRIM("账户"::text), '') <> ''
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+        AND TRIM("账户"::text) NOT LIKE '%国信%'
+        AND TRIM("账户"::text) <> '665300200077'
       ORDER BY "交易日期" ASC
     `
 
@@ -137,6 +157,11 @@ async function _GET() {
         SUM((NULLIF(REPLACE(REPLACE(COALESCE(d."保证金占用", ''), ',', ''), ' ', ''), ''))::numeric)       AS sector_margin
       FROM mom_daily_reports d
       LEFT JOIN mom_advisor_info a ON a.account_code = d."账户"
+      WHERE COALESCE(TRIM(d."账户"::text), '') <> ''
+        AND UPPER(TRIM(d."账户"::text)) NOT LIKE '%GUOXIN%'
+        AND UPPER(TRIM(d."账户"::text)) NOT LIKE '%GUOSEN%'
+        AND TRIM(d."账户"::text) NOT LIKE '%国信%'
+        AND TRIM(d."账户"::text) <> '665300200077'
       GROUP BY d."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')
       ORDER BY d."交易日期"::date ASC
     `
@@ -146,6 +171,11 @@ async function _GET() {
         "账户"                                                                                              AS sector,
         SUM((NULLIF(REPLACE(REPLACE(COALESCE("保证金占用", ''), ',', ''), ' ', ''), ''))::numeric)         AS sector_margin
       FROM mom_daily_reports
+      WHERE COALESCE(TRIM("账户"::text), '') <> ''
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+        AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+        AND TRIM("账户"::text) NOT LIKE '%国信%'
+        AND TRIM("账户"::text) <> '665300200077'
       GROUP BY "交易日期"::date, "账户"
       ORDER BY "交易日期"::date ASC
     `
@@ -161,6 +191,11 @@ async function _GET() {
               THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END)      AS short_margin
       FROM mom_futures_position_details fp
       LEFT JOIN mom_advisor_info a ON a.account_code = fp."账户"
+      WHERE COALESCE(TRIM(fp."账户"::text), '') <> ''
+        AND UPPER(TRIM(fp."账户"::text)) NOT LIKE '%GUOXIN%'
+        AND UPPER(TRIM(fp."账户"::text)) NOT LIKE '%GUOSEN%'
+        AND TRIM(fp."账户"::text) NOT LIKE '%国信%'
+        AND TRIM(fp."账户"::text) <> '665300200077'
       GROUP BY fp."交易日期"::date, COALESCE(NULLIF(TRIM(a.sector), ''), '未分类')
       ORDER BY fp."交易日期"::date ASC
     `
@@ -283,6 +318,11 @@ async function _GET() {
         SUM(CASE WHEN (NULLIF(REPLACE(fp."卖持仓", ',', ''), ''))::numeric > 0
               THEN (NULLIF(REPLACE(REPLACE(fp."保证金", ',', ''), ' ', ''), ''))::numeric ELSE 0 END) AS short_margin
       FROM mom_futures_position_details fp
+      WHERE COALESCE(TRIM(fp."账户"::text), '') <> ''
+        AND UPPER(TRIM(fp."账户"::text)) NOT LIKE '%GUOXIN%'
+        AND UPPER(TRIM(fp."账户"::text)) NOT LIKE '%GUOSEN%'
+        AND TRIM(fp."账户"::text) NOT LIKE '%国信%'
+        AND TRIM(fp."账户"::text) <> '665300200077'
       GROUP BY fp."账户", fp."交易日期"::date
       ORDER BY fp."交易日期"::date ASC
     `
@@ -320,83 +360,6 @@ async function _GET() {
       sector: acctSectorMap.get(a.account) ?? '未分类',
       ...(acctLsLatestMap.get(a.account) ?? { longMarginRatio: null, shortMarginRatio: null }),
     }))
-
-    // Merge guoxin (guosen) account into all data structures — skipped if unavailable
-    try {
-      const guosenMarginRows = await query<{
-        trade_date: string; margin_occupied: string | null
-        client_equity: string | null; fund_avail: string | null
-      }>(
-        `SELECT trade_date::text AS trade_date,
-                COALESCE(margin_occupied, 0)::text AS margin_occupied,
-                COALESCE(client_equity, 0)::text   AS client_equity,
-                COALESCE(fund_avail, 0)::text       AS fund_avail
-         FROM guosen_account_summary
-         ORDER BY trade_date ASC`,
-      )
-
-      if (guosenMarginRows.length > 0) {
-        // Per-account timeseries
-        const guosenAcctSeries = guosenMarginRows.map(r => {
-          const margin  = parseNum(r.margin_occupied) ?? 0
-          const equity  = parseNum(r.client_equity)   ?? 0
-          return {
-            date:      r.trade_date,
-            riskRatio: equity > 0 ? Math.round(margin / equity * 1000) / 10 : null,
-            margin,
-            equity,
-            available: parseNum(r.fund_avail) ?? 0,
-          }
-        })
-        accounts.push({ account: "guoxin", series: guosenAcctSeries })
-
-        // Compute long/short margin proportions from guosen_position_detail
-        const guosenLsRows = await query<{ long_margin: string | null; short_margin: string | null }>(
-          `SELECT
-             SUM(CASE WHEN bs='买' THEN COALESCE(margin,0) ELSE 0 END)::text AS long_margin,
-             SUM(CASE WHEN bs='卖' THEN COALESCE(margin,0) ELSE 0 END)::text AS short_margin
-           FROM guosen_position_detail
-           WHERE settlement_date = (SELECT MAX(settlement_date) FROM guosen_position_detail)`,
-        ).catch(() => [] as { long_margin: string | null; short_margin: string | null }[])
-        const lsRow = guosenLsRows[0]
-        const glm = lsRow ? (parseNum(lsRow.long_margin) ?? 0) : 0
-        const gsm = lsRow ? (parseNum(lsRow.short_margin) ?? 0) : 0
-        const gLsTotal = glm + gsm
-        const guoxinLongRatio  = gLsTotal > 0 ? glm / gLsTotal : null
-        const guoxinShortRatio = gLsTotal > 0 ? gsm / gLsTotal : null
-
-        // Latest snapshot
-        const lastG = guosenAcctSeries[guosenAcctSeries.length - 1]
-        latestWithLs.push({
-          account:          "guoxin",
-          date:             lastG.date,
-          riskRatio:        lastG.riskRatio,
-          margin:           lastG.margin,
-          equity:           lastG.equity,
-          available:        lastG.available,
-          sector:           "未分类",
-          longMarginRatio:  guoxinLongRatio,
-          shortMarginRatio: guoxinShortRatio,
-        })
-        latestWithLs.sort((a, b) => (b.margin ?? 0) - (a.margin ?? 0))
-
-        // Merge into portfolio timeseries
-        const guosenDateMap = new Map(guosenMarginRows.map(r => [r.trade_date, r]))
-        for (const ts of timeseries) {
-          const g = guosenDateMap.get(ts.date)
-          if (!g) continue
-          const gMargin = parseNum(g.margin_occupied) ?? 0
-          const gEquity = parseNum(g.client_equity)   ?? 0
-          ts.margin    += gMargin
-          ts.equity    += gEquity
-          ts.available += parseNum(g.fund_avail) ?? 0
-          ts.fundNav    = ts.fundNav != null ? ts.fundNav + gEquity : gEquity
-          ts.riskRatio  = ts.fundNav > 0 ? ts.margin / ts.fundNav * 100 : null
-        }
-      }
-    } catch {
-      // guosen_account_summary not available — skip
-    }
 
     return NextResponse.json({ ok: true, timeseries, accounts, latest: latestWithLs, sectorSeries, sectorLsSeries })
   } catch (err: unknown) {

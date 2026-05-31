@@ -21,7 +21,7 @@ async function _GET(req: Request) {
     : null
 
   try {
-    const [dailyRows, infoRows, guosenHeatRows] = await Promise.all([
+    const [dailyRows, infoRows] = await Promise.all([
       query<{ account: string; date: string; margin: string; equity: string }>(
         `SELECT
            "账户" AS account,
@@ -37,14 +37,6 @@ async function _GET(req: Request) {
                 COALESCE(equity_wan::text, '0') AS equity_wan
          FROM mom_advisor_info`,
       ).catch(() => [] as { account: string; sector: string; equity_wan: string }[]),
-      query<{ date: string; margin: string; equity: string }>(
-        `SELECT trade_date::text AS date,
-                margin_occupied::text AS margin,
-                client_equity::text AS equity
-         FROM guosen_account_summary
-         WHERE client_id = '665300200077'
-         ORDER BY trade_date`,
-      ).catch(() => [] as { date: string; margin: string; equity: string }[]),
     ])
 
     const sectorMap    = new Map(infoRows.map((r) => [r.account, r.sector]))
@@ -53,7 +45,6 @@ async function _GET(req: Request) {
     // Collect all dates
     const allDatesSet = new Set<string>()
     for (const r of dailyRows) allDatesSet.add(r.date)
-    for (const r of guosenHeatRows) allDatesSet.add(r.date)
     const allDates   = [...allDatesSet].sort()
     const windowDates = WINDOW ? allDates.slice(-WINDOW) : allDates
     const dateSet    = new Set(windowDates)
@@ -61,7 +52,6 @@ async function _GET(req: Request) {
     // Collect sectors
     const sectorsSet = new Set<string>()
     for (const r of infoRows) sectorsSet.add(r.sector ?? "其他")
-    sectorsSet.add("商品") // ensure guoxin sector is present
     if (sectorsSet.size === 0) {
       // fallback: infer from daily rows
       for (const r of dailyRows) {
@@ -95,18 +85,6 @@ async function _GET(req: Request) {
       }
 
       const k = `${sector}|${r.date}`
-      cellMap.set(k, (cellMap.get(k) ?? 0) + deployed)
-    }
-
-    // Add guoxin rows (equity_wan ≈ 1000万, sector = 商品)
-    const GUOXIN_EQUITY_WAN = 1000
-    for (const r of guosenHeatRows) {
-      if (!dateSet.has(r.date)) continue
-      const margin = toNum(r.margin)
-      const equity = toNum(r.equity)
-      if (equity <= 0) continue
-      const deployed = GUOXIN_EQUITY_WAN * (margin / equity)
-      const k = `商品|${r.date}`
       cellMap.set(k, (cellMap.get(k) ?? 0) + deployed)
     }
 

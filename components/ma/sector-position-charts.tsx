@@ -48,21 +48,21 @@ export default function SectorPositionCharts({ height = 300, capturing = false }
 
   useEffect(() => {
     let done = 0
-    const finish = () => { if (++done >= 2) setLoading(false) }
+    const finish = () => { if (++done >= 1) setLoading(false) }
 
     fetch("/ma/api/mom-analysis/category-exposure")
       .then(r => r.json())
-      .then(j => { if (j.ok) setSeries(j.series ?? []) })
-      .catch(() => {})
-      .finally(finish)
-
-    fetch("/ma/api/mom-analysis/product-nav")
-      .then(r => r.json())
       .then(j => {
-        const map = new Map<string, number>()
-        for (const d of (j.data ?? []) as { date: string; cumCapital: number }[])
-          if (d.cumCapital > 0) map.set(d.date, d.cumCapital)
-        setCapitalMap(map)
+        if (j.ok) {
+          const expSeries: ExposureRow[] = j.series ?? []
+          setSeries(expSeries)
+          const map = new Map<string, number>()
+          for (const d of expSeries) {
+            const eq = Number((d as Record<string, unknown>).equity ?? 0)
+            if (Number.isFinite(eq) && eq > 0) map.set(d.date, eq)
+          }
+          setCapitalMap(map)
+        }
       })
       .catch(() => {})
       .finally(finish)

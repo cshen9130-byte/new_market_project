@@ -105,8 +105,17 @@ async function _GET(req: Request) {
               )::text AS lots
        FROM mom_position_details
        WHERE "交易日期" = (
-         SELECT MAX("交易日期") FROM mom_position_details WHERE "交易日期" IS NOT NULL
+         SELECT MAX("交易日期") FROM mom_position_details
+         WHERE "交易日期" IS NOT NULL
+           AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+           AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+           AND TRIM("账户"::text) NOT LIKE '%国信%'
+           AND TRIM("账户"::text) <> '665300200077'
        )
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
          AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
          AND TRIM("合约") NOT LIKE '%-%-%'
        GROUP BY UPPER(TRIM("合约"))`,
@@ -114,7 +123,13 @@ async function _GET(req: Request) {
 
     // 2. Latest trading date
     const dateRow = await query<{ date: string }>(
-      `SELECT MAX("交易日期")::text AS date FROM mom_position_details WHERE "交易日期" IS NOT NULL`,
+      `SELECT MAX("交易日期")::text AS date
+       FROM mom_position_details
+       WHERE "交易日期" IS NOT NULL
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'`,
     )
     const latestDate = dateRow[0]?.date ?? ""
 
@@ -210,8 +225,19 @@ async function _GET(req: Request) {
               )::text AS mv,
               SUM(${numExpr("保证金")})::text AS margin
        FROM mom_position_details
-       WHERE "交易日期" = (SELECT MAX("交易日期") FROM mom_position_details WHERE "交易日期" IS NOT NULL)
+       WHERE "交易日期" = (
+         SELECT MAX("交易日期") FROM mom_position_details
+         WHERE "交易日期" IS NOT NULL
+           AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+           AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+           AND TRIM("账户"::text) NOT LIKE '%国信%'
+           AND TRIM("账户"::text) <> '665300200077'
+       )
          AND "账户" IS NOT NULL
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
          AND UPPER(TRIM("合约")) !~ '[0-9][CP][0-9]'
          AND TRIM("合约") NOT LIKE '%-%-%'
        GROUP BY UPPER(TRIM("账户")), UPPER(TRIM("合约"))`,

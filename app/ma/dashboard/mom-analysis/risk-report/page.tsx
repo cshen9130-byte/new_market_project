@@ -4630,17 +4630,19 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
 
   useEffect(() => {
     let doneCount = 0
-    const maybeFinish = () => { if (++doneCount >= 3) setLoading(false) }
+    const maybeFinish = () => { if (++doneCount >= 2) setLoading(false) }
 
     fetchJsonCached("/ma/api/mom-analysis/category-exposure").then(expJ => {
-      if (expJ.ok) setSeries(expJ.series ?? [])
-    }).catch(() => {}).finally(maybeFinish)
-
-    fetchJsonCached("/ma/api/mom-analysis/product-nav").then(navJ => {
-      const navData: { date: string; cumCapital: number }[] = navJ.data ?? []
-      const map = new Map<string, number>()
-      for (const d of navData) if (d.cumCapital > 0) map.set(d.date, d.cumCapital)
-      setCapitalMap(map)
+      if (expJ.ok) {
+        const expSeries: ExposureRow[] = expJ.series ?? []
+        setSeries(expSeries)
+        const map = new Map<string, number>()
+        for (const d of expSeries) {
+          const eq = Number((d as Record<string, unknown>).equity ?? 0)
+          if (Number.isFinite(eq) && eq > 0) map.set(d.date, eq)
+        }
+        setCapitalMap(map)
+      }
     }).catch(() => {}).finally(maybeFinish)
 
     fetchJsonCached("/ma/api/mom-analysis/position-change").then(pcJ => {

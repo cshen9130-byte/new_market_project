@@ -31,7 +31,12 @@ async function _GET(req: Request) {
     } else {
       const latestRows = await query<{ date: string }>(
         `SELECT DISTINCT "交易日期"::date::text AS date FROM mom_position_details
-         WHERE "交易日期" IS NOT NULL ORDER BY date DESC LIMIT 2`,
+         WHERE "交易日期" IS NOT NULL
+           AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+           AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+           AND TRIM("账户"::text) NOT LIKE '%国信%'
+           AND TRIM("账户"::text) <> '665300200077'
+         ORDER BY date DESC LIMIT 2`,
       )
       targetDate = latestRows[rankParam - 1]?.date ?? latestRows[0]?.date
     }
@@ -54,6 +59,10 @@ async function _GET(req: Request) {
          TRIM("交易所")           AS exchange
        FROM mom_position_details
        WHERE "交易日期"::date = $1
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
        ORDER BY TRIM("账户"), UPPER(TRIM("合约")), "成交序号"`,
       [targetDate],
     )
@@ -73,49 +82,6 @@ async function _GET(req: Request) {
       margin:      Math.round(toNum(r.margin)),
       exchange:    (r.exchange ?? "").trim(),
     }))
-
-    // Merge guoxin (guosen) positions for the same date
-    try {
-      const guosenRows = await query<{
-        instrument: string; bs: string; position_lots: string
-        open_price: string; prev_settl: string; mtm_pl: string
-        settl_today: string; margin: string
-      }>(
-        `SELECT UPPER(TRIM(instrument)) AS instrument,
-                bs,
-                COALESCE(position_lots, 0)::text AS position_lots,
-                COALESCE(open_price,    0)::text AS open_price,
-                COALESCE(prev_settl,    0)::text AS prev_settl,
-                COALESCE(mtm_pl,        0)::text AS mtm_pl,
-                COALESCE(settl_today,   0)::text AS settl_today,
-                COALESCE(margin,        0)::text AS margin
-         FROM guosen_position_detail
-         WHERE settlement_date::date = $1
-         ORDER BY instrument`,
-        [targetDate],
-      )
-      for (const r of guosenRows) {
-        const lots = Math.round(toNum(r.position_lots))
-        const isLong = r.bs === '买'
-        result.push({
-          account:      "guoxin",
-          contract:     r.instrument,
-          longLots:     isLong ? lots : 0,
-          buyPrice:     isLong ? toNum(r.open_price) : 0,
-          shortLots:    isLong ? 0 : lots,
-          sellPrice:    isLong ? 0 : toNum(r.open_price),
-          prevSettle:   toNum(r.prev_settl),
-          positionPnl:  Math.round(toNum(r.mtm_pl)),
-          hedgeType:    "",
-          tradeDateRaw: targetDate!,
-          positionMv:   Math.round(lots * toNum(r.settl_today)),
-          margin:       Math.round(toNum(r.margin)),
-          exchange:     "",
-        })
-      }
-    } catch {
-      // guosen_position_detail unavailable — skip
-    }
 
     return NextResponse.json({ ok: true, date: targetDate, total: result.length, rows: result })
   } catch (err) {

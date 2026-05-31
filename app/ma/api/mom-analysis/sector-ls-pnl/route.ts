@@ -61,6 +61,11 @@ async function _GET() {
        FROM mom_futures_trade_details
        WHERE "交易日期"::date = $1
          AND "合约" IS NOT NULL
+         AND COALESCE(TRIM("账户"::text), '') <> ''
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
        GROUP BY UPPER(TRIM("合约")), TRIM("买/卖")`,
       [latestDate],
     )
@@ -79,6 +84,11 @@ async function _GET() {
        FROM mom_position_details
        WHERE "交易日期"::date = $1
          AND "合约" IS NOT NULL
+         AND COALESCE(TRIM("账户"::text), '') <> ''
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'
        GROUP BY UPPER(TRIM("合约")),
          CASE WHEN ${numExpr("买持仓")} > 0 THEN '买' ELSE '卖' END`,
       [latestDate],
@@ -96,6 +106,11 @@ async function _GET() {
          FROM mom_trade_details
          WHERE trade_date::date = $1
            AND "合约" IS NOT NULL
+           AND COALESCE(TRIM(account::text), '') <> ''
+           AND UPPER(TRIM(account::text)) NOT LIKE '%GUOXIN%'
+           AND UPPER(TRIM(account::text)) NOT LIKE '%GUOSEN%'
+           AND TRIM(account::text) NOT LIKE '%国信%'
+           AND TRIM(account::text) <> '665300200077'
          GROUP BY UPPER(TRIM("合约")), TRIM("买/卖")`,
         [latestDate],
       )
@@ -138,25 +153,6 @@ async function _GET() {
       const dir = row.direction?.trim()
       if (dir === "卖") add(row.contract, "long", net)
       else if (dir === "买") add(row.contract, "short", net)
-    }
-
-    // Add guosen long/short position PnL — gracefully skipped if unavailable
-    try {
-      const guosenLsRows = await query<{ product: string; bs: string; pnl: string }>(
-        `SELECT UPPER(TRIM(instrument)) AS product,
-                bs,
-                SUM(COALESCE(mtm_pl, 0))::text AS pnl
-         FROM guosen_position_detail
-         WHERE settlement_date = (SELECT MAX(settlement_date) FROM guosen_position_detail)
-           AND instrument IS NOT NULL
-         GROUP BY UPPER(TRIM(instrument)), bs`,
-      )
-      for (const row of guosenLsRows) {
-        const side: "long" | "short" = row.bs === "B" ? "long" : "short"
-        add(row.product, side, toNum(row.pnl))
-      }
-    } catch {
-      // guosen_position_detail not available — skip
     }
 
     // Merge into sorted lists
