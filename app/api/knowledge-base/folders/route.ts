@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, moveKnowledgeBaseFolder, normalizeKnowledgeBasePath, renameKnowledgeBaseFolder } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
-import { invalidateVectorStoreCache, syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
 import { pgRenamePathPrefix } from "@/lib/server/knowledge-pg"
 
 export const runtime = "nodejs"
@@ -48,9 +48,9 @@ export async function DELETE(req: Request) {
 
     await deleteKnowledgeBaseFolder(relativePath, currentUser.id, currentUser.role === "admin")
 
-    // Folder deletion can affect multiple nested scopes; clear all caches then warm root.
-    await invalidateVectorStoreCache()
-    void syncVectorStoreForScope("")
+    const parentFolder = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
+    // Re-sync incrementally without clearing unrelated scopes.
+    void Promise.allSettled([syncVectorStoreForScope(""), syncVectorStoreForScope(parentFolder)])
 
     return NextResponse.json({ ok: true })
   } catch (error: any) {
@@ -80,10 +80,13 @@ export async function PATCH(req: Request) {
     const renamed = await renameKnowledgeBaseFolder(relativePath, newName, currentUser.id, currentUser.role === "admin")
 
     // Migrate all PG index rows to the new path in-place (preserves embeddings).
-    // Then evict only the affected in-memory scopes so they reload from PG on next query.
+    // Then re-sync incrementally without wiping unrelated scopes.
     await pgRenamePathPrefix(relativePath, renamed.relativePath)
-    await invalidateVectorStoreCache(relativePath)
-    await invalidateVectorStoreCache(renamed.relativePath)
+
+    const oldParent = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
+    const newParent = renamed.relativePath.includes("/") ? renamed.relativePath.slice(0, renamed.relativePath.lastIndexOf("/")) : ""
+    const warmScopes = Array.from(new Set(["", oldParent, newParent, renamed.relativePath]))
+    void Promise.allSettled(warmScopes.map((scope) => syncVectorStoreForScope(scope)))
 
     return NextResponse.json({ ok: true, folder: renamed })
   } catch (error: any) {
@@ -112,8 +115,13 @@ export async function PUT(req: Request) {
 
     const moved = await moveKnowledgeBaseFolder(sourcePath, destinationParent ?? "", currentUser.id, currentUser.role === "admin")
 
-    await invalidateVectorStoreCache()
-    void syncVectorStoreForScope("")
+    // Keep embeddings when moving by rewriting PG path prefixes in-place.
+    await pgRenamePathPrefix(sourcePath, moved.relativePath)
+
+    const oldParent = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : ""
+    const newParent = moved.relativePath.includes("/") ? moved.relativePath.slice(0, moved.relativePath.lastIndexOf("/")) : ""
+    const warmScopes = Array.from(new Set(["", oldParent, newParent, moved.relativePath]))
+    void Promise.allSettled(warmScopes.map((scope) => syncVectorStoreForScope(scope)))
 
     return NextResponse.json({ ok: true, folder: moved })
   } catch (error: any) {

@@ -8,7 +8,8 @@ import {
   readKnowledgeBasePreviewContent,
 } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
-import { invalidateVectorStoreCache, syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { pgRenamePathPrefix } from "@/lib/server/knowledge-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -103,9 +104,13 @@ export async function PATCH(req: Request) {
 
     const renamed = await renameKnowledgeBaseFile(relativePath, newName, currentUser.id, currentUser.role === "admin")
 
-    // Rename can invalidate existing chunk paths; clear caches and warm root incrementally.
-    await invalidateVectorStoreCache()
-    void syncVectorStoreForScope("")
+    // Keep embeddings by migrating path keys in PG instead of clearing all indexes.
+    await pgRenamePathPrefix(relativePath, renamed.relativePath)
+
+    const oldParent = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
+    const newParent = renamed.relativePath.includes("/") ? renamed.relativePath.slice(0, renamed.relativePath.lastIndexOf("/")) : ""
+    const warmScopes = Array.from(new Set(["", oldParent, newParent]))
+    void Promise.allSettled(warmScopes.map((scope) => syncVectorStoreForScope(scope)))
 
     return NextResponse.json({ ok: true, file: renamed })
   } catch (error: any) {
