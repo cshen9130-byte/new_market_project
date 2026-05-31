@@ -53,12 +53,12 @@ export async function GET(
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]
 
-  // Return since inception (based on cum_nav_withdrawal)
-  const latestCumNav  = latest ? parseFloat(latest.cum_nav_withdrawal) : null
-  const firstCumNav   = first  ? parseFloat(first.cum_nav_withdrawal)  : null
+  // Headline returns should follow the reinvested series, which matches the source system.
+  const latestReinvestedNav = latest ? parseFloat(latest.cumulative_nav) : null
+  const firstReinvestedNav = first ? parseFloat(first.cumulative_nav) : null
   const ret_since_inception =
-    latestCumNav !== null && firstCumNav !== null && firstCumNav > 0
-      ? (latestCumNav - firstCumNav) / firstCumNav
+    latestReinvestedNav !== null && firstReinvestedNav !== null && firstReinvestedNav > 0
+      ? latestReinvestedNav / firstReinvestedNav - 1
       : null
 
   // Days since inception
@@ -75,15 +75,15 @@ export async function GET(
       ? Math.pow(1 + ret_since_inception, 365 / days) - 1
       : null
 
-  // YTD return (compare to first NAV of current year)
+  // YTD return: use the last value before year start when available, otherwise the
+  // first value inside the year. This matches common fund-reporting conventions.
   const yearPrefix = latest ? latest.price_date.slice(0, 4) + "-01-01" : null
-  const ytdFirst = yearPrefix
-    ? nav_series.find((r) => r.price_date >= yearPrefix) ?? null
+  const ytdBase = yearPrefix
+    ? [...nav_series].reverse().find((r) => r.price_date < yearPrefix) ?? nav_series.find((r) => r.price_date >= yearPrefix) ?? null
     : null
   const ytd_ret =
-    ytdFirst && latest
-      ? (parseFloat(latest.cum_nav_withdrawal) - parseFloat(ytdFirst.cum_nav_withdrawal)) /
-        parseFloat(ytdFirst.cum_nav_withdrawal)
+    ytdBase && latest
+      ? parseFloat(latest.cumulative_nav) / parseFloat(ytdBase.cumulative_nav) - 1
       : null
 
   // Max drawdown (from cumulative_nav / reinvested series)

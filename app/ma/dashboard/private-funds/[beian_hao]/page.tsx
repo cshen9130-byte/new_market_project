@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, useMemo } from "react"
+import type React from "react"
 import { useParams } from "next/navigation"
 import {
   Area,
@@ -11,7 +12,21 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts"
-import { ArrowLeft, TrendingUp, TrendingDown, Minus } from "lucide-react"
+import { ArrowLeft } from "lucide-react"
+import { useRouter } from "next/navigation"
+
+const menuItems = [
+  { key: "funds",      label: "基金" },
+  { key: "portfolio",  label: "组合" },
+  { key: "investment", label: "投资" },
+  { key: "operations", label: "运维" },
+]
+
+const fundsSidebarItems = [
+  { key: "private-funds",      label: "私募基金",  href: "/ma/dashboard/private-funds" },
+  { key: "fund-managers-org",  label: "私募管理人", href: "/ma/dashboard/private-funds" },
+  { key: "fund-managers",      label: "基金经理",  href: "/ma/dashboard/private-funds" },
+]
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -200,6 +215,7 @@ function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: 
 
 export default function PrivateFundDetailPage() {
   const params = useParams()
+  const router = useRouter()
   const beian_hao = typeof params.beian_hao === "string" ? params.beian_hao : ""
 
   const [data, setData]       = useState<DetailData | null>(null)
@@ -237,19 +253,69 @@ export default function PrivateFundDetailPage() {
     return [+(min - pad).toFixed(4), +(max + pad).toFixed(4)] as [number, number]
   }, [chartData])
 
+  function PageShell({ children }: { children: React.ReactNode }) {
+    return (
+      <div className="flex flex-col">
+        {/* Top menu bar */}
+        <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <nav className="flex items-center gap-1 px-6 h-12">
+            {menuItems.map((item) => (
+              <button
+                key={item.key}
+                onClick={() => item.key !== "funds" && router.push("/ma/dashboard/private-funds")}
+                className={[
+                  "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
+                  item.key === "funds"
+                    ? "text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-zinc-900 after:rounded-full dark:after:bg-zinc-100"
+                    : "text-muted-foreground hover:text-foreground",
+                ].join(" ")}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+        {/* Body: sidebar + content */}
+        <div className="flex">
+          <aside className="w-44 border-r bg-background flex-shrink-0">
+            <nav className="flex flex-col gap-0.5 p-3 pt-4">
+              {fundsSidebarItems.map((item) => (
+                <button
+                  key={item.key}
+                  onClick={() => item.key !== "private-funds" ? router.push(item.href) : undefined}
+                  className={[
+                    "w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none",
+                    item.key === "private-funds"
+                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                  ].join(" ")}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+          </aside>
+          <div className="flex-1 p-5 min-w-0">{children}</div>
+        </div>
+      </div>
+    )
+  }
+
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-40 text-zinc-400 text-sm">
-        加载中…
-      </div>
+      <PageShell>
+        <div className="flex items-center justify-center h-40 text-zinc-400 text-sm">加载中…</div>
+      </PageShell>
     )
   }
 
   if (error || !data) {
     return (
-      <div className="flex items-center justify-center h-40 text-red-500 text-sm">
-        加载失败：{error ?? "未知错误"}
-      </div>
+      <PageShell>
+        <div className="flex items-center justify-center h-40 text-red-500 text-sm">
+          加载失败：{error ?? "未知错误"}
+        </div>
+      </PageShell>
     )
   }
 
@@ -279,7 +345,8 @@ export default function PrivateFundDetailPage() {
   }
 
   return (
-    <div className="max-w-5xl mx-auto py-6 px-2">
+    <PageShell>
+    <div>
       {/* Back link */}
       <a
         href="/ma/dashboard/private-funds"
@@ -289,89 +356,121 @@ export default function PrivateFundDetailPage() {
         返回基金列表
       </a>
 
-      {/* ── Header ────────────────────────────────────────── */}
-      <div className="mb-6">
-        <div className="flex items-start justify-between flex-wrap gap-2">
-          <div>
-            <h1 className="text-2xl font-bold text-zinc-900 leading-tight">{info.product_name}</h1>
-            <div className="flex flex-wrap items-center gap-2 mt-1.5">
-              {info.strategy_l1 && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600 font-medium">
-                  {info.strategy_l1}
-                </span>
-              )}
-              {info.strategy_l2 && info.strategy_l2 !== "-" && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600">
-                  {info.strategy_l2}
-                </span>
-              )}
-              <span className="text-xs text-zinc-400">备案号: {info.beian_hao}</span>
-              <span className="text-xs text-zinc-400">管理人: {info.manager}</span>
-              {info.inception_date && (
-                <span className="text-xs text-zinc-400">成立: {info.inception_date.slice(0, 10)}</span>
-              )}
-              {info.benchmark && (
-                <span className="text-xs text-zinc-400">基准: {info.benchmark}</span>
-              )}
-            </div>
-          </div>
-          {/* Latest NAV big display */}
-          <div className="text-right">
-            <div className="text-3xl font-bold text-zinc-900 tabular-nums">
-              {fmt(metrics.latest_nav, 4)}
-            </div>
-            <div className="text-xs text-zinc-400 mt-0.5">
-              单位净值 {metrics.latest_nav_date ?? ""}
-            </div>
-          </div>
+      {/* ── Header: fund name + strategy tags ────────────── */}
+      <div className="mb-3">
+        <h1 className="text-2xl font-bold text-zinc-900 leading-tight">{info.product_name}</h1>
+        <div className="flex flex-wrap items-center gap-2 mt-1.5">
+          {info.strategy_l1 && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600 font-medium">
+              {info.strategy_l1}
+            </span>
+          )}
+          {info.strategy_l2 && info.strategy_l2 !== "-" && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600">
+              {info.strategy_l2}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* ── Key metrics grid ──────────────────────────────── */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-6">
-        <StatCard
-          label="累计净值"
-          value={fmt(metrics.latest_cum_nav, 4)}
-        />
-        <StatCard
-          label="复权净值"
-          value={fmt(metrics.latest_cum_nav_reinvested, 4)}
-        />
-        <StatCard
-          label="成立以来收益"
-          value={<PctSpan value={metrics.ret_since_inception} />}
-        />
-        <StatCard
-          label="今年以来收益"
-          value={<PctSpan value={metrics.ytd_ret} />}
-        />
-        <StatCard
-          label="成立以来年化"
-          value={<PctSpan value={metrics.ann_ret} />}
-        />
-        <StatCard
-          label="最大回撤"
-          value={
-            <span className="text-2xl font-bold tabular-nums" style={{ color: GREEN }}>
-              {metrics.max_drawdown !== null ? "-" + metrics.max_drawdown + "%" : "—"}
+      {/* ── Key info band (matches reference screenshot) ── */}
+      <div className="flex flex-wrap items-start gap-x-8 gap-y-3 py-4 mb-4 border-y border-zinc-100">
+
+        {/* 单位净值 – hero number */}
+        <div className="min-w-[120px]">
+          <div className="text-[2rem] font-bold tabular-nums leading-none" style={{ color: RED }}>
+            {fmt(metrics.latest_nav, 4)}
+          </div>
+          <div className="text-xs text-zinc-500 mt-1">单位净值（{metrics.latest_nav_date ?? ""}）</div>
+        </div>
+
+        {/* 累计净值 + 复权净值 */}
+        <div className="flex flex-col gap-1 justify-center">
+          <div className="text-xs text-zinc-500">
+            累计净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav, 4)}</span>
+          </div>
+          <div className="text-xs text-zinc-500">
+            复权净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav_reinvested, 4)}</span>
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="hidden sm:block w-px self-stretch bg-zinc-100" />
+
+        {/* 成立以来收益 */}
+        <div className="flex flex-col items-start gap-0.5">
+          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: RED }}>
+            {metrics.ret_since_inception !== null ? "+" + metrics.ret_since_inception + "%" : "—"}
+          </span>
+          <span className="text-xs text-zinc-500">成立以来收益</span>
+        </div>
+
+        {/* 今年以来收益 */}
+        <div className="flex flex-col items-start gap-0.5">
+          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: RED }}>
+            {metrics.ytd_ret !== null
+              ? (parseFloat(metrics.ytd_ret) > 0 ? "+" : "") + metrics.ytd_ret + "%"
+              : "—"}
+          </span>
+          <span className="text-xs text-zinc-500">今年以来收益</span>
+        </div>
+
+        {/* 成立以来年化 */}
+        <div className="flex flex-col items-start gap-0.5">
+          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: RED }}>
+            {metrics.ann_ret !== null ? "+" + metrics.ann_ret + "%" : "—"}
+          </span>
+          <span className="text-xs text-zinc-500">成立以来年化</span>
+        </div>
+
+        {/* Divider */}
+        <div className="hidden sm:block w-px self-stretch bg-zinc-100" />
+
+        {/* 最大回撤 */}
+        <div className="flex flex-col items-start gap-0.5">
+          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: GREEN }}>
+            {metrics.max_drawdown !== null ? "-" + metrics.max_drawdown + "%" : "—"}
+          </span>
+          <span className="text-xs text-zinc-500">成立以来最大回撤</span>
+        </div>
+
+        {/* 夏普比率 */}
+        {info.sharpe_1y && (
+          <div className="flex flex-col items-start gap-0.5">
+            <span className="text-[1.4rem] font-bold tabular-nums text-zinc-800">
+              {parseFloat(info.sharpe_1y).toFixed(2)}
             </span>
-          }
-        />
+            <span className="text-xs text-zinc-500">成立以来夏普比率</span>
+          </div>
+        )}
+
+        {/* Spacer pushes the fund info to the right */}
+        <div className="flex-1" />
+
+        {/* 备案 / 管理人 info block */}
+        <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-zinc-500 self-center">
+          <span>备案编号：</span>
+          <span className="font-medium text-zinc-800">{info.beian_hao}</span>
+          <span>产品成立时间：</span>
+          <span className="font-medium text-zinc-800">{info.inception_date?.slice(0, 10) ?? "—"}</span>
+          <span>私募管理人：</span>
+          <span className="font-medium text-zinc-800">{info.manager}</span>
+          {info.benchmark && (
+            <>
+              <span>业绩基准：</span>
+              <span className="font-medium text-zinc-800">{info.benchmark}</span>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* ── Secondary metrics (from private_fund_info) ───── */}
+      {/* ── Secondary period-return pills ─────────────────── */}
       <div className="flex flex-wrap gap-2 mb-6">
         <RetPill label="近1周" pct={pct1w} />
         <RetPill label="近1月" pct={pct1m} />
         <RetPill label="近3月" pct={pct3m} />
         <RetPill label="近6月" pct={pct6m} />
         <RetPill label="近1年" pct={pct1y} />
-        {info.sharpe_1y && (
-          <div className="flex flex-col items-center gap-0.5 px-3 py-2 rounded bg-zinc-50 border border-zinc-100">
-            <span className="text-[10px] text-zinc-400 font-medium">夏普(1Y)</span>
-            <span className="text-sm font-bold tabular-nums text-zinc-800">{parseFloat(info.sharpe_1y).toFixed(2)}</span>
-          </div>
-        )}
         {info.calmar_1y && (
           <div className="flex flex-col items-center gap-0.5 px-3 py-2 rounded bg-zinc-50 border border-zinc-100">
             <span className="text-[10px] text-zinc-400 font-medium">卡玛(1Y)</span>
@@ -380,11 +479,12 @@ export default function PrivateFundDetailPage() {
         )}
       </div>
 
-      {/* ── Performance Chart ─────────────────────────────── */}
+      {/* ── Chart + Table side by side ─────────────────── */}
+      <div className="flex flex-col xl:flex-row gap-4">
       {chartData.length > 1 && (
-        <div className="mb-6 rounded-xl border border-zinc-100 bg-white p-5">
+        <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5">
           <div className="text-sm font-semibold text-zinc-700 mb-3">净值走势（复权净值）</div>
-          <ResponsiveContainer width="100%" height={280}>
+          <ResponsiveContainer width="100%" height={340}>
             <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
               <defs>
                 <linearGradient id="navGrad" x1="0" y1="0" x2="0" y2="1">
@@ -425,10 +525,12 @@ export default function PrivateFundDetailPage() {
       )}
 
       {/* ── NAV Table ─────────────────────────────────────── */}
-      <div className="rounded-xl border border-zinc-100 bg-white p-5">
+      <div className="xl:w-[480px] flex-shrink-0 rounded-xl border border-zinc-100 bg-white p-5">
         <div className="text-sm font-semibold text-zinc-700 mb-3">净值数据</div>
         <NavTable rows={nav_series} />
       </div>
+      </div>{/* end flex chart+table */}
     </div>
+    </PageShell>
   )
 }
