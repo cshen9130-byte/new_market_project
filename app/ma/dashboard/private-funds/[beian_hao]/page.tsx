@@ -375,10 +375,10 @@ export default function PrivateFundDetailPage() {
       </div>
 
       {/* ── Key info band ── */}
-      <div className="flex items-start justify-between gap-4 py-4 mb-4 border-y border-zinc-100">
+      <div className="flex items-start gap-8 py-4 mb-4 border-y border-zinc-100">
 
-        {/* LEFT: all metric cells */}
-        <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        {/* LEFT: all metric cells – flex-1 + justify-between to fill the row */}
+        <div className="flex flex-wrap items-start gap-x-10 gap-y-3">
 
         {/* 单位净值 – hero number */}
         <div className="min-w-[120px]">
