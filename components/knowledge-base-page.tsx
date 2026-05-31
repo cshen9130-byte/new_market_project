@@ -687,6 +687,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [tableFillCols, setTableFillCols] = useState<string[]>([])
   const [tableFillRowNames, setTableFillRowNames] = useState<string[]>([])
   const [tableFillData, setTableFillData] = useState<Record<string, string>>({})
+  const [tableFillColumnSources, setTableFillColumnSources] = useState<Record<string, string[]>>({})
   const [tableFillCurrentCell, setTableFillCurrentCell] = useState<{ rowIdx: number; colIdx: number } | null>(null)
   const [tableFillDone, setTableFillDone] = useState(false)
   const [tableFillView, setTableFillView] = useState(false)
@@ -2638,10 +2639,40 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     return raw.split(/[\n\t,，]+/).map((s) => s.trim()).filter(Boolean)
   }
 
+  function normalizeTableCellValue(raw: string): string {
+    const trimmed = raw.replace(/\r/g, "").trim()
+    if (!trimmed) return "暂无数据"
+
+    const compact = trimmed.replace(/\s+/g, " ")
+    if (/(没有找到|未找到|无法提供|暂无相关|无相关|暂无数据)/.test(compact) && !/收益|回撤|胜率|赔率|仓位|开仓|平仓|年化|%|\d/.test(compact)) {
+      return "暂无数据"
+    }
+    if (/^根据.{0,30}(资料|文档).{0,40}(没有找到|未找到|无法提供)/.test(compact)) {
+      return "暂无数据"
+    }
+
+    const cleanedLines = trimmed
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !/^根据(提供|上述|检索|资料|文档).*(如下|信息如下|可知|可得)?[：:]?$/.test(line))
+      .filter((line) => !/^引用(资料|文件|来源)?[：:]?$/.test(line))
+      .filter((line) => !/^资料\s*\d+/.test(line))
+      .filter((line) => !/^(来源|source)\s*[：:]/i.test(line))
+
+    const cleaned = cleanedLines.join("\n").trim()
+    if (!cleaned) return "暂无数据"
+    if (/^(暂无数据[。.]?|暂无)$/.test(cleaned)) return "暂无数据"
+    if (/^(没有找到|未找到|无法提供|暂无相关|无相关)/.test(cleaned)) return "暂无数据"
+
+    return cleaned
+  }
+
   async function handleTableFill(cols: string[], rows: string[], title: string) {
     setTableFillCols(cols)
     setTableFillRowNames(rows)
     setTableFillData({})
+    setTableFillColumnSources({})
     setTableFillCurrentCell(null)
     setTableFillDone(false)
     setTableFillActive(true)
@@ -2661,8 +2692,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         setTableFillCurrentCell({ rowIdx, colIdx })
 
         const q = title
-          ? `关于「${title}」，请根据知识库资料，查找「${colName}」这个基金/产品/策略在「${rowName}」维度的信息，简洁作答（1-3句话，支持数字/日期/关键词）。如果知识库中没有相关信息，请直接回答"暂无数据"。`
-          : `请根据知识库资料，查找「${colName}」在「${rowName}」维度的信息，简洁作答（1-3句话）。如果知识库中没有相关信息，请直接回答"暂无数据"。`
+          ? `关于「${title}」，请查找「${colName}」在「${rowName}」维度的信息。仅输出该单元格有效信息，不要写开场模板（如“根据提供的资料”），不要写“引用资料/资料1/资料2”等来源段。无数据时仅输出“暂无数据”。`
+          : `请查找「${colName}」在「${rowName}」维度的信息。仅输出该单元格有效信息，不要写开场模板，不要写来源段。无数据时仅输出“暂无数据”。`
 
         try {
           const res = await fetch("/api/knowledge-base/chat", {
@@ -2690,6 +2721,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           const decoder = new TextDecoder()
           let sseBuffer = ""
           let fullContent = ""
+          let sourcesForCell: string[] = []
 
           // eslint-disable-next-line no-labels
           outer: while (true) {
@@ -2702,20 +2734,30 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               if (!part.startsWith("data: ")) continue
               const jsonStr = part.slice(6).trim()
               if (jsonStr === "[DONE]") continue
-              let event: { type: string; delta?: string } | null = null
+              let event: { type: string; delta?: string; sources?: string[] } | null = null
               try { event = JSON.parse(jsonStr) } catch { continue }
               if (!event) continue
               if (event.type === "text" && event.delta) {
                 fullContent += event.delta
-                setTableFillData((prev) => ({ ...prev, [cellKey]: fullContent }))
+                setTableFillData((prev) => ({ ...prev, [cellKey]: normalizeTableCellValue(fullContent) }))
+              }
+              if (event.type === "done" && Array.isArray(event.sources)) {
+                sourcesForCell = event.sources
               }
               // eslint-disable-next-line no-labels
               if (tableFillAbortRef.current) { void reader.cancel(); break outer }
             }
           }
 
-          if (!fullContent) {
-            setTableFillData((prev) => ({ ...prev, [cellKey]: "暂无数据" }))
+          const normalized = normalizeTableCellValue(fullContent)
+          setTableFillData((prev) => ({ ...prev, [cellKey]: normalized || "暂无数据" }))
+          if (sourcesForCell.length > 0) {
+            setTableFillColumnSources((prev) => {
+              const key = String(colIdx)
+              const existing = prev[key] ?? []
+              const merged = Array.from(new Set([...existing, ...sourcesForCell]))
+              return { ...prev, [key]: merged }
+            })
           }
         } catch {
           if (tableFillAbortRef.current) break
@@ -2734,7 +2776,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     tableFillAbortRef.current = true
   }
 
-  function handleDownloadTableCSV(cols: string[], rows: string[], data: Record<string, string>, title: string) {
+  function handleDownloadTableCSV(cols: string[], rows: string[], data: Record<string, string>, title: string, columnSources: Record<string, string[]>) {
     const header = ["", ...cols].map((c) => `"${c.replace(/"/g, '""')}"`).join(",")
     const bodyRows = rows.map((rowName, rowIdx) => {
       const cells = cols.map((_, colIdx) => {
@@ -2743,7 +2785,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       })
       return [`"${rowName.replace(/"/g, '""')}"`, ...cells].join(",")
     })
-    const csv = [header, ...bodyRows].join("\n")
+    const sourceCells = cols.map((_, colIdx) => {
+      const refs = columnSources[String(colIdx)] ?? []
+      return `"${refs.join("\n").replace(/"/g, '""')}"`
+    })
+    const sourceRow = [`"引用"`, ...sourceCells].join(",")
+    const csv = [header, ...bodyRows, sourceRow].join("\n")
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" })
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
@@ -2753,7 +2800,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     URL.revokeObjectURL(url)
   }
 
-  async function handleDownloadTableXLSX(cols: string[], rows: string[], data: Record<string, string>, title: string) {
+  async function handleDownloadTableXLSX(cols: string[], rows: string[], data: Record<string, string>, title: string, columnSources: Record<string, string[]>) {
     const { utils, writeFile } = await import("xlsx")
     const wsData: string[][] = [
       ["", ...cols],
@@ -2761,6 +2808,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         rowName,
         ...cols.map((_, colIdx) => data[`${rowIdx}||${colIdx}`] ?? ""),
       ]),
+      [
+        "引用",
+        ...cols.map((_, colIdx) => (columnSources[String(colIdx)] ?? []).join("\n")),
+      ],
     ]
     const ws = utils.aoa_to_sheet(wsData)
     const wb = utils.book_new()
@@ -4745,6 +4796,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               })}
                             </TableRow>
                           ))}
+                          <TableRow>
+                            <TableCell className="sticky left-0 z-10 bg-muted/70 font-semibold text-foreground whitespace-nowrap">引用</TableCell>
+                            {tableFillCols.map((_, colIdx) => {
+                              const refs = tableFillColumnSources[String(colIdx)] ?? []
+                              return (
+                                <TableCell key={`source-${colIdx}`} className="align-top text-muted-foreground">
+                                  <span className="whitespace-pre-wrap leading-relaxed">{refs.length > 0 ? refs.join("\n") : ""}</span>
+                                </TableCell>
+                              )
+                            })}
+                          </TableRow>
                         </TableBody>
                       </Table>
                     </div>
@@ -4831,7 +4893,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         variant="outline"
                         className="gap-1.5"
                         disabled={tableFillActive}
-                        onClick={() => handleDownloadTableCSV(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle)}
+                        onClick={() => handleDownloadTableCSV(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle, tableFillColumnSources)}
                       >
                         <Download className="h-3.5 w-3.5" />
                         CSV
@@ -4841,7 +4903,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         variant="outline"
                         className="gap-1.5"
                         disabled={tableFillActive}
-                        onClick={() => void handleDownloadTableXLSX(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle)}
+                        onClick={() => void handleDownloadTableXLSX(tableFillCols, tableFillRowNames, tableFillData, tableFillTitle, tableFillColumnSources)}
                       >
                         <FileSpreadsheet className="h-3.5 w-3.5" />
                         Excel
@@ -4888,14 +4950,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
         {/* Table Fill Setup Dialog */}
         <Dialog open={showTableFillSetup} onOpenChange={(open) => { if (!open) setShowTableFillSetup(false) }}>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
+          <DialogContent className="flex max-h-[90vh] w-[min(92vw,40rem)] flex-col gap-0 p-0">
+            <DialogHeader className="border-b px-6 pb-3 pt-5">
               <DialogTitle className="flex items-center gap-2">
                 <Table2 className="h-4 w-4" />
                 AI 自动填表助手
               </DialogTitle>
             </DialogHeader>
-            <div className="space-y-4 py-2">
+            <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+              <div className="space-y-4">
               <div>
                 <label className="mb-1.5 block text-sm font-medium">表格名称（上下文提示）</label>
                 <Input
@@ -4937,8 +5000,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <strong>{Math.round(parseTableNames(tableFillColumnsInput).length * parseTableNames(tableFillRowsInput).length * 5 / 60)}</strong> 分钟。
                 </div>
               )}
+              </div>
             </div>
-            <DialogFooter>
+            <DialogFooter className="border-t bg-background px-6 py-4">
               <Button variant="outline" onClick={() => setShowTableFillSetup(false)}>取消</Button>
               <Button
                 disabled={parseTableNames(tableFillColumnsInput).length === 0 || parseTableNames(tableFillRowsInput).length === 0}
