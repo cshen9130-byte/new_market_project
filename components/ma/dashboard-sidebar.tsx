@@ -39,8 +39,8 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
     pathname === "/ma/dashboard/private-funds" ||
     pathname.startsWith("/ma/dashboard/mom-analysis/trader-analysis") ||
     pathname.startsWith("/ma/dashboard/mom-analysis/risk-report")
-  const [isCollapsed, setIsCollapsed] = useState(shouldAutoCollapse)
-  const previousManualCollapsedRef = useRef<boolean | null>(shouldAutoCollapse ? false : null)
+  const [isCollapsed, setIsCollapsed] = useState(true)
+  const previousManualCollapsedRef = useRef<boolean | null>(null)
   const previousAutoCollapseRef = useRef(shouldAutoCollapse)
 
   useEffect(() => {
@@ -58,8 +58,8 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
   }, [shouldAutoCollapse])
 
   const sidebarContent = (
-    <aside className={cn("border-r bg-card flex flex-col transition-all duration-200 h-full", isCollapsed ? "w-20" : "w-64")}>
-      <div className={cn("border-b", isCollapsed ? "px-3 py-6" : "p-6")}>
+    <aside className={cn("border-r bg-card flex flex-col transition-all duration-200 h-full", isCollapsed ? "w-12" : "w-40")}>
+      <div className={cn("border-b", isCollapsed ? "px-2 py-5" : "px-4 py-5")}>
         {isCollapsed ? (
           <Link href="/ma/dashboard" title="返回主页" className="flex flex-col items-center gap-1 hover:text-primary transition-colors">
             <Home className="h-5 w-5" />
@@ -67,12 +67,12 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
           </Link>
         ) : (
           <>
-            <h2 className="text-lg font-semibold">母基金AI投研系统</h2>
-            <p className="text-sm text-muted-foreground">分析看板（传统风格）</p>
+            <h2 className="text-sm font-semibold leading-snug">母基金AI投研系统</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">分析看板（传统风格）</p>
           </>
         )}
       </div>
-      <nav className={cn("flex-1 space-y-1", isCollapsed ? "p-2" : "p-4")}>
+      <nav className={cn("flex-1 space-y-1", isCollapsed ? "p-1.5" : "p-3")}>
         {navigation.map((item) => {
           const isActive = pathname === item.href
           const baseClasses = cn(
