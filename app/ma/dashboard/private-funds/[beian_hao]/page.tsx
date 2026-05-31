@@ -202,12 +202,17 @@ function NavTable({ rows }: { rows: NavRow[] }) {
 
 // ─── Custom Tooltip ───────────────────────────────────────────────────────────
 
-function ChartTooltip({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) {
+function ChartTooltip({ active, payload, label, mode }: { active?: boolean; payload?: { value: number }[]; label?: string; mode?: "nav" | "return" }) {
   if (!active || !payload?.length) return null
+  const v = payload[0]?.value
+  const display = mode === "return"
+    ? (v >= 0 ? "+" : "") + v?.toFixed(2) + "%"
+    : v?.toFixed(4)
+  const fieldLabel = mode === "return" ? "收益率" : "复权净值"
   return (
     <div className="bg-white border border-zinc-100 shadow-md rounded-lg px-3 py-2 text-xs">
       <div className="text-zinc-500 mb-1">{label}</div>
-      <div className="font-semibold text-zinc-900">复权净值: {payload[0]?.value?.toFixed(4)}</div>
+      <div className="font-semibold text-zinc-900">{fieldLabel}: {display}</div>
     </div>
   )
 }
@@ -237,6 +242,8 @@ export default function PrivateFundDetailPage() {
       .finally(() => setLoading(false))
   }, [beian_hao])
 
+  const [chartMode, setChartMode] = useState<"nav" | "return">("nav")
+
   const chartData = useMemo(() => {
     if (!data) return []
     return downsample(data.nav_series).map((r) => ({
@@ -245,14 +252,25 @@ export default function PrivateFundDetailPage() {
     }))
   }, [data])
 
+  const returnChartData = useMemo(() => {
+    if (!data || !data.nav_series.length) return []
+    const firstNav = parseFloat(data.nav_series[0].cumulative_nav)
+    return downsample(data.nav_series).map((r) => ({
+      date: r.price_date,
+      value: firstNav > 0 ? +((parseFloat(r.cumulative_nav) / firstNav - 1) * 100).toFixed(4) : 0,
+    }))
+  }, [data])
+
+  const activeChartData = chartMode === "nav" ? chartData : returnChartData
+
   const yDomain = useMemo(() => {
-    if (!chartData.length) return ["auto", "auto"] as [string, string]
-    const vals = chartData.map((d) => d.value)
+    if (!activeChartData.length) return ["auto", "auto"] as [string, string]
+    const vals = activeChartData.map((d) => d.value)
     const min = Math.min(...vals)
     const max = Math.max(...vals)
     const pad = (max - min) * 0.05
     return [+(min - pad).toFixed(4), +(max + pad).toFixed(4)] as [number, number]
-  }, [chartData])
+  }, [activeChartData])
 
   function PageShell({ children }: { children: React.ReactNode }) {
     return (
@@ -469,11 +487,37 @@ export default function PrivateFundDetailPage() {
 
       {/* ── Chart + Table side by side ─────────────────── */}
       <div className="flex flex-col xl:flex-row gap-4">
-      {chartData.length > 1 && (
+      {activeChartData.length > 1 && (
         <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5">
-          <div className="text-sm font-semibold text-zinc-700 mb-3">净值走势（复权净值）</div>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-sm font-semibold text-zinc-700">
+              {chartMode === "nav" ? "净值走势（复权净值）" : "收益曲线（成立以来收益率）"}
+            </div>
+            <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-xs">
+              <button
+                onClick={() => setChartMode("return")}
+                className={`px-3 py-1.5 transition-colors ${
+                  chartMode === "return"
+                    ? "bg-zinc-900 text-white font-semibold"
+                    : "bg-white text-zinc-500 hover:bg-zinc-50"
+                }`}
+              >
+                收益曲线
+              </button>
+              <button
+                onClick={() => setChartMode("nav")}
+                className={`px-3 py-1.5 transition-colors border-l border-zinc-200 ${
+                  chartMode === "nav"
+                    ? "bg-zinc-900 text-white font-semibold"
+                    : "bg-white text-zinc-500 hover:bg-zinc-50"
+                }`}
+              >
+                净值曲线
+              </button>
+            </div>
+          </div>
           <ResponsiveContainer width="100%" height={340}>
-            <AreaChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+            <AreaChart data={activeChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
               <defs>
                 <linearGradient id="navGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%"  stopColor="#ef4444" stopOpacity={0.18} />
@@ -491,12 +535,12 @@ export default function PrivateFundDetailPage() {
               <YAxis
                 domain={yDomain}
                 tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                width={54}
-                tickFormatter={(v: number) => v.toFixed(2)}
+                width={60}
+                tickFormatter={(v: number) => chartMode === "return" ? v.toFixed(0) + "%" : v.toFixed(2)}
               />
               <Tooltip content={(props) => (
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                <ChartTooltip {...(props as any)} />
+                <ChartTooltip {...(props as any)} mode={chartMode} />
               )} />
               <Area
                 type="monotone"
