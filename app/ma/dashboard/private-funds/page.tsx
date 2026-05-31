@@ -942,10 +942,15 @@ function PrivateFundTable({
                   {/* 产品名称 */}
                   <td style={{ left: stickyLeft.name, width: 220 }}
                     className={`${stickyCell} border-r px-3`}>
-                    <div className="truncate font-medium text-blue-600 dark:text-blue-400 cursor-pointer hover:underline leading-5"
-                      title={row.product_name}>
+                    <a
+                      href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="truncate font-medium text-blue-600 dark:text-blue-400 hover:underline leading-5 block"
+                      title={row.product_name}
+                    >
                       {row.product_name}
-                    </div>
+                    </a>
                     {row.strategy_l1 && (
                       <div className="flex items-center gap-1 mt-0.5">
                         <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
