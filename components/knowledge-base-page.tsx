@@ -2815,7 +2815,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
 
   async function handleDownloadTableXLSX(cols: string[], rows: string[], data: Record<string, string>, title: string, columnSources: Record<string, string[]>) {
-    const xlsx = await import("xlsx")
+    const xlsx = await import("xlsx-js-style") as typeof import("xlsx")
     const { utils, writeFile } = xlsx
 
     const totalRows = rows.length + 2 // header row + data rows + citation row
@@ -2835,7 +2835,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     ]
     const ws = utils.aoa_to_sheet(wsData)
 
-    // All-sides thin border
+    // All-sides thin border for the entire table area.
     const border = {
       top:    { style: "thin", color: { rgb: "999999" } },
       bottom: { style: "thin", color: { rgb: "999999" } },
@@ -2843,37 +2843,37 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       right:  { style: "thin", color: { rgb: "999999" } },
     }
 
-    // Column letter helper (A-Z, AA-AZ)
-    const colLetters = Array.from({ length: totalCols }, (_, i) =>
-      i < 26 ? String.fromCharCode(65 + i) : "A" + String.fromCharCode(65 + i - 26)
-    )
-
     for (let r = 0; r < totalRows; r++) {
       for (let c = 0; c < totalCols; c++) {
-        const addr = colLetters[c] + (r + 1)
+        const addr = utils.encode_cell({ r, c })
         if (!ws[addr]) ws[addr] = { t: "s", v: "" }
         const isHeaderRow = r === 0   // column-name row
         const isHeaderCol = c === 0   // row-name column
 
         ws[addr].s = {
           font: { bold: isHeaderRow || isHeaderCol, sz: 11 },
-          alignment: { wrapText: true, vertical: "top", horizontal: isHeaderCol ? "center" : "left" },
+          alignment: { wrapText: true, vertical: "top", horizontal: isHeaderRow || isHeaderCol ? "center" : "left" },
           border,
         }
       }
     }
 
-    // Fixed column widths: row-name col 20, data cols 30
+    // Fixed column widths: row-name col + data cols.
     ws["!cols"] = [
       { wch: 20 },
-      ...cols.map(() => ({ wch: 30 })),
+      ...cols.map(() => ({ wch: 32 })),
     ]
 
-    // No fixed row heights — wrapText lets Excel auto-size rows
+    // No fixed row heights. Keep automatic row sizing with wrapped text.
+    if ("!rows" in ws) delete ws["!rows"]
 
     const wb = utils.book_new()
     utils.book_append_sheet(wb, ws, title.slice(0, 31) || "Sheet1")
-    writeFile(wb, `${(title || "表格").replace(/[/\\:*?"<>|]/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`)
+    writeFile(
+      wb,
+      `${(title || "表格").replace(/[/\\:*?"<>|]/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      { cellStyles: true },
+    )
   }
 
   function handleQuestionKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
