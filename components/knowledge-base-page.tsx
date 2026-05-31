@@ -3379,10 +3379,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           <ContextMenuTrigger asChild>
             <div className={cn("overflow-hidden rounded-lg border", isCyber ? "border-cyan-500/15 bg-black/20" : "border-border bg-card") }>
               {explorerView === "list" && (
-                <div className={cn("grid grid-cols-1 sm:grid-cols-[minmax(0,2fr)_minmax(80px,auto)] lg:grid-cols-[minmax(0,2fr)_minmax(80px,1fr)_minmax(55px,0.6fr)_minmax(55px,0.6fr)_minmax(65px,0.7fr)] gap-3 border-b px-3 py-2 text-xs font-medium", isCyber ? "border-cyan-500/15 bg-black/25 text-cyan-300/80" : "border-border bg-muted/40 text-muted-foreground")}>
+                <div className={cn("grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,130px)] lg:grid-cols-[minmax(0,2fr)_minmax(80px,1fr)_minmax(55px,0.6fr)_minmax(55px,0.6fr)_minmax(65px,0.7fr)] gap-3 border-b px-3 py-2 text-xs font-medium", isCyber ? "border-cyan-500/15 bg-black/25 text-cyan-300/80" : "border-border bg-muted/40 text-muted-foreground")}>
                   {(["name", "updatedAt", "typeLabel", "size", "ownerName"] as const).map((col) => {
                     const labels: Record<string, string> = { name: "名称", updatedAt: "修改日期", typeLabel: "类型", size: "大小", ownerName: "上传者" }
-                    const colHide: Record<string, string> = { name: "", updatedAt: "hidden sm:flex", typeLabel: "hidden lg:flex", size: "hidden lg:flex", ownerName: "hidden lg:flex" }
+                    const colHide: Record<string, string> = { name: "", updatedAt: "hidden md:flex", typeLabel: "hidden lg:flex", size: "hidden lg:flex", ownerName: "hidden lg:flex" }
                     const active = explorerSort.key === col
                     const Icon = active ? (explorerSort.dir === "asc" ? ChevronUp : ChevronDown) : ChevronsUpDown
                     return (
@@ -3446,7 +3446,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                               }}
                               onDoubleClick={() => handleExplorerEntryOpen(entry)}
                               className={cn(
-                                "grid w-full grid-cols-1 sm:grid-cols-[minmax(0,2fr)_minmax(80px,auto)] lg:grid-cols-[minmax(0,2fr)_minmax(80px,1fr)_minmax(55px,0.6fr)_minmax(55px,0.6fr)_minmax(65px,0.7fr)] gap-3 border-b px-3 py-2 text-left text-sm transition-colors last:border-b-0",
+                                "grid w-full grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,130px)] lg:grid-cols-[minmax(0,2fr)_minmax(80px,1fr)_minmax(55px,0.6fr)_minmax(55px,0.6fr)_minmax(65px,0.7fr)] gap-3 border-b px-3 py-2 text-left text-sm transition-colors last:border-b-0",
                                 isCyber
                                   ? selected
                                     ? "border-cyan-400/30 bg-cyan-500/10 text-cyan-50"
@@ -3476,7 +3476,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                                   <Lock className="ml-0.5 h-3 w-3 shrink-0 text-amber-500" />
                                 )}
                               </div>
-                              <div className="hidden sm:block truncate">{formatDateTime(entry.updatedAt)}</div>
+                              <div className="hidden md:block truncate">{formatDateTime(entry.updatedAt)}</div>
                               <div className="hidden lg:block truncate">{entry.typeLabel}</div>
                               <div className="hidden lg:block truncate">{entry.kind === "file" ? formatFileSize(entry.document.size) : formatFileSize(getFolderTotalSize(entry.folder))}</div>
                               <div className={cn("hidden lg:block truncate", dimmedNotIndexed && "text-muted-foreground")}>{entry.ownerName}</div>
