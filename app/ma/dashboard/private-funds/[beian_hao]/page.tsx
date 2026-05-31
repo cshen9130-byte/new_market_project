@@ -172,7 +172,6 @@ function NavTable({ rows }: { rows: NavRow[] }) {
     </div>
   )
 }
-}
 
 // ─── Custom Tooltip ───────────────────────────────────────────────────────────
 
