@@ -276,6 +276,51 @@ export async function pgLoadRows(
   }))
 }
 
+/**
+ * Fallback helpers: query chunks by source path prefix across ALL scopes.
+ * Used when a folder scope is empty but the data was embedded under root scope
+ * (e.g. after a root-scope recovery embed job).
+ */
+function escapeSourcePrefix(prefix: string): string {
+  return prefix.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_")
+}
+
+export async function pgCountChunksBySourcePrefix(sourcePrefix: string): Promise<number> {
+  await pgEnsureSchema()
+  const rows = await dbQuery<{ n: string }>(
+    `SELECT COUNT(*) AS n FROM kb_chunks WHERE source LIKE $1 ESCAPE '\\'`,
+    [`${escapeSourcePrefix(sourcePrefix)}/%`],
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+export async function pgCountDocumentsBySourcePrefix(sourcePrefix: string): Promise<number> {
+  await pgEnsureSchema()
+  const rows = await dbQuery<{ n: string }>(
+    `SELECT COUNT(DISTINCT source) AS n FROM kb_chunks WHERE source LIKE $1 ESCAPE '\\'`,
+    [`${escapeSourcePrefix(sourcePrefix)}/%`],
+  )
+  return Number(rows[0]?.n ?? 0)
+}
+
+export async function pgLoadRowsBySourcePrefix(
+  sourcePrefix: string,
+  opts?: { includeEmbeddings?: boolean },
+): Promise<MemoryVectorRow[]> {
+  await pgEnsureSchema()
+  const withVec = opts?.includeEmbeddings !== false
+  const cols = withVec ? "content, metadata, embedding" : "content, metadata"
+  const rows = await dbQuery<{ content: string; metadata: Record<string, unknown>; embedding?: unknown }>(
+    `SELECT ${cols} FROM kb_chunks WHERE source LIKE $1 ESCAPE '\\' ORDER BY id`,
+    [`${escapeSourcePrefix(sourcePrefix)}/%`],
+  )
+  return rows.map((r) => ({
+    content: r.content,
+    embedding: withVec ? parseVec(r.embedding) : [],
+    metadata: r.metadata ?? {},
+  }))
+}
+
 /** Delete all chunks for specific source files in a scope. */
 export async function pgDeleteChunksBySource(scope: string, sources: string[]): Promise<void> {
   if (!sources.length) return

@@ -18,6 +18,9 @@ import {
   pgCountChunks,
   pgCountDocuments,
   pgLoadRows,
+  pgCountChunksBySourcePrefix,
+  pgCountDocumentsBySourcePrefix,
+  pgLoadRowsBySourcePrefix,
   pgDeleteChunksBySource,
   pgDeleteScopeChunks,
   pgUpsertFileChunks,
@@ -438,7 +441,20 @@ async function getOrBuildVectorStore(
     if (options?.queryOnly) {
       if (inMemory) return inMemory
 
-      const totalChunks = await pgCountChunks(scopeKey)
+      let totalChunks = await pgCountChunks(scopeKey)
+
+      // Fallback: if this folder scope is empty but root scope has chunks
+      // with matching source prefix (e.g. after a root-scope recovery embed),
+      // serve those chunks so queries work without re-embedding.
+      let useSourcePrefix = false
+      if (!totalChunks && scopeKey) {
+        const prefixChunks = await pgCountChunksBySourcePrefix(scopeKey)
+        if (prefixChunks > 0) {
+          totalChunks = prefixChunks
+          useSourcePrefix = true
+        }
+      }
+
       if (!totalChunks) {
         throw new Error("当前文件夹没有可用于问答的文档。支持 txt、md、json、csv、html、pdf。")
       }
@@ -448,9 +464,13 @@ async function getOrBuildVectorStore(
 
       let mergedRows: MemoryVectorRow[] = []
       if (needEmbeddings) {
-        mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: true })
+        mergedRows = useSourcePrefix
+          ? await pgLoadRowsBySourcePrefix(scopeKey, { includeEmbeddings: true })
+          : await pgLoadRows(scopeKey, { includeEmbeddings: true })
       } else if (needContentRows) {
-        mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: false })
+        mergedRows = useSourcePrefix
+          ? await pgLoadRowsBySourcePrefix(scopeKey, { includeEmbeddings: false })
+          : await pgLoadRows(scopeKey, { includeEmbeddings: false })
       }
 
       const vectorStore = needEmbeddings
@@ -459,16 +479,19 @@ async function getOrBuildVectorStore(
 
       let bm25Index: Bm25PreIndex
       if (totalChunks <= PG_BM25_MAX) {
-        bm25Index = (await pgLoadBm25Index(scopeKey)) ?? (mergedRows.length > 0 ? buildBm25Index(mergedRows) : EMPTY_BM25_INDEX)
+        // BM25 index is scope-specific; in fallback mode it won't exist, so build from rows.
+        bm25Index = (useSourcePrefix ? null : await pgLoadBm25Index(scopeKey)) ?? (mergedRows.length > 0 ? buildBm25Index(mergedRows) : EMPTY_BM25_INDEX)
       } else {
         bm25Index = EMPTY_BM25_INDEX
       }
 
       const graphIndex = totalChunks <= PG_GRAPH_MAX
-        ? ((await pgLoadGraphIndex(scopeKey)) ?? EMPTY_GRAPH_INDEX)
+        ? ((useSourcePrefix ? null : await pgLoadGraphIndex(scopeKey)) ?? EMPTY_GRAPH_INDEX)
         : EMPTY_GRAPH_INDEX
 
-      const indexedDocuments = await pgCountDocuments(scopeKey)
+      const indexedDocuments = useSourcePrefix
+        ? await pgCountDocumentsBySourcePrefix(scopeKey)
+        : await pgCountDocuments(scopeKey)
 
       const nextValue: KnowledgeBaseIndexCacheEntry = {
         signature: `pg:${scopeKey}:${indexedDocuments}:${totalChunks}`,
