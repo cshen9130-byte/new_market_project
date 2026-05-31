@@ -693,6 +693,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [tableFillView, setTableFillView] = useState(false)
   const [tableFillTitle, setTableFillTitle] = useState("")
   const [tableFillMode, setTableFillMode] = useState<"fast" | "deep">("fast")
+  const [tableFillRowLengths, setTableFillRowLengths] = useState<Record<string, "long" | "short" | "options">>({})
+  const [tableFillRowOptions, setTableFillRowOptions] = useState<Record<string, string>>({})
   const tableFillAbortRef = useRef(false)
 
   useEffect(() => {
@@ -2667,7 +2669,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     return cleaned
   }
 
-  async function handleTableFill(cols: string[], rows: string[], title: string, mode: "fast" | "deep" = "fast") {
+  async function handleTableFill(cols: string[], rows: string[], title: string, mode: "fast" | "deep" = "fast", rowLengths: Record<string, "long" | "short" | "options"> = {}, rowOptions: Record<string, string> = {}) {
     setTableFillCols(cols)
     setTableFillRowNames(rows)
     setTableFillData({})
@@ -2690,9 +2692,16 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
         setTableFillCurrentCell({ rowIdx, colIdx })
 
+        const rowMode = rowLengths[rowName] ?? "long"
+        const optionsList = (rowOptions[rowName] ?? "").split(/[,，\n]/).map((s) => s.trim()).filter(Boolean)
+        const lengthInstruction = rowMode === "short"
+          ? "输出要求：极简回答，仅输出一个名字/数字/短语（不超过10字），不加任何解释。"
+          : rowMode === "options" && optionsList.length > 0
+            ? `输出要求：只能从以下选项中选一个最符合的输出：${optionsList.map((o) => `「${o}」`).join("、")}。只输出选项本身，不加任何解释。如果无法判断则输出「未知」。`
+            : "输出要求：仅输出单元格内容本身，不加开场白，不加来源脚注，1-4句或要点列表。"
         const q = title
-          ? `你正在填写「${title}」比较表中的一个单元格。列（对象）：「${colName}」，行（维度）：「${rowName}」。请尽力从知识库找到相关信息。搜索时可用同义词/缩写/相关概念扩展（如"打板"联想"涨停""强势股""竞价""封板"等）。无直接字面匹配时从相关内容推断并注明"（推测）"。完全无任何线索时才输出"暂无数据"。输出要求：仅输出单元格内容本身，不加开场白，不加来源脚注，1-4句或要点列表。`
-          : `请从知识库找「${colName}」在「${rowName}」维度的信息。可用同义词/相关概念扩展；无直接信息时推断并注明"（推测）"；完全无线索才输出"暂无数据"。仅输出内容本身，不加开场白和来源脚注。`
+          ? `你正在填写「${title}」比较表中的一个单元格。列（对象）：「${colName}」，行（维度）：「${rowName}」。请尽力从知识库找到相关信息。搜索时可用同义词/缩写/相关概念扩展（如"打板"联想"涨停""强势股""竞价""封板"等）。无直接字面匹配时从相关内容推断并注明"（推测）"。完全无任何线索时才输出"暂无数据"。${lengthInstruction}`
+          : `请从知识库找「${colName}」在「${rowName}」维度的信息。可用同义词/相关概念扩展；无直接信息时推断并注明"（推测）"；完全无线索才输出"暂无数据"。${lengthInstruction}`
 
         const cellAbort = new AbortController()
         const timeoutId = setTimeout(() => cellAbort.abort("timeout"), 60000)
@@ -2826,14 +2835,15 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     ]
     const ws = utils.aoa_to_sheet(wsData)
 
-    // Border style shared by all cells
+    // All-sides thin border
     const border = {
-      top:    { style: "thin", color: { rgb: "BBBBBB" } },
-      bottom: { style: "thin", color: { rgb: "BBBBBB" } },
-      left:   { style: "thin", color: { rgb: "BBBBBB" } },
-      right:  { style: "thin", color: { rgb: "BBBBBB" } },
+      top:    { style: "thin", color: { rgb: "999999" } },
+      bottom: { style: "thin", color: { rgb: "999999" } },
+      left:   { style: "thin", color: { rgb: "999999" } },
+      right:  { style: "thin", color: { rgb: "999999" } },
     }
 
+    // Column letter helper (A-Z, AA-AZ)
     const colLetters = Array.from({ length: totalCols }, (_, i) =>
       i < 26 ? String.fromCharCode(65 + i) : "A" + String.fromCharCode(65 + i - 26)
     )
@@ -2842,38 +2852,24 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       for (let c = 0; c < totalCols; c++) {
         const addr = colLetters[c] + (r + 1)
         if (!ws[addr]) ws[addr] = { t: "s", v: "" }
-        const isHeaderRow = r === 0
-        const isHeaderCol = c === 0
-        const isHeader = isHeaderRow || isHeaderCol
+        const isHeaderRow = r === 0   // column-name row
+        const isHeaderCol = c === 0   // row-name column
 
         ws[addr].s = {
-          font: { bold: isHeader, sz: 11 },
-          alignment: { wrapText: true, vertical: "top", horizontal: isHeader ? "center" : "left" },
-          fill: isHeaderRow
-            ? { fgColor: { rgb: "1F3864" }, patternType: "solid" }
-            : isHeaderCol
-              ? { fgColor: { rgb: "D6E4F7" }, patternType: "solid" }
-              : { fgColor: { rgb: "FFFFFF" }, patternType: "solid" },
-          font: isHeaderRow
-            ? { bold: true, sz: 11, color: { rgb: "FFFFFF" } }
-            : { bold: isHeaderCol, sz: 11 },
+          font: { bold: isHeaderRow || isHeaderCol, sz: 11 },
+          alignment: { wrapText: true, vertical: "top", horizontal: isHeaderCol ? "center" : "left" },
           border,
         }
       }
     }
 
-    // Column widths: first col narrower, data cols wider
+    // Fixed column widths: row-name col 20, data cols 30
     ws["!cols"] = [
-      { wch: 18 },
-      ...cols.map(() => ({ wch: 32 })),
+      { wch: 20 },
+      ...cols.map(() => ({ wch: 30 })),
     ]
 
-    // Row heights: header row shorter, data rows taller to accommodate wrapped text
-    ws["!rows"] = [
-      { hpt: 28 },
-      ...rows.map(() => ({ hpt: 90 })),
-      { hpt: 60 }, // citation row
-    ]
+    // No fixed row heights — wrapText lets Excel auto-size rows
 
     const wb = utils.book_new()
     utils.book_append_sheet(wb, ws, title.slice(0, 31) || "Sheet1")
@@ -5052,6 +5048,50 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   将作为表格的<strong>行标题</strong>（通常是各维度/属性），共 {parseTableNames(tableFillRowsInput).length} 行
                 </p>
               </div>
+              {parseTableNames(tableFillRowsInput).length > 0 && (
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium">每行答案长度</label>
+                  <div className="divide-y rounded-md border">
+                    {parseTableNames(tableFillRowsInput).map((rowName) => {
+                      const rowMode = tableFillRowLengths[rowName] ?? "long"
+                      return (
+                        <div key={rowName} className="space-y-1.5 px-3 py-2">
+                          <div className="flex items-center justify-between">
+                            <span className="truncate text-sm">{rowName}</span>
+                            <div className="ml-3 flex shrink-0 overflow-hidden rounded border text-xs">
+                              {(["short", "long", "options"] as const).map((mode, i) => (
+                                <button
+                                  key={mode}
+                                  type="button"
+                                  onClick={() => setTableFillRowLengths((prev) => ({ ...prev, [rowName]: mode }))}
+                                  className={`px-2.5 py-1 transition-colors ${
+                                    i > 0 ? "border-l" : ""
+                                  } ${
+                                    rowMode === mode
+                                      ? "bg-primary text-primary-foreground"
+                                      : "hover:bg-muted/60"
+                                  }`}
+                                >
+                                  {mode === "short" ? "简短" : mode === "long" ? "详细" : "选项"}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          {rowMode === "options" && (
+                            <input
+                              type="text"
+                              value={tableFillRowOptions[rowName] ?? ""}
+                              onChange={(e) => setTableFillRowOptions((prev) => ({ ...prev, [rowName]: e.target.value }))}
+                              placeholder="选项用逗号分隔，如：扫板，排板，混合，未知"
+                              className="w-full rounded border bg-background px-2 py-1 text-xs outline-none ring-offset-background focus:ring-1 focus:ring-ring"
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
               <div>
                 <label className="mb-1.5 block text-sm font-medium">检索模式</label>
                 <div className="flex gap-2">
@@ -5101,6 +5141,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   parseTableNames(tableFillRowsInput),
                   tableFillTitleInput.trim(),
                   tableFillMode,
+                  tableFillRowLengths,
+                  tableFillRowOptions,
                 )}
               >
                 <Table2 className="mr-1.5 h-4 w-4" />
