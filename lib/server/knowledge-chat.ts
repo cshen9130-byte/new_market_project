@@ -528,39 +528,53 @@ async function getOrBuildVectorStore(
       const changedDocs = updatedOrAdded
         .map((p) => docMap.get(p))
         .filter((doc): doc is NonNullable<typeof docMap extends Map<any, infer V> ? V : never> => Boolean(doc))
+      const failedDocs: Array<{ path: string; reason: string }> = []
 
       const embeddingsModel = createIndexEmbeddingsModel()
       for (let i = 0; i < changedDocs.length; i++) {
         const doc = changedDocs[i]
-        const fileDoc = new Document({
-          pageContent: doc.text,
-          metadata: { source: doc.relativePath, size: doc.size, updatedAt: doc.updatedAt },
-        })
-        const chunks = await splitter.splitDocuments([fileDoc])
-        if (chunks.length > 0) {
-          // Retry once on 429 with a short backoff before giving up
-          let attempt = 0
-          while (true) {
-            try {
-              const partStore = await MemoryVectorStore.fromDocuments(chunks, embeddingsModel)
-              const newRows = (partStore as any).memoryVectors as MemoryVectorRow[]
-              await pgUpsertFileChunks(scopeKey, doc.relativePath, newRows, nextFiles[doc.relativePath], getEmbeddingModel())
-              break
-            } catch (err: any) {
-              const classified = classifyApiError(err)
-              const is429 = classified.message.includes("429") || classified.message.includes("频率超限")
-              if (is429 && attempt === 0) {
-                attempt++
-                await new Promise((r) => setTimeout(r, 30_000))
-                continue
+        try {
+          const fileDoc = new Document({
+            pageContent: doc.text,
+            metadata: { source: doc.relativePath, size: doc.size, updatedAt: doc.updatedAt },
+          })
+          const chunks = await splitter.splitDocuments([fileDoc])
+          if (chunks.length > 0) {
+            // Retry once on 429 with a short backoff before giving up
+            let attempt = 0
+            while (true) {
+              try {
+                const partStore = await MemoryVectorStore.fromDocuments(chunks, embeddingsModel)
+                const newRows = (partStore as any).memoryVectors as MemoryVectorRow[]
+                await pgUpsertFileChunks(scopeKey, doc.relativePath, newRows, nextFiles[doc.relativePath], getEmbeddingModel())
+                break
+              } catch (err: any) {
+                const classified = classifyApiError(err)
+                const is429 = classified.message.includes("429") || classified.message.includes("频率超限")
+                if (is429 && attempt === 0) {
+                  attempt++
+                  await new Promise((r) => setTimeout(r, 30_000))
+                  continue
+                }
+                throw classified
               }
-              throw classified
             }
           }
+        } catch (err: any) {
+          const classified = classifyApiError(err)
+          const is429 = classified.message.includes("429") || classified.message.includes("频率超限")
+          if (is429) {
+            throw classified
+          }
+          failedDocs.push({ path: doc.relativePath, reason: classified.message })
+          console.warn(`[knowledge-chat] Skip failed file ${doc.relativePath}: ${classified.message}`)
         }
         onProgress?.(i + 1, changedDocs.length, doc.relativePath)
         // Small inter-file pause to reduce sustained API pressure
         if (i < changedDocs.length - 1) await new Promise((r) => setTimeout(r, 100))
+      }
+      if (failedDocs.length > 0) {
+        console.warn(`[knowledge-chat] ${failedDocs.length} files failed during embedding for scope "${scopeKey || "<root>"}".`)
       }
     }
 
