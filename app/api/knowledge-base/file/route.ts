@@ -8,7 +8,7 @@ import {
   readKnowledgeBasePreviewContent,
 } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
-import { syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { syncVectorStoreForScope, evictMemoryCache } from "@/lib/server/knowledge-chat"
 import { pgRenamePathPrefix } from "@/lib/server/knowledge-pg"
 
 export const runtime = "nodejs"
@@ -106,6 +106,8 @@ export async function PATCH(req: Request) {
 
     // Keep embeddings by migrating path keys in PG instead of clearing all indexes.
     await pgRenamePathPrefix(relativePath, renamed.relativePath)
+    evictMemoryCache(relativePath)
+    evictMemoryCache(renamed.relativePath)
 
     const oldParent = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
     const newParent = renamed.relativePath.includes("/") ? renamed.relativePath.slice(0, renamed.relativePath.lastIndexOf("/")) : ""

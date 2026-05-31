@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { createKnowledgeBaseFolder, deleteKnowledgeBaseFolder, moveKnowledgeBaseFolder, normalizeKnowledgeBasePath, renameKnowledgeBaseFolder } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
-import { syncVectorStoreForScope } from "@/lib/server/knowledge-chat"
+import { syncVectorStoreForScope, invalidateVectorStoreCache, evictMemoryCache } from "@/lib/server/knowledge-chat"
 import { pgRenamePathPrefix } from "@/lib/server/knowledge-pg"
 
 export const runtime = "nodejs"
@@ -48,8 +48,11 @@ export async function DELETE(req: Request) {
 
     await deleteKnowledgeBaseFolder(relativePath, currentUser.id, currentUser.role === "admin")
 
+    // Delete PG index data only for the removed folder scope, then evict memory.
+    await invalidateVectorStoreCache(relativePath)
+
     const parentFolder = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
-    // Re-sync incrementally without clearing unrelated scopes.
+    // Warm only root and parent — no other scopes affected.
     void Promise.allSettled([syncVectorStoreForScope(""), syncVectorStoreForScope(parentFolder)])
 
     return NextResponse.json({ ok: true })
@@ -80,8 +83,10 @@ export async function PATCH(req: Request) {
     const renamed = await renameKnowledgeBaseFolder(relativePath, newName, currentUser.id, currentUser.role === "admin")
 
     // Migrate all PG index rows to the new path in-place (preserves embeddings).
-    // Then re-sync incrementally without wiping unrelated scopes.
+    // Evict only the old path from memory cache — new path will load from PG on next query.
     await pgRenamePathPrefix(relativePath, renamed.relativePath)
+    evictMemoryCache(relativePath)
+    evictMemoryCache(renamed.relativePath)
 
     const oldParent = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
     const newParent = renamed.relativePath.includes("/") ? renamed.relativePath.slice(0, renamed.relativePath.lastIndexOf("/")) : ""
@@ -116,7 +121,10 @@ export async function PUT(req: Request) {
     const moved = await moveKnowledgeBaseFolder(sourcePath, destinationParent ?? "", currentUser.id, currentUser.role === "admin")
 
     // Keep embeddings when moving by rewriting PG path prefixes in-place.
+    // Evict only the old path from memory — new path reloads from PG on next query.
     await pgRenamePathPrefix(sourcePath, moved.relativePath)
+    evictMemoryCache(sourcePath)
+    evictMemoryCache(moved.relativePath)
 
     const oldParent = sourcePath.includes("/") ? sourcePath.slice(0, sourcePath.lastIndexOf("/")) : ""
     const newParent = moved.relativePath.includes("/") ? moved.relativePath.slice(0, moved.relativePath.lastIndexOf("/")) : ""

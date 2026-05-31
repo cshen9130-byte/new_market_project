@@ -240,6 +240,25 @@ function computeSignatureFromFiles(files: Record<string, FileFingerprint>) {
 }
 
 /** Clear in-memory cache and PG-stored indexes for a folder (or all scopes if folderPath is null). */
+/**
+ * Evict in-memory index cache only. Safe to call at any time — never deletes PG data.
+ * Use this after rename/move to force reload from PG on next query.
+ */
+export function evictMemoryCache(folderPath?: string | null): void {
+  const normalized = normalizeKnowledgeBasePath(folderPath)
+  const cache = getKnowledgeBaseIndexCache()
+  if (!normalized) {
+    cache.clear()
+  } else {
+    cache.delete(normalized)
+  }
+}
+
+/**
+ * Erase ALL PG index data for a scope (chunks, bm25, graph, entities) AND evict memory cache.
+ * Only call this when you explicitly intend to force a full re-embed (e.g. reindex UI action,
+ * model change, or folder deletion). NEVER call with null unless wiping the entire knowledge base.
+ */
 export async function invalidateVectorStoreCache(folderPath?: string | null): Promise<void> {
   const normalized = normalizeKnowledgeBasePath(folderPath)
   const cache = getKnowledgeBaseIndexCache()
