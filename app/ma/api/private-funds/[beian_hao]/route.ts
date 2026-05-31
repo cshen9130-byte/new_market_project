@@ -102,11 +102,14 @@ export async function GET(
   }
 
   // Since-inception Sharpe = annualised return / annualised volatility (rf = 0)
+  // Use actual records-per-year so weekly/daily funds both annualise correctly
   let sharpe_since_inception: string | null = null
-  if (ann_ret !== null && dailyReturns.length > 1) {
+  if (ann_ret !== null && dailyReturns.length > 1 && days && days > 0) {
+    const totalYears = days / 365
+    const recordsPerYear = dailyReturns.length / totalYears
     const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
     const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length
-    const annVol = Math.sqrt(variance) * Math.sqrt(252)
+    const annVol = Math.sqrt(variance) * Math.sqrt(recordsPerYear)
     if (annVol > 0) sharpe_since_inception = (ann_ret / annVol).toFixed(2)
   }
 

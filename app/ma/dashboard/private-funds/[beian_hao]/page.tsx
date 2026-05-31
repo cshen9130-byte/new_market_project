@@ -374,8 +374,11 @@ export default function PrivateFundDetailPage() {
         </div>
       </div>
 
-      {/* ── Key info band (matches reference screenshot) ── */}
-      <div className="flex flex-wrap items-start gap-x-8 gap-y-3 py-4 mb-4 border-y border-zinc-100">
+      {/* ── Key info band ── */}
+      <div className="flex items-start justify-between gap-4 py-4 mb-4 border-y border-zinc-100">
+
+        {/* LEFT: all metric cells */}
+        <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
 
         {/* 单位净值 – hero number */}
         <div className="min-w-[120px]">
@@ -445,8 +448,10 @@ export default function PrivateFundDetailPage() {
           </div>
         )}
 
-        {/* 备案 / 管理人 info block – pushed to far right with ml-auto */}
-        <div className="ml-auto grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-zinc-500 self-center">
+        </div>{/* end LEFT */}
+
+        {/* RIGHT: 备案 / 管理人 info block */}
+        <div className="shrink-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-zinc-500 self-center">
           <span>备案编号：</span>
           <span className="font-medium text-zinc-800">{info.beian_hao}</span>
           <span>产品成立时间：</span>
