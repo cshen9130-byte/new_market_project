@@ -692,6 +692,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [tableFillDone, setTableFillDone] = useState(false)
   const [tableFillView, setTableFillView] = useState(false)
   const [tableFillTitle, setTableFillTitle] = useState("")
+  const [tableFillMode, setTableFillMode] = useState<"fast" | "deep">("fast")
   const tableFillAbortRef = useRef(false)
 
   useEffect(() => {
@@ -2666,7 +2667,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     return cleaned
   }
 
-  async function handleTableFill(cols: string[], rows: string[], title: string) {
+  async function handleTableFill(cols: string[], rows: string[], title: string, mode: "fast" | "deep" = "fast") {
     setTableFillCols(cols)
     setTableFillRowNames(rows)
     setTableFillData({})
@@ -2693,10 +2694,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           ? `你正在填写「${title}」比较表中的一个单元格。列（对象）：「${colName}」，行（维度）：「${rowName}」。请尽力从知识库找到相关信息。搜索时可用同义词/缩写/相关概念扩展（如"打板"联想"涨停""强势股""竞价""封板"等）。无直接字面匹配时从相关内容推断并注明"（推测）"。完全无任何线索时才输出"暂无数据"。输出要求：仅输出单元格内容本身，不加开场白，不加来源脚注，1-4句或要点列表。`
           : `请从知识库找「${colName}」在「${rowName}」维度的信息。可用同义词/相关概念扩展；无直接信息时推断并注明"（推测）"；完全无线索才输出"暂无数据"。仅输出内容本身，不加开场白和来源脚注。`
 
+        const cellAbort = new AbortController()
+        const timeoutId = setTimeout(() => cellAbort.abort("timeout"), 60000)
         try {
           const res = await fetch("/api/knowledge-base/chat", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...(getKnowledgeBaseAuthHeaders() ?? {}) },
+            signal: cellAbort.signal,
             body: JSON.stringify({
               question: q,
               folderPath: selectedFolder,
@@ -2704,8 +2708,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               useBm25: true,
               useGraphRag: false,
               stream: true,
-              modelMode: "plus",
-              deepSearch: true,
+              modelMode: mode === "deep" ? "plus" : "turbo",
+              deepSearch: mode === "deep",
               thinkingSearch: false,
             }),
           })
@@ -2743,7 +2747,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 sourcesForCell = event.sources
               }
               // eslint-disable-next-line no-labels
-              if (tableFillAbortRef.current) { void reader.cancel(); break outer }
+              if (tableFillAbortRef.current) { cellAbort.abort("user-stop"); void reader.cancel(); break outer }
             }
           }
 
@@ -2757,9 +2761,12 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               return { ...prev, [key]: merged }
             })
           }
-        } catch {
-          if (tableFillAbortRef.current) break
-          setTableFillData((prev) => ({ ...prev, [cellKey]: "查询失败" }))
+        } catch (e: unknown) {
+          if (tableFillAbortRef.current) { clearTimeout(timeoutId); break }
+          const isTimeout = e instanceof Error && (e.name === "AbortError" || (e as Error & { cause?: unknown }).cause === "timeout")
+          setTableFillData((prev) => ({ ...prev, [cellKey]: isTimeout ? "超时，跳过" : "查询失败" }))
+        } finally {
+          clearTimeout(timeoutId)
         }
       }
       if (tableFillAbortRef.current) break
@@ -2799,7 +2806,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
 
   async function handleDownloadTableXLSX(cols: string[], rows: string[], data: Record<string, string>, title: string, columnSources: Record<string, string[]>) {
-    const { utils, writeFile } = await import("xlsx")
+    const xlsx = await import("xlsx")
+    const { utils, writeFile } = xlsx
+
+    const totalRows = rows.length + 2 // header row + data rows + citation row
+    const totalCols = cols.length + 1 // row-name col + data cols
+
+    // Build sheet from array-of-arrays
     const wsData: string[][] = [
       ["", ...cols],
       ...rows.map((rowName, rowIdx) => [
@@ -2812,6 +2825,56 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       ],
     ]
     const ws = utils.aoa_to_sheet(wsData)
+
+    // Border style shared by all cells
+    const border = {
+      top:    { style: "thin", color: { rgb: "BBBBBB" } },
+      bottom: { style: "thin", color: { rgb: "BBBBBB" } },
+      left:   { style: "thin", color: { rgb: "BBBBBB" } },
+      right:  { style: "thin", color: { rgb: "BBBBBB" } },
+    }
+
+    const colLetters = Array.from({ length: totalCols }, (_, i) =>
+      i < 26 ? String.fromCharCode(65 + i) : "A" + String.fromCharCode(65 + i - 26)
+    )
+
+    for (let r = 0; r < totalRows; r++) {
+      for (let c = 0; c < totalCols; c++) {
+        const addr = colLetters[c] + (r + 1)
+        if (!ws[addr]) ws[addr] = { t: "s", v: "" }
+        const isHeaderRow = r === 0
+        const isHeaderCol = c === 0
+        const isHeader = isHeaderRow || isHeaderCol
+
+        ws[addr].s = {
+          font: { bold: isHeader, sz: 11 },
+          alignment: { wrapText: true, vertical: "top", horizontal: isHeader ? "center" : "left" },
+          fill: isHeaderRow
+            ? { fgColor: { rgb: "1F3864" }, patternType: "solid" }
+            : isHeaderCol
+              ? { fgColor: { rgb: "D6E4F7" }, patternType: "solid" }
+              : { fgColor: { rgb: "FFFFFF" }, patternType: "solid" },
+          font: isHeaderRow
+            ? { bold: true, sz: 11, color: { rgb: "FFFFFF" } }
+            : { bold: isHeaderCol, sz: 11 },
+          border,
+        }
+      }
+    }
+
+    // Column widths: first col narrower, data cols wider
+    ws["!cols"] = [
+      { wch: 18 },
+      ...cols.map(() => ({ wch: 32 })),
+    ]
+
+    // Row heights: header row shorter, data rows taller to accommodate wrapped text
+    ws["!rows"] = [
+      { hpt: 28 },
+      ...rows.map(() => ({ hpt: 90 })),
+      { hpt: 60 }, // citation row
+    ]
+
     const wb = utils.book_new()
     utils.book_append_sheet(wb, ws, title.slice(0, 31) || "Sheet1")
     writeFile(wb, `${(title || "表格").replace(/[/\\:*?"<>|]/g, "_")}_${new Date().toISOString().slice(0, 10)}.xlsx`)
@@ -4989,13 +5052,42 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   将作为表格的<strong>行标题</strong>（通常是各维度/属性），共 {parseTableNames(tableFillRowsInput).length} 行
                 </p>
               </div>
+              <div>
+                <label className="mb-1.5 block text-sm font-medium">检索模式</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTableFillMode("fast")}
+                    className={`flex-1 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
+                      tableFillMode === "fast"
+                        ? "border-primary bg-primary/10 font-medium text-primary"
+                        : "border-border bg-background hover:bg-muted/50"
+                    }`}
+                  >
+                    <div className="font-medium">⚡ 快速模式</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">每格约 2-4 秒，turbo 模型，适合资料充足的知识库</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTableFillMode("deep")}
+                    className={`flex-1 rounded-md border px-3 py-2 text-left text-sm transition-colors ${
+                      tableFillMode === "deep"
+                        ? "border-primary bg-primary/10 font-medium text-primary"
+                        : "border-border bg-background hover:bg-muted/50"
+                    }`}
+                  >
+                    <div className="font-medium">🔍 深度模式</div>
+                    <div className="mt-0.5 text-xs text-muted-foreground">每格约 8-15 秒，plus 模型 + 扩展检索，覆盖更多内容</div>
+                  </button>
+                </div>
+              </div>
               {parseTableNames(tableFillColumnsInput).length > 0 && parseTableNames(tableFillRowsInput).length > 0 && (
                 <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
                   共 <strong>{parseTableNames(tableFillColumnsInput).length}</strong> 列 ×{" "}
                   <strong>{parseTableNames(tableFillRowsInput).length}</strong> 行 ={" "}
                   <strong>{parseTableNames(tableFillColumnsInput).length * parseTableNames(tableFillRowsInput).length}</strong> 个单元格，AI 将逐一检索填写。
-                  每格约 3-8 秒，预计总耗时约{" "}
-                  <strong>{Math.round(parseTableNames(tableFillColumnsInput).length * parseTableNames(tableFillRowsInput).length * 5 / 60)}</strong> 分钟。
+                  每格约 {tableFillMode === "fast" ? "2-4" : "8-15"} 秒，预计总耗时约{" "}
+                  <strong>{Math.round(parseTableNames(tableFillColumnsInput).length * parseTableNames(tableFillRowsInput).length * (tableFillMode === "fast" ? 3 : 12) / 60)}</strong> 分钟。
                 </div>
               )}
               </div>
@@ -5008,6 +5100,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   parseTableNames(tableFillColumnsInput),
                   parseTableNames(tableFillRowsInput),
                   tableFillTitleInput.trim(),
+                  tableFillMode,
                 )}
               >
                 <Table2 className="mr-1.5 h-4 w-4" />
