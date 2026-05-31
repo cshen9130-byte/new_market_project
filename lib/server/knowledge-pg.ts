@@ -321,6 +321,39 @@ export async function pgLoadRowsBySourcePrefix(
   }))
 }
 
+/** Load fingerprints for files matching a source path prefix (across ALL scopes).
+ * Used when data was stored under root scope from a recovery/root-level embed job. */
+export async function pgLoadFingerprintsBySourcePrefix(sourcePrefix: string): Promise<Record<string, FileFingerprint>> {
+  await pgEnsureSchema()
+  const rows = await dbQuery<{ source: string; file_size: string; file_updated_at: string }>(
+    `SELECT DISTINCT ON (source) source, file_size, file_updated_at FROM kb_chunks WHERE source LIKE $1 ESCAPE '\\' ORDER BY source, id DESC`,
+    [`${escapeSourcePrefix(sourcePrefix)}/%`],
+  )
+  const map: Record<string, FileFingerprint> = {}
+  for (const row of rows) {
+    map[row.source] = { size: Number(row.file_size), updatedAt: row.file_updated_at }
+  }
+  return map
+}
+
+/** Delete chunks by source path only — no scope constraint.
+ * Correct when chunks may be stored under any scope (e.g. after a root-scope recovery embed). */
+export async function pgDeleteChunksBySources(sources: string[]): Promise<void> {
+  if (!sources.length) return
+  await pgEnsureSchema()
+  await rawQuery(`DELETE FROM kb_chunks WHERE source = ANY($1::text[])`, [sources])
+}
+
+/** Delete all chunks whose source path starts with the given prefix, across ALL scopes. */
+export async function pgDeleteChunksBySourcePrefix(sourcePrefix: string): Promise<void> {
+  if (!sourcePrefix) return
+  await pgEnsureSchema()
+  await rawQuery(
+    `DELETE FROM kb_chunks WHERE source LIKE $1 ESCAPE '\\'`,
+    [`${escapeSourcePrefix(sourcePrefix)}/%`],
+  )
+}
+
 /** Delete all chunks for specific source files in a scope. */
 export async function pgDeleteChunksBySource(scope: string, sources: string[]): Promise<void> {
   if (!sources.length) return

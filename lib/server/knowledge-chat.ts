@@ -21,6 +21,9 @@ import {
   pgCountChunksBySourcePrefix,
   pgCountDocumentsBySourcePrefix,
   pgLoadRowsBySourcePrefix,
+  pgLoadFingerprintsBySourcePrefix,
+  pgDeleteChunksBySources,
+  pgDeleteChunksBySourcePrefix,
   pgDeleteChunksBySource,
   pgDeleteScopeChunks,
   pgUpsertFileChunks,
@@ -524,15 +527,25 @@ async function getOrBuildVectorStore(
       chunkOverlap: 180,
     })
 
-    // Load file fingerprints from PG (replaces JSON disk index)
-    const prevFiles = await pgLoadFingerprints(scopeKey)
+    // Load file fingerprints from PG.
+    // If this scope has no indexed files, fall back to root-scope chunks filtered by source prefix
+    // (e.g. after a root-level recovery embed job). This makes embed incremental from any folder level.
+    let prevFiles = await pgLoadFingerprints(scopeKey)
+    let usingSourcePrefix = false
+    if (scopeKey && Object.keys(prevFiles).length === 0) {
+      const prefixFiles = await pgLoadFingerprintsBySourcePrefix(scopeKey)
+      if (Object.keys(prefixFiles).length > 0) {
+        prevFiles = prefixFiles
+        usingSourcePrefix = true
+      }
+    }
 
     // Auto-detect embedding model mismatch: if the stored index was built with a
     // different model, treat every file as new so the whole scope is re-embedded.
     const currentModel = getEmbeddingModel()
     const hasIndexedFiles = Object.keys(prevFiles).length > 0
     const storedModel = hasIndexedFiles
-      ? await pgGetScopeEmbeddingModel(scopeKey)
+      ? (await pgGetScopeEmbeddingModel(scopeKey) ?? (usingSourcePrefix ? await pgGetScopeEmbeddingModel("") : null))
       : null
     // Legacy rows may have empty model; treat that as mismatch so we can
     // migrate old indexes to the current embedding model in one pass.
@@ -540,7 +553,12 @@ async function getOrBuildVectorStore(
 
     if (modelChanged) {
       console.log(`[knowledge-chat] Embedding model changed (${storedModel} → ${currentModel}), clearing scope index for re-embed.`)
-      await invalidateVectorStoreCache(normalizedFolderPath)
+      if (usingSourcePrefix) {
+        await pgDeleteChunksBySourcePrefix(scopeKey)
+      } else {
+        await invalidateVectorStoreCache(normalizedFolderPath)
+      }
+      usingSourcePrefix = false
       // All files must be re-embedded; reset prevFiles to empty
       Object.keys(prevFiles).forEach((k) => delete prevFiles[k])
     }
@@ -559,9 +577,10 @@ async function getOrBuildVectorStore(
       }
     }
 
-    // Remove deleted files from PG
+    // Remove deleted files from PG — delete by source path only so it works
+    // regardless of which scope the chunks are stored in.
     if (deleted.size > 0) {
-      await pgDeleteChunksBySource(scopeKey, [...deleted])
+      await pgDeleteChunksBySources([...deleted])
     }
 
     // Embed updated/added files and upsert chunks into PG
@@ -588,7 +607,9 @@ async function getOrBuildVectorStore(
               try {
                 const partStore = await MemoryVectorStore.fromDocuments(chunks, embeddingsModel)
                 const newRows = (partStore as any).memoryVectors as MemoryVectorRow[]
-                await pgUpsertFileChunks(scopeKey, doc.relativePath, newRows, nextFiles[doc.relativePath], getEmbeddingModel())
+                // Store under root scope when in source-prefix mode to keep all data consistent.
+                const chunkScope = usingSourcePrefix ? "" : scopeKey
+                await pgUpsertFileChunks(chunkScope, doc.relativePath, newRows, nextFiles[doc.relativePath], getEmbeddingModel())
                 break
               } catch (err: any) {
                 const classified = classifyApiError(err)
@@ -622,8 +643,11 @@ async function getOrBuildVectorStore(
 
     const changed = new Set<string>([...updatedOrAdded, ...deleted])
 
-    // Determine total chunk count after all updates
-    const totalChunks = await pgCountChunks(scopeKey)
+    // Determine total chunk count after all updates.
+    // Use source-prefix counting when data is stored under root scope.
+    const totalChunks = usingSourcePrefix
+      ? await pgCountChunksBySourcePrefix(scopeKey)
+      : await pgCountChunks(scopeKey)
 
     // Small scopes: load embeddings into RAM → MemoryVectorStore for fast in-process search
     // Large scopes: skip loading vectors into Node.js → PG HNSW handles vector queries
@@ -633,9 +657,13 @@ async function getOrBuildVectorStore(
 
     let mergedRows: MemoryVectorRow[] = []
     if (needEmbeddings) {
-      mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: true })
+      mergedRows = usingSourcePrefix
+        ? await pgLoadRowsBySourcePrefix(scopeKey, { includeEmbeddings: true })
+        : await pgLoadRows(scopeKey, { includeEmbeddings: true })
     } else if (needContentRows) {
-      mergedRows = await pgLoadRows(scopeKey, { includeEmbeddings: false })
+      mergedRows = usingSourcePrefix
+        ? await pgLoadRowsBySourcePrefix(scopeKey, { includeEmbeddings: false })
+        : await pgLoadRows(scopeKey, { includeEmbeddings: false })
     }
 
     // Empty MemoryVectorStore signals: use PG HNSW for vector search
@@ -647,7 +675,7 @@ async function getOrBuildVectorStore(
     let bm25Index: Bm25PreIndex
     if (totalChunks <= PG_BM25_MAX) {
       if (changed.size > 0) {
-        const rowsForBm25 = mergedRows.length > 0 ? mergedRows : await pgLoadRows(scopeKey, { includeEmbeddings: false })
+        const rowsForBm25 = mergedRows.length > 0 ? mergedRows : (usingSourcePrefix ? await pgLoadRowsBySourcePrefix(scopeKey, { includeEmbeddings: false }) : await pgLoadRows(scopeKey, { includeEmbeddings: false }))
         bm25Index = buildBm25Index(rowsForBm25)
         await pgSaveBm25Index(scopeKey, bm25Index)
       } else {
@@ -662,7 +690,7 @@ async function getOrBuildVectorStore(
     if (totalChunks <= PG_GRAPH_MAX) {
       const pgGraph = await pgLoadGraphIndex(scopeKey)
       if (pgGraph?.signature !== nextSignature) {
-        const rowsForGraph = mergedRows.length > 0 ? mergedRows : await pgLoadRows(scopeKey, { includeEmbeddings: false })
+        const rowsForGraph = mergedRows.length > 0 ? mergedRows : (usingSourcePrefix ? await pgLoadRowsBySourcePrefix(scopeKey, { includeEmbeddings: false }) : await pgLoadRows(scopeKey, { includeEmbeddings: false }))
         graphIndex = buildGraphIndex(rowsForGraph, nextSignature)
         await pgSaveGraphIndex(scopeKey, graphIndex)
       } else {
