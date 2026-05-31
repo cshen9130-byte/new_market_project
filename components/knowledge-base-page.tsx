@@ -2761,27 +2761,36 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     if (userMessages.length === 0) return
     const { text, title } = buildConversationText()
 
-    // On mobile: use native share sheet — WeChat appears there and handles the content
-    const isMobile = typeof navigator !== "undefined" && /android|iphone|ipad|ipod/i.test(navigator.userAgent)
-    if (isMobile && navigator.share) {
+    // Prefer native share API (works on iOS/Android and triggers the system share sheet
+    // where the user can pick WeChat directly).
+    if (typeof navigator !== "undefined" && navigator.share) {
+      // Try sharing as a .txt file — WeChat mobile can receive and forward files.
+      const safeTitle = title.replace(/[/\\:*?"<>|]/g, "_")
+      const file = new globalThis.File([text], `${safeTitle}.txt`, { type: "text/plain" })
+      if (navigator.canShare?.({ files: [file] })) {
+        try {
+          await navigator.share({ title, files: [file] })
+          setShareStatus("shared")
+          setTimeout(() => setShareStatus("idle"), 3000)
+          return
+        } catch (e: any) {
+          if (e?.name === "AbortError") return // user cancelled
+          // file share unsupported — fall through to text share
+        }
+      }
+      // Fallback: share as plain text
       try {
         await navigator.share({ title, text })
         setShareStatus("shared")
         setTimeout(() => setShareStatus("idle"), 3000)
+        return
       } catch (e: any) {
-        if (e?.name !== "AbortError") {
-          // Fall through to clipboard
-          await navigator.clipboard.writeText(text).catch(() => {})
-          setShareStatus("copied")
-          setTimeout(() => setShareStatus("idle"), 3000)
-        }
+        if (e?.name === "AbortError") return
+        // share failed — fall through to clipboard
       }
-      return
     }
 
-    // On desktop (PC WeChat): the Windows share sheet → "发送给朋友" does not pass
-    // content from browser correctly. Best approach: copy to clipboard so the user
-    // can paste directly in any WeChat chat window.
+    // Last resort (desktop without share API or all share attempts failed): copy to clipboard.
     try {
       await navigator.clipboard.writeText(text)
       setShareStatus("copied")
@@ -2789,7 +2798,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setWechatHint(true)
       setTimeout(() => setWechatHint(false), 6000)
     } catch {
-      alert("复制失败，请手动选择对话内容后在微信中粘贴。")
+      alert("分享失败，请使用「复制文字」后在微信中粘贴发送。")
     }
   }
 
@@ -5106,7 +5115,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                   <DropdownMenuContent align="end">
                     <DropdownMenuItem onClick={() => void handleShareToWechat()}>
                       <span className="mr-2 text-green-600">微信</span>
-                      分享到微信（复制后粘贴）
+                      分享到微信
                     </DropdownMenuItem>
                     <DropdownMenuItem onClick={() => void handleCopyConversation()}>
                       <Download className="mr-2 h-4 w-4" />
@@ -6023,7 +6032,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem onClick={() => void handleShareToWechat()}>
                         <span className="mr-2 text-green-600">微信</span>
-                        分享到微信（复制后粘贴）
+                        分享到微信
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => void handleCopyConversation()}>
                         <Download className="mr-2 h-4 w-4" />
