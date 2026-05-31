@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { type ChangeEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter } from "next/navigation"
@@ -2643,27 +2643,25 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     const trimmed = raw.replace(/\r/g, "").trim()
     if (!trimmed) return "暂无数据"
 
-    const compact = trimmed.replace(/\s+/g, " ")
-    if (/(没有找到|未找到|无法提供|暂无相关|无相关|暂无数据)/.test(compact) && !/收益|回撤|胜率|赔率|仓位|开仓|平仓|年化|%|\d/.test(compact)) {
-      return "暂无数据"
-    }
-    if (/^根据.{0,30}(资料|文档).{0,40}(没有找到|未找到|无法提供)/.test(compact)) {
-      return "暂无数据"
-    }
-
+    // Strip boilerplate lines only — never collapse real content
     const cleanedLines = trimmed
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
-      .filter((line) => !/^根据(提供|上述|检索|资料|文档).*(如下|信息如下|可知|可得)?[：:]?$/.test(line))
-      .filter((line) => !/^引用(资料|文件|来源)?[：:]?$/.test(line))
-      .filter((line) => !/^资料\s*\d+/.test(line))
-      .filter((line) => !/^(来源|source)\s*[：:]/i.test(line))
+      .filter((line) => !/^根据(提供|上述|检索|资料|文档|知识库).*(如下|信息如下|可知|可得|详述如下|请查阅|介绍如下)?[：:]?\s*$/.test(line))
+      .filter((line) => !/^以上(信息|内容|数据)?(基于|来自|来源于).+/.test(line))
+      .filter((line) => !/^引用(资料|文件|来源)?[：:]?\s*$/.test(line))
+      .filter((line) => !/^资料\s*\d+\s*(（|\(|[:：])/.test(line))
+      .filter((line) => !/^\d+\.\s*(内部尽调|资料|来源|参考)/.test(line))
+      .filter((line) => !/^(来源|source|参考文献)\s*[：:]/i.test(line))
 
     const cleaned = cleanedLines.join("\n").trim()
     if (!cleaned) return "暂无数据"
-    if (/^(暂无数据[。.]?|暂无)$/.test(cleaned)) return "暂无数据"
-    if (/^(没有找到|未找到|无法提供|暂无相关|无相关)/.test(cleaned)) return "暂无数据"
+
+    // Only collapse to 暂无数据 when the ENTIRE cleaned output is a no-data phrase
+    const compactCleaned = cleaned.replace(/\s+/g, " ")
+    const isEntirelyNoData = /^(暂无数据[。.]?|暂无|无数据|无相关数据|没有相关信息|无法提供|未找到相关|没有找到相关)$/.test(compactCleaned)
+    if (isEntirelyNoData) return "暂无数据"
 
     return cleaned
   }
@@ -2692,8 +2690,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         setTableFillCurrentCell({ rowIdx, colIdx })
 
         const q = title
-          ? `关于「${title}」，请查找「${colName}」在「${rowName}」维度的信息。仅输出该单元格有效信息，不要写开场模板（如“根据提供的资料”），不要写“引用资料/资料1/资料2”等来源段。无数据时仅输出“暂无数据”。`
-          : `请查找「${colName}」在「${rowName}」维度的信息。仅输出该单元格有效信息，不要写开场模板，不要写来源段。无数据时仅输出“暂无数据”。`
+          ? `你正在填写「${title}」比较表中的一个单元格。列（对象）：「${colName}」，行（维度）：「${rowName}」。请尽力从知识库找到相关信息。搜索时可用同义词/缩写/相关概念扩展（如"打板"联想"涨停""强势股""竞价""封板"等）。无直接字面匹配时从相关内容推断并注明"（推测）"。完全无任何线索时才输出"暂无数据"。输出要求：仅输出单元格内容本身，不加开场白，不加来源脚注，1-4句或要点列表。`
+          : `请从知识库找「${colName}」在「${rowName}」维度的信息。可用同义词/相关概念扩展；无直接信息时推断并注明"（推测）"；完全无线索才输出"暂无数据"。仅输出内容本身，不加开场白和来源脚注。`
 
         try {
           const res = await fetch("/api/knowledge-base/chat", {
@@ -2706,8 +2704,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               useBm25: true,
               useGraphRag: false,
               stream: true,
-              modelMode: "turbo",
-              deepSearch: false,
+              modelMode: "plus",
+              deepSearch: true,
               thinkingSearch: false,
             }),
           })
