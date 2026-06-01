@@ -423,7 +423,9 @@ export default function PrivateFundDetailPage() {
   const activeChartData = useMemo(() => {
     if (!filteredNavRows.length) return []
     const rows = downsample(filteredNavRows)
-    const benchmarkValues = buildAlignedBenchmarkValues(rows, benchmarkData, chartMode, filterNavType)
+    const benchmarkValues = appliedBench
+      ? buildAlignedBenchmarkValues(rows, benchmarkData, chartMode, filterNavType)
+      : rows.map(() => null)
     const firstNav = getNavFieldValue(rows[0], filterNavType)
 
     return rows.map((row, index) => {
@@ -436,7 +438,7 @@ export default function PrivateFundDetailPage() {
         benchmarkValue: benchmarkValues[index],
       }
     })
-  }, [benchmarkData, chartMode, filterNavType, filteredNavRows])
+  }, [appliedBench, benchmarkData, chartMode, filterNavType, filteredNavRows])
 
   const benchmarkLabel = getBenchmarkLabel(appliedBench)
 
