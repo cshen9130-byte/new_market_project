@@ -328,6 +328,8 @@ export default function PrivateFundDetailPage() {
   const [appliedTo,      setAppliedTo]      = useState<string>("")
   const [appliedBench,   setAppliedBench]   = useState<string>("")
   const [benchmarkData,  setBenchmarkData]  = useState<BenchmarkPoint[]>([])
+  const [showDateRange,    setShowDateRange]    = useState(true)
+  const [excessByDivision, setExcessByDivision] = useState(false)
 
   // When data loads, seed benchmark and dates
   useEffect(() => {
@@ -441,6 +443,177 @@ export default function PrivateFundDetailPage() {
   }, [appliedBench, benchmarkData, chartMode, filterNavType, filteredNavRows])
 
   const benchmarkLabel = getBenchmarkLabel(appliedBench)
+
+  // ─── Period statistics ────────────────────────────────────────────────────
+  const periodStats = useMemo(() => {
+    if (filteredNavRows.length < 3) return null
+
+    const _mean = (arr: number[]) => arr.reduce((s, v) => s + v, 0) / arr.length
+    const _std  = (arr: number[], ddof = 1): number => {
+      if (arr.length <= ddof) return NaN
+      const m = _mean(arr)
+      return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - ddof))
+    }
+    const _skew = (arr: number[]): number => {
+      if (arr.length < 3) return NaN
+      const m = _mean(arr); const s = _std(arr)
+      if (!isFinite(s) || s === 0) return NaN
+      return arr.reduce((sum, v) => sum + ((v - m) / s) ** 3, 0) / arr.length
+    }
+    const _kurt = (arr: number[]): number => {
+      if (arr.length < 4) return NaN
+      const m = _mean(arr); const s = _std(arr)
+      if (!isFinite(s) || s === 0) return NaN
+      return arr.reduce((sum, v) => sum + ((v - m) / s) ** 4, 0) / arr.length - 3
+    }
+    const _var95 = (arr: number[]): number => {
+      if (arr.length < 5) return NaN
+      return [...arr].sort((a, b) => a - b)[Math.floor(arr.length * 0.05)]
+    }
+
+    const navVals   = filteredNavRows.map(r => getNavFieldValue(r, filterNavType))
+    const dateTsArr = filteredNavRows.map(r => new Date(r.price_date).getTime())
+    const totalDays = (dateTsArr[dateTsArr.length - 1] - dateTsArr[0]) / 86400000
+    const years     = Math.max(totalDays / 365.25, 1 / 365)
+
+    // Median gap → annualization factor
+    const gaps = []
+    for (let i = 1; i < dateTsArr.length; i++) gaps.push((dateTsArr[i] - dateTsArr[i - 1]) / 86400000)
+    gaps.sort((a, b) => a - b)
+    const medGap = gaps[Math.floor(gaps.length / 2)] || 1
+    const ppy = medGap <= 2 ? 252 : medGap <= 10 ? 52 : medGap <= 20 ? 26 : medGap <= 45 ? 12 : 4
+
+    // Fund returns
+    const fundRets: number[] = []
+    for (let i = 1; i < navVals.length; i++) {
+      fundRets.push(navVals[i - 1] > 0 ? navVals[i] / navVals[i - 1] - 1 : 0)
+    }
+
+    const fundPeriodRet = navVals[navVals.length - 1] / navVals[0] - 1
+    const fundAnnRet    = Math.pow(1 + fundPeriodRet, 1 / years) - 1
+    const fundAnnVol    = fundRets.length > 1 ? _std(fundRets) * Math.sqrt(ppy) : NaN
+    const RF = 0.02
+    const fundSharpe = isFinite(fundAnnVol) && fundAnnVol > 0 ? (fundAnnRet - RF) / fundAnnVol : NaN
+
+    // Drawdown + recovery + no-new-high streak
+    let peak = navVals[0], peakTs = dateTsArr[0]
+    let maxDD = 0, troughTs = dateTsArr[0], maxDDPeakVal = navVals[0]
+    let longestNoNewHigh = 0, curHighTs = dateTsArr[0]
+    for (let i = 0; i < navVals.length; i++) {
+      if (navVals[i] > peak) { peak = navVals[i]; peakTs = dateTsArr[i]; curHighTs = dateTsArr[i] }
+      else { const d = (dateTsArr[i] - curHighTs) / 86400000; if (d > longestNoNewHigh) longestNoNewHigh = d }
+      const dd = (peak - navVals[i]) / peak
+      if (dd > maxDD) { maxDD = dd; troughTs = dateTsArr[i]; maxDDPeakVal = peak }
+    }
+    let ddRecoveryDays: number | null = null
+    for (let i = 0; i < navVals.length; i++) {
+      if (dateTsArr[i] > troughTs && navVals[i] >= maxDDPeakVal) {
+        ddRecoveryDays = Math.round((dateTsArr[i] - troughTs) / 86400000); break
+      }
+    }
+
+    const fundCalmar = maxDD > 0 ? fundAnnRet / maxDD : NaN
+    const downRets   = fundRets.filter(r => r < 0)
+    const fundDsr    = downRets.length > 0 ? Math.sqrt(downRets.reduce((s, r) => s + r * r, 0) / downRets.length) * Math.sqrt(ppy) : 0
+    const fundSortino = fundDsr > 0 ? (fundAnnRet - RF) / fundDsr : NaN
+
+    const fund = {
+      periodRet: fundPeriodRet, annRet: fundAnnRet, annVol: fundAnnVol,
+      sharpe: fundSharpe, calmar: fundCalmar, downsideRisk: fundDsr,
+      maxDD, ddRecoveryDays, longestNoNewHighDays: Math.round(longestNoNewHigh),
+      sortino: fundSortino,
+      correlation: NaN, infoRatio: NaN, trackingError: NaN, alpha: NaN, beta: NaN,
+      skewness: _skew(fundRets), kurtosis: _kurt(fundRets), var95: _var95(fundRets),
+    }
+
+    // ── Benchmark ──────────────────────────────────────────────────────────
+    type BenchStats = typeof fund & { ddRecoveryDays: number | null }
+    let bench: BenchStats | null = null
+
+    if (appliedBench && benchmarkData.length) {
+      const benchAligned = buildAlignedBenchmarkValues(filteredNavRows, benchmarkData, "nav", filterNavType)
+      const baseIdx = benchAligned.findIndex(v => v !== null)
+
+      if (baseIdx >= 0 && baseIdx < navVals.length - 1) {
+        const fRetsAl: number[] = [], bRetsAl: number[] = []
+        for (let i = Math.max(1, baseIdx); i < benchAligned.length; i++) {
+          const bp = benchAligned[i - 1], bc = benchAligned[i]
+          if (bp !== null && bc !== null && bp > 0) {
+            fRetsAl.push(navVals[i] / navVals[i - 1] - 1)
+            bRetsAl.push(bc / bp - 1)
+          }
+        }
+
+        const bLevels: Array<{ v: number; ts: number }> = []
+        for (let i = 0; i < benchAligned.length; i++) {
+          if (benchAligned[i] !== null) bLevels.push({ v: benchAligned[i]!, ts: dateTsArr[i] })
+        }
+
+        if (bLevels.length >= 2 && bRetsAl.length >= 2) {
+          const bPeriodRet = bLevels[bLevels.length - 1].v / bLevels[0].v - 1
+          const bAnnRet    = Math.pow(1 + bPeriodRet, 1 / years) - 1
+          const bAnnVol    = _std(bRetsAl) * Math.sqrt(ppy)
+          const bSharpe    = isFinite(bAnnVol) && bAnnVol > 0 ? (bAnnRet - RF) / bAnnVol : NaN
+
+          let bPeak = bLevels[0].v, bMaxDD = 0, bTroughTs = bLevels[0].ts
+          let bMaxDDPeakVal = bLevels[0].v, bLongestNoNewHigh = 0, bCurHighTs = bLevels[0].ts
+          for (const { v, ts } of bLevels) {
+            if (v > bPeak) { bPeak = v; bCurHighTs = ts }
+            else { const d = (ts - bCurHighTs) / 86400000; if (d > bLongestNoNewHigh) bLongestNoNewHigh = d }
+            const dd = (bPeak - v) / bPeak
+            if (dd > bMaxDD) { bMaxDD = dd; bTroughTs = ts; bMaxDDPeakVal = bPeak }
+          }
+          let bDDRecoveryDays: number | null = null
+          for (const { v, ts } of bLevels) {
+            if (ts > bTroughTs && v >= bMaxDDPeakVal) { bDDRecoveryDays = Math.round((ts - bTroughTs) / 86400000); break }
+          }
+
+          const bCalmar      = bMaxDD > 0 ? bAnnRet / bMaxDD : NaN
+          const bDownRets    = bRetsAl.filter(r => r < 0)
+          const bDsr         = bDownRets.length > 0 ? Math.sqrt(bDownRets.reduce((s, r) => s + r * r, 0) / bDownRets.length) * Math.sqrt(ppy) : 0
+          const bSortino     = bDsr > 0 ? (bAnnRet - RF) / bDsr : NaN
+
+          const mf = _mean(fRetsAl), mb = _mean(bRetsAl)
+          const cov  = fRetsAl.reduce((s, v, i) => s + (v - mf) * (bRetsAl[i] - mb), 0) / fRetsAl.length
+          const sf   = _std(fRetsAl), sb = _std(bRetsAl)
+          const corr = isFinite(sf) && sf > 0 && isFinite(sb) && sb > 0 ? cov / (sf * sb) : NaN
+          const varB = bRetsAl.reduce((s, v) => s + (v - mb) ** 2, 0) / bRetsAl.length
+          const beta = varB > 0 ? cov / varB : NaN
+          const alpha = isFinite(beta) ? fundAnnRet - (RF + beta * (bAnnRet - RF)) : NaN
+
+          const excessRets = excessByDivision
+            ? fRetsAl.map((r, i) => (1 + r) / (1 + bRetsAl[i]) - 1)
+            : fRetsAl.map((r, i) => r - bRetsAl[i])
+          const trackingError = excessRets.length > 1 ? _std(excessRets) * Math.sqrt(ppy) : NaN
+          const excessAnnRet  = excessByDivision
+            ? Math.pow((1 + fundPeriodRet) / (1 + bPeriodRet), 1 / years) - 1
+            : fundAnnRet - bAnnRet
+          const infoRatio = isFinite(trackingError) && trackingError > 0 ? excessAnnRet / trackingError : NaN
+
+          bench = {
+            periodRet: bPeriodRet, annRet: bAnnRet, annVol: bAnnVol,
+            sharpe: bSharpe, calmar: bCalmar, downsideRisk: bDsr,
+            maxDD: bMaxDD, ddRecoveryDays: bDDRecoveryDays, longestNoNewHighDays: Math.round(bLongestNoNewHigh),
+            sortino: bSortino,
+            correlation: 1, infoRatio: NaN, trackingError: 0, alpha: 0, beta: 1,
+            skewness: _skew(bRetsAl), kurtosis: _kurt(bRetsAl), var95: _var95(bRetsAl),
+          }
+          // overwrite fund-relative fields on fund itself
+          fund.correlation    = corr
+          fund.infoRatio      = infoRatio
+          fund.trackingError  = trackingError
+          fund.alpha          = alpha
+          fund.beta           = beta
+        }
+      }
+    }
+
+    return {
+      dateRange: `${filteredNavRows[0].price_date} ～ ${filteredNavRows[filteredNavRows.length - 1].price_date}`,
+      fund,
+      bench,
+    }
+  }, [filteredNavRows, benchmarkData, filterNavType, appliedBench, excessByDivision])
 
   const yDomain = useMemo(() => {
     if (!activeChartData.length) return ["auto", "auto"] as [string, string]
@@ -840,6 +1013,123 @@ export default function PrivateFundDetailPage() {
         <NavTable rows={nav_series.filter(r => (!activeFrom || r.price_date >= activeFrom) && (!activeTo || r.price_date <= activeTo))} />
       </div>
       </div>{/* end flex chart+table */}
+
+      {/* ── Period Statistics Table ──────────────────────── */}
+      {periodStats && (
+        <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">
+          {/* Header row */}
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs text-zinc-500">
+              {showDateRange && <span>统计区间：{periodStats.dateRange}</span>}
+            </div>
+            <div className="flex items-center gap-5 text-xs text-zinc-600">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" checked={showDateRange} onChange={e => setShowDateRange(e.target.checked)} className="rounded border-zinc-300 accent-zinc-700" />
+                显示区间
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" checked={excessByDivision} onChange={e => setExcessByDivision(e.target.checked)} className="rounded border-zinc-300 accent-zinc-700" />
+                超额（除法）
+              </label>
+            </div>
+          </div>
+
+          {/* Two-panel table */}
+          {(() => {
+            const { fund, bench } = periodStats
+            const hasBench = appliedBench && bench !== null
+
+            // Formatters
+            const pct = (v: number | undefined) =>
+              v !== undefined && isFinite(v) ? (v * 100).toFixed(2) + "%" : "—"
+            const num = (v: number | undefined, dp = 4) =>
+              v !== undefined && isFinite(v) ? v.toFixed(dp) : "—"
+            const colorPct = (v: number | undefined) => {
+              if (v === undefined || !isFinite(v)) return <span className="text-zinc-400 tabular-nums">—</span>
+              const s = (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%"
+              return <span className="tabular-nums font-semibold" style={{ color: v > 0 ? RED : v < 0 ? GREEN : undefined }}>{s}</span>
+            }
+
+            const TH = ({ children }: { children: React.ReactNode }) => (
+              <th className="pb-2 pt-1 text-right text-xs font-medium text-zinc-600 border-b border-zinc-100">{children}</th>
+            )
+            const THLeft = ({ children }: { children: React.ReactNode }) => (
+              <th className="pb-2 pt-1 text-left text-xs font-medium text-zinc-400 border-b border-zinc-100 w-[44%]">{children}</th>
+            )
+            const TD = ({ children, right }: { children: React.ReactNode; right?: boolean }) => (
+              <td className={`py-1.5 text-xs text-zinc-700 tabular-nums${right ? " text-right" : ""}`}>{children}</td>
+            )
+
+            const leftRows: Array<{
+              label: string
+              fNode: React.ReactNode
+              bNode: React.ReactNode
+            }> = [
+              { label: "区间收益",                 fNode: colorPct(fund.periodRet),     bNode: hasBench ? colorPct(bench!.periodRet)     : <span className="text-zinc-300">—</span> },
+              { label: "年化收益",                 fNode: colorPct(fund.annRet),        bNode: hasBench ? colorPct(bench!.annRet)        : <span className="text-zinc-300">—</span> },
+              { label: "年化波动率",               fNode: pct(fund.annVol),             bNode: hasBench ? pct(bench!.annVol)             : "—" },
+              { label: "夏普比率（Rf=2.00%）",     fNode: num(fund.sharpe),             bNode: hasBench ? num(bench!.sharpe)             : "—" },
+              { label: "卡马比率",                 fNode: num(fund.calmar),             bNode: hasBench ? num(bench!.calmar)             : "—" },
+              { label: "下行风险",                 fNode: pct(fund.downsideRisk),       bNode: hasBench ? pct(bench!.downsideRisk)       : "—" },
+              { label: "最大回撤",                 fNode: pct(fund.maxDD),              bNode: hasBench ? pct(bench!.maxDD)              : "—" },
+              {
+                label: "最大回撤补期（天）",
+                fNode: fund.ddRecoveryDays === null ? "未回补" : fund.ddRecoveryDays,
+                bNode: !hasBench ? "—" : bench!.ddRecoveryDays === null ? "未回补" : bench!.ddRecoveryDays,
+              },
+              {
+                label: "最长连续不创新高天数（天）",
+                fNode: fund.longestNoNewHighDays,
+                bNode: hasBench ? bench!.longestNoNewHighDays : "—",
+              },
+            ]
+
+            const rightRows: Array<{
+              label: string
+              fNode: React.ReactNode
+              bNode: React.ReactNode
+            }> = [
+              { label: "索提诺比率",   fNode: num(fund.sortino),      bNode: hasBench ? num(bench!.sortino)    : "—" },
+              { label: "相关系数",     fNode: num(fund.correlation),  bNode: hasBench ? num(1)                 : "—" },
+              { label: "信息比率",     fNode: num(fund.infoRatio),    bNode: hasBench ? "—"                   : "—" },
+              { label: "跟踪误差",     fNode: pct(fund.trackingError),bNode: hasBench ? "0.00%"               : "—" },
+              { label: "Alpha",        fNode: colorPct(fund.alpha !== undefined && isFinite(fund.alpha) ? fund.alpha : NaN), bNode: hasBench ? "0.00%" : "—" },
+              { label: "Beta",         fNode: num(fund.beta),         bNode: hasBench ? "1.0000"              : "—" },
+              { label: "偏度",         fNode: num(fund.skewness),     bNode: hasBench ? num(bench!.skewness)  : "—" },
+              { label: "峰度",         fNode: num(fund.kurtosis),     bNode: hasBench ? num(bench!.kurtosis)  : "—" },
+              { label: "VaR（95%置信）",fNode: num(fund.var95),       bNode: hasBench ? num(bench!.var95)     : "—" },
+            ]
+
+            const Panel = ({ rows }: { rows: typeof leftRows }) => (
+              <table className="w-full">
+                <thead>
+                  <tr>
+                    <THLeft>指标名称</THLeft>
+                    <TH>{info.product_name}</TH>
+                    {hasBench && <TH>{benchmarkLabel}（基准）</TH>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, i) => (
+                    <tr key={row.label} className={i % 2 === 1 ? "bg-zinc-50/60" : ""}>
+                      <TD>{row.label}</TD>
+                      <TD right>{row.fNode}</TD>
+                      {hasBench && <TD right>{row.bNode}</TD>}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )
+
+            return (
+              <div className="grid grid-cols-2 gap-6">
+                <Panel rows={leftRows} />
+                <Panel rows={rightRows} />
+              </div>
+            )
+          })()}
+        </div>
+      )}
     </div>
     </PageShell>
   )
