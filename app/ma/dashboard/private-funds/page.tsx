@@ -16,9 +16,68 @@ const fundsSidebarItems = [
   { key: "fund-managers", label: "基金经理" },
 ]
 
+interface SidebarGroup {
+  label: string
+  items: { key: string; label: string }[]
+}
+
+const investmentSidebarGroups: SidebarGroup[] = [
+  {
+    label: "尽调池",
+    items: [
+      { key: "inv-dd-calendar", label: "尽调日历" },
+      { key: "inv-dd-report", label: "尽调报告" },
+      { key: "inv-notes", label: "投资笔记" },
+      { key: "inv-score", label: "评分管理" },
+    ],
+  },
+  {
+    label: "跟踪池",
+    items: [
+      { key: "inv-tracking", label: "跟踪产品" },
+      { key: "inv-tracking-mgr", label: "跟踪管理人" },
+      { key: "inv-compare", label: "基金对比" },
+      { key: "inv-approve", label: "审批入池" },
+    ],
+  },
+  {
+    label: "投资池",
+    items: [
+      { key: "inv-overview", label: "投资概览" },
+      { key: "inv-active", label: "在管产品" },
+      { key: "inv-fof", label: "FOF底层" },
+      { key: "inv-docs", label: "资料列表" },
+    ],
+  },
+  {
+    label: "直投池",
+    items: [
+      { key: "inv-direct", label: "直投产品" },
+      { key: "inv-direct-portfolio", label: "直投组合" },
+    ],
+  },
+]
+
 const sidebarMap: Record<string, { key: string; label: string }[]> = {
   funds: fundsSidebarItems,
 }
+
+const TAB_DEFAULT_SIDE: Record<string, string> = {
+  funds: "private-funds",
+  investment: "inv-tracking",
+}
+
+const TRACK_STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"]
+const ORG_SIZE_OPTS = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20亿", "5-10亿", "0-5亿"]
+const pools = [
+  { key: "all", label: "全部" },
+  { key: "bfl", label: "bfl跟踪池" },
+  { key: "tracking", label: "跟踪池" },
+  { key: "selected", label: "精选池" },
+  { key: "core", label: "核心池" },
+  { key: "hy", label: "hy跟踪池" },
+  { key: "fof", label: "FOF&MO..." },
+]
 
 const STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"] as const
 const MORE_INFO_TABS = ["基金类型", "基金成立日期", "净值日期", "净值频率", "净值完整度", "是否代表产品", "基金规模提示", "基金信披情况", "基金策略确认", "投资区域", "运作状态", "机构管理规模", "机构办公地址"] as const
@@ -1073,6 +1132,521 @@ function PrivateFundTable({
   )
 }
 
+// ─── InvestmentTrackingView ────────────────────────────────────────────────
+
+interface TrackFundRow {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  strategy_l2: string | null
+  manager: string | null
+  inception_date: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+}
+
+function TrackPctCell({ value }: { value: string | null }) {
+  if (!value) return <span className="text-muted-foreground">—</span>
+  const n = parseFloat(value)
+  if (isNaN(n)) return <span className="text-muted-foreground">—</span>
+  const cls = n > 0 ? "text-red-500" : n < 0 ? "text-green-600" : "text-foreground"
+  return <span className={cls}>{n > 0 ? "+" : ""}{(n * 100).toFixed(2)}%</span>
+}
+
+const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+interface TrackStrategyNode {
+  l1: string
+  l2s: { l2: string; l3s: string[] }[]
+}
+
+function InvestmentTrackingView() {
+  const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
+  const [activePool, setActivePool] = useState("bfl")
+  const [fundClass, setFundClass] = useState<"private" | "public">("private")
+  const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
+  const [strategyL1, setStrategyL1] = useState("")
+  const [strategyL2, setStrategyL2] = useState("")
+  const [strategyL3, setStrategyL3] = useState("")
+  const [orgSizeFilter, setOrgSizeFilter] = useState("不限")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [sortCol, setSortCol] = useState("")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
+  const [page, setPage] = useState(1)
+  const [jumpVal, setJumpVal] = useState("")
+  const [data, setData] = useState<TrackFundRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+
+  // Derived hierarchy slices
+  const l2Options = strategyL1
+    ? (strategyHierarchy.find((n) => n.l1 === strategyL1)?.l2s ?? [])
+    : []
+  const l3Options = strategyL2
+    ? (l2Options.find((n) => n.l2 === strategyL2)?.l3s ?? [])
+    : []
+
+  // Fetch strategy hierarchy once
+  useEffect(() => {
+    fetch("/ma/api/tracking-funds/strategies")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
+      .catch(() => {})
+  }, [])
+
+  const isBfl = activePool === "bfl"
+  const totalPages = Math.max(1, Math.ceil(total / 50))
+
+  function handleSort(col: string) {
+    if (sortCol === col) setSortDir((d) => (d === "desc" ? "asc" : "desc"))
+    else { setSortCol(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function SortIco({ col }: { col: string }) {
+    if (sortCol !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function toggleAll() {
+    if (selected.size === data.length && data.length > 0) setSelected(new Set())
+    else setSelected(new Set(data.map((r) => r.beian_hao)))
+  }
+
+  function jumpTo() {
+    const n = parseInt(jumpVal)
+    if (!isNaN(n)) { setPage(Math.min(totalPages, Math.max(1, n))); setJumpVal("") }
+  }
+
+  function pageButtons(): (number | string)[] {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1)
+    const btns: (number | string)[] = [1]
+    if (page > 3) btns.push("…")
+    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) btns.push(i)
+    if (page < totalPages - 2) btns.push("…")
+    btns.push(totalPages)
+    return btns
+  }
+
+  useEffect(() => {
+    if (!isBfl) return
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: String(page), sort: sortCol, dir: sortDir, keyword,
+      strategy_l1: strategyL1,
+      strategy_l2: strategyL2,
+      strategy_l3: strategyL3,
+    })
+    fetch(`/ma/api/tracking-funds/list?${params}`)
+      .then((r) => r.json())
+      .then((d) => { setData(d.data ?? []); setTotal(d.total ?? 0) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [isBfl, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3])
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Team / Mine tabs */}
+      <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
+        {(["team", "mine"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTrackTab(t)}
+            className={[
+              "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
+              trackTab === t
+                ? "border-red-500 text-red-600 dark:text-red-400"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+          >
+            {t === "team" ? "团队跟踪" : "我的跟踪"}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-0 flex-1 min-h-0">
+        {/* Left pool sidebar */}
+        <aside className="w-32 flex-shrink-0 border-r">
+          <div className="flex items-center gap-1 px-2 py-2 border-b">
+            <button className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors">
+              <span className="text-base leading-none">⊕</span>
+              <span>新增</span>
+            </button>
+            <button className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors">
+              <span className="text-sm leading-none">⚙</span>
+              <span>管理</span>
+            </button>
+          </div>
+          <nav className="flex flex-col gap-0.5 p-1.5">
+            {pools.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => setActivePool(p.key)}
+                className={[
+                  "w-full text-left px-3 py-2 rounded text-sm transition-colors",
+                  activePool === p.key
+                    ? "bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400 font-medium"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                ].join(" ")}
+              >
+                {p.label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+        {/* Main content */}
+        <div className="flex-1 flex flex-col min-w-0 pl-4">
+          {/* Filter bar */}
+          <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+            {/* 基金分类 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">基金分类：</span>
+              <div className="flex items-center gap-1">
+                {(["private", "public"] as const).map((fc) => (
+                  <button
+                    key={fc}
+                    onClick={() => setFundClass(fc)}
+                    className={[
+                      "px-3 py-1 rounded text-xs font-medium transition-all border",
+                      fundClass === fc
+                        ? "bg-red-500 text-white border-red-500"
+                        : "text-zinc-500 border-border hover:text-foreground hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {fc === "private" ? "私募" : "公募"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* 一级策略 */}
+            <div className="flex items-start px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  onClick={() => { setStrategyL1(""); setStrategyL2(""); setStrategyL3(""); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    !strategyL1
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  不限
+                </span>
+                {strategyHierarchy.map((node) => (
+                  <span
+                    key={node.l1}
+                    onClick={() => {
+                      const next = strategyL1 === node.l1 ? "" : node.l1
+                      setStrategyL1(next); setStrategyL2(""); setStrategyL3(""); setPage(1)
+                    }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                      strategyL1 === node.l1
+                        ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        : "border-border text-zinc-500 hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {node.l1}
+                  </span>
+                ))}
+              </div>
+            </div>
+            {/* 二级策略 — only when l1 is selected and has l2 options */}
+            {strategyL1 && l2Options.length > 0 && (
+              <div className="flex items-start px-4 py-2 bg-muted/20">
+                <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">二级策略：</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    onClick={() => { setStrategyL2(""); setStrategyL3(""); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                      !strategyL2
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    不限
+                  </span>
+                  {l2Options.map((node) => (
+                    <span
+                      key={node.l2}
+                      onClick={() => {
+                        const next = strategyL2 === node.l2 ? "" : node.l2
+                        setStrategyL2(next); setStrategyL3(""); setPage(1)
+                      }}
+                      className={[
+                        "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                        strategyL2 === node.l2
+                          ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                          : "border-border text-zinc-500 hover:bg-muted/60",
+                      ].join(" ")}
+                    >
+                      {node.l2}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* 三级策略 — only when l2 is selected and has l3 options */}
+            {strategyL2 && l3Options.length > 0 && (
+              <div className="flex items-start px-4 py-2 bg-muted/30">
+                <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">三级策略：</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span
+                    onClick={() => { setStrategyL3(""); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                      !strategyL3
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    不限
+                  </span>
+                  {l3Options.map((v) => (
+                    <span
+                      key={v}
+                      onClick={() => { setStrategyL3(strategyL3 === v ? "" : v); setPage(1) }}
+                      className={[
+                        "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                        strategyL3 === v
+                          ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                          : "border-border text-zinc-500 hover:bg-muted/60",
+                      ].join(" ")}
+                    >
+                      {v}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* 团队标签 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队标签：</span>
+              <div className="flex items-center gap-2">
+                <button className="inline-flex items-center gap-1 border rounded px-2.5 py-1 text-xs text-zinc-600 hover:bg-muted/60 transition-colors">
+                  交集 (且)
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                <span className="inline-flex items-center px-2.5 py-1 rounded border border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 text-xs font-medium cursor-pointer">
+                  不限
+                </span>
+              </div>
+            </div>
+            {/* 管理人规模 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">管理人规模：</span>
+              <div className="flex items-center gap-1 flex-wrap">
+                {ORG_SIZE_OPTS.map((s) => (
+                  <FilterPill key={s} label={s} active={orgSizeFilter === s} onClick={() => setOrgSizeFilter(s)} />
+                ))}
+              </div>
+            </div>
+            {/* 关键字 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+              <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-60">
+                <input
+                  className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+                  placeholder="输入产品/产品备案号，回车搜索"
+                  value={kwInput}
+                  onChange={(e) => setKwInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+                />
+                <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+                  <Search className="h-3 w-3" />
+                </button>
+              </div>
+              <label className="flex items-center gap-1.5 text-xs cursor-pointer select-none ml-3">
+                <input type="checkbox" className="rounded h-3 w-3" />
+                收藏
+              </label>
+            </div>
+          </div>
+
+          {/* Toolbar */}
+          <div className="flex items-center justify-between mb-2 flex-shrink-0 text-xs">
+            <div className="flex items-center gap-1.5 text-zinc-500">
+              <span>指标计算截止日期</span>
+              <span className="text-zinc-400">①</span>
+              <button className="inline-flex items-center gap-1 border rounded px-1.5 py-0.5 text-zinc-600 hover:bg-muted cursor-pointer transition-colors">
+                <CalendarDays className="h-3 w-3" />
+                <span className="tabular-nums">{new Date().toISOString().slice(0, 10)}</span>
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
+                <input type="checkbox" defaultChecked className="rounded h-3 w-3 accent-zinc-700" />
+                计算指标
+              </label>
+              <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
+                <input type="checkbox" className="rounded h-3 w-3 accent-zinc-700" />
+                显示区间
+              </label>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                <LayoutTemplate className="h-3 w-3" />
+                默认模板
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                <PlusCircle className="h-3 w-3" />
+                添加指标
+              </button>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                批量操作
+              </button>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                ⊕ 更多
+              </button>
+              <button className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
+                添加跟踪
+              </button>
+            </div>
+          </div>
+
+          {/* Table */}
+          <div className="overflow-x-auto rounded-lg border flex-1">
+            <table className="text-sm border-collapse w-full" style={{ minWidth: 1200 }}>
+              <thead className="sticky top-0 z-20">
+                <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+                  <th className={`${thBase} w-8 px-2`}>
+                    <input type="checkbox" className="rounded h-3 w-3"
+                      checked={selected.size === data.length && data.length > 0}
+                      onChange={toggleAll} />
+                  </th>
+                  <th className={`${thBase} w-10`}>序号</th>
+                  <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
+                  <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<SortIco col="latest_nav_date" /></th>
+                  <th className={`${thSort} min-w-[90px]`} onClick={() => handleSort("latest_nav")}>最新单位净值<SortIco col="latest_nav" /></th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>最新涨跌幅</th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>近一周收益<SortIco col="ret_1w" /></th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1m")}>近一月收益<SortIco col="ret_1m" /></th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_3m")}>近三月收益<SortIco col="ret_3m" /></th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_6m")}>近六月收益<SortIco col="ret_6m" /></th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1y")}>近一年收益<SortIco col="ret_1y" /></th>
+                  <th className={`${thBase} text-center w-16`}>走势</th>
+                  <th className={`${thBase} text-center w-16`}>资料</th>
+                  <th className={`${thBase} text-center w-16`}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                ) : !isBfl ? (
+                  <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">请选择 bfl跟踪池 查看数据</td></tr>
+                ) : data.length === 0 ? (
+                  <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
+                ) : data.map((row, i) => {
+                  const isSelected = selected.has(row.beian_hao)
+                  const bg = isSelected ? "bg-blue-50/40 dark:bg-blue-950/20" : "bg-background"
+                  const cell = `border-b px-3 py-0 ${bg} group-hover:bg-muted/30 transition-colors`
+                  return (
+                    <tr key={row.beian_hao} className="group" style={{ height: 52 }}>
+                      <td className={`${cell} px-2 text-center`}>
+                        <input type="checkbox" className="rounded h-3 w-3"
+                          checked={isSelected}
+                          onChange={() => {
+                            const s = new Set(selected)
+                            isSelected ? s.delete(row.beian_hao) : s.add(row.beian_hao)
+                            setSelected(s)
+                          }} />
+                      </td>
+                      <td className={`${cell} text-center tabular-nums`}>{(page - 1) * 50 + i + 1}</td>
+                      <td className={`${cell}`}>
+                        <a
+                          href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-blue-600 dark:text-blue-400 leading-5 truncate max-w-[220px] hover:underline block"
+                          title={row.product_name}
+                        >{row.product_name}</a>
+                        {row.strategy_l1 && (
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                            <span className="text-[10px] text-muted-foreground">{row.strategy_l1}{row.strategy_l2 ? ` · ${row.strategy_l2}` : ""}</span>
+                          </div>
+                        )}
+                      </td>
+                      <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                      <td className={`${cell} tabular-nums`}>
+                        <div className="font-medium leading-5">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</div>
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_1w} /></td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_1m} /></td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_3m} /></td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_6m} /></td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_1y} /></td>
+                      <td className={`${cell} text-center`}>
+                        <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
+                      </td>
+                      <td className={`${cell} text-center`}><span className="text-muted-foreground">—</span></td>
+                      <td className={`${cell} text-center`}>
+                        <div className="flex items-center justify-center gap-1">
+                          <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-rose-500 transition-colors"><Heart className="h-3.5 w-3.5" /></button>
+                          <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><Send className="h-3.5 w-3.5" /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination */}
+          {isBfl && (
+            <div className="flex items-center justify-between pt-3 flex-shrink-0">
+              <span className="text-sm text-zinc-500">共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 只基金</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+                  className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+                {pageButtons().map((btn, idx) =>
+                  btn === "…" ? (
+                    <span key={`e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+                  ) : (
+                    <button key={btn} onClick={() => setPage(btn as number)}
+                      className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                        btn === page ? "bg-zinc-900 text-white border-zinc-900 font-medium dark:bg-zinc-100 dark:text-zinc-900" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                      {btn}
+                    </button>
+                  )
+                )}
+                <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                  className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+                <div className="flex items-center gap-1 ml-3 text-sm text-foreground">
+                  跳至
+                  <input type="number" min={1} max={totalPages} value={jumpVal}
+                    onChange={(e) => setJumpVal(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && jumpTo()}
+                    className="w-12 h-7 border rounded px-2 text-center bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                  页
+                  <button onClick={jumpTo} className="h-7 px-2 border rounded text-xs hover:bg-muted transition-colors">GO</button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PrivateFundView() {
   const [filters, setFilters] = useState<FilterState>({ strategyFilters: [], keyword: "", manager: "", metricTab: "收益", period: "本周", range: "不限", inceptionPeriod: "", navDatePeriod: "", navFrequency: "" })
   const [templates, setTemplates] = useState<SavedTemplate[]>(() => loadTemplates())
@@ -1113,6 +1687,11 @@ export default function PrivateFundsPage() {
 
   const sidebarItems = sidebarMap[activeTab] ?? []
 
+  function handleTabChange(tab: string) {
+    setActiveTab(tab)
+    if (TAB_DEFAULT_SIDE[tab]) setActiveSideItem(TAB_DEFAULT_SIDE[tab])
+  }
+
   return (
     <div className="flex flex-col">
       {/* Top menu bar */}
@@ -1121,7 +1700,7 @@ export default function PrivateFundsPage() {
           {menuItems.map((item) => (
             <button
               key={item.key}
-              onClick={() => setActiveTab(item.key)}
+              onClick={() => handleTabChange(item.key)}
               className={[
                 "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
                 activeTab === item.key
@@ -1157,10 +1736,42 @@ export default function PrivateFundsPage() {
             </nav>
           </aside>
         )}
+        {activeTab === "investment" && (
+          <aside className="w-44 border-r bg-background flex-shrink-0">
+            <nav className="flex flex-col pt-3 pb-4">
+              {investmentSidebarGroups.map((group) => {
+                const hasActive = group.items.some((i) => i.key === activeSideItem)
+                return (
+                  <div key={group.label}>
+                    <div className={[
+                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                    ].join(" ")}>{group.label}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        onClick={() => setActiveSideItem(item.key)}
+                        className={[
+                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                          activeSideItem === item.key
+                            ? "text-red-600 dark:text-red-400 font-medium before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500 before:rounded-full"
+                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                        ].join(" ")}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
+            </nav>
+          </aside>
+        )}
 
         {/* Page content area */}
         <div className="flex-1 p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
+          {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
         </div>
       </div>
     </div>
