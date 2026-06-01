@@ -724,7 +724,7 @@ export default function PrivateFundDetailPage() {
           <span className="text-zinc-500 whitespace-nowrap">业绩基准：</span>
           <select
             value={filterBench}
-            onChange={e => setFilterBench(e.target.value)}
+            onChange={e => { setFilterBench(e.target.value); setAppliedBench(e.target.value) }}
             className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[120px]"
           >
             {BENCHMARK_OPTIONS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
