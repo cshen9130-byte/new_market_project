@@ -128,17 +128,22 @@ def _pct_return(latest: float, base: float | None) -> float | None:
 
 def compute_fund_metrics(
     gdf: "pd.DataFrame",
-    today: date,
 ) -> tuple:
     """Return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y)."""
     gdf = gdf.sort_values("price_date")
 
-    latest_nav  = float(gdf.iloc[-1]["nav"])
-    cutoff_1w   = today - timedelta(days=7)
-    cutoff_1m   = today - timedelta(days=30)
-    cutoff_3m   = today - timedelta(days=91)
-    cutoff_6m   = today - timedelta(days=182)
-    cutoff_1y   = today - timedelta(days=365)
+    # Use the fund's own latest NAV date as reference so that
+    # returns are measured up to the most-recent available data point,
+    # not today's calendar date (which may be days after the last NAV).
+    latest_row  = gdf.iloc[-1]
+    latest_nav  = float(latest_row["nav"])
+    ref_date    = latest_row["price_date"].date()
+
+    cutoff_1w   = ref_date - timedelta(days=7)
+    cutoff_1m   = ref_date - timedelta(days=30)
+    cutoff_3m   = ref_date - timedelta(days=91)
+    cutoff_6m   = ref_date - timedelta(days=182)
+    cutoff_1y   = ref_date - timedelta(days=365)
 
     ret_1w  = _pct_return(latest_nav, _base_nav(gdf, cutoff_1w))
     ret_1m  = _pct_return(latest_nav, _base_nav(gdf, cutoff_1m))
@@ -182,6 +187,9 @@ def run(conn, *, dry_run: bool = False) -> int:
     today    = date.today()
     lookback = today - timedelta(days=LOOKBACK_DAYS)
 
+    # No fixed lookback cutoff — load all history needed so that funds with
+    # old latest-nav-dates (e.g. monthly reporters) still get correct 1Y metrics.
+    # We keep LOOKBACK_DAYS as a safeguard only.
     log.info("Loading NAV data since %s …", lookback)
     with conn.cursor() as cur:
         cur.execute(
@@ -211,7 +219,7 @@ def run(conn, *, dry_run: bool = False) -> int:
     # ── compute per fund ──────────────────────────────────────────────────────
     results: list[tuple] = []
     for beian_hao, gdf in df.groupby("beian_hao", sort=False):
-        metrics = compute_fund_metrics(gdf, today)
+        metrics = compute_fund_metrics(gdf)
         # tuple order: ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y, beian_hao
         results.append((*metrics, beian_hao))
 

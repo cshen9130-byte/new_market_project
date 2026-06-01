@@ -2148,12 +2148,6 @@ def step_private_fund_indicators(conn) -> int:
     SQRT252   = math.sqrt(252)
     MIN_PTS   = 20
 
-    cutoff_1w = today - timedelta(days=7)
-    cutoff_1m = today - timedelta(days=30)
-    cutoff_3m = today - timedelta(days=91)
-    cutoff_6m = today - timedelta(days=182)
-    cutoff_1y = today - timedelta(days=365)
-
     def base_nav(gdf, cutoff):
         sub = gdf.loc[gdf["price_date"].dt.date <= cutoff]
         return float(sub.iloc[-1]["nav"]) if not sub.empty else None
@@ -2166,7 +2160,18 @@ def step_private_fund_indicators(conn) -> int:
     results: list = []
     for beian_hao, gdf in df.groupby("beian_hao", sort=False):
         gdf        = gdf.sort_values("price_date")
-        latest_nav = float(gdf.iloc[-1]["nav"])
+        latest_row = gdf.iloc[-1]
+        latest_nav = float(latest_row["nav"])
+        # Use the fund's own latest NAV date as the reference so that returns
+        # are measured up to the most-recent data point, not today's date
+        # (which may be days/weeks after the last NAV for weekly/monthly funds).
+        ref_date   = latest_row["price_date"].date()
+
+        cutoff_1w  = ref_date - timedelta(days=7)
+        cutoff_1m  = ref_date - timedelta(days=30)
+        cutoff_3m  = ref_date - timedelta(days=91)
+        cutoff_6m  = ref_date - timedelta(days=182)
+        cutoff_1y  = ref_date - timedelta(days=365)
 
         ret_1w = pct_ret(latest_nav, base_nav(gdf, cutoff_1w))
         ret_1m = pct_ret(latest_nav, base_nav(gdf, cutoff_1m))
