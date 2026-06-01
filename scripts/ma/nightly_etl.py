@@ -2188,7 +2188,13 @@ def step_private_fund_indicators(conn) -> int:
             nav_arr    = sub_1y["nav"].to_numpy(dtype=float)
             daily_rets = np.diff(nav_arr) / nav_arr[:-1]
             if len(daily_rets) >= MIN_PTS - 1:
-                ann_vol = float(daily_rets.std()) * SQRT252
+                # Infer actual observation frequency so weekly/monthly reporters
+                # are annualised correctly instead of always using √252 (daily).
+                dates_in_win = sub_1y["price_date"].values
+                total_days   = (dates_in_win[-1] - dates_in_win[0]) / np.timedelta64(1, "D")
+                avg_interval = total_days / (len(dates_in_win) - 1) if len(dates_in_win) > 1 else 7.0
+                periods_p_yr = 365.0 / max(float(avg_interval), 0.5)
+                ann_vol = float(daily_rets.std()) * math.sqrt(periods_p_yr)
                 if ann_vol > 0:
                     ann_ret   = ret_1y / 100.0
                     sharpe_1y = round((ann_ret - RISK_FREE) / ann_vol, 4)
