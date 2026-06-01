@@ -157,8 +157,12 @@ def main() -> None:
         start_dt = _parse_date(args[0])
         end_dt = _parse_date(args[1])
 
-    username = os.environ.get("EMQ_USERNAME", "bflzg0006")
+    username = os.environ.get("EMQ_USERNAME", "")
     password = os.environ.get("EMQ_PASSWORD", "")
+
+    if not username or not password:
+        print(json.dumps({"error": "Missing EMQ_USERNAME/EMQ_PASSWORD in environment"}))
+        sys.exit(2)
 
     try:
         from EmQuantAPI import c  # type: ignore[import-untyped]
