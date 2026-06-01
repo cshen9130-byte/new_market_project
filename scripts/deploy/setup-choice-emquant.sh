@@ -272,17 +272,30 @@ else
   CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
 fi
 
-# 7) Persist credentials to .env so DATABASE_URL survives future pm2 restarts
-# Write/update DATABASE_URL in .env if provided on the command line
+# 7) Persist credentials to .env so all Python scripts find them without PM2
 ENV_FILE="$PROJECT_ROOT/.env"
-if [[ -n "$DATABASE_URL" ]]; then
+
+# Helper: remove any existing KEY= line then append the new value (idempotent)
+_upsert_env() {
+  local key="$1" val="$2"
+  [[ -z "$val" ]] && return
   if [[ -f "$ENV_FILE" ]]; then
-    # Remove any existing DATABASE_URL line then append the new value
-    sed -i '/^DATABASE_URL=/d' "$ENV_FILE"
+    sed -i "/^${key}=/d" "$ENV_FILE"
   fi
-  echo "DATABASE_URL=${DATABASE_URL}" >> "$ENV_FILE"
-  echo "DATABASE_URL written to $ENV_FILE"
-fi
+  printf '%s=%s\n' "$key" "$val" >> "$ENV_FILE"
+}
+
+_upsert_env "DATABASE_URL"              "$DATABASE_URL"
+_upsert_env "EMQ_USERNAME"              "$EMQ_USERNAME"
+_upsert_env "EMQ_PASSWORD"              "$EMQ_PASSWORD"
+_upsert_env "TUSHARE_TOKEN"             "$TUSHARE_TOKEN"
+_upsert_env "DASHSCOPE_API_KEY"         "$DASHSCOPE_API_KEY"
+_upsert_env "DASHSCOPE_BASE_URL"        "$DASHSCOPE_BASE_URL"
+_upsert_env "DASHSCOPE_CHAT_MODEL"      "$DASHSCOPE_CHAT_MODEL"
+_upsert_env "DASHSCOPE_EMBEDDING_MODEL" "$DASHSCOPE_EMBEDDING_MODEL"
+_upsert_env "PYTHON_EXE"               "$PY_EXE_PATH"
+
+echo "Credentials written to $ENV_FILE"
 
 # Source .env so DATABASE_URL is visible to ecosystem.config.js at pm2 start time
 if [[ -f "$ENV_FILE" ]]; then
