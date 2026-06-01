@@ -2099,6 +2099,137 @@ def step_futures_rollover_dates(conn, *, force: bool = False) -> int:
 # STEP — Warm MOM dashboard API caches
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def step_private_fund_indicators(conn) -> int:
+    """Recompute ret_1w/1m/3m/6m/1y, sharpe_1y, calmar_1y for every fund in
+    private_fund_info from the raw private_fund_nav time-series.
+
+    This makes the 私募基金 dashboard page load instantly — the API simply
+    reads pre-computed values from private_fund_info rather than scanning the
+    entire NAV table on every request.
+    """
+    try:
+        import math
+        import numpy as np
+        import pandas as pd
+    except ImportError:
+        log.error("pandas / numpy not installed — skipping private_fund_indicators")
+        return 0
+
+    today    = date.today()
+    lookback = today - timedelta(days=400)
+
+    log.info("private_fund_indicators: loading NAV data since %s …", lookback)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT beian_hao, price_date, nav
+            FROM private_fund_nav
+            WHERE price_date >= %s
+              AND nav IS NOT NULL
+              AND nav > 0
+            ORDER BY beian_hao, price_date
+            """,
+            (lookback,),
+        )
+        rows = cur.fetchall()
+
+    if not rows:
+        log.warning("private_fund_indicators: no NAV data found — skipping.")
+        return 0
+
+    df              = pd.DataFrame(rows, columns=["beian_hao", "price_date", "nav"])
+    df["price_date"] = pd.to_datetime(df["price_date"])
+    df["nav"]        = df["nav"].astype(float)
+
+    log.info("private_fund_indicators: %d NAV rows for %d funds.",
+             len(df), df["beian_hao"].nunique())
+
+    RISK_FREE = 0.03
+    SQRT252   = math.sqrt(252)
+    MIN_PTS   = 20
+
+    cutoff_1w = today - timedelta(days=7)
+    cutoff_1m = today - timedelta(days=30)
+    cutoff_3m = today - timedelta(days=91)
+    cutoff_6m = today - timedelta(days=182)
+    cutoff_1y = today - timedelta(days=365)
+
+    def base_nav(gdf, cutoff):
+        sub = gdf.loc[gdf["price_date"].dt.date <= cutoff]
+        return float(sub.iloc[-1]["nav"]) if not sub.empty else None
+
+    def pct_ret(latest, base):
+        if base is None or base <= 0:
+            return None
+        return round((latest / base - 1) * 100, 4)
+
+    results: list = []
+    for beian_hao, gdf in df.groupby("beian_hao", sort=False):
+        gdf        = gdf.sort_values("price_date")
+        latest_nav = float(gdf.iloc[-1]["nav"])
+
+        ret_1w = pct_ret(latest_nav, base_nav(gdf, cutoff_1w))
+        ret_1m = pct_ret(latest_nav, base_nav(gdf, cutoff_1m))
+        ret_3m = pct_ret(latest_nav, base_nav(gdf, cutoff_3m))
+        ret_6m = pct_ret(latest_nav, base_nav(gdf, cutoff_6m))
+        b1y    = base_nav(gdf, cutoff_1y)
+        ret_1y = pct_ret(latest_nav, b1y)
+
+        sharpe_1y: float | None = None
+        calmar_1y: float | None = None
+
+        sub_1y = gdf.loc[gdf["price_date"].dt.date >= cutoff_1y]
+        if len(sub_1y) >= MIN_PTS and ret_1y is not None:
+            nav_arr    = sub_1y["nav"].to_numpy(dtype=float)
+            daily_rets = np.diff(nav_arr) / nav_arr[:-1]
+            if len(daily_rets) >= MIN_PTS - 1:
+                ann_vol = float(daily_rets.std()) * SQRT252
+                if ann_vol > 0:
+                    ann_ret   = ret_1y / 100.0
+                    sharpe_1y = round((ann_ret - RISK_FREE) / ann_vol, 4)
+                rolling_max = np.maximum.accumulate(nav_arr)
+                drawdowns   = (rolling_max - nav_arr) / rolling_max
+                max_dd      = float(drawdowns.max())
+                if max_dd > 0 and ret_1y is not None:
+                    calmar_1y = round((ret_1y / 100.0) / max_dd, 4)
+
+        results.append((ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
+                        sharpe_1y, calmar_1y, beian_hao))
+
+    log.info("private_fund_indicators: updating %d rows in private_fund_info …", len(results))
+
+    BATCH = 1_000
+    updated = 0
+    for i in range(0, len(results), BATCH):
+        batch = results[i : i + BATCH]
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                UPDATE private_fund_info AS t SET
+                    ret_1w     = v.ret_1w::numeric,
+                    ret_1m     = v.ret_1m::numeric,
+                    ret_3m     = v.ret_3m::numeric,
+                    ret_6m     = v.ret_6m::numeric,
+                    ret_1y     = v.ret_1y::numeric,
+                    sharpe_1y  = v.sharpe_1y::numeric,
+                    calmar_1y  = v.calmar_1y::numeric,
+                    updated_at = NOW()
+                FROM (VALUES %s) AS v(
+                    ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
+                    sharpe_1y, calmar_1y, beian_hao
+                )
+                WHERE t.beian_hao = v.beian_hao
+                """,
+                batch,
+            )
+        conn.commit()
+        updated += len(batch)
+
+    log.info("private_fund_indicators: done — %d funds updated.", updated)
+    return updated
+
+
 def step_warm_mom_cache() -> int:
     """Call the /ma/api/mom-analysis/warm-cache endpoint to pre-compute all chart data."""
     import urllib.request
@@ -2144,6 +2275,7 @@ ORDERED_STEPS = [
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
+    "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "warm_mom_cache",                # warm MOM dashboard API caches
 ]
 
@@ -2254,6 +2386,7 @@ def main():
         "regime_similarity":               lambda: step_regime_similarity(conn),
         "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),
         "money_credit":                    lambda: step_money_credit(conn),
+        "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
     }
 
