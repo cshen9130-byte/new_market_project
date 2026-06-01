@@ -1837,6 +1837,61 @@ def step_etf_prices(conn, trade_date: date, *, force: bool = False) -> int:
     return len(records)
 
 
+def step_backfill_benchmarks(conn, start: date | None = None, end: date | None = None) -> int:
+    """One-off backfill of all benchmark tables used by the 私募基金 detail chart.
+
+    Fills:
+      - raw_spot_daily          (IH / IF / IC / IM)  via EmQuant timeseries
+      - raw_etf_daily           (all 6 ETFs)          via EmQuant timeseries
+      - raw_nanhua_indices_daily (NHCI.NH + 16 others) via EmQuant timeseries
+
+    Can be run on demand:
+        python3 nightly_etl.py --step backfill_benchmarks
+    Or with a custom start date:
+        python3 nightly_etl.py --step backfill_benchmarks --date 2020-01-01
+    """
+    today = date.today()
+    _start = start or date(2020, 1, 1)
+    _end   = end   or today
+    log.info("backfill_benchmarks: %s → %s", _start, _end)
+    total = 0
+
+    # ── 1. Spot index closes: IH / IF / IC / IM ──────────────────────────────
+    try:
+        n = step_spot_timeseries_backfill(conn, _start, _end)
+        log.info("  spot backfill: %d rows", n)
+        total += n
+    except Exception as exc:
+        log.error("  spot backfill failed: %s", exc)
+
+    # ── 2. ETF prices (all 6 tickers used by model + benchmark chart) ─────────
+    try:
+        n = step_etf_backfill(conn, _start, _end)
+        log.info("  ETF backfill: %d rows", n)
+        total += n
+    except Exception as exc:
+        log.error("  ETF backfill failed: %s", exc)
+
+    # ── 3. 南华 sub-indices (includes NHCI.NH) ────────────────────────────────
+    # Temporarily lower the module-level backfill-start constant so the step
+    # function re-fetches history all the way back to _start instead of 2025.
+    global _NH_INDICES_BACKFILL_START  # noqa: PLW0603
+    _prev_start = _NH_INDICES_BACKFILL_START
+    _NH_INDICES_BACKFILL_START = _start
+    try:
+        # force=True bypasses the "already up-to-date" early-exit check
+        n = step_nanhua_indices(conn, force=True)
+        log.info("  NH indices backfill: %d rows", n)
+        total += n
+    except Exception as exc:
+        log.error("  NH indices backfill failed: %s", exc)
+    finally:
+        _NH_INDICES_BACKFILL_START = _prev_start
+
+    log.info("backfill_benchmarks: total %d rows upserted.", total)
+    return total
+
+
 def step_etf_backfill(conn, start: date, end: date) -> int:
     """Bulk-load ETF prices for a date range (used during initial backfill)."""
     log.info("ETF backfill %s → %s …", start, end)
@@ -2294,6 +2349,7 @@ ORDERED_STEPS = [
     "money_credit",                  # money+credit cycle calculation
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "warm_mom_cache",                # warm MOM dashboard API caches
+    "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
 ]
 
 
@@ -2405,6 +2461,7 @@ def main():
         "money_credit":                    lambda: step_money_credit(conn),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
+        "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),
     }
 
     steps_to_run = [args.step] if args.step else ORDERED_STEPS

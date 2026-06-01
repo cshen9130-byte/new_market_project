@@ -5,7 +5,8 @@ import type React from "react"
 import { useParams } from "next/navigation"
 import {
   Area,
-  AreaChart,
+  ComposedChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -71,6 +72,81 @@ interface DetailData {
   info:       FundInfo
   nav_series: NavRow[]
   metrics:    Metrics
+}
+
+interface BenchmarkPoint {
+  date: string
+  value: number
+}
+
+const BENCHMARK_OPTIONS = [
+  { key: "", label: "不显示" },
+  { key: "IM", label: "中证1000" },
+  { key: "IC", label: "中证500" },
+  { key: "IF", label: "沪深300" },
+  { key: "IH", label: "上证50" },
+  { key: "NHCI.NH", label: "南华商品指数" },
+  { key: "511010.SH", label: "国债ETF" },
+  { key: "518880.SH", label: "黄金ETF" },
+] as const
+
+function normalizeBenchmarkKey(raw: string | null | undefined): string {
+  const text = (raw ?? "").replace(/\s+/g, "")
+  if (!text) return ""
+  if (text.includes("中证1000")) return "IM"
+  if (text.includes("中证500")) return "IC"
+  if (text.includes("沪深300")) return "IF"
+  if (text.includes("上证50")) return "IH"
+  if (text.includes("南华商品")) return "NHCI.NH"
+  if (text.includes("国债")) return "511010.SH"
+  if (text.includes("黄金")) return "518880.SH"
+  return ""
+}
+
+function getBenchmarkLabel(key: string): string {
+  return BENCHMARK_OPTIONS.find((option) => option.key === key)?.label ?? "业绩基准"
+}
+
+function getNavFieldValue(row: NavRow, navType: string): number {
+  if (navType === "单位净值") return parseFloat(row.nav)
+  if (navType === "累计净值") return parseFloat(row.cum_nav_withdrawal)
+  return parseFloat(row.cumulative_nav)
+}
+
+function buildAlignedBenchmarkValues(
+  rows: NavRow[],
+  benchmarkSeries: BenchmarkPoint[],
+  chartMode: "nav" | "return",
+  navType: string,
+): Array<number | null> {
+  if (!rows.length || !benchmarkSeries.length) return rows.map(() => null)
+
+  let benchmarkIndex = 0
+  let lastBenchmarkValue: number | null = null
+  const matchedValues = rows.map((row) => {
+    while (benchmarkIndex < benchmarkSeries.length && benchmarkSeries[benchmarkIndex].date <= row.price_date) {
+      lastBenchmarkValue = benchmarkSeries[benchmarkIndex].value
+      benchmarkIndex += 1
+    }
+    return lastBenchmarkValue
+  })
+
+  const baseIndex = matchedValues.findIndex((value) => value !== null)
+  if (baseIndex === -1) return rows.map(() => null)
+
+  const baseBenchmarkValue = matchedValues[baseIndex]
+  const baseFundValue = getNavFieldValue(rows[baseIndex], navType)
+  if (baseBenchmarkValue === null || !isFinite(baseFundValue) || baseFundValue <= 0) {
+    return rows.map(() => null)
+  }
+
+  return matchedValues.map((value) => {
+    if (value === null || value <= 0) return null
+    if (chartMode === "return") {
+      return +(((value / baseBenchmarkValue) - 1) * 100).toFixed(4)
+    }
+    return +((value / baseBenchmarkValue) * baseFundValue).toFixed(4)
+  })
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -175,17 +251,37 @@ function NavTable({ rows }: { rows: NavRow[] }) {
 
 // ─── Custom Tooltip ───────────────────────────────────────────────────────────
 
-function ChartTooltip({ active, payload, label, mode }: { active?: boolean; payload?: { value: number }[]; label?: string; mode?: "nav" | "return" }) {
+function ChartTooltip({
+  active,
+  payload,
+  label,
+  mode,
+}: {
+  active?: boolean
+  payload?: Array<{ value?: number; name?: string; color?: string }>
+  label?: string
+  mode?: "nav" | "return"
+}) {
   if (!active || !payload?.length) return null
-  const v = payload[0]?.value
-  const display = mode === "return"
-    ? (v >= 0 ? "+" : "") + v?.toFixed(2) + "%"
-    : v?.toFixed(4)
-  const fieldLabel = mode === "return" ? "收益率" : "复权净值"
+  const visibleItems = payload.filter((item) => typeof item.value === "number")
+  if (!visibleItems.length) return null
+
+  function formatValue(value: number): string {
+    return mode === "return"
+      ? (value >= 0 ? "+" : "") + value.toFixed(2) + "%"
+      : value.toFixed(4)
+  }
+
   return (
     <div className="bg-white border border-zinc-100 shadow-md rounded-lg px-3 py-2 text-xs">
       <div className="text-zinc-500 mb-1">{label}</div>
-      <div className="font-semibold text-zinc-900">{fieldLabel}: {display}</div>
+      <div className="space-y-1">
+        {visibleItems.map((item) => (
+          <div key={item.name} className="font-semibold text-zinc-900" style={item.color ? { color: item.color } : undefined}>
+            {item.name}: {formatValue(item.value as number)}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -230,17 +326,51 @@ export default function PrivateFundDetailPage() {
   // Applied values (only updated on 开始分析)
   const [appliedFrom,    setAppliedFrom]    = useState<string>("")
   const [appliedTo,      setAppliedTo]      = useState<string>("")
+  const [appliedBench,   setAppliedBench]   = useState<string>("")
+  const [benchmarkData,  setBenchmarkData]  = useState<BenchmarkPoint[]>([])
 
   // When data loads, seed benchmark and dates
   useEffect(() => {
     if (!data) return
     const inc = data.info.inception_date?.slice(0, 10) ?? ""
     const last = data.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
+    const benchmarkKey = normalizeBenchmarkKey(data.info.benchmark)
     setFilterFrom(inc)
     setFilterTo(last)
-    setFilterBench(data.info.benchmark ?? "")
+    setFilterBench(benchmarkKey)
+    setAppliedBench(benchmarkKey)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
+
+  useEffect(() => {
+    if (!data || !appliedBench) {
+      setBenchmarkData([])
+      return
+    }
+
+    const first = data.nav_series[0]?.price_date
+    const last = data.nav_series[data.nav_series.length - 1]?.price_date
+    if (!first || !last) {
+      setBenchmarkData([])
+      return
+    }
+
+    let cancelled = false
+    const params = new URLSearchParams({ key: appliedBench, from: first, to: last })
+    fetch(`/ma/api/private-funds/benchmark?${params.toString()}`)
+      .then(async (response) => {
+        const json = await response.json()
+        if (!response.ok || !json.ok) throw new Error(json.error || `HTTP ${response.status}`)
+        if (!cancelled) setBenchmarkData(Array.isArray(json.data) ? json.data : [])
+      })
+      .catch(() => {
+        if (!cancelled) setBenchmarkData([])
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [data, appliedBench])
 
   const PERIOD_OPTIONS = ["成立以来", "近1年", "近3年", "近5年", "今年以来", "自定义"]
   function applyPeriod(p: string) {
@@ -264,45 +394,51 @@ export default function PrivateFundDetailPage() {
   function handleApply() {
     setAppliedFrom(filterFrom)
     setAppliedTo(filterTo)
+    setAppliedBench(filterBench)
   }
   function handleReset() {
     const inc  = inceptionDate
     const last = data?.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
+    const benchmarkKey = normalizeBenchmarkKey(data?.info.benchmark)
     setFilterPeriod("成立以来")
     setFilterFrom(inc)
     setFilterTo(last)
     setFilterNavType("复权净值")
     setFilterFreq("全部")
-    setFilterBench(data?.info.benchmark ?? "")
+    setFilterBench(benchmarkKey)
     setAppliedFrom("")
     setAppliedTo("")
+    setAppliedBench(benchmarkKey)
   }
 
   // Active date range for chart/table
   const activeFrom = appliedFrom || filterFrom
   const activeTo   = appliedTo   || filterTo
 
-  const chartData = useMemo(() => {
+  const filteredNavRows = useMemo(() => {
     if (!data) return []
-    const rows = data.nav_series.filter(r => (!activeFrom || r.price_date >= activeFrom) && (!activeTo || r.price_date <= activeTo))
-    return downsample(rows).map((r) => ({
-      date: r.price_date,
-      value: parseFloat(r.cumulative_nav),
-    }))
+    return data.nav_series.filter((row) => (!activeFrom || row.price_date >= activeFrom) && (!activeTo || row.price_date <= activeTo))
   }, [data, activeFrom, activeTo])
 
-  const returnChartData = useMemo(() => {
-    if (!data || !data.nav_series.length) return []
-    const rows = data.nav_series.filter(r => (!activeFrom || r.price_date >= activeFrom) && (!activeTo || r.price_date <= activeTo))
-    if (!rows.length) return []
-    const firstNav = parseFloat(rows[0].cumulative_nav)
-    return downsample(rows).map((r) => ({
-      date: r.price_date,
-      value: firstNav > 0 ? +((parseFloat(r.cumulative_nav) / firstNav - 1) * 100).toFixed(4) : 0,
-    }))
-  }, [data, activeFrom, activeTo])
+  const activeChartData = useMemo(() => {
+    if (!filteredNavRows.length) return []
+    const rows = downsample(filteredNavRows)
+    const benchmarkValues = buildAlignedBenchmarkValues(rows, benchmarkData, chartMode, filterNavType)
+    const firstNav = getNavFieldValue(rows[0], filterNavType)
 
-  const activeChartData = chartMode === "nav" ? chartData : returnChartData
+    return rows.map((row, index) => {
+      const navValue = getNavFieldValue(row, filterNavType)
+      return {
+        date: row.price_date,
+        value: chartMode === "return"
+          ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
+          : navValue,
+        benchmarkValue: benchmarkValues[index],
+      }
+    })
+  }, [benchmarkData, chartMode, filterNavType, filteredNavRows])
+
+  const benchmarkLabel = getBenchmarkLabel(appliedBench)
 
   const yDomain = useMemo(() => {
     if (!activeChartData.length) return ["auto", "auto"] as [string, string]
@@ -584,12 +720,13 @@ export default function PrivateFundDetailPage() {
         {/* 业绩基准 */}
         <div className="flex items-center gap-1.5">
           <span className="text-zinc-500 whitespace-nowrap">业绩基准：</span>
-          <input
-            type="text"
+          <select
             value={filterBench}
             onChange={e => setFilterBench(e.target.value)}
-            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none w-32"
-          />
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[120px]"
+          >
+            {BENCHMARK_OPTIONS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+          </select>
         </div>
 
         {/* Buttons */}
@@ -615,7 +752,7 @@ export default function PrivateFundDetailPage() {
         <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
           <div className="flex items-center justify-between mb-3 flex-shrink-0">
             <div className="text-sm font-semibold text-zinc-700">
-              {chartMode === "nav" ? "净值走势（复权净值）" : "收益曲线（成立以来收益率）"}
+              {chartMode === "nav" ? `净值走势（${filterNavType}）` : `收益曲线（${filterNavType}）`}
             </div>
             <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-xs">
               <button
@@ -642,7 +779,7 @@ export default function PrivateFundDetailPage() {
           </div>
           <div className="flex-1 min-h-0">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={activeChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
+            <ComposedChart data={activeChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
               <defs>
                 <linearGradient id="navGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%"  stopColor="#ef4444" stopOpacity={0.18} />
@@ -667,16 +804,29 @@ export default function PrivateFundDetailPage() {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 <ChartTooltip {...(props as any)} mode={chartMode} />
               )} />
+              {appliedBench && (
+                <Line
+                  type="monotone"
+                  dataKey="benchmarkValue"
+                  name={benchmarkLabel}
+                  stroke="#2563eb"
+                  strokeWidth={1.5}
+                  dot={false}
+                  connectNulls={false}
+                  activeDot={{ r: 3, fill: "#2563eb" }}
+                />
+              )}
               <Area
                 type="monotone"
                 dataKey="value"
+                name={chartMode === "return" ? "基金收益率" : filterNavType}
                 stroke="#ef4444"
                 strokeWidth={1.5}
                 fill="url(#navGrad)"
                 dot={false}
                 activeDot={{ r: 4, fill: "#ef4444" }}
               />
-            </AreaChart>
+            </ComposedChart>
           </ResponsiveContainer>
           </div>
         </div>
