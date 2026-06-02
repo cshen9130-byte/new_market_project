@@ -1150,6 +1150,8 @@ interface TrackFundRow {
   ret_3m: string | null
   ret_6m: string | null
   ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
 }
 
 function TrackPctCell({ value }: { value: string | null }) {
@@ -1158,6 +1160,14 @@ function TrackPctCell({ value }: { value: string | null }) {
   if (isNaN(n)) return <span className="text-muted-foreground">—</span>
   const cls = n > 0 ? "text-red-500" : n < 0 ? "text-green-600" : "text-foreground"
   return <span className={cls}>{n > 0 ? "+" : ""}{(n * 100).toFixed(2)}%</span>
+}
+
+function TrackRatioCell({ value }: { value: string | null }) {
+  if (!value) return <span className="text-muted-foreground">—</span>
+  const n = parseFloat(value)
+  if (isNaN(n)) return <span className="text-muted-foreground">—</span>
+  const cls = n > 0 ? "text-red-500" : n < 0 ? "text-green-600" : "text-foreground"
+  return <span className={cls}>{n.toFixed(2)}</span>
 }
 
 const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
@@ -1521,7 +1531,7 @@ function InvestmentTrackingView() {
 
           {/* Table */}
           <div className="overflow-x-auto rounded-lg border flex-1">
-            <table className="text-sm border-collapse w-full" style={{ minWidth: 1200 }}>
+            <table className="text-sm border-collapse w-full" style={{ minWidth: 1400 }}>
               <thead className="sticky top-0 z-20">
                 <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
                   <th className={`${thBase} w-8 px-2`}>
@@ -1539,6 +1549,8 @@ function InvestmentTrackingView() {
                   <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_3m")}>近三月收益<SortIco col="ret_3m" /></th>
                   <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_6m")}>近六月收益<SortIco col="ret_6m" /></th>
                   <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1y")}>近一年收益<SortIco col="ret_1y" /></th>
+                  <th className={`${thBase} text-right min-w-[98px]`}>近一年夏普比率</th>
+                  <th className={`${thBase} text-right min-w-[98px]`}>近一年卡玛比率</th>
                   <th className={`${thBase} text-center w-16`}>走势</th>
                   <th className={`${thBase} text-center w-16`}>资料</th>
                   <th className={`${thBase} text-center w-16`}>操作</th>
@@ -1546,11 +1558,11 @@ function InvestmentTrackingView() {
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isBfl ? (
-                  <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">请选择 bfl跟踪池 查看数据</td></tr>
+                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">请选择 bfl跟踪池 查看数据</td></tr>
                 ) : data.length === 0 ? (
-                  <tr><td colSpan={14} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
+                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
                   const isSelected = selected.has(row.beian_hao)
                   const bg = isSelected ? "bg-blue-50/40 dark:bg-blue-950/20" : "bg-background"
@@ -1592,6 +1604,8 @@ function InvestmentTrackingView() {
                       <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_3m} /></td>
                       <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_6m} /></td>
                       <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_1y} /></td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackRatioCell value={row.sharpe_1y} /></td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackRatioCell value={row.calmar_1y} /></td>
                       <td className={`${cell} text-center`}>
                         <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
                       </td>

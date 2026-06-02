@@ -9,45 +9,125 @@ export async function GET(
 ) {
   const { beian_hao } = await params
 
-  const [infoRows, navRows] = await Promise.all([
-    query<{
-      beian_hao:      string
-      product_name:   string
-      strategy_l1:    string | null
-      strategy_l2:    string | null
-      manager:        string
-      inception_date: string | null
-      benchmark:      string | null
-      ret_1w:         string | null
-      ret_1m:         string | null
-      ret_3m:         string | null
-      ret_6m:         string | null
-      ret_1y:         string | null
-      sharpe_1y:      string | null
-      calmar_1y:      string | null
-    }>(
-      `SELECT beian_hao, product_name, strategy_l1, strategy_l2, manager,
-              inception_date::text AS inception_date, benchmark,
-              ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-              sharpe_1y::text, calmar_1y::text
-       FROM private_fund_info WHERE beian_hao = $1`,
-      [beian_hao]
-    ),
-    query<{
-      price_date:         string
-      nav:                string
-      cumulative_nav:     string
-      cum_nav_withdrawal: string
-      price_change:       string
-    }>(
-      `SELECT price_date::text AS price_date, nav::text, cumulative_nav::text,
-              cum_nav_withdrawal::text, price_change::text
-       FROM private_fund_nav WHERE beian_hao = $1 ORDER BY price_date ASC`,
-      [beian_hao]
-    ),
-  ])
+  const infoRows = await query<{
+    beian_hao:      string
+    product_name:   string
+    short_name:     string | null
+    strategy_l1:    string | null
+    strategy_l2:    string | null
+    manager:        string
+    inception_date: string | null
+    benchmark:      string | null
+    ret_1w:         string | null
+    ret_1m:         string | null
+    ret_3m:         string | null
+    ret_6m:         string | null
+    ret_1y:         string | null
+    sharpe_1y:      string | null
+    calmar_1y:      string | null
+  }>(
+    `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, manager,
+            inception_date::text AS inception_date, benchmark,
+            ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
+            sharpe_1y::text, calmar_1y::text
+     FROM private_fund_info WHERE beian_hao = $1`,
+    [beian_hao]
+  )
 
-  if (!infoRows[0]) return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+  const bflRows = infoRows[0]
+    ? []
+    : await query<{
+        beian_hao:      string
+        product_name:   string
+        short_name:     string | null
+        strategy_l1:    string | null
+        strategy_l2:    string | null
+        manager:        string
+        inception_date: string | null
+        benchmark:      string | null
+        ret_1w:         string | null
+        ret_1m:         string | null
+        ret_3m:         string | null
+        ret_6m:         string | null
+        ret_1y:         string | null
+        sharpe_1y:      string | null
+        calmar_1y:      string | null
+      }>(
+        `SELECT beian_hao, product_name, short_name,
+                strategy_one AS strategy_l1,
+                strategy_two AS strategy_l2,
+                ''::text     AS manager,
+                NULL::text   AS inception_date,
+                NULL::text   AS benchmark,
+                NULL::text   AS ret_1w,
+                NULL::text   AS ret_1m,
+                NULL::text   AS ret_3m,
+                NULL::text   AS ret_6m,
+                NULL::text   AS ret_1y,
+                NULL::text   AS sharpe_1y,
+                NULL::text   AS calmar_1y
+         FROM private_fund_info_bfl
+         WHERE beian_hao = $1`,
+        [beian_hao]
+      )
+
+  const info = infoRows[0] ?? bflRows[0]
+  if (!info) return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+
+  const productName = info.product_name ?? ""
+  const shortName = info.short_name ?? ""
+
+  const navRows = await query<{
+    price_date:         string
+    nav:                string
+    cumulative_nav:     string
+    cum_nav_withdrawal: string
+    price_change:       string
+  }>(
+    `SELECT DISTINCT ON (price_date)
+        price_date::text AS price_date,
+        nav::text,
+        cumulative_nav::text,
+        cum_nav_withdrawal::text,
+        price_change::text
+     FROM (
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 0 AS pri
+       FROM private_fund_nav_group
+       WHERE beian_hao = $1
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 1 AS pri
+       FROM private_fund_nav_group
+       WHERE $2 <> '' AND product_name = $2
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 2 AS pri
+       FROM private_fund_nav_group
+       WHERE $3 <> '' AND product_name = $3
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
+       FROM private_fund_nav
+       WHERE beian_hao = $1
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri
+       FROM private_fund_nav
+       WHERE $2 <> '' AND product_name = $2
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri
+       FROM private_fund_nav
+       WHERE $3 <> '' AND product_name = $3
+     ) nav_union
+     ORDER BY price_date ASC, pri ASC`,
+    [beian_hao, productName, shortName]
+  )
 
   const nav_series = navRows
   const first = nav_series[0]
@@ -114,7 +194,7 @@ export async function GET(
   }
 
   return NextResponse.json({
-    info: infoRows[0],
+    info,
     nav_series,
     metrics: {
       latest_nav:                latest?.nav              ?? null,

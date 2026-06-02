@@ -45,6 +45,185 @@ function navAtOffset(alias: string, days: number): string {
   ) ${alias} ON true`
 }
 
+interface NavSeriesPoint {
+  price_date: string
+  level: string | null
+}
+
+interface OneYearRatios {
+  sharpe_1y: string | null
+  calmar_1y: string | null
+}
+
+interface TrackRow {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  strategy_l2: string | null
+  manager: string | null
+  inception_date: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
+}
+
+function std(values: number[]): number {
+  if (values.length <= 1) return NaN
+  const mean = values.reduce((sum, v) => sum + v, 0) / values.length
+  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (values.length - 1)
+  return Math.sqrt(variance)
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return NaN
+  const arr = [...values].sort((a, b) => a - b)
+  const mid = Math.floor(arr.length / 2)
+  return arr.length % 2 === 0 ? (arr[mid - 1] + arr[mid]) / 2 : arr[mid]
+}
+
+function calcOneYearRatios(points: NavSeriesPoint[]): OneYearRatios {
+  if (points.length < 3) return { sharpe_1y: null, calmar_1y: null }
+
+  const byDate = new Map<string, { ts: number; level: number }>()
+  for (const p of points) {
+    const ts = new Date(p.price_date).getTime()
+    const level = p.level ? parseFloat(p.level) : NaN
+    if (!Number.isFinite(ts) || !Number.isFinite(level) || level <= 0) continue
+    byDate.set(p.price_date, { ts, level })
+  }
+
+  const series = Array.from(byDate.values()).sort((a, b) => a.ts - b.ts)
+  if (series.length < 3) return { sharpe_1y: null, calmar_1y: null }
+
+  const first = series[0]
+  const last = series[series.length - 1]
+  const days = (last.ts - first.ts) / 86_400_000
+  if (!Number.isFinite(days) || days <= 0) return { sharpe_1y: null, calmar_1y: null }
+
+  const periodRet = last.level / first.level - 1
+  if (!Number.isFinite(periodRet) || periodRet <= -1) return { sharpe_1y: null, calmar_1y: null }
+  const annRet = Math.pow(1 + periodRet, 365 / days) - 1
+
+  const periodicRets: number[] = []
+  const gaps: number[] = []
+  for (let i = 1; i < series.length; i++) {
+    const prev = series[i - 1]
+    const curr = series[i]
+    if (prev.level > 0) periodicRets.push(curr.level / prev.level - 1)
+    const gap = (curr.ts - prev.ts) / 86_400_000
+    if (Number.isFinite(gap) && gap > 0) gaps.push(gap)
+  }
+
+  const medGap = median(gaps)
+  const periodsPerYear = !Number.isFinite(medGap)
+    ? 52
+    : medGap <= 2
+      ? 252
+      : medGap <= 10
+        ? 52
+        : medGap <= 20
+          ? 26
+          : medGap <= 45
+            ? 12
+            : 4
+
+  const vol = periodicRets.length > 1 ? std(periodicRets) * Math.sqrt(periodsPerYear) : NaN
+
+  let peak = series[0].level
+  let maxDrawdown = 0
+  for (const p of series) {
+    if (p.level > peak) peak = p.level
+    const dd = peak > 0 ? (peak - p.level) / peak : 0
+    if (dd > maxDrawdown) maxDrawdown = dd
+  }
+
+  const sharpe = Number.isFinite(vol) && vol > 0 ? annRet / vol : NaN
+  const calmar = maxDrawdown > 0 ? annRet / maxDrawdown : NaN
+
+  return {
+    sharpe_1y: Number.isFinite(sharpe) ? sharpe.toFixed(2) : null,
+    calmar_1y: Number.isFinite(calmar) ? calmar.toFixed(2) : null,
+  }
+}
+
+async function loadOneYearSeries(beianHao: string, productName: string, shortName: string | null): Promise<NavSeriesPoint[]> {
+  const rows = await query<NavSeriesPoint>(
+    `WITH candidates AS (
+       SELECT 1 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+       FROM private_fund_nav_group
+       WHERE beian_hao = $1
+
+       UNION ALL
+
+       SELECT 2 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+       FROM private_fund_nav_group
+       WHERE $2 <> '' AND product_name = $2
+
+       UNION ALL
+
+       SELECT 3 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+       FROM private_fund_nav_group
+       WHERE $3 <> '' AND product_name = $3
+
+       UNION ALL
+
+       SELECT 4 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+       FROM private_fund_nav
+       WHERE beian_hao = $1
+
+       UNION ALL
+
+       SELECT 5 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+       FROM private_fund_nav
+       WHERE $2 <> '' AND product_name = $2
+
+       UNION ALL
+
+       SELECT 6 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+       FROM private_fund_nav
+       WHERE $3 <> '' AND product_name = $3
+     ),
+     best AS (
+       SELECT MIN(pri) AS pri FROM candidates
+     )
+     SELECT c.price_date::text AS price_date, c.level::text AS level
+     FROM candidates c
+     JOIN best b ON c.pri = b.pri
+     WHERE c.price_date >= CURRENT_DATE - INTERVAL '370 days'
+     ORDER BY c.price_date ASC`,
+    [beianHao, productName ?? "", shortName ?? ""]
+  )
+  return rows
+}
+
+async function addOneYearRiskMetrics(rows: TrackRow[]): Promise<TrackRow[]> {
+  if (rows.length === 0) return rows
+  const batchSize = 8
+  const out: TrackRow[] = []
+
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch = rows.slice(i, i + batchSize)
+    const enriched = await Promise.all(
+      batch.map(async (row) => {
+        const series = await loadOneYearSeries(row.beian_hao, row.product_name, row.short_name)
+        const ratios = calcOneYearRatios(series)
+        return { ...row, ...ratios }
+      })
+    )
+    out.push(...enriched)
+  }
+
+  return out
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
@@ -140,23 +319,7 @@ export async function GET(req: Request) {
 
   try {
     const [rows, countRow] = await Promise.all([
-      query<{
-        beian_hao:           string
-        product_name:        string
-        short_name:          string | null
-        strategy_l1:         string | null
-        strategy_l2:         string | null
-        manager:             string | null
-        inception_date:      string | null
-        latest_nav:          string | null
-        latest_nav_date:     string | null
-        latest_price_change: string | null
-        ret_1w:              string | null
-        ret_1m:              string | null
-        ret_3m:              string | null
-        ret_6m:              string | null
-        ret_1y:              string | null
-      }>(
+      query<TrackRow>(
         `SELECT
            i.beian_hao,
            i.product_name,
@@ -177,7 +340,9 @@ export async function GET(req: Request) {
            CASE WHEN h6m.nav IS NOT NULL AND h6m.nav <> 0
              THEN (((${currentNavExpr}) / h6m.nav) - 1)::text END AS ret_6m,
            CASE WHEN h1y.nav IS NOT NULL AND h1y.nav <> 0
-             THEN (((${currentNavExpr}) / h1y.nav) - 1)::text END AS ret_1y
+             THEN (((${currentNavExpr}) / h1y.nav) - 1)::text END AS ret_1y,
+           NULL::text AS sharpe_1y,
+           NULL::text AS calmar_1y
          FROM private_fund_info_bfl i
          ${latestNavJoin}
          ${histJoins}
@@ -192,13 +357,15 @@ export async function GET(req: Request) {
       ),
     ])
 
+    const data = await addOneYearRiskMetrics(rows)
+
     const total = parseInt(countRow[0]?.total ?? "0")
     return NextResponse.json({
       page,
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: rows,
+      data,
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
