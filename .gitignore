@@ -95,3 +95,7 @@ data/settlement_email_config.json
 
 # MOM API cache files
 data/mom-cache/
+
+# Local large tracking imports (never commit)
+nav_csv_group/
+type3_团队跟踪_全量.csv
