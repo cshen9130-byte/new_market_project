@@ -5,40 +5,40 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 interface StrategyRow {
-  strategy_l1: string | null
-  strategy_l2: string | null
-  strategy_l3: string | null
+  strategy_one: string | null
+  strategy_two: string | null
+  strategy_three: string | null
 }
 
-function parsePythonList(s: string | null): string[] {
+function splitStrategyThree(s: string | null): string[] {
   if (!s) return []
-  try {
-    return JSON.parse(s.replace(/'/g, '"')) as string[]
-  } catch {
-    return []
-  }
+  return s
+    .split(/[，,]/)
+    .map((x) => x.trim())
+    .filter(Boolean)
 }
 
 export async function GET() {
   const rows = await query<StrategyRow>(
-    `SELECT DISTINCT strategy_l1, strategy_l2, strategy_l3
+    `SELECT DISTINCT strategy_one, strategy_two, strategy_three
      FROM private_fund_info_bfl
-     WHERE strategy_l1 IS NOT NULL`
+     WHERE strategy_one IS NOT NULL AND strategy_one <> ''`
   )
 
   // Build l1 → l2 → l3[] hierarchy
   const l1Map = new Map<string, Map<string, Set<string>>>()
 
   for (const row of rows) {
-    const l1 = row.strategy_l1!
+    const l1 = row.strategy_one!
     if (!l1Map.has(l1)) l1Map.set(l1, new Map())
     const l2Map = l1Map.get(l1)!
 
-    if (!row.strategy_l2) continue
-    if (!l2Map.has(row.strategy_l2)) l2Map.set(row.strategy_l2, new Set())
-    const l3Set = l2Map.get(row.strategy_l2)!
+    const l2 = row.strategy_two?.trim()
+    if (!l2) continue
+    if (!l2Map.has(l2)) l2Map.set(l2, new Set())
+    const l3Set = l2Map.get(l2)!
 
-    for (const v of parsePythonList(row.strategy_l3)) {
+    for (const v of splitStrategyThree(row.strategy_three)) {
       if (v) l3Set.add(v)
     }
   }

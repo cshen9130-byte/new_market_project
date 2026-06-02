@@ -6,8 +6,8 @@ export const dynamic = "force-dynamic"
 
 const ALLOWED_SORT: Record<string, string> = {
   product_name:    "i.product_name",
-  latest_nav:      "COALESCE(ng.nav, nf.nav)::numeric",
-  latest_nav_date: "COALESCE(ng.price_date, nf.price_date)",
+  latest_nav:      "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
+  latest_nav_date: "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
   ret_1w:          "ret_1w",
   ret_1m:          "ret_1m",
   ret_3m:          "ret_3m",
@@ -15,17 +15,33 @@ const ALLOWED_SORT: Record<string, string> = {
   ret_1y:          "ret_1y",
 }
 
+function navScalarExpr(days: number): string {
+  return `COALESCE(
+    (SELECT ngc.nav::numeric FROM private_fund_nav_group ngc
+     WHERE ngc.beian_hao = i.beian_hao AND ngc.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY ngc.price_date DESC LIMIT 1),
+    (SELECT ngn.nav::numeric FROM private_fund_nav_group ngn
+     WHERE ngn.product_name = i.product_name AND ngn.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY ngn.price_date DESC LIMIT 1),
+    (SELECT ngs.nav::numeric FROM private_fund_nav_group ngs
+     WHERE i.short_name IS NOT NULL AND ngs.product_name = i.short_name AND ngs.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY ngs.price_date DESC LIMIT 1),
+    (SELECT nfc.nav::numeric FROM private_fund_nav nfc
+     WHERE nfc.beian_hao = i.beian_hao AND nfc.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY nfc.price_date DESC LIMIT 1),
+    (SELECT nfn.nav::numeric FROM private_fund_nav nfn
+     WHERE nfn.product_name = i.product_name AND nfn.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY nfn.price_date DESC LIMIT 1),
+    (SELECT nfs.nav::numeric FROM private_fund_nav nfs
+     WHERE i.short_name IS NOT NULL AND nfs.product_name = i.short_name AND nfs.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY nfs.price_date DESC LIMIT 1)
+  )`
+}
+
 // Build a LATERAL subquery that gets the closest NAV on or before a given offset
 function navAtOffset(alias: string, days: number): string {
   return `LEFT JOIN LATERAL (
-    SELECT COALESCE(
-      (SELECT nav::numeric FROM private_fund_nav_group
-       WHERE beian_hao = i.beian_hao AND price_date <= CURRENT_DATE - INTERVAL '${days} days'
-       ORDER BY price_date DESC LIMIT 1),
-      (SELECT nav::numeric FROM private_fund_nav
-       WHERE beian_hao = i.beian_hao AND price_date <= CURRENT_DATE - INTERVAL '${days} days'
-       ORDER BY price_date DESC LIMIT 1)
-    ) AS nav
+    SELECT ${navScalarExpr(days)} AS nav
   ) ${alias} ON true`
 }
 
@@ -48,15 +64,15 @@ export async function GET(req: Request) {
 
   if (strategyL1) {
     filterParams.push(strategyL1)
-    where.push(`i.strategy_l1 = $${filterParams.length}`)
+    where.push(`i.strategy_one = $${filterParams.length}`)
   }
   if (strategyL2) {
     filterParams.push(strategyL2)
-    where.push(`i.strategy_l2 = $${filterParams.length}`)
+    where.push(`i.strategy_two = $${filterParams.length}`)
   }
   if (strategyL3) {
-    filterParams.push(`%'${strategyL3}'%`)
-    where.push(`i.strategy_l3 LIKE $${filterParams.length}`)
+    filterParams.push(`%${strategyL3}%`)
+    where.push(`COALESCE(i.strategy_three, '') ILIKE $${filterParams.length}`)
   }
   if (keyword) {
     filterParams.push(`%${keyword}%`)
@@ -79,11 +95,39 @@ export async function GET(req: Request) {
     ) ng ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group
+      WHERE product_name = i.product_name
+      ORDER BY price_date DESC LIMIT 1
+    ) ng_name ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name
+      ORDER BY price_date DESC LIMIT 1
+    ) ng_short ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav
       WHERE beian_hao = i.beian_hao
       ORDER BY price_date DESC LIMIT 1
     ) nf ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav
+      WHERE product_name = i.product_name
+      ORDER BY price_date DESC LIMIT 1
+    ) nf_name ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name
+      ORDER BY price_date DESC LIMIT 1
+    ) nf_short ON true
   `
+
+  const currentNavExpr = "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nf.nav, nf_name.nav, nf_short.nav)"
+  const currentDateExpr = "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)"
+  const currentPctExpr = "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)"
 
   // Historical NAV at each window for period-return calculation
   const histJoins = [
@@ -117,23 +161,23 @@ export async function GET(req: Request) {
            i.beian_hao,
            i.product_name,
            i.short_name,
-           i.strategy_l1,
-           i.strategy_l2,
-           i.manager,
-           i.inception_date::text                         AS inception_date,
-           COALESCE(ng.nav, nf.nav)::text                 AS latest_nav,
-           COALESCE(ng.price_date, nf.price_date)::text   AS latest_nav_date,
-           COALESCE(ng.price_change, nf.price_change)::text AS latest_price_change,
+           i.strategy_one                                AS strategy_l1,
+           i.strategy_two                                AS strategy_l2,
+           NULL::text                                    AS manager,
+           NULL::text                                    AS inception_date,
+           ${currentNavExpr}::text                         AS latest_nav,
+           ${currentDateExpr}::text                        AS latest_nav_date,
+           ${currentPctExpr}::text                         AS latest_price_change,
            CASE WHEN h1w.nav IS NOT NULL AND h1w.nav <> 0
-                THEN ((COALESCE(ng.nav, nf.nav) / h1w.nav) - 1)::text END AS ret_1w,
+             THEN (((${currentNavExpr}) / h1w.nav) - 1)::text END AS ret_1w,
            CASE WHEN h1m.nav IS NOT NULL AND h1m.nav <> 0
-                THEN ((COALESCE(ng.nav, nf.nav) / h1m.nav) - 1)::text END AS ret_1m,
+             THEN (((${currentNavExpr}) / h1m.nav) - 1)::text END AS ret_1m,
            CASE WHEN h3m.nav IS NOT NULL AND h3m.nav <> 0
-                THEN ((COALESCE(ng.nav, nf.nav) / h3m.nav) - 1)::text END AS ret_3m,
+             THEN (((${currentNavExpr}) / h3m.nav) - 1)::text END AS ret_3m,
            CASE WHEN h6m.nav IS NOT NULL AND h6m.nav <> 0
-                THEN ((COALESCE(ng.nav, nf.nav) / h6m.nav) - 1)::text END AS ret_6m,
+             THEN (((${currentNavExpr}) / h6m.nav) - 1)::text END AS ret_6m,
            CASE WHEN h1y.nav IS NOT NULL AND h1y.nav <> 0
-                THEN ((COALESCE(ng.nav, nf.nav) / h1y.nav) - 1)::text END AS ret_1y
+             THEN (((${currentNavExpr}) / h1y.nav) - 1)::text END AS ret_1y
          FROM private_fund_info_bfl i
          ${latestNavJoin}
          ${histJoins}
