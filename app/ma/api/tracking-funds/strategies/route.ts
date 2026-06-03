@@ -10,6 +10,23 @@ interface StrategyRow {
   strategy_three: string | null
 }
 
+type StrategySource = "company" | "platform"
+
+function normalizeStrategySource(raw: string | null): StrategySource {
+  return (raw || "").trim().toLowerCase() === "platform" ? "platform" : "company"
+}
+
+function rawStrategyJsonExpr(alias: string): string {
+  const rawText = `LTRIM(COALESCE(${alias}.raw_strategy, ''))`
+  return `
+    CASE
+      WHEN LEFT(${rawText}, 2) = '{"' THEN ${rawText}::jsonb
+      WHEN LEFT(${rawText}, 2) = '{' || CHR(39) THEN REPLACE(${rawText}, CHR(39), CHR(34))::jsonb
+      ELSE '{}'::jsonb
+    END
+  `.trim()
+}
+
 function splitStrategyThree(s: string | null): string[] {
   if (!s) return []
   return s
@@ -18,11 +35,27 @@ function splitStrategyThree(s: string | null): string[] {
     .filter(Boolean)
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url)
+  const strategySource = normalizeStrategySource(searchParams.get("strategy_source"))
+  const sourceJsonExpr = rawStrategyJsonExpr("p")
+  const strategyL1Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
+  const strategyL2Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
+  const strategyL3Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
+
   const rows = await query<StrategyRow>(
-    `SELECT DISTINCT strategy_one, strategy_two, strategy_three
-     FROM private_fund_info_bfl
-     WHERE strategy_one IS NOT NULL AND strategy_one <> ''`
+    `SELECT DISTINCT
+       s.strategy_one,
+       s.strategy_two,
+       s.strategy_three
+     FROM private_fund_info_bfl p
+     CROSS JOIN LATERAL (
+       SELECT
+         ${strategyL1Expr} AS strategy_one,
+         ${strategyL2Expr} AS strategy_two,
+         ${strategyL3Expr} AS strategy_three
+     ) s
+     WHERE s.strategy_one IS NOT NULL`
   )
 
   // Build l1 → l2 → l3[] hierarchy

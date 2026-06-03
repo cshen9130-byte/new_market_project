@@ -75,6 +75,23 @@ interface TrackRow {
   calmar_1y: string | null
 }
 
+type StrategySource = "company" | "platform"
+
+function normalizeStrategySource(raw: string | null): StrategySource {
+  return raw === "platform" ? "platform" : "company"
+}
+
+function rawStrategyJsonExpr(alias: string): string {
+  const rawText = `LTRIM(COALESCE(${alias}.raw_strategy, ''))`
+  return `
+    CASE
+      WHEN LEFT(${rawText}, 2) = '{"' THEN ${rawText}::jsonb
+      WHEN LEFT(${rawText}, 2) = '{' || CHR(39) THEN REPLACE(${rawText}, CHR(39), CHR(34))::jsonb
+      ELSE '{}'::jsonb
+    END
+  `.trim()
+}
+
 function std(values: number[]): number {
   if (values.length <= 1) return NaN
   const mean = values.reduce((sum, v) => sum + v, 0) / values.length
@@ -236,22 +253,28 @@ export async function GET(req: Request) {
   const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
   const strategyL2 = (searchParams.get("strategy_l2") || "").trim()
   const strategyL3 = (searchParams.get("strategy_l3") || "").trim()
+  const strategySource = normalizeStrategySource((searchParams.get("strategy_source") || "").trim().toLowerCase())
   const orderCol = ALLOWED_SORT[sortKey] ?? "i.product_name"
+
+  const sourceJsonExpr = rawStrategyJsonExpr("i")
+  const strategyL1Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
+  const strategyL2Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
+  const strategyL3Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
 
   const filterParams: (string | number)[] = []
   const where: string[] = []
 
   if (strategyL1) {
     filterParams.push(strategyL1)
-    where.push(`i.strategy_one = $${filterParams.length}`)
+    where.push(`${strategyL1Expr} = $${filterParams.length}`)
   }
   if (strategyL2) {
     filterParams.push(strategyL2)
-    where.push(`i.strategy_two = $${filterParams.length}`)
+    where.push(`${strategyL2Expr} = $${filterParams.length}`)
   }
   if (strategyL3) {
     filterParams.push(`%${strategyL3}%`)
-    where.push(`COALESCE(i.strategy_three, '') ILIKE $${filterParams.length}`)
+    where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
   }
   if (keyword) {
     filterParams.push(`%${keyword}%`)
@@ -324,8 +347,8 @@ export async function GET(req: Request) {
            i.beian_hao,
            i.product_name,
            i.short_name,
-           i.strategy_one                                AS strategy_l1,
-           i.strategy_two                                AS strategy_l2,
+            ${strategyL1Expr}                             AS strategy_l1,
+            ${strategyL2Expr}                             AS strategy_l2,
            NULL::text                                    AS manager,
            NULL::text                                    AS inception_date,
            ${currentNavExpr}::text                         AS latest_nav,

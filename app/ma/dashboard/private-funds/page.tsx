@@ -1178,10 +1178,13 @@ interface TrackStrategyNode {
   l2s: { l2: string; l3s: string[] }[]
 }
 
+type TrackStrategySource = "company" | "platform"
+
 function InvestmentTrackingView() {
   const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
   const [activePool, setActivePool] = useState("bfl")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
+  const [strategySource, setStrategySource] = useState<TrackStrategySource>("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
   const [strategyL2, setStrategyL2] = useState("")
@@ -1206,13 +1209,14 @@ function InvestmentTrackingView() {
     ? (l2Options.find((n) => n.l2 === strategyL2)?.l3s ?? [])
     : []
 
-  // Fetch strategy hierarchy once
+  // Fetch strategy hierarchy by source
   useEffect(() => {
-    fetch("/ma/api/tracking-funds/strategies")
+    const params = new URLSearchParams({ strategy_source: strategySource })
+    fetch(`/ma/api/tracking-funds/strategies?${params}`)
       .then((r) => r.json())
       .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
       .catch(() => {})
-  }, [])
+  }, [strategySource])
 
   const isBfl = activePool === "bfl"
   const totalPages = Math.max(1, Math.ceil(total / 50))
@@ -1258,13 +1262,14 @@ function InvestmentTrackingView() {
       strategy_l1: strategyL1,
       strategy_l2: strategyL2,
       strategy_l3: strategyL3,
+      strategy_source: strategySource,
     })
     fetch(`/ma/api/tracking-funds/list?${params}`)
       .then((r) => r.json())
       .then((d) => { setData(d.data ?? []); setTotal(d.total ?? 0) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [isBfl, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3])
+  }, [isBfl, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, strategySource])
 
   return (
     <div className="flex flex-col h-full">
@@ -1345,6 +1350,25 @@ function InvestmentTrackingView() {
             <div className="flex items-start px-4 py-2">
               <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
               <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <select
+                    value={strategySource}
+                    onChange={(e) => {
+                      const next = e.target.value as TrackStrategySource
+                      if (strategySource === next) return
+                      setStrategySource(next)
+                      setStrategyL1("")
+                      setStrategyL2("")
+                      setStrategyL3("")
+                      setPage(1)
+                    }}
+                    className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="company">团队策略</option>
+                    <option value="platform">平台策略</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+                </div>
                 <span
                   onClick={() => { setStrategyL1(""); setStrategyL2(""); setStrategyL3(""); setPage(1) }}
                   className={[
