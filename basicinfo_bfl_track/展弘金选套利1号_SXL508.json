@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "展弘金选套利1号",
+  "fund_name": "展弘金选套利1号私募证券投资基金",
+  "register_number": "SXL508",
+  "fund_type": 2,
+  "advisor": "上海展弘投资",
+  "advisor2": "",
+  "inception_date": "2022-10-12",
+  "puton_date": "2022-10-13",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "黎扬海",
+      "id": "649128077d3dad38"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1015638"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期货套利",
+      "strategy_three": "跨市场套利"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "新伯霖健康成长1号B期",
+  "fund_name": "新伯霖健康成长1号私募证券投资基金B期",
+  "register_number": "STZ565",
+  "fund_type": 2,
+  "advisor": "上海新伯霖",
+  "advisor2": "",
+  "inception_date": "2022-08-10",
+  "puton_date": "2022-08-16",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "基金成立之后的每周周三，如遇非交易日，则顺延至下一交易日。临时开放日仅允许赎回。",
+    "is_temporary_open": 3,
+    "fee_purchase": "本基金申购费率为 1%。募集机构有权减免申购费率。",
+    "add_amount": "基金投资者首次净认购金额应不低于 100 万元人民币（不含认购费，且本合同“私募基金的募集对象”中的“特殊合格投资者”不受此限）",
+    "fee_redeem": "本基金份额持有期低于 365 天（不含）的赎回费率为 2%，基金份额持有期在 365 天及以上的赎回费率为 0%。 本基金赎回费归私募基金管理人所有。 管理人有权减免赎回费率。",
+    "precautious_line": "0.8",
+    "closed_period": "无",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "R= 15%，为业绩报酬提取比例；",
+    "scale": "5-10亿元",
+    "register_code": "P1071580"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

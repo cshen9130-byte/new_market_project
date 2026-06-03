@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "福克斯-蜂鸟科技创新3号",
+  "fund_name": "福克斯-蜂鸟科技创新3号私募证券投资基金",
+  "register_number": "SAVM60",
+  "fund_type": 2,
+  "advisor": "深圳福克斯投资",
+  "advisor2": "",
+  "inception_date": "2025-03-31",
+  "puton_date": "2025-04-09",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周的周二、周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于3个月，赎回费率0.5%；持有期大等于3个月，赎回费率0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "A类份额：1%；B类份额：0%",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "参照北证50（代码 899050），A类份额计提超额部分50%；B类0%",
+    "scale": "10-20亿元",
+    "register_code": "P1065770"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "风格指增",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "平安信托平安30CTA精选1号FOF",
+  "fund_name": "平安信托平安30CTA精选1号FOF集合资金信托计划",
+  "register_number": "ZXD202511270000000195",
+  "fund_type": 13,
+  "advisor": "平安信托",
+  "advisor2": "",
+  "inception_date": "2026-02-03",
+  "puton_date": "2026-02-09",
+  "mandator_name": "",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "",
+    "register_code": ""
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "混合均衡"
+    }
+  }
+}

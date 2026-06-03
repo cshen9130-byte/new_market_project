@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "静观悟道帅猫进取",
+  "fund_name": "静观悟道帅猫进取私募证券投资基金",
+  "register_number": "STK752",
+  "fund_type": 2,
+  "advisor": "厦门静观悟道投资",
+  "advisor2": "",
+  "inception_date": "2021-12-03",
+  "puton_date": "2021-12-13",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [
+    {
+      "name": "魏淮瑰",
+      "id": "deb824bdac1340b7"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1024992"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "交易型"
+    }
+  }
+}

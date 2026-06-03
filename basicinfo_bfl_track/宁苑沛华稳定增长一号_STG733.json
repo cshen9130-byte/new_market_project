@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "宁苑沛华稳定增长一号",
+  "fund_name": "宁苑沛华稳定增长一号私募证券投资基金",
+  "register_number": "STG733",
+  "fund_type": 2,
+  "advisor": "上海宁苑资管",
+  "advisor2": "",
+  "inception_date": "2021-11-29",
+  "puton_date": "2021-12-06",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "A份额：D<365，1%；B份额：无；C份额：D<730，1%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.02,
+    "fee_trust": "0.015%",
+    "fee_manage": "B份额不收取管理费",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "B份额不收取业绩报酬。\n本基金业绩报酬计提基准日分为固定计提基准日、赎回申请日和基金终止日，固定计提基准日为每年6月、12月的最后一个工作日。\n在固定计提确认日，对未赎回基金份额计算业绩报酬，按照本次计提基准日的基金份额净值将业绩报酬折算为等值的基金份额，从对应的认购/申购记录中强制扣减相应数量的基金份额。\n本基金默认采用红利再投资。",
+    "scale": "50-100亿元",
+    "register_code": "P1018867"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

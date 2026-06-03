@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "集微投资2期",
+  "fund_name": "集微投资2期私募证券投资基金",
+  "register_number": "SGA681",
+  "fund_type": 2,
+  "advisor": "上海集微",
+  "advisor2": "",
+  "inception_date": "2019-03-21",
+  "puton_date": "2019-03-27",
+  "mandator_name": "中泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每自然月5号",
+    "is_temporary_open": 0,
+    "fee_purchase": "无",
+    "add_amount": "",
+    "fee_redeem": "无",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.03%",
+    "fee_manage": "1.50%",
+    "fee_admin_service": "0.06%\n",
+    "fee_pay": "对持有期年化收益率大于0%部分提取20%",
+    "scale": "50-100亿元",
+    "register_code": "P1062961"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "混合均衡,中高频"
+    }
+  }
+}

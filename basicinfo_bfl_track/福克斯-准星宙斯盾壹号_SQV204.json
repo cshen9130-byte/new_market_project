@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "福克斯-准星宙斯盾壹号",
+  "fund_name": "福克斯-准星宙斯盾壹号私募证券投资基金",
+  "register_number": "SQV204",
+  "fund_type": 2,
+  "advisor": "深圳福克斯投资",
+  "advisor2": "",
+  "inception_date": "2021-06-21",
+  "puton_date": "2021-06-28",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "汪沛",
+      "id": "4c1dd7a4ab72845f"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "0.85",
+    "closed_period": "无",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.04%",
+    "fee_manage": "A类份额：1%，B类份额：0%",
+    "fee_admin_service": "0.04%",
+    "fee_pay": "A 类份额业绩报酬的提取比例（Y）为【20】%，B 类份额业绩报酬的\n提取比例（Y）为【0】%。",
+    "scale": "10-20亿元",
+    "register_code": "P1065770"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "1000指增",
+      "strategy_three": "高频,量价"
+    }
+  }
+}

@@ -27,26 +27,12 @@ if sys.platform == "win32":
 # Patch requests to enforce a 30-second timeout on all akshare HTTP calls.
 # Without this, a single hung HTTP connection stalls the whole script.
 import pickle
-import requests
-import requests.adapters as _ra
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-_orig_send = _ra.HTTPAdapter.send
-def _send_with_timeout(self, request, **kwargs):
-    # requests.Session.send() always passes timeout=None explicitly, so
-    # setdefault() is ineffective — use an explicit None check instead.
-    if kwargs.get("timeout") is None:
-        kwargs["timeout"] = 30
-    return _orig_send(self, request, **kwargs)
-_ra.HTTPAdapter.send = _send_with_timeout
 
 # Suppress tqdm progress bars so they don't pollute stdout when running
 # headless (e.g., spawned by Node.js child_process).
 import os as _os
 _os.environ.setdefault("TQDM_DISABLE", "1")
-
-import akshare as ak
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -267,6 +253,27 @@ def _save_market_cache(df: pd.DataFrame, start_date: str, end_date: str) -> None
 # Remaining functions identical to the CSV version
 # ---------------------------------------------------------------------------
 
+import re as _re
+_CZCE_3DIGIT = _re.compile(r'^([A-Z]+)([0-9])(\d{2})$')
+
+
+def _to_canonical(sym: str) -> str:
+    """Normalize CZCE 3-digit contract codes to 4-digit format used in DB.
+
+    CZCE traditionally encodes contracts as e.g. FG605 (product=FG, year=6, month=05).
+    The database stores them as FG2605.  All other exchanges already use 4-digit
+    year format (AL2605, JD2606, LC2606 …) so they pass through unchanged.
+    """
+    s = sym.upper()
+    m = _CZCE_3DIGIT.match(s)
+    if m:
+        product, year_digit, month = m.groups()
+        # 2-digit year: digit 5-9 → "2X" (2025-2029), digit 0-4 → "3X" (2030-2034)
+        decade = "2" if int(year_digit) >= 5 else "3"
+        return f"{product}{decade}{year_digit}{month}"
+    return s
+
+
 def fetch_market_history(trades: pd.DataFrame) -> pd.DataFrame:
     # Exclude options contracts (product names containing '期权', or instrument
     # codes containing '-P-' / '-C-' for puts/calls).
@@ -276,14 +283,10 @@ def fetch_market_history(trades: pd.DataFrame) -> pd.DataFrame:
     )
     futures_trades = trades[~is_option]
     relevant = futures_trades[["product", "instrument"]].drop_duplicates().copy()
-    relevant["symbol"] = relevant["instrument"].str.upper()
-    relevant["market"] = relevant["product"].map(PRODUCT_MARKET)
-    unmapped = relevant.loc[relevant["market"].isna(), "product"].unique().tolist()
-    if unmapped:
-        print(f"[WARN] 以下品种未在 PRODUCT_MARKET 中配置，将跳过行情获取: {unmapped}", flush=True)
+    # Canonicalize: convert CZCE 3-digit codes (FG605) to 4-digit (FG2605) so
+    # they match the DB column raw_futures_contracts_daily.contract.
+    relevant["symbol"] = relevant["instrument"].apply(_to_canonical)
 
-    # Use a 20-day lookback (instead of 45) to keep the per-exchange HTTP
-    # requests manageable — each exchange iterates day-by-day, ~5s/request.
     start_date = (trades["trade_date"].min() - pd.Timedelta(days=20)).strftime("%Y%m%d")
     end_date = trades["trade_date"].max().strftime("%Y%m%d")
 
@@ -291,132 +294,75 @@ def fetch_market_history(trades: pd.DataFrame) -> pd.DataFrame:
     if cached is not None:
         return cached
 
-    # ------------------------------------------------------------------ #
-    # Parallel fetch: all four exchanges run simultaneously via threads.  #
-    # GFEX/SHFE: get_futures_daily (one request per trading day)         #
-    # CZCE: get_czce_daily per trading day (different URL, no SSL issue) #
-    # DCE: futures_zh_daily_sina per symbol (full history per symbol)    #
-    # ------------------------------------------------------------------ #
-    def _fetch_exchange(market: str) -> pd.DataFrame:
-        """Fetch GFEX or SHFE via get_futures_daily (works reliably)."""
-        needed = relevant.loc[relevant["market"] == market, "symbol"].unique().tolist()
-        if not needed:
-            return pd.DataFrame()
-        print(f"[AK] Fetching {market} market data…", flush=True)
-        try:
-            df = ak.get_futures_daily(start_date=start_date, end_date=end_date, market=market)
-        except Exception as exc:
-            print(f"[AK] ERROR {market}: {type(exc).__name__}: {exc}", flush=True)
-            return pd.DataFrame()
-        if df.empty:
-            return pd.DataFrame()
-        df["date"] = pd.to_datetime(df["date"].astype(str))
-        df["symbol"] = df["symbol"].astype(str).str.upper()
-        for col in ["open", "high", "low", "close", "volume", "open_interest", "turnover", "settle", "pre_settle"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        result = df[df["symbol"].isin(needed)].copy()
-        print(f"[AK] {market} done ({len(result)} rows for {len(needed)} symbols).", flush=True)
-        return result
+    needed_symbols = relevant["symbol"].unique().tolist()
+    start_dt = pd.to_datetime(start_date).date()
+    end_dt = pd.to_datetime(end_date).date()
 
-    def _fetch_czce() -> pd.DataFrame:
-        """Fetch CZCE via get_czce_daily per trading day (avoids SSL issues with main API)."""
-        needed = relevant.loc[relevant["market"] == "CZCE", "symbol"].unique().tolist()
-        if not needed:
-            return pd.DataFrame()
-        print("[AK] Fetching CZCE market data…", flush=True)
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        bdays = pd.bdate_range(start=start_dt, end=end_dt, freq="B")
-        day_frames: list[pd.DataFrame] = []
-        for d in bdays:
-            date_str = d.strftime("%Y%m%d")
-            try:
-                df = ak.get_czce_daily(date=date_str)
-                if df is None or df.empty:
-                    continue
-                df["date"] = d
-                df["symbol"] = df["symbol"].astype(str).str.upper()
-                for col in ["open", "high", "low", "close", "volume", "open_interest", "settle", "pre_settle"]:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                filtered = df[df["symbol"].isin(needed)].copy()
-                if not filtered.empty:
-                    day_frames.append(filtered)
-            except Exception:
-                pass  # skip non-trading days or transient errors
-        result = pd.concat(day_frames, ignore_index=True) if day_frames else pd.DataFrame()
-        print(f"[AK] CZCE done ({len(result)} rows for {len(needed)} symbols).", flush=True)
-        return result
+    print(f"[DB] Fetching market data for {len(needed_symbols)} symbols from raw_futures_contracts_daily…", flush=True)
 
-    def _fetch_dce() -> pd.DataFrame:
-        """Fetch DCE via futures_zh_daily_sina per symbol (full history, filter by date range)."""
-        needed = relevant.loc[relevant["market"] == "DCE", "symbol"].unique().tolist()
-        if not needed:
-            return pd.DataFrame()
-        print(f"[AK] Fetching DCE market data ({len(needed)} symbols)…", flush=True)
-        start_dt = pd.to_datetime(start_date)
-        end_dt = pd.to_datetime(end_date)
-        sym_frames: list[pd.DataFrame] = []
-        for symbol in needed:
-            try:
-                df = ak.futures_zh_daily_sina(symbol=symbol)
-                if df is None or df.empty:
-                    continue
-                df["date"] = pd.to_datetime(df["date"])
-                df = df[(df["date"] >= start_dt) & (df["date"] <= end_dt)]
-                if df.empty:
-                    continue
-                df = df.copy()
-                df["symbol"] = symbol.upper()
-                df["open_interest"] = pd.to_numeric(df["hold"], errors="coerce")
-                for col in ["open", "high", "low", "close", "volume", "settle"]:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-                df["pre_settle"] = df["settle"].shift(1)
-                sym_frames.append(df[["date", "symbol", "open", "high", "low", "close",
-                                      "volume", "open_interest", "settle", "pre_settle"]].copy())
-            except Exception as exc:
-                print(f"[AK] DCE {symbol} error: {type(exc).__name__}: {exc}", flush=True)
-        result = pd.concat(sym_frames, ignore_index=True) if sym_frames else pd.DataFrame()
-        print(f"[AK] DCE done ({len(result)} rows for {len(sym_frames)} symbols).", flush=True)
-        return result
+    db_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://market_user:2026SmartDashboard!@127.0.0.1:5433/market_data",
+    )
+    conn = psycopg2.connect(db_url, connect_timeout=8)
+    try:
+        with conn.cursor() as cur:
+            # DISTINCT ON deduplicates (trade_date, symbol) keeping the row with
+            # an exchange suffix (e.g. AL2606.SHF over AL2606) when both exist.
+            cur.execute(
+                """
+                SELECT DISTINCT ON (trade_date, sym)
+                    trade_date,
+                    UPPER(SPLIT_PART(contract, '.', 1)) AS sym,
+                    open, high, low, close,
+                    clear        AS settle,
+                    preclear     AS pre_settle,
+                    volume,
+                    hqoi         AS open_interest
+                FROM raw_futures_contracts_daily
+                WHERE trade_date BETWEEN %s AND %s
+                  AND UPPER(SPLIT_PART(contract, '.', 1)) = ANY(%s)
+                  AND clear IS NOT NULL
+                ORDER BY trade_date, sym,
+                    CASE WHEN contract LIKE '%%.%%' THEN 0 ELSE 1 END,
+                    contract
+                """,
+                (start_dt, end_dt, needed_symbols),
+            )
+            cols = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+    finally:
+        conn.close()
 
-    tasks: list = []
-    for m in ["GFEX", "SHFE"]:
-        if relevant.loc[relevant["market"] == m, "symbol"].unique().tolist():
-            tasks.append(("exchange", m))
-    if relevant.loc[relevant["market"] == "CZCE", "symbol"].unique().tolist():
-        tasks.append(("czce", None))
-    if relevant.loc[relevant["market"] == "DCE", "symbol"].unique().tolist():
-        tasks.append(("dce", None))
-
-    frames: list[pd.DataFrame] = []
-    with ThreadPoolExecutor(max_workers=min(len(tasks), 6)) as pool:
-        future_map = {}
-        for kind, arg in tasks:
-            if kind == "exchange":
-                future_map[pool.submit(_fetch_exchange, arg)] = arg
-            elif kind == "czce":
-                future_map[pool.submit(_fetch_czce)] = "CZCE"
-            else:
-                future_map[pool.submit(_fetch_dce)] = "DCE"
-        for fut in as_completed(future_map):
-            df = fut.result()
-            if not df.empty:
-                frames.append(df)
-
-    if not frames:
+    if not rows:
+        print("[DB] No market data found in DB.", flush=True)
         return pd.DataFrame()
 
-    market_hist = pd.concat(frames, ignore_index=True).drop_duplicates(["date", "symbol"])
-    market_hist = market_hist.sort_values(["symbol", "date"]).reset_index(drop=True)
+    df = pd.DataFrame(rows, columns=cols)
+    df = df.rename(columns={"sym": "symbol", "trade_date": "date"})
+    df["date"] = pd.to_datetime(df["date"])
+    df["symbol"] = df["symbol"].astype(str)
+    for col in ["open", "high", "low", "close", "settle", "pre_settle", "volume", "open_interest"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    found_symbols = set(df["symbol"].unique())
+    missing = set(needed_symbols) - found_symbols
+    if missing:
+        print(f"[DB] Symbols not found in DB (settle data unavailable): {sorted(missing)}", flush=True)
+    else:
+        print(f"[DB] All {len(needed_symbols)} symbols found in DB ({len(df)} rows).", flush=True)
+
+    market_hist = df.sort_values(["symbol", "date"]).reset_index(drop=True)
     _save_market_cache(market_hist, start_date, end_date)
     return market_hist
 
 
 def build_trade_market_table(trades: pd.DataFrame, market_hist: pd.DataFrame) -> pd.DataFrame:
     merged = trades.copy()
-    merged["symbol"] = merged["instrument"].str.upper()
+    # Use canonical 4-digit format so CZCE contracts like FG605 → FG2605 match
+    # the symbols stored in market_hist (which come from the DB in 4-digit form).
+    merged["symbol"] = merged["instrument"].apply(_to_canonical)
     merged = merged.merge(
         market_hist[["date", "symbol", "open", "high", "low", "close", "settle", "pre_settle", "volume", "open_interest"]],
         left_on=["trade_date", "symbol"],
@@ -900,7 +846,7 @@ def main() -> None:
     ensure_output_dirs()
     configure_matplotlib()
     account, trades, positions, closed = load_data_from_db()
-    print("[INFO] Fetching market history from akshare…")
+    print("[INFO] Fetching market data from database…")
     market_hist = fetch_market_history(trades)
     trade_mkt = build_trade_market_table(trades, market_hist)
     if trade_mkt["settle"].isna().any():

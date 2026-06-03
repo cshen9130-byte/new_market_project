@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "交睿宏观配置5号A类",
+  "fund_name": "交睿宏观配置5号私募证券投资基金A类份额",
+  "register_number": "ZY084A",
+  "fund_type": 2,
+  "advisor": "上海交睿",
+  "advisor2": "",
+  "inception_date": "2023-04-25",
+  "puton_date": "2023-05-06",
+  "mandator_name": "华鑫证券有限责任公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "扣除申购费的净追加申购金额应不低于1万元人民币",
+    "fee_redeem": "持有期限小于3个月为0.5%；持有期限大于等于3个月为0%",
+    "precautious_line": "0.85",
+    "closed_period": "无",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.010%",
+    "fee_manage": "1.0%",
+    "fee_admin_service": "0.010%",
+    "fee_pay": "基金管理人对期间年化收益率超过【20%】的部分提取【20%】作为业绩报酬",
+    "scale": "20-50亿元",
+    "register_code": "P1064961"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

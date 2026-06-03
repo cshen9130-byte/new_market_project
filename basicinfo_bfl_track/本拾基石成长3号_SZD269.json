@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "本拾基石成长3号",
+  "fund_name": "本拾基石成长3号私募证券投资基金",
+  "register_number": "SZD269",
+  "fund_type": 2,
+  "advisor": "上海本拾",
+  "advisor2": "",
+  "inception_date": "2023-01-20",
+  "puton_date": "2023-01-30",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "谭聪",
+      "id": "7332e0252e10ab5d"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个工作日开放申购，每月最后一个工作日开放赎回",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于180天，赎回费率为1%；持有期大等于180天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "15%",
+    "scale": "0-5亿元",
+    "register_code": "P1072573"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

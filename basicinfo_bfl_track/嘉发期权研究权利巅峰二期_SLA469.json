@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "嘉发期权研究权利巅峰二期",
+  "fund_name": "嘉发期权研究权利巅峰二期私募证券投资基金",
+  "register_number": "SLA469",
+  "fund_type": 2,
+  "advisor": "深圳嘉发资管",
+  "advisor2": "",
+  "inception_date": "2020-08-05",
+  "puton_date": "2020-08-11",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "聂雄",
+      "id": "eb11ab0dce519f9e"
+    },
+    {
+      "name": "罗文波",
+      "id": "288ac7c0da4cf336"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "申购开放日为每周周五、每月最后一个交易日；赎回开放日为每自然季度末月最后一个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%（可申请减免）",
+    "add_amount": "1万整数倍",
+    "fee_redeem": "持有期小于180天，赎回费率为0.5%；持有期大等于180天，赎回费率为 0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "B类份额：1%",
+    "fee_admin_service": "",
+    "fee_pay": "B类份额：业绩报酬20%",
+    "scale": "0-5亿元",
+    "register_code": "P1009007"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "场内期权",
+      "strategy_three": "中性波动率交易"
+    }
+  }
+}

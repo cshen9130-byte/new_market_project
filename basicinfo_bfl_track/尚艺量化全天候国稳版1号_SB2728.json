@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "尚艺量化全天候国稳版1号",
+  "fund_name": "尚艺量化全天候国稳版1号私募证券投资基金",
+  "register_number": "SB2728",
+  "fund_type": 2,
+  "advisor": "北京尚艺",
+  "advisor2": "",
+  "inception_date": "2023-06-13",
+  "puton_date": "2023-06-13",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周二、周三",
+    "is_temporary_open": 3,
+    "fee_purchase": "A类份额： 0%；B类份额：0%；C类份额：0.5%",
+    "add_amount": "1万元起",
+    "fee_redeem": "A类份额、B类份额：持有期小于6个月，赎回费率为0.5%；持有期大等于6个月，赎回费率为0%。C类份额：持有期小于6个月，赎回费率为1%；持有期大等于6个月且小于12个月，赎回费率为0.5%；持有期大等于12个月，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.013%",
+    "fee_manage": "A类份额：0%，B类份额：1.5%，C类份额：1%",
+    "fee_admin_service": "0.013%",
+    "fee_pay": "管理人将根据委托人每笔投资的期间年化收益率（R），对期间年化收益率超过 5.2%以上部分按照比例 Y 收取业绩报酬。其中，B 类份额业绩报酬的提取比例（Y）为【40】%，C类份额业绩报酬的提取比例（Y）为【40】%。",
+    "scale": "50-100亿元",
+    "register_code": "P1006152"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

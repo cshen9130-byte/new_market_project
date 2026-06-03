@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "晨乐佳享9号",
+  "fund_name": "晨乐佳享9号私募证券投资基金",
+  "register_number": "SNP119",
+  "fund_type": 2,
+  "advisor": "北京晨乐资管",
+  "advisor2": "",
+  "inception_date": "2021-01-20",
+  "puton_date": "2021-01-28",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [
+    {
+      "name": "过绿洲",
+      "id": "034850e87e232b31"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1064140"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "中高频"
+    }
+  }
+}

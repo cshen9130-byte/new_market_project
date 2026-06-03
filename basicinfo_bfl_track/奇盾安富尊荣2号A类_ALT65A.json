@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "奇盾安富尊荣2号A类",
+  "fund_name": "奇盾安富尊荣2号私募证券投资基金A类份额",
+  "register_number": "ALT65A",
+  "fund_type": 2,
+  "advisor": "上海奇盾世家",
+  "advisor2": "",
+  "inception_date": "2024-06-18",
+  "puton_date": "2024-06-27",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周三",
+    "is_temporary_open": 3,
+    "fee_purchase": "0",
+    "add_amount": "",
+    "fee_redeem": "少于90天,1%\n归基金",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "20%\n基准=中证转债指数\n分红时计提后收益不为负",
+    "scale": "20-50亿元",
+    "register_code": "P1062571"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "可转债多头",
+      "strategy_three": "量化"
+    }
+  }
+}

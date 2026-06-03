@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "大树隽清绝对收益聚配1号A类",
+  "fund_name": "大树隽清绝对收益聚配1号私募证券投资基金A类份额",
+  "register_number": "AQF79A",
+  "fund_type": 2,
+  "advisor": "深圳大树",
+  "advisor2": "",
+  "inception_date": "2024-10-29",
+  "puton_date": "2024-11-08",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周四、周五",
+    "is_temporary_open": 3,
+    "fee_purchase": "0",
+    "add_amount": "1万元",
+    "fee_redeem": "持有期不满 3 个月，赎回费率为0.5%（赎回费归基金财产所有，不可减免）",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.008,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "单人单笔高水位16%",
+    "scale": "0-5亿元",
+    "register_code": "P1023564"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": ""
+    }
+  }
+}

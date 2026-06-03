@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "上海高恩价值策略1号A类",
+  "fund_name": "上海高恩价值策略1号私募证券投资基金A类份额",
+  "register_number": "VD360A",
+  "fund_type": 2,
+  "advisor": "上海高恩",
+  "advisor2": "",
+  "inception_date": "2022-03-11",
+  "puton_date": "2022-03-18",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周二周四",
+    "is_temporary_open": 0,
+    "fee_purchase": "认购费率为1%；（可免）",
+    "add_amount": "",
+    "fee_redeem": "0 日<持有期限<365 日赎回费2% 持有期限≥365 日赎回费0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "管理费1%+20%\n",
+    "scale": "20-50亿元",
+    "register_code": "P1072816"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "均衡型,港股,红利型"
+    }
+  }
+}

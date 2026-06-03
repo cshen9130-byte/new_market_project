@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "明策糖糖五号",
+  "fund_name": "明策糖糖五号私募证券投资基金",
+  "register_number": "SLX990",
+  "fund_type": 2,
+  "advisor": "浙江明策资管",
+  "advisor2": "",
+  "inception_date": "2021-05-25",
+  "puton_date": "2021-06-01",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [
+    {
+      "name": "唐晟",
+      "id": "9e91e6e1bddb9137"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1032655"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": ""
+    }
+  }
+}

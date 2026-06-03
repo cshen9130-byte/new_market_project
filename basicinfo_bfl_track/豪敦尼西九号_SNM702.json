@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "豪敦尼西九号",
+  "fund_name": "豪敦尼西九号私募证券投资基金",
+  "register_number": "SNM702",
+  "fund_type": 2,
+  "advisor": "上海豪敦",
+  "advisor2": "",
+  "inception_date": "2020-12-30",
+  "puton_date": "2020-12-31",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "武若愚",
+      "id": "a736f18a5c5c3ba5"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "3%",
+    "precautious_line": "0.96",
+    "closed_period": "无",
+    "stop_line": "0.95",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "基金服务费：0.05%",
+    "fee_admin_service": "",
+    "fee_pay": "单个投资者单份额高水位法：\n如果 r＜6%，则 R=0\n如果 r≥6%，则R=min{F×C×r×60%×T/365,F×C×（r-6%）×T/365}",
+    "scale": "0-5亿元",
+    "register_code": "P1030975"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期货套利",
+      "strategy_three": "股指套利,高频,锁仓"
+    }
+  }
+}

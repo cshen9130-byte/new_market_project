@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "裕丰惠泽1号B类",
+  "fund_name": "裕丰惠泽1号私募证券投资基金B类份额",
+  "register_number": "ANB00B",
+  "fund_type": 2,
+  "advisor": "上海裕丰惠达",
+  "advisor2": "",
+  "inception_date": "2024-07-25",
+  "puton_date": "2024-07-30",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周四、周五",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于3个月，赎回费率为0.5%；持有期大等于3个月，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "计提基准日分为固定计提基准日（封闭期（若有）结束后的每年 6 月、12 月的第 4 个周四。）、该类份额的除息日（若有）、赎回申请日和基金终止日（其中固定计提基准日和除息日（若有）统称为“统一计提基准日”）。\n计提方法：单人单笔高水位法计提比例，B 类份额：20%",
+    "scale": "10-20亿元",
+    "register_code": "P1073106"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "另类多头",
+      "strategy_three": "择时择股"
+    }
+  }
+}

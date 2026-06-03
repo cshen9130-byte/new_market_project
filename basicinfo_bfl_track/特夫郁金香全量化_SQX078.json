@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "特夫郁金香全量化",
+  "fund_name": "特夫郁金香全量化私募证券投资基金",
+  "register_number": "SQX078",
+  "fund_type": 2,
+  "advisor": "上海特夫",
+  "advisor2": "",
+  "inception_date": "2021-06-28",
+  "puton_date": "2021-07-08",
+  "mandator_name": "华鑫证券有限责任公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周一",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%，可免",
+    "add_amount": "",
+    "fee_redeem": "0",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "30%",
+    "scale": "5-10亿元",
+    "register_code": "P1026263"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": "打板"
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": "打板"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "云汉宝禄丰泽2号",
+  "fund_name": "云汉宝禄丰泽2号私募证券投资基金",
+  "register_number": "STW263",
+  "fund_type": 2,
+  "advisor": "上海云汉资管",
+  "advisor2": "",
+  "inception_date": "2022-02-25",
+  "puton_date": "2022-02-25",
+  "mandator_name": "中信建投证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周一",
+    "is_temporary_open": 3,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.015%",
+    "fee_manage": "",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "年化收益6%以内（含）部分收取20%；\n年化收益6%-12%以内（含）部分收取30%；\n年化收益超过12%以上部分收取50%",
+    "scale": "0-5亿元",
+    "register_code": "P1065844"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "",
+      "strategy_three": ""
+    }
+  }
+}

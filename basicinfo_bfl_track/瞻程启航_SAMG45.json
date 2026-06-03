@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "瞻程启航",
+  "fund_name": "瞻程启航私募证券投资基金",
+  "register_number": "SAMG45",
+  "fund_type": 2,
+  "advisor": "上海瞻程投资",
+  "advisor2": "",
+  "inception_date": "2024-07-10",
+  "puton_date": "2024-07-10",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "基金成立后每周二、周三（如遇非交易日顺延至下一交易日）",
+    "is_temporary_open": 3,
+    "fee_purchase": "0",
+    "add_amount": "首次申购不低于100万元，追加申购不低于10万元",
+    "fee_redeem": "A类份额：0%/年\nB类份额：1%/年\nC类份额：1.5%/年\n每日计提，按季支付",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.015%/年，以前一自然日基金资产净值每日计提，按季支付",
+    "fee_manage": "A类份额：0%/年\nB类份额：1%/年\n每日计提，按月支付",
+    "fee_admin_service": "0.015%/年，以前一自然日基金资产净值每日计提，按季支付",
+    "fee_pay": "计提基准：高水位法（累计净值创新高）\n提取比例：A类份额15%，B类份额20%，C类份额20%\n计提时点：赎回、分红、基金终止时\n连续两次计提间隔≥6个月",
+    "scale": "5-10亿元",
+    "register_code": "P1016964"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "量化选股",
+      "strategy_three": ""
+    }
+  }
+}

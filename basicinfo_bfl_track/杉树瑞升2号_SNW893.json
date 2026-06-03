@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "杉树瑞升2号",
+  "fund_name": "杉树瑞升2号私募证券投资基金",
+  "register_number": "SNW893",
+  "fund_type": 2,
+  "advisor": "上海杉树资管",
+  "advisor2": "",
+  "inception_date": "2021-03-03",
+  "puton_date": "2021-03-04",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [
+    {
+      "name": "刘世伟",
+      "id": "cb04a15a9b1cd927"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每年每月每周倒数第1个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "持有期限<31天：1% 持有期限≥31天：0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.025%/年",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "20-50亿元",
+    "register_code": "P1002462"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": "中频,另类因子,500中性"
+    }
+  }
+}

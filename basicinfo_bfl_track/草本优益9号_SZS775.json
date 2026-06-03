@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "草本优益9号",
+  "fund_name": "草本优益9号私募证券投资基金",
+  "register_number": "SZS775",
+  "fund_type": 2,
+  "advisor": "广州草本投资",
+  "advisor2": "",
+  "inception_date": "2023-05-16",
+  "puton_date": "2023-05-16",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "本基金的申赎开放日为每周周一，遇非工作日顺延。",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%，申购费用（如有）均归基金募集机构所有，募集机构有权减免。",
+    "add_amount": "每次申购的金额应不低于10万元人民币（不含申购费（如有））",
+    "fee_redeem": "持有天数（天）\t赎回费率\n 【0】天-【365】天\t【1】 %\n 【365】天（含）以上\t【0】 %，赎回费用（如有）均归基金募集机构所有，募集机构有权减免。",
+    "precautious_line": "0.85",
+    "closed_period": "无",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.02%",
+    "fee_manage": "1.00%",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "单个投资者单份额高水位法，在基金收益分配、基金份额持有人赎回基金或者基金终止时进行业绩报酬的提取。业绩报酬提取比例为20%",
+    "scale": "20-50亿元",
+    "register_code": "P1013786"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "宏观多策略"
+    }
+  }
+}

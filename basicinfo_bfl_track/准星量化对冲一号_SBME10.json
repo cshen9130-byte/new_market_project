@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "准星量化对冲一号",
+  "fund_name": "准星量化对冲一号私募证券投资基金",
+  "register_number": "SBME10",
+  "fund_type": 2,
+  "advisor": "深圳准星私募",
+  "advisor2": "",
+  "inception_date": "2025-12-24",
+  "puton_date": "2025-12-29",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周四、周五",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于3个月，赎回费率为0.5%；持有期大等于3个月，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "20%(单客户单笔份额高水位法;在基金分红、投资者赎回、基金终止时提取)",
+    "scale": "0-5亿元",
+    "register_code": "P1075056"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "1000指增",
+      "strategy_three": ""
+    }
+  }
+}

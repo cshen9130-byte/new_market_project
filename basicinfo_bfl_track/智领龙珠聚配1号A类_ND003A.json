@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "智领龙珠聚配1号A类",
+  "fund_name": "智领龙珠聚配1号私募证券投资基金A类份额",
+  "register_number": "ND003A",
+  "fund_type": 2,
+  "advisor": "福州智领三联",
+  "advisor2": "",
+  "inception_date": "2020-11-12",
+  "puton_date": "2020-11-16",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "申购开放日：本基金成立之后的每周周二和每周周五（如遇非交易日，则顺延至下一个交易日；若本周无交易日可顺延，则不再顺延至下周，即本次不进行开放）；\n赎回开放日：本基金成立之后的每月第三个周五（如遇非交易日，则顺延至下一交易日）。",
+    "is_temporary_open": 3,
+    "fee_purchase": "A类份额：0%， B类份额：0%",
+    "add_amount": "",
+    "fee_redeem": "A类份额：本基金A类份额持有期限低于90天（不含）的，赎回费率为2%，份额持有期在90天及以上的，赎回费率为0%。 B类份额：0%",
+    "precautious_line": "0.8",
+    "closed_period": "无",
+    "stop_line": "0.75",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.05%",
+    "fee_manage": "A类份额：1%， B类份额：0%",
+    "fee_admin_service": "0.05%",
+    "fee_pay": "A类份额：计提16%\nB类份额：计提0%",
+    "scale": "20-50亿元",
+    "register_code": "P1033867"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "量化选股",
+      "strategy_three": ""
+    }
+  }
+}

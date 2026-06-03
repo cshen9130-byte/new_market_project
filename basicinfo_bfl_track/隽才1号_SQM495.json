@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "隽才1号",
+  "fund_name": "隽贤隽才1号证券投资私募基金",
+  "register_number": "SQM495",
+  "fund_type": 2,
+  "advisor": "上海隽贤投资",
+  "advisor2": "",
+  "inception_date": "2021-05-24",
+  "puton_date": "2021-05-31",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "李辉",
+      "id": "9a5ed79d96f34a35"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1071470"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期货套利",
+      "strategy_three": "跨期套利,商品套利"
+    }
+  }
+}

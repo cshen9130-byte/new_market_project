@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "领容炽航泓途B类",
+  "fund_name": "领容炽航泓途私募证券投资基金B类份额",
+  "register_number": "AXA95B",
+  "fund_type": 2,
+  "advisor": "上海领容投资",
+  "advisor2": "",
+  "inception_date": "2025-04-11",
+  "puton_date": "2025-04-16",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周二、周三",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于3个月，赎回费率1%；持有期大等于3个月，赎回费率0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.005,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "当R≤ 0%时，则不提取业绩报酬。\n当 0%<R≤ 5%时，对整体收益部分提取0%作为业绩报酬，即:E=Fx(A-C)xU%。\n当 5%< R≤ 20%时，对整体收益部分提取20%作为业绩报酬，即:E=Fx(A-C)xR%。\n当R>20%时，对整体收益部分提取30%作为业绩报酬，即:E=Fx(A-C)xT%",
+    "scale": "10-20亿元",
+    "register_code": "P1071654"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "交易型"
+    }
+  }
+}

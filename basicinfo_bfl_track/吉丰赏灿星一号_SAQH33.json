@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "吉丰赏灿星一号",
+  "fund_name": "吉丰赏灿星一号私募证券投资基金",
+  "register_number": "SAQH33",
+  "fund_type": 2,
+  "advisor": "北京吉丰",
+  "advisor2": "",
+  "inception_date": "2024-11-29",
+  "puton_date": "2024-12-19",
+  "mandator_name": "中信建投证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周二、周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "持有期小于180天，赎回费率为0.5%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "5%以上收20%",
+    "scale": "10-20亿元",
+    "register_code": "P1021481"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

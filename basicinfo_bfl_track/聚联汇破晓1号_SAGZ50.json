@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "聚联汇破晓1号",
+  "fund_name": "聚联汇破晓1号私募证券投资基金",
+  "register_number": "SAGZ50",
+  "fund_type": 2,
+  "advisor": "深圳聚联汇投资",
+  "advisor2": "",
+  "inception_date": "2024-03-01",
+  "puton_date": "2024-03-07",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每日申赎",
+    "is_temporary_open": 0,
+    "fee_purchase": "A类份额：1%； B 类份额：0%",
+    "add_amount": "10万元起",
+    "fee_redeem": "365天1%",
+    "precautious_line": "0.8",
+    "closed_period": "无",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.012,
+    "fee_trust": "0.02%",
+    "fee_manage": "A类份额：1.2%； B 类份额：0.3%",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "A类份额：20%； B 类份额：不计提业绩报酬",
+    "scale": "0-5亿元",
+    "register_code": "P1071620"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "可转债多头",
+      "strategy_three": ""
+    }
+  }
+}

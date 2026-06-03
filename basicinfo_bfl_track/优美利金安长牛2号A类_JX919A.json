@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "优美利金安长牛2号A类",
+  "fund_name": "优美利金安长牛2号私募证券投资基金A类份额",
+  "register_number": "JX919A",
+  "fund_type": 2,
+  "advisor": "深圳优美利投资",
+  "advisor2": "",
+  "inception_date": "2020-04-27",
+  "puton_date": "2020-05-09",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周一、三、五",
+    "is_temporary_open": 2,
+    "fee_purchase": "1%",
+    "add_amount": "每次追加申购的最低金额为10万元人民币。",
+    "fee_redeem": "1%（1-3月）、0.5%（3-6月）、0（>6月）",
+    "precautious_line": "0.8",
+    "closed_period": "",
+    "stop_line": "0.75",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.05%/年",
+    "fee_manage": "",
+    "fee_admin_service": "0.05%/年",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1060844"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "可转债多头",
+      "strategy_three": "量化"
+    }
+  }
+}

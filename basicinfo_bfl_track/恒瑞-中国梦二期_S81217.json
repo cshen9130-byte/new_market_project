@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "恒瑞-中国梦二期",
+  "fund_name": "恒瑞-中国梦二期私募证券投资基金",
+  "register_number": "S81217",
+  "fund_type": 2,
+  "advisor": "上海恒瑞",
+  "advisor2": "",
+  "inception_date": "2015-09-29",
+  "puton_date": "2015-10-08",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [
+    {
+      "name": "肖正根",
+      "id": "68cd8d264064da5a"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1000886"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

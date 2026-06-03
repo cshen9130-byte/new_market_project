@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "无涯中证500指数增强1号B类",
+  "fund_name": "无涯中证500指数增强1号私募证券投资基金B类份额",
+  "register_number": "ZH500B",
+  "fund_type": 2,
+  "advisor": "上海无涯",
+  "advisor2": "",
+  "inception_date": "2023-02-22",
+  "puton_date": "2023-03-01",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周第1、第2个交易日",
+    "is_temporary_open": 3,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于90天，赎回费率为0.5%；持有期大等于90天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "计提比例20%",
+    "scale": "10-20亿元",
+    "register_code": "P1071391"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "500指增",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "泓湖高腾博喻宏观策略",
+  "fund_name": "泓湖高腾博喻宏观策略私募证券投资基金",
+  "register_number": "SXB832",
+  "fund_type": 2,
+  "advisor": "上海泓湖",
+  "advisor2": "",
+  "inception_date": "2022-08-11",
+  "puton_date": "2022-08-11",
+  "mandator_name": "广发证券股份有限公司",
+  "managers": [
+    {
+      "name": "梁文涛",
+      "id": "5b15e21cc9f0cfa6"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每周最后一个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0",
+    "add_amount": "1万元起",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.0075,
+    "fee_trust": "0.025%",
+    "fee_manage": "B：0.75%+15%（5%以上部分的固定比例）",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "B类份额：超过年化收益（Y，Y=【5】%）以上部分的固定比例（R，R=【15】%）计提业绩报酬。",
+    "scale": "100亿元以上",
+    "register_code": "P1000395"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量道商品套利3号",
+  "fund_name": "量道商品套利3号私募证券投资基金",
+  "register_number": "SVQ692",
+  "fund_type": 2,
+  "advisor": "深圳量道投资",
+  "advisor2": "",
+  "inception_date": "2022-05-11",
+  "puton_date": "2022-05-12",
+  "mandator_name": "申万宏源证券有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0",
+    "add_amount": "1万元的整数倍",
+    "fee_redeem": "0",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.003,
+    "fee_trust": "0.02%/年（年最低收费金额2000元）",
+    "fee_manage": "",
+    "fee_admin_service": "0.02%/年（年最低收费金额2000元）",
+    "fee_pay": "计提方式：单个投资者单笔年化收益率法。\n计提时点：基金赎回确认日、基金分红确认日、基金清算确认日、固定结算日（每年12 月的最后一个交易日）。\n计提比例：30%。",
+    "scale": "100亿元以上",
+    "register_code": "P1016658"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "灵涛平衡混合",
+  "fund_name": "灵涛平衡混合私募证券投资基金",
+  "register_number": "SXS456",
+  "fund_type": 2,
+  "advisor": "灵涛基金",
+  "advisor2": "",
+  "inception_date": "2022-12-07",
+  "puton_date": "2022-12-07",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "余春露",
+      "id": "4184a66e79010349"
+    },
+    {
+      "name": "王建",
+      "id": "a97b7ab40d5c7b1f"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每周周二、周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "10万整数倍",
+    "fee_redeem": "持有期小于90天，赎回费率为 0.5%；持有期大等于90天，赎回费率为 0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "单个投资者单笔高水位法（盈利部分计提 18%）",
+    "scale": "5-10亿元",
+    "register_code": "P1024039"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "股指"
+    }
+  }
+}

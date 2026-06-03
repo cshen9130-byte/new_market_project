@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "均泰华山一号",
+  "fund_name": "均泰华山一号私募证券投资基金",
+  "register_number": "SNR129",
+  "fund_type": 2,
+  "advisor": "海南均泰基金",
+  "advisor2": "",
+  "inception_date": "2021-01-21",
+  "puton_date": "2021-02-03",
+  "mandator_name": "光大证券股份有限公司",
+  "managers": [
+    {
+      "name": "黄均寅",
+      "id": "ac8fcd746c894398"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1071653"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

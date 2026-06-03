@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "静瑞金选价值灵动1号B类",
+  "fund_name": "静瑞金选价值灵动1号私募证券投资基金B类份额",
+  "register_number": "XX149B",
+  "fund_type": 2,
+  "advisor": "上海静瑞",
+  "advisor2": "",
+  "inception_date": "2023-03-06",
+  "puton_date": "2023-03-09",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "10万元起",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.0075,
+    "fee_trust": "0.015%",
+    "fee_manage": "0.75%",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "B类: 15%。\n计提基准日：每年固定时间12月15日 (遇节假日则顺延至下个工作日）、赎回时、基金清算时。",
+    "scale": "50-100亿元",
+    "register_code": "P1072080"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "港股"
+    }
+  }
+}

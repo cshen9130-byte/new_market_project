@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "申毅尊享稳泰2号B类",
+  "fund_name": "申毅尊享稳泰2号私募证券投资基金B类份额",
+  "register_number": "BBP09B",
+  "fund_type": 2,
+  "advisor": "上海申毅投资",
+  "advisor2": "",
+  "inception_date": "2025-07-22",
+  "puton_date": "2025-07-28",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周五",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万元起",
+    "fee_redeem": "持有期小等于92天，赎回费率为0.5%；持有期大于92天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "采用“单个投资者单份额高水位法”，B类份额：0以上计提16%比例。",
+    "scale": "100亿元以上",
+    "register_code": "P1000404"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "场内期权",
+      "strategy_three": "金融期权"
+    }
+  }
+}

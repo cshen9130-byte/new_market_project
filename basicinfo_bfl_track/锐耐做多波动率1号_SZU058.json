@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "锐耐做多波动率1号",
+  "fund_name": "锐耐做多波动率1号私募证券投资基金",
+  "register_number": "SZU058",
+  "fund_type": 2,
+  "advisor": "上海锐耐",
+  "advisor2": "",
+  "inception_date": "2023-04-21",
+  "puton_date": "2023-04-25",
+  "mandator_name": "国金证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周一、周三、周五",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "360天内（不含）收取2%",
+    "precautious_line": "",
+    "closed_period": "360天",
+    "stop_line": "",
+    "fee_manage_rate": 0.02,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "收益15%归管理人",
+    "scale": "20-50亿元",
+    "register_code": "P1071795"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "场内期权",
+      "strategy_three": "中性波动率交易"
+    }
+  }
+}

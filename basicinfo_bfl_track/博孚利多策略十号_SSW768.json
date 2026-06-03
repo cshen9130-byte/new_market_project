@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "博孚利多策略十号",
+  "fund_name": "博孚利多策略十号私募证券投资基金",
+  "register_number": "SSW768",
+  "fund_type": 2,
+  "advisor": "厦门博孚利资管",
+  "advisor2": "",
+  "inception_date": "2021-09-30",
+  "puton_date": "2021-09-30",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万元的整数倍",
+    "fee_redeem": "半年内赎回收2%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "份额高水位法，提取比例为20%  ",
+    "scale": "50-100亿元",
+    "register_code": "P1023120"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期货套利",
+      "strategy_three": "跨期套利,商品套利,跨市场套利"
+    }
+  }
+}

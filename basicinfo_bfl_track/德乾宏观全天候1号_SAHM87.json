@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "德乾宏观全天候1号",
+  "fund_name": "德乾宏观全天候1号私募证券投资基金",
+  "register_number": "SAHM87",
+  "fund_type": 2,
+  "advisor": "上海德乾",
+  "advisor2": "",
+  "inception_date": "2024-03-05",
+  "puton_date": "2024-03-13",
+  "mandator_name": "申万宏源证券有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日可申购、每周二可赎回",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.003,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "以后的新产品后端20%",
+    "scale": "0-5亿元",
+    "register_code": "P1071524"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": ""
+    }
+  }
+}

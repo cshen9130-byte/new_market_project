@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "正定成长CTA1号",
+  "fund_name": "正定成长CTA1号私募证券投资基金",
+  "register_number": "SXD663",
+  "fund_type": 2,
+  "advisor": "北京正定",
+  "advisor2": "",
+  "inception_date": "2022-08-25",
+  "puton_date": "2022-08-30",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "蒋林浩",
+      "id": "8e5064134488ba01"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "申购开放日为每个自然周的周二；赎回开放日为每个自然月度第一个周二",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于6个月，赎回费率为1%；持有期大等于6个月且小于12个月，赎回费率为0.5%；持有期大等于12个月，赎回费率为0%",
+    "precautious_line": "0.8",
+    "closed_period": "",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "1%",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "当 R>0％时，对超过 0%的收益部分提取 20%的业绩报酬，即 E=F×（A-C）×20%",
+    "scale": "100亿元以上",
+    "register_code": "P1073791"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "中高频"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "昭融乐晞1号",
+  "fund_name": "昭融乐晞1号私募证券投资基金",
+  "register_number": "SXT020",
+  "fund_type": 2,
+  "advisor": "武汉昭融汇利",
+  "advisor2": "",
+  "inception_date": "2022-12-02",
+  "puton_date": "2022-12-12",
+  "mandator_name": "长江证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "本基金成立之日起每个交易日开放申购和赎回。",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万元起",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.02%",
+    "fee_manage": "",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "单人单笔高水位计提30%",
+    "scale": "50-100亿元",
+    "register_code": "P1010330"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": ""
+    }
+  }
+}

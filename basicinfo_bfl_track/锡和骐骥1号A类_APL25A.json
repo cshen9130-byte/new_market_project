@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "锡和骐骥1号A类",
+  "fund_name": "锡和骐骥1号私募证券投资基金A类份额",
+  "register_number": "APL25A",
+  "fund_type": 2,
+  "advisor": "上海锡和",
+  "advisor2": "",
+  "inception_date": "2024-10-16",
+  "puton_date": "2024-10-18",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "周二、三",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "<90天 0.5%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "计提30%业绩报酬",
+    "scale": "5-10亿元",
+    "register_code": "P1074621"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "元盛中国多元化一号",
+  "fund_name": "元盛中国多元化一号私募基金",
+  "register_number": "SEF203",
+  "fund_type": 2,
+  "advisor": "上海元胜投资",
+  "advisor2": "",
+  "inception_date": "2018-07-31",
+  "puton_date": "2018-09-14",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个自然月最后一个工作日为固定开放日",
+    "is_temporary_open": 1,
+    "fee_purchase": "无",
+    "add_amount": "",
+    "fee_redeem": "无",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "金管理人业绩报酬的提取采用单个委托人单笔投资高水位法计提，自本基金项下的委托资产运作起始日起至最近的第一个固定开放日，以及以后每个自然季度（即每年3月底、6月底、9月底和12月底）为一个基金管理人的业绩报酬计算周期（以下简称“计算周期”）。以每个计算周期最后一个交易日收盘清算估值后的基金份额及份额净值作为该计算周期期末的基金份额及份额净值，每个计算周期结束时，管理人就单个委托人单笔投资的基金财产分别按其在该计算周期内新增收益的20%计提业绩报酬。业绩报酬在每个计算周期结束日、基金投资者退出基金份额或本合同终止时提取。如本合同于非计算周期末的日期终止，浮动业绩报酬应如同该终止日为计算周期末般计算。 ",
+    "scale": "20-50亿元",
+    "register_code": "P1068514"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "时序"
+    }
+  }
+}

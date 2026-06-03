@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "众智长江二号",
+  "fund_name": "众智长江二号私募投资基金",
+  "register_number": "SX9317",
+  "fund_type": 2,
+  "advisor": "广州众智",
+  "advisor2": "",
+  "inception_date": "2018-01-09",
+  "puton_date": "2018-01-20",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1012858"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "农产"
+    }
+  }
+}

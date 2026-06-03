@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "卓胜中证500指数增强一号",
+  "fund_name": "卓胜中证500指数增强一号私募证券投资基金",
+  "register_number": "SXN301",
+  "fund_type": 2,
+  "advisor": "上海卓胜",
+  "advisor2": "",
+  "inception_date": "2022-11-01",
+  "puton_date": "2022-11-07",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "马万里",
+      "id": "fa4a43c3dbb5c82b"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "A类份额：1%；B类份额：0%",
+    "add_amount": "",
+    "fee_redeem": "A类份额：持有期小于6个月，赎回费率为1%；持有期大等于6个月，赎回费率为0%。B类份额：0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.02%",
+    "fee_manage": "A类份额：1%；B类份额：0%",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "A类份额：当期收益为正且超过中证 500 指数（000905）对应期间收益，则管理人将提取赎回份额或分红份额当期超过中证 500 指数（000905）对应期间收益的 20%作为业绩报酬。\nB类份额：0%",
+    "scale": "0-5亿元",
+    "register_code": "P1073962"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "500指增",
+      "strategy_three": "中频,量价"
+    }
+  }
+}

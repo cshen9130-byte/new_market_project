@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "思瑞玉衡可转债精选",
+  "fund_name": "思瑞玉衡可转债精选私募证券投资基金",
+  "register_number": "SVM078",
+  "fund_type": 2,
+  "advisor": "海南思瑞",
+  "advisor2": "",
+  "inception_date": "2022-04-28",
+  "puton_date": "2022-05-07",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "沈鹰杰",
+      "id": "5b298daab8eb57f4"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "20-50亿元",
+    "register_code": "P1073292"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "可转债多头",
+      "strategy_three": "量化"
+    }
+  }
+}

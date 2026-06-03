@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "慕途基本面量化1号B类",
+  "fund_name": "慕途基本面量化1号私募证券投资基金B类份额",
+  "register_number": "VW787B",
+  "fund_type": 2,
+  "advisor": "慕途基金",
+  "advisor2": "",
+  "inception_date": "2022-07-08",
+  "puton_date": "2022-07-14",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "申购开放日为每周周五，赎回开放日为每月第四个周五",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "10万元起",
+    "fee_redeem": "持有期<180天，赎回费1.5%；持有期≥180天，免赎回费",
+    "precautious_line": "0.9",
+    "closed_period": "无",
+    "stop_line": "0.85",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.03%",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "单笔份额高水位净值法。赎回、分红、清算日计提，计提比例【年化收益率20%（含）以内部分20%；20%-30%（含）的部分30%，30%-40%（含）的部分40%，超过40%的部分50%\nB 类份额业绩报酬的计提基准日：投资者赎回日、分红权益登记日、基金清算日。默认采用现金分红",
+    "scale": "10-20亿元",
+    "register_code": "P1073298"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期货套利",
+      "strategy_three": "商品套利,跨市场套利"
+    }
+  }
+}

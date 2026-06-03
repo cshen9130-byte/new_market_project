@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "永泉奇点18号混合投资",
+  "fund_name": "永泉奇点18号混合投资私募基金",
+  "register_number": "SNK980",
+  "fund_type": 2,
+  "advisor": "宁波永泉",
+  "advisor2": "",
+  "inception_date": "2021-05-18",
+  "puton_date": "2021-05-26",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周三",
+    "is_temporary_open": 3,
+    "fee_purchase": "0.1%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "0.97",
+    "closed_period": "除开放日外的期间",
+    "stop_line": "0.95",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.05%",
+    "fee_manage": "",
+    "fee_admin_service": "0.05%",
+    "fee_pay": "在收益分配基准日、赎回日及基金终止日，若持有期年化收益率小于等于6.02%，则不计提业绩报酬；若持有期年化收益率大于6.02%，则对基金份额收益的30%以及份额年化收益率高于6.02%的收益孰低计提业绩报酬。",
+    "scale": "0-5亿元",
+    "register_code": "P1017919"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "混合套利",
+      "strategy_three": ""
+    }
+  }
+}

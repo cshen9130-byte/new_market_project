@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "靖奇天弓一号",
+  "fund_name": "靖奇天弓一号私募证券投资基金",
+  "register_number": "SJZ470",
+  "fund_type": 2,
+  "advisor": "上海靖奇投资",
+  "advisor2": "",
+  "inception_date": "2022-04-01",
+  "puton_date": "2022-04-02",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [
+    {
+      "name": "范思奇",
+      "id": "0356a8333fcfae37"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1019905"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "另类多头",
+      "strategy_three": "择时择股,持仓分散"
+    }
+  }
+}

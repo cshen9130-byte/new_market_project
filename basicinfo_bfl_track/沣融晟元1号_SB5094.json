@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "沣融晟元1号",
+  "fund_name": "沣融晟元1号私募证券投资基金",
+  "register_number": "SB5094",
+  "fund_type": 2,
+  "advisor": "上海沣融汇",
+  "advisor2": "",
+  "inception_date": "2023-07-06",
+  "puton_date": "2023-07-11",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "吴荻",
+      "id": "e0b0a1d1a4447bee"
+    },
+    {
+      "name": "蒋兴达",
+      "id": "22053993576ce486"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1074502"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

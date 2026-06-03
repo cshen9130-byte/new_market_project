@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "金友至远1号",
+  "fund_name": "金友至远1号私募证券投资基金",
+  "register_number": "SBFM35",
+  "fund_type": 2,
+  "advisor": "南京金友",
+  "advisor2": "",
+  "inception_date": "2025-09-18",
+  "puton_date": "2025-10-17",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周第 3 个交易日",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于 180 个自然日，赎回费率为 2%；持有期大等于180个自然日，赎回费率为 0%。赎回费列入基金财产，且列入基金财产部分管理人不得减免",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01％",
+    "fee_manage": "A类份额：1%，B类份额：0%",
+    "fee_admin_service": "0.01％",
+    "fee_pay": "A类份额：单位份额实际收益率 R 小于或等于 6%时，管理人不提取业绩报酬；单位份额实际收益率 R 大于 6%，管理人对 6%至 15%（含）部分提取 20%作为业绩报酬，对大于 15%的部分提取 30%作为业绩报酬。\nB类份额：0%",
+    "scale": "0-5亿元",
+    "register_code": "P1073917"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "中高频,量价"
+    }
+  }
+}

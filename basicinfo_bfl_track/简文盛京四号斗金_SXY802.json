@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "简文盛京四号斗金",
+  "fund_name": "简文盛京四号斗金私募证券投资基金",
+  "register_number": "SXY802",
+  "fund_type": 2,
+  "advisor": "上海简文",
+  "advisor2": "",
+  "inception_date": "2022-12-30",
+  "puton_date": "2023-01-09",
+  "mandator_name": "华鑫证券有限责任公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "固定开放日为本基金成立之日后【每周一和每 周二】（如遇非交易日，则不开放）",
+    "is_temporary_open": 3,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期<3个月:0.5%持有期>3个月:0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "高水位净值法当R≥0时，基金管理人对期间年化收益率超过【0%】的部分提取【20%】作为业绩报酬，",
+    "scale": "10-20亿元",
+    "register_code": "P1022166"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "量化选股",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "芷瀚量化CTA激进一号",
+  "fund_name": "芷瀚量化CTA激进一号私募基金",
+  "register_number": "SEU998",
+  "fund_type": 2,
+  "advisor": "上海芷瀚资管",
+  "advisor2": "",
+  "inception_date": "2019-03-06",
+  "puton_date": "2019-03-13",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "李栋",
+      "id": "8dd74f10702a101a"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每月15号",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于3个月，赎回费率为1%；持有期大等于3个月，赎回费率0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.05%",
+    "fee_manage": "",
+    "fee_admin_service": "0.05%",
+    "fee_pay": "为基金成立日（认购份额）或该份额申购对应开放日（申购份额）至本业绩报酬计提日）收益的20%作为业绩报酬。\n计提基准日：固定时点提取（每年12月15日）、赎回时提取和合同终止时提取。",
+    "scale": "0-5亿元",
+    "register_code": "P1066464"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "时序"
+    }
+  }
+}

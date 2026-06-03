@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量派300增强2号A类",
+  "fund_name": "量派300增强2号私募证券投资基金A类份额",
+  "register_number": "ND172A",
+  "fund_type": 2,
+  "advisor": "上海量派投资",
+  "advisor2": "",
+  "inception_date": "2020-11-17",
+  "puton_date": "",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "1万元起",
+    "fee_redeem": "持有期小于6个月，赎回费率为1%；持有期大等于6个月，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "当份额赎回、基金终止或分红时，若赎回或参与分红份额收益当期收益超过沪深 300 指数（000300）同期收益，则管理人将提取赎回份额或参与分红份额当期超过沪深 300 指数（000300）同期收益部分的 20%作为业绩报酬。",
+    "scale": "100亿元以上",
+    "register_code": "P1071253"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "300指增",
+      "strategy_three": "量价"
+    }
+  }
+}

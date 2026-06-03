@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "致远中证A500兴泰2号",
+  "fund_name": "致远中证A500兴泰2号私募证券投资基金",
+  "register_number": "SCN872",
+  "fund_type": 2,
+  "advisor": "珠海致诚卓远投资",
+  "advisor2": "",
+  "inception_date": "2018-04-09",
+  "puton_date": "2018-04-24",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [
+    {
+      "name": "史帆",
+      "id": "f8d7bf6d3e0a98d1"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "本基金的申赎开放日为每周最后一个交易日，本周无交易日的则不开放。",
+    "is_temporary_open": 0,
+    "fee_purchase": "无",
+    "add_amount": "每次申购的金额应不低于1万元人民币（不含申购费（如有））",
+    "fee_redeem": "A类：\n持有时间（天）\t赎回费率\n 【0】天-【92】天（含）\t【0.5】 %\n 【92】天以上\t【0】 %，赎回费用（如有）归基金资产所有。\nB类：\n持有时间（天）\t赎回费率\n 【0】天-【92】天（含）\t【1】 %\n 【92】天以上\t【0】 %，赎回费用（如有）归基金资产所有。",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.05%",
+    "fee_manage": "A类：无\nB类：1%",
+    "fee_admin_service": "0.05%",
+    "fee_pay": "A类无业绩报酬\nB类单个投资者单份额高水位法，在基金收益分配、基金份额持有人赎回B类基金份额或者基金终止时进行业绩报酬的提取。\n赚钱且超过中证A500指数时，基金才会提取业绩报酬，金额为超额收益的18%，但不超过总收益的60%",
+    "scale": "100亿元以上",
+    "register_code": "P1065479"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "A500指增",
+      "strategy_three": ""
+    }
+  }
+}

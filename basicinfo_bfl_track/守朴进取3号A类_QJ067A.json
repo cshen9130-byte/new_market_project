@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "守朴进取3号A类",
+  "fund_name": "守朴进取3号私募证券投资基金A类",
+  "register_number": "QJ067A",
+  "fund_type": 2,
+  "advisor": "上海守朴资管",
+  "advisor2": "",
+  "inception_date": "2022-10-12",
+  "puton_date": "",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每日可申赎",
+    "is_temporary_open": 1,
+    "fee_purchase": "0%",
+    "add_amount": "不低于1万元",
+    "fee_redeem": "天|%|0|2|180|1|365|0",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "1.00%",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "0|0|0.04|0.25",
+    "scale": "5-10亿元",
+    "register_code": "P1068966"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "债券策略",
+      "strategy_two": "信用债",
+      "strategy_three": "城投债"
+    }
+  }
+}

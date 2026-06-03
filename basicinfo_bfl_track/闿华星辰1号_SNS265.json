@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "闿华星辰1号",
+  "fund_name": "闿华星辰1号私募证券投资基金",
+  "register_number": "SNS265",
+  "fund_type": 2,
+  "advisor": "上海闿华资管",
+  "advisor2": "",
+  "inception_date": "2021-01-20",
+  "puton_date": "2021-01-27",
+  "mandator_name": "广发证券股份有限公司",
+  "managers": [
+    {
+      "name": "魏大勇",
+      "id": "e2dcd6e20f627f68"
+    },
+    {
+      "name": "费思思",
+      "id": "a9267bda3343d2f2"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1029096"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "多板块"
+    }
+  }
+}

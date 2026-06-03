@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "中闽汇金成长1号",
+  "fund_name": "中闽汇金成长1号私募证券投资基金",
+  "register_number": "SJH842",
+  "fund_type": 2,
+  "advisor": "厦门中闽汇金",
+  "advisor2": "",
+  "inception_date": "2019-11-18",
+  "puton_date": "2019-11-25",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [
+    {
+      "name": "王江明",
+      "id": "9e3843468044d55c"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "10-20亿元",
+    "register_code": "P1018983"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "2000指增",
+      "strategy_three": ""
+    }
+  }
+}

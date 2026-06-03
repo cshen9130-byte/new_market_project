@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "博孚利多策略75号",
+  "fund_name": "博孚利多策略75号私募证券投资基金",
+  "register_number": "SVX151",
+  "fund_type": 2,
+  "advisor": "厦门博孚利资管",
+  "advisor2": "",
+  "inception_date": "2022-06-27",
+  "puton_date": "2022-06-27",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "何阳阳",
+      "id": "8431f70d905a2cd2"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万",
+    "fee_redeem": "1%（管理人有权减免）",
+    "precautious_line": "0.9",
+    "closed_period": "无",
+    "stop_line": "0.85",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "",
+    "scale": "50-100亿元",
+    "register_code": "P1023120"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期权套利",
+      "strategy_three": ""
+    }
+  }
+}

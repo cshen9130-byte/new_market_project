@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "凡德成长",
+  "fund_name": "凡德成长私募证券投资基金",
+  "register_number": "STY073",
+  "fund_type": 2,
+  "advisor": "广东凡德投资",
+  "advisor2": "",
+  "inception_date": "2022-08-08",
+  "puton_date": "2022-08-15",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "陈尊德",
+      "id": "fb81e7b6fefb06f4"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每周二",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "<180d，2%；>=180d，0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "每日计提",
+    "fee_admin_service": "",
+    "fee_pay": "业绩报酬的计提基准日：投资者赎回日、每季度末月最后一个交易日（固定日，但封闭期及/或锁定期（如有）除外）、分红权益登记日和基金清算日。本基金各类份额连续两次成功计提业绩报酬基准日的间隔不应短于 3 个月。业绩报酬的计算采用单个投资者单笔高水位净值法。\n",
+    "scale": "5-10亿元",
+    "register_code": "P1003150"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "量化选股",
+      "strategy_three": ""
+    }
+  }
+}

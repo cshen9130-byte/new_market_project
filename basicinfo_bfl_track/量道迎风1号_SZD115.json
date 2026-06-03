@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量道迎风1号",
+  "fund_name": "量道迎风1号私募证券投资基金",
+  "register_number": "SZD115",
+  "fund_type": 2,
+  "advisor": "深圳量道投资",
+  "advisor2": "",
+  "inception_date": "2023-01-13",
+  "puton_date": "2023-01-16",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "A类份额：1%，B类份额：0%",
+    "add_amount": "1 万元的整数倍",
+    "fee_redeem": "A类份额：持有期小于180天，赎回费率为1%；持有期大等于180天，赎回费率为为0%。B类份额：0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%/年",
+    "fee_manage": "A类份额:1.00%，B类份额:0%。 A类份额：向除B类份额投资者以外的其它合格投资者募集的基金份额。 B类份额：向本基金管理人管理的其他私募基金 、本基金管理人、本基金管理人员工募集的基金份额。",
+    "fee_admin_service": "0.015%/年",
+    "fee_pay": "A类份额：\n1、计提方式：单个投资者单笔高水位净值法。\n2、计提时点：投资者赎回日、分红权益登记日、基金清算日。\n3、计提比例：30%。\nB类份额：不计提业绩报酬。",
+    "scale": "100亿元以上",
+    "register_code": "P1016658"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": "打板"
+    }
+  }
+}

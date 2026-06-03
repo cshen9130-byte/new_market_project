@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "九木CTA1号A类",
+  "fund_name": "九木CTA1号私募证券投资基金A类份额",
+  "register_number": "AXH50A",
+  "fund_type": 2,
+  "advisor": "深圳九木",
+  "advisor2": "",
+  "inception_date": "2025-04-22",
+  "puton_date": "2025-04-25",
+  "mandator_name": "",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "10-20亿元",
+    "register_code": "P1074963"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "量价"
+    }
+  }
+}

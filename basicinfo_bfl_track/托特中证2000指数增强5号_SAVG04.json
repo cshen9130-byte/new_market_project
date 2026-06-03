@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "托特中证2000指数增强5号",
+  "fund_name": "托特中证2000指数增强5号私募证券投资基金",
+  "register_number": "SAVG04",
+  "fund_type": 2,
+  "advisor": "三亚托特",
+  "advisor2": "",
+  "inception_date": "2025-03-07",
+  "puton_date": "2025-03-12",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1073258"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "2000指增",
+      "strategy_three": ""
+    }
+  }
+}

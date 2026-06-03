@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "知行稳健1号",
+  "fund_name": "知行稳健1号私募证券投资基金",
+  "register_number": "SS8256",
+  "fund_type": 2,
+  "advisor": "深圳前海知行资管",
+  "advisor2": "",
+  "inception_date": "2017-05-05",
+  "puton_date": "2017-05-11",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "吴小安",
+      "id": "b6715e3070ae209b"
+    },
+    {
+      "name": "宫皓",
+      "id": "498da8f5af7bd408"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "10万元起",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "超过年化收益率2%，计提比例20%",
+    "scale": "0-5亿元",
+    "register_code": "P1062051"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": "中频,量价,500中性"
+    }
+  }
+}

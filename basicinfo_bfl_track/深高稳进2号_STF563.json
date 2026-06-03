@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "深高稳进2号",
+  "fund_name": "深高稳进2号私募证券投资基金",
+  "register_number": "STF563",
+  "fund_type": 2,
+  "advisor": "深圳深高",
+  "advisor2": "",
+  "inception_date": "2021-12-08",
+  "puton_date": "2021-12-14",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "李凯",
+      "id": "690c556c85b50925"
+    },
+    {
+      "name": "刘小宇",
+      "id": "683b9fec378e2dae"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "20-50亿元",
+    "register_code": "P1072589"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "达奇投资瞬生聚配1号",
+  "fund_name": "达奇投资瞬生聚配1号私募证券投资基金",
+  "register_number": "SZL374",
+  "fund_type": 2,
+  "advisor": "深圳达奇投资",
+  "advisor2": "",
+  "inception_date": "2023-02-21",
+  "puton_date": "2023-02-24",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1069838"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

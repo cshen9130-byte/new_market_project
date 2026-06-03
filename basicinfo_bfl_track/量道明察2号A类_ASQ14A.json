@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量道明察2号A类",
+  "fund_name": "量道明察2号私募证券投资基金A类份额",
+  "register_number": "ASQ14A",
+  "fund_type": 2,
+  "advisor": "深圳量道投资",
+  "advisor2": "",
+  "inception_date": "2024-12-26",
+  "puton_date": "0000-00-00",
+  "mandator_name": "",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周三、周四（遇节假日不顺延）",
+    "is_temporary_open": 3,
+    "fee_purchase": "0",
+    "add_amount": "1 万元的整数倍",
+    "fee_redeem": "<90天为1%，>=90天为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%/年",
+    "fee_manage": "",
+    "fee_admin_service": "0.015%/年",
+    "fee_pay": "计提方式：单客户单笔份额高水位法\n计提时点：赎回日、基金终止日、分红权益登记日\n计提比例：20%",
+    "scale": "100亿元以上",
+    "register_code": "P1016658"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": ""
+    }
+  }
+}

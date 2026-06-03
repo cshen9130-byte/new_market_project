@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "致邃投资-致盈1号",
+  "fund_name": "致邃投资-致盈1号私募证券投资基金",
+  "register_number": "SGA724",
+  "fund_type": 2,
+  "advisor": "上海致邃投资",
+  "advisor2": "",
+  "inception_date": "2019-03-01",
+  "puton_date": "2019-03-11",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周二、周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小等于90天，赎回费率为1%；持有期大于90天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "A类份额：0.6%，B类份额：1%",
+    "fee_admin_service": "",
+    "fee_pay": "年化收益≤6.00%，不计提；\n6.00%＜年化收益＜35.00%，50%；\n年化收益≥35.00%, 60%",
+    "scale": "5-10亿元",
+    "register_code": "P1063212"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": "打板"
+    }
+  }
+}

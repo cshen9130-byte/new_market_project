@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "因诺聚配中证500指数增强",
+  "fund_name": "因诺聚配中证500指数增强私募证券投资基金",
+  "register_number": "SGX346",
+  "fund_type": 2,
+  "advisor": "上海因诺资管",
+  "advisor2": "",
+  "inception_date": "2019-08-14",
+  "puton_date": "2019-08-22",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每月18号，遇非顺延\n",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "无封闭期",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "1.00%\n",
+    "fee_admin_service": "0.10%\n",
+    "fee_pay": "中证500指数超强30%的部分计提16%，超过30%的部分计提40%\n",
+    "scale": "100亿元以上",
+    "register_code": "P1006164"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "500指增",
+      "strategy_three": ""
+    }
+  }
+}

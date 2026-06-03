@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "姚泾河鲁班一号",
+  "fund_name": "姚泾河鲁班一号私募证券投资基金",
+  "register_number": "SGU015",
+  "fund_type": 2,
+  "advisor": "上海姚泾河",
+  "advisor2": "",
+  "inception_date": "2019-07-09",
+  "puton_date": "2019-07-16",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "支东兴",
+      "id": "84b4051c93d5ba3e"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1016165"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "交易型"
+    }
+  }
+}

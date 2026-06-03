@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "溯数量化未来",
+  "fund_name": "溯数量化未来私募证券投资基金",
+  "register_number": "SGV605",
+  "fund_type": 2,
+  "advisor": "上海溯数投资",
+  "advisor2": "",
+  "inception_date": "2019-07-15",
+  "puton_date": "2019-07-19",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "关宇颂",
+      "id": "eef17c6ea7e2f7ea"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1067799"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "截面,基本面"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "兰盈量化多头1号",
+  "fund_name": "兰盈量化多头1号私募证券投资基金",
+  "register_number": "SXN280",
+  "fund_type": 2,
+  "advisor": "上海兰盈量投",
+  "advisor2": "",
+  "inception_date": "2022-10-20",
+  "puton_date": "2022-10-27",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 2,
+    "fee_purchase": "1%",
+    "add_amount": "追加金额不低于 1 万元人民币",
+    "fee_redeem": "<180天为2% ；>=180天且<365天为1% ；>=365天为0%",
+    "precautious_line": "0.7",
+    "closed_period": "本基金无封闭期",
+    "stop_line": "0.6",
+    "fee_manage_rate": 0.005,
+    "fee_trust": "0.02%年",
+    "fee_manage": "",
+    "fee_admin_service": "0.02%/年",
+    "fee_pay": "1）业绩报酬的计提基准日：投资者赎回日、分红权益登记日、基金清算日、固定结算日（每年12月最后一个交易日）；\n2）业绩报酬的计算采用单个投资者单笔高水位净值法，R=15%。",
+    "scale": "10-20亿元",
+    "register_code": "P1073965"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "500指增",
+      "strategy_three": ""
+    }
+  }
+}

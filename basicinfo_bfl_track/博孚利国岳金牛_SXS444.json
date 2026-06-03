@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "博孚利国岳金牛",
+  "fund_name": "博孚利国岳金牛私募证券投资基金",
+  "register_number": "SXS444",
+  "fund_type": 2,
+  "advisor": "厦门博孚利资管",
+  "advisor2": "",
+  "inception_date": "2022-11-10",
+  "puton_date": "2022-11-10",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "本基金的申购开放日为基金成立之后的每周周三；如遇非交易日，则顺延至下一交易日。 \n本基金的赎回开放日为基金成立之后的每月第20个自然日，如遇非交易日，则顺延至下一交易日。",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "不少于1万",
+    "fee_redeem": "本基金份额持有期低于365天（不含）的赎回费率为1%，基金份额持有期在365天及以上的赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "20240625-20250624暂停计提",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "不计提",
+    "scale": "50-100亿元",
+    "register_code": "P1023120"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "组合策略",
+      "strategy_two": "FOF",
+      "strategy_three": ""
+    }
+  }
+}

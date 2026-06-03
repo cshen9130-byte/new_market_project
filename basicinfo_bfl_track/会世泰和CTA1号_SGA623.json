@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "会世泰和CTA1号",
+  "fund_name": "会世泰和CTA1号私募证券投资基金",
+  "register_number": "SGA623",
+  "fund_type": 2,
+  "advisor": "上海会世",
+  "advisor2": "",
+  "inception_date": "2019-02-28",
+  "puton_date": "2019-03-14",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [
+    {
+      "name": "张议夫",
+      "id": "e637674fd77fd276"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "\"每月第10个工作日开放申购； 每季度第一个月第10个工作日开放申购赎回\"",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "D＜180天：2% D≥180天：0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.02,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "20%，单客户单笔高水位净值法",
+    "scale": "50-100亿元",
+    "register_code": "P1068444"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "混合均衡"
+    }
+  }
+}

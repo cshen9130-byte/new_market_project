@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "勤辰森裕1号",
+  "fund_name": "勤辰森裕1号私募证券投资基金",
+  "register_number": "SXF480",
+  "fund_type": 2,
+  "advisor": "上海勤辰",
+  "advisor2": "",
+  "inception_date": "2022-10-20",
+  "puton_date": "2022-10-25",
+  "mandator_name": "招商银行股份有限公司",
+  "managers": [
+    {
+      "name": "林森",
+      "id": "b041ecc816c815c9"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1073280"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "价值型,均衡型,中盘,港股"
+    }
+  }
+}

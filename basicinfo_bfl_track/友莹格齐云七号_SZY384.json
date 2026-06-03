@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "友莹格齐云七号",
+  "fund_name": "友莹格齐云七号私募证券投资基金",
+  "register_number": "SZY384",
+  "fund_type": 2,
+  "advisor": "上海友莹格资管",
+  "advisor2": "",
+  "inception_date": "2023-04-21",
+  "puton_date": "2023-04-25",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "不低于1万",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.02,
+    "fee_trust": "0.02%",
+    "fee_manage": "2%。基金服务费：0.02%",
+    "fee_admin_service": "",
+    "fee_pay": "当R>0％时，对超过0%的收益部分提取20%的业绩报酬",
+    "scale": "0-5亿元",
+    "register_code": "P1060304"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "黑色"
+    }
+  }
+}

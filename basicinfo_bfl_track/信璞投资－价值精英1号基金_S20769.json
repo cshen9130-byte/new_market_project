@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "信璞投资－价值精英1号基金",
+  "fund_name": "信璞投资－价值精英1号基金",
+  "register_number": "S20769",
+  "fund_type": 2,
+  "advisor": "上海信璞",
+  "advisor2": "",
+  "inception_date": "2014-08-07",
+  "puton_date": "2014-08-11",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "归江",
+      "id": "c48d4f8b706b2b5c"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每季度最后一个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "A类份额：0% 。B类份额、 C类份额：持有期大于1年且小等于2年，赎回费率为2%；持有期大于2年且小等于3年，赎回费率为1%；持有期大于3年，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "1年",
+    "stop_line": "",
+    "fee_manage_rate": 0.009,
+    "fee_trust": "0.1%",
+    "fee_manage": "A类份额：0.3% ，B类份额：0.3%， C类份额：0.9%",
+    "fee_admin_service": "0.1%",
+    "fee_pay": "A类份额：0% ，B类份额：10%， C类份额：20%",
+    "scale": "100亿元以上",
+    "register_code": "P1000419"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

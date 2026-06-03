@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "蒙玺量化精选对冲2号",
+  "fund_name": "蒙玺量化精选对冲2号私募证券投资基金",
+  "register_number": "SQE031",
+  "fund_type": 2,
+  "advisor": "上海蒙玺投资",
+  "advisor2": "",
+  "inception_date": "2021-04-26",
+  "puton_date": "2021-04-29",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1063294"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": "高频,另类因子,500中性"
+    }
+  }
+}

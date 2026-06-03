@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "青琰信达六号",
+  "fund_name": "青琰信达六号私募证券投资基金",
+  "register_number": "SBRD70",
+  "fund_type": 2,
+  "advisor": "上海青琰",
+  "advisor2": "",
+  "inception_date": "2026-02-05",
+  "puton_date": "2026-03-02",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周二、周三",
+    "is_temporary_open": 3,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于3 个月，赎回费率为1%；持有期大等于3个月，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "B 类份额：0%，A类份额：1%",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "A类份额：当期间年化收益率大于【6】%时，对所有收益按照【60】%的比例收取业绩报酬，且计提后该笔份额的期间年化收益率不低于【6】%。\n计提基准日：每年 3 月、9 月第三个周三（固定日，但封闭期及锁定期（如\n有）除外，如遇非交易日则顺延至下一交易日）、投资者赎回日、分红权益登记日和基金清算日。",
+    "scale": "20-50亿元",
+    "register_code": "P1073943"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票T0",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "量派聚核20号",
+  "fund_name": "量派聚核20号私募证券投资基金",
+  "register_number": "SSS088",
+  "fund_type": 2,
+  "advisor": "上海量派投资",
+  "advisor2": "",
+  "inception_date": "2021-09-22",
+  "puton_date": "2021-09-24",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "孙林",
+      "id": "6119a57b8adfa1f4"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "1万元起",
+    "fee_redeem": "持有期小于180天，赎回费率为1%；持有期大等于180 天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "单个投资者单笔高水位净值法，计提 20%",
+    "scale": "100亿元以上",
+    "register_code": "P1071253"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "复合策略",
+      "strategy_three": ""
+    }
+  }
+}

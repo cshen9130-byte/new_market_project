@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "碳硅1号A",
+  "fund_name": "碳硅1号私募证券投资基金A类份额",
+  "register_number": "XJ836A",
+  "fund_type": 0,
+  "advisor": "杭州碳硅",
+  "advisor2": "",
+  "inception_date": "2022-09-21",
+  "puton_date": "",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "申购开放日为每月的15日；赎回开放日为每季度末月（即 3 月、6 月、9 月、\n12 月）15日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "0.75",
+    "closed_period": "",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.015,
+    "fee_trust": " 0.015%",
+    "fee_manage": "",
+    "fee_admin_service": " 0.015%",
+    "fee_pay": "20%",
+    "scale": "10-20亿元",
+    "register_code": "P1073911"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": ""
+    }
+  }
+}

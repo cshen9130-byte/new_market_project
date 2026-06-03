@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "中信信托黑翼CTA复合策略1号",
+  "fund_name": "中信信托黑翼CTA复合策略1号集合资金信托计划",
+  "register_number": "ZXD202505230000001627",
+  "fund_type": 13,
+  "advisor": "中信信托",
+  "advisor2": "",
+  "inception_date": "2025-06-18",
+  "puton_date": "2025-06-20",
+  "mandator_name": "",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1010737"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量宇红番茄十一号B类",
+  "fund_name": "量宇红番茄十一号私募证券投资基金B类份额",
+  "register_number": "JM483B",
+  "fund_type": 2,
+  "advisor": "上海量宇",
+  "advisor2": "",
+  "inception_date": "2020-03-06",
+  "puton_date": "2020-03-10",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每月1号",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于6个月，赎回费率为1%；持有期大等于6个月，赎回费率为 0%",
+    "precautious_line": "0.85",
+    "closed_period": "",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "当 R>0％时，对超过 0%的收益部分提取 20%的业绩报酬",
+    "scale": "10-20亿元",
+    "register_code": "P1064318"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "另类多头",
+      "strategy_three": ""
+    }
+  }
+}

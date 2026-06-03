@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "艾悉财赋1号",
+  "fund_name": "艾悉财赋1号私募证券投资基金",
+  "register_number": "SX9349",
+  "fund_type": 2,
+  "advisor": "上海艾悉",
+  "advisor2": "",
+  "inception_date": "2017-11-20",
+  "puton_date": "2017-11-23",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "杨柳",
+      "id": "44bcb9cd59960521"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "FOF投资产品池",
+    "is_temporary_open": 0,
+    "fee_purchase": "每交易日开放",
+    "add_amount": "上海艾悉资产管理有限公司",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "股票多空策略",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1065219"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "500指增",
+      "strategy_three": "中频,量价"
+    }
+  }
+}

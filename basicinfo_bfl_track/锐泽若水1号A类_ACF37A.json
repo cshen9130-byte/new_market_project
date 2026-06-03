@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "锐泽若水1号A类",
+  "fund_name": "锐泽若水1号私募证券投资基金A类份额",
+  "register_number": "ACF37A",
+  "fund_type": 2,
+  "advisor": "杭州锐泽",
+  "advisor2": "",
+  "inception_date": "2023-10-17",
+  "puton_date": "2023-11-01",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "每次追加申购的金额应不低于1万元人民币（不含申购费）",
+    "fee_redeem": "D<180 天：1%；D≥180天：0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%/年",
+    "fee_manage": "每日计提，按自然季支付",
+    "fee_admin_service": "0.01%/年",
+    "fee_pay": "业绩报酬：20.0%（绝对收益）\n收取，提取比例20%\n计算方式：单个投资者单份额高水位法\n提取时点：基金收益分配、基金份额持有人赎回、基金终止\n连续两次计提间隔期不应短于6个月（赎回和终止时除外）\n赎回从赎回资金中扣除；收益分配从分配资金中扣除；终止从清算资金中扣除",
+    "scale": "10-20亿元",
+    "register_code": "P1074623"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "基金套利",
+      "strategy_three": "ETF套利"
+    }
+  }
+}

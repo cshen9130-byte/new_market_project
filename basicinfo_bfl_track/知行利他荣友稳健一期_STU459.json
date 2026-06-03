@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "知行利他荣友稳健一期",
+  "fund_name": "知行利他荣友稳健一期私募证券投资基金",
+  "register_number": "STU459",
+  "fund_type": 2,
+  "advisor": "北京知行利他",
+  "advisor2": "",
+  "inception_date": "2022-02-11",
+  "puton_date": "2022-02-18",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "张世远",
+      "id": "1d8b78b71babdb1e"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每月15号和25号",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于12个月，赎回费率为2%；持有期大等于12个月，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "6个月",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "1%",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "当 R>0％时，对超过 0%的收益部分提取 20%的业绩报酬",
+    "scale": "0-5亿元",
+    "register_code": "P1072980"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "交易型"
+    }
+  }
+}

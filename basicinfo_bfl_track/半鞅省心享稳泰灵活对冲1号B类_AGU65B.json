@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "半鞅省心享稳泰灵活对冲1号B类",
+  "fund_name": "半鞅省心享稳泰灵活对冲1号私募证券投资基金B类份额",
+  "register_number": "AGU65B",
+  "fund_type": 2,
+  "advisor": "半鞅基金",
+  "advisor2": "",
+  "inception_date": "2024-03-07",
+  "puton_date": "2024-03-28",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "申购开放日为每个交易日，赎回开放日为每周三（赎回需提前5个交易日申请）",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "计提比例：16%\n计提方式：单客户高水位法",
+    "scale": "100亿元以上",
+    "register_code": "P1072919"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": "高频"
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "顽岩中证2000指数增强3号",
+  "fund_name": "顽岩中证2000指数增强3号私募证券投资基金",
+  "register_number": "STL472",
+  "fund_type": 2,
+  "advisor": "上海顽岩",
+  "advisor2": "",
+  "inception_date": "2021-12-16",
+  "puton_date": "2021-12-16",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "申购开放日为每个工作日；赎回开放日为每周周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "0",
+    "add_amount": "1万元起",
+    "fee_redeem": "0",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.02%",
+    "fee_manage": "1%",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "赎回日 终止日 分红日 固定计提日计提，固定计提日为3月、9月第一个周三，\n赎回、清算时：超额水下计提20%；固定时点、分红时：超额水上计提20%",
+    "scale": "100亿元以上",
+    "register_code": "P1034708"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "2000指增",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "平安财富淡水泉成长一期集合资金信托",
+  "fund_name": "平安财富淡水泉成长一期集合资金信托",
+  "register_number": "SE1261",
+  "fund_type": 6,
+  "advisor": "",
+  "advisor2": "北京淡水泉投资",
+  "inception_date": "2007-09-06",
+  "puton_date": "2014-03-25",
+  "mandator_name": "中国建设银行股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "",
+    "register_code": ""
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "成长型,大盘"
+    }
+  }
+}

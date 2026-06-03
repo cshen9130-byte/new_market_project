@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "博润稳健量化2号",
+  "fund_name": "博润稳健量化2号私募证券投资基金",
+  "register_number": "SST556",
+  "fund_type": 2,
+  "advisor": "北京博润银泰投资",
+  "advisor2": "",
+  "inception_date": "2021-10-14",
+  "puton_date": "2021-10-14",
+  "mandator_name": "广发证券股份有限公司",
+  "managers": [
+    {
+      "name": "马志伟",
+      "id": "77707f0cd50715d5"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1002960"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "场内期权",
+      "strategy_three": ""
+    }
+  }
+}

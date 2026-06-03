@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "奕睿CTA二期D",
+  "fund_name": "奕睿CTA二期D私募证券投资基金",
+  "register_number": "SXU778",
+  "fund_type": 2,
+  "advisor": "上海奕睿",
+  "advisor2": "",
+  "inception_date": "2022-11-22",
+  "puton_date": "2022-11-25",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "李岸隆",
+      "id": "3714353280c81c57"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1072839"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": ""
+    }
+  }
+}

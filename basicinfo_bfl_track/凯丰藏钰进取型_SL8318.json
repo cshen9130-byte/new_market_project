@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "凯丰藏钰进取型",
+  "fund_name": "凯丰藏钰进取型私募基金",
+  "register_number": "SL8318",
+  "fund_type": 2,
+  "advisor": "昌都市凯丰投资",
+  "advisor2": "",
+  "inception_date": "2016-10-12",
+  "puton_date": "2016-10-13",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "0.010000",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "0.017000",
+    "fee_admin_service": "",
+    "fee_pay": "0.250000",
+    "scale": "50-100亿元",
+    "register_code": "P1016484"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "宏观策略",
+      "strategy_three": ""
+    }
+  }
+}

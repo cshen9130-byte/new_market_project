@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "六妙星滚雪粒1号A类",
+  "fund_name": "六妙星滚雪粒1号私募证券投资基金A类份额",
+  "register_number": "ASB96A",
+  "fund_type": 2,
+  "advisor": "北京六妙星",
+  "advisor2": "",
+  "inception_date": "2024-12-16",
+  "puton_date": "2024-12-31",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周二、周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于 90 天，赎回费率 1%；持有期大等于 90 天，赎回费率 0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "单人单笔高水位法，赎回、收益分配、终止时计提。计提比例20%",
+    "scale": "20-50亿元",
+    "register_code": "P1073972"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期权套利",
+      "strategy_three": ""
+    }
+  }
+}

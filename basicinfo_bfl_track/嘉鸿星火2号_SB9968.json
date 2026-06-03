@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "嘉鸿星火2号",
+  "fund_name": "嘉鸿星火2号私募证券投资基金",
+  "register_number": "SB9968",
+  "fund_type": 2,
+  "advisor": "上海嘉鸿",
+  "advisor2": "",
+  "inception_date": "2023-08-17",
+  "puton_date": "2023-08-17",
+  "mandator_name": "广发证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "50-100亿元",
+    "register_code": "P1068812"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "博弈渭华翔昇三号B类",
+  "fund_name": "博弈渭华翔昇三号私募证券投资基金B类份额",
+  "register_number": "AKX56B",
+  "fund_type": 2,
+  "advisor": "青岛博弈资管",
+  "advisor2": "",
+  "inception_date": "2024-05-21",
+  "puton_date": "2024-05-28",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周二、周三申赎",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "不低于10万且为10万元的整数倍",
+    "fee_redeem": "0%",
+    "precautious_line": "0.92",
+    "closed_period": "",
+    "stop_line": "0.9",
+    "fee_manage_rate": 0.005,
+    "fee_trust": "0.01%",
+    "fee_manage": "",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "单客户单笔份额高水位法，当基金份额赎回、基金终止或分红时，且该赎回份额或分红份额当期收益大于年化 7%，管理人提取该份额整体盈利部分的 50%作为业绩报酬，但计提后该笔份额的当期年化收益不低于 7%。",
+    "scale": "20-50亿元",
+    "register_code": "P1062573"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "量化选股",
+      "strategy_three": ""
+    }
+  }
+}

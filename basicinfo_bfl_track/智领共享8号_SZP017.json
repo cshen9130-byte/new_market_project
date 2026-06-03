@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "智领共享8号",
+  "fund_name": "智领共享8号私募证券投资基金",
+  "register_number": "SZP017",
+  "fund_type": 2,
+  "advisor": "福州智领三联",
+  "advisor2": "",
+  "inception_date": "2023-04-04",
+  "puton_date": "2023-04-12",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "1万元",
+    "fee_redeem": "1%",
+    "precautious_line": "0.95",
+    "closed_period": "无",
+    "stop_line": "0.92",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "在赎回、本基金终止或分红时提取业绩报酬，间隔时间不少于3个月。收益分配方案由基金管理人拟定。",
+    "scale": "20-50亿元",
+    "register_code": "P1033867"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": "打板"
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "鑫鼎长风套利1号",
+  "fund_name": "鑫鼎长风套利1号私募证券投资基金",
+  "register_number": "SSA947",
+  "fund_type": 2,
+  "advisor": "深圳鑫鼎",
+  "advisor2": "",
+  "inception_date": "2021-08-02",
+  "puton_date": "2021-08-10",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [
+    {
+      "name": "成亮",
+      "id": "a64071f4c3c8b7d8"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万的整数倍",
+    "fee_redeem": "0%\n",
+    "precautious_line": "0.95",
+    "closed_period": "无",
+    "stop_line": "0.9",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.04%",
+    "fee_manage": "",
+    "fee_admin_service": "0.04%",
+    "fee_pay": "单个客户单笔高水位净值法计提，年化超过8%的部分提取50%的业绩报酬\n",
+    "scale": "5-10亿元",
+    "register_code": "P1008450"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "场内期权",
+      "strategy_three": "中性波动率交易"
+    }
+  }
+}

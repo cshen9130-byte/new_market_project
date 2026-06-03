@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "箐安期权稳健一号",
+  "fund_name": "箐安期权稳健一号私募证券投资基金",
+  "register_number": "SXS135",
+  "fund_type": 2,
+  "advisor": "上海箐安投资",
+  "advisor2": "",
+  "inception_date": "2022-11-28",
+  "puton_date": "2022-11-28",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周二、周五",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "1万元起",
+    "fee_redeem": "持有期小于180个自然日，赎回费率为0.5%；持有期大等于180个自然，赎回费率为0%",
+    "precautious_line": "0.85",
+    "closed_period": "",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.03%/年",
+    "fee_manage": "",
+    "fee_admin_service": "0.03%/年",
+    "fee_pay": "单客户单笔高水位法计提比例，实际收益超过[0%]的部分提取[20%]作为业绩报酬",
+    "scale": "5-10亿元",
+    "register_code": "P1064545"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "场内期权",
+      "strategy_three": ""
+    }
+  }
+}

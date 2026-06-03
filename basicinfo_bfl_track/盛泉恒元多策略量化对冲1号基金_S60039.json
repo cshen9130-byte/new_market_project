@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "盛泉恒元多策略量化对冲1号基金",
+  "fund_name": "盛泉恒元多策略量化对冲1号基金",
+  "register_number": "S60039",
+  "fund_type": 2,
+  "advisor": "南京盛泉恒元投资",
+  "advisor2": "",
+  "inception_date": "2015-07-10",
+  "puton_date": "2015-07-14",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每月最后一个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "每月最后一个交易日，赎回费0.5%（持有期满360天免收）",
+    "precautious_line": "",
+    "closed_period": "3个月",
+    "stop_line": "",
+    "fee_manage_rate": 0.005,
+    "fee_trust": "每年0.02%",
+    "fee_manage": "管理费：0.5%/年\n托管/运营服务费：各0.02%/年",
+    "fee_admin_service": "每年0.02%",
+    "fee_pay": "客户净收益的20%，客户赎回、基金终止和收益分配时计提并支付",
+    "scale": "100亿元以上",
+    "register_code": "P1006545"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": ""
+    }
+  }
+}

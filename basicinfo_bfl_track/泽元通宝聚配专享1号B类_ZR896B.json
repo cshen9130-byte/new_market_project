@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "泽元通宝聚配专享1号B类",
+  "fund_name": "泽元通宝聚配专享1号私募证券投资基金B类份额",
+  "register_number": "ZR896B",
+  "fund_type": 2,
+  "advisor": "广州泽元",
+  "advisor2": "",
+  "inception_date": "2023-03-30",
+  "puton_date": "2023-04-04",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "本基金的申赎开放日为每周周三、周五，遇非工作日提前。基金管理人可设置临时开放日为基金份额持有人办理赎回，临时开放日不得进行申购。",
+    "is_temporary_open": 3,
+    "fee_purchase": "本基金 A 类基金份额无申购费，本基金的 B 类基金份额申购费率为 1%",
+    "add_amount": "基金份额持有人在开放日内追加申购的，每次申购的金额应不低于 10万元人民币（不含申购费（如有））。",
+    "fee_redeem": "6个月内1%",
+    "precautious_line": "0.8",
+    "closed_period": "无",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.01,
+    "fee_trust": " 0.01%",
+    "fee_manage": "本基金 A 类基金份额无管理费。B 类基金份额基金管理费按前一日 B 类基金份额资产净值 1%的年费率计提。",
+    "fee_admin_service": " 0.01%",
+    "fee_pay": "本基金 A 类基金份额无业绩报酬。\n本基金 B 类基金份额业绩报酬：16%",
+    "scale": "20-50亿元",
+    "register_code": "P1005795"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

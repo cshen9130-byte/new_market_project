@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "慈阳投资进取2号",
+  "fund_name": "慈阳投资进取2号私募证券投资基金",
+  "register_number": "SSA743",
+  "fund_type": 2,
+  "advisor": "上海慈阳投资",
+  "advisor2": "",
+  "inception_date": "2021-08-09",
+  "puton_date": "2021-08-17",
+  "mandator_name": "中国国际金融股份有限公司",
+  "managers": [
+    {
+      "name": "洪喆",
+      "id": "4f674dca56bf8fc7"
+    },
+    {
+      "name": "史朝兴",
+      "id": "028a25804fdda144"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每月10号",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "10万的整数倍",
+    "fee_redeem": "持有期小于365天，赎回费率为1.5%；持有期大等于365天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.03%",
+    "fee_manage": "",
+    "fee_admin_service": "0.03%",
+    "fee_pay": "根据高水位净值法对单个基金份额持有人单笔投资基金份额分别计提业绩报酬。业绩报酬计提日分为固定计提日、赎回申请日（T日）（含开放日和临时开放日（如有）赎回的份额）和基金终止日，固定计提日为自基金成立日起之后【每自然年度的6月10号（如遇非工作日，则顺延至之后的第一个工作日）】。业绩报酬计提费率为：r=（20）%",
+    "scale": "5-10亿元",
+    "register_code": "P1069377"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "交易型"
+    }
+  }
+}

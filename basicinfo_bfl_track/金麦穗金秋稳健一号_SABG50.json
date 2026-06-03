@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "金麦穗金秋稳健一号",
+  "fund_name": "金麦穗金秋稳健一号私募证券投资基金",
+  "register_number": "SABG50",
+  "fund_type": 2,
+  "advisor": "山东金麦穗",
+  "advisor2": "",
+  "inception_date": "2023-10-23",
+  "puton_date": "2023-11-07",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个工作日开放申购，每周第二个工作日开放赎回",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于180 天，赎回费 0.3%；持有期大等于180 天，赎回费 0%",
+    "precautious_line": "0.95",
+    "closed_period": "",
+    "stop_line": "0.9",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.01%",
+    "fee_manage": "A 类份额：0%，B 类份额：1%",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "20%",
+    "scale": "0-5亿元",
+    "register_code": "P1023272"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "交易型"
+    }
+  }
+}

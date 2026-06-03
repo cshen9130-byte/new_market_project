@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "璞远矿世纯债聚配专享",
+  "fund_name": "璞远矿世纯债聚配专享私募证券投资基金",
+  "register_number": "SQT220",
+  "fund_type": 2,
+  "advisor": "上海璞远资管",
+  "advisor2": "",
+  "inception_date": "2021-08-03",
+  "puton_date": "2021-08-09",
+  "mandator_name": "华福证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1002935"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "债券策略",
+      "strategy_two": "信用债",
+      "strategy_three": ""
+    }
+  }
+}

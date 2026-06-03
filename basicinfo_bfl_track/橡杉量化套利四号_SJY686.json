@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "橡杉量化套利四号",
+  "fund_name": "橡杉量化套利四号私募证券投资基金",
+  "register_number": "SJY686",
+  "fund_type": 2,
+  "advisor": "上海橡杉资管",
+  "advisor2": "",
+  "inception_date": "2020-04-15",
+  "puton_date": "2020-04-17",
+  "mandator_name": "国信证券股份有限公司",
+  "managers": [
+    {
+      "name": "王丽明",
+      "id": "34ceed12b43913aa"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1060103"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "期货套利",
+      "strategy_three": "商品套利,跨市场套利"
+    }
+  }
+}

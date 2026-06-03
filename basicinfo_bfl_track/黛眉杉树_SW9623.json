@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "黛眉杉树",
+  "fund_name": "黛眉杉树私募证券投资基金",
+  "register_number": "SW9623",
+  "fund_type": 2,
+  "advisor": "上海杉树资管",
+  "advisor2": "",
+  "inception_date": "2017-09-01",
+  "puton_date": "2017-09-11",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "刘世伟",
+      "id": "cb04a15a9b1cd927"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "申购：每个交易日\n赎回：每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "不低于10万元。",
+    "fee_redeem": "0%",
+    "precautious_line": "0.8",
+    "closed_period": "无",
+    "stop_line": "0.75",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.05%",
+    "fee_manage": "本基金不收取管理费。",
+    "fee_admin_service": "0.05%",
+    "fee_pay": "不收取业绩报酬。",
+    "scale": "20-50亿元",
+    "register_code": "P1002462"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "500指增",
+      "strategy_three": "另类因子"
+    }
+  }
+}

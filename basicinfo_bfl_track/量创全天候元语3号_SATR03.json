@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量创全天候元语3号",
+  "fund_name": "量创全天候元语3号私募证券投资基金",
+  "register_number": "SATR03",
+  "fund_type": 2,
+  "advisor": "前海量创投资",
+  "advisor2": "",
+  "inception_date": "2025-02-19",
+  "puton_date": "2025-03-14",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周三",
+    "is_temporary_open": 3,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期笑于90天，赎回费率为0.75%；持有期大等于90天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.01%",
+    "fee_manage": "A类份额：1.5%，B类份额：0%",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "单个投资者单笔高水位净值法，A类份额：20%，B类份额：不计提业绩报酬",
+    "scale": "20-50亿元",
+    "register_code": "P1032081"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "复合策略",
+      "strategy_three": ""
+    }
+  }
+}

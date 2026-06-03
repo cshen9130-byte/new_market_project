@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "银方沣泽一号",
+  "fund_name": "银方沣泽一号私募证券投资基金",
+  "register_number": "SSG345",
+  "fund_type": 2,
+  "advisor": "青岛银方",
+  "advisor2": "",
+  "inception_date": "2021-08-09",
+  "puton_date": "2021-08-19",
+  "mandator_name": "中国银河证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周一、周三、周五",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "0.8",
+    "closed_period": "3个月",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "单人单笔计，期间收益的50%作为业报",
+    "scale": "0-5亿元",
+    "register_code": "P1063103"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "套利策略",
+      "strategy_two": "基金套利",
+      "strategy_three": "ETF套利"
+    }
+  }
+}

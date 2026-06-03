@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "衍复兴享新动力指增一号",
+  "fund_name": "衍复兴享新动力指增一号私募证券投资基金",
+  "register_number": "SNH811",
+  "fund_type": 2,
+  "advisor": "上海衍复投资",
+  "advisor2": "",
+  "inception_date": "2020-12-03",
+  "puton_date": "2020-12-10",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万元起",
+    "fee_redeem": "持有期小于360个自然日，赎回费率为1%；持有期大等于360个自然日，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.05%",
+    "fee_manage": "",
+    "fee_admin_service": "0.05%",
+    "fee_pay": "在业绩报酬计提基准日 (委托人赎回由请日、基金清算日、财产分配权益登记日)，当单个基金份额持有人单笔投资相对于同期中证500指数的超额收益率Re大于0% (Re =同期基金份额收益率 - 同期中证500指数收益率) ，可按照超额收益率Re的20%计提业绩报酬。",
+    "scale": "100亿元以上",
+    "register_code": "P1070325"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "500指增",
+      "strategy_three": "低频,量价"
+    }
+  }
+}

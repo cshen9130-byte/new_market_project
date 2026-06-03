@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "泓大奥格瑞玛2号",
+  "fund_name": "泓大奥格瑞玛2号私募证券投资基金",
+  "register_number": "SNV894",
+  "fund_type": 2,
+  "advisor": "海南泓大",
+  "advisor2": "",
+  "inception_date": "2021-02-01",
+  "puton_date": "2021-02-04",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "黄子镔",
+      "id": "96584f17871bf902"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每自然周周一、周三",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "0.7",
+    "closed_period": "无封闭期",
+    "stop_line": "0.65",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.035%",
+    "fee_manage": "1.5%",
+    "fee_admin_service": "0.035%",
+    "fee_pay": "20%",
+    "scale": "10-20亿元",
+    "register_code": "P1066953"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "中高频"
+    }
+  }
+}

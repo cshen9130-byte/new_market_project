@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "睿郡6号",
+  "fund_name": "睿郡6号私募证券投资基金",
+  "register_number": "SJP915",
+  "fund_type": 2,
+  "advisor": "上海睿郡资管",
+  "advisor2": "",
+  "inception_date": "2020-01-15",
+  "puton_date": "2020-01-21",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "A类份额：持有期小于 360 个自然日，赎回费率为2%；持有期大等于 360个自然日，赎回费率为0%。B类份额：0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.002,
+    "fee_trust": "A类份额：0.1%；B类份额：5000元",
+    "fee_manage": "A类份额：0.2%；B类份额：0%（A类份额单位净值小于等于0.8元时，本基金自符合净值触发条件的下一日起暂停计提管理费）",
+    "fee_admin_service": "A类份额：0.1%；B类份额：5000元（客户服务费：A类份额：0.8%；B类份额：0%）",
+    "fee_pay": "A类份额：业绩报酬的计算将对单个投资者单笔投资进行分别计算。在业绩报酬计提基准日(投资者赎回日、分红日、基金清算日)，若第i位基金份额持有人的第j笔投资在上一计提日(首次计提时，则为该笔投资的参与日)至本次基准日持有期间的年化收益大于0，则对至1(含)的部分提取15%作为业绩报酬；对大于 10%的部分提取 20%作为业绩报酬。\nB类份额：不收取。",
+    "scale": "100亿元以上",
+    "register_code": "P1014376"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "宽辅专享1号",
+  "fund_name": "宽辅专享1号私募证券投资基金",
+  "register_number": "SB5590",
+  "fund_type": 2,
+  "advisor": "海南宽辅",
+  "advisor2": "",
+  "inception_date": "2023-07-11",
+  "puton_date": "2023-07-20",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "1万元起",
+    "fee_redeem": "持有期小于360 天，赎回费率为 1%；持有期大等于360 天，赎回费率为 0%。",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.02,
+    "fee_trust": "0.01%",
+    "fee_manage": "A类份额（管理人及其员工份额）：0%；B类份额（2025 年2月28日之前申购的且非管理人及其员工的份额）：1%；C类份额（A、B 之外的直销份额）：1%；D类份额（代销份额）：2%",
+    "fee_admin_service": "0.01%",
+    "fee_pay": "1.计提原则：单人单份额高水位法\n2.计提时点：赎回、分红、清盘时计提；每年 6 月、12 月最后一个交易日计提\n3.计提比例：\nA类份额（管理人及其员工份额）：0%；\nB类份额（2025 年 2 月 28 日之前申购的且非管理人及其员工的份额）：绝对收益计提 18%；\nC类份额（A、B 之外的直销份额）：绝对收益计提 20%；\nD类份额（代销份额）：绝对收益计提 20%",
+    "scale": "10-20亿元",
+    "register_code": "P1074464"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "可转债多头",
+      "strategy_three": "量化"
+    }
+  }
+}

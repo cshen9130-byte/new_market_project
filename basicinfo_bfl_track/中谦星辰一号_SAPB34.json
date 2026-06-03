@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "中谦星辰一号",
+  "fund_name": "中谦星辰一号私募证券投资基金",
+  "register_number": "SAPB34",
+  "fund_type": 2,
+  "advisor": "杭州中谦资管",
+  "advisor2": "",
+  "inception_date": "2024-09-06",
+  "puton_date": "2024-09-12",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "申购开放日为每个自然周的最后一个工作日。赎回开放日为每个自然月度的第二个自然周的最后一个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于3 个月，赎回费1%；持有期超过3 个月，赎回费0%",
+    "precautious_line": "",
+    "closed_period": "3个月",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.02%",
+    "fee_manage": "",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "单客户高水位法，在投资者赎回日、分红权益登记日、基金清算日收取期间收益的 20%。",
+    "scale": "0-5亿元",
+    "register_code": "P1032373"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "能化"
+    }
+  }
+}

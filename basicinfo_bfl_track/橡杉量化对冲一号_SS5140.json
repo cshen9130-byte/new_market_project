@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "橡杉量化对冲一号",
+  "fund_name": "橡杉量化对冲一号私募证券投资基金",
+  "register_number": "SS5140",
+  "fund_type": 2,
+  "advisor": "上海橡杉资管",
+  "advisor2": "",
+  "inception_date": "2017-04-05",
+  "puton_date": "2017-04-19",
+  "mandator_name": "中信建投证券股份有限公司",
+  "managers": [
+    {
+      "name": "王丽明",
+      "id": "34ceed12b43913aa"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "5-10亿元",
+    "register_code": "P1060103"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": "基本面"
+    }
+  }
+}

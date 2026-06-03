@@ -218,6 +218,33 @@ const BATCH_UPLOAD_MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024 // 1 GB
 const CHUNK_THRESHOLD = 10 * 1024 * 1024 // 10 MB
 const CHUNK_SIZE = 8 * 1024 * 1024 // 8 MB per chunk
 
+function createUploadSessionId(): string {
+  if (typeof globalThis !== "undefined" && globalThis.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16)
+    globalThis.crypto.getRandomValues(bytes)
+
+    // RFC 4122 v4 variant/version bits
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0"))
+    return [
+      hex.slice(0, 4).join(""),
+      hex.slice(4, 6).join(""),
+      hex.slice(6, 8).join(""),
+      hex.slice(8, 10).join(""),
+      hex.slice(10, 16).join(""),
+    ].join("-")
+  }
+
+  // Last-resort fallback for environments without Web Crypto.
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+    const r = Math.floor(Math.random() * 16)
+    const v = ch === "x" ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
+}
+
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
@@ -890,7 +917,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     signal?: AbortSignal,
   ): Promise<KnowledgeBaseUploadResponse> {
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE)
-    const sessionId = crypto.randomUUID()
+    const sessionId = createUploadSessionId()
     let uploadedBytes = 0
     let lastResponse: KnowledgeBaseUploadResponse = { ok: true }
 
@@ -904,7 +931,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
       const form = new FormData()
       form.append("folderPath", resolvedTarget)
-      form.append("files", new FileIcon([chunkBlob], file.name))
+      form.append("files", new File([chunkBlob], file.name, { type: file.type || "application/octet-stream" }))
       form.append("relativePaths", relativePath)
       form.append("skipDedup", "true")
       form.append("chunkSessionId", sessionId)

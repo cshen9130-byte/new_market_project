@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量派金选量化对冲7号B类",
+  "fund_name": "量派金选量化对冲7号私募证券投资基金B类份额",
+  "register_number": "SS284B",
+  "fund_type": 2,
+  "advisor": "上海量派投资",
+  "advisor2": "",
+  "inception_date": "2021-10-26",
+  "puton_date": "2021-11-01",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万元起",
+    "fee_redeem": "A、B类：0%      C类(＜180天)：1%    C类(≥180天)：0%，归入基金财产",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.02%",
+    "fee_manage": "A类：0%  B类：1%  C类：1.2%",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "A类：0%  B类：20%  C类：22%\n",
+    "scale": "100亿元以上",
+    "register_code": "P1071253"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": "300中性"
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "汉盛晓希1号",
+  "fund_name": "汉盛晓希1号私募证券投资基金",
+  "register_number": "SVH952",
+  "fund_type": 2,
+  "advisor": "上海汉鸿",
+  "advisor2": "",
+  "inception_date": "2022-03-21",
+  "puton_date": "2022-03-24",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [
+    {
+      "name": "杨正豪",
+      "id": "676416ac82cf188e"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "本基金自成立之日起每周三开放申购和赎回（遇非交易日顺延至本周的下一个交易日，若本周无交易日可顺延，则不再顺延至下周，即本周不进行开放）。",
+    "is_temporary_open": 3,
+    "fee_purchase": "0",
+    "add_amount": "每次追加申购金额（含申购费）不少于 1 万元 人民币",
+    "fee_redeem": "0",
+    "precautious_line": "0.8",
+    "closed_period": "",
+    "stop_line": "0.75",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.004%/年",
+    "fee_manage": "本基金的管理费按基金资产净值的 1％年费率计提",
+    "fee_admin_service": "0.004%/年",
+    "fee_pay": "业绩报酬的计算采取“单客户单笔份额高水位法”：当基金份额赎回、基金终止或分红时，管理人将提取赎回份额或分红份额当期收益的20%作为业绩报酬。",
+    "scale": "10-20亿元",
+    "register_code": "P1072580"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "可转债多头",
+      "strategy_three": "量化"
+    }
+  }
+}

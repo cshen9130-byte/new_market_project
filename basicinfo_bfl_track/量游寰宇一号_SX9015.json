@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "量游寰宇一号",
+  "fund_name": "量游寰宇一号私募投资基金",
+  "register_number": "SX9015",
+  "fund_type": 2,
+  "advisor": "上海量游资管",
+  "advisor2": "",
+  "inception_date": "2017-11-10",
+  "puton_date": "2017-11-17",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "刘鹏宇",
+      "id": "2aeb1bb041a58177"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每周周二、周五",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "0.9",
+    "closed_period": "无",
+    "stop_line": "0.88",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.05%",
+    "fee_manage": "",
+    "fee_admin_service": "0.05%",
+    "fee_pay": "单个投资者单笔高水位净值法，计提比例 20%。业绩报酬以扣减委托人份额的方式提取。\n计提时点：本基金业绩报酬计提基准日分为固定计提基准日（每自然季度末月最后一个交易日）、赎回申请日、分红权益登记日和基金终止日。",
+    "scale": "5-10亿元",
+    "register_code": "P1005511"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "混合均衡"
+    }
+  }
+}

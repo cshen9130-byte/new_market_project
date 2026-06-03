@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "全天候人工智能产业基金一号",
+  "fund_name": "全天候人工智能产业基金一号私募证券投资基金",
+  "register_number": "SASY89",
+  "fund_type": 2,
+  "advisor": "珠海寰宸",
+  "advisor2": "",
+  "inception_date": "2025-01-17",
+  "puton_date": "2025-02-06",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "20-50亿元",
+    "register_code": "P1072409"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "其他",
+      "strategy_two": "",
+      "strategy_three": ""
+    }
+  }
+}

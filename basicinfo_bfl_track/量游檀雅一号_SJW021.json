@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "量游檀雅一号",
+  "fund_name": "量游檀雅一号私募证券投资基金",
+  "register_number": "SJW021",
+  "fund_type": 2,
+  "advisor": "上海量游资管",
+  "advisor2": "",
+  "inception_date": "2020-03-26",
+  "puton_date": "2020-03-31",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每季度末月（即 3、6、9、12 月）最后一个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "0.88",
+    "closed_period": "无",
+    "stop_line": "0.85",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "单个投资者单笔高水位净值法：计提比例 20%。\n",
+    "scale": "5-10亿元",
+    "register_code": "P1005511"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期权策略",
+      "strategy_two": "场内期权",
+      "strategy_three": "金融期权,定价卖波"
+    }
+  }
+}

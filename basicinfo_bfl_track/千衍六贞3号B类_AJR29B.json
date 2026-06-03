@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "千衍六贞3号B类",
+  "fund_name": "千衍六贞3号私募证券投资基金B类份额",
+  "register_number": "AJR29B",
+  "fund_type": 2,
+  "advisor": "上海千衍",
+  "advisor2": "",
+  "inception_date": "2024-06-18",
+  "puton_date": "2024-06-21",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "申购开放日为每个交易日，赎回开放日为每周周三、每月12日和22日",
+    "is_temporary_open": 3,
+    "fee_purchase": "0%",
+    "add_amount": "1万元起",
+    "fee_redeem": "持有期小于180天，赎回费率为1%；持有期大等于180天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.015%",
+    "fee_manage": "",
+    "fee_admin_service": "0.015%",
+    "fee_pay": "在分红、赎回、终止时，若持有期年化收益率小于等于0%，则不计提业绩报酬；若持有期年化收益率大于0%，则管理人对超出部分按20%的比例提取业绩报酬",
+    "scale": "100亿元以上",
+    "register_code": "P1009640"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "复合策略",
+      "strategy_three": ""
+    }
+  }
+}

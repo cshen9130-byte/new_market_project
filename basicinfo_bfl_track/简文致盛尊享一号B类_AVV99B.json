@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "简文致盛尊享一号B类",
+  "fund_name": "简文致盛尊享一号私募证券投资基金B类份额",
+  "register_number": "AVV99B",
+  "fund_type": 2,
+  "advisor": "上海简文",
+  "advisor2": "",
+  "inception_date": "2025-03-21",
+  "puton_date": "2025-04-03",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每周周一、周二",
+    "is_temporary_open": 0,
+    "fee_purchase": "0%",
+    "add_amount": "1万",
+    "fee_redeem": "持有期小等于92天，赎回费率为0.5%；持有期大于92天，赎回费率为0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "本基金采用“单个投资者单份额高水位法”。25%",
+    "scale": "10-20亿元",
+    "register_code": "P1022166"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": "打板"
+    }
+  }
+}

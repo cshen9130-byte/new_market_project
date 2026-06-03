@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "中邮永安黑猫CTA一号",
+  "fund_name": "中邮永安黑猫CTA一号私募证券投资基金",
+  "register_number": "SXY774",
+  "fund_type": 2,
+  "advisor": "上海中邮永安",
+  "advisor2": "",
+  "inception_date": "2022-12-16",
+  "puton_date": "2022-12-16",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [
+    {
+      "name": "徐诗文",
+      "id": "5a8fd9a22c36b027"
+    },
+    {
+      "name": "张雷",
+      "id": "8d593d73e2bb4195"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "20-50亿元",
+    "register_code": "P1062202"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "时序"
+    }
+  }
+}

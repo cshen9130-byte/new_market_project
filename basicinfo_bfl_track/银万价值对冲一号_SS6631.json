@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "银万价值对冲一号",
+  "fund_name": "银万价值对冲一号私募证券投资基金",
+  "register_number": "SS6631",
+  "fund_type": 2,
+  "advisor": "浙江银万",
+  "advisor2": "",
+  "inception_date": "2017-05-18",
+  "puton_date": "2017-05-25",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "余涛",
+      "id": "278647781ad4bd59"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "0.000000",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.001000",
+    "fee_manage": "0.010000",
+    "fee_admin_service": "",
+    "fee_pay": "0.200000",
+    "scale": "20-50亿元",
+    "register_code": "P1005420"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "复合策略",
+      "strategy_three": ""
+    }
+  }
+}

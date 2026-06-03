@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "东海龙王一号",
+  "fund_name": "东海龙王一号私募证券投资基金",
+  "register_number": "SEA420",
+  "fund_type": 2,
+  "advisor": "上海量魁",
+  "advisor2": "",
+  "inception_date": "2018-06-05",
+  "puton_date": "2018-06-20",
+  "mandator_name": "广发证券股份有限公司",
+  "managers": [
+    {
+      "name": "梁涛",
+      "id": "c473b1c2e16c5ea0"
+    },
+    {
+      "name": "金枫杰",
+      "id": "4e46ede23ce2f961"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每月5号，遇非工作日顺延",
+    "is_temporary_open": 1,
+    "fee_purchase": "2%",
+    "add_amount": "追加金额1万人民币起",
+    "fee_redeem": "D<365天：2%，D≥365天：0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "0.7",
+    "fee_manage_rate": 0.02,
+    "fee_trust": "0.075%/年",
+    "fee_manage": "自基金成立日起，每日计提，按季支付。",
+    "fee_admin_service": "0.075%/年",
+    "fee_pay": "业绩报酬：20.0%（绝对收益）",
+    "scale": "100亿元以上",
+    "register_code": "P1062372"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "时序"
+    }
+  }
+}

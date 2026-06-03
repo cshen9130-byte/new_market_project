@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "极量太极1号",
+  "fund_name": "极量太极1号私募证券投资基金",
+  "register_number": "SND542",
+  "fund_type": 2,
+  "advisor": "共青城极量投资",
+  "advisor2": "",
+  "inception_date": "2020-11-10",
+  "puton_date": "2020-11-13",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 0,
+    "fee_purchase": "1%",
+    "add_amount": "",
+    "fee_redeem": "持有期小于12个月，赎回费率为1%；持有期大等于12 个月，赎回费率为0%",
+    "precautious_line": "0.85",
+    "closed_period": "",
+    "stop_line": "0.8",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.02%",
+    "fee_manage": "0%",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "当基金份额赎回、基金终止或分红时，且该赎回份额或分红份额当期收益大于年化 6%，管理人提取该份额整体盈利部分的 50%作为业绩报酬，但计提后该笔份额的当期年化收益不低于 6%。",
+    "scale": "10-20亿元",
+    "register_code": "P1071373"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "择时对冲",
+      "strategy_three": "打板"
+    }
+  }
+}

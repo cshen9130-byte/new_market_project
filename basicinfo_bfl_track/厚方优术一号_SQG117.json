@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "厚方优术一号",
+  "fund_name": "厚方优术一号私募证券投资基金",
+  "register_number": "SQG117",
+  "fund_type": 2,
+  "advisor": "广东厚方投资",
+  "advisor2": "",
+  "inception_date": "2021-03-26",
+  "puton_date": "2021-03-26",
+  "mandator_name": "广发证券股份有限公司",
+  "managers": [
+    {
+      "name": "张家颖",
+      "id": "f6fb2483acd33bae"
+    },
+    {
+      "name": "张良",
+      "id": "8c57158c21c5b1c8"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每自然月份的 1 号和 15 号，非工作日顺延",
+    "is_temporary_open": 0,
+    "fee_purchase": "0.00%",
+    "add_amount": "",
+    "fee_redeem": "少于12个月1%；大于等于12个月0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "25%\n",
+    "scale": "10-20亿元",
+    "register_code": "P1019245"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "主观期货",
+      "strategy_three": "宏观多策略"
+    }
+  }
+}

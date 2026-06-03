@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "外贸信托-隆新6号(慎知资产)",
+  "fund_name": "外贸信托-隆新6号（慎知资产）集合资金信托计划",
+  "register_number": "SNT325",
+  "fund_type": 6,
+  "advisor": "",
+  "advisor2": "上海慎知资管",
+  "inception_date": "2020-12-16",
+  "puton_date": "2021-01-22",
+  "mandator_name": "中国光大银行股份有限公司",
+  "managers": [
+    {
+      "name": "余海丰",
+      "id": "ad94bc15f3073187"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "",
+    "register_code": ""
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "成长型,大盘"
+    }
+  }
+}

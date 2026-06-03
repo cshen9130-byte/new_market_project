@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "盛泉恒元灵活配置专项6号A类",
+  "fund_name": "盛泉恒元灵活配置专项6号私募证券投资基金A类份额",
+  "register_number": "JV685A",
+  "fund_type": 2,
+  "advisor": "南京盛泉恒元投资",
+  "advisor2": "",
+  "inception_date": "2020-03-26",
+  "puton_date": "2020-03-26",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1006545"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "量化选股",
+      "strategy_three": ""
+    }
+  }
+}

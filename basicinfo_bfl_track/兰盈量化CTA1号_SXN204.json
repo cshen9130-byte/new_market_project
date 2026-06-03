@@ -1,0 +1,53 @@
+{
+  "fund_short_name": "兰盈量化CTA1号",
+  "fund_name": "兰盈量化CTA1号私募证券投资基金",
+  "register_number": "SXN204",
+  "fund_type": 2,
+  "advisor": "上海兰盈量投",
+  "advisor2": "",
+  "inception_date": "2022-10-14",
+  "puton_date": "2022-10-21",
+  "mandator_name": "华泰证券股份有限公司",
+  "managers": [
+    {
+      "name": "章宇涵",
+      "id": "bde448255ddff037"
+    },
+    {
+      "name": "林雄",
+      "id": "b95d3e9638e5fc1c"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每个交易日",
+    "is_temporary_open": 0,
+    "fee_purchase": "A类份额：1%；B类份额：0%",
+    "add_amount": "追加金额不低于 1 万元人民币",
+    "fee_redeem": "A类份额：持有期小于180天，赎回费率为2%；持有期大等于180天且小于365天，赎回费率为1%；持有期大等于365天，赎回费率为0%。B类份额：0%",
+    "precautious_line": "0.7",
+    "closed_period": "无",
+    "stop_line": "0.6",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.02%",
+    "fee_manage": "A类份额：1%；B类份额：0.1%",
+    "fee_admin_service": "0.02%",
+    "fee_pay": "A类份额：年化收益率小于30%，计提20%业绩报酬；年化收益率大等于30%，计提25%业绩报酬。B类份额：0%",
+    "scale": "10-20亿元",
+    "register_code": "P1073965"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "时序,中高频,机器学习"
+    }
+  }
+}

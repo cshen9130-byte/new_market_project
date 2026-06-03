@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "龙旗巨星一号",
+  "fund_name": "龙旗巨星一号私募投资基金",
+  "register_number": "SH7639",
+  "fund_type": 2,
+  "advisor": "杭州龙旗科技",
+  "advisor2": "",
+  "inception_date": "2016-04-15",
+  "puton_date": "2016-04-20",
+  "mandator_name": "国泰君安证券股份有限公司",
+  "managers": [
+    {
+      "name": "朱晓康",
+      "id": "1696b71da8fd2ec9"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "申购开放日：每周最后一个交易日。赎回开放日：每自然季度末月（3、6、9、12月）最后一个交易日。",
+    "is_temporary_open": 1,
+    "fee_purchase": "0%",
+    "add_amount": "追加金额1万元起",
+    "fee_redeem": "0%",
+    "precautious_line": "0.8",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0.015,
+    "fee_trust": "0.05%/年",
+    "fee_manage": "本基金的管理费自基金成立日起，每日计提，按季支付。",
+    "fee_admin_service": "0.05%/年",
+    "fee_pay": "业绩报酬：20.0%（绝对收益）",
+    "scale": "100亿元以上",
+    "register_code": "P1000676"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "另类多头",
+      "strategy_three": "择时择股"
+    }
+  }
+}

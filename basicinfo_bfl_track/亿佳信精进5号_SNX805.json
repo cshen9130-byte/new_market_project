@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "亿佳信精进5号",
+  "fund_name": "亿佳信精进5号私募证券投资基金",
+  "register_number": "SNX805",
+  "fund_type": 2,
+  "advisor": "珠海亿佳信资管",
+  "advisor2": "",
+  "inception_date": "2021-02-10",
+  "puton_date": "2021-02-23",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [
+    {
+      "name": "李樾",
+      "id": "6c75e5939f6fc22f"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "0-5亿元",
+    "register_code": "P1068350"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "时序"
+    }
+  }
+}

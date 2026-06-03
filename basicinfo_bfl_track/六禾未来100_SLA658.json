@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "六禾未来100",
+  "fund_name": "六禾未来100私募证券投资基金",
+  "register_number": "SLA658",
+  "fund_type": 2,
+  "advisor": "上海六禾致谦",
+  "advisor2": "",
+  "inception_date": "2020-05-15",
+  "puton_date": "2020-05-18",
+  "mandator_name": "中国国际金融股份有限公司",
+  "managers": [
+    {
+      "name": "戴斌",
+      "id": "1cfe8a02e30e87c5"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "10-20亿元",
+    "register_code": "P1000767"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": ""
+    }
+  }
+}

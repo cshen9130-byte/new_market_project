@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "天演6号",
+  "fund_name": "天演6号私募证券投资基金",
+  "register_number": "SN1819",
+  "fund_type": 2,
+  "advisor": "上海天演",
+  "advisor2": "",
+  "inception_date": "2016-12-26",
+  "puton_date": "2016-12-30",
+  "mandator_name": "广发证券股份有限公司",
+  "managers": [
+    {
+      "name": "谢晓阳",
+      "id": "5b25e9698ae2f173"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1004907"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票对冲",
+      "strategy_two": "股票市场中性",
+      "strategy_three": "中频,量价,500中性"
+    }
+  }
+}

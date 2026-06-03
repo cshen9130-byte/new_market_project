@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "正源信毅月月开贰号",
+  "fund_name": "正源信毅月月开贰号私募证券投资基金",
+  "register_number": "STX591",
+  "fund_type": 2,
+  "advisor": "苏州正源信毅资管",
+  "advisor2": "",
+  "inception_date": "2022-09-21",
+  "puton_date": "2022-09-26",
+  "mandator_name": "中信证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "每个工作日",
+    "is_temporary_open": 1,
+    "fee_purchase": "0%",
+    "add_amount": "",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0.01,
+    "fee_trust": "0.025%",
+    "fee_manage": "",
+    "fee_admin_service": "0.025%",
+    "fee_pay": "对期间年化收益率超过 4%以上部分按照 20%的比例收取业绩报酬",
+    "scale": "5-10亿元",
+    "register_code": "P1067860"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "期货策略",
+      "strategy_two": "量化期货",
+      "strategy_three": "混合均衡"
+    }
+  }
+}

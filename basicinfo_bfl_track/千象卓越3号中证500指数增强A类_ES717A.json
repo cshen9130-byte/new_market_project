@@ -1,0 +1,44 @@
+{
+  "fund_short_name": "千象卓越3号中证500指数增强A类",
+  "fund_name": "千象卓越3号中证500指数增强私募证券投资基金A类份额",
+  "register_number": "ES717A",
+  "fund_type": 2,
+  "advisor": "上海千象资产",
+  "advisor2": "",
+  "inception_date": "2018-11-16",
+  "puton_date": "",
+  "mandator_name": "招商证券股份有限公司",
+  "managers": [],
+  "FundsBase": {
+    "open_day": "",
+    "is_temporary_open": 0,
+    "fee_purchase": "",
+    "add_amount": "",
+    "fee_redeem": "",
+    "precautious_line": "",
+    "closed_period": "",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "",
+    "fee_manage": "",
+    "fee_admin_service": "",
+    "fee_pay": "",
+    "scale": "100亿元以上",
+    "register_code": "P1006930"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "多资产策略",
+      "strategy_two": "复合策略",
+      "strategy_three": ""
+    }
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "fund_short_name": "开思沪港深优选",
+  "fund_name": "开思沪港深优选私募证券投资基金",
+  "register_number": "SLP048",
+  "fund_type": 2,
+  "advisor": "上海开思",
+  "advisor2": "",
+  "inception_date": "2020-08-04",
+  "puton_date": "2020-08-04",
+  "mandator_name": "兴业证券股份有限公司",
+  "managers": [
+    {
+      "name": "倪飞",
+      "id": "8f09361855a203c0"
+    }
+  ],
+  "FundsBase": {
+    "open_day": "每周第三个交易日开放申赎（若遇本周无此交易日则本周不进行开放）",
+    "is_temporary_open": 0,
+    "fee_purchase": "90天以内赎回费0.5%",
+    "add_amount": "1万元起",
+    "fee_redeem": "0%",
+    "precautious_line": "",
+    "closed_period": "无",
+    "stop_line": "",
+    "fee_manage_rate": 0,
+    "fee_trust": "0.03%，年保底费为 0.5 万元",
+    "fee_manage": "0%+17%",
+    "fee_admin_service": "0.03%，年保底费为 0.5 万元",
+    "fee_pay": "A类份额：0%，B类份额：17%",
+    "scale": "100亿元以上",
+    "register_code": "P1032176"
+  },
+  "tag": {
+    "company": []
+  },
+  "strategy": {
+    "company": {
+      "strategy_one": "",
+      "strategy_two": "",
+      "strategy_three": ""
+    },
+    "platform": {
+      "strategy_one": "股票多头",
+      "strategy_two": "主观多头",
+      "strategy_three": "成长型,港股,宏观对冲"
+    }
+  }
+}
