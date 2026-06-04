@@ -6,8 +6,8 @@ export const dynamic = "force-dynamic"
 
 const ALLOWED_SORT: Record<string, string> = {
   product_name:    "i.product_name",
-  latest_nav:      "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
-  latest_nav_date: "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
+  latest_nav:      "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
+  latest_nav_date: "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
   ret_1w:          "ret_1w",
   ret_1m:          "ret_1m",
   ret_3m:          "ret_3m",
@@ -26,6 +26,15 @@ function navScalarExpr(days: number): string {
     (SELECT ngs.nav::numeric FROM private_fund_nav_group ngs
      WHERE i.short_name IS NOT NULL AND ngs.product_name = i.short_name AND ngs.price_date <= CURRENT_DATE - INTERVAL '${days} days'
      ORDER BY ngs.price_date DESC LIMIT 1),
+    (SELECT nhc.nav::numeric FROM private_fund_nav_group_hy nhc
+     WHERE nhc.beian_hao = i.beian_hao AND nhc.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY nhc.price_date DESC LIMIT 1),
+    (SELECT nhn.nav::numeric FROM private_fund_nav_group_hy nhn
+     WHERE nhn.product_name = i.product_name AND nhn.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY nhn.price_date DESC LIMIT 1),
+    (SELECT nhs.nav::numeric FROM private_fund_nav_group_hy nhs
+     WHERE i.short_name IS NOT NULL AND nhs.product_name = i.short_name AND nhs.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     ORDER BY nhs.price_date DESC LIMIT 1),
     (SELECT nfc.nav::numeric FROM private_fund_nav nfc
      WHERE nfc.beian_hao = i.beian_hao AND nfc.price_date <= CURRENT_DATE - INTERVAL '${days} days'
      ORDER BY nfc.price_date DESC LIMIT 1),
@@ -201,19 +210,37 @@ async function loadOneYearSeries(beianHao: string, productName: string, shortNam
 
        UNION ALL
 
-       SELECT 4 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+      SELECT 4 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+      FROM private_fund_nav_group_hy
+      WHERE beian_hao = $1
+
+      UNION ALL
+
+      SELECT 5 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+      FROM private_fund_nav_group_hy
+      WHERE $2 <> '' AND product_name = $2
+
+      UNION ALL
+
+      SELECT 6 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+      FROM private_fund_nav_group_hy
+      WHERE $3 <> '' AND product_name = $3
+
+      UNION ALL
+
+      SELECT 7 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
        FROM private_fund_nav
        WHERE beian_hao = $1
 
        UNION ALL
 
-       SELECT 5 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+      SELECT 8 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
        FROM private_fund_nav
        WHERE $2 <> '' AND product_name = $2
 
        UNION ALL
 
-       SELECT 6 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+      SELECT 9 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
        FROM private_fund_nav
        WHERE $3 <> '' AND product_name = $3
      ),
@@ -253,6 +280,8 @@ async function addOneYearRiskMetrics(rows: TrackRow[]): Promise<TrackRow[]> {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
+  const requestedPool = searchParams.get("pool")
+  const pool = requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" ? requestedPool : "bfl"
   const isExport = searchParams.get("export") === "1"
   const pageSize = isExport ? 100000 : 50
   const offset   = isExport ? 0 : (page - 1) * pageSize
@@ -269,9 +298,73 @@ export async function GET(req: Request) {
   const orderCol = ALLOWED_SORT[sortKey] ?? "i.product_name"
 
   const sourceJsonExpr = rawStrategyJsonExpr("i")
-  const strategyL1Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
-  const strategyL2Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
-  const strategyL3Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
+  const strategyPrefix = strategySource === "platform" ? "platform" : "company"
+  const isExternalPool = pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof"
+  const sourceTable = pool === "selected" ? "selected_pool" : pool === "core" ? "core_pool" : pool === "hy" ? "hy_tracking_pool" : pool === "fof" ? "fof_mom_tracking" : "tracking_pool"
+  const strategyL1Expr = isExternalPool
+    ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_one, '')), '')`
+    : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
+  const strategyL2Expr = isExternalPool
+    ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_two, '')), '')`
+    : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
+  const strategyL3Expr = isExternalPool
+    ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_three, '')), '')`
+    : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
+
+  const sourceCte = isExternalPool
+    ? `WITH source AS (
+        SELECT
+          p.register_number AS beian_hao,
+          p.product_name,
+          COALESCE(o.fund_short_name, b.fund_short_name) AS short_name,
+          NULL::text AS raw_strategy,
+          tag_data.strategy_company,
+          o.company_strategy_one,
+          o.company_strategy_two,
+          o.company_strategy_three,
+          o.platform_strategy_one,
+          o.platform_strategy_two,
+          o.platform_strategy_three
+        FROM ${sourceTable} p
+        LEFT JOIN LATERAL (
+          SELECT * FROM type6_ops_team_full o
+          WHERE o.register_number = p.register_number
+          ORDER BY o.updated_at DESC NULLS LAST, o.id DESC
+          LIMIT 1
+        ) o ON true
+        LEFT JOIN LATERAL (
+          SELECT * FROM basicinfo_bfl_track b
+          WHERE b.register_number = p.register_number OR b.record_key = p.register_number
+          ORDER BY b.updated_at DESC NULLS LAST, b.id DESC
+          LIMIT 1
+        ) b ON true
+        CROSS JOIN LATERAL (
+          SELECT CASE
+            WHEN jsonb_typeof(o.tag->'company') = 'array' THEN (
+              SELECT string_agg(BTRIM(tag_value), ',')
+              FROM jsonb_array_elements_text(o.tag->'company') AS tag_values(tag_value)
+              WHERE BTRIM(tag_value) <> ''
+            )
+            ELSE NULL
+          END AS strategy_company
+        ) tag_data
+        WHERE p.register_number IS NOT NULL
+      )`
+    : `WITH source AS (
+        SELECT
+          beian_hao,
+          product_name,
+          short_name,
+          raw_strategy,
+          strategy_company,
+          NULL::text AS company_strategy_one,
+          NULL::text AS company_strategy_two,
+          NULL::text AS company_strategy_three,
+          NULL::text AS platform_strategy_one,
+          NULL::text AS platform_strategy_two,
+          NULL::text AS platform_strategy_three
+        FROM private_fund_info_bfl
+      )`
 
   const filterParams: (string | number)[] = []
   const where: string[] = []
@@ -337,6 +430,24 @@ export async function GET(req: Request) {
     ) ng_short ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group_hy
+      WHERE beian_hao = i.beian_hao
+      ORDER BY price_date DESC LIMIT 1
+    ) nh ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group_hy
+      WHERE product_name = i.product_name
+      ORDER BY price_date DESC LIMIT 1
+    ) nh_name ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group_hy
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name
+      ORDER BY price_date DESC LIMIT 1
+    ) nh_short ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav
       WHERE beian_hao = i.beian_hao
       ORDER BY price_date DESC LIMIT 1
@@ -355,9 +466,9 @@ export async function GET(req: Request) {
     ) nf_short ON true
   `
 
-  const currentNavExpr = "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nf.nav, nf_name.nav, nf_short.nav)"
-  const currentDateExpr = "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)"
-  const currentPctExpr = "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)"
+  const currentNavExpr = "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)"
+  const currentDateExpr = "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)"
+  const currentPctExpr = "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)"
 
   // Historical NAV at each window for period-return calculation
   const histJoins = [
@@ -371,7 +482,8 @@ export async function GET(req: Request) {
   try {
     const [rows, countRow] = await Promise.all([
       query<TrackRow>(
-        `SELECT
+        `${sourceCte}
+         SELECT
            i.beian_hao,
            i.product_name,
            i.short_name,
@@ -394,7 +506,7 @@ export async function GET(req: Request) {
              THEN (((${currentNavExpr}) / h1y.nav) - 1)::text END AS ret_1y,
            NULL::text AS sharpe_1y,
            NULL::text AS calmar_1y
-         FROM private_fund_info_bfl i
+         FROM source i
          ${latestNavJoin}
          ${histJoins}
          ${whereClause}
@@ -403,7 +515,8 @@ export async function GET(req: Request) {
         [...filterParams, pageSize, offset]
       ),
       query<{ total: string }>(
-        `SELECT COUNT(*) AS total FROM private_fund_info_bfl i ${whereClause}`,
+        `${sourceCte}
+         SELECT COUNT(*) AS total FROM source i ${whereClause}`,
         filterParams
       ),
     ])

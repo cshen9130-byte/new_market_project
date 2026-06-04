@@ -76,7 +76,7 @@ const pools = [
   { key: "selected", label: "精选池" },
   { key: "core", label: "核心池" },
   { key: "hy", label: "hy跟踪池" },
-  { key: "fof", label: "FOF&MO..." },
+  { key: "fof", label: "FOF&MOM跟踪" },
 ]
 
 const STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"] as const
@@ -1204,6 +1204,8 @@ function InvestmentTrackingView() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const sourcePool = activePool === "tracking" || activePool === "selected" || activePool === "core" || activePool === "hy" || activePool === "fof" ? activePool : "bfl"
+  const isSupportedPool = activePool === "bfl" || activePool === "tracking" || activePool === "selected" || activePool === "core" || activePool === "hy" || activePool === "fof"
 
   // Derived hierarchy slices
   const l2Options = strategyL1
@@ -1215,23 +1217,23 @@ function InvestmentTrackingView() {
 
   // Fetch strategy hierarchy by source
   useEffect(() => {
-    const params = new URLSearchParams({ strategy_source: strategySource })
+    const params = new URLSearchParams({ strategy_source: strategySource, pool: sourcePool })
     fetch(`/ma/api/tracking-funds/strategies?${params}`)
       .then((r) => r.json())
       .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
       .catch(() => {})
-  }, [strategySource])
+  }, [strategySource, sourcePool])
 
   useEffect(() => {
-    fetch("/ma/api/tracking-funds/team-tags")
+    const params = new URLSearchParams({ pool: sourcePool })
+    fetch(`/ma/api/tracking-funds/team-tags?${params}`)
       .then((r) => r.json())
       .then((d) => Array.isArray(d) ? setTeamTagOptions(d) : null)
       .catch(() => {})
-  }, [])
+  }, [sourcePool])
 
-  const isBfl = activePool === "bfl"
   const totalPages = Math.max(1, Math.ceil(total / 50))
-  const trackingFilterKey = `${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}`
+  const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}`
 
   function handleSort(col: string) {
     if (sortCol === col) setSortDir((d) => (d === "desc" ? "asc" : "desc"))
@@ -1267,10 +1269,15 @@ function InvestmentTrackingView() {
   }
 
   useEffect(() => {
-    if (!isBfl) return
+    if (!isSupportedPool) {
+      setData([])
+      setTotal(0)
+      return
+    }
     setLoading(true)
     const params = new URLSearchParams({
       page: String(page), sort: sortCol, dir: sortDir, keyword,
+      pool: sourcePool,
       strategy_l1: strategyL1,
       strategy_l2: strategyL2,
       strategy_l3: strategyL3,
@@ -1284,7 +1291,7 @@ function InvestmentTrackingView() {
       .then((d) => { setData(d.data ?? []); setTotal(d.total ?? 0) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [isBfl, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey])
+  }, [activePool, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey])
 
   function toggleTeamTag(tag: string) {
     setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
@@ -1328,7 +1335,7 @@ function InvestmentTrackingView() {
             {pools.map((p) => (
               <button
                 key={p.key}
-                onClick={() => setActivePool(p.key)}
+                onClick={() => { setActivePool(p.key); setPage(1); setSelected(new Set()) }}
                 className={[
                   "w-full text-left px-3 py-2 rounded text-sm transition-colors",
                   activePool === p.key
@@ -1632,8 +1639,8 @@ function InvestmentTrackingView() {
               <tbody>
                 {loading ? (
                   <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
-                ) : !isBfl ? (
-                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">请选择 bfl跟踪池 查看数据</td></tr>
+                ) : !isSupportedPool ? (
+                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">请选择 bfl跟踪池、跟踪池、精选池、核心池、hy跟踪池或FOF&MOM跟踪 查看数据</td></tr>
                 ) : data.length === 0 ? (
                   <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
@@ -1697,7 +1704,7 @@ function InvestmentTrackingView() {
           </div>
 
           {/* Pagination */}
-          {isBfl && (
+          {isSupportedPool && (
             <div className="flex items-center justify-between pt-3 flex-shrink-0">
               <span className="text-sm text-zinc-500">共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 只基金</span>
               <div className="flex items-center gap-1">

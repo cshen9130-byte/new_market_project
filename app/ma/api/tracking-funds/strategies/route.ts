@@ -38,17 +38,28 @@ function splitStrategyThree(s: string | null): string[] {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const strategySource = normalizeStrategySource(searchParams.get("strategy_source"))
+  const requestedPool = searchParams.get("pool")
+  const pool = requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" ? requestedPool : "bfl"
   const sourceJsonExpr = rawStrategyJsonExpr("p")
-  const strategyL1Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
-  const strategyL2Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
-  const strategyL3Expr = `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
+  const trackingPrefix = strategySource === "platform" ? "platform" : "company"
+  const isExternalPool = pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof"
+  const strategyL1Expr = isExternalPool
+    ? `NULLIF(BTRIM(COALESCE(p.${trackingPrefix}_strategy_one, '')), '')`
+    : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
+  const strategyL2Expr = isExternalPool
+    ? `NULLIF(BTRIM(COALESCE(p.${trackingPrefix}_strategy_two, '')), '')`
+    : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
+  const strategyL3Expr = isExternalPool
+    ? `NULLIF(BTRIM(COALESCE(p.${trackingPrefix}_strategy_three, '')), '')`
+    : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
+  const sourceTable = isExternalPool ? "type6_ops_team_full" : "private_fund_info_bfl"
 
   const rows = await query<StrategyRow>(
     `SELECT DISTINCT
        s.strategy_one,
        s.strategy_two,
        s.strategy_three
-     FROM private_fund_info_bfl p
+    FROM ${sourceTable} p
      CROSS JOIN LATERAL (
        SELECT
          ${strategyL1Expr} AS strategy_one,
