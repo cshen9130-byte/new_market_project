@@ -15,42 +15,42 @@ const ALLOWED_SORT: Record<string, string> = {
   ret_1y:          "ret_1y",
 }
 
-function navScalarExpr(days: number): string {
+function navScalarExpr(days: number, cutoffExpr = "CURRENT_DATE"): string {
   return `COALESCE(
     (SELECT ngc.nav::numeric FROM private_fund_nav_group ngc
-     WHERE ngc.beian_hao = i.beian_hao AND ngc.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE ngc.beian_hao = i.beian_hao AND ngc.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY ngc.price_date DESC LIMIT 1),
     (SELECT ngn.nav::numeric FROM private_fund_nav_group ngn
-     WHERE ngn.product_name = i.product_name AND ngn.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE ngn.product_name = i.product_name AND ngn.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY ngn.price_date DESC LIMIT 1),
     (SELECT ngs.nav::numeric FROM private_fund_nav_group ngs
-     WHERE i.short_name IS NOT NULL AND ngs.product_name = i.short_name AND ngs.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE i.short_name IS NOT NULL AND ngs.product_name = i.short_name AND ngs.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY ngs.price_date DESC LIMIT 1),
     (SELECT nhc.nav::numeric FROM private_fund_nav_group_hy nhc
-     WHERE nhc.beian_hao = i.beian_hao AND nhc.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE nhc.beian_hao = i.beian_hao AND nhc.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY nhc.price_date DESC LIMIT 1),
     (SELECT nhn.nav::numeric FROM private_fund_nav_group_hy nhn
-     WHERE nhn.product_name = i.product_name AND nhn.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE nhn.product_name = i.product_name AND nhn.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY nhn.price_date DESC LIMIT 1),
     (SELECT nhs.nav::numeric FROM private_fund_nav_group_hy nhs
-     WHERE i.short_name IS NOT NULL AND nhs.product_name = i.short_name AND nhs.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE i.short_name IS NOT NULL AND nhs.product_name = i.short_name AND nhs.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY nhs.price_date DESC LIMIT 1),
     (SELECT nfc.nav::numeric FROM private_fund_nav nfc
-     WHERE nfc.beian_hao = i.beian_hao AND nfc.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE nfc.beian_hao = i.beian_hao AND nfc.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY nfc.price_date DESC LIMIT 1),
     (SELECT nfn.nav::numeric FROM private_fund_nav nfn
-     WHERE nfn.product_name = i.product_name AND nfn.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE nfn.product_name = i.product_name AND nfn.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY nfn.price_date DESC LIMIT 1),
     (SELECT nfs.nav::numeric FROM private_fund_nav nfs
-     WHERE i.short_name IS NOT NULL AND nfs.product_name = i.short_name AND nfs.price_date <= CURRENT_DATE - INTERVAL '${days} days'
+     WHERE i.short_name IS NOT NULL AND nfs.product_name = i.short_name AND nfs.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
      ORDER BY nfs.price_date DESC LIMIT 1)
   )`
 }
 
 // Build a LATERAL subquery that gets the closest NAV on or before a given offset
-function navAtOffset(alias: string, days: number): string {
+function navAtOffset(alias: string, days: number, cutoffExpr = "CURRENT_DATE"): string {
   return `LEFT JOIN LATERAL (
-    SELECT ${navScalarExpr(days)} AS nav
+    SELECT ${navScalarExpr(days, cutoffExpr)} AS nav
   ) ${alias} ON true`
 }
 
@@ -281,7 +281,12 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
   const requestedPool = searchParams.get("pool")
-  const pool = requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" ? requestedPool : "bfl"
+  const isCustomPool = requestedPool ? (requestedPool.startsWith("custom_") || requestedPool.startsWith("mine_custom_") || requestedPool === "mine_default") : false
+  const KNOWN_POOLS = new Set(["bfl", "tracking", "selected", "core", "hy", "fof", "all"])
+  if (requestedPool && !KNOWN_POOLS.has(requestedPool) && !isCustomPool) {
+    return NextResponse.json({ page, pageSize: 50, total: 0, totalPages: 0, data: [] })
+  }
+  const pool = requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all" || isCustomPool ? requestedPool : "bfl"
   const isExport = searchParams.get("export") === "1"
   const pageSize = isExport ? 100000 : 50
   const offset   = isExport ? 0 : (page - 1) * pageSize
@@ -295,23 +300,87 @@ export async function GET(req: Request) {
   const teamTagMode = searchParams.get("team_tag_mode") === "or" ? "or" : "and"
   const teamTags = searchParams.getAll("team_tag").map((s) => s.trim()).filter(Boolean)
   const strategySource = normalizeStrategySource((searchParams.get("strategy_source") || "").trim().toLowerCase())
+  const cutoffRaw = (searchParams.get("cutoff") || "").trim()
+  const cutoffExpr = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw) ? `'${cutoffRaw}'::date` : "CURRENT_DATE"
   const orderCol = ALLOWED_SORT[sortKey] ?? "i.product_name"
 
   const sourceJsonExpr = rawStrategyJsonExpr("i")
   const strategyPrefix = strategySource === "platform" ? "platform" : "company"
-  const isExternalPool = pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof"
-  const sourceTable = pool === "selected" ? "selected_pool" : pool === "core" ? "core_pool" : pool === "hy" ? "hy_tracking_pool" : pool === "fof" ? "fof_mom_tracking" : "tracking_pool"
-  const strategyL1Expr = isExternalPool
+  const isExternalPool = pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || isCustomPool
+  const sourceTable = pool === "selected" ? "selected_pool" : pool === "core" ? "core_pool" : pool === "hy" ? "hy_tracking_pool" : pool === "fof" ? "fof_mom_tracking" : isCustomPool ? "user_custom_pool" : "tracking_pool"
+  const strategyL1Expr = pool === "all"
+    ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_one, (${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
+    : isExternalPool
     ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_one, '')), '')`
     : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`
-  const strategyL2Expr = isExternalPool
+  const strategyL2Expr = pool === "all"
+    ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_two, (${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
+    : isExternalPool
     ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_two, '')), '')`
     : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_two'), '')), '')`
-  const strategyL3Expr = isExternalPool
+  const strategyL3Expr = pool === "all"
+    ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_three, (${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
+    : isExternalPool
     ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_three, '')), '')`
     : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
 
-  const sourceCte = isExternalPool
+  const sourceCte = pool === "all"
+    ? `WITH all_funds AS (
+        SELECT beian_hao, product_name, 1 AS priority FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
+        UNION ALL
+        SELECT register_number AS beian_hao, product_name, 2 AS priority FROM tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL
+        SELECT register_number AS beian_hao, product_name, 3 AS priority FROM selected_pool WHERE register_number IS NOT NULL
+        UNION ALL
+        SELECT register_number AS beian_hao, product_name, 4 AS priority FROM core_pool WHERE register_number IS NOT NULL
+        UNION ALL
+        SELECT register_number AS beian_hao, product_name, 5 AS priority FROM hy_tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL
+        SELECT register_number AS beian_hao, product_name, 6 AS priority FROM fof_mom_tracking WHERE register_number IS NOT NULL
+      ),
+      deduped AS (
+        SELECT DISTINCT ON (beian_hao) beian_hao, product_name
+        FROM all_funds
+        ORDER BY beian_hao, priority ASC
+      ),
+      source AS (
+        SELECT
+          d.beian_hao,
+          d.product_name,
+          COALESCE(o.fund_short_name, bfl.short_name) AS short_name,
+          bfl.raw_strategy,
+          COALESCE(tag_data.strategy_company, bfl.strategy_company) AS strategy_company,
+          o.company_strategy_one,
+          o.company_strategy_two,
+          o.company_strategy_three,
+          o.platform_strategy_one,
+          o.platform_strategy_two,
+          o.platform_strategy_three
+        FROM deduped d
+        LEFT JOIN LATERAL (
+          SELECT * FROM type6_ops_team_full o
+          WHERE o.register_number = d.beian_hao
+          ORDER BY o.updated_at DESC NULLS LAST, o.id DESC
+          LIMIT 1
+        ) o ON true
+        LEFT JOIN LATERAL (
+          SELECT short_name, raw_strategy, strategy_company
+          FROM private_fund_info_bfl
+          WHERE beian_hao = d.beian_hao
+          LIMIT 1
+        ) bfl ON true
+        CROSS JOIN LATERAL (
+          SELECT CASE
+            WHEN jsonb_typeof(o.tag->'company') = 'array' THEN (
+              SELECT string_agg(BTRIM(tag_value), ',')
+              FROM jsonb_array_elements_text(o.tag->'company') AS tag_values(tag_value)
+              WHERE BTRIM(tag_value) <> ''
+            )
+            ELSE NULL
+          END AS strategy_company
+        ) tag_data
+      )`
+    : isExternalPool
     ? `WITH source AS (
         SELECT
           p.register_number AS beian_hao,
@@ -349,6 +418,7 @@ export async function GET(req: Request) {
           END AS strategy_company
         ) tag_data
         WHERE p.register_number IS NOT NULL
+          ${isCustomPool ? "AND p.pool_key = $1" : ""}
       )`
     : `WITH source AS (
         SELECT
@@ -366,7 +436,8 @@ export async function GET(req: Request) {
         FROM private_fund_info_bfl
       )`
 
-  const filterParams: (string | number)[] = []
+  // For custom pools, pool_key is always the first param ($1)
+  const filterParams: (string | number)[] = isCustomPool && requestedPool ? [requestedPool] : []
   const where: string[] = []
 
   if (strategyL1) {
@@ -413,55 +484,55 @@ export async function GET(req: Request) {
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav_group
-      WHERE beian_hao = i.beian_hao
+      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) ng ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav_group
-      WHERE product_name = i.product_name
+      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) ng_name ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav_group
-      WHERE i.short_name IS NOT NULL AND product_name = i.short_name
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) ng_short ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav_group_hy
-      WHERE beian_hao = i.beian_hao
+      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) nh ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav_group_hy
-      WHERE product_name = i.product_name
+      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) nh_name ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav_group_hy
-      WHERE i.short_name IS NOT NULL AND product_name = i.short_name
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) nh_short ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav
-      WHERE beian_hao = i.beian_hao
+      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) nf ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav
-      WHERE product_name = i.product_name
+      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) nf_name ON true
     LEFT JOIN LATERAL (
       SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
       FROM private_fund_nav
-      WHERE i.short_name IS NOT NULL AND product_name = i.short_name
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
       ORDER BY price_date DESC LIMIT 1
     ) nf_short ON true
   `
@@ -472,11 +543,11 @@ export async function GET(req: Request) {
 
   // Historical NAV at each window for period-return calculation
   const histJoins = [
-    navAtOffset("h1w",  7),
-    navAtOffset("h1m",  30),
-    navAtOffset("h3m",  90),
-    navAtOffset("h6m",  180),
-    navAtOffset("h1y",  365),
+    navAtOffset("h1w",  7,   cutoffExpr),
+    navAtOffset("h1m",  30,  cutoffExpr),
+    navAtOffset("h3m",  90,  cutoffExpr),
+    navAtOffset("h6m",  180, cutoffExpr),
+    navAtOffset("h1y",  365, cutoffExpr),
   ].join("\n")
 
   try {

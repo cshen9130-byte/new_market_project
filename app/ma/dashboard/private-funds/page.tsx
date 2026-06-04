@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download } from "lucide-react"
 
 const menuItems = [
@@ -69,7 +69,7 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
 
 const TRACK_STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"]
 const ORG_SIZE_OPTS = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20亿", "5-10亿", "0-5亿"]
-const pools = [
+const DEFAULT_POOLS = [
   { key: "all", label: "全部" },
   { key: "bfl", label: "bfl跟踪池" },
   { key: "tracking", label: "跟踪池" },
@@ -1202,10 +1202,59 @@ function InvestmentTrackingView() {
   const [jumpVal, setJumpVal] = useState("")
   const [data, setData] = useState<TrackFundRow[]>([])
   const [total, setTotal] = useState(0)
+  const [pools, setPools] = useState<{ key: string; label: string }[]>(DEFAULT_POOLS)
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const sourcePool = activePool === "tracking" || activePool === "selected" || activePool === "core" || activePool === "hy" || activePool === "fof" ? activePool : "bfl"
-  const isSupportedPool = activePool === "bfl" || activePool === "tracking" || activePool === "selected" || activePool === "core" || activePool === "hy" || activePool === "fof"
+  const [showNewPoolDialog, setShowNewPoolDialog] = useState(false)
+  const [newPoolName, setNewPoolName] = useState("")
+  const [showManageDialog, setShowManageDialog] = useState(false)
+  const [editingPoolKey, setEditingPoolKey] = useState<string | null>(null)
+  const [editingPoolLabel, setEditingPoolLabel] = useState("")
+  const [myActivePool, setMyActivePool] = useState("mine_default")
+  const [myPools, setMyPools] = useState<{ key: string; label: string }[]>([
+    { key: "mine_all", label: "全部" },
+    { key: "mine_default", label: "默认我的跟踪" },
+  ])
+  const [showMineNewPoolDialog, setShowMineNewPoolDialog] = useState(false)
+  const [mineNewPoolName, setMineNewPoolName] = useState("")
+  const [showMineManageDialog, setShowMineManageDialog] = useState(false)
+  const [mineEditingPoolKey, setMineEditingPoolKey] = useState<string | null>(null)
+  const [mineEditingPoolLabel, setMineEditingPoolLabel] = useState("")
+  const [showMineAddMenu, setShowMineAddMenu] = useState(false)
+  const [showTeamAddMenu, setShowTeamAddMenu] = useState(false)
+  const [showSingleAddDialog, setShowSingleAddDialog] = useState(false)
+  const [addFundClass, setAddFundClass] = useState<"private" | "public">("private")
+  const [addFundSearch, setAddFundSearch] = useState("")
+  const [addFundTag, setAddFundTag] = useState("")
+  const [addFundResults, setAddFundResults] = useState<{beian_hao:string;product_name:string;short_name:string|null;strategy_one:string|null}[]>([])
+  const [addFundLoading, setAddFundLoading] = useState(false)
+  const [addFundSelected, setAddFundSelected] = useState<{beian_hao:string;product_name:string}|null>(null)
+  const [addFundShowDropdown, setAddFundShowDropdown] = useState(false)
+  const addFundSearchRef = useRef<ReturnType<typeof setTimeout>|null>(null)
+  const [myFundClass, setMyFundClass] = useState<"private" | "public">("private")
+  const [myOrgSize, setMyOrgSize] = useState("不限")
+  const [myKwInput, setMyKwInput] = useState("")
+  const [myPersonalTagMode, setMyPersonalTagMode] = useState<"and" | "or">("and")
+  const [teamCutoffDate, setTeamCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [showTeamDatePicker, setShowTeamDatePicker] = useState(false)
+  const [mineCutoffDate, setMineCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [showMineDatePicker, setShowMineDatePicker] = useState(false)
+  const [addFundTargetPool, setAddFundTargetPool] = useState("")
+  const [addFundSaving, setAddFundSaving] = useState(false)
+  const [addFundError, setAddFundError] = useState<string | null>(null)
+  const [dataReloadKey, setDataReloadKey] = useState(0)
+  // Batch add dialog
+  const [showBatchAddDialog, setShowBatchAddDialog] = useState(false)
+  const [batchAddTargetPool, setBatchAddTargetPool] = useState("")
+  const [batchAddText, setBatchAddText] = useState("")
+  const [batchAddSearching, setBatchAddSearching] = useState(false)
+  const [batchAddResults, setBatchAddResults] = useState<{beian_hao:string;product_name:string;short_name:string|null;strategy_one:string|null}[]>([])
+  const [batchAddChecked, setBatchAddChecked] = useState<Set<string>>(new Set())
+  const [batchAddTag, setBatchAddTag] = useState("")
+  const [batchAddSaving, setBatchAddSaving] = useState(false)
+  const [batchAddError, setBatchAddError] = useState<string|null>(null)
+  const isSupportedPool = pools.some((p) => p.key === activePool)
+  const sourcePool = isSupportedPool ? activePool : "bfl"
 
   // Derived hierarchy slices
   const l2Options = strategyL1
@@ -1233,7 +1282,7 @@ function InvestmentTrackingView() {
   }, [sourcePool])
 
   const totalPages = Math.max(1, Math.ceil(total / 50))
-  const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}`
+  const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}\u0000${teamCutoffDate}\u0000${dataReloadKey}`
 
   function handleSort(col: string) {
     if (sortCol === col) setSortDir((d) => (d === "desc" ? "asc" : "desc"))
@@ -1284,6 +1333,7 @@ function InvestmentTrackingView() {
       strategy_source: strategySource,
       org_size: orgSizeFilter,
       team_tag_mode: teamTagMode,
+      cutoff: teamCutoffDate,
     })
     teamTags.forEach((tag) => params.append("team_tag", tag))
     fetch(`/ma/api/tracking-funds/list?${params}`)
@@ -1292,6 +1342,33 @@ function InvestmentTrackingView() {
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [activePool, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey])
+
+  // Debounced search for 添加跟踪产品 dialog
+  useEffect(() => {
+    if (!showSingleAddDialog) return
+    if (!addFundSearch.trim()) {
+      setAddFundResults([])
+      setAddFundShowDropdown(false)
+      return
+    }
+    if (addFundSearchRef.current) clearTimeout(addFundSearchRef.current)
+    addFundSearchRef.current = setTimeout(async () => {
+      setAddFundLoading(true)
+      try {
+        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(addFundSearch.trim())}`)
+        const data = await res.json()
+        setAddFundResults(Array.isArray(data) ? data : [])
+        setAddFundShowDropdown(true)
+      } catch {
+        setAddFundResults([])
+      } finally {
+        setAddFundLoading(false)
+      }
+    }, 250)
+    return () => {
+      if (addFundSearchRef.current) clearTimeout(addFundSearchRef.current)
+    }
+  }, [addFundSearch, showSingleAddDialog])
 
   function toggleTeamTag(tag: string) {
     setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
@@ -1318,15 +1395,22 @@ function InvestmentTrackingView() {
         ))}
       </div>
 
+      {trackTab === "team" && (
       <div className="flex gap-0 flex-1 min-h-0">
         {/* Left pool sidebar */}
         <aside className="w-32 flex-shrink-0 border-r">
           <div className="flex items-center gap-1 px-2 py-2 border-b">
-            <button className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors">
+            <button
+              onClick={() => { setNewPoolName(""); setShowNewPoolDialog(true) }}
+              className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors"
+            >
               <span className="text-base leading-none">⊕</span>
               <span>新增</span>
             </button>
-            <button className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors">
+            <button
+              onClick={() => { setEditingPoolKey(null); setShowManageDialog(true) }}
+              className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors"
+            >
               <span className="text-sm leading-none">⚙</span>
               <span>管理</span>
             </button>
@@ -1573,11 +1657,28 @@ function InvestmentTrackingView() {
             <div className="flex items-center gap-1.5 text-zinc-500">
               <span>指标计算截止日期</span>
               <span className="text-zinc-400">①</span>
-              <button className="inline-flex items-center gap-1 border rounded px-1.5 py-0.5 text-zinc-600 hover:bg-muted cursor-pointer transition-colors">
-                <CalendarDays className="h-3 w-3" />
-                <span className="tabular-nums">{new Date().toISOString().slice(0, 10)}</span>
-                <ChevronDown className="h-3 w-3" />
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShowTeamDatePicker((v) => !v)}
+                  className="inline-flex items-center gap-1 border rounded px-1.5 py-0.5 text-zinc-600 hover:bg-muted cursor-pointer transition-colors">
+                  <CalendarDays className="h-3 w-3" />
+                  <span className="tabular-nums">{teamCutoffDate}</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {showTeamDatePicker && (
+                  <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg p-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="date"
+                      value={teamCutoffDate}
+                      max={new Date().toISOString().slice(0, 10)}
+                      onChange={(e) => { if (e.target.value) { setTeamCutoffDate(e.target.value); setShowTeamDatePicker(false) } }}
+                      className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
+                      autoFocus
+                    />
+                  </div>
+                )}
+                {showTeamDatePicker && <div className="fixed inset-0 z-30" onClick={() => setShowTeamDatePicker(false)} />}
+              </div>
             </div>
             <div className="flex items-center gap-1.5">
               <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
@@ -1603,9 +1704,30 @@ function InvestmentTrackingView() {
               <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
                 ⊕ 更多
               </button>
-              <button className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
-                添加跟踪
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShowTeamAddMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
+                  添加跟踪
+                </button>
+                {showTeamAddMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowTeamAddMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[100px]" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => { setShowTeamAddMenu(false); setAddFundSearch(""); setAddFundTag(""); setAddFundSelected(null); setAddFundResults([]); setAddFundShowDropdown(false); setAddFundError(null); setAddFundTargetPool(sourcePool); setShowSingleAddDialog(true) }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
+                        单只添加
+                      </button>
+                      <button
+                        onClick={() => { setShowTeamAddMenu(false); setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddTag(""); setBatchAddError(null); setBatchAddTargetPool(sourcePool); setShowBatchAddDialog(true) }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
+                        批量添加
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1640,7 +1762,7 @@ function InvestmentTrackingView() {
                 {loading ? (
                   <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isSupportedPool ? (
-                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">请选择 bfl跟踪池、跟踪池、精选池、核心池、hy跟踪池或FOF&MOM跟踪 查看数据</td></tr>
+                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
                 ) : data.length === 0 ? (
                   <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
@@ -1737,6 +1859,879 @@ function InvestmentTrackingView() {
           )}
         </div>
       </div>
+      )}
+
+      {trackTab === "mine" && (
+      <div className="flex gap-0 flex-1 min-h-0">
+        {/* Mine sidebar */}
+        <aside className="w-32 flex-shrink-0 border-r">
+          <div className="flex items-center gap-1 px-2 py-2 border-b">
+            <button
+              onClick={() => { setMineNewPoolName(""); setShowMineNewPoolDialog(true) }}
+              className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors">
+              <span className="text-base leading-none">⊕</span>
+              <span>新增</span>
+            </button>
+            <button
+              onClick={() => { setMineEditingPoolKey(null); setShowMineManageDialog(true) }}
+              className="flex-1 inline-flex items-center justify-center gap-1 text-xs text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 hover:bg-muted/60 rounded px-2 py-1 transition-colors">
+              <span className="text-sm leading-none">⚙</span>
+              <span>管理</span>
+            </button>
+          </div>
+          <nav className="flex flex-col gap-0.5 p-1.5">
+            {myPools.map((p) => (
+              <button
+                key={p.key}
+                onClick={() => setMyActivePool(p.key)}
+                className={[
+                  "w-full text-left px-3 py-2 rounded text-sm transition-colors",
+                  myActivePool === p.key
+                    ? "bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400 font-medium"
+                    : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                ].join(" ")}
+              >
+                {p.label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+        {/* Mine main */}
+        <div className="flex-1 flex flex-col min-w-0 pl-4">
+          {/* Filter bar */}
+          <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+            {/* 基金分类 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">基金分类：</span>
+              <div className="flex items-center gap-1">
+                {(["private", "public"] as const).map((fc) => (
+                  <button
+                    key={fc}
+                    onClick={() => setMyFundClass(fc)}
+                    className={[
+                      "px-3 py-1 rounded text-xs font-medium transition-all border",
+                      myFundClass === fc
+                        ? "bg-red-500 text-white border-red-500"
+                        : "text-zinc-500 border-border hover:text-foreground hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {fc === "private" ? "私募" : "公募"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* 一级策略 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">一级策略：</span>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <select className="h-7 min-w-[5.75rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring">
+                    <option>平台策略</option>
+                    <option>团队策略</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+                </div>
+                <span className="inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20">不限</span>
+              </div>
+            </div>
+            {/* 个人标签 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">个人标签：</span>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <select
+                    value={myPersonalTagMode}
+                    onChange={(e) => setMyPersonalTagMode(e.target.value as "and" | "or")}
+                    className="h-7 min-w-[5.75rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="and">交集（且）</option>
+                    <option value="or">并集（或）</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+                </div>
+                <span className="inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20">不限</span>
+              </div>
+            </div>
+            {/* 管理人规模 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-20 whitespace-nowrap text-right pr-3">管理人规模：</span>
+              <div className="flex items-center gap-1 flex-wrap">
+                {ORG_SIZE_OPTS.map((s) => (
+                  <FilterPill key={s} label={s} active={myOrgSize === s} onClick={() => setMyOrgSize(s)} />
+                ))}
+              </div>
+            </div>
+            {/* 关键字 */}
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+              <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-60">
+                <input
+                  className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+                  placeholder="输入产品/产品备案号，回车搜索"
+                  value={myKwInput}
+                  onChange={(e) => setMyKwInput(e.target.value)}
+                />
+                <button className="text-muted-foreground hover:text-foreground transition-colors">
+                  <Search className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          </div>
+          {/* Toolbar */}
+          <div className="flex items-center justify-between mb-2 flex-shrink-0 text-xs">
+            <div className="flex items-center gap-1.5 text-zinc-500">
+              <span>指标计算截止日期</span>
+              <span className="text-zinc-400">②</span>
+              <div className="relative">
+                <button
+                  onClick={() => setShowMineDatePicker((v) => !v)}
+                  className="inline-flex items-center gap-1 border rounded px-1.5 py-0.5 text-zinc-600 hover:bg-muted cursor-pointer transition-colors">
+                  <CalendarDays className="h-3 w-3" />
+                  <span className="tabular-nums">{mineCutoffDate}</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {showMineDatePicker && (
+                  <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg p-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="date"
+                      value={mineCutoffDate}
+                      max={new Date().toISOString().slice(0, 10)}
+                      onChange={(e) => { if (e.target.value) { setMineCutoffDate(e.target.value); setShowMineDatePicker(false) } }}
+                      className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
+                      autoFocus
+                    />
+                  </div>
+                )}
+                {showMineDatePicker && <div className="fixed inset-0 z-30" onClick={() => setShowMineDatePicker(false)} />}
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
+                <input type="checkbox" defaultChecked className="rounded h-3 w-3 accent-zinc-700" />
+                计算指标
+              </label>
+              <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
+                <input type="checkbox" className="rounded h-3 w-3 accent-zinc-700" />
+                显示区间
+              </label>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                <LayoutTemplate className="h-3 w-3" />
+                默认模板
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                <PlusCircle className="h-3 w-3" />
+                添加指标
+              </button>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                批量操作
+              </button>
+              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                ⊕ 更多
+              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShowMineAddMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
+                  添加跟踪
+                </button>
+                {showMineAddMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowMineAddMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[100px]" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => { setShowMineAddMenu(false); setAddFundSearch(""); setAddFundTag(""); setAddFundSelected(null); setAddFundResults([]); setAddFundShowDropdown(false); setAddFundError(null); setAddFundTargetPool(myActivePool); setShowSingleAddDialog(true) }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
+                        单只添加
+                      </button>
+                      <button
+                        onClick={() => { setShowMineAddMenu(false); setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddTag(""); setBatchAddError(null); setBatchAddTargetPool(myActivePool); setShowBatchAddDialog(true) }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
+                        批量添加
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          {/* Table */}
+          <div className="overflow-x-auto rounded-lg border flex-1">
+            <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
+              <thead className="sticky top-0 z-20">
+                <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+                  <th className={`${thBase} w-8 px-2`}><input type="checkbox" className="rounded h-3 w-3" /></th>
+                  <th className={`${thBase} w-10`}>序号</th>
+                  <th className={`${thBase} min-w-[200px]`}>产品名称</th>
+                  <th className={`${thBase} min-w-[100px]`}>最新净値日期</th>
+                  <th className={`${thBase} min-w-[90px]`}>最新单位净値</th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>最新涨跌幅</th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>近一周收益</th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>近一月收益</th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>近三月收益</th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>近六月收益</th>
+                  <th className={`${thBase} text-center w-16`}>走势</th>
+                  <th className={`${thBase} text-center min-w-[80px]`}>个人备注</th>
+                  <th className={`${thBase} text-center w-16`}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td colSpan={13} className="py-20 text-center text-muted-foreground">
+                    <div className="flex flex-col items-center gap-2">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+                      <span>暂无数据</span>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      )}
+
+      {/* Single add dialog */}
+      {showSingleAddDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowSingleAddDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[640px] p-6" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between mb-6">
+              <span className="font-semibold text-base">添加跟踪产品</span>
+              <button onClick={() => setShowSingleAddDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+            {/* 选择基金 */}
+            <div className="flex items-start gap-3 mb-5">
+              <span className="text-sm shrink-0 w-16 text-right mt-2"><span className="text-red-500 mr-0.5">*</span>选择基金：</span>
+              <div className="flex flex-1 flex-col gap-0">
+                {/* Input row */}
+                <div className="flex flex-1 items-center gap-0 border rounded overflow-visible">
+                  <div className="relative shrink-0">
+                    <select
+                      value={addFundClass}
+                      onChange={(e) => setAddFundClass(e.target.value as "private" | "public")}
+                      className="h-9 appearance-none pl-3 pr-7 text-sm bg-muted/50 border-r text-zinc-700 dark:text-zinc-300 focus:outline-none cursor-pointer"
+                    >
+                      <option value="private">私募基金</option>
+                      <option value="public">公募基金</option>
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                  </div>
+                  <div className="flex flex-1 items-center px-3 gap-2 relative">
+                    {addFundSelected ? (
+                      <div className="flex flex-1 items-center justify-between h-9">
+                        <div className="flex flex-col leading-tight">
+                          <span className="text-sm font-medium">{addFundSelected.product_name}</span>
+                          <span className="text-xs text-muted-foreground">{addFundSelected.beian_hao}</span>
+                        </div>
+                        <button
+                          onClick={() => { setAddFundSelected(null); setAddFundSearch(""); setAddFundShowDropdown(false) }}
+                          className="text-muted-foreground hover:text-foreground text-base leading-none ml-2 shrink-0">×</button>
+                      </div>
+                    ) : (
+                      <>
+                        <input
+                          autoFocus
+                          type="text"
+                          value={addFundSearch}
+                          onChange={(e) => { setAddFundSearch(e.target.value); setAddFundSelected(null) }}
+                          onFocus={() => { if (addFundResults.length > 0) setAddFundShowDropdown(true) }}
+                          placeholder="搜索并选择基金，支持备案号/代码"
+                          className="flex-1 h-9 text-sm bg-transparent outline-none placeholder:text-muted-foreground/50"
+                        />
+                        {addFundLoading
+                          ? <svg className="h-3.5 w-3.5 animate-spin text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round"/></svg>
+                          : <Search className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                        }
+                      </>
+                    )}
+                  </div>
+                </div>
+                {/* Search results dropdown */}
+                {addFundShowDropdown && addFundResults.length > 0 && !addFundSelected && (
+                  <div className="relative z-50">
+                    <div className="absolute left-0 right-0 top-0 bg-background border rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                      {addFundResults.map((r) => (
+                        <button
+                          key={r.beian_hao}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => { setAddFundSelected({ beian_hao: r.beian_hao, product_name: r.product_name }); setAddFundSearch(""); setAddFundShowDropdown(false) }}
+                          className="w-full text-left px-3 py-2 hover:bg-muted transition-colors flex items-center justify-between gap-3 group"
+                        >
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm truncate">{r.product_name}</span>
+                            <span className="text-xs text-muted-foreground truncate">{r.beian_hao}{r.short_name ? ` · ${r.short_name}` : ""}</span>
+                          </div>
+                          {r.strategy_one && (
+                            <span className="text-xs text-zinc-400 shrink-0 border rounded px-1 py-0.5">{r.strategy_one}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {addFundShowDropdown && addFundResults.length === 0 && !addFundLoading && addFundSearch.trim() && !addFundSelected && (
+                  <div className="relative z-50">
+                    <div className="absolute left-0 right-0 top-0 bg-background border rounded-lg shadow-xl px-4 py-3 text-sm text-muted-foreground">
+                      未找到匹配的基金
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* 标签 */}
+            <div className="flex items-center gap-3 mb-3">
+              <span className="text-sm shrink-0 w-16 text-right">标签：</span>
+              <div className="flex flex-1 items-center border rounded px-3 h-9 gap-2">
+                <input
+                  type="text"
+                  value={addFundTag}
+                  onChange={(e) => setAddFundTag(e.target.value)}
+                  placeholder="请选择标签"
+                  className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/40"
+                />
+              </div>
+              <button
+                onClick={() => setAddFundTag("")}
+                className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0">
+                清空
+              </button>
+            </div>
+            {/* 团队标签 */}
+            <div className="flex items-start gap-3 mb-6">
+              <span className="text-sm shrink-0 w-16 text-right pt-0.5">团队标签：</span>
+              <div className="flex flex-1 items-center gap-2 bg-muted/30 rounded px-3 py-2 text-sm text-muted-foreground">
+                <span className="flex-1">暂无标签，可点击「设置」添加后刷新</span>
+                <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                  设置
+                </button>
+                <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                  刷新
+                </button>
+              </div>
+            </div>
+            {/* Footer */}
+            <div className="flex flex-col gap-2">
+              {addFundError && (
+                <p className="text-xs text-red-500 text-right">
+                  {addFundError === "already_exists" ? "该基金已在当前产品池中" : `添加失败：${addFundError}`}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowSingleAddDialog(false)}
+                  disabled={addFundSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50">
+                  取 消
+                </button>
+                <button
+                  disabled={!addFundSelected || addFundSaving}
+                  onClick={async () => {
+                    if (!addFundSelected) return
+                    setAddFundSaving(true)
+                    setAddFundError(null)
+                    try {
+                      const res = await fetch("/ma/api/tracking-funds/add", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ pool: addFundTargetPool, beian_hao: addFundSelected.beian_hao, product_name: addFundSelected.product_name }),
+                      })
+                      const json = await res.json()
+                      if (json.error) {
+                        setAddFundError(json.error)
+                      } else {
+                        setShowSingleAddDialog(false)
+                        setDataReloadKey((k) => k + 1)
+                      }
+                    } catch {
+                      setAddFundError("network_error")
+                    } finally {
+                      setAddFundSaving(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  {addFundSaving ? "保存中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch add dialog */}
+      {showBatchAddDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowBatchAddDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[780px] max-h-[90vh] flex flex-col p-6" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between mb-5 shrink-0">
+              <span className="font-semibold text-base">添加跟踪产品</span>
+              <button onClick={() => setShowBatchAddDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+
+            {/* 添加基金 */}
+            <div className="mb-5 shrink-0">
+              <div className="flex items-center gap-1 mb-3">
+                <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
+                <span className="font-medium text-sm">添加基金</span>
+              </div>
+              <div className="flex gap-3" style={{ height: 220 }}>
+                {/* Left: clipboard textarea */}
+                <div className="flex flex-col flex-1">
+                  <div className="text-xs text-muted-foreground mb-1">剪贴板</div>
+                  <textarea
+                    className="flex-1 w-full border rounded p-2 text-sm bg-transparent resize-none outline-none placeholder:text-muted-foreground/40 focus:ring-1 focus:ring-ring"
+                    placeholder={"将基金名称/备案号/代码粘贴至此，内容要\n分行，如：\n     xxxxx1号\n     xxxxx2号\n     xxxxx3号"}
+                    value={batchAddText}
+                    onChange={(e) => setBatchAddText(e.target.value)}
+                  />
+                </div>
+                {/* Middle: search button */}
+                <div className="flex items-center shrink-0">
+                  <button
+                    disabled={batchAddSearching || !batchAddText.trim()}
+                    onClick={async () => {
+                      const keywords = batchAddText.split("\n").map((l) => l.trim()).filter(Boolean)
+                      if (keywords.length === 0) return
+                      setBatchAddSearching(true)
+                      setBatchAddResults([])
+                      setBatchAddChecked(new Set())
+                      try {
+                        const res = await fetch("/ma/api/tracking-funds/batch-search", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ keywords }),
+                        })
+                        const json = await res.json()
+                        const found = json.results ?? []
+                        setBatchAddResults(found)
+                        setBatchAddChecked(new Set(found.map((r: { beian_hao: string }) => r.beian_hao)))
+                      } catch {
+                        // ignore
+                      } finally {
+                        setBatchAddSearching(false)
+                      }
+                    }}
+                    className="bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded px-3 py-1.5 text-sm font-medium transition-colors whitespace-nowrap">
+                    {batchAddSearching
+                      ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round"/></svg>
+                      : "搜索 >"}
+                  </button>
+                </div>
+                {/* Right: results table */}
+                <div className="flex flex-col flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-muted-foreground">搜索成功</span>
+                    {batchAddResults.length > 0 && (
+                      <button
+                        onClick={() => { setBatchAddResults([]); setBatchAddChecked(new Set()) }}
+                        className="text-xs text-blue-500 hover:text-blue-600 transition-colors">
+                        删除
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex-1 border rounded overflow-auto">
+                    {batchAddResults.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" className="opacity-30">
+                          <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/>
+                        </svg>
+                        <span className="text-xs">暂无数据</span>
+                      </div>
+                    ) : (
+                      <table className="w-full text-xs border-collapse">
+                        <thead className="sticky top-0 bg-muted/60">
+                          <tr>
+                            <th className="w-8 px-2 py-1.5 text-left">
+                              <input type="checkbox"
+                                className="rounded h-3 w-3"
+                                checked={batchAddChecked.size === batchAddResults.length}
+                                onChange={(e) => setBatchAddChecked(e.target.checked ? new Set(batchAddResults.map((r) => r.beian_hao)) : new Set())}
+                              />
+                            </th>
+                            <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">基金名称</th>
+                            <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">备案号/代码</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {batchAddResults.map((r) => (
+                            <tr key={r.beian_hao} className="border-t hover:bg-muted/30 transition-colors">
+                              <td className="px-2 py-1.5">
+                                <input type="checkbox"
+                                  className="rounded h-3 w-3"
+                                  checked={batchAddChecked.has(r.beian_hao)}
+                                  onChange={(e) => {
+                                    const next = new Set(batchAddChecked)
+                                    e.target.checked ? next.add(r.beian_hao) : next.delete(r.beian_hao)
+                                    setBatchAddChecked(next)
+                                  }}
+                                />
+                              </td>
+                              <td className="px-2 py-1.5 max-w-[160px] truncate" title={r.product_name}>{r.product_name}</td>
+                              <td className="px-2 py-1.5 text-muted-foreground">{r.beian_hao}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 添加标签 */}
+            <div className="mb-5 shrink-0">
+              <div className="flex items-center gap-1 mb-3">
+                <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
+                <span className="font-medium text-sm">添加标签</span>
+                <span className="text-xs text-muted-foreground ml-1">可对本次搜索成功的基金添加共同标签</span>
+              </div>
+              <div className="flex items-center gap-3 mb-2.5">
+                <span className="text-sm shrink-0 w-14 text-right">标签：</span>
+                <div className="flex flex-1 items-center border rounded px-3 h-9 gap-2">
+                  <input
+                    type="text"
+                    value={batchAddTag}
+                    onChange={(e) => setBatchAddTag(e.target.value)}
+                    placeholder="请选择标签"
+                    className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/40"
+                  />
+                </div>
+                <button onClick={() => setBatchAddTag("")} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0">清空</button>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-14 text-right pt-0.5">团队标签：</span>
+                <div className="flex flex-1 items-center gap-2 bg-muted/30 rounded px-3 py-2 text-sm text-muted-foreground">
+                  <span className="flex-1">暂无标签，可点击「设置」添加后刷新</span>
+                  <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                    设置
+                  </button>
+                  <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex flex-col gap-2 shrink-0">
+              {batchAddError && (
+                <p className="text-xs text-red-500 text-right">{batchAddError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowBatchAddDialog(false)}
+                  disabled={batchAddSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50">
+                  取 消
+                </button>
+                <button
+                  disabled={batchAddChecked.size === 0 || batchAddSaving}
+                  onClick={async () => {
+                    const toAdd = batchAddResults.filter((r) => batchAddChecked.has(r.beian_hao))
+                    if (toAdd.length === 0) return
+                    setBatchAddSaving(true)
+                    setBatchAddError(null)
+                    try {
+                      const results = await Promise.all(
+                        toAdd.map((r) =>
+                          fetch("/ma/api/tracking-funds/add", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ pool: batchAddTargetPool, beian_hao: r.beian_hao, product_name: r.product_name }),
+                          }).then((res) => res.json())
+                        )
+                      )
+                      const failed = results.filter((r) => r.error && r.error !== "already_exists")
+                      if (failed.length > 0) {
+                        setBatchAddError(`${failed.length} 个添加失败`)
+                      } else {
+                        setShowBatchAddDialog(false)
+                        setDataReloadKey((k) => k + 1)
+                      }
+                    } catch {
+                      setBatchAddError("网络错误，请重试")
+                    } finally {
+                      setBatchAddSaving(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  {batchAddSaving ? "保存中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mine manage dialog */}
+      {showMineManageDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setMineEditingPoolKey(null); setShowMineManageDialog(false) }}>
+          <div className="bg-background rounded-lg shadow-xl w-[600px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">我的跟踪产品池管理</span>
+              <button onClick={() => { setMineEditingPoolKey(null); setShowMineManageDialog(false) }} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="border-b">
+                  <th className="text-left py-2 px-3 text-muted-foreground font-medium w-12">序号</th>
+                  <th className="text-left py-2 px-3 text-muted-foreground font-medium">产品池名称</th>
+                  <th className="text-left py-2 px-3 text-muted-foreground font-medium w-32">指标模版</th>
+                  <th className="text-left py-2 px-3 text-muted-foreground font-medium w-24">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {myPools.filter((p) => p.key !== "mine_all").map((p, idx) => (
+                  <tr key={p.key} className="border-b last:border-0 hover:bg-muted/30">
+                    <td className="py-2 px-3 text-muted-foreground">{idx + 1}</td>
+                    <td className="py-2 px-3">
+                      {mineEditingPoolKey === p.key ? (
+                        <input
+                          autoFocus
+                          value={mineEditingPoolLabel}
+                          onChange={(e) => setMineEditingPoolLabel(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && mineEditingPoolLabel.trim()) {
+                              setMyPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: mineEditingPoolLabel.trim() } : x))
+                              setMineEditingPoolKey(null)
+                            } else if (e.key === "Escape") setMineEditingPoolKey(null)
+                          }}
+                          onBlur={() => {
+                            if (mineEditingPoolLabel.trim()) setMyPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: mineEditingPoolLabel.trim() } : x))
+                            setMineEditingPoolKey(null)
+                          }}
+                          className="border rounded px-2 py-1 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring w-full"
+                        />
+                      ) : p.label}
+                    </td>
+                    <td className="py-2 px-3 text-muted-foreground">默认模版</td>
+                    <td className="py-2 px-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => { setMineEditingPoolKey(p.key); setMineEditingPoolLabel(p.label) }}
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          title="重命名"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                        </button>
+                        {p.key !== "mine_default" && (
+                          <button
+                            onClick={() => {
+                              setMyPools((prev) => prev.filter((x) => x.key !== p.key))
+                              if (myActivePool === p.key) setMyActivePool("mine_default")
+                            }}
+                            className="text-muted-foreground hover:text-red-500 transition-colors"
+                            title="删除"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="mt-3 text-xs text-muted-foreground">列表可拖动排序</p>
+          </div>
+        </div>
+      )}
+
+      {/* Mine new pool dialog */}
+      {showMineNewPoolDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowMineNewPoolDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[420px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">新建我的跟踪产品池</span>
+              <button onClick={() => setShowMineNewPoolDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-6">
+              <span className="text-sm shrink-0"><span className="text-red-500 mr-0.5">*</span>池名称：</span>
+              <input
+                autoFocus
+                type="text"
+                value={mineNewPoolName}
+                onChange={(e) => setMineNewPoolName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && mineNewPoolName.trim()) {
+                    const key = `mine_custom_${Date.now()}`
+                    setMyPools((prev) => [...prev, { key, label: mineNewPoolName.trim() }])
+                    setMyActivePool(key)
+                    setShowMineNewPoolDialog(false)
+                  }
+                }}
+                placeholder="请输入我的跟踪产品池名称"
+                className="flex-1 border rounded px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowMineNewPoolDialog(false)}
+                className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors"
+              >
+                取 消
+              </button>
+              <button
+                disabled={!mineNewPoolName.trim()}
+                onClick={() => {
+                  if (!mineNewPoolName.trim()) return
+                  const key = `mine_custom_${Date.now()}`
+                  setMyPools((prev) => [...prev, { key, label: mineNewPoolName.trim() }])
+                  setMyActivePool(key)
+                  setShowMineNewPoolDialog(false)
+                }}
+                className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                确 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New pool dialog */}
+      {showNewPoolDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNewPoolDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[420px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">新建团队跟踪产品池</span>
+              <button onClick={() => setShowNewPoolDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-6">
+              <span className="text-sm shrink-0"><span className="text-red-500 mr-0.5">*</span>池名称：</span>
+              <input
+                autoFocus
+                type="text"
+                value={newPoolName}
+                onChange={(e) => setNewPoolName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newPoolName.trim()) {
+                    const key = `custom_${Date.now()}`
+                    setPools((prev) => [...prev, { key, label: newPoolName.trim() }])
+                    setActivePool(key)
+                    setPage(1)
+                    setShowNewPoolDialog(false)
+                  }
+                }}
+                placeholder="请输入团队跟踪产品池名称"
+                className="flex-1 border rounded px-3 py-2 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setShowNewPoolDialog(false)}
+                className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors"
+              >
+                取 消
+              </button>
+              <button
+                disabled={!newPoolName.trim()}
+                onClick={() => {
+                  if (!newPoolName.trim()) return
+                  const key = `custom_${Date.now()}`
+                  setPools((prev) => [...prev, { key, label: newPoolName.trim() }])
+                  setActivePool(key)
+                  setPage(1)
+                  setShowNewPoolDialog(false)
+                }}
+                className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                确 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage pools dialog */}
+      {showManageDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => { setShowManageDialog(false); setEditingPoolKey(null) }}>
+          <div className="bg-background rounded-lg shadow-xl w-[600px] max-h-[80vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">团队跟踪产品池管理</span>
+              <button onClick={() => { setShowManageDialog(false); setEditingPoolKey(null) }} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+            {/* Table */}
+            <div className="flex-1 overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/40">
+                    <th className="text-left px-6 py-3 font-medium text-muted-foreground w-16">序号</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground">产品池名称</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground">指标模版</th>
+                    <th className="text-left px-4 py-3 font-medium text-muted-foreground w-24">操作</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {pools.filter((p) => p.key !== "all").map((p, idx) => (
+                    <tr key={p.key} className="hover:bg-muted/30 transition-colors">
+                      <td className="px-6 py-3 text-muted-foreground">{idx + 1}</td>
+                      <td className="px-4 py-3">
+                        {editingPoolKey === p.key ? (
+                          <input
+                            autoFocus
+                            type="text"
+                            value={editingPoolLabel}
+                            onChange={(e) => setEditingPoolLabel(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && editingPoolLabel.trim()) {
+                                setPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: editingPoolLabel.trim() } : x))
+                                setEditingPoolKey(null)
+                              } else if (e.key === "Escape") {
+                                setEditingPoolKey(null)
+                              }
+                            }}
+                            onBlur={() => {
+                              if (editingPoolLabel.trim()) {
+                                setPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: editingPoolLabel.trim() } : x))
+                              }
+                              setEditingPoolKey(null)
+                            }}
+                            className="border rounded px-2 py-1 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring w-full max-w-[200px]"
+                          />
+                        ) : (
+                          p.label
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground">默认模版</td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-3">
+                          <button
+                            title="重命名"
+                            onClick={() => { setEditingPoolKey(p.key); setEditingPoolLabel(p.label) }}
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                          </button>
+                          <button
+                            title="删除"
+                            onClick={() => {
+                              setPools((prev) => prev.filter((x) => x.key !== p.key))
+                              if (activePool === p.key) { setActivePool("bfl"); setPage(1) }
+                            }}
+                            className="text-muted-foreground hover:text-red-500 transition-colors"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {/* Footer */}
+            <div className="px-6 py-3 border-t flex-shrink-0">
+              <span className="text-xs text-muted-foreground">列表可拖动排序</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

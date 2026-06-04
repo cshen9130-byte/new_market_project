@@ -11,8 +11,8 @@ interface TeamTagRow {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const requestedPool = searchParams.get("pool")
-  const pool = requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" ? requestedPool : "bfl"
-  if (pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof") {
+  const pool = requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all" ? requestedPool : "bfl"
+  if (pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || pool === "all") {
     const rows = await query<TeamTagRow>(
       `SELECT DISTINCT BTRIM(tag_value) AS tag
        FROM type6_ops_team_full
