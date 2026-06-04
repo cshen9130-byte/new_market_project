@@ -81,6 +81,15 @@ function normalizeStrategySource(raw: string | null): StrategySource {
   return raw === "platform" ? "platform" : "company"
 }
 
+const ORG_SIZE_SCALE: Record<string, string> = {
+  "100亿以上": "100亿元以上",
+  "50-100亿": "50-100亿元",
+  "20-50亿": "20-50亿元",
+  "10-20亿": "10-20亿元",
+  "5-10亿": "5-10亿元",
+  "0-5亿": "0-5亿元",
+}
+
 function rawStrategyJsonExpr(alias: string): string {
   const rawText = `LTRIM(COALESCE(${alias}.raw_strategy, ''))`
   return `
@@ -253,6 +262,9 @@ export async function GET(req: Request) {
   const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
   const strategyL2 = (searchParams.get("strategy_l2") || "").trim()
   const strategyL3 = (searchParams.get("strategy_l3") || "").trim()
+  const orgSize = (searchParams.get("org_size") || "").trim()
+  const teamTagMode = searchParams.get("team_tag_mode") === "or" ? "or" : "and"
+  const teamTags = searchParams.getAll("team_tag").map((s) => s.trim()).filter(Boolean)
   const strategySource = normalizeStrategySource((searchParams.get("strategy_source") || "").trim().toLowerCase())
   const orderCol = ALLOWED_SORT[sortKey] ?? "i.product_name"
 
@@ -279,6 +291,22 @@ export async function GET(req: Request) {
   if (keyword) {
     filterParams.push(`%${keyword}%`)
     where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+  }
+  if (teamTags.length > 0) {
+    const clauses = teamTags.map((tag) => {
+      filterParams.push(tag)
+      return `POSITION(',' || $${filterParams.length} || ',' IN ',' || regexp_replace(COALESCE(i.strategy_company, ''), '\\s+', '', 'g') || ',') > 0`
+    })
+    where.push(teamTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+  }
+  const scaleValue = ORG_SIZE_SCALE[orgSize]
+  if (scaleValue) {
+    filterParams.push(scaleValue)
+    where.push(`EXISTS (
+      SELECT 1 FROM basicinfo_bfl_track b
+      WHERE b.scale = $${filterParams.length}
+        AND (b.record_key = i.beian_hao OR b.register_number = i.beian_hao)
+    )`)
   }
 
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""

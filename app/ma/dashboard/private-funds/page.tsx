@@ -1179,6 +1179,7 @@ interface TrackStrategyNode {
 }
 
 type TrackStrategySource = "company" | "platform"
+type TrackTeamTagMode = "and" | "or"
 
 function InvestmentTrackingView() {
   const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
@@ -1189,6 +1190,9 @@ function InvestmentTrackingView() {
   const [strategyL1, setStrategyL1] = useState("")
   const [strategyL2, setStrategyL2] = useState("")
   const [strategyL3, setStrategyL3] = useState("")
+  const [teamTagMode, setTeamTagMode] = useState<TrackTeamTagMode>("and")
+  const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
+  const [teamTags, setTeamTags] = useState<string[]>([])
   const [orgSizeFilter, setOrgSizeFilter] = useState("不限")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
@@ -1218,8 +1222,16 @@ function InvestmentTrackingView() {
       .catch(() => {})
   }, [strategySource])
 
+  useEffect(() => {
+    fetch("/ma/api/tracking-funds/team-tags")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setTeamTagOptions(d) : null)
+      .catch(() => {})
+  }, [])
+
   const isBfl = activePool === "bfl"
   const totalPages = Math.max(1, Math.ceil(total / 50))
+  const trackingFilterKey = `${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}`
 
   function handleSort(col: string) {
     if (sortCol === col) setSortDir((d) => (d === "desc" ? "asc" : "desc"))
@@ -1263,13 +1275,21 @@ function InvestmentTrackingView() {
       strategy_l2: strategyL2,
       strategy_l3: strategyL3,
       strategy_source: strategySource,
+      org_size: orgSizeFilter,
+      team_tag_mode: teamTagMode,
     })
+    teamTags.forEach((tag) => params.append("team_tag", tag))
     fetch(`/ma/api/tracking-funds/list?${params}`)
       .then((r) => r.json())
       .then((d) => { setData(d.data ?? []); setTotal(d.total ?? 0) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [isBfl, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, strategySource])
+  }, [isBfl, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey])
+
+  function toggleTeamTag(tag: string) {
+    setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
+    setPage(1)
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -1471,22 +1491,51 @@ function InvestmentTrackingView() {
             {/* 团队标签 */}
             <div className="flex items-center px-4 py-2">
               <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队标签：</span>
-              <div className="flex items-center gap-2">
-                <button className="inline-flex items-center gap-1 border rounded px-2.5 py-1 text-xs text-zinc-600 hover:bg-muted/60 transition-colors">
-                  交集 (且)
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-                <span className="inline-flex items-center px-2.5 py-1 rounded border border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 text-xs font-medium cursor-pointer">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative">
+                  <select
+                    value={teamTagMode}
+                    onChange={(e) => { setTeamTagMode(e.target.value as TrackTeamTagMode); setPage(1) }}
+                    className="h-7 min-w-[5.75rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="and">交集（且）</option>
+                    <option value="or">并集（或）</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+                </div>
+                <span
+                  onClick={() => { setTeamTags([]); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    teamTags.length === 0
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
                   不限
                 </span>
+                {teamTagOptions.map((tag) => (
+                  <span
+                    key={tag}
+                    onClick={() => toggleTeamTag(tag)}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                      teamTags.includes(tag)
+                        ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        : "border-border text-zinc-500 hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {tag}
+                  </span>
+                ))}
               </div>
             </div>
             {/* 管理人规模 */}
             <div className="flex items-center px-4 py-2">
-              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">管理人规模：</span>
+              <span className="text-zinc-400 shrink-0 w-20 whitespace-nowrap text-right pr-3">管理人规模：</span>
               <div className="flex items-center gap-1 flex-wrap">
                 {ORG_SIZE_OPTS.map((s) => (
-                  <FilterPill key={s} label={s} active={orgSizeFilter === s} onClick={() => setOrgSizeFilter(s)} />
+                  <FilterPill key={s} label={s} active={orgSizeFilter === s} onClick={() => { setOrgSizeFilter(s); setPage(1) }} />
                 ))}
               </div>
             </div>
