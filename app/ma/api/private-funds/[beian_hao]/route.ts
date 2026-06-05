@@ -15,6 +15,7 @@ export async function GET(
     short_name:     string | null
     strategy_l1:    string | null
     strategy_l2:    string | null
+    strategy_l3:    string | null
     manager:        string
     inception_date: string | null
     benchmark:      string | null
@@ -26,7 +27,7 @@ export async function GET(
     sharpe_1y:      string | null
     calmar_1y:      string | null
   }>(
-    `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, manager,
+    `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, NULL::text AS strategy_l3, manager,
             inception_date::text AS inception_date, benchmark,
             ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
             sharpe_1y::text, calmar_1y::text
@@ -42,6 +43,7 @@ export async function GET(
         short_name:     string | null
         strategy_l1:    string | null
         strategy_l2:    string | null
+        strategy_l3:    string | null
         manager:        string
         inception_date: string | null
         benchmark:      string | null
@@ -56,6 +58,7 @@ export async function GET(
         `SELECT beian_hao, product_name, short_name,
                 strategy_one AS strategy_l1,
                 strategy_two AS strategy_l2,
+                strategy_three AS strategy_l3,
                 ''::text     AS manager,
                 NULL::text   AS inception_date,
                 NULL::text   AS benchmark,
@@ -71,8 +74,88 @@ export async function GET(
         [beian_hao]
       )
 
-  const info = infoRows[0] ?? bflRows[0]
+  // Fallback: look for fund in tracking pool tables (type6_ops_team_full or register_number pools)
+  type InfoRowShape = typeof infoRows[0]
+  const trackingRow: InfoRowShape | undefined = (infoRows[0] || bflRows[0])
+    ? undefined
+    : await (async () => {
+        // Try type6_ops_team_full first (has most metadata)
+        try {
+          const rows = await query<{ register_number: string; fund_name: string; short_name: string | null; company_strategy_one: string | null; company_strategy_two: string | null; company_strategy_three: string | null }>(
+            `SELECT register_number, fund_name, fund_short_name AS short_name,
+                    company_strategy_one, company_strategy_two, company_strategy_three
+             FROM type6_ops_team_full
+             WHERE register_number = $1
+             LIMIT 1`,
+            [beian_hao]
+          )
+          if (rows[0]) {
+            return {
+              beian_hao:      rows[0].register_number,
+              product_name:   rows[0].short_name ?? rows[0].fund_name,
+              short_name:     rows[0].fund_name,
+              strategy_l1:    rows[0].company_strategy_one,
+              strategy_l2:    rows[0].company_strategy_two,
+              strategy_l3:    rows[0].company_strategy_three,
+              manager:        "",
+              inception_date: null,
+              benchmark:      null,
+              ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
+              sharpe_1y: null, calmar_1y: null,
+            } as InfoRowShape
+          }
+        } catch { /* table may not exist */ }
+
+        // Try generic pool tables
+        const poolTables = [
+          { table: "tracking_pool",   nameCol: "product_name", idCol: "register_number" },
+          { table: "selected_pool",   nameCol: "product_name", idCol: "register_number" },
+          { table: "core_pool",       nameCol: "product_name", idCol: "register_number" },
+          { table: "hy_tracking_pool",nameCol: "product_name", idCol: "register_number" },
+          { table: "fof_mom_tracking",nameCol: "product_name", idCol: "register_number" },
+          { table: "user_custom_pool",nameCol: "product_name", idCol: "register_number" },
+        ]
+        for (const p of poolTables) {
+          try {
+            const rows = await query<{ product_name: string }>(
+              `SELECT ${p.nameCol} AS product_name FROM ${p.table} WHERE ${p.idCol} = $1 LIMIT 1`,
+              [beian_hao]
+            )
+            if (rows[0]) {
+              return {
+                beian_hao,
+                product_name: rows[0].product_name,
+                short_name:   null,
+                strategy_l1:  null,
+                strategy_l2:  null,
+                strategy_l3:  null,
+                manager:      "",
+                inception_date: null, benchmark: null,
+                ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
+                sharpe_1y: null, calmar_1y: null,
+              } as InfoRowShape
+            }
+          } catch { /* table may not exist */ }
+        }
+        return undefined
+      })()
+
+  const info = infoRows[0] ?? bflRows[0] ?? trackingRow
   if (!info) return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+
+  // Fetch strategy_l3 from various sources (column may not exist in all tables — use try-catch)
+  let strategy_l3: string | null = (info as Record<string, unknown>).strategy_l3 as string | null ?? null
+  if (!strategy_l3) {
+    for (const [sql, params] of [
+      [`SELECT strategy_three::text AS l3 FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`, [beian_hao]],
+      [`SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`, [beian_hao]],
+    ] as [string, string[]][]) {
+      try {
+        const rows = await query<{ l3: string | null }>(sql, params)
+        if (rows[0]?.l3) { strategy_l3 = rows[0].l3; break }
+      } catch { /* column may not exist */ }
+    }
+  }
 
   const productName = info.product_name ?? ""
   const shortName = info.short_name ?? ""
@@ -110,18 +193,36 @@ export async function GET(
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
-       FROM private_fund_nav
+       FROM private_fund_nav_group_hy
        WHERE beian_hao = $1
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri
-       FROM private_fund_nav
+       FROM private_fund_nav_group_hy
        WHERE $2 <> '' AND product_name = $2
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri
+       FROM private_fund_nav_group_hy
+       WHERE $3 <> '' AND product_name = $3
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 6 AS pri
+       FROM private_fund_nav
+       WHERE beian_hao = $1
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 7 AS pri
+       FROM private_fund_nav
+       WHERE $2 <> '' AND product_name = $2
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 8 AS pri
        FROM private_fund_nav
        WHERE $3 <> '' AND product_name = $3
      ) nav_union
@@ -194,7 +295,7 @@ export async function GET(
   }
 
   return NextResponse.json({
-    info,
+    info: { ...info, strategy_l3 },
     nav_series,
     metrics: {
       latest_nav:                latest?.nav              ?? null,

@@ -1,4 +1,4 @@
-"use client"
+﻿"use client"
 
 import { useEffect, useState, useMemo } from "react"
 import type React from "react"
@@ -36,6 +36,7 @@ interface FundInfo {
   product_name:   string
   strategy_l1:    string | null
   strategy_l2:    string | null
+  strategy_l3:    string | null
   manager:        string
   inception_date: string | null
   benchmark:      string | null
@@ -296,6 +297,150 @@ export default function PrivateFundDetailPage() {
   const [data, setData]       = useState<DetailData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState<string | null>(null)
+  const [fundTags, setFundTags]   = useState<string[]>([])
+  const [fundPools, setFundPools] = useState<{ pool_key: string; pool_label: string }[]>([])
+  const [availTeamTags, setAvailTeamTags] = useState<string[]>([])
+  const [showTagEditor, setShowTagEditor] = useState(false)
+
+  // ─── 编辑要素 modal ─────────────────────────────────────────────────────────
+  type StrategyL2 = { l2: string; l3s: string[] }
+  type StrategyTree = { l1: string; l2s: StrategyL2[] }[]
+  const [showStrategyModal, setShowStrategyModal] = useState(false)
+  const [strategyTab, setStrategyTab] = useState<"team" | "platform" | "subscription" | "attachment">("team")
+  const [strategyTree, setStrategyTree] = useState<StrategyTree>([])
+  const [editL1, setEditL1] = useState<string>("")
+  const [editL2, setEditL2] = useState<string>("")
+  const [editL3s, setEditL3s] = useState<string[]>([])
+  const [savingStrategy, setSavingStrategy] = useState(false)
+
+  function openStrategyModal() {
+    if (!data) return
+    setEditL1(data.info.strategy_l1 ?? "")
+    setEditL2(data.info.strategy_l2 ?? "")
+    const l3raw = data.info.strategy_l3 ?? ""
+    setEditL3s(l3raw ? l3raw.split(/[，,]/).map(s => s.trim()).filter(Boolean) : [])
+    setStrategyTab("team")
+    setShowStrategyModal(true)
+    if (!strategyTree.length) {
+      fetch("/ma/api/tracking-funds/strategies?pool=tracking")
+        .then(r => r.json())
+        .then(d => Array.isArray(d) && setStrategyTree(d))
+        .catch(() => {})
+    }
+  }
+
+  async function saveStrategy() {
+    setSavingStrategy(true)
+    try {
+      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy_l1: editL1 || null,
+          strategy_l2: editL2 || null,
+          strategy_l3: editL3s.length ? editL3s.join(",") : null,
+        }),
+      })
+      if (res.ok && data) {
+        setData({
+          ...data,
+          info: {
+            ...data.info,
+            strategy_l1: editL1 || null,
+            strategy_l2: editL2 || null,
+            strategy_l3: editL3s.length ? editL3s.join(",") : null,
+          },
+        })
+        setShowStrategyModal(false)
+      }
+    } finally {
+      setSavingStrategy(false)
+    }
+  }
+
+  // ─── 编辑产品池 modal ──────────────────────────────────────────────────────
+  const ALL_POOLS = [
+    { key: "bfl",      label: "bfl跟踪池" },
+    { key: "tracking", label: "跟踪池" },
+    { key: "selected", label: "精选池" },
+    { key: "core",     label: "核心池" },
+    { key: "hy",       label: "hy跟踪池" },
+    { key: "fof",      label: "FOF&MOM跟踪" },
+  ]
+  const [showPoolModal, setShowPoolModal] = useState(false)
+  const [editPools, setEditPools] = useState<{ pool_key: string; pool_label: string }[]>([])
+  const [savingPools, setSavingPools] = useState(false)
+
+  function openPoolModal() {
+    setEditPools([...fundPools])
+    setShowPoolModal(true)
+  }
+
+  function toggleEditPool(key: string, label: string) {
+    setEditPools(prev => {
+      if (prev.some(p => p.pool_key === key)) return prev.filter(p => p.pool_key !== key)
+      return [...prev, { pool_key: key, pool_label: label }]
+    })
+  }
+
+  async function savePoolChanges() {
+    if (!data) return
+    setSavingPools(true)
+    const productName = data.info.product_name ?? ""
+    const toAdd = editPools.filter(p => !fundPools.some(q => q.pool_key === p.pool_key))
+    const toRemove = fundPools.filter(p => !editPools.some(q => q.pool_key === p.pool_key))
+    try {
+      await Promise.all([
+        ...toAdd.map(p =>
+          fetch("/ma/api/tracking-funds/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pool: p.pool_key, beian_hao, product_name: productName }),
+          })
+        ),
+        ...toRemove.map(p =>
+          fetch(`/ma/api/tracking-funds/add?pool=${encodeURIComponent(p.pool_key)}&beian_hao=${encodeURIComponent(beian_hao)}`, {
+            method: "DELETE",
+          })
+        ),
+      ])
+      setFundPools(editPools)
+      setShowPoolModal(false)
+    } finally {
+      setSavingPools(false)
+    }
+  }
+
+  function currentUserName(): string {
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      return u?.name || u?.email || ""
+    } catch { return "" }
+  }
+
+  async function loadFundMeta(id: string) {
+    try {
+      const res = await fetch(`/ma/api/ops/fund-tags?beian_hao=${encodeURIComponent(id)}`)
+      const d = await res.json()
+      setFundTags(Array.isArray(d.tags) ? d.tags : [])
+      setFundPools(Array.isArray(d.pools) ? d.pools : [])
+    } catch {}
+  }
+
+  async function addTag(tag: string) {
+    if (!beian_hao || fundTags.includes(tag)) return
+    await fetch("/ma/api/ops/fund-tags", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ beian_hao, tag_name: tag, user_name: currentUserName() }),
+    })
+    setFundTags((p) => [...p, tag])
+  }
+
+  async function removeTag(tag: string) {
+    await fetch(`/ma/api/ops/fund-tags?beian_hao=${encodeURIComponent(beian_hao)}&tag_name=${encodeURIComponent(tag)}`, { method: "DELETE" })
+    setFundTags((p) => p.filter((t) => t !== tag))
+  }
 
   useEffect(() => {
     if (!beian_hao) return
@@ -309,6 +454,11 @@ export default function PrivateFundDetailPage() {
       .then(setData)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
+    loadFundMeta(beian_hao)
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setAvailTeamTags(d.map((t: { name: string }) => t.name)) : null)
+      .catch(() => {})
   }, [beian_hao])
 
   const [chartMode, setChartMode] = useState<"nav" | "return">("nav")
@@ -716,6 +866,7 @@ export default function PrivateFundDetailPage() {
   }
 
   return (
+    <>
     <PageShell>
     <div>
       {/* Back link */}
@@ -730,17 +881,76 @@ export default function PrivateFundDetailPage() {
       {/* ── Header: fund name + strategy tags ────────────── */}
       <div className="mb-3">
         <h1 className="text-2xl font-bold text-zinc-900 leading-tight">{info.product_name}</h1>
-        <div className="flex flex-wrap items-center gap-2 mt-1.5">
-          {info.strategy_l1 && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600 font-medium">
-              {info.strategy_l1}
-            </span>
+        <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
+          {/* ── 策略标签（一级 / 二级 / 三级） ── */}
+          {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3) && (
+            <>
+              {(info.strategy_l1 || info.strategy_l2) && (
+                <span
+                  className="px-1.5 py-0.5 rounded font-medium whitespace-nowrap text-xs"
+                  style={{ backgroundColor: "#eff6ff", color: "#2563eb", border: "1px solid #93c5fd" }}
+                >
+                  {[info.strategy_l1, info.strategy_l2].filter(Boolean).join(" /")}
+                </span>
+              )}
+              {info.strategy_l3 && info.strategy_l3 !== "-" && (
+                <span
+                  className="px-1.5 py-0.5 rounded whitespace-nowrap text-xs"
+                  style={{ backgroundColor: "#eff6ff", color: "#2563eb", border: "1px solid #93c5fd" }}
+                >
+                  {info.strategy_l3}
+                </span>
+              )}
+              <button className="text-zinc-400 hover:text-zinc-700 transition-colors" title="编辑策略标签" onClick={openStrategyModal}>
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <span className="text-zinc-300 select-none mx-0.5">|</span>
+            </>
           )}
-          {info.strategy_l2 && info.strategy_l2 !== "-" && (
-            <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600">
-              {info.strategy_l2}
+
+          {/* ── 团队标签 ── */}
+          {fundTags.map((tag) => (
+            <span
+              key={tag}
+              className="px-1.5 py-0.5 rounded whitespace-nowrap text-xs"
+              style={{ backgroundColor: "#eff6ff", color: "#2563eb", border: "1px solid #93c5fd" }}
+            >
+              {tag}
             </span>
+          ))}
+
+          {/* ── 池 ── */}
+          {fundPools.length > 0 && (
+            <>
+              {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3 || fundTags.length > 0) && (
+                <span className="text-zinc-300 select-none mx-0.5">|</span>
+              )}
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-500 flex-shrink-0"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+              <button onClick={openPoolModal} className="text-zinc-600 font-medium whitespace-nowrap text-xs hover:text-zinc-900 transition-colors flex items-center gap-0.5">
+                团队产品池
+                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <span className="text-zinc-300 select-none mx-0.5">|</span>
+              {fundPools.map((p) => (
+                <span
+                  key={p.pool_key}
+                  className="px-1.5 py-0.5 rounded whitespace-nowrap text-xs"
+                  style={{ backgroundColor: "#fffbeb", color: "#d97706", border: "1px solid #fcd34d" }}
+                >
+                  {p.pool_label}
+                </span>
+              ))}
+            </>
           )}
+
+          {/* ── 编辑产品池 button ── */}
+          <button
+            onClick={openPoolModal}
+            className="text-zinc-400 hover:text-zinc-700 transition-colors ml-0.5"
+            title="编辑产品池"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
         </div>
       </div>
 
@@ -1132,5 +1342,254 @@ export default function PrivateFundDetailPage() {
       )}
     </div>
     </PageShell>
+
+    {/* ── 编辑产品池 modal ────────────────────────────────────────────────── */}
+    {showPoolModal && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center"
+        style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
+        onClick={(e) => e.target === e.currentTarget && setShowPoolModal(false)}
+      >
+        <div className="bg-white rounded-lg shadow-xl w-[520px] max-w-[95vw] flex flex-col">
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-3.5 border-b">
+            <span className="font-semibold text-zinc-900 text-sm">编辑产品池</span>
+            <button onClick={() => setShowPoolModal(false)} className="text-zinc-400 hover:text-zinc-700 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          {/* Fund name */}
+          <div className="px-5 pt-3 pb-1 flex items-center gap-2">
+            <div className="w-1 self-stretch rounded-full" style={{ backgroundColor: "#dc2626" }} />
+            <span className="font-semibold text-zinc-800 text-sm">{info.product_name}</span>
+          </div>
+
+          {/* Body */}
+          <div className="px-5 py-4 space-y-4">
+            {/* Current pools row */}
+            <div className="flex items-start gap-3">
+              <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right pt-1">产品池：</label>
+              <div className="flex-1 border border-zinc-200 rounded px-2.5 py-2 min-h-[40px] flex flex-wrap gap-1.5">
+                {editPools.map(p => (
+                  <span
+                    key={p.pool_key}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs"
+                    style={{ backgroundColor: "#fffbeb", color: "#d97706", border: "1px solid #fcd34d" }}
+                  >
+                    {p.pool_label}
+                    <button
+                      onClick={() => setEditPools(prev => prev.filter(q => q.pool_key !== p.pool_key))}
+                      className="hover:opacity-70"
+                    >&#x00D7;</button>
+                  </span>
+                ))}
+              </div>
+              <button
+                onClick={() => setEditPools([])}
+                className="text-xs text-zinc-500 hover:text-red-500 transition-colors flex-shrink-0 pt-1"
+              >
+                清空
+              </button>
+            </div>
+
+            {/* All team pools row */}
+            <div className="flex items-start gap-3">
+              <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right pt-1">团队产品池：</label>
+              <div className="flex-1 flex flex-wrap gap-1.5">
+                {ALL_POOLS.map(p => {
+                  const active = editPools.some(q => q.pool_key === p.key)
+                  return (
+                    <button
+                      key={p.key}
+                      onClick={() => toggleEditPool(p.key, p.label)}
+                      className="px-2.5 py-0.5 rounded text-xs transition-colors"
+                      style={active
+                        ? { backgroundColor: "#eff6ff", color: "#2563eb", border: "1px solid #93c5fd" }
+                        : { backgroundColor: "white", color: "#52525b", border: "1px solid #d4d4d8" }
+                      }
+                    >
+                      {p.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 px-5 py-3 border-t">
+            <button
+              onClick={() => setShowPoolModal(false)}
+              className="px-4 py-1.5 rounded border border-zinc-200 text-sm text-zinc-600 hover:bg-zinc-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={savePoolChanges}
+              disabled={savingPools}
+              className="px-4 py-1.5 rounded text-sm text-white font-medium transition-colors"
+              style={{ backgroundColor: savingPools ? "#f87171" : "#dc2626" }}
+            >
+              {savingPools ? "保存中…" : "确定"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ── 编辑要素 modal ─────────────────────────────────────────────────── */}
+    {showStrategyModal && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center"
+        style={{ backgroundColor: "rgba(0,0,0,0.4)" }}
+        onClick={(e) => e.target === e.currentTarget && setShowStrategyModal(false)}
+      >
+        <div className="bg-white rounded-lg shadow-xl w-[520px] max-w-[95vw] flex flex-col" style={{ maxHeight: "90vh" }}>
+          {/* Header */}
+          <div className="flex items-center justify-between px-5 py-3.5 border-b">
+            <span className="font-semibold text-zinc-900 text-sm">编辑要素</span>
+            <button
+              onClick={() => setShowStrategyModal(false)}
+              className="text-zinc-400 hover:text-zinc-700 transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+
+          {/* Fund name */}
+          <div className="px-5 pt-3 pb-2 flex items-center gap-2">
+            <div className="w-1 self-stretch rounded-full" style={{ backgroundColor: "#dc2626" }} />
+            <span className="font-semibold text-zinc-800 text-sm">{info.product_name}</span>
+          </div>
+
+          {/* Tabs */}
+          <div className="flex border-b px-5 gap-0">
+            {([
+              { key: "platform",     label: "平台策略" },
+              { key: "subscription", label: "申赎信息" },
+              { key: "attachment",   label: "要素附件" },
+              { key: "team",         label: "团队策略" },
+            ] as const).map(tab => (
+              <button
+                key={tab.key}
+                onClick={() => setStrategyTab(tab.key)}
+                className={[
+                  "px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors",
+                  strategyTab === tab.key
+                    ? "border-red-500 text-red-600"
+                    : "border-transparent text-zinc-500 hover:text-zinc-800",
+                ].join(" ")}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 overflow-y-auto px-5 py-4">
+            {strategyTab === "team" ? (
+              <div className="space-y-4">
+                {/* Info notice */}
+                <div className="rounded px-3 py-2.5 text-xs" style={{ backgroundColor: "#fffbeb", color: "#92400e", border: "1px solid #fde68a" }}>
+                  团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+                </div>
+
+                {/* 一级策略 */}
+                <div className="flex items-center gap-3">
+                  <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right">一级策略：</label>
+                  <select
+                    value={editL1}
+                    onChange={e => { setEditL1(e.target.value); setEditL2(""); setEditL3s([]) }}
+                    className="flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
+                  >
+                    <option value="">— 请选择 —</option>
+                    {strategyTree.map(n => (
+                      <option key={n.l1} value={n.l1}>{n.l1}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 二级策略 */}
+                <div className="flex items-center gap-3">
+                  <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right">二级策略：</label>
+                  <select
+                    value={editL2}
+                    onChange={e => { setEditL2(e.target.value); setEditL3s([]) }}
+                    className="flex-1 border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
+                    disabled={!editL1}
+                  >
+                    <option value="">— 请选择 —</option>
+                    {(strategyTree.find(n => n.l1 === editL1)?.l2s ?? []).map(n => (
+                      <option key={n.l2} value={n.l2}>{n.l2}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* 三级策略 (multi-select chips) */}
+                <div className="flex items-start gap-3">
+                  <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right pt-1.5">三级策略：</label>
+                  <div className="flex-1">
+                    {editL3s.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        {editL3s.map(v => (
+                          <span
+                            key={v}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs"
+                            style={{ backgroundColor: "#eff6ff", color: "#2563eb", border: "1px solid #93c5fd" }}
+                          >
+                            {v}
+                            <button
+                              onClick={() => setEditL3s(p => p.filter(x => x !== v))}
+                              className="text-blue-400 hover:text-blue-700"
+                            >×</button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <select
+                      value=""
+                      onChange={e => { const v = e.target.value; if (v && !editL3s.includes(v)) setEditL3s(p => [...p, v]) }}
+                      className="w-full border border-zinc-200 rounded px-3 py-1.5 text-sm text-zinc-800 bg-white focus:outline-none focus:border-zinc-400"
+                      disabled={!editL2}
+                    >
+                      <option value="">— 添加三级策略 —</option>
+                      {(strategyTree.find(n => n.l1 === editL1)?.l2s.find(n => n.l2 === editL2)?.l3s ?? [])
+                        .filter(v => !editL3s.includes(v))
+                        .map(v => (
+                          <option key={v} value={v}>{v}</option>
+                        ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center h-24 text-zinc-400 text-sm">
+                {strategyTab === "platform" ? "平台策略" : strategyTab === "subscription" ? "申赎信息" : "要素附件"} 暂无内容
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 px-5 py-3 border-t">
+            <button
+              onClick={() => setShowStrategyModal(false)}
+              className="px-4 py-1.5 rounded border border-zinc-200 text-sm text-zinc-600 hover:bg-zinc-50 transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={saveStrategy}
+              disabled={savingStrategy}
+              className="px-4 py-1.5 rounded text-sm text-white font-medium transition-colors"
+              style={{ backgroundColor: savingStrategy ? "#f87171" : "#dc2626" }}
+            >
+              {savingStrategy ? "保存中…" : "确定"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }

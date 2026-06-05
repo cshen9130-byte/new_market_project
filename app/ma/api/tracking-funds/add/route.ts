@@ -76,3 +76,28 @@ export async function POST(req: Request) {
   }
 }
 
+export async function DELETE(req: Request) {
+  const { searchParams } = new URL(req.url)
+  const pool = searchParams.get("pool") ?? ""
+  const beian_hao = searchParams.get("beian_hao") ?? ""
+  if (!pool || !beian_hao) {
+    return NextResponse.json({ error: "missing_fields" }, { status: 400 })
+  }
+  try {
+    if (isCustomPool(pool)) {
+      await query(
+        `DELETE FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2`,
+        [pool, beian_hao]
+      )
+    } else {
+      const table = POOL_TABLE[pool]
+      if (!table) return NextResponse.json({ error: "unknown_pool" }, { status: 400 })
+      await query(`DELETE FROM ${table} WHERE register_number = $1`, [beian_hao])
+    }
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    console.error("[tracking-funds/add DELETE]", err)
+    return NextResponse.json({ error: "db_error" }, { status: 500 })
+  }
+}
+
