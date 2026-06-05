@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download } from "lucide-react"
 
 const menuItems = [
@@ -62,9 +63,31 @@ const sidebarMap: Record<string, { key: string; label: string }[]> = {
   funds: fundsSidebarItems,
 }
 
+const operationsSidebarGroups: SidebarGroup[] = [
+  {
+    label: "产品维护",
+    items: [
+      { key: "ops-active-funds", label: "在管产品" },
+      { key: "ops-fof", label: "FOF底层" },
+      { key: "ops-direct", label: "直投产品" },
+      { key: "ops-tracking", label: "跟踪产品" },
+    ],
+  },
+  {
+    label: "数据维护",
+    items: [
+      { key: "ops-email-sync", label: "邮箱同步" },
+      { key: "ops-ledger", label: "台账管理" },
+      { key: "ops-team-data", label: "团队数据" },
+      { key: "ops-strategy-tags", label: "策略标签" },
+    ],
+  },
+]
+
 const TAB_DEFAULT_SIDE: Record<string, string> = {
   funds: "private-funds",
   investment: "inv-tracking",
+  operations: "ops-strategy-tags",
 }
 
 const TRACK_STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"]
@@ -1225,7 +1248,8 @@ function InvestmentTrackingView() {
   const [showSingleAddDialog, setShowSingleAddDialog] = useState(false)
   const [addFundClass, setAddFundClass] = useState<"private" | "public">("private")
   const [addFundSearch, setAddFundSearch] = useState("")
-  const [addFundTag, setAddFundTag] = useState("")
+  const [addFundSelectedTags, setAddFundSelectedTags] = useState<string[]>([])
+  const [addFundTeamTags, setAddFundTeamTags] = useState<string[]>([])
   const [addFundResults, setAddFundResults] = useState<{beian_hao:string;product_name:string;short_name:string|null;strategy_one:string|null}[]>([])
   const [addFundLoading, setAddFundLoading] = useState(false)
   const [addFundSelected, setAddFundSelected] = useState<{beian_hao:string;product_name:string}|null>(null)
@@ -1250,7 +1274,8 @@ function InvestmentTrackingView() {
   const [batchAddSearching, setBatchAddSearching] = useState(false)
   const [batchAddResults, setBatchAddResults] = useState<{beian_hao:string;product_name:string;short_name:string|null;strategy_one:string|null}[]>([])
   const [batchAddChecked, setBatchAddChecked] = useState<Set<string>>(new Set())
-  const [batchAddTag, setBatchAddTag] = useState("")
+  const [batchAddSelectedTags, setBatchAddSelectedTags] = useState<string[]>([])
+  const [batchAddTeamTags, setBatchAddTeamTags] = useState<string[]>([])
   const [batchAddSaving, setBatchAddSaving] = useState(false)
   const [batchAddError, setBatchAddError] = useState<string|null>(null)
   const isSupportedPool = pools.some((p) => p.key === activePool)
@@ -1344,6 +1369,22 @@ function InvestmentTrackingView() {
   }, [activePool, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey])
 
   // Debounced search for 添加跟踪产品 dialog
+  useEffect(() => {
+    if (!showSingleAddDialog) return
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setAddFundTeamTags(d.map((t: { name: string }) => t.name)) : null)
+      .catch(() => {})
+  }, [showSingleAddDialog])
+
+  useEffect(() => {
+    if (!showBatchAddDialog) return
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setBatchAddTeamTags(d.map((t: { name: string }) => t.name)) : null)
+      .catch(() => {})
+  }, [showBatchAddDialog])
+
   useEffect(() => {
     if (!showSingleAddDialog) return
     if (!addFundSearch.trim()) {
@@ -1715,12 +1756,12 @@ function InvestmentTrackingView() {
                     <div className="fixed inset-0 z-30" onClick={() => setShowTeamAddMenu(false)} />
                     <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[100px]" onClick={(e) => e.stopPropagation()}>
                       <button
-                        onClick={() => { setShowTeamAddMenu(false); setAddFundSearch(""); setAddFundTag(""); setAddFundSelected(null); setAddFundResults([]); setAddFundShowDropdown(false); setAddFundError(null); setAddFundTargetPool(sourcePool); setShowSingleAddDialog(true) }}
+                        onClick={() => { setShowTeamAddMenu(false); setAddFundSearch(""); setAddFundSelectedTags([]); setAddFundSelected(null); setAddFundResults([]); setAddFundShowDropdown(false); setAddFundError(null); setAddFundTargetPool(sourcePool); setShowSingleAddDialog(true) }}
                         className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
                         单只添加
                       </button>
                       <button
-                        onClick={() => { setShowTeamAddMenu(false); setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddTag(""); setBatchAddError(null); setBatchAddTargetPool(sourcePool); setShowBatchAddDialog(true) }}
+                        onClick={() => { setShowTeamAddMenu(false); setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddSelectedTags([]); setBatchAddError(null); setBatchAddTargetPool(sourcePool); setShowBatchAddDialog(true) }}
                         className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
                         批量添加
                       </button>
@@ -2040,12 +2081,12 @@ function InvestmentTrackingView() {
                     <div className="fixed inset-0 z-30" onClick={() => setShowMineAddMenu(false)} />
                     <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[100px]" onClick={(e) => e.stopPropagation()}>
                       <button
-                        onClick={() => { setShowMineAddMenu(false); setAddFundSearch(""); setAddFundTag(""); setAddFundSelected(null); setAddFundResults([]); setAddFundShowDropdown(false); setAddFundError(null); setAddFundTargetPool(myActivePool); setShowSingleAddDialog(true) }}
+                        onClick={() => { setShowMineAddMenu(false); setAddFundSearch(""); setAddFundSelectedTags([]); setAddFundSelected(null); setAddFundResults([]); setAddFundShowDropdown(false); setAddFundError(null); setAddFundTargetPool(myActivePool); setShowSingleAddDialog(true) }}
                         className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
                         单只添加
                       </button>
                       <button
-                        onClick={() => { setShowMineAddMenu(false); setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddTag(""); setBatchAddError(null); setBatchAddTargetPool(myActivePool); setShowBatchAddDialog(true) }}
+                        onClick={() => { setShowMineAddMenu(false); setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddSelectedTags([]); setBatchAddError(null); setBatchAddTargetPool(myActivePool); setShowBatchAddDialog(true) }}
                         className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
                         批量添加
                       </button>
@@ -2182,31 +2223,49 @@ function InvestmentTrackingView() {
             {/* 标签 */}
             <div className="flex items-center gap-3 mb-3">
               <span className="text-sm shrink-0 w-16 text-right">标签：</span>
-              <div className="flex flex-1 items-center border rounded px-3 h-9 gap-2">
-                <input
-                  type="text"
-                  value={addFundTag}
-                  onChange={(e) => setAddFundTag(e.target.value)}
-                  placeholder="请选择标签"
-                  className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/40"
-                />
+              <div className="flex flex-1 items-center flex-wrap border rounded px-3 min-h-[36px] gap-1.5 py-1">
+                {addFundSelectedTags.map((tag) => (
+                  <span key={tag} className="inline-flex items-center gap-1 bg-muted text-zinc-700 dark:text-zinc-200 rounded px-2 py-0.5 text-xs">
+                    {tag}
+                    <button onClick={() => setAddFundSelectedTags((p) => p.filter((t) => t !== tag))} className="hover:text-red-500 leading-none ml-0.5">×</button>
+                  </span>
+                ))}
+                {addFundSelectedTags.length === 0 && (
+                  <span className="text-sm text-muted-foreground/40">请选择标签</span>
+                )}
               </div>
               <button
-                onClick={() => setAddFundTag("")}
+                onClick={() => setAddFundSelectedTags([])}
                 className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0">
                 清空
               </button>
             </div>
             {/* 团队标签 */}
             <div className="flex items-start gap-3 mb-6">
-              <span className="text-sm shrink-0 w-16 text-right pt-0.5">团队标签：</span>
-              <div className="flex flex-1 items-center gap-2 bg-muted/30 rounded px-3 py-2 text-sm text-muted-foreground">
-                <span className="flex-1">暂无标签，可点击「设置」添加后刷新</span>
-                <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+              <span className="text-sm shrink-0 w-16 text-right pt-1.5">团队标签：</span>
+              <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                {addFundTeamTags.length === 0 && (
+                  <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                )}
+                {addFundTeamTags.map((tag) => (
+                  <button
+                    key={tag}
+                    onClick={() => setAddFundSelectedTags((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                    className={[
+                      "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                      addFundSelectedTags.includes(tag)
+                        ? "bg-red-50 text-red-500 border-red-300"
+                        : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >{tag}</button>
+                ))}
+                <button onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=tags", "_blank")} className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1">
                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
                   设置
                 </button>
-                <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                <button
+                  onClick={() => fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setAddFundTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {})}
+                  className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
                   刷新
                 </button>
@@ -2389,26 +2448,44 @@ function InvestmentTrackingView() {
               </div>
               <div className="flex items-center gap-3 mb-2.5">
                 <span className="text-sm shrink-0 w-14 text-right">标签：</span>
-                <div className="flex flex-1 items-center border rounded px-3 h-9 gap-2">
-                  <input
-                    type="text"
-                    value={batchAddTag}
-                    onChange={(e) => setBatchAddTag(e.target.value)}
-                    placeholder="请选择标签"
-                    className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/40"
-                  />
+                <div className="flex flex-1 items-center flex-wrap border rounded px-3 min-h-[36px] gap-1.5 py-1">
+                  {batchAddSelectedTags.map((tag) => (
+                    <span key={tag} className="inline-flex items-center gap-1 bg-muted text-zinc-700 dark:text-zinc-200 rounded px-2 py-0.5 text-xs">
+                      {tag}
+                      <button onClick={() => setBatchAddSelectedTags((p) => p.filter((t) => t !== tag))} className="hover:text-red-500 leading-none ml-0.5">×</button>
+                    </span>
+                  ))}
+                  {batchAddSelectedTags.length === 0 && (
+                    <span className="text-sm text-muted-foreground/40">请选择标签</span>
+                  )}
                 </div>
-                <button onClick={() => setBatchAddTag("")} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0">清空</button>
+                <button onClick={() => setBatchAddSelectedTags([])} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0">清空</button>
               </div>
               <div className="flex items-start gap-3">
-                <span className="text-sm shrink-0 w-14 text-right pt-0.5">团队标签：</span>
-                <div className="flex flex-1 items-center gap-2 bg-muted/30 rounded px-3 py-2 text-sm text-muted-foreground">
-                  <span className="flex-1">暂无标签，可点击「设置」添加后刷新</span>
-                  <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                <span className="text-sm shrink-0 w-14 text-right pt-1.5">团队标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {batchAddTeamTags.length === 0 && (
+                    <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                  )}
+                  {batchAddTeamTags.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setBatchAddSelectedTags((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        batchAddSelectedTags.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                  <button onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=tags", "_blank")} className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
                     设置
                   </button>
-                  <button className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                  <button
+                    onClick={() => fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchAddTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {})}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
                     刷新
                   </button>
@@ -2736,6 +2813,528 @@ function InvestmentTrackingView() {
   )
 }
 
+// ─── OperationsStrategyTagsView ───────────────────────────────────────────
+
+interface OpsStrategyL1 {
+  l1: string
+  l2s: string[]
+}
+
+const TAG_CATEGORIES = [
+  { key: "fund",      label: "基金" },
+  { key: "portfolio", label: "组合" },
+  { key: "compare",   label: "对比" },
+  { key: "manager",   label: "管理人" },
+  { key: "note",      label: "笔记" },
+  { key: "material",  label: "资料" },
+] as const
+
+interface OpsTagRow {
+  id: number
+  category: string
+  name: string
+  created_by: string
+  updated_by: string
+  created_at: string
+  updated_at: string
+}
+
+function fmtDateTime(iso: string | null) {
+  if (!iso) return "—"
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function OperationsTeamTagsTab() {
+  const [tagCategory, setTagCategory] = useState<string>("fund")
+  const [tags, setTags] = useState<OpsTagRow[]>([])
+  const [tagsLoading, setTagsLoading] = useState(false)
+  const [showNewTagModal, setShowNewTagModal] = useState(false)
+  const [newTagName, setNewTagName] = useState("")
+  const [newTagSaving, setNewTagSaving] = useState(false)
+  const [editingTag, setEditingTag] = useState<OpsTagRow | null>(null)
+  const [editTagName, setEditTagName] = useState("")
+  const [editTagSaving, setEditTagSaving] = useState(false)
+
+  function currentUserName(): string {
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      return u?.name || u?.email || ""
+    } catch { return "" }
+  }
+
+  function loadTags(cat: string) {
+    setTagsLoading(true)
+    fetch(`/ma/api/ops/team-tags?category=${encodeURIComponent(cat)}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setTags(d) : null)
+      .catch(() => {})
+      .finally(() => setTagsLoading(false))
+  }
+
+  useEffect(() => { loadTags(tagCategory) }, [tagCategory])
+
+  async function createTag() {
+    if (!newTagName.trim()) return
+    setNewTagSaving(true)
+    try {
+      const res = await fetch("/ma/api/ops/team-tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: tagCategory, name: newTagName.trim(), user_name: currentUserName() }),
+      })
+      if (res.ok) {
+        setShowNewTagModal(false)
+        setNewTagName("")
+        loadTags(tagCategory)
+      }
+    } finally { setNewTagSaving(false) }
+  }
+
+  async function saveEditTag() {
+    if (!editingTag || !editTagName.trim()) return
+    setEditTagSaving(true)
+    try {
+      const res = await fetch(`/ma/api/ops/team-tags/${editingTag.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editTagName.trim(), user_name: currentUserName() }),
+      })
+      if (res.ok) {
+        setEditingTag(null)
+        loadTags(tagCategory)
+      }
+    } finally { setEditTagSaving(false) }
+  }
+
+  async function deleteTag(id: number) {
+    await fetch(`/ma/api/ops/team-tags/${id}`, { method: "DELETE" })
+    setTags((prev) => prev.filter((t) => t.id !== id))
+  }
+
+  return (
+    <>
+      {/* Category filter + action */}
+      <div className="flex items-center justify-between mt-4 mb-3">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-zinc-500 font-medium">分类：</span>
+          {TAG_CATEGORIES.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => setTagCategory(c.key)}
+              className={[
+                "px-3 py-1 rounded text-sm font-medium transition-all border",
+                tagCategory === c.key
+                  ? "bg-red-50 text-red-500 border-red-300 dark:bg-red-950/20 dark:border-red-700"
+                  : "border-transparent text-zinc-600 dark:text-zinc-400 hover:text-foreground",
+              ].join(" ")}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => { setNewTagName(""); setShowNewTagModal(true) }}
+          className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
+        >
+          新建标签
+        </button>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-auto rounded border">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-muted/40 border-b">
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">标签名称</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">最近修改</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">修改人</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">创建人</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 w-24">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tagsLoading ? (
+              <tr><td colSpan={6} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : tags.length === 0 ? (
+              <tr><td colSpan={6} className="py-20 text-center text-muted-foreground">暂无标签</td></tr>
+            ) : tags.map((tag, i) => (
+              <tr key={tag.id} className="border-b hover:bg-muted/20 transition-colors">
+                <td className="px-4 py-3 text-muted-foreground tabular-nums">{i + 1}</td>
+                <td className="px-4 py-3 font-medium">{tag.name}</td>
+                <td className="px-4 py-3 tabular-nums text-muted-foreground">{fmtDateTime(tag.updated_at)}</td>
+                <td className="px-4 py-3">{tag.updated_by || "—"}</td>
+                <td className="px-4 py-3">{tag.created_by || "—"}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-3">
+                    <button
+                      title="编辑"
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => { setEditingTag(tag); setEditTagName(tag.name) }}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
+                    </button>
+                    <button
+                      title="删除"
+                      className="text-muted-foreground hover:text-red-500 transition-colors"
+                      onClick={() => deleteTag(tag.id)}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* New tag modal */}
+      {showNewTagModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNewTagModal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[360px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <span className="font-semibold text-base">新建标签</span>
+              <button onClick={() => setShowNewTagModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-8">
+              <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0">标签名称：</label>
+              <input
+                autoFocus
+                className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                value={newTagName}
+                onChange={(e) => setNewTagName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !newTagSaving && createTag()}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowNewTagModal(false)}
+                className="px-5 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={createTag}
+                disabled={!newTagName.trim() || newTagSaving}
+                className="px-5 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {newTagSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit tag modal */}
+      {editingTag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditingTag(null)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">编辑标签</span>
+              <button onClick={() => setEditingTag(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-6">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300 shrink-0">标签名称：</label>
+              <input
+                autoFocus
+                className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                placeholder="请输入标签名称"
+                value={editTagName}
+                onChange={(e) => setEditTagName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !editTagSaving && saveEditTag()}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingTag(null)}
+                className="px-4 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={saveEditTag}
+                disabled={!editTagName.trim() || editTagSaving}
+                className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {editTagSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialOpsTab?: "strategies" | "tags" | "fields" }) {
+  const [opsTab, setOpsTab] = useState<"strategies" | "tags" | "fields">(initialOpsTab)
+  const [strategies, setStrategies] = useState<OpsStrategyL1[]>([])
+  const [loading, setLoading] = useState(false)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [showNewL1Modal, setShowNewL1Modal] = useState(false)
+  const [newL1Name, setNewL1Name] = useState("")
+  const [editingKey, setEditingKey] = useState<{ l1: string; l2?: string } | null>(null)
+  const [editName, setEditName] = useState("")
+
+  useEffect(() => {
+    setLoading(true)
+    fetch("/ma/api/private-funds/strategies")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setStrategies(d) : null)
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  function toggleExpand(l1: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      next.has(l1) ? next.delete(l1) : next.add(l1)
+      return next
+    })
+  }
+
+  interface FlatRow { type: "l1" | "l2"; l1: string; l2?: string; index?: number }
+  const rows: FlatRow[] = []
+  let idx = 1
+  for (const s of strategies) {
+    rows.push({ type: "l1", l1: s.l1, index: idx++ })
+    if (expanded.has(s.l1)) {
+      for (const l2 of s.l2s) rows.push({ type: "l2", l1: s.l1, l2 })
+    }
+  }
+
+  const opsTabs = [
+    { key: "strategies" as const, label: "团队策略" },
+    { key: "tags" as const, label: "团队标签" },
+    { key: "fields" as const, label: "团队字段" },
+  ]
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Tabs + action button */}
+      <div className="flex items-center justify-between border-b">
+        <div className="flex items-center">
+          {opsTabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setOpsTab(t.key)}
+              className={[
+                "px-5 py-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+                opsTab === t.key
+                  ? "border-red-500 text-red-600 dark:text-red-400"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {opsTab === "strategies" && (
+          <button
+            onClick={() => { setNewL1Name(""); setShowNewL1Modal(true) }}
+            className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
+          >
+            新建一级
+          </button>
+        )}
+      </div>
+
+      {/* Strategies table */}
+      {opsTab === "strategies" && (
+        <>
+          <div className="overflow-auto rounded border mt-4">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-muted/40 border-b">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">一级策略</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">二级策略</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">三级策略</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 w-28">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={5} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                ) : rows.length === 0 ? (
+                  <tr><td colSpan={5} className="py-20 text-center text-muted-foreground">暂无策略</td></tr>
+                ) : rows.map((row, i) => (
+                  <tr key={`${row.l1}_${row.l2 ?? "l1"}_${i}`} className="border-b hover:bg-muted/20 transition-colors">
+                    <td className="px-4 py-3 text-muted-foreground tabular-nums">
+                      {row.type === "l1" ? row.index : ""}
+                    </td>
+                    <td className="px-4 py-3">
+                      {row.type === "l1" ? (
+                        <button
+                          onClick={() => toggleExpand(row.l1)}
+                          className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground hover:text-red-500 transition-colors"
+                        >
+                          <span className="text-red-500 font-bold text-base leading-none select-none">+</span>
+                          {row.l1}
+                        </button>
+                      ) : (
+                        <span className="text-muted-foreground pl-5">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {row.type === "l2" ? (
+                        <span className="text-sm">{row.l2}</span>
+                      ) : (
+                        <span className="text-muted-foreground">-</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-muted-foreground">-</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          title="编辑"
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => {
+                            setEditingKey({ l1: row.l1, l2: row.l2 })
+                            setEditName(row.type === "l1" ? row.l1 : (row.l2 ?? ""))
+                          }}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
+                        </button>
+                        <button
+                          title="管理子级"
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => toggleExpand(row.l1)}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
+                        </button>
+                        <button
+                          title="删除"
+                          className="text-muted-foreground hover:text-red-500 transition-colors"
+                          onClick={() => {
+                            if (row.type === "l1") {
+                              setStrategies((prev) => prev.filter((s) => s.l1 !== row.l1))
+                              setExpanded((prev) => { const next = new Set(prev); next.delete(row.l1); return next })
+                            } else {
+                              setStrategies((prev) => prev.map((s) =>
+                                s.l1 !== row.l1 ? s : { ...s, l2s: s.l2s.filter((x) => x !== row.l2) }
+                              ))
+                            }
+                          }}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-4 pt-3 border-t">
+            <p className="text-xs text-muted-foreground">
+              说明：机构用户可根据需求个性化设置团队策略，并在运维模块各产品列表操作区域的要素管理对私募、公募基金进行团队策略设置。团队策略仅内部可见。
+            </p>
+          </div>
+        </>
+      )}
+
+      {opsTab === "tags" && <OperationsTeamTagsTab />}
+
+      {opsTab === "fields" && (
+        <div className="flex-1 flex items-center justify-center text-muted-foreground mt-8">
+          团队字段管理（待开发）
+        </div>
+      )}
+
+      {/* New L1 modal */}
+      {showNewL1Modal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNewL1Modal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">新建一级策略</span>
+              <button onClick={() => setShowNewL1Modal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-6">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300 shrink-0">策略名称：</label>
+              <input
+                autoFocus
+                className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                placeholder="请输入策略名称"
+                value={newL1Name}
+                onChange={(e) => setNewL1Name(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && newL1Name.trim()) {
+                    setStrategies((prev) => [...prev, { l1: newL1Name.trim(), l2s: [] }])
+                    setShowNewL1Modal(false)
+                  }
+                }}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowNewL1Modal(false)}
+                className="px-4 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={() => {
+                  if (newL1Name.trim()) {
+                    setStrategies((prev) => [...prev, { l1: newL1Name.trim(), l2s: [] }])
+                    setShowNewL1Modal(false)
+                  }
+                }}
+                disabled={!newL1Name.trim()}
+                className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                确 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit modal */}
+      {editingKey && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditingKey(null)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">编辑策略名称</span>
+              <button onClick={() => setEditingKey(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-6">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300 shrink-0">策略名称：</label>
+              <input
+                autoFocus
+                className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                placeholder="请输入策略名称"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && editName.trim()) {
+                    if (!editingKey.l2) {
+                      setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
+                    } else {
+                      setStrategies((prev) => prev.map((s) => s.l1 !== editingKey.l1 ? s : { ...s, l2s: s.l2s.map((x) => x === editingKey.l2 ? editName.trim() : x) }))
+                    }
+                    setEditingKey(null)
+                  }
+                }}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingKey(null)}
+                className="px-4 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={() => {
+                  if (editName.trim()) {
+                    if (!editingKey.l2) {
+                      setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
+                    } else {
+                      setStrategies((prev) => prev.map((s) => s.l1 !== editingKey.l1 ? s : { ...s, l2s: s.l2s.map((x) => x === editingKey.l2 ? editName.trim() : x) }))
+                    }
+                    setEditingKey(null)
+                  }
+                }}
+                disabled={!editName.trim()}
+                className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                确 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function PrivateFundView() {
   const [filters, setFilters] = useState<FilterState>({ strategyFilters: [], keyword: "", manager: "", metricTab: "收益", period: "本周", range: "不限", inceptionPeriod: "", navDatePeriod: "", navFrequency: "" })
   const [templates, setTemplates] = useState<SavedTemplate[]>(() => loadTemplates())
@@ -2771,8 +3370,14 @@ function PrivateFundView() {
 }
 
 export default function PrivateFundsPage() {
-  const [activeTab, setActiveTab] = useState("funds")
-  const [activeSideItem, setActiveSideItem] = useState("private-funds")
+  const searchParams = useSearchParams()
+  const [activeTab, setActiveTab] = useState(() => searchParams.get("tab") || "funds")
+  const [activeSideItem, setActiveSideItem] = useState(() => {
+    const side = searchParams.get("side")
+    if (side) return side
+    const tab = searchParams.get("tab") || "funds"
+    return TAB_DEFAULT_SIDE[tab] ?? "private-funds"
+  })
 
   const sidebarItems = sidebarMap[activeTab] ?? []
 
@@ -2857,10 +3462,48 @@ export default function PrivateFundsPage() {
           </aside>
         )}
 
+        {activeTab === "operations" && (
+          <aside className="w-44 border-r bg-background flex-shrink-0">
+            <nav className="flex flex-col pt-3 pb-4">
+              {operationsSidebarGroups.map((group) => {
+                const hasActive = group.items.some((i) => i.key === activeSideItem)
+                return (
+                  <div key={group.label}>
+                    <div className={[
+                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                    ].join(" ")}>{group.label}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        onClick={() => setActiveSideItem(item.key)}
+                        className={[
+                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                          activeSideItem === item.key
+                            ? "text-red-600 dark:text-red-400 font-medium before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500 before:rounded-full"
+                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                        ].join(" ")}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
+            </nav>
+          </aside>
+        )}
+
         {/* Page content area */}
         <div className="flex-1 p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
+          {activeTab === "operations" && activeSideItem === "ops-strategy-tags" && <OperationsStrategyTagsView initialOpsTab={(searchParams.get("ops") as "strategies" | "tags" | "fields") || "strategies"} />}
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && (
+            <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+              该功能正在建设中，敬请期待
+            </div>
+          )}
         </div>
       </div>
     </div>
