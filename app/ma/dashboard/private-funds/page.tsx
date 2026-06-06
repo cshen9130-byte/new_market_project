@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react"
 import { useSearchParams } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox } from "lucide-react"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -84,8 +84,25 @@ const operationsSidebarGroups: SidebarGroup[] = [
   },
 ]
 
+const portfolioSidebarGroups: SidebarGroup[] = [
+  {
+    label: "模拟组合",
+    items: [
+      { key: "port-new", label: "新建组合" },
+      { key: "port-simulated", label: "模拟组合" },
+    ],
+  },
+  {
+    label: "实盘组合",
+    items: [
+      { key: "port-live", label: "实盘组合" },
+    ],
+  },
+]
+
 const TAB_DEFAULT_SIDE: Record<string, string> = {
   funds: "private-funds",
+  portfolio: "port-simulated",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
 }
@@ -4797,6 +4814,483 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
   )
 }
 
+// ─── PortfolioView ─────────────────────────────────────────────────────────
+
+type PortfolioSortKey =
+  | "name" | "unit_nav" | "size" | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m"
+  | "ret_1y" | "sharpe_1y" | "calmar_1y" | "updated_at"
+
+interface PortfolioRow {
+  id: string
+  name: string
+  team_tags: string[]
+  build_type: string | null
+  unit_nav: string | null
+  size: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
+  share_status: string | null
+  updated_at: string | null
+  created_by: string | null
+}
+
+function PortfolioView({ sideItem }: { sideItem: string }) {
+  const portfolioType = sideItem === "port-live" ? "live" : "simulated"
+  const [scopeTab, setScopeTab] = useState<"team" | "mine">("team")
+  const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
+  const [teamTags, setTeamTags] = useState<string[]>([])
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [showDatePicker, setShowDatePicker] = useState(false)
+  const [page, setPage] = useState(1)
+  const [jumpVal, setJumpVal] = useState("")
+  const [data, setData] = useState<PortfolioRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [sortKey, setSortKey] = useState<PortfolioSortKey>("name")
+  const [sortDir, setSortDir] = useState<SortDir>("asc")
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [addedCols, setAddedCols] = useState<AddedCol[]>([])
+  const [showAddMetric, setShowAddMetric] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [metricTemplates, setMetricTemplates] = useState<{ name: string; items: AddedCol[] }[]>(() => {
+    if (typeof window === "undefined") return []
+    try { return JSON.parse(localStorage.getItem("portfolio_metric_templates") ?? "[]") } catch { return [] }
+  })
+
+  const totalPages = Math.max(1, Math.ceil(total / 50))
+
+  useEffect(() => {
+    fetch("/ma/api/ops/team-tags?category=portfolio")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name))
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    setPage(1)
+  }, [scopeTab, portfolioType, keyword, teamTags.join("\u0001"), cutoffDate])
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      scope: scopeTab,
+      type: portfolioType,
+      page: String(page),
+      sort: sortKey,
+      dir: sortDir,
+      keyword,
+      cutoff: cutoffDate,
+    })
+    teamTags.forEach((t) => params.append("tag", t))
+    fetch(`/ma/api/portfolios/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setData(json.data ?? [])
+        setTotal(json.total ?? 0)
+        setSelected(new Set())
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+        setSelected(new Set())
+      })
+      .finally(() => setLoading(false))
+  }, [scopeTab, portfolioType, page, sortKey, sortDir, keyword, teamTags, cutoffDate])
+
+  function handleSort(col: PortfolioSortKey) {
+    if (col === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function PortSortIcon({ col }: { col: PortfolioSortKey }) {
+    if (col !== sortKey) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function toggleAll() {
+    if (selected.size === data.length && data.length > 0) setSelected(new Set())
+    else setSelected(new Set(data.map((r) => r.id)))
+  }
+
+  function toggleTeamTag(tag: string) {
+    setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
+  }
+
+  function jumpTo() {
+    const n = parseInt(jumpVal)
+    if (!isNaN(n)) { setPage(Math.min(totalPages, Math.max(1, n))); setJumpVal("") }
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  async function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const rows = selected.size > 0 ? data.filter((r) => selected.has(r.id)) : data
+    const headers = ["组合名称", "团队标签", "构建类型", "单位净值", "组合规模(元)", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率", "共享状态", "最近修改", "创建人"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.name), escape(r.team_tags.join(";")), escape(r.build_type), escape(r.unit_nav),
+        escape(r.size), escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m),
+        escape(r.ret_1y), escape(r.sharpe_1y), escape(r.calmar_1y), escape(r.share_status),
+        escape(r.updated_at), escape(r.created_by),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `组合列表_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 dark:text-zinc-400 whitespace-nowrap select-none"
+  const thSort = thBase + " cursor-pointer hover:text-foreground transition-colors"
+  const colCount = 17 + addedCols.length
+
+  if (sideItem === "port-new") {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground text-sm gap-2">
+        <Briefcase className="h-10 w-10 opacity-30" />
+        <span>新建组合功能正在建设中，敬请期待</span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col h-full min-w-0">
+      {/* 团队组合 / 我的组合 */}
+      <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
+        {(["team", "mine"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setScopeTab(t)}
+            className={[
+              "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
+              scopeTab === t
+                ? "border-red-500 text-red-600 dark:text-red-400"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+          >
+            {t === "team" ? "团队组合" : "我的组合"}
+          </button>
+        ))}
+      </div>
+
+      {/* Filter + toolbar row */}
+      <div className="flex items-center justify-between gap-4 mb-3 flex-shrink-0 flex-wrap">
+        <div className="flex items-center gap-4 flex-wrap flex-1 min-w-0">
+          <div className="flex items-center gap-2 text-sm">
+            <span className="text-zinc-500 shrink-0">团队标签：</span>
+            <button
+              onClick={() => setTeamTags([])}
+              className={[
+                "inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium border transition-colors",
+                teamTags.length === 0
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </button>
+            {teamTagOptions.map((tag) => (
+              <button
+                key={tag}
+                onClick={() => toggleTeamTag(tag)}
+                className={[
+                  "inline-flex items-center px-2.5 py-0.5 rounded text-xs font-medium border transition-colors",
+                  teamTags.includes(tag)
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+          <div className="relative">
+            <input
+              type="text"
+              value={kwInput}
+              onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { setKeyword(kwInput.trim()); setPage(1) } }}
+              placeholder="请输入组合名称并按回车搜索"
+              className="h-8 w-64 pl-3 pr-8 border rounded-lg text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+            />
+            <Search
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground cursor-pointer"
+              onClick={() => { setKeyword(kwInput.trim()); setPage(1) }}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400 mr-2">
+            <span className="text-xs whitespace-nowrap">指标计算截止日期(?)</span>
+            <span className="text-zinc-400">:</span>
+            <div className="relative">
+              <button
+                onClick={() => setShowDatePicker((v) => !v)}
+                className="inline-flex items-center gap-1 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors border rounded px-1.5 py-0.5 text-xs tabular-nums"
+              >
+                <CalendarDays className="h-3 w-3" />
+                {cutoffDate}
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {showDatePicker && (
+                <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg p-3" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="date"
+                    value={cutoffDate}
+                    max={new Date().toISOString().slice(0, 10)}
+                    onChange={(e) => { if (e.target.value) { setCutoffDate(e.target.value); setShowDatePicker(false) } }}
+                    className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
+                    autoFocus
+                  />
+                </div>
+              )}
+              {showDatePicker && <div className="fixed inset-0 z-30" onClick={() => setShowDatePicker(false)} />}
+            </div>
+          </div>
+          <div className="relative">
+            <button
+              onClick={() => setShowTemplates((v) => !v)}
+              className="inline-flex items-center gap-1.5 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors bg-muted/40 hover:bg-muted border border-border/50 rounded-lg px-2.5 py-1 text-xs"
+            >
+              <LayoutTemplate className="h-3.5 w-3.5" />
+              <span>{metricTemplates.length === 0 ? "默认模板" : `模板 (${metricTemplates.length})`}</span>
+              <ChevronDown className="h-3 w-3" />
+            </button>
+            {showTemplates && (
+              <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg min-w-[180px] py-1" onClick={(e) => e.stopPropagation()}>
+                {metricTemplates.length === 0 ? (
+                  <div className="px-4 py-3 text-xs text-muted-foreground">暂无保存的模板</div>
+                ) : metricTemplates.map((t, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { setAddedCols(t.items); setShowTemplates(false) }}
+                    className="w-full text-left px-4 py-2 text-xs hover:bg-muted transition-colors"
+                  >
+                    {t.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {showTemplates && <div className="fixed inset-0 z-30" onClick={() => setShowTemplates(false)} />}
+          </div>
+          <button
+            onClick={() => setShowAddMetric(true)}
+            className="inline-flex items-center gap-1.5 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors bg-muted/40 hover:bg-muted border border-border/50 rounded-lg px-2.5 py-1 text-xs"
+          >
+            <PlusCircle className="h-3.5 w-3.5" />
+            <span>{addedCols.length > 0 ? `添加指标(${addedCols.length})` : "添加指标"}</span>
+          </button>
+          <button
+            onClick={handleExport}
+            className="inline-flex items-center gap-1.5 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors bg-muted/40 hover:bg-muted border border-border/50 rounded-lg px-2.5 py-1 text-xs"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span>{selected.size > 0 ? `导出(${selected.size})` : "导出"}</span>
+          </button>
+          <button className="inline-flex items-center gap-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg px-3 py-1 text-xs font-medium transition-colors">
+            新建组合
+          </button>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-x-auto rounded-lg border flex-1">
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1800 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+              <th className={`${thBase} w-8 px-2 border-b`}>
+                <input type="checkbox" className="rounded h-3.5 w-3.5" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+              </th>
+              <th className={`${thBase} w-10 border-b`}>序号</th>
+              <th className={`${thSort} border-b min-w-[180px]`} onClick={() => handleSort("name")}>
+                组合名称<PortSortIcon col="name" />
+              </th>
+              <th className={`${thBase} border-b min-w-[100px]`}>团队标签</th>
+              <th className={`${thBase} border-b min-w-[88px]`}>构建类型</th>
+              <th className={`${thSort} border-b min-w-[88px]`} onClick={() => handleSort("unit_nav")}>
+                单位净值<PortSortIcon col="unit_nav" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[110px]`} onClick={() => handleSort("size")}>
+                组合规模(元)<PortSortIcon col="size" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
+                近一周收益<PortSortIcon col="ret_1w" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[88px]`} onClick={() => handleSort("ret_1m")}>
+                近一月收益<PortSortIcon col="ret_1m" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[88px]`} onClick={() => handleSort("ret_3m")}>
+                近三月收益<PortSortIcon col="ret_3m" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[88px]`} onClick={() => handleSort("ret_6m")}>
+                近六月收益<PortSortIcon col="ret_6m" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[88px]`} onClick={() => handleSort("ret_1y")}>
+                近一年收益<PortSortIcon col="ret_1y" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[110px]`} onClick={() => handleSort("sharpe_1y")}>
+                近一年夏普比率<PortSortIcon col="sharpe_1y" />
+              </th>
+              <th className={`${thSort} border-b text-right min-w-[110px]`} onClick={() => handleSort("calmar_1y")}>
+                近一年卡玛比率<PortSortIcon col="calmar_1y" />
+              </th>
+              <th className={`${thBase} border-b min-w-[80px]`}>共享状态</th>
+              <th className={`${thSort} border-b min-w-[100px]`} onClick={() => handleSort("updated_at")}>
+                最近修改<PortSortIcon col="updated_at" />
+              </th>
+              <th className={`${thBase} border-b min-w-[80px]`}>创建人</th>
+              <th className={`${thBase} border-b text-center w-16`}>操作</th>
+              {addedCols.map((col) => (
+                <th key={col.id} className={`${thBase} border-b text-right min-w-[96px]`}>{col.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={colCount} className="py-20 text-center text-foreground">加载中…</td></tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={colCount} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : data.map((row, i) => {
+              const isSelected = selected.has(row.id)
+              const cellBase = `border-b px-3 py-2 ${isSelected ? "bg-blue-50/40 dark:bg-blue-950/20" : ""}`
+              return (
+                <tr key={row.id} className="group hover:bg-muted/30 transition-colors">
+                  <td className={`${cellBase} px-2 text-center`}>
+                    <input
+                      type="checkbox"
+                      className="rounded h-3.5 w-3.5"
+                      checked={isSelected}
+                      onChange={() => {
+                        const s = new Set(selected)
+                        isSelected ? s.delete(row.id) : s.add(row.id)
+                        setSelected(s)
+                      }}
+                    />
+                  </td>
+                  <td className={`${cellBase} text-center tabular-nums text-muted-foreground`}>{(page - 1) * 50 + i + 1}</td>
+                  <td className={`${cellBase} font-medium text-blue-600 dark:text-blue-400`}>{row.name}</td>
+                  <td className={cellBase}>
+                    <div className="flex flex-wrap gap-1">
+                      {row.team_tags.length > 0 ? row.team_tags.map((t) => (
+                        <span key={t} className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-50 text-red-500 border border-red-200 dark:bg-red-950/20 dark:border-red-800">{t}</span>
+                      )) : <span className="text-muted-foreground">—</span>}
+                    </div>
+                  </td>
+                  <td className={cellBase}>{row.build_type ?? "—"}</td>
+                  <td className={`${cellBase} tabular-nums`}>{fmtNum(row.unit_nav)}</td>
+                  <td className={`${cellBase} text-right tabular-nums`}>{row.size ?? "—"}</td>
+                  <td className={`${cellBase} text-right`}><TrackPctCell value={row.ret_1w} /></td>
+                  <td className={`${cellBase} text-right`}><TrackPctCell value={row.ret_1m} /></td>
+                  <td className={`${cellBase} text-right`}><TrackPctCell value={row.ret_3m} /></td>
+                  <td className={`${cellBase} text-right`}><TrackPctCell value={row.ret_6m} /></td>
+                  <td className={`${cellBase} text-right`}><TrackPctCell value={row.ret_1y} /></td>
+                  <td className={`${cellBase} text-right`}><TrackRatioCell value={row.sharpe_1y} /></td>
+                  <td className={`${cellBase} text-right`}><TrackRatioCell value={row.calmar_1y} /></td>
+                  <td className={cellBase}>{row.share_status ?? "—"}</td>
+                  <td className={`${cellBase} tabular-nums whitespace-nowrap text-xs text-muted-foreground`}>{row.updated_at ?? "—"}</td>
+                  <td className={cellBase}>{row.created_by ?? "—"}</td>
+                  <td className={`${cellBase} text-center`}>
+                    <button className="text-xs text-blue-500 hover:text-blue-600 hover:underline">编辑</button>
+                  </td>
+                  {addedCols.map((col) => (
+                    <td key={col.id} className={`${cellBase} text-right text-muted-foreground`}>—</td>
+                  ))}
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between pt-3 pb-0.5 flex-shrink-0">
+        <span className="text-sm text-zinc-500 dark:text-zinc-400">
+          共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条
+        </span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+            ‹
+          </button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={[
+                  "w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page
+                    ? "bg-zinc-900 text-white border-zinc-900 font-medium shadow-sm dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100"
+                    : "text-foreground hover:bg-muted border-border",
+                ].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+            ›
+          </button>
+          <div className="flex items-center gap-1 ml-3 text-sm text-foreground">
+            跳至
+            <input
+              type="number" min={1} max={totalPages} value={jumpVal}
+              onChange={(e) => setJumpVal(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && jumpTo()}
+              className="w-12 h-7 border rounded px-2 text-center text-foreground bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+            页
+            <button onClick={jumpTo} className="h-7 px-2 border rounded text-xs hover:bg-muted transition-colors">GO</button>
+          </div>
+        </div>
+      </div>
+
+      {showAddMetric && (
+        <AddMetricModal
+          initial={addedCols}
+          onConfirm={(cols) => { setAddedCols(cols); setShowAddMetric(false) }}
+          onClose={() => setShowAddMetric(false)}
+        />
+      )}
+    </div>
+  )
+}
+
 function PrivateFundView() {
   const [filters, setFilters] = useState<FilterState>({ strategyFilters: [], keyword: "", manager: "", metricTab: "收益", period: "本周", range: "不限", inceptionPeriod: "", navDatePeriod: "", navFrequency: "" })
   const [templates, setTemplates] = useState<SavedTemplate[]>(() => loadTemplates())
@@ -4956,9 +5450,50 @@ export default function PrivateFundsPage() {
           </aside>
         )}
 
+        {activeTab === "portfolio" && (
+          <aside className="w-44 border-r bg-background flex-shrink-0">
+            <div className="flex items-center gap-2 px-4 py-4 border-b">
+              <div className="h-7 w-7 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+                <Briefcase className="h-3.5 w-3.5 text-white" />
+              </div>
+              <span className="text-sm font-semibold text-foreground">组合管理</span>
+            </div>
+            <nav className="flex flex-col pt-3 pb-4">
+              {portfolioSidebarGroups.map((group) => {
+                const hasActive = group.items.some((i) => i.key === activeSideItem)
+                return (
+                  <div key={group.label}>
+                    <div className={[
+                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                    ].join(" ")}>{group.label}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        onClick={() => setActiveSideItem(item.key)}
+                        className={[
+                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                          activeSideItem === item.key
+                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:right-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
+                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                        ].join(" ")}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
+            </nav>
+          </aside>
+        )}
+
         {/* Page content area */}
         <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
+          {activeTab === "portfolio" && (activeSideItem === "port-simulated" || activeSideItem === "port-live" || activeSideItem === "port-new") && (
+            <PortfolioView sideItem={activeSideItem} />
+          )}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
           {activeTab === "operations" && activeSideItem === "ops-strategy-tags" && <OperationsStrategyTagsView initialOpsTab={(searchParams.get("ops") as "strategies" | "tags" | "fields") || "strategies"} />}
           {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && (
