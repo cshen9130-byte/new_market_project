@@ -2156,7 +2156,7 @@ function InvestmentTrackingView() {
           </div>
 
           {/* Table */}
-          <div className="overflow-x-auto rounded-lg border flex-1">
+          <div className="overflow-auto rounded-lg border flex-1 min-h-0">
             <table className="text-sm border-collapse w-full" style={{ minWidth: 1400 }}>
               <thead className="sticky top-0 z-20">
                 <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
@@ -4848,9 +4848,9 @@ export default function PrivateFundsPage() {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col h-screen overflow-hidden">
       {/* Top menu bar */}
-      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
         <nav className="flex items-center gap-1 px-6 h-12">
           {menuItems.map((item) => (
             <button
@@ -4870,7 +4870,7 @@ export default function PrivateFundsPage() {
       </div>
 
       {/* Body: sidebar + content */}
-      <div className="flex">
+      <div className="flex flex-1 min-h-0">
         {sidebarItems.length > 0 && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <nav className="flex flex-col gap-0.5 p-3 pt-4">
@@ -4956,7 +4956,7 @@ export default function PrivateFundsPage() {
         )}
 
         {/* Page content area */}
-        <div className="flex-1 min-w-0 overflow-x-hidden p-5">
+        <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
           {activeTab === "operations" && activeSideItem === "ops-strategy-tags" && <OperationsStrategyTagsView initialOpsTab={(searchParams.get("ops") as "strategies" | "tags" | "fields") || "strategies"} />}
