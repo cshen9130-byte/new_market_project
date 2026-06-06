@@ -1719,7 +1719,7 @@ function InvestmentTrackingView() {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
       {/* Team / Mine tabs */}
       <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
         {(["team", "mine"] as const).map((t) => (
@@ -4956,7 +4956,7 @@ export default function PrivateFundsPage() {
         )}
 
         {/* Page content area */}
-        <div className="flex-1 p-5">
+        <div className="flex-1 min-w-0 overflow-x-hidden p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
           {activeTab === "operations" && activeSideItem === "ops-strategy-tags" && <OperationsStrategyTagsView initialOpsTab={(searchParams.get("ops") as "strategies" | "tags" | "fields") || "strategies"} />}
