@@ -1720,8 +1720,6 @@ function InvestmentTrackingView() {
 
   return (
     <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
-      {/* Team / Mine tabs */}
-      <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
         {(["team", "mine"] as const).map((t) => (
           <button
             key={t}
@@ -2206,8 +2204,9 @@ function InvestmentTrackingView() {
                   <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
                   const isSelected = selected.has(row.beian_hao)
-                  const bg = isSelected ? "bg-blue-50/40 dark:bg-blue-950/20" : "bg-background"
-                  const cell = `border-b px-3 py-0 ${bg} group-hover:bg-muted/30 transition-colors`
+                  const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
+                  const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/40" : "group-hover:bg-muted"
+                  const cell = `border-b px-3 py-0 ${bg} ${hoverBg} transition-colors`
                   const stickyCell = `${cell} z-10`
                   return (
                     <tr key={row.beian_hao} className="group" style={{ height: 52 }}>
@@ -4848,7 +4847,7 @@ export default function PrivateFundsPage() {
   }
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* Top menu bar */}
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
         <nav className="flex items-center gap-1 px-6 h-12">

@@ -34,7 +34,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <DashboardSidebar mobileOpen={mobileSidebarOpen} onMobileClose={() => setMobileSidebarOpen(false)} />
       <div className="flex flex-col flex-1 overflow-hidden">
         <DashboardHeader user={headerUser} onChatToggle={() => setChatVisible((v) => !v)} onMenuToggle={() => setMobileSidebarOpen((v) => !v)} />
-        <main className="flex-1 overflow-y-auto px-4 md:px-6 pb-6">{children}</main>
+        <main className="flex-1 overflow-hidden px-4 md:px-6 pb-6">{children}</main>
       </div>
       <ChatBotWidget visible={chatVisible} onClose={() => setChatVisible(false)} />
     </div>
