@@ -1720,6 +1720,8 @@ function InvestmentTrackingView() {
 
   return (
     <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
+      {/* Team / Mine tabs */}
+      <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
         {(["team", "mine"] as const).map((t) => (
           <button
             key={t}
