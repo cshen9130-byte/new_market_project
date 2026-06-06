@@ -1,8 +1,8 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import { useSearchParams } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle } from "lucide-react"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -1193,8 +1193,108 @@ function TrackRatioCell({ value }: { value: string | null }) {
   return <span className={cls}>{n.toFixed(2)}</span>
 }
 
+function calcInterval(cutoff: string, days: number): string {
+  const end = new Date(cutoff)
+  const start = new Date(cutoff)
+  start.setDate(start.getDate() - days)
+  const fmt = (d: Date) => d.toISOString().slice(0, 10)
+  return `${fmt(start)} ~ ${fmt(end)}`
+}
+
 const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
 const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+// ── TrendHoverChart ─────────────────────────────────────────────────────────
+interface TrendPoint { d: string; v: number }
+interface TrendData { fund: TrendPoint[]; bench: TrendPoint[]; name: string }
+
+function TrendHoverChart({ beian_hao, productName }: { beian_hao: string; productName: string }) {
+  const [data, setData] = useState<TrendData | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setData(null)
+    fetch(`/ma/api/tracking-funds/chart-preview?beian_hao=${encodeURIComponent(beian_hao)}&days=90`)
+      .then((r) => r.json())
+      .then((d) => { if (!cancelled) setData(d) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [beian_hao])
+
+  const W = 340, H = 160, PAD = { t: 12, r: 12, b: 28, l: 40 }
+  const cW = W - PAD.l - PAD.r
+  const cH = H - PAD.t - PAD.b
+
+  if (!data) return (
+    <div className="w-[340px] h-[160px] flex items-center justify-center text-xs text-muted-foreground">加载中…</div>
+  )
+  const { fund, bench, name } = data
+  if (fund.length < 2) return (
+    <div className="w-[340px] h-[160px] flex items-center justify-center text-xs text-muted-foreground">暂无净值数据</div>
+  )
+
+  // Combine for axis range
+  const allVals = [...fund.map(p => p.v), ...bench.map(p => p.v)]
+  const minV = Math.min(...allVals), maxV = Math.max(...allVals)
+  const pad = (maxV - minV) * 0.12 || 1
+  const lo = minV - pad, hi = maxV + pad
+
+  // All dates union (sorted)
+  const allDates = Array.from(new Set([...fund.map(p => p.d), ...bench.map(p => p.d)])).sort()
+  const xScale = (d: string) => PAD.l + (allDates.indexOf(d) / Math.max(allDates.length - 1, 1)) * cW
+  const yScale = (v: number) => PAD.t + (1 - (v - lo) / (hi - lo)) * cH
+
+  const toPath = (pts: TrendPoint[]) =>
+    pts.map((p, i) => `${i === 0 ? "M" : "L"}${xScale(p.d).toFixed(1)},${yScale(p.v).toFixed(1)}`).join(" ")
+
+  // Y axis ticks
+  const tickCount = 5
+  const yTicks = Array.from({ length: tickCount }, (_, i) => lo + (hi - lo) * (i / (tickCount - 1)))
+
+  // X axis: show ~4 date labels
+  const xTickIndices = [0, Math.floor(allDates.length * 0.33), Math.floor(allDates.length * 0.66), allDates.length - 1]
+    .filter((v, i, a) => a.indexOf(v) === i)
+  const fmtDate = (d: string) => {
+    const [, m, day] = d.split("-")
+    return `${parseInt(m)}月${parseInt(day)}`
+  }
+
+  const fundColor = "#ef4444"
+  const benchColor = "#3b82f6"
+
+  return (
+    <div className="w-[340px]">
+      {/* Legend */}
+      <div className="flex items-center gap-3 px-3 pt-2 pb-1 text-xs">
+        <span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5 bg-red-500 rounded" />{name}</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-5 h-0.5 bg-blue-500 rounded" />沪深300</span>
+      </div>
+      <svg width={W} height={H} className="overflow-visible">
+        {/* Y axis gridlines + labels */}
+        {yTicks.map((v) => (
+          <g key={v}>
+            <line x1={PAD.l} y1={yScale(v)} x2={PAD.l + cW} y2={yScale(v)} stroke="currentColor" strokeOpacity={0.08} strokeWidth={1} />
+            <text x={PAD.l - 4} y={yScale(v)} textAnchor="end" dominantBaseline="middle" fontSize={9} fill="currentColor" opacity={0.5}>
+              {v > 0 ? `+${v.toFixed(1)}%` : `${v.toFixed(1)}%`}
+            </text>
+          </g>
+        ))}
+        {/* Zero line */}
+        <line x1={PAD.l} y1={yScale(0)} x2={PAD.l + cW} y2={yScale(0)} stroke="currentColor" strokeOpacity={0.2} strokeWidth={1} strokeDasharray="3,3" />
+        {/* Bench line */}
+        {bench.length >= 2 && <path d={toPath(bench)} fill="none" stroke={benchColor} strokeWidth={1.5} strokeLinejoin="round" />}
+        {/* Fund line */}
+        <path d={toPath(fund)} fill="none" stroke={fundColor} strokeWidth={2} strokeLinejoin="round" />
+        {/* X axis labels */}
+        {xTickIndices.map((i) => (
+          <text key={i} x={xScale(allDates[i])} y={H - 6} textAnchor="middle" fontSize={9} fill="currentColor" opacity={0.5}>
+            {fmtDate(allDates[i])}
+          </text>
+        ))}
+      </svg>
+    </div>
+  )
+}
 
 interface TrackStrategyNode {
   l1: string
@@ -1245,6 +1345,72 @@ function InvestmentTrackingView() {
   const [mineEditingPoolLabel, setMineEditingPoolLabel] = useState("")
   const [showMineAddMenu, setShowMineAddMenu] = useState(false)
   const [showTeamAddMenu, setShowTeamAddMenu] = useState(false)
+  const [showTeamMoreMenu, setShowTeamMoreMenu] = useState(false)
+  const [showMineMoreMenu, setShowMineMoreMenu] = useState(false)
+  const [showTeamBatchMenu, setShowTeamBatchMenu] = useState(false)
+  const [showMineBatchMenu, setShowMineBatchMenu] = useState(false)
+  const [showFieldConfigDialog, setShowFieldConfigDialog] = useState(false)
+  const [fieldConfigTab, setFieldConfigTab] = useState<string>("基本信息")
+  const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>(["最新净值日期", "最新单位净值", "最新涨跌幅"])
+  const [fieldConfigDraft, setFieldConfigDraft] = useState<string[]>(["最新净值日期", "最新单位净值", "最新涨跌幅"])
+  const [showAuditLogDialog, setShowAuditLogDialog] = useState(false)
+  const [showBatchTagDialog, setShowBatchTagDialog] = useState(false)
+  const [batchTagSelected, setBatchTagSelected] = useState<string[]>([])
+  const [batchTagTeamTags, setBatchTagTeamTags] = useState<string[]>([])
+  // Single-fund tag edit dialog
+  const [showEditTagDialog, setShowEditTagDialog] = useState(false)
+  const [editTagBeianHao, setEditTagBeianHao] = useState<string | null>(null)
+  const [editTagName, setEditTagName] = useState("")
+  const [editTagSelected, setEditTagSelected] = useState<string[]>([])
+  const [editTagTeamTags, setEditTagTeamTags] = useState<string[]>([])
+  const [editTagSaving, setEditTagSaving] = useState(false)
+  const [showBatchStrategyDialog, setShowBatchStrategyDialog] = useState(false)
+  const [batchStrategyL1, setBatchStrategyL1] = useState("")
+  const [batchStrategyL2, setBatchStrategyL2] = useState("")
+  const [batchStrategyL3, setBatchStrategyL3] = useState("")
+  // Single-fund strategy edit dialog
+  const [showEditStrategyDialog, setShowEditStrategyDialog] = useState(false)
+  const [editStrategyBeianHao, setEditStrategyBeianHao] = useState<string | null>(null)
+  const [editStrategyName, setEditStrategyName] = useState("")
+  const [editStrategyL1, setEditStrategyL1] = useState("")
+  const [editStrategyL2, setEditStrategyL2] = useState("")
+  const [editStrategyL3, setEditStrategyL3] = useState("")
+  const [editStrategySaving, setEditStrategySaving] = useState(false)
+  // Note dialog
+  const [showNoteDialog, setShowNoteDialog] = useState(false)
+  const [noteBeianHao, setNoteBeianHao] = useState<string | null>(null)
+  const [noteName, setNoteName] = useState("")
+  const [noteText, setNoteText] = useState("")
+  const [noteSaving, setNoteSaving] = useState(false)
+  // Notes map: beian_hao -> note record (null means no note)
+  const [fundNotes, setFundNotes] = useState<Record<string, { note: string; updated_by: string; updated_at: string } | undefined>>({})
+  const [openNotePopup, setOpenNotePopup] = useState<string | null>(null)
+  const [notePopupPos, setNotePopupPos] = useState<{ x: number; y: number } | null>(null)
+  const [showBatchMoveDialog, setShowBatchMoveDialog] = useState(false)
+  const [batchMoveTargetPool, setBatchMoveTargetPool] = useState("")
+  const [batchMoveMode, setBatchMoveMode] = useState<"move" | "copy">("move")
+  const [showBatchConfirmDialog, setShowBatchConfirmDialog] = useState(false)
+  const [batchConfirmTitle, setBatchConfirmTitle] = useState("")
+  const [batchConfirmMessage, setBatchConfirmMessage] = useState("")
+  const [batchConfirmAction, setBatchConfirmAction] = useState<"remove_strategy" | "remove_tags" | "remove" | "">("")
+  const [batchContextPool, setBatchContextPool] = useState("")
+  const [batchSubmitting, setBatchSubmitting] = useState(false)
+  const [showAddMetricDialog, setShowAddMetricDialog] = useState(false)
+  const [showInterval, setShowInterval] = useState(false)
+  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
+  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
+  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [addMetricPeriod, setAddMetricPeriod] = useState("近一月")
+  const [addMetricDraftItems, setAddMetricDraftItems] = useState<{period: string; metric: string}[]>([])
+  const [addMetricApplied, setAddMetricApplied] = useState<{period: string; metric: string}[]>([])
+  const [addMetricDragIdx, setAddMetricDragIdx] = useState<number | null>(null)
+  const [showTeamTemplateMenu, setShowTeamTemplateMenu] = useState(false)
+  const [showMineTemplateMenu, setShowMineTemplateMenu] = useState(false)
+  const [trackingTemplates, setTrackingTemplates] = useState<{name: string; items: {period: string; metric: string}[]}[]>(() => {
+    if (typeof window === "undefined") return []
+    try { return JSON.parse(localStorage.getItem("tracking_metric_templates") ?? "[]") } catch { return [] }
+  })
   const [showSingleAddDialog, setShowSingleAddDialog] = useState(false)
   const [addFundClass, setAddFundClass] = useState<"private" | "public">("private")
   const [addFundSearch, setAddFundSearch] = useState("")
@@ -1278,6 +1444,23 @@ function InvestmentTrackingView() {
   const [batchAddTeamTags, setBatchAddTeamTags] = useState<string[]>([])
   const [batchAddSaving, setBatchAddSaving] = useState(false)
   const [batchAddError, setBatchAddError] = useState<string|null>(null)
+  // Fund elements dialog
+  const [showElementsDialog, setShowElementsDialog] = useState(false)
+  const [elementsBeianHao, setElementsBeianHao] = useState<string | null>(null)
+  const [elementsName, setElementsName] = useState("")
+  const [elementsData, setElementsData] = useState<Record<string, string | null> | null>(null)
+  const [elementsLoading, setElementsLoading] = useState(false)
+
+  useEffect(() => {
+    if (!showElementsDialog || !elementsBeianHao) return
+    setElementsData(null)
+    setElementsLoading(true)
+    fetch(`/ma/api/tracking-funds/fund-elements?beian_hao=${encodeURIComponent(elementsBeianHao)}`)
+      .then((r) => r.json())
+      .then((d) => { setElementsData(d); setElementsLoading(false) })
+      .catch(() => setElementsLoading(false))
+  }, [showElementsDialog, elementsBeianHao])
+
   const isSupportedPool = pools.some((p) => p.key === activePool)
   const sourcePool = isSupportedPool ? activePool : "bfl"
 
@@ -1332,6 +1515,115 @@ function InvestmentTrackingView() {
     if (!isNaN(n)) { setPage(Math.min(totalPages, Math.max(1, n))); setJumpVal("") }
   }
 
+  async function openNoteDialog(beian_hao: string, product_name: string) {
+    setNoteBeianHao(beian_hao)
+    setNoteName(product_name)
+    setNoteText("")
+    setShowNoteDialog(true)
+    try {
+      const res = await fetch(`/ma/api/tracking-funds/fund-note?beian_hao=${encodeURIComponent(beian_hao)}`)
+      const d = await res.json()
+      setNoteText(d.note ?? "")
+    } catch { /* ignore */ }
+  }
+
+  async function openEditStrategyDialog(beian_hao: string, product_name: string) {
+    // pre-load current strategy from type6_ops_team_full via the strategies endpoint
+    setEditStrategyBeianHao(beian_hao)
+    setEditStrategyName(product_name)
+    setEditStrategyL1("")
+    setEditStrategyL2("")
+    setEditStrategyL3("")
+    setShowEditStrategyDialog(true)
+    try {
+      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`)
+      const d = await res.json()
+      if (d?.strategy_l1) setEditStrategyL1(d.strategy_l1)
+      if (d?.strategy_l2) setEditStrategyL2(d.strategy_l2)
+      if (d?.strategy_l3) setEditStrategyL3(d.strategy_l3)
+    } catch { /* ignore */ }
+  }
+
+  async function openEditTagDialog(beian_hao: string, product_name: string) {
+    setEditTagBeianHao(beian_hao)
+    setEditTagName(product_name)
+    setEditTagSelected([])
+    setEditTagTeamTags([])
+    setShowEditTagDialog(true)
+    const [tagsRes, teamTagsRes] = await Promise.all([
+      fetch(`/ma/api/tracking-funds/fund-tags?beian_hao=${encodeURIComponent(beian_hao)}`).then((r) => r.json()).catch(() => []),
+      fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).catch(() => []),
+    ])
+    if (Array.isArray(tagsRes)) setEditTagSelected(tagsRes)
+    if (Array.isArray(teamTagsRes)) setEditTagTeamTags(teamTagsRes.map((t: { name: string }) => t.name))
+  }
+
+  async function handleTrackExport(filename: string) {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const params = new URLSearchParams({
+      export: "1", sort: sortCol, dir: sortDir, keyword,
+      pool: sourcePool,
+      strategy_l1: strategyL1,
+      strategy_l2: strategyL2,
+      strategy_l3: strategyL3,
+      strategy_source: strategySource,
+      org_size: orgSizeFilter,
+      team_tag_mode: teamTagMode,
+      cutoff: teamCutoffDate,
+    })
+    teamTags.forEach((tag) => params.append("team_tag", tag))
+    const json = await fetch(`/ma/api/tracking-funds/list?${params}`).then((r) => r.json())
+    const rows: TrackFundRow[] = json.data ?? []
+    const headers = ["备案号", "基金名称", "简称", "一级策略", "二级策略", "管理人", "成立日期", "最新净值", "净值日期", "最新涨跌幅", "近1周", "近1月", "近3月", "近6月", "近1年", "夏普(1Y)", "卡玛(1Y)"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.beian_hao), escape(r.product_name), escape(r.short_name),
+        escape(r.strategy_l1), escape(r.strategy_l2), escape(r.manager), escape(r.inception_date),
+        escape(r.latest_nav), escape(r.latest_nav_date), escape(r.latest_price_change),
+        escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
+        escape(r.sharpe_1y), escape(r.calmar_1y),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  async function handleBatchOp(
+    action: string,
+    extra: Record<string, unknown> = {}
+  ) {
+    const beian_haos = Array.from(selected)
+    if (beian_haos.length === 0) return
+    setBatchSubmitting(true)
+    try {
+      const res = await fetch("/ma/api/tracking-funds/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, beian_haos, pool: batchContextPool, ...extra }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        console.error("[batch op]", err)
+      }
+    } catch (err) {
+      console.error("[batch op]", err)
+    } finally {
+      setBatchSubmitting(false)
+      setSelected(new Set())
+      setDataReloadKey((k) => k + 1)
+    }
+  }
+
   function pageButtons(): (number | string)[] {
     if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1)
     const btns: (number | string)[] = [1]
@@ -1367,6 +1659,16 @@ function InvestmentTrackingView() {
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [activePool, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey])
+
+  // Batch-load notes for current page rows
+  useEffect(() => {
+    if (data.length === 0) return
+    const ids = data.map((r) => r.beian_hao).join(",")
+    fetch(`/ma/api/tracking-funds/fund-note?beian_haos=${encodeURIComponent(ids)}`)
+      .then((r) => r.json())
+      .then((d) => { if (d && typeof d === "object" && !d.error) setFundNotes((prev) => ({ ...prev, ...d })) })
+      .catch(() => {})
+  }, [data])
 
   // Debounced search for 添加跟踪产品 dialog
   useEffect(() => {
@@ -1483,18 +1785,18 @@ function InvestmentTrackingView() {
               <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">基金分类：</span>
               <div className="flex items-center gap-1">
                 {(["private", "public"] as const).map((fc) => (
-                  <button
+                  <span
                     key={fc}
                     onClick={() => setFundClass(fc)}
                     className={[
-                      "px-3 py-1 rounded text-xs font-medium transition-all border",
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                       fundClass === fc
-                        ? "bg-red-500 text-white border-red-500"
-                        : "text-zinc-500 border-border hover:text-foreground hover:bg-muted/60",
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
                     ].join(" ")}
                   >
                     {fc === "private" ? "私募" : "公募"}
-                  </button>
+                  </span>
                 ))}
               </div>
             </div>
@@ -1667,7 +1969,22 @@ function InvestmentTrackingView() {
               <span className="text-zinc-400 shrink-0 w-20 whitespace-nowrap text-right pr-3">管理人规模：</span>
               <div className="flex items-center gap-1 flex-wrap">
                 {ORG_SIZE_OPTS.map((s) => (
-                  <FilterPill key={s} label={s} active={orgSizeFilter === s} onClick={() => { setOrgSizeFilter(s); setPage(1) }} />
+                  <span
+                    key={s}
+                    onClick={() => { setOrgSizeFilter(s); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                      orgSizeFilter === s
+                        ? s === "不限"
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                          : "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        : s === "不限"
+                          ? "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
+                          : "border-border text-zinc-500 hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {s}
+                  </span>
                 ))}
               </div>
             </div>
@@ -1727,24 +2044,90 @@ function InvestmentTrackingView() {
                 计算指标
               </label>
               <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
-                <input type="checkbox" className="rounded h-3 w-3 accent-zinc-700" />
+                <input type="checkbox" checked={showInterval} onChange={(e) => setShowInterval(e.target.checked)} className="rounded h-3 w-3 accent-zinc-700" />
                 显示区间
               </label>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
-                <LayoutTemplate className="h-3 w-3" />
-                默认模板
-                <ChevronDown className="h-3 w-3" />
-              </button>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+              <div className="relative">
+                <button
+                  onClick={() => setShowTeamTemplateMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                  <LayoutTemplate className="h-3 w-3" />
+                  {trackingTemplates.length > 0 ? `模板(${trackingTemplates.length})` : "默认模板"}
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {showTeamTemplateMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowTeamTemplateMenu(false)} />
+                    <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[160px]" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setAddMetricApplied([]); setShowTeamTemplateMenu(false) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <LayoutTemplate className="h-3.5 w-3.5 text-zinc-400" /> 默认模板
+                      </button>
+                      {trackingTemplates.length > 0 && <div className="border-t my-1" />}
+                      {trackingTemplates.map((t, i) => (
+                        <button key={i} onClick={() => { setAddMetricApplied([...t.items]); setShowTeamTemplateMenu(false) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors truncate">{t.name}</button>
+                      ))}
+                      <div className="border-t my-1" />
+                      <button onClick={() => { setShowTeamTemplateMenu(false); window.open("/ma/dashboard/settings?tab=metric-templates", "_blank") }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">管理模板</button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => { setAddMetricDraftItems([...addMetricApplied]); setShowAddMetricDialog(true) }}
+                className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
                 <PlusCircle className="h-3 w-3" />
-                添加指标
+                {addMetricApplied.length > 0 ? `添加指标(${addMetricApplied.length})` : "添加指标"}
               </button>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
-                批量操作
-              </button>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
-                ⊕ 更多
-              </button>
+              <div className="relative">
+                <button
+                  disabled={selected.size === 0}
+                  onClick={() => { setBatchContextPool(sourcePool); setShowTeamBatchMenu((v) => !v) }}
+                  className="inline-flex items-center gap-1 border border-border/50 rounded px-2 py-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-zinc-600 hover:text-foreground hover:bg-muted/60 disabled:hover:bg-transparent disabled:hover:text-zinc-600">
+                  批量操作
+                  {selected.size > 0 && <span className="text-xs text-red-500">({selected.size})</span>}
+                </button>
+                {showTeamBatchMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowTeamBatchMenu(false)} />
+                    <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("move"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量移动到</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("copy"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量复制到</button>
+                      <div className="border-t my-1" />
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="relative">
+                <button
+                  onClick={() => setShowTeamMoreMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                  ⊕ 更多
+                </button>
+                {showTeamMoreMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowTeamMoreMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => setShowTeamMoreMenu(false)} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <RefreshCw className="h-3.5 w-3.5 text-zinc-400" /> 刷新指标
+                      </button>
+                      <button onClick={() => { setShowTeamMoreMenu(false); setFieldConfigDraft([...fieldConfigSelected]); setFieldConfigTab("基本信息"); setShowFieldConfigDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <Settings2 className="h-3.5 w-3.5 text-zinc-400" /> 字段配置
+                      </button>
+                      <button onClick={() => { setShowTeamMoreMenu(false); setShowAuditLogDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <ClipboardList className="h-3.5 w-3.5 text-zinc-400" /> 操作日志
+                      </button>
+                      <button onClick={() => { setShowTeamMoreMenu(false); handleTrackExport(`团队跟踪_${new Date().toISOString().slice(0, 10)}.csv`) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <Download className="h-3.5 w-3.5 text-zinc-400" /> 导出
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
               <div className="relative">
                 <button
                   onClick={() => setShowTeamAddMenu((v) => !v)}
@@ -1777,26 +2160,41 @@ function InvestmentTrackingView() {
             <table className="text-sm border-collapse w-full" style={{ minWidth: 1400 }}>
               <thead className="sticky top-0 z-20">
                 <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
-                  <th className={`${thBase} w-8 px-2`}>
+                  <th className={`${thBase} w-8 px-2 sticky left-0 z-30 bg-muted/40 dark:bg-muted/20`}>
                     <input type="checkbox" className="rounded h-3 w-3"
                       checked={selected.size === data.length && data.length > 0}
                       onChange={toggleAll} />
                   </th>
-                  <th className={`${thBase} w-10`}>序号</th>
-                  <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
+                  <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted/40 dark:bg-muted/20`}>序号</th>
+                  <th className={`${thSort} min-w-[200px] sticky left-[72px] z-30 bg-muted/40 dark:bg-muted/20 border-r border-zinc-200 dark:border-zinc-700`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
                   <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<SortIco col="latest_nav_date" /></th>
                   <th className={`${thSort} min-w-[90px]`} onClick={() => handleSort("latest_nav")}>最新单位净值<SortIco col="latest_nav" /></th>
-                  <th className={`${thBase} text-right min-w-[88px]`}>最新涨跌幅</th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>近一周收益<SortIco col="ret_1w" /></th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1m")}>近一月收益<SortIco col="ret_1m" /></th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_3m")}>近三月收益<SortIco col="ret_3m" /></th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_6m")}>近六月收益<SortIco col="ret_6m" /></th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1y")}>近一年收益<SortIco col="ret_1y" /></th>
-                  <th className={`${thBase} text-right min-w-[98px]`}>近一年夏普比率</th>
-                  <th className={`${thBase} text-right min-w-[98px]`}>近一年卡玛比率</th>
-                  <th className={`${thBase} text-center w-16`}>走势</th>
-                  <th className={`${thBase} text-center w-16`}>资料</th>
-                  <th className={`${thBase} text-center w-16`}>操作</th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("latest_price_change")}>最新涨跌幅<SortIco col="latest_price_change" /></th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
+                    <div>近一周收益<SortIco col="ret_1w" /></div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 7)}</div>}
+                  </th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1m")}>
+                    <div>近一月收益<SortIco col="ret_1m" /></div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 30)}</div>}
+                  </th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_3m")}>
+                    <div>近三月收益<SortIco col="ret_3m" /></div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 91)}</div>}
+                  </th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_6m")}>
+                    <div>近六月收益<SortIco col="ret_6m" /></div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 182)}</div>}
+                  </th>
+                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1y")}>
+                    <div>近一年收益<SortIco col="ret_1y" /></div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 365)}</div>}
+                  </th>
+                  <th className={`${thSort} text-right min-w-[98px]`} onClick={() => handleSort("sharpe_1y")}>近一年夏普比率<SortIco col="sharpe_1y" /></th>
+                  <th className={`${thSort} text-right min-w-[98px]`} onClick={() => handleSort("calmar_1y")}>近一年卡玛比率<SortIco col="calmar_1y" /></th>
+                  <th className={`${thBase} text-center w-16 sticky right-32 z-30 bg-muted/40 dark:bg-muted/20 border-l border-zinc-200 dark:border-zinc-700`}>走势</th>
+                  <th className={`${thBase} text-center w-16 sticky right-16 z-30 bg-muted/40 dark:bg-muted/20`}>资料</th>
+                  <th className={`${thBase} text-center w-16 sticky right-0 z-30 bg-muted/40 dark:bg-muted/20`}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -1810,9 +2208,10 @@ function InvestmentTrackingView() {
                   const isSelected = selected.has(row.beian_hao)
                   const bg = isSelected ? "bg-blue-50/40 dark:bg-blue-950/20" : "bg-background"
                   const cell = `border-b px-3 py-0 ${bg} group-hover:bg-muted/30 transition-colors`
+                  const stickyCell = `${cell} z-10`
                   return (
                     <tr key={row.beian_hao} className="group" style={{ height: 52 }}>
-                      <td className={`${cell} px-2 text-center`}>
+                      <td className={`${stickyCell} px-2 text-center sticky left-0`}>
                         <input type="checkbox" className="rounded h-3 w-3"
                           checked={isSelected}
                           onChange={() => {
@@ -1821,15 +2220,15 @@ function InvestmentTrackingView() {
                             setSelected(s)
                           }} />
                       </td>
-                      <td className={`${cell} text-center tabular-nums`}>{(page - 1) * 50 + i + 1}</td>
-                      <td className={`${cell}`}>
+                      <td className={`${stickyCell} text-center tabular-nums sticky left-8`}>{(page - 1) * 50 + i + 1}</td>
+                      <td className={`${stickyCell} sticky left-[72px] border-r border-zinc-200 dark:border-zinc-700`}>
                         <a
                           href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="font-medium text-blue-600 dark:text-blue-400 leading-5 truncate max-w-[220px] hover:underline block"
                           title={row.product_name}
-                        >{row.product_name}</a>
+                        >{row.short_name || row.product_name}</a>
                         {row.strategy_l1 && (
                           <div className="flex items-center gap-1 mt-0.5">
                             <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
@@ -1842,21 +2241,96 @@ function InvestmentTrackingView() {
                         <div className="font-medium leading-5">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</div>
                       </td>
                       <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_1w} /></td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_1m} /></td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_3m} /></td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_6m} /></td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.ret_1y} /></td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1w} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 7)}</div>}
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1m} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 30)}</div>}
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_3m} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 91)}</div>}
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_6m} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 182)}</div>}
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1y} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 365)}</div>}
+                      </td>
                       <td className={`${cell} text-right tabular-nums`}><TrackRatioCell value={row.sharpe_1y} /></td>
                       <td className={`${cell} text-right tabular-nums`}><TrackRatioCell value={row.calmar_1y} /></td>
-                      <td className={`${cell} text-center`}>
-                        <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
+                      <td className={`${stickyCell} text-center sticky right-32 border-l border-zinc-200 dark:border-zinc-700`}>
+                        <div className="flex items-center justify-center"
+                          onMouseEnter={(e) => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                            hoverTimeout.current = setTimeout(() => {
+                              setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                              setHoverChartRow(row.beian_hao)
+                            }, 200)
+                          }}
+                          onMouseLeave={() => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                          }}>
+                          <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
+                        </div>
                       </td>
-                      <td className={`${cell} text-center`}><span className="text-muted-foreground">—</span></td>
-                      <td className={`${cell} text-center`}>
-                        <div className="flex items-center justify-center gap-1">
-                          <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-rose-500 transition-colors"><Heart className="h-3.5 w-3.5" /></button>
-                          <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><Send className="h-3.5 w-3.5" /></button>
+                      <td className={`${stickyCell} text-center sticky right-16`}>
+                        {fundNotes[row.beian_hao] ? (
+                          <div className="relative flex items-center justify-center">
+                            <button
+                              onClick={(e) => {
+                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                                setNotePopupPos({ x: rect.left, y: rect.bottom + 4 })
+                                setOpenNotePopup(openNotePopup === row.beian_hao ? null : row.beian_hao)
+                              }}
+                              className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className={`${stickyCell} text-center sticky right-0`}>
+                        <div className="relative flex items-center justify-center">
+                          <button
+                            onClick={() => setOpenRowMenu(openRowMenu === row.beian_hao ? null : row.beian_hao)}
+                            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest">
+                            ···
+                          </button>
+                          {openRowMenu === row.beian_hao && (
+                            <>
+                              <div className="fixed inset-0 z-30" onClick={() => setOpenRowMenu(null)} />
+                              <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[140px]" onClick={(e) => e.stopPropagation()}>
+                                <button onClick={() => { setElementsBeianHao(row.beian_hao); setElementsName(row.product_name); setShowElementsDialog(true); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><FileSearch className="h-3.5 w-3.5 text-muted-foreground" />查询要素</button>
+                                <button onClick={() => { openEditTagDialog(row.beian_hao, row.product_name); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><Tag className="h-3.5 w-3.5 text-muted-foreground" />编辑标签</button>
+                                <button onClick={() => { openEditStrategyDialog(row.beian_hao, row.product_name); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><Layers className="h-3.5 w-3.5 text-muted-foreground" />编辑策略</button>
+                                <button onClick={() => { openNoteDialog(row.beian_hao, row.product_name); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><StickyNote className="h-3.5 w-3.5 text-muted-foreground" />备注管理</button>
+                                <button onClick={() => setOpenRowMenu(null)} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground" />估值表分析</button>
+                                <button onClick={() => setOpenRowMenu(null)} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><Star className="h-3.5 w-3.5 text-muted-foreground" />收藏</button>
+                                <div className="border-t my-1" />
+                                <button
+                                  onClick={() => {
+                                    setBatchContextPool(sourcePool)
+                                    setBatchConfirmTitle("取消跟踪")
+                                    setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`)
+                                    setBatchConfirmAction("remove")
+                                    setSelected(new Set([row.beian_hao]))
+                                    setOpenRowMenu(null)
+                                    setShowBatchConfirmDialog(true)
+                                  }}
+                                  className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500">
+                                  <MinusCircle className="h-3.5 w-3.5" />取消跟踪
+                                </button>
+                              </div>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -1946,18 +2420,18 @@ function InvestmentTrackingView() {
               <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">基金分类：</span>
               <div className="flex items-center gap-1">
                 {(["private", "public"] as const).map((fc) => (
-                  <button
+                  <span
                     key={fc}
                     onClick={() => setMyFundClass(fc)}
                     className={[
-                      "px-3 py-1 rounded text-xs font-medium transition-all border",
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                       myFundClass === fc
-                        ? "bg-red-500 text-white border-red-500"
-                        : "text-zinc-500 border-border hover:text-foreground hover:bg-muted/60",
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
                     ].join(" ")}
                   >
                     {fc === "private" ? "私募" : "公募"}
-                  </button>
+                  </span>
                 ))}
               </div>
             </div>
@@ -1998,7 +2472,22 @@ function InvestmentTrackingView() {
               <span className="text-zinc-400 shrink-0 w-20 whitespace-nowrap text-right pr-3">管理人规模：</span>
               <div className="flex items-center gap-1 flex-wrap">
                 {ORG_SIZE_OPTS.map((s) => (
-                  <FilterPill key={s} label={s} active={myOrgSize === s} onClick={() => setMyOrgSize(s)} />
+                  <span
+                    key={s}
+                    onClick={() => setMyOrgSize(s)}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                      myOrgSize === s
+                        ? s === "不限"
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                          : "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        : s === "不限"
+                          ? "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
+                          : "border-border text-zinc-500 hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {s}
+                  </span>
                 ))}
               </div>
             </div>
@@ -2052,24 +2541,90 @@ function InvestmentTrackingView() {
                 计算指标
               </label>
               <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
-                <input type="checkbox" className="rounded h-3 w-3 accent-zinc-700" />
+                <input type="checkbox" checked={showInterval} onChange={(e) => setShowInterval(e.target.checked)} className="rounded h-3 w-3 accent-zinc-700" />
                 显示区间
               </label>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
-                <LayoutTemplate className="h-3 w-3" />
-                默认模板
-                <ChevronDown className="h-3 w-3" />
-              </button>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+              <div className="relative">
+                <button
+                  onClick={() => setShowMineTemplateMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                  <LayoutTemplate className="h-3 w-3" />
+                  {trackingTemplates.length > 0 ? `模板(${trackingTemplates.length})` : "默认模板"}
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+                {showMineTemplateMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowMineTemplateMenu(false)} />
+                    <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[160px]" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setAddMetricApplied([]); setShowMineTemplateMenu(false) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <LayoutTemplate className="h-3.5 w-3.5 text-zinc-400" /> 默认模板
+                      </button>
+                      {trackingTemplates.length > 0 && <div className="border-t my-1" />}
+                      {trackingTemplates.map((t, i) => (
+                        <button key={i} onClick={() => { setAddMetricApplied([...t.items]); setShowMineTemplateMenu(false) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors truncate">{t.name}</button>
+                      ))}
+                      <div className="border-t my-1" />
+                      <button onClick={() => { setShowMineTemplateMenu(false); window.open("/ma/dashboard/settings?tab=metric-templates", "_blank") }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">管理模板</button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => { setAddMetricDraftItems([...addMetricApplied]); setShowAddMetricDialog(true) }}
+                className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
                 <PlusCircle className="h-3 w-3" />
-                添加指标
+                {addMetricApplied.length > 0 ? `添加指标(${addMetricApplied.length})` : "添加指标"}
               </button>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
-                批量操作
-              </button>
-              <button className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
-                ⊕ 更多
-              </button>
+              <div className="relative">
+                <button
+                  disabled={selected.size === 0}
+                  onClick={() => { setBatchContextPool(myActivePool); setShowMineBatchMenu((v) => !v) }}
+                  className="inline-flex items-center gap-1 border border-border/50 rounded px-2 py-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-zinc-600 hover:text-foreground hover:bg-muted/60 disabled:hover:bg-transparent disabled:hover:text-zinc-600">
+                  批量操作
+                  {selected.size > 0 && <span className="text-xs text-red-500">({selected.size})</span>}
+                </button>
+                {showMineBatchMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowMineBatchMenu(false)} />
+                    <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("move"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量移动到</button>
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("copy"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量复制到</button>
+                      <div className="border-t my-1" />
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
+                      <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="relative">
+                <button
+                  onClick={() => setShowMineMoreMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+                  ⊕ 更多
+                </button>
+                {showMineMoreMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowMineMoreMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => setShowMineMoreMenu(false)} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <RefreshCw className="h-3.5 w-3.5 text-zinc-400" /> 刷新指标
+                      </button>
+                      <button onClick={() => { setShowMineMoreMenu(false); setFieldConfigDraft([...fieldConfigSelected]); setFieldConfigTab("基本信息"); setShowFieldConfigDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <Settings2 className="h-3.5 w-3.5 text-zinc-400" /> 字段配置
+                      </button>
+                      <button onClick={() => { setShowMineMoreMenu(false); setShowAuditLogDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <ClipboardList className="h-3.5 w-3.5 text-zinc-400" /> 操作日志
+                      </button>
+                      <button onClick={() => { setShowMineMoreMenu(false); handleTrackExport(`我的跟踪_${new Date().toISOString().slice(0, 10)}.csv`) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                        <Download className="h-3.5 w-3.5 text-zinc-400" /> 导出
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
               <div className="relative">
                 <button
                   onClick={() => setShowMineAddMenu((v) => !v)}
@@ -2107,10 +2662,22 @@ function InvestmentTrackingView() {
                   <th className={`${thBase} min-w-[100px]`}>最新净値日期</th>
                   <th className={`${thBase} min-w-[90px]`}>最新单位净値</th>
                   <th className={`${thBase} text-right min-w-[88px]`}>最新涨跌幅</th>
-                  <th className={`${thBase} text-right min-w-[88px]`}>近一周收益</th>
-                  <th className={`${thBase} text-right min-w-[88px]`}>近一月收益</th>
-                  <th className={`${thBase} text-right min-w-[88px]`}>近三月收益</th>
-                  <th className={`${thBase} text-right min-w-[88px]`}>近六月收益</th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>
+                    <div>近一周收益</div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 7)}</div>}
+                  </th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>
+                    <div>近一月收益</div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 30)}</div>}
+                  </th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>
+                    <div>近三月收益</div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 91)}</div>}
+                  </th>
+                  <th className={`${thBase} text-right min-w-[88px]`}>
+                    <div>近六月收益</div>
+                    {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 182)}</div>}
+                  </th>
                   <th className={`${thBase} text-center w-16`}>走势</th>
                   <th className={`${thBase} text-center min-w-[80px]`}>个人备注</th>
                   <th className={`${thBase} text-center w-16`}>操作</th>
@@ -2131,6 +2698,688 @@ function InvestmentTrackingView() {
         </div>
       </div>
       )}
+
+      {/* Add metric dialog */}
+      {showAddMetricDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowAddMetricDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl flex flex-col" style={{ width: 900, maxHeight: "85vh" }} onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">选择指标</span>
+              <button onClick={() => setShowAddMetricDialog(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none transition-colors">×</button>
+            </div>
+            {/* Body */}
+            <div className="flex flex-1 overflow-hidden">
+              {/* Left panel */}
+              <div className="flex-1 overflow-y-auto px-6 py-5 border-r">
+                <p className="text-xs font-semibold text-zinc-500 mb-3">可选指标</p>
+                {/* Period radio grid */}
+                <div className="grid gap-x-2 gap-y-2 mb-5" style={{ gridTemplateColumns: "repeat(5, 1fr)" }}>
+                  {ADD_METRIC_PERIODS.map((p) => (
+                    <label key={p} className="inline-flex items-center gap-1.5 cursor-pointer text-sm text-zinc-600 dark:text-zinc-300 hover:text-foreground">
+                      <input
+                        type="radio"
+                        name="addMetricPeriod"
+                        value={p}
+                        checked={addMetricPeriod === p}
+                        onChange={() => setAddMetricPeriod(p)}
+                        className="accent-red-500 h-3.5 w-3.5 flex-shrink-0"
+                      />
+                      {p}
+                    </label>
+                  ))}
+                </div>
+                {/* Metric checkboxes in 3 columns */}
+                <div className="grid gap-x-4 gap-y-2.5" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+                  {ADD_METRIC_GROUPS.map((col, ci) =>
+                    col.map((metric) => {
+                      const isChecked = addMetricDraftItems.some((x) => x.period === addMetricPeriod && x.metric === metric)
+                      return (
+                        <label key={`${ci}-${metric}`} className="inline-flex items-center gap-2 cursor-pointer text-sm text-zinc-600 dark:text-zinc-300 hover:text-foreground">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() => {
+                              if (isChecked) {
+                                setAddMetricDraftItems((prev) => prev.filter((x) => !(x.period === addMetricPeriod && x.metric === metric)))
+                              } else {
+                                setAddMetricDraftItems((prev) => [...prev, { period: addMetricPeriod, metric }])
+                              }
+                            }}
+                            className="accent-red-500 h-3.5 w-3.5 flex-shrink-0 rounded"
+                          />
+                          {metric}
+                        </label>
+                      )
+                    })
+                  )}
+                </div>
+              </div>
+              {/* Right panel */}
+              <div className="w-52 flex-shrink-0 flex flex-col px-4 py-5">
+                <div className="flex items-center justify-between mb-3">
+                  <span className="text-xs font-semibold text-zinc-500">已选指标({addMetricDraftItems.length})</span>
+                  <button onClick={() => setAddMetricDraftItems([])} className="text-xs text-blue-500 hover:text-blue-600 transition-colors">清空</button>
+                </div>
+                <div className="flex-1 overflow-y-auto space-y-1">
+                  {addMetricDraftItems.map((item, idx) => (
+                    <div
+                      key={`${item.period}-${item.metric}-${idx}`}
+                      draggable
+                      onDragStart={() => setAddMetricDragIdx(idx)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => {
+                        if (addMetricDragIdx === null || addMetricDragIdx === idx) return
+                        const arr = [...addMetricDraftItems]
+                        const [moved] = arr.splice(addMetricDragIdx, 1)
+                        arr.splice(idx, 0, moved)
+                        setAddMetricDraftItems(arr)
+                        setAddMetricDragIdx(null)
+                      }}
+                      onDragEnd={() => setAddMetricDragIdx(null)}
+                      className={[
+                        "flex items-center justify-between gap-1 px-2 py-1.5 rounded text-xs border cursor-grab select-none transition-colors",
+                        addMetricDragIdx === idx
+                          ? "opacity-40 bg-muted border-border"
+                          : "bg-background border-border hover:bg-muted/60",
+                      ].join(" ")}
+                    >
+                      <span className="truncate text-zinc-600 dark:text-zinc-300">
+                        <span className="text-zinc-400 mr-1">{item.period}·</span>{item.metric}
+                      </span>
+                      <button
+                        onClick={() => setAddMetricDraftItems((prev) => prev.filter((_, i) => i !== idx))}
+                        className="flex-shrink-0 text-zinc-400 hover:text-red-500 transition-colors leading-none"
+                      >×</button>
+                    </div>
+                  ))}
+                </div>
+                {addMetricDraftItems.length > 0 && (
+                  <p className="mt-2 text-[10px] text-muted-foreground text-center">已选列表可拖拉上下排序</p>
+                )}
+                {addMetricDraftItems.length === 0 && (
+                  <p className="mt-auto text-[10px] text-muted-foreground text-center pt-4">已选列表可拖拉上下排序</p>
+                )}
+              </div>
+            </div>
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button
+                onClick={() => {
+                  setAddMetricApplied([...addMetricDraftItems])
+                  setShowAddMetricDialog(false)
+                }}
+                className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">
+                确 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch confirm dialog */}
+      {showBatchConfirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowBatchConfirmDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 flex-shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div>
+                <p className="font-semibold text-sm mb-1">{batchConfirmTitle}</p>
+                <p className="text-sm text-zinc-500">{batchConfirmMessage}</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowBatchConfirmDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                disabled={batchSubmitting}
+                onClick={async () => {
+                  if (batchConfirmAction) await handleBatchOp(batchConfirmAction)
+                  setShowBatchConfirmDialog(false)
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {batchSubmitting ? "处理中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch move dialog */}
+      {showBatchMoveDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowBatchMoveDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[420px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">{batchMoveMode === "copy" ? "复制到产品池" : "移动到产品池"}</span>
+              <button onClick={() => setShowBatchMoveDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5">
+              <div className="flex items-center gap-3">
+                <span className="text-sm shrink-0 w-16 text-right">
+                  <span className="text-red-500 mr-0.5">*</span>目标池：
+                </span>
+                <div className="relative flex-1">
+                  <select
+                    value={batchMoveTargetPool}
+                    onChange={(e) => setBatchMoveTargetPool(e.target.value)}
+                    className={[
+                      "w-full appearance-none rounded border pl-3 pr-8 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring",
+                      batchMoveTargetPool ? "text-zinc-700 dark:text-zinc-200 border-border" : "text-muted-foreground border-red-300",
+                    ].join(" ")}>
+                    <option value="">请选择目标池</option>
+                    {pools.filter((p) => p.key !== "all" && p.key !== sourcePool).map((p) => (
+                      <option key={p.key} value={p.key}>{p.label}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button onClick={() => setShowBatchMoveDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                disabled={!batchMoveTargetPool || batchSubmitting}
+                onClick={async () => {
+                  await handleBatchOp(batchMoveMode, { target_pool: batchMoveTargetPool })
+                  setShowBatchMoveDialog(false)
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {batchSubmitting ? "处理中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 编辑团队策略 Dialog (single fund) ── */}
+      {showEditStrategyDialog && (() => {
+        const editL2Opts = editStrategyL1 ? (strategyHierarchy.find((n) => n.l1 === editStrategyL1)?.l2s ?? []) : []
+        const editL3Opts = editStrategyL2 ? (editL2Opts.find((n) => n.l2 === editStrategyL2)?.l3s ?? []) : []
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowEditStrategyDialog(false)}>
+            <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+                <span className="font-semibold text-base">编辑团队策略</span>
+                <button onClick={() => setShowEditStrategyDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+              </div>
+              {/* Body */}
+              <div className="px-6 py-5 flex flex-col gap-4">
+                {/* Fund name */}
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
+                  <span className="font-semibold text-sm">{editStrategyName}</span>
+                </div>
+                {/* Warning */}
+                <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  团队策略仅内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+                </div>
+                {/* 一级策略 */}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-16 text-right">一级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={editStrategyL1}
+                      onChange={(e) => { setEditStrategyL1(e.target.value); setEditStrategyL2(""); setEditStrategyL3("") }}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300">
+                      <option value="">请选择一级策略</option>
+                      {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                {/* 二级策略 */}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-16 text-right">二级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={editStrategyL2}
+                      onChange={(e) => { setEditStrategyL2(e.target.value); setEditStrategyL3("") }}
+                      disabled={editL2Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
+                      <option value="">{editStrategyL1 ? "请选择二级策略" : "请先选择一级策略"}</option>
+                      {editL2Opts.map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                {/* 三级策略 */}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-16 text-right">三级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={editStrategyL3}
+                      onChange={(e) => setEditStrategyL3(e.target.value)}
+                      disabled={editL3Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
+                      <option value="">{editStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}</option>
+                      {editL3Opts.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+              </div>
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+                <button onClick={() => setShowEditStrategyDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+                <button
+                  disabled={!editStrategyL1 || editStrategySaving}
+                  onClick={async () => {
+                    if (!editStrategyBeianHao || !editStrategyL1) return
+                    setEditStrategySaving(true)
+                    try {
+                      await fetch(`/ma/api/private-funds/${encodeURIComponent(editStrategyBeianHao)}/strategy`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          strategy_l1: editStrategyL1 || null,
+                          strategy_l2: editStrategyL2 || null,
+                          strategy_l3: editStrategyL3 || null,
+                        }),
+                      })
+                      setShowEditStrategyDialog(false)
+                      setDataReloadKey((k) => k + 1)
+                    } finally {
+                      setEditStrategySaving(false)
+                    }
+                  }}
+                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  {editStrategySaving ? "保存中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Batch add strategy dialog */}
+      {showBatchStrategyDialog && (() => {
+        const batchL2Opts = batchStrategyL1 ? (strategyHierarchy.find((n) => n.l1 === batchStrategyL1)?.l2s ?? []) : []
+        const batchL3Opts = batchStrategyL2 ? (batchL2Opts.find((n) => n.l2 === batchStrategyL2)?.l3s ?? []) : []
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowBatchStrategyDialog(false)}>
+            <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+                <span className="font-semibold text-base">批量添加策略</span>
+                <button onClick={() => setShowBatchStrategyDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+              </div>
+              <div className="px-6 py-5 flex flex-col gap-4">
+                <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  对已选产品批量添加团队策略，策略团队内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+                </div>
+                {/* 一级策略 */}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-16 text-right">
+                    <span className="text-red-500 mr-0.5">*</span>一级策略：
+                  </span>
+                  <div className="relative flex-1">
+                    <select
+                      value={batchStrategyL1}
+                      onChange={(e) => { setBatchStrategyL1(e.target.value); setBatchStrategyL2(""); setBatchStrategyL3("") }}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300">
+                      <option value="">请选择一级策略</option>
+                      {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                {/* 二级策略 */}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-16 text-right">二级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={batchStrategyL2}
+                      onChange={(e) => { setBatchStrategyL2(e.target.value); setBatchStrategyL3("") }}
+                      disabled={batchL2Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
+                      <option value="">请选择二级策略</option>
+                      {batchL2Opts.map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                {/* 三级策略 */}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-16 text-right">三级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={batchStrategyL3}
+                      onChange={(e) => setBatchStrategyL3(e.target.value)}
+                      disabled={batchL3Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50">
+                      <option value="">请选择三级策略</option>
+                      {batchL3Opts.map((v) => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+                <button onClick={() => setShowBatchStrategyDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+                <button
+                  disabled={!batchStrategyL1 || batchSubmitting}
+                  onClick={async () => {
+                    await handleBatchOp("set_strategy", {
+                      strategy_l1: batchStrategyL1 || null,
+                      strategy_l2: batchStrategyL2 || null,
+                      strategy_l3: batchStrategyL3 || null,
+                    })
+                    setShowBatchStrategyDialog(false)
+                  }}
+                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                  {batchSubmitting ? "处理中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Batch add tag dialog */}
+      {/* ── 编辑标签 Dialog ── */}
+      {showEditTagDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowEditTagDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">跟踪产品编辑</span>
+              <button onClick={() => setShowEditTagDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            {/* Body */}
+            <div className="px-6 py-5 flex flex-col gap-4">
+              {/* Fund name */}
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
+                <span className="font-semibold text-sm">{editTagName}</span>
+              </div>
+              {/* Tag selector */}
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-12 text-right pt-2">标签：</span>
+                <div className="flex-1">
+                  <div className="flex items-center border rounded px-3 py-1.5 gap-2 flex-wrap min-h-[36px] bg-background cursor-pointer"
+                    onClick={() => {/* click to focus / show team tags below */}}>
+                    {editTagSelected.map((t) => (
+                      <span key={t} className="inline-flex items-center gap-1 bg-red-50 border border-red-300 text-red-500 rounded px-2 py-0.5 text-xs">
+                        {t}
+                        <button onClick={(e) => { e.stopPropagation(); setEditTagSelected((p) => p.filter((x) => x !== t)) }} className="leading-none hover:text-red-700">×</button>
+                      </span>
+                    ))}
+                    {editTagSelected.length === 0 && <span className="text-xs text-muted-foreground">请选择标签</span>}
+                  </div>
+                </div>
+                <button onClick={() => setEditTagSelected([])} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0 pt-2">清空</button>
+              </div>
+              {/* Team tags */}
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-12 text-right pt-1.5">团队标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {editTagTeamTags.length === 0 && (
+                    <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                  )}
+                  {editTagTeamTags.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setEditTagSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        editTagSelected.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                  <button
+                    onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=tags", "_blank")}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                    设置
+                  </button>
+                  <button
+                    onClick={() => fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setEditTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {})}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button onClick={() => setShowEditTagDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                disabled={editTagSaving}
+                onClick={async () => {
+                  if (!editTagBeianHao) return
+                  setEditTagSaving(true)
+                  try {
+                    await fetch("/ma/api/tracking-funds/fund-tags", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ beian_hao: editTagBeianHao, tags: editTagSelected }),
+                    })
+                    setShowEditTagDialog(false)
+                  } finally {
+                    setEditTagSaving(false)
+                  }
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {editTagSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showBatchTagDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowBatchTagDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">批量添加标签</span>
+              <button onClick={() => setShowBatchTagDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            {/* Body */}
+            <div className="px-6 py-5 flex flex-col gap-4">
+              {/* Info banner */}
+              <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                对已选产品批量添加标签，标签团队内部可见。团队标签的新增、编辑在【运维-数据维护-团队标签】中。
+              </div>
+              {/* Tag selector */}
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-10 text-right pt-2">标签：</span>
+                <div className="flex-1">
+                  <div className="flex items-center border rounded px-3 py-1.5 gap-2 flex-wrap min-h-[36px] bg-background">
+                    {batchTagSelected.map((t) => (
+                      <span key={t} className="inline-flex items-center gap-1 bg-red-50 border border-red-300 text-red-500 rounded px-2 py-0.5 text-xs">
+                        {t}
+                        <button onClick={() => setBatchTagSelected((p) => p.filter((x) => x !== t))} className="leading-none hover:text-red-700">×</button>
+                      </span>
+                    ))}
+                    {batchTagSelected.length === 0 && <span className="text-xs text-muted-foreground">请选择标签</span>}
+                  </div>
+                </div>
+                <button onClick={() => setBatchTagSelected([])} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0 pt-2">清空</button>
+              </div>
+              {/* Team tags */}
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-10 text-right pt-1.5">团队标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {batchTagTeamTags.length === 0 && (
+                    <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                  )}
+                  {batchTagTeamTags.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setBatchTagSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        batchTagSelected.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                  <button
+                    onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=tags", "_blank")}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                    设置
+                  </button>
+                  <button
+                    onClick={() => fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {})}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button onClick={() => setShowBatchTagDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                disabled={batchTagSelected.length === 0 || batchSubmitting}
+                onClick={async () => {
+                  await handleBatchOp("add_tags", { tags: batchTagSelected })
+                  setShowBatchTagDialog(false)
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {batchSubmitting ? "处理中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Audit log dialog */}
+      {showAuditLogDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowAuditLogDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[700px] flex flex-col" style={{ maxHeight: "70vh" }} onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">操作日志</span>
+              <button onClick={() => setShowAuditLogDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            {/* Table */}
+            <div className="flex-1 overflow-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-muted/40 border-b">
+                    <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-16">序号</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-32">操作人</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-48">操作时间</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">操作事项</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td colSpan={4} className="py-16 text-center text-muted-foreground">
+                      <div className="flex flex-col items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+                        <span>暂无数据</span>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            {/* Footer pagination */}
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0 text-sm text-zinc-500">
+              <span>共0条</span>
+              <button className="px-2 py-1 rounded border hover:bg-muted transition-colors disabled:opacity-40" disabled>‹</button>
+              <span className="px-2.5 py-1 rounded border bg-muted text-foreground font-medium">1</span>
+              <button className="px-2 py-1 rounded border hover:bg-muted transition-colors disabled:opacity-40" disabled>›</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Field config dialog */}
+      {showFieldConfigDialog && (() => {
+        const FIELD_TABS = ["基本信息", "申赎信息", "团队策略/标签/池", "净值信息", "团队字段", "其他"]
+        const FIELD_OPTIONS: Record<string, string[]> = {
+          "基本信息": ["备案编码", "成立日期", "基金全称", "备案日期", "基准指数", "基金管理人", "管理人规模", "投资顾问", "托管券商", "平台一级策略", "平台二级策略", "平台三级策略"],
+          "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "最低申购金额", "封闭期"],
+          "团队策略/标签/池": ["团队一级策略", "团队二级策略", "团队三级策略", "团队标签", "所在跟踪池"],
+          "净值信息": ["成立以来收益", "近两年收益", "近三年收益", "最大回撤", "年化收益", "年化波动率", "信息比率", "卡玛比率"],
+          "团队字段": ["团队评级", "团队备注", "关注度"],
+          "其他": ["产品规模", "基金托管人", "外部评级"],
+        }
+        const opts = FIELD_OPTIONS[fieldConfigTab] ?? []
+        const toggleDraft = (f: string) => {
+          setFieldConfigDraft((prev) => prev.includes(f) ? prev.filter((x) => x !== f) : [...prev, f])
+        }
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowFieldConfigDialog(false)}>
+            <div className="bg-background rounded-lg shadow-xl w-[760px] flex flex-col" style={{ maxHeight: "80vh" }} onClick={(e) => e.stopPropagation()}>
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+                <span className="font-semibold text-base">字段配置</span>
+                <button onClick={() => setShowFieldConfigDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+              </div>
+              {/* Body */}
+              <div className="flex flex-1 overflow-hidden">
+                {/* Left: tabs + fields */}
+                <div className="flex-1 flex flex-col min-w-0 px-6 py-4">
+                  {/* Tab row */}
+                  <div className="flex items-center gap-4 mb-4 flex-wrap">
+                    {FIELD_TABS.map((tab) => (
+                      <label key={tab} className="flex items-center gap-1.5 cursor-pointer text-sm whitespace-nowrap">
+                        <input
+                          type="radio"
+                          name="fieldConfigTab"
+                          checked={fieldConfigTab === tab}
+                          onChange={() => setFieldConfigTab(tab)}
+                          className="accent-red-500 h-3.5 w-3.5"
+                        />
+                        {tab}
+                      </label>
+                    ))}
+                  </div>
+                  {/* Checkboxes grid */}
+                  <div className="grid grid-cols-3 gap-x-6 gap-y-3">
+                    {opts.map((f) => (
+                      <label key={f} className="flex items-center gap-2 cursor-pointer text-sm">
+                        <input
+                          type="checkbox"
+                          checked={fieldConfigDraft.includes(f)}
+                          onChange={() => toggleDraft(f)}
+                          className="rounded h-3.5 w-3.5 accent-red-500"
+                        />
+                        {f}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                {/* Right: selected list */}
+                <div className="w-48 border-l flex flex-col px-4 py-4 flex-shrink-0">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm text-zinc-600">已选({fieldConfigDraft.length})</span>
+                    <button onClick={() => setFieldConfigDraft([])} className="text-xs text-red-500 hover:text-red-600 transition-colors">清空</button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto space-y-1.5">
+                    {fieldConfigDraft.map((f) => (
+                      <div key={f} className="flex items-center justify-between text-sm py-0.5">
+                        <span className="text-zinc-700 dark:text-zinc-300 truncate">{f}</span>
+                        <button onClick={() => toggleDraft(f)} className="text-zinc-400 hover:text-zinc-600 transition-colors ml-1 flex-shrink-0">×</button>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-zinc-400 mt-3 leading-snug">已选列表可拖拉上下排序</p>
+                </div>
+              </div>
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+                <button onClick={() => setShowFieldConfigDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+                <button
+                  onClick={() => { setFieldConfigSelected([...fieldConfigDraft]); setShowFieldConfigDialog(false) }}
+                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">
+                  确 定
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Single add dialog */}
       {showSingleAddDialog && (
@@ -2805,6 +4054,218 @@ function InvestmentTrackingView() {
             {/* Footer */}
             <div className="px-6 py-3 border-t flex-shrink-0">
               <span className="text-xs text-muted-foreground">列表可拖动排序</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 走势 hover chart (fixed, escapes scroll container) ── */}
+      {hoverChartRow && hoverChartPos && (() => {
+        const popupW = 356
+        const popupH = 210
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
+        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
+        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
+        const hoverRow = data.find((r) => r.beian_hao === hoverChartRow)
+        return (
+          <div
+            className="fixed z-[9999] bg-background border rounded-xl shadow-2xl"
+            style={{ left, top, width: popupW }}
+            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+            onMouseLeave={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current); hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150) }}>
+            <div className="px-3 pt-3 pb-1 font-semibold text-sm border-b">收益走势</div>
+            <TrendHoverChart beian_hao={hoverChartRow} productName={hoverRow?.product_name ?? ""} />
+          </div>
+        )
+      })()}
+
+      {/* ── 资料 note popup (fixed) ── */}
+      {openNotePopup && notePopupPos && (() => {
+        const noteRec = fundNotes[openNotePopup]
+        const noteRow = data.find((r) => r.beian_hao === openNotePopup)
+        if (!noteRec) return null
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
+        const popW = 260
+        const left = Math.min(notePopupPos.x, vw - popW - 8)
+        return (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setOpenNotePopup(null)} />
+            <div className="fixed z-50 bg-background border rounded-xl shadow-2xl py-3" style={{ left, top: notePopupPos.y, width: popW }}>
+              <div className="flex items-center justify-between px-4 pb-2 border-b mb-2">
+                <span className="font-semibold text-sm">团队备注</span>
+                <button
+                  onClick={() => { setOpenNotePopup(null); openNoteDialog(openNotePopup, noteRow?.product_name ?? "") }}
+                  className="text-xs text-red-500 hover:text-red-600 transition-colors">添加</button>
+              </div>
+              <div className="px-4 pb-2">
+                <div className="flex items-start gap-1.5 text-sm">
+                  <span className="text-red-500 mt-0.5">•</span>
+                  <span className="text-foreground break-words flex-1">{noteRec.note}</span>
+                </div>
+              </div>
+              <div className="flex items-center justify-between px-4 pt-1">
+                <span className="text-xs text-muted-foreground">
+                  {noteRec.updated_at?.slice(0, 10)} {noteRec.updated_by}
+                </span>
+                <button
+                  onClick={async () => {
+                    await fetch(`/ma/api/tracking-funds/fund-note?beian_hao=${encodeURIComponent(openNotePopup)}`, { method: "DELETE" })
+                    setFundNotes((prev) => { const n = { ...prev }; delete n[openNotePopup]; return n })
+                    setOpenNotePopup(null)
+                  }}
+                  className="text-muted-foreground hover:text-red-500 transition-colors p-1">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                </button>
+              </div>
+            </div>
+          </>
+        )
+      })()}
+
+      {/* ── 备注管理 Dialog ── */}
+      {showNoteDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNoteDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[580px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">团队备注管理</span>
+              <button onClick={() => setShowNoteDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            {/* Body */}
+            <div className="px-6 py-5 flex flex-col gap-4">
+              {/* Fund name */}
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
+                <span className="font-semibold text-sm">{noteName}</span>
+              </div>
+              {/* Note label */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm text-foreground">
+                  <span className="text-red-500 mr-0.5">*</span>团队备注
+                </label>
+                <textarea
+                  value={noteText}
+                  onChange={(e) => setNoteText(e.target.value.slice(0, 250))}
+                  placeholder="请输入不大于250字的备注"
+                  rows={5}
+                  className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+                />
+                <div className="text-right text-xs text-muted-foreground">{noteText.length}/250</div>
+              </div>
+            </div>
+            {/* Footer */}
+            <div className="flex items-center justify-end px-6 py-3 border-t flex-shrink-0">
+              <button
+                disabled={noteSaving}
+                onClick={async () => {
+                  if (!noteBeianHao) return
+                  setNoteSaving(true)
+                  try {
+                    const res = await fetch("/ma/api/tracking-funds/fund-note", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ beian_hao: noteBeianHao, note: noteText }),
+                    })
+                    const d = await res.json()
+                    if (noteText.trim()) {
+                      setFundNotes((prev) => ({ ...prev, [noteBeianHao]: d.record ?? { note: noteText, updated_by: "", updated_at: new Date().toISOString() } }))
+                    } else {
+                      setFundNotes((prev) => { const n = { ...prev }; delete n[noteBeianHao]; return n })
+                    }
+                    setShowNoteDialog(false)
+                  } finally {
+                    setNoteSaving(false)
+                  }
+                }}
+                className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {noteSaving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 产品要素 Dialog ── */}
+      {showElementsDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowElementsDialog(false)}>
+          <div className="bg-background rounded-lg shadow-2xl w-[780px] max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">产品要素</span>
+              <button onClick={() => setShowElementsDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            {/* Body */}
+            <div className="overflow-y-auto flex-1 px-6 py-5">
+              {/* Fund name */}
+              <h2 className="text-lg font-bold mb-5 pl-3 border-l-4 border-red-500">{elementsName}</h2>
+
+              {elementsLoading && (
+                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">加载中…</div>
+              )}
+              {!elementsLoading && elementsData && elementsData.error && (
+                <div className="text-sm text-muted-foreground py-8 text-center">暂无产品要素数据</div>
+              )}
+              {!elementsLoading && elementsData && !elementsData.error && (() => {
+                const d = elementsData
+                const val = (v: string | null | undefined) => v || "—"
+                const Row2 = ({ l1, v1, l2, v2 }: { l1: string; v1?: string | null; l2?: string; v2?: string | null }) => (
+                  <tr className="border-b border-border/50 last:border-0">
+                    <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l1}</td>
+                    <td className="py-2 px-4 text-sm text-foreground">{val(v1)}</td>
+                    {l2 !== undefined && <>
+                      <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l2}</td>
+                      <td className="py-2 px-4 text-sm text-foreground">{val(v2)}</td>
+                    </>}
+                  </tr>
+                )
+                return (
+                  <>
+                    {/* 基本信息 */}
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
+                      <span className="text-sm font-semibold">基本信息</span>
+                    </div>
+                    <table className="w-full border border-border rounded-lg overflow-hidden mb-5 text-sm">
+                      <tbody>
+                        <Row2 l1="产品全称" v1={d.fund_name as string} l2="备案编号" v2={d.register_number as string} />
+                        <Row2 l1="投资顾问" v1={d.advisor as string} l2="基金管理人" v2={d.fund_manager as string} />
+                        <Row2 l1="成立日期" v1={d.inception_date as string} l2="备案日期" v2={d.puton_date as string} />
+                        <tr className="border-b border-border/50 last:border-0">
+                          <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">托管券商</td>
+                          <td className="py-2 px-4 text-sm text-foreground" colSpan={3}>{val(d.custodian as string)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+
+                    {/* 申赎信息 */}
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
+                        <span className="text-sm font-semibold">申赎信息</span>
+                      </div>
+                      {d.updated_at && (
+                        <span className="text-xs text-muted-foreground">最近更新: {d.updated_at as string}</span>
+                      )}
+                    </div>
+                    <table className="w-full border border-border rounded-lg overflow-hidden text-sm">
+                      <tbody>
+                        <Row2 l1="开放日" v1={d.open_day as string} l2="是否可临开" v2={d.is_temporary_open as string} />
+                        <Row2 l1="申购费" v1={d.fee_purchase as string} l2="追加限制" v2={d.add_amount as string} />
+                        <Row2 l1="赎回费" v1={d.fee_redeem as string} l2="风险等级" v2={null} />
+                        <Row2 l1="预警线" v1={d.precautious_line as string} l2="封闭期" v2={d.closed_period as string} />
+                        <Row2 l1="平仓线" v1={d.stop_line as string} l2="锁定期说明" v2={null} />
+                        <Row2 l1="管理费率" v1={d.fee_manage_rate as string} l2="托管费" v2={d.fee_trust as string} />
+                        <Row2 l1="管理费说明" v1={d.fee_manage as string} l2="外包费" v2={d.fee_admin_service as string} />
+                        <tr className="border-b border-border/50 last:border-0">
+                          <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap align-top">业绩报酬说明</td>
+                          <td className="py-2 px-4 text-sm text-foreground whitespace-pre-wrap leading-relaxed" colSpan={3}>{val(d.fee_pay as string)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </>
+                )
+              })()}
             </div>
           </div>
         </div>

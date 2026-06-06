@@ -38,6 +38,7 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
     pathname === "/ma/dashboard/ai-knowledge" ||
     pathname === "/ma/dashboard/private-funds" ||
     pathname.startsWith("/ma/dashboard/private-funds/") ||
+    pathname.startsWith("/ma/dashboard/settings") ||
     pathname.startsWith("/ma/dashboard/mom-analysis/trader-analysis") ||
     pathname.startsWith("/ma/dashboard/mom-analysis/risk-report")
   const [isCollapsed, setIsCollapsed] = useState(false)

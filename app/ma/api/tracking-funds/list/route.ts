@@ -5,14 +5,15 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 const ALLOWED_SORT: Record<string, string> = {
-  product_name:    "i.product_name",
-  latest_nav:      "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
-  latest_nav_date: "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
-  ret_1w:          "ret_1w",
-  ret_1m:          "ret_1m",
-  ret_3m:          "ret_3m",
-  ret_6m:          "ret_6m",
-  ret_1y:          "ret_1y",
+  product_name:         "i.product_name",
+  latest_nav:           "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
+  latest_nav_date:      "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
+  latest_price_change:  "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)::numeric",
+  ret_1w:               "ret_1w",
+  ret_1m:               "ret_1m",
+  ret_3m:               "ret_3m",
+  ret_6m:               "ret_6m",
+  ret_1y:               "ret_1y",
 }
 
 function navScalarExpr(days: number, cutoffExpr = "CURRENT_DATE"): string {
@@ -592,7 +593,19 @@ export async function GET(req: Request) {
       ),
     ])
 
-    const data = await addOneYearRiskMetrics(rows)
+    let data = await addOneYearRiskMetrics(rows)
+
+    if (sortKey === "sharpe_1y" || sortKey === "calmar_1y") {
+      const asc = sortDir === "ASC"
+      data = [...data].sort((a, b) => {
+        const av = a[sortKey] != null ? parseFloat(a[sortKey] as string) : null
+        const bv = b[sortKey] != null ? parseFloat(b[sortKey] as string) : null
+        if (av == null && bv == null) return 0
+        if (av == null) return 1
+        if (bv == null) return -1
+        return asc ? av - bv : bv - av
+      })
+    }
 
     const total = parseInt(countRow[0]?.total ?? "0")
     return NextResponse.json({
