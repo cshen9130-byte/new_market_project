@@ -160,6 +160,21 @@ export async function GET(
   const productName = info.product_name ?? ""
   const shortName = info.short_name ?? ""
 
+  const bflTrackRows = await query<{ scale: string | null; manager_names: string | null }>(
+    `SELECT scale, manager_names
+     FROM basicinfo_bfl_track
+     WHERE register_number = $1
+        OR record_key = $1
+        OR ($2 <> '' AND (fund_name = $2 OR fund_short_name = $2))
+        OR ($3 <> '' AND (fund_name = $3 OR fund_short_name = $3))
+     ORDER BY updated_at DESC NULLS LAST, id DESC
+     LIMIT 1`,
+    [beian_hao, productName, shortName]
+  ).catch(() => [] as { scale: string | null; manager_names: string | null }[])
+
+  const scale = bflTrackRows[0]?.scale ?? null
+  const manager_names = bflTrackRows[0]?.manager_names ?? null
+
   const navRows = await query<{
     price_date:         string
     nav:                string
@@ -295,7 +310,7 @@ export async function GET(
   }
 
   return NextResponse.json({
-    info: { ...info, strategy_l3 },
+    info: { ...info, strategy_l3, scale, manager_names },
     nav_series,
     metrics: {
       latest_nav:                latest?.nav              ?? null,
