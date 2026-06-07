@@ -415,7 +415,7 @@ function exportNavCsv(rows: NavRow[], filename: string) {
     headers.join(","),
     ...rows.map((r) => {
       const chg = parseFloat(r.price_change)
-      const chgPct = isNaN(chg) ? "" : (chg * 100).toFixed(2) + "%"
+      const chgPct = isNaN(chg) ? "" : chg.toFixed(2) + "%"
       return [
         escape(r.price_date),
         escape(r.nav),
@@ -455,7 +455,7 @@ function NavTable({ rows }: { rows: NavRow[] }) {
           <tbody>
             {reversed.map((r) => {
               const chg = parseFloat(r.price_change)
-              const chgPct = isNaN(chg) ? null : (chg * 100).toFixed(2)
+              const chgPct = isNaN(chg) ? null : chg.toFixed(2)
               const chgStyle = isNaN(chg) ? {} : chg > 0 ? { color: RED } : chg < 0 ? { color: GREEN } : {}
               return (
                 <tr key={r.price_date} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
