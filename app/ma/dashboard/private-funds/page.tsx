@@ -1,8 +1,9 @@
 "use client"
 
 import { useEffect, useRef, useState, useCallback } from "react"
+import { createPortal } from "react-dom"
 import { useSearchParams } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2 } from "lucide-react"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -11,34 +12,29 @@ const menuItems = [
   { key: "operations", label: "运维" },
 ]
 
-const fundsSidebarItems = [
-  { key: "private-funds", label: "私募基金" },
-  { key: "fund-managers-org", label: "私募管理人" },
-  { key: "fund-managers", label: "基金经理" },
-]
-
 interface SidebarGroup {
   label: string
   items: { key: string; label: string }[]
 }
 
-const investmentSidebarGroups: SidebarGroup[] = [
+const fundsSidebarGroups: SidebarGroup[] = [
   {
-    label: "尽调池",
+    label: "私募数据库",
     items: [
-      { key: "inv-dd-calendar", label: "尽调日历" },
-      { key: "inv-dd-report", label: "尽调报告" },
-      { key: "inv-notes", label: "投资笔记" },
-      { key: "inv-score", label: "评分管理" },
+      { key: "private-funds", label: "私募基金" },
+      { key: "fund-managers-org", label: "管理人库" },
+      { key: "fund-managers", label: "基金经理" },
     ],
   },
+]
+
+const investmentSidebarGroups: SidebarGroup[] = [
   {
     label: "跟踪池",
     items: [
       { key: "inv-tracking", label: "跟踪产品" },
       { key: "inv-tracking-mgr", label: "跟踪管理人" },
       { key: "inv-compare", label: "基金对比" },
-      { key: "inv-approve", label: "审批入池" },
     ],
   },
   {
@@ -58,10 +54,6 @@ const investmentSidebarGroups: SidebarGroup[] = [
     ],
   },
 ]
-
-const sidebarMap: Record<string, { key: string; label: string }[]> = {
-  funds: fundsSidebarItems,
-}
 
 const operationsSidebarGroups: SidebarGroup[] = [
   {
@@ -185,15 +177,26 @@ interface FilterState {
   navFrequency: string
 }
 
-function FilterPill({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function FilterPill({ label, active, onClick, variant = "primary" }: {
+  label: string
+  active: boolean
+  onClick: () => void
+  variant?: "primary" | "muted"
+}) {
+  const base = "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors whitespace-nowrap"
+  const activePrimary = "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+  const inactivePrimary = "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
+  const activeMuted = "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+  const inactiveMuted = "border-border text-zinc-500 hover:bg-muted/60"
+
   return (
     <button
       onClick={onClick}
       className={[
-        "px-3 py-1 rounded-md text-xs font-medium transition-all cursor-pointer whitespace-nowrap",
+        base,
         active
-          ? "bg-zinc-600 text-white shadow-sm dark:bg-zinc-300 dark:text-zinc-900"
-          : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:text-zinc-100",
+          ? (variant === "muted" ? activeMuted : activePrimary)
+          : (variant === "muted" ? inactiveMuted : inactivePrimary),
       ].join(" ")}
     >
       {label}
@@ -300,11 +303,12 @@ function FundFilterPanel({
       <div>
         <div className="flex items-center px-4 py-2.5">
           <span className={lbl}>一级策略：</span>
-          <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             {STRATEGIES.map((s) => (
               <FilterPill
                 key={s}
                 label={s}
+                variant={s === "不限" ? "primary" : "muted"}
                 active={s === "不限" ? filters.strategyFilters.length === 0 : filters.strategyFilters.some((f) => f.l1 === s)}
                 onClick={() => s === "不限" ? onChange({ strategyFilters: [] }) : toggleL1(s)}
               />
@@ -315,7 +319,7 @@ function FundFilterPanel({
         {filters.strategyFilters.length > 0 && l2Options.length > 0 && (
           <div className="flex items-center pl-16 pr-4 py-2 border-t border-dashed bg-muted/20">
             <span className="text-zinc-400 dark:text-zinc-500 shrink-0 text-xs w-[4.5rem] text-right pr-2">二级策略：</span>
-            <div className="flex items-center gap-1 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
               <FilterPill
                 label="不限"
                 active={filters.strategyFilters.every((f) => f.l2s.length === 0)}
@@ -325,6 +329,7 @@ function FundFilterPanel({
                 <FilterPill
                   key={`${l1}:${l2}`}
                   label={l2}
+                  variant="muted"
                   active={isL2Active(l1, l2)}
                   onClick={() => toggleL2(l1, l2)}
                 />
@@ -338,7 +343,7 @@ function FundFilterPanel({
       <div>
         <div className="flex items-center px-4 py-2.5">
           <span className={lbl}>更多信息：</span>
-          <div className="flex items-center gap-1 overflow-x-auto flex-1 scrollbar-none">
+          <div className="flex items-center gap-2 overflow-x-auto flex-1 scrollbar-none">
             {MORE_INFO_TABS.map((tab) => (
               <FilterPill
                 key={tab}
@@ -359,7 +364,7 @@ function FundFilterPanel({
                 <label key={ft} className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
                   <input
                     type="checkbox"
-                    className="rounded h-3 w-3"
+                    className="rounded h-3 w-3 accent-red-500"
                     checked={checked}
                     onChange={() => {
                       if (ft === "不限") setFundTypes([])
@@ -383,7 +388,7 @@ function FundFilterPanel({
                 <label key={s} className="flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
                   <input
                     type="checkbox"
-                    className="rounded h-3 w-3"
+                    className="rounded h-3 w-3 accent-red-500"
                     checked={checked}
                     onChange={() => {
                       if (s === "不限") setOrgSizes([])
@@ -400,7 +405,7 @@ function FundFilterPanel({
         )}
         {moreInfoTab !== "基金类型" && moreInfoTab !== "机构管理规模" && MORE_INFO_OPTIONS[moreInfoTab] && (
           <div className="flex items-center pl-16 pr-4 py-1.5 bg-muted/30 border-t">
-            <div className="flex items-center gap-1 flex-wrap">
+            <div className="flex items-center gap-2 flex-wrap">
               {MORE_INFO_OPTIONS[moreInfoTab].map((opt) => (
                 <FilterPill
                   key={opt}
@@ -428,7 +433,7 @@ function FundFilterPanel({
       <div>
         <div className="flex items-center px-4 py-2.5">
           <span className={lbl}>基金指标：</span>
-          <div className="flex items-center gap-1 overflow-x-auto flex-1 scrollbar-none">
+          <div className="flex items-center gap-2 overflow-x-auto flex-1 scrollbar-none">
             {METRIC_TABS.map((tab) => (
               <FilterPill
                 key={tab}
@@ -450,7 +455,7 @@ function FundFilterPanel({
         </div>
         <div className="flex items-center pl-16 pr-4 py-1.5 border-t border-dashed bg-muted/20">
           <span className={lbl}>计算区间：</span>
-          <div className="flex items-center gap-1 overflow-x-auto scrollbar-none flex-1">
+          <div className="flex items-center gap-2 overflow-x-auto scrollbar-none flex-1">
             {getPeriodsForMetric(filters.metricTab).map((p) => (
               <FilterPill key={p} label={p} active={filters.period === p} onClick={() => onChange({ period: p })} />
             ))}
@@ -458,7 +463,7 @@ function FundFilterPanel({
         </div>
         <div className="flex items-center pl-16 pr-4 py-1.5 border-t border-dashed bg-muted/20">
           <span className={lbl}>{filters.metricTab.includes("排名") ? "指标排名：" : "指标范围："}</span>
-          <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
             {getRangesForMetric(filters.metricTab).map((r) => (
               <FilterPill key={r} label={r} active={filters.range === r} onClick={() => onChange({ range: r })} />
             ))}
@@ -501,17 +506,17 @@ function FundFilterPanel({
           {activeConditions.map((c, i) => (
             <span key={i} className="flex items-center gap-1.5">
               {c.or && <span className="text-zinc-400 text-[10px]">或</span>}
-              <span className="flex items-center gap-1 bg-zinc-100 text-zinc-800 border border-zinc-200 dark:bg-zinc-800 dark:text-zinc-200 dark:border-zinc-700 rounded px-2 py-0.5 text-xs">
+              <span className="flex items-center gap-1 bg-red-50 text-red-600 border border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-800 rounded px-2 py-0.5 text-xs">
                 {c.label}
-                <button onClick={c.clear} className="hover:opacity-60 leading-none ml-0.5 text-zinc-500">×</button>
+                <button onClick={c.clear} className="hover:opacity-60 leading-none ml-0.5 text-red-400">×</button>
               </span>
             </span>
           ))}
         </div>
         <div className="flex items-center gap-2 ml-auto shrink-0">
-          <button onClick={clearAll} className="text-xs text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 transition-colors">清空</button>
+          <button onClick={clearAll} className="text-xs text-blue-500 hover:text-blue-600 transition-colors">清空</button>
           <span className="text-zinc-200 dark:text-zinc-700">|</span>
-          <button onClick={() => setShowSaveModal(true)} className="text-xs font-medium text-zinc-700 hover:text-zinc-900 dark:text-zinc-300 dark:hover:text-zinc-100 transition-colors">保存</button>
+          <button onClick={() => setShowSaveModal(true)} className="text-xs font-medium text-blue-500 hover:text-blue-600 transition-colors">保存</button>
         </div>
       </div>
     </div>
@@ -570,7 +575,7 @@ function SaveFilterModal({ onSave, onClose }: {
           <button
             onClick={() => name.trim() && onSave(name.trim())}
             disabled={!name.trim()}
-            className="px-4 py-1.5 bg-zinc-900 text-white rounded text-sm hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300 transition-colors disabled:opacity-40">保存</button>
+            className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">保存</button>
         </div>
       </div>
     </div>
@@ -1134,7 +1139,7 @@ function PrivateFundTable({
                 className={[
                   "w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
                   btn === page
-                    ? "bg-zinc-900 text-white border-zinc-900 font-medium shadow-sm dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100"
+                    ? "bg-red-500 text-white border-red-500 font-medium shadow-sm"
                     : "text-foreground hover:bg-muted border-border",
                 ].join(" ")}>
                 {btn}
@@ -1321,7 +1326,8 @@ interface TrackStrategyNode {
 type TrackStrategySource = "company" | "platform"
 type TrackTeamTagMode = "and" | "or"
 
-function InvestmentTrackingView() {
+function InvestmentTrackingView({ variant = "investment" }: { variant?: "investment" | "operations" } = {}) {
+  const isOps = variant === "operations"
   const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
   const [activePool, setActivePool] = useState("bfl")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
@@ -1737,27 +1743,45 @@ function InvestmentTrackingView() {
 
   return (
     <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
-      {/* Team / Mine tabs */}
-      <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
-        {(["team", "mine"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTrackTab(t)}
-            className={[
-              "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
-              trackTab === t
-                ? "border-red-500 text-red-600 dark:text-red-400"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            ].join(" ")}
-          >
-            {t === "team" ? "团队跟踪" : "我的跟踪"}
-          </button>
-        ))}
-      </div>
+      {isOps ? (
+        <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0 overflow-x-auto">
+          {pools.map((p) => (
+            <button
+              key={p.key}
+              onClick={() => { setActivePool(p.key); setPage(1); setSelected(new Set()) }}
+              className={[
+                "px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px whitespace-nowrap flex-shrink-0",
+                activePool === p.key
+                  ? "border-red-500 text-red-600 dark:text-red-400"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
+          {(["team", "mine"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTrackTab(t)}
+              className={[
+                "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
+                trackTab === t
+                  ? "border-red-500 text-red-600 dark:text-red-400"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              {t === "team" ? "团队跟踪" : "我的跟踪"}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {trackTab === "team" && (
+      {(isOps || trackTab === "team") && (
       <div className="flex gap-0 flex-1 min-h-0">
-        {/* Left pool sidebar */}
+        {!isOps && (
         <aside className="w-32 flex-shrink-0 border-r">
           <div className="flex items-center gap-1 px-2 py-2 border-b">
             <button
@@ -1792,9 +1816,10 @@ function InvestmentTrackingView() {
             ))}
           </nav>
         </aside>
+        )}
 
         {/* Main content */}
-        <div className="flex-1 flex flex-col min-w-0 pl-4">
+        <div className={`flex-1 flex flex-col min-w-0 ${isOps ? "" : "pl-4"}`}>
           {/* Filter bar */}
           <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
             {/* 基金分类 */}
@@ -1981,6 +2006,8 @@ function InvestmentTrackingView() {
                 ))}
               </div>
             </div>
+            {!isOps && (
+            <>
             {/* 管理人规模 */}
             <div className="flex items-center px-4 py-2">
               <span className="text-zinc-400 shrink-0 w-20 whitespace-nowrap text-right pr-3">管理人规模：</span>
@@ -2025,9 +2052,95 @@ function InvestmentTrackingView() {
                 收藏
               </label>
             </div>
+            </>
+            )}
           </div>
 
           {/* Toolbar */}
+          {isOps ? (
+          <div className="flex items-center justify-between mb-3 flex-shrink-0 gap-3">
+            <div className="flex items-center border rounded-lg px-3 h-8 gap-2 bg-background flex-1 max-w-md">
+              <Search className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+              <input
+                className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+                placeholder="请输入产品/产品备案号，按回车搜索"
+                value={kwInput}
+                onChange={(e) => setKwInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+              />
+            </div>
+            <div className="flex items-center gap-3 text-xs text-zinc-600 flex-shrink-0">
+              <button
+                onClick={() => setShowAuditLogDialog(true)}
+                className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                <ClipboardList className="h-3.5 w-3.5" /> 操作日志
+              </button>
+              <button
+                onClick={() => { setFieldConfigDraft([...fieldConfigSelected]); setFieldConfigTab("基本信息"); setShowFieldConfigDialog(true) }}
+                className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                <Settings2 className="h-3.5 w-3.5" /> 字段配置
+              </button>
+              <button
+                onClick={() => handleTrackExport(`跟踪产品_${new Date().toISOString().slice(0, 10)}.csv`)}
+                className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                <Download className="h-3.5 w-3.5" /> 导出
+              </button>
+              <div className="relative">
+                <button
+                  disabled={selected.size === 0}
+                  onClick={() => { setBatchContextPool(sourcePool); setShowTeamBatchMenu((v) => !v) }}
+                  className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
+                  批量操作
+                  {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
+                </button>
+                {showTeamBatchMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowTeamBatchMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("move"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量移动到</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("copy"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量复制到</button>
+                      <div className="border-t my-1" />
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
+                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消跟踪"); setBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500">批量取消跟踪</button>
+                    </div>
+                  </>
+                )}
+              </div>
+              <button
+                onClick={() => { setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddSelectedTags([]); setBatchAddError(null); setBatchAddTargetPool(sourcePool); setShowBatchAddDialog(true) }}
+                className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                批量上传
+              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShowTeamAddMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
+                  添加跟踪
+                </button>
+                {showTeamAddMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowTeamAddMenu(false)} />
+                    <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[100px]" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => { setShowTeamAddMenu(false); setAddFundSearch(""); setAddFundSelectedTags([]); setAddFundSelected(null); setAddFundResults([]); setAddFundShowDropdown(false); setAddFundError(null); setAddFundTargetPool(sourcePool); setShowSingleAddDialog(true) }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
+                        单只添加
+                      </button>
+                      <button
+                        onClick={() => { setShowTeamAddMenu(false); setBatchAddText(""); setBatchAddResults([]); setBatchAddChecked(new Set()); setBatchAddSelectedTags([]); setBatchAddError(null); setBatchAddTargetPool(sourcePool); setShowBatchAddDialog(true) }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">
+                        批量添加
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+          ) : (
           <div className="flex items-center justify-between mb-2 flex-shrink-0 text-xs">
             <div className="flex items-center gap-1.5 text-zinc-500">
               <span>指标计算截止日期</span>
@@ -2171,8 +2284,105 @@ function InvestmentTrackingView() {
               </div>
             </div>
           </div>
+          )}
 
           {/* Table */}
+          {isOps ? (
+          <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+            <table className="text-sm border-collapse w-full">
+              <thead className="sticky top-0 z-20">
+                <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+                  <th className={`${thBase} w-8 px-2`}>
+                    <input type="checkbox" className="rounded h-3 w-3"
+                      checked={selected.size === data.length && data.length > 0}
+                      onChange={toggleAll} />
+                  </th>
+                  <th className={`${thBase} w-10`}>序号</th>
+                  <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
+                  <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("beian_hao")}>备案编码<SortIco col="beian_hao" /></th>
+                  <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("latest_nav")}>团队单位净值<SortIco col="latest_nav" /></th>
+                  <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("latest_nav_date")}>团队净值日期<SortIco col="latest_nav_date" /></th>
+                  <th className={`${thSort} text-right min-w-[100px]`} onClick={() => handleSort("latest_price_change")}>团队涨跌幅<SortIco col="latest_price_change" /></th>
+                  <th className={`${thBase} text-center w-20`}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                ) : !isSupportedPool ? (
+                  <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
+                ) : data.length === 0 ? (
+                  <tr><td colSpan={8} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
+                ) : data.map((row, i) => {
+                  const isSelected = selected.has(row.beian_hao)
+                  const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
+                  const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/40" : "group-hover:bg-muted"
+                  const cell = `border-b px-3 py-2 ${bg} ${hoverBg} transition-colors`
+                  return (
+                    <tr key={row.beian_hao} className="group">
+                      <td className={`${cell} px-2 text-center`}>
+                        <input type="checkbox" className="rounded h-3 w-3"
+                          checked={isSelected}
+                          onChange={() => {
+                            const s = new Set(selected)
+                            isSelected ? s.delete(row.beian_hao) : s.add(row.beian_hao)
+                            setSelected(s)
+                          }} />
+                      </td>
+                      <td className={`${cell} text-center tabular-nums`}>{(page - 1) * 50 + i + 1}</td>
+                      <td className={cell}>
+                        <a
+                          href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[240px]"
+                          title={row.product_name}
+                        >{row.short_name || row.product_name}</a>
+                        {row.strategy_l1 && (
+                          <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
+                            {row.strategy_l1}
+                          </span>
+                        )}
+                      </td>
+                      <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao}</td>
+                      <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
+                      <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                      <td className={`${cell} text-center`}>
+                        <div className="flex items-center justify-center gap-1">
+                          <div
+                            onMouseEnter={(e) => {
+                              if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                              hoverTimeout.current = setTimeout(() => {
+                                setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                                setHoverChartRow(row.beian_hao)
+                              }, 200)
+                            }}
+                            onMouseLeave={() => {
+                              if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                              hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                            }}>
+                            <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
+                          </div>
+                          <TrackingRowMenu
+                            beian_hao={row.beian_hao}
+                            product_name={row.product_name}
+                            onQueryElements={() => { setElementsBeianHao(row.beian_hao); setElementsName(row.product_name); setShowElementsDialog(true) }}
+                            onEditTags={() => openEditTagDialog(row.beian_hao, row.product_name)}
+                            onEditStrategy={() => openEditStrategyDialog(row.beian_hao, row.product_name)}
+                            onNoteManage={() => openNoteDialog(row.beian_hao, row.product_name)}
+                            onRemove={() => { setBatchContextPool(sourcePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          ) : (
           <div className="overflow-auto rounded-lg border flex-1 min-h-0">
             <table className="text-sm border-collapse w-full" style={{ minWidth: 1400 }}>
               <thead className="sticky top-0 z-20">
@@ -2316,39 +2526,16 @@ function InvestmentTrackingView() {
                         )}
                       </td>
                       <td className={`${stickyCell} text-center sticky right-0`}>
-                        <div className="relative flex items-center justify-center">
-                          <button
-                            onClick={() => setOpenRowMenu(openRowMenu === row.beian_hao ? null : row.beian_hao)}
-                            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest">
-                            ···
-                          </button>
-                          {openRowMenu === row.beian_hao && (
-                            <>
-                              <div className="fixed inset-0 z-30" onClick={() => setOpenRowMenu(null)} />
-                              <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[140px]" onClick={(e) => e.stopPropagation()}>
-                                <button onClick={() => { setElementsBeianHao(row.beian_hao); setElementsName(row.product_name); setShowElementsDialog(true); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><FileSearch className="h-3.5 w-3.5 text-muted-foreground" />查询要素</button>
-                                <button onClick={() => { openEditTagDialog(row.beian_hao, row.product_name); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><Tag className="h-3.5 w-3.5 text-muted-foreground" />编辑标签</button>
-                                <button onClick={() => { openEditStrategyDialog(row.beian_hao, row.product_name); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><Layers className="h-3.5 w-3.5 text-muted-foreground" />编辑策略</button>
-                                <button onClick={() => { openNoteDialog(row.beian_hao, row.product_name); setOpenRowMenu(null) }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><StickyNote className="h-3.5 w-3.5 text-muted-foreground" />备注管理</button>
-                                <button onClick={() => setOpenRowMenu(null)} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground" />估值表分析</button>
-                                <button onClick={() => setOpenRowMenu(null)} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2"><Star className="h-3.5 w-3.5 text-muted-foreground" />收藏</button>
-                                <div className="border-t my-1" />
-                                <button
-                                  onClick={() => {
-                                    setBatchContextPool(sourcePool)
-                                    setBatchConfirmTitle("取消跟踪")
-                                    setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`)
-                                    setBatchConfirmAction("remove")
-                                    setSelected(new Set([row.beian_hao]))
-                                    setOpenRowMenu(null)
-                                    setShowBatchConfirmDialog(true)
-                                  }}
-                                  className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500">
-                                  <MinusCircle className="h-3.5 w-3.5" />取消跟踪
-                                </button>
-                              </div>
-                            </>
-                          )}
+                        <div className="flex items-center justify-center">
+                          <TrackingRowMenu
+                            beian_hao={row.beian_hao}
+                            product_name={row.product_name}
+                            onQueryElements={() => { setElementsBeianHao(row.beian_hao); setElementsName(row.product_name); setShowElementsDialog(true) }}
+                            onEditTags={() => openEditTagDialog(row.beian_hao, row.product_name)}
+                            onEditStrategy={() => openEditStrategyDialog(row.beian_hao, row.product_name)}
+                            onNoteManage={() => openNoteDialog(row.beian_hao, row.product_name)}
+                            onRemove={() => { setBatchContextPool(sourcePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -2357,6 +2544,7 @@ function InvestmentTrackingView() {
               </tbody>
             </table>
           </div>
+          )}
 
           {/* Pagination */}
           {isSupportedPool && (
@@ -2371,7 +2559,11 @@ function InvestmentTrackingView() {
                   ) : (
                     <button key={btn} onClick={() => setPage(btn as number)}
                       className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
-                        btn === page ? "bg-zinc-900 text-white border-zinc-900 font-medium dark:bg-zinc-100 dark:text-zinc-900" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                        btn === page
+                          ? isOps
+                            ? "bg-red-500 text-white border-red-500 font-medium"
+                            : "bg-zinc-900 text-white border-zinc-900 font-medium dark:bg-zinc-100 dark:text-zinc-900"
+                          : "text-foreground hover:bg-muted border-border"].join(" ")}>
                       {btn}
                     </button>
                   )
@@ -2394,7 +2586,7 @@ function InvestmentTrackingView() {
       </div>
       )}
 
-      {trackTab === "mine" && (
+      {!isOps && trackTab === "mine" && (
       <div className="flex gap-0 flex-1 min-h-0">
         {/* Mine sidebar */}
         <aside className="w-32 flex-shrink-0 border-r">
@@ -4288,15 +4480,25 @@ function InvestmentTrackingView() {
           </div>
         </div>
       )}
+
     </div>
   )
 }
 
 // ─── OperationsStrategyTagsView ───────────────────────────────────────────
 
+interface OpsStrategyL2 {
+  l2: string
+  l3s: string[]
+}
+
 interface OpsStrategyL1 {
   l1: string
-  l2s: string[]
+  l2s: OpsStrategyL2[]
+}
+
+function opsL2Key(l1: string, l2: string) {
+  return `${l1}\u0000${l2}`
 }
 
 const TAG_CATEGORIES = [
@@ -4539,40 +4741,423 @@ function OperationsTeamTagsTab() {
   )
 }
 
+const FIELD_CATEGORIES = ["文本", "数字", "百分数", "日期", "单选", "多选", "附件", "人员"] as const
+
+function FieldFormLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-[5.5rem] text-right">
+      <span className="text-red-500">*</span> {children}
+    </label>
+  )
+}
+
+interface OpsFieldRow {
+  id: number
+  name: string
+  category: string
+  sort_order: number
+  created_by: string
+  updated_by: string
+  created_at: string
+  updated_at: string
+}
+
+function OperationsTeamFieldsTab({
+  externalNewOpen,
+  onExternalNewClose,
+}: {
+  externalNewOpen?: boolean
+  onExternalNewClose?: () => void
+}) {
+  const [fields, setFields] = useState<OpsFieldRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showNewModal, setShowNewModal] = useState(false)
+  const [newFieldName, setNewFieldName] = useState("")
+  const [newFieldCategory, setNewFieldCategory] = useState<string>("文本")
+  const [newFieldSaving, setNewFieldSaving] = useState(false)
+  const [editingField, setEditingField] = useState<OpsFieldRow | null>(null)
+  const [editFieldName, setEditFieldName] = useState("")
+  const [editFieldCategory, setEditFieldCategory] = useState<string>("文本")
+  const [editFieldSaving, setEditFieldSaving] = useState(false)
+
+  function currentUserName(): string {
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      return u?.name || u?.email || ""
+    } catch { return "" }
+  }
+
+  function loadFields() {
+    setLoading(true)
+    fetch("/ma/api/ops/team-fields")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setFields(d) : null)
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { loadFields() }, [])
+
+  useEffect(() => {
+    if (externalNewOpen) {
+      setNewFieldName("")
+      setNewFieldCategory("文本")
+      setShowNewModal(true)
+      onExternalNewClose?.()
+    }
+  }, [externalNewOpen, onExternalNewClose])
+
+  async function createField() {
+    if (!newFieldName.trim()) return
+    setNewFieldSaving(true)
+    try {
+      const res = await fetch("/ma/api/ops/team-fields", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: newFieldName.trim(), category: newFieldCategory, user_name: currentUserName() }),
+      })
+      if (res.ok) {
+        setShowNewModal(false)
+        setNewFieldName("")
+        loadFields()
+      }
+    } finally { setNewFieldSaving(false) }
+  }
+
+  async function saveEditField() {
+    if (!editingField || !editFieldName.trim()) return
+    setEditFieldSaving(true)
+    try {
+      const res = await fetch(`/ma/api/ops/team-fields/${editingField.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editFieldName.trim(), category: editFieldCategory, user_name: currentUserName() }),
+      })
+      if (res.ok) {
+        setEditingField(null)
+        loadFields()
+      }
+    } finally { setEditFieldSaving(false) }
+  }
+
+  async function deleteField(id: number) {
+    await fetch(`/ma/api/ops/team-fields/${id}`, { method: "DELETE" })
+    setFields((prev) => prev.filter((f) => f.id !== id))
+  }
+
+  return (
+    <>
+      <div className="overflow-auto rounded border mt-4">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-muted/40 border-b">
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">字段名称</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">字段类别</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">最近修改</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 w-24">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={5} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : fields.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : fields.map((field, i) => (
+              <tr key={field.id} className="border-b hover:bg-muted/20 transition-colors">
+                <td className="px-4 py-3 text-muted-foreground tabular-nums">{i + 1}</td>
+                <td className="px-4 py-3 font-medium">{field.name}</td>
+                <td className="px-4 py-3">{field.category}</td>
+                <td className="px-4 py-3 tabular-nums text-muted-foreground">{fmtDateTime(field.updated_at)}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-3">
+                    <button
+                      title="编辑"
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => {
+                        setEditingField(field)
+                        setEditFieldName(field.name)
+                        setEditFieldCategory(field.category)
+                      }}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
+                    </button>
+                    <button
+                      title="删除"
+                      className="text-muted-foreground hover:text-red-500 transition-colors"
+                      onClick={() => deleteField(field.id)}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-4 pt-3 border-t">
+        <p className="text-xs text-muted-foreground">
+          说明：自定义团队字段，满足个性化字段需求，新建后可在投资/运维各基金列表编辑和查看。字段可拖拽排序。
+        </p>
+      </div>
+
+      {showNewModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNewModal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[420px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <span className="font-semibold text-base">新建字段</span>
+              <button onClick={() => setShowNewModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="space-y-5 mb-8">
+              <div className="flex items-center gap-3">
+                <FieldFormLabel>字段类别：</FieldFormLabel>
+                <select
+                  value={newFieldCategory}
+                  onChange={(e) => setNewFieldCategory(e.target.value)}
+                  className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-red-300 bg-background"
+                >
+                  {FIELD_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <FieldFormLabel>字段名称：</FieldFormLabel>
+                <input
+                  className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-red-300 bg-background"
+                  placeholder=""
+                  value={newFieldName}
+                  onChange={(e) => setNewFieldName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !newFieldSaving && createField()}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button
+                onClick={createField}
+                disabled={!newFieldName.trim() || newFieldSaving}
+                className="px-6 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {newFieldSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingField && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditingField(null)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">编辑字段</span>
+              <button onClick={() => setEditingField(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="space-y-5 mb-8">
+              <div className="flex items-center gap-3">
+                <FieldFormLabel>字段类别：</FieldFormLabel>
+                <select
+                  value={editFieldCategory}
+                  onChange={(e) => setEditFieldCategory(e.target.value)}
+                  className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-red-300 bg-background"
+                >
+                  {FIELD_CATEGORIES.map((c) => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <FieldFormLabel>字段名称：</FieldFormLabel>
+                <input
+                  autoFocus
+                  className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-red-300 bg-background"
+                  value={editFieldName}
+                  onChange={(e) => setEditFieldName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && !editFieldSaving && saveEditField()}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingField(null)}
+                className="px-5 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={saveEditField}
+                disabled={!editFieldName.trim() || editFieldSaving}
+                className="px-5 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {editFieldSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialOpsTab?: "strategies" | "tags" | "fields" }) {
   const [opsTab, setOpsTab] = useState<"strategies" | "tags" | "fields">(initialOpsTab)
   const [strategies, setStrategies] = useState<OpsStrategyL1[]>([])
   const [loading, setLoading] = useState(false)
-  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [expandedL1, setExpandedL1] = useState<Set<string>>(new Set())
+  const [expandedL2, setExpandedL2] = useState<Set<string>>(new Set())
   const [showNewL1Modal, setShowNewL1Modal] = useState(false)
   const [newL1Name, setNewL1Name] = useState("")
-  const [editingKey, setEditingKey] = useState<{ l1: string; l2?: string } | null>(null)
+  const [openNewFieldModal, setOpenNewFieldModal] = useState(false)
+  const [addChildModal, setAddChildModal] = useState<{ level: 2 | 3; l1: string; l2?: string } | null>(null)
+  const [addChildNames, setAddChildNames] = useState<string[]>([""])
+  const [editL3Modal, setEditL3Modal] = useState<{ l1: string; l2: string } | null>(null)
+  const [editL3Names, setEditL3Names] = useState<string[]>([])
+  const [editingKey, setEditingKey] = useState<{ l1: string } | null>(null)
   const [editName, setEditName] = useState("")
+
+  function openEditL3Modal(l1: string, l2: string) {
+    const l2Node = strategies.find((s) => s.l1 === l1)?.l2s.find((n) => n.l2 === l2)
+    setEditL3Modal({ l1, l2 })
+    setEditL3Names(l2Node?.l3s.length ? [...l2Node.l3s] : [""])
+  }
+
+  function confirmEditL3() {
+    if (!editL3Modal) return
+    const seen = new Set<string>()
+    const names: string[] = []
+    for (const raw of editL3Names) {
+      const name = raw.trim()
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      names.push(name)
+    }
+    setStrategies((prev) => prev.map((s) => {
+      if (s.l1 !== editL3Modal.l1) return s
+      return {
+        ...s,
+        l2s: s.l2s.map((n) => n.l2 !== editL3Modal.l2 ? n : { ...n, l3s: names }),
+      }
+    }))
+    if (names.length > 0) {
+      setExpandedL1((prev) => new Set(prev).add(editL3Modal.l1))
+      setExpandedL2((prev) => new Set(prev).add(opsL2Key(editL3Modal.l1, editL3Modal.l2)))
+    }
+    setEditL3Modal(null)
+    setEditL3Names([])
+  }
+
+  function TrashIcon() {
+    return (
+      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polyline points="3 6 5 6 21 6" />
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+        <path d="M10 11v6" />
+        <path d="M14 11v6" />
+        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+      </svg>
+    )
+  }
+
+  function openAddChildModal(level: 2 | 3, l1: string, l2?: string) {
+    setAddChildModal({ level, l1, l2 })
+    setAddChildNames([""])
+  }
+
+  function confirmAddChild() {
+    if (!addChildModal) return
+    const names = addChildNames.map((n) => n.trim()).filter(Boolean)
+    if (names.length === 0) return
+
+    if (addChildModal.level === 2) {
+      setStrategies((prev) => prev.map((s) => {
+        if (s.l1 !== addChildModal.l1) return s
+        const existing = new Set(s.l2s.map((n) => n.l2))
+        const newL2s = names.filter((n) => !existing.has(n)).map((n) => ({ l2: n, l3s: [] }))
+        return { ...s, l2s: [...s.l2s, ...newL2s] }
+      }))
+      setExpandedL1((prev) => new Set(prev).add(addChildModal.l1))
+    } else if (addChildModal.l2) {
+      const { l1, l2 } = addChildModal
+      setStrategies((prev) => prev.map((s) => {
+        if (s.l1 !== l1) return s
+        return {
+          ...s,
+          l2s: s.l2s.map((n) => {
+            if (n.l2 !== l2) return n
+            const existing = new Set(n.l3s)
+            const newL3s = names.filter((name) => !existing.has(name))
+            return { ...n, l3s: [...n.l3s, ...newL3s] }
+          }),
+        }
+      }))
+      setExpandedL1((prev) => new Set(prev).add(l1))
+      setExpandedL2((prev) => new Set(prev).add(opsL2Key(l1, l2)))
+    }
+    setAddChildModal(null)
+    setAddChildNames([""])
+  }
+
+  function AddChildIcon() {
+    return (
+      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="5" r="2" />
+        <circle cx="5" cy="19" r="2" />
+        <circle cx="19" cy="19" r="2" />
+        <path d="M12 7v5" />
+        <path d="M8 14h8" />
+        <path d="M5 17v-2" />
+        <path d="M19 17v-2" />
+      </svg>
+    )
+  }
 
   useEffect(() => {
     setLoading(true)
-    fetch("/ma/api/private-funds/strategies")
+    fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all")
       .then((r) => r.json())
       .then((d) => Array.isArray(d) ? setStrategies(d) : null)
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [])
 
-  function toggleExpand(l1: string) {
-    setExpanded((prev) => {
+  function toggleExpandL1(l1: string) {
+    setExpandedL1((prev) => {
       const next = new Set(prev)
       next.has(l1) ? next.delete(l1) : next.add(l1)
       return next
     })
   }
 
-  interface FlatRow { type: "l1" | "l2"; l1: string; l2?: string; index?: number }
+  function toggleExpandL2(l1: string, l2: string) {
+    const key = opsL2Key(l1, l2)
+    setExpandedL2((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  type FlatRow =
+    | { type: "l1"; l1: string; index: number; hasChildren: boolean }
+    | { type: "l2"; l1: string; l2: string; hasChildren: boolean }
+    | { type: "l3"; l1: string; l2: string; l3: string }
+
   const rows: FlatRow[] = []
   let idx = 1
   for (const s of strategies) {
-    rows.push({ type: "l1", l1: s.l1, index: idx++ })
-    if (expanded.has(s.l1)) {
-      for (const l2 of s.l2s) rows.push({ type: "l2", l1: s.l1, l2 })
+    const hasL2 = s.l2s.length > 0
+    rows.push({ type: "l1", l1: s.l1, index: idx++, hasChildren: hasL2 })
+    if (expandedL1.has(s.l1)) {
+      for (const l2Node of s.l2s) {
+        const hasL3 = l2Node.l3s.length > 0
+        rows.push({ type: "l2", l1: s.l1, l2: l2Node.l2, hasChildren: hasL3 })
+        if (expandedL2.has(opsL2Key(s.l1, l2Node.l2))) {
+          for (const l3 of l2Node.l3s) {
+            rows.push({ type: "l3", l1: s.l1, l2: l2Node.l2, l3 })
+          }
+        }
+      }
     }
   }
 
@@ -4610,6 +5195,14 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
             新建一级
           </button>
         )}
+        {opsTab === "fields" && (
+          <button
+            onClick={() => setOpenNewFieldModal(true)}
+            className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
+          >
+            新建字段
+          </button>
+        )}
       </div>
 
       {/* Strategies table */}
@@ -4632,62 +5225,118 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
                 ) : rows.length === 0 ? (
                   <tr><td colSpan={5} className="py-20 text-center text-muted-foreground">暂无策略</td></tr>
                 ) : rows.map((row, i) => (
-                  <tr key={`${row.l1}_${row.l2 ?? "l1"}_${i}`} className="border-b hover:bg-muted/20 transition-colors">
+                  <tr key={`${row.type}_${row.type === "l3" ? row.l3 : row.type === "l2" ? row.l2 : row.l1}_${i}`} className="border-b hover:bg-muted/20 transition-colors">
                     <td className="px-4 py-3 text-muted-foreground tabular-nums">
                       {row.type === "l1" ? row.index : ""}
                     </td>
                     <td className="px-4 py-3">
                       {row.type === "l1" ? (
-                        <button
-                          onClick={() => toggleExpand(row.l1)}
-                          className="inline-flex items-center gap-1.5 text-sm font-medium text-foreground hover:text-red-500 transition-colors"
-                        >
-                          <span className="text-red-500 font-bold text-base leading-none select-none">+</span>
+                        <span className="inline-flex items-center gap-1.5 text-sm font-medium">
+                          {row.hasChildren ? (
+                            <button
+                              onClick={() => toggleExpandL1(row.l1)}
+                              className="text-red-500 font-bold text-base leading-none select-none w-4 hover:opacity-70 transition-opacity"
+                              title={expandedL1.has(row.l1) ? "收起" : "展开"}
+                            >
+                              {expandedL1.has(row.l1) ? "−" : "+"}
+                            </button>
+                          ) : (
+                            <span className="w-4 inline-block text-muted-foreground text-center">−</span>
+                          )}
                           {row.l1}
-                        </button>
+                        </span>
                       ) : (
-                        <span className="text-muted-foreground pl-5">—</span>
+                        <span className="text-muted-foreground pl-5">−</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
                       {row.type === "l2" ? (
-                        <span className="text-sm">{row.l2}</span>
+                        <span className="inline-flex items-center gap-1.5 text-sm">
+                          {row.hasChildren ? (
+                            <button
+                              onClick={() => toggleExpandL2(row.l1, row.l2)}
+                              className="text-red-500 font-bold text-base leading-none select-none w-4 hover:opacity-70 transition-opacity"
+                              title={expandedL2.has(opsL2Key(row.l1, row.l2)) ? "收起" : "展开"}
+                            >
+                              {expandedL2.has(opsL2Key(row.l1, row.l2)) ? "−" : "+"}
+                            </button>
+                          ) : (
+                            <span className="w-4 inline-block text-muted-foreground text-center">−</span>
+                          )}
+                          {row.l2}
+                        </span>
                       ) : (
-                        <span className="text-muted-foreground">-</span>
+                        <span className="text-muted-foreground">{row.type === "l3" ? "−" : "−"}</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <span className="text-muted-foreground">-</span>
+                      {row.type === "l3" ? (
+                        <span className="text-sm">{row.l3}</span>
+                      ) : (
+                        <span className="text-muted-foreground">−</span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-3">
-                        <button
-                          title="编辑"
-                          className="text-muted-foreground hover:text-foreground transition-colors"
-                          onClick={() => {
-                            setEditingKey({ l1: row.l1, l2: row.l2 })
-                            setEditName(row.type === "l1" ? row.l1 : (row.l2 ?? ""))
-                          }}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
-                        </button>
-                        <button
-                          title="管理子级"
-                          className="text-muted-foreground hover:text-foreground transition-colors"
-                          onClick={() => toggleExpand(row.l1)}
-                        >
-                          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
-                        </button>
+                        {row.type === "l1" && (
+                          <button
+                            title="编辑"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => {
+                              setEditingKey({ l1: row.l1 })
+                              setEditName(row.l1)
+                            }}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
+                          </button>
+                        )}
+                        {row.type === "l2" && (
+                          <button
+                            title="编辑三级"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => openEditL3Modal(row.l1, row.l2)}
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
+                          </button>
+                        )}
+                        {row.type === "l1" && (
+                          <button
+                            title="新增二级"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => openAddChildModal(2, row.l1)}
+                          >
+                            <AddChildIcon />
+                          </button>
+                        )}
+                        {row.type === "l2" && (
+                          <button
+                            title="新增三级"
+                            className="text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={() => openAddChildModal(3, row.l1, row.l2)}
+                          >
+                            <AddChildIcon />
+                          </button>
+                        )}
                         <button
                           title="删除"
                           className="text-muted-foreground hover:text-red-500 transition-colors"
                           onClick={() => {
                             if (row.type === "l1") {
                               setStrategies((prev) => prev.filter((s) => s.l1 !== row.l1))
-                              setExpanded((prev) => { const next = new Set(prev); next.delete(row.l1); return next })
+                              setExpandedL1((prev) => { const next = new Set(prev); next.delete(row.l1); return next })
+                            } else if (row.type === "l2") {
+                              setStrategies((prev) => prev.map((s) =>
+                                s.l1 !== row.l1 ? s : { ...s, l2s: s.l2s.filter((x) => x.l2 !== row.l2) }
+                              ))
+                              setExpandedL2((prev) => { const next = new Set(prev); next.delete(opsL2Key(row.l1, row.l2)); return next })
                             } else {
                               setStrategies((prev) => prev.map((s) =>
-                                s.l1 !== row.l1 ? s : { ...s, l2s: s.l2s.filter((x) => x !== row.l2) }
+                                s.l1 !== row.l1 ? s : {
+                                  ...s,
+                                  l2s: s.l2s.map((n) =>
+                                    n.l2 !== row.l2 ? n : { ...n, l3s: n.l3s.filter((x) => x !== row.l3) }
+                                  ),
+                                }
                               ))
                             }
                           }}
@@ -4712,9 +5361,10 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
       {opsTab === "tags" && <OperationsTeamTagsTab />}
 
       {opsTab === "fields" && (
-        <div className="flex-1 flex items-center justify-center text-muted-foreground mt-8">
-          团队字段管理（待开发）
-        </div>
+        <OperationsTeamFieldsTab
+          externalNewOpen={openNewFieldModal}
+          onExternalNewClose={() => setOpenNewFieldModal(false)}
+        />
       )}
 
       {/* New L1 modal */}
@@ -4760,12 +5410,117 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
         </div>
       )}
 
-      {/* Edit modal */}
+      {/* Add L2 / L3 modal */}
+      {addChildModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setAddChildModal(null)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[480px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <span className="font-semibold text-base">
+                {addChildModal.level === 2 ? "新增二级" : "新增三级"}
+              </span>
+              <button onClick={() => setAddChildModal(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="space-y-3 mb-8">
+              {addChildNames.map((name, i) => (
+                <div key={i} className="flex items-center gap-3">
+                  <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-20 text-right">
+                    {addChildModal.level === 2 ? "二级策略：" : "三级策略："}
+                  </label>
+                  <input
+                    autoFocus={i === 0}
+                    className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                    placeholder="请输入策略名称"
+                    value={name}
+                    onChange={(e) => setAddChildNames((prev) => prev.map((v, j) => j === i ? e.target.value : v))}
+                    onKeyDown={(e) => e.key === "Enter" && confirmAddChild()}
+                  />
+                  {i === addChildNames.length - 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setAddChildNames((prev) => [...prev, ""])}
+                      className="h-7 w-7 flex items-center justify-center rounded-full border border-zinc-300 text-zinc-500 hover:border-red-400 hover:text-red-500 transition-colors shrink-0"
+                      title="添加一行"
+                    >
+                      <PlusCircle className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setAddChildModal(null)}
+                className="px-5 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={confirmAddChild}
+                disabled={!addChildNames.some((n) => n.trim())}
+                className="px-5 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                确 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit L3 modal */}
+      {editL3Modal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditL3Modal(null)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <span className="font-semibold text-base">编辑三级</span>
+              <button onClick={() => setEditL3Modal(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="space-y-3 mb-8 max-h-[360px] overflow-y-auto">
+              {editL3Names.map((name, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-20 text-right">三级策略：</label>
+                  <input
+                    autoFocus={i === 0}
+                    className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                    value={name}
+                    onChange={(e) => setEditL3Names((prev) => prev.map((v, j) => j === i ? e.target.value : v))}
+                  />
+                  <div className="flex items-center gap-1.5 shrink-0 w-14 justify-end">
+                    {i === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setEditL3Names((prev) => [...prev, ""])}
+                        className="text-muted-foreground hover:text-red-500 transition-colors"
+                        title="添加一行"
+                      >
+                        <PlusCircle className="h-4 w-4" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setEditL3Names((prev) => prev.length <= 1 ? [""] : prev.filter((_, j) => j !== i))}
+                      className="text-muted-foreground hover:text-red-500 transition-colors"
+                      title="删除"
+                    >
+                      <TrashIcon />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditL3Modal(null)}
+                className="px-5 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={confirmEditL3}
+                className="px-5 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors">
+                确 定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit L1 modal */}
       {editingKey && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditingKey(null)}>
           <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
-              <span className="font-semibold text-base">编辑策略名称</span>
+              <span className="font-semibold text-base">编辑一级策略</span>
               <button onClick={() => setEditingKey(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
             </div>
             <div className="flex items-center gap-3 mb-6">
@@ -4778,11 +5533,7 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
                 onChange={(e) => setEditName(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && editName.trim()) {
-                    if (!editingKey.l2) {
-                      setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
-                    } else {
-                      setStrategies((prev) => prev.map((s) => s.l1 !== editingKey.l1 ? s : { ...s, l2s: s.l2s.map((x) => x === editingKey.l2 ? editName.trim() : x) }))
-                    }
+                    setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
                     setEditingKey(null)
                   }
                 }}
@@ -4794,11 +5545,7 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
               <button
                 onClick={() => {
                   if (editName.trim()) {
-                    if (!editingKey.l2) {
-                      setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
-                    } else {
-                      setStrategies((prev) => prev.map((s) => s.l1 !== editingKey.l1 ? s : { ...s, l2s: s.l2s.map((x) => x === editingKey.l2 ? editName.trim() : x) }))
-                    }
+                    setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
                     setEditingKey(null)
                   }
                 }}
@@ -4810,6 +5557,3713 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── OperationsDirectView ──────────────────────────────────────────────────
+
+type DirectFundClass = "private" | "public" | "team"
+type DirectHoldingStatus = "holding" | "cleared"
+type DirectSortKey =
+  | "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change"
+  | "holding_mv" | "holding_shares"
+
+interface DirectFundRow {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  holding_mv: string | null
+  holding_shares: string | null
+  valuation_date: string | null
+}
+
+function DirectFormLabel({ children, required = true }: { children: React.ReactNode; required?: boolean }) {
+  return (
+    <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-[7.5rem] text-right pt-2 leading-snug">
+      {required && <span className="text-red-500 mr-0.5">*</span>}
+      {children}
+    </label>
+  )
+}
+
+function DirectFormHint() {
+  return (
+    <span
+      title="说明"
+      className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-zinc-300 text-[9px] leading-none text-zinc-400 ml-0.5 align-middle cursor-help"
+    >
+      ?
+    </span>
+  )
+}
+
+const DIRECT_FIELD_CONFIG_TABS = ["基本信息", "申赎信息", "团队策略/标签", "净值信息", "团队字段"] as const
+const DIRECT_FIELD_CONFIG_LOCKED = "备案编码"
+const DIRECT_FIELD_CONFIG_DEFAULT = ["备案编码", "单位净值", "净值日期", "涨跌幅"]
+const DIRECT_FIELD_CONFIG_OPTIONS: Record<string, string[]> = {
+  "基本信息": ["备案编码", "备案日期", "成立日期", "基金全称", "管理人规模", "基准指数", "基金管理人", "投资顾问", "托管券商", "平台一级策略", "平台二级策略", "平台三级策略"],
+  "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "最低申购金额", "封闭期", "开放日"],
+  "团队策略/标签": ["团队一级策略", "团队二级策略", "团队三级策略", "团队标签", "所在跟踪池"],
+  "净值信息": ["单位净值", "净值日期", "涨跌幅", "成立以来收益", "近一年收益", "最大回撤", "年化收益", "年化波动率", "夏普比率", "卡玛比率"],
+  "团队字段": ["团队评级", "团队备注", "关注度"],
+}
+
+const OPS_AUDIT_LOG_TYPES = ["不限", "跟踪产品", "跟踪管理人", "要素", "在管产品", "团队数据"] as const
+
+function OpsAuditLogDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [logType, setLogType] = useState<string>("不限")
+  const [page, setPage] = useState(1)
+  const [logs, setLogs] = useState<{ operator: string; operated_at: string; action: string }[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+
+  const pageSize = 20
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) })
+    if (logType !== "不限") params.set("type", logType)
+    fetch(`/ma/api/ops/audit-logs?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setLogs(json.data ?? [])
+        setTotal(json.total ?? 0)
+      })
+      .catch(() => {
+        setLogs([])
+        setTotal(0)
+      })
+      .finally(() => setLoading(false))
+  }, [open, logType, page])
+
+  useEffect(() => {
+    if (open) {
+      setPage(1)
+      setLogType("不限")
+    }
+  }, [open])
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="bg-background rounded-lg shadow-xl w-full max-w-[760px] flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">操作日志</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="px-6 pt-4 pb-3 border-b flex-shrink-0">
+          <div className="flex items-center gap-2 flex-wrap text-xs">
+            <span className="text-zinc-400 shrink-0">类型：</span>
+            {OPS_AUDIT_LOG_TYPES.map((t) => (
+              <span
+                key={t}
+                onClick={() => { setLogType(t); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border cursor-pointer transition-colors",
+                  logType === t
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+          <p className="text-xs text-zinc-400 mt-2">* 仅展示近6月操作日志。</p>
+        </div>
+
+        <div className="flex-1 overflow-auto min-h-[280px]">
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-muted/40 border-b">
+                <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-16">序号</th>
+                <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-28">操作人</th>
+                <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-44">操作时间</th>
+                <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">操作事项</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={4} className="py-16 text-center text-muted-foreground">加载中…</td></tr>
+              ) : logs.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="py-16 text-center text-muted-foreground">
+                    <div className="flex flex-col items-center gap-2">
+                      <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                      <span>暂无数据</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : logs.map((row, i) => (
+                <tr key={`${row.operated_at}-${i}`} className="border-b hover:bg-muted/20 transition-colors">
+                  <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{(page - 1) * pageSize + i + 1}</td>
+                  <td className="px-4 py-2.5">{row.operator}</td>
+                  <td className="px-4 py-2.5 tabular-nums whitespace-nowrap text-muted-foreground">{row.operated_at}</td>
+                  <td className="px-4 py-2.5">{row.action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex items-center justify-between px-6 py-3 border-t flex-shrink-0 text-sm text-zinc-500">
+          <span>共{total}条</span>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed">‹</button>
+            <span className="w-7 h-7 flex items-center justify-center rounded border bg-red-500 text-white text-xs font-medium">{page}</span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages || total === 0}
+              className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed">›</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function DirectFieldConfigDialog({
+  open,
+  selected,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  selected: string[]
+  onClose: () => void
+  onConfirm: (fields: string[]) => void
+}) {
+  const [tab, setTab] = useState<string>("基本信息")
+  const [draft, setDraft] = useState<string[]>(selected)
+
+  useEffect(() => {
+    if (open) setDraft(selected.includes(DIRECT_FIELD_CONFIG_LOCKED) ? selected : [DIRECT_FIELD_CONFIG_LOCKED, ...selected])
+  }, [open, selected])
+
+  if (!open) return null
+
+  const opts = DIRECT_FIELD_CONFIG_OPTIONS[tab] ?? []
+
+  function ensureLocked(fields: string[]) {
+    return fields.includes(DIRECT_FIELD_CONFIG_LOCKED)
+      ? fields
+      : [DIRECT_FIELD_CONFIG_LOCKED, ...fields]
+  }
+
+  function toggleDraft(field: string) {
+    if (field === DIRECT_FIELD_CONFIG_LOCKED) return
+    setDraft((prev) => {
+      const next = prev.includes(field) ? prev.filter((x) => x !== field) : [...prev, field]
+      return ensureLocked(next)
+    })
+  }
+
+  function clearDraft() {
+    setDraft([DIRECT_FIELD_CONFIG_LOCKED])
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="bg-background rounded-lg shadow-xl w-full max-w-[760px] flex flex-col max-h-[80vh]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">字段配置</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+        <div className="flex flex-1 overflow-hidden min-h-0">
+          <div className="flex-1 flex flex-col min-w-0 px-6 py-4 overflow-y-auto">
+            <div className="flex items-center gap-4 mb-4 flex-wrap">
+              {DIRECT_FIELD_CONFIG_TABS.map((t) => (
+                <label key={t} className="flex items-center gap-1.5 cursor-pointer text-sm whitespace-nowrap">
+                  <input
+                    type="radio"
+                    name="directFieldConfigTab"
+                    checked={tab === t}
+                    onChange={() => setTab(t)}
+                    className="accent-red-500 h-3.5 w-3.5"
+                  />
+                  {t}
+                </label>
+              ))}
+            </div>
+            <div className="grid grid-cols-3 gap-x-6 gap-y-3">
+              {opts.map((f) => {
+                const locked = f === DIRECT_FIELD_CONFIG_LOCKED
+                return (
+                  <label
+                    key={f}
+                    className={["flex items-center gap-2 text-sm", locked ? "cursor-not-allowed opacity-60" : "cursor-pointer"].join(" ")}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.includes(f)}
+                      disabled={locked}
+                      onChange={() => toggleDraft(f)}
+                      className="rounded h-3.5 w-3.5 accent-red-500 disabled:opacity-70"
+                    />
+                    {f}
+                  </label>
+                )
+              })}
+            </div>
+          </div>
+          <div className="w-48 border-l flex flex-col px-4 py-4 flex-shrink-0 min-h-0">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm text-zinc-600">已选({draft.length})</span>
+              <button onClick={clearDraft} className="text-xs text-blue-500 hover:text-blue-600 transition-colors">清空</button>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-1.5">
+              {draft.map((f) => {
+                const locked = f === DIRECT_FIELD_CONFIG_LOCKED
+                return (
+                  <div key={f} className="flex items-center justify-between text-sm py-0.5">
+                    <span className="text-zinc-700 dark:text-zinc-300 truncate">{f}</span>
+                    {locked ? (
+                      <span className="text-zinc-300 ml-1 flex-shrink-0 cursor-not-allowed">×</span>
+                    ) : (
+                      <button onClick={() => toggleDraft(f)} className="text-zinc-400 hover:text-zinc-600 transition-colors ml-1 flex-shrink-0">×</button>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            <p className="text-xs text-zinc-400 mt-3 leading-snug">已选列表可拖拉上下排序</p>
+          </div>
+        </div>
+        <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
+          <button
+            onClick={() => onConfirm(ensureLocked(draft))}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">
+            确定
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type OpsElementsTab = "platform" | "subscription" | "attachment" | "team"
+
+interface OpsFundElementsData {
+  platform_l1: string | null
+  platform_l2: string | null
+  platform_l3: string | null
+  company_l1: string | null
+  company_l2: string | null
+  company_l3: string | null
+  benchmark: string | null
+  open_day: string | null
+  is_temporary_open: string | null
+  fee_purchase: string | null
+  add_amount: string | null
+  fee_redeem: string | null
+  precautious_line: string | null
+  closed_period: string | null
+  stop_line: string | null
+  fee_manage_rate: string | null
+  fee_trust: string | null
+  fee_manage: string | null
+  fee_admin_service: string | null
+  fee_pay: string | null
+}
+
+const OPS_ELEMENTS_TABS: { key: OpsElementsTab; label: string }[] = [
+  { key: "platform", label: "平台策略" },
+  { key: "subscription", label: "申赎信息" },
+  { key: "attachment", label: "要素附件" },
+  { key: "team", label: "团队策略" },
+]
+
+const OPS_BENCHMARK_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数"]
+
+type PerfFeeMode = "none" | "fixed" | "annual_gradient" | "excess_gradient" | "benchmark"
+
+interface PerfFeeGradient {
+  fromPct: string
+  toPct: string
+  ratePct: string
+}
+
+function OpsElementsFieldLabel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return (
+    <label className={["text-sm text-zinc-600 dark:text-zinc-400 shrink-0 w-[5.5rem] text-right leading-snug", className].join(" ")}>
+      {children}
+    </label>
+  )
+}
+
+function OpsElementsNotice({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="rounded px-3 py-2.5 text-xs leading-relaxed bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/30 dark:text-amber-200 dark:border-amber-800/50">
+      {children}
+    </div>
+  )
+}
+
+function OpsEditElementsDialog({
+  open,
+  beian_hao,
+  product_name,
+  onClose,
+}: {
+  open: boolean
+  beian_hao: string | null
+  product_name: string
+  onClose: () => void
+}) {
+  const [tab, setTab] = useState<OpsElementsTab>("platform")
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [platformTree, setPlatformTree] = useState<TrackStrategyNode[]>([])
+  const [teamTree, setTeamTree] = useState<TrackStrategyNode[]>([])
+
+  const [platformL1, setPlatformL1] = useState("")
+  const [platformL2, setPlatformL2] = useState("")
+  const [platformL3s, setPlatformL3s] = useState<string[]>([])
+  const [benchmark, setBenchmark] = useState("")
+
+  const [teamL1, setTeamL1] = useState("")
+  const [teamL2, setTeamL2] = useState("")
+  const [teamL3s, setTeamL3s] = useState<string[]>([])
+
+  const [openDay, setOpenDay] = useState("")
+  const [feePurchase, setFeePurchase] = useState("")
+  const [feeRedeem, setFeeRedeem] = useState("")
+  const [closedPeriod, setClosedPeriod] = useState("")
+  const [lockPeriodDesc, setLockPeriodDesc] = useState("")
+  const [feeManageRate, setFeeManageRate] = useState("")
+  const [feeManageDesc, setFeeManageDesc] = useState("")
+  const [feePayDesc, setFeePayDesc] = useState("")
+  const [tempOpenMode, setTempOpenMode] = useState<"yes" | "no">("no")
+  const [tempOpenPurchase, setTempOpenPurchase] = useState(false)
+  const [tempOpenRedeem, setTempOpenRedeem] = useState(false)
+  const [addAmount, setAddAmount] = useState("")
+  const [riskLevel, setRiskLevel] = useState("")
+  const [warningLineMode, setWarningLineMode] = useState<"none" | "set">("none")
+  const [warningLine, setWarningLine] = useState("")
+  const [stopLineMode, setStopLineMode] = useState<"none" | "set">("none")
+  const [stopLine, setStopLine] = useState("")
+  const [feeAdminService, setFeeAdminService] = useState("")
+  const [feeTrust, setFeeTrust] = useState("")
+  const [perfFeeMode, setPerfFeeMode] = useState<PerfFeeMode>("annual_gradient")
+  const [perfGradients, setPerfGradients] = useState<PerfFeeGradient[]>([
+    { fromPct: "0", toPct: "6", ratePct: "0" },
+    { fromPct: "6", toPct: "", ratePct: "40" },
+  ])
+
+  useEffect(() => {
+    if (!open || !beian_hao) return
+    setTab("platform")
+    setLoading(true)
+    Promise.all([
+      fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beian_hao)}`).then((r) => r.json()),
+      fetch("/ma/api/tracking-funds/strategies?strategy_source=platform&pool=all").then((r) => r.json()),
+      fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all").then((r) => r.json()),
+    ])
+      .then(([data, pTree, tTree]) => {
+        if (Array.isArray(pTree)) setPlatformTree(pTree)
+        if (Array.isArray(tTree)) setTeamTree(tTree)
+        if (data?.error) return
+        const d = data as OpsFundElementsData
+        setPlatformL1(d.platform_l1 ?? "")
+        setPlatformL2(d.platform_l2 ?? "")
+        setPlatformL3s(d.platform_l3 ? d.platform_l3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
+        setBenchmark(d.benchmark ?? "")
+        setTeamL1(d.company_l1 ?? "")
+        setTeamL2(d.company_l2 ?? "")
+        setTeamL3s(d.company_l3 ? d.company_l3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
+        setOpenDay(d.open_day ?? "")
+        setFeePurchase(d.fee_purchase ?? "")
+        setFeeRedeem(d.fee_redeem ?? "")
+        setClosedPeriod(d.closed_period ?? "")
+        setLockPeriodDesc("")
+        setFeeManageRate(d.fee_manage_rate ?? "")
+        setFeeManageDesc(d.fee_manage ?? "")
+        setFeePayDesc(d.fee_pay ?? "")
+        setAddAmount(d.add_amount ?? "")
+        setFeeAdminService(d.fee_admin_service ?? "")
+        setFeeTrust(d.fee_trust ?? "")
+        const tempText = d.is_temporary_open ?? ""
+        if (tempText.includes("不可")) {
+          setTempOpenMode("no")
+          setTempOpenPurchase(false)
+          setTempOpenRedeem(false)
+        } else if (tempText.includes("可")) {
+          setTempOpenMode("yes")
+          setTempOpenPurchase(!tempText.includes("回"))
+          setTempOpenRedeem(tempText.includes("回") || tempText === "可")
+        } else {
+          setTempOpenMode("no")
+          setTempOpenPurchase(false)
+          setTempOpenRedeem(false)
+        }
+        const prec = d.precautious_line ?? ""
+        if (prec && !prec.includes("不设置")) {
+          setWarningLineMode("set")
+          setWarningLine(prec)
+        } else {
+          setWarningLineMode("none")
+          setWarningLine("")
+        }
+        const stop = d.stop_line ?? ""
+        if (stop && !stop.includes("不设置")) {
+          setStopLineMode("set")
+          setStopLine(stop)
+        } else {
+          setStopLineMode("none")
+          setStopLine("")
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [open, beian_hao])
+
+  async function handleConfirm() {
+    if (!beian_hao) return
+    setSaving(true)
+    try {
+      await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy_l1: teamL1 || null,
+          strategy_l2: teamL2 || null,
+          strategy_l3: teamL3s.length ? teamL3s.join(",") : null,
+        }),
+      })
+      onClose()
+    } catch { /* ignore */ }
+    finally { setSaving(false) }
+  }
+
+  function renderStrategySelectors(
+    tree: TrackStrategyNode[],
+    l1: string, setL1: (v: string) => void,
+    l2: string, setL2: (v: string) => void,
+    l3s: string[], setL3s: (v: string[]) => void,
+    disabled = false,
+  ) {
+    const disabledSelectClass = "flex-1 border rounded px-3 py-1.5 text-sm bg-muted/40 text-muted-foreground cursor-not-allowed"
+    const selectClass = disabled
+      ? disabledSelectClass
+      : "flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <OpsElementsFieldLabel>一级策略：</OpsElementsFieldLabel>
+          <select
+            value={l1}
+            onChange={(e) => { setL1(e.target.value); setL2(""); setL3s([]) }}
+            disabled={disabled}
+            className={selectClass}
+          >
+            <option value="">— 请选择 —</option>
+            {tree.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
+            {l1 && !tree.some((n) => n.l1 === l1) && <option value={l1}>{l1}</option>}
+          </select>
+        </div>
+        <div className="flex items-center gap-3">
+          <OpsElementsFieldLabel>二级策略：</OpsElementsFieldLabel>
+          <select
+            value={l2}
+            onChange={(e) => { setL2(e.target.value); setL3s([]) }}
+            disabled={disabled || !l1}
+            className={selectClass}
+          >
+            <option value="">— 请选择 —</option>
+            {(tree.find((n) => n.l1 === l1)?.l2s ?? []).map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
+            {l2 && !(tree.find((n) => n.l1 === l1)?.l2s ?? []).some((n) => n.l2 === l2) && <option value={l2}>{l2}</option>}
+          </select>
+        </div>
+        <div className="flex items-start gap-3">
+          <OpsElementsFieldLabel className={disabled ? "" : "pt-1.5"}>三级策略：</OpsElementsFieldLabel>
+          <div className="flex-1 min-w-0">
+            {disabled ? (
+              <select value={l3s[0] ?? ""} disabled className={disabledSelectClass}>
+                <option value="">—</option>
+                {l3s.map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            ) : (
+              <>
+                {l3s.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mb-2">
+                    {l3s.map((v) => (
+                      <span key={v} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-blue-50 text-blue-600 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800">
+                        {v}
+                        <button type="button" onClick={() => setL3s(l3s.filter((x) => x !== v))} className="text-blue-400 hover:text-blue-700">×</button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <select
+                  value=""
+                  onChange={(e) => { const v = e.target.value; if (v && !l3s.includes(v)) setL3s([...l3s, v]) }}
+                  disabled={!l2}
+                  className="w-full border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+                >
+                  <option value="">— 添加三级策略 —</option>
+                  {(tree.find((n) => n.l1 === l1)?.l2s.find((n) => n.l2 === l2)?.l3s ?? [])
+                    .filter((v) => !l3s.includes(v))
+                    .map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[920px] flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">编辑要素</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="px-6 pt-4 pb-2 flex items-center gap-2 flex-shrink-0">
+          <div className="w-1 self-stretch rounded-full bg-red-500 shrink-0" />
+          <span className="font-semibold text-base">{product_name}</span>
+        </div>
+
+        <div className="px-6 pb-3 flex items-center gap-2 flex-wrap flex-shrink-0">
+          {OPS_ELEMENTS_TABS.map((t) => (
+            <span
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={[
+                "inline-flex items-center px-3 py-1 rounded-full border text-sm cursor-pointer transition-colors",
+                tab === t.key
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              {t.label}
+            </span>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 pb-4 min-h-[320px]">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-muted-foreground text-sm">加载中…</div>
+          ) : tab === "platform" ? (
+            <div className="space-y-4">
+              <OpsElementsNotice>
+                当前策略已确认，无法修改。如有疑问，请联系客服。
+              </OpsElementsNotice>
+              {renderStrategySelectors(platformTree, platformL1, setPlatformL1, platformL2, setPlatformL2, platformL3s, setPlatformL3s, true)}
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>基准指数：</OpsElementsFieldLabel>
+                <select
+                  value={benchmark}
+                  disabled
+                  className="flex-1 border rounded px-3 py-1.5 text-sm bg-muted/40 text-muted-foreground cursor-not-allowed"
+                >
+                  <option value="">— 请选择 —</option>
+                  {OPS_BENCHMARK_OPTIONS.map((b) => <option key={b} value={b}>{b}</option>)}
+                  {benchmark && !OPS_BENCHMARK_OPTIONS.includes(benchmark) && <option value={benchmark}>{benchmark}</option>}
+                </select>
+              </div>
+            </div>
+          ) : tab === "subscription" ? (
+            <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>开放日：</OpsElementsFieldLabel>
+                  <input value={openDay} onChange={(e) => setOpenDay(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>申购费：</OpsElementsFieldLabel>
+                  <input value={feePurchase} onChange={(e) => setFeePurchase(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>赎回费：</OpsElementsFieldLabel>
+                  <input value={feeRedeem} onChange={(e) => setFeeRedeem(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>封闭期：</OpsElementsFieldLabel>
+                  <input value={closedPeriod} onChange={(e) => setClosedPeriod(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>锁定期说明：</OpsElementsFieldLabel>
+                  <input value={lockPeriodDesc} onChange={(e) => setLockPeriodDesc(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>管理费率：</OpsElementsFieldLabel>
+                  <input value={feeManageRate} onChange={(e) => setFeeManageRate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>管理费说明：</OpsElementsFieldLabel>
+                  <input value={feeManageDesc} onChange={(e) => setFeeManageDesc(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-start gap-3">
+                  <OpsElementsFieldLabel className="pt-1.5">业绩报酬说明：</OpsElementsFieldLabel>
+                  <textarea value={feePayDesc} onChange={(e) => setFeePayDesc(e.target.value)} rows={3} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring resize-none" />
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="flex items-start gap-3">
+                  <OpsElementsFieldLabel className="pt-0.5">临开信息：</OpsElementsFieldLabel>
+                  <div className="flex-1 space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="tempOpen" checked={tempOpenMode === "yes"} onChange={() => setTempOpenMode("yes")} className="accent-red-500" />
+                      <span>可临开</span>
+                      <label className="flex items-center gap-1 ml-2 cursor-pointer text-muted-foreground">
+                        <input type="checkbox" checked={tempOpenPurchase} onChange={(e) => setTempOpenPurchase(e.target.checked)} disabled={tempOpenMode !== "yes"} className="accent-red-500" />
+                        可临开申购
+                      </label>
+                      <label className="flex items-center gap-1 cursor-pointer text-muted-foreground">
+                        <input type="checkbox" checked={tempOpenRedeem} onChange={(e) => setTempOpenRedeem(e.target.checked)} disabled={tempOpenMode !== "yes"} className="accent-red-500" />
+                        可临开赎回
+                      </label>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="tempOpen" checked={tempOpenMode === "no"} onChange={() => { setTempOpenMode("no"); setTempOpenPurchase(false); setTempOpenRedeem(false) }} className="accent-red-500" />
+                      <span>不可临开</span>
+                    </label>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>追加限制：</OpsElementsFieldLabel>
+                  <input value={addAmount} onChange={(e) => setAddAmount(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>风险等级：</OpsElementsFieldLabel>
+                  <input value={riskLevel} onChange={(e) => setRiskLevel(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-start gap-3">
+                  <OpsElementsFieldLabel className="pt-0.5">预警线：</OpsElementsFieldLabel>
+                  <div className="flex-1 space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="warningLine" checked={warningLineMode === "none"} onChange={() => setWarningLineMode("none")} className="accent-red-500" />
+                      <span>不设置预警线</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="warningLine" checked={warningLineMode === "set"} onChange={() => setWarningLineMode("set")} className="accent-red-500" />
+                      <span>设置预警线</span>
+                      {warningLineMode === "set" && (
+                        <input value={warningLine} onChange={(e) => setWarningLine(e.target.value)} className="flex-1 border rounded px-2 py-1 text-sm bg-background ml-2" placeholder="预警线" />
+                      )}
+                    </label>
+                  </div>
+                </div>
+                <div className="flex items-start gap-3">
+                  <OpsElementsFieldLabel className="pt-0.5">平仓线：</OpsElementsFieldLabel>
+                  <div className="flex-1 space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="stopLine" checked={stopLineMode === "none"} onChange={() => setStopLineMode("none")} className="accent-red-500" />
+                      <span>不设置平仓线</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="radio" name="stopLine" checked={stopLineMode === "set"} onChange={() => setStopLineMode("set")} className="accent-red-500" />
+                      <span>设置平仓线</span>
+                      {stopLineMode === "set" && (
+                        <input value={stopLine} onChange={(e) => setStopLine(e.target.value)} className="flex-1 border rounded px-2 py-1 text-sm bg-background ml-2" placeholder="平仓线" />
+                      )}
+                    </label>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>外包费：</OpsElementsFieldLabel>
+                  <input value={feeAdminService} onChange={(e) => setFeeAdminService(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+                <div className="flex items-center gap-3">
+                  <OpsElementsFieldLabel>托管费：</OpsElementsFieldLabel>
+                  <input value={feeTrust} onChange={(e) => setFeeTrust(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                </div>
+              </div>
+              <div className="col-span-2 pt-2 border-t mt-1">
+                <p className="text-sm text-zinc-600 mb-3">业绩报酬公式</p>
+                <div className="space-y-2 text-sm">
+                  {([
+                    ["none", "无"],
+                    ["fixed", "按固定比例计提"],
+                    ["annual_gradient", "按年化收益梯度计提"],
+                    ["excess_gradient", "按超额年化收益梯度计提"],
+                    ["benchmark", "按计提基准计提"],
+                  ] as const).map(([mode, label]) => (
+                    <label key={mode} className="flex items-start gap-2 cursor-pointer">
+                      <input type="radio" name="perfFee" checked={perfFeeMode === mode} onChange={() => setPerfFeeMode(mode)} className="accent-red-500 mt-0.5" />
+                      <div className="flex-1">
+                        <span>{label}</span>
+                        {mode === "annual_gradient" && perfFeeMode === "annual_gradient" && (
+                          <div className="mt-2 space-y-2 pl-1">
+                            {perfGradients.map((g, i) => (
+                              <div key={i} className="flex items-center gap-2 flex-wrap text-xs text-zinc-600">
+                                <input value={g.fromPct} onChange={(e) => setPerfGradients(perfGradients.map((row, j) => j === i ? { ...row, fromPct: e.target.value } : row))} className="w-10 border rounded px-1 py-0.5 text-center bg-background" />
+                                <span>% ≤ 年化收益</span>
+                                {g.toPct ? (
+                                  <>
+                                    <span>&lt;</span>
+                                    <input value={g.toPct} onChange={(e) => setPerfGradients(perfGradients.map((row, j) => j === i ? { ...row, toPct: e.target.value } : row))} className="w-10 border rounded px-1 py-0.5 text-center bg-background" />
+                                    <span>%</span>
+                                  </>
+                                ) : (
+                                  <span className="mx-1" />
+                                )}
+                                <span className="text-red-500">*</span>
+                                <span>计提比例:</span>
+                                <input value={g.ratePct} onChange={(e) => setPerfGradients(perfGradients.map((row, j) => j === i ? { ...row, ratePct: e.target.value } : row))} className="w-10 border rounded px-1 py-0.5 text-center bg-background" />
+                                <span>%</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : tab === "attachment" ? (
+            <div className="space-y-4">
+              <OpsElementsNotice>上传的要素附件仅限团队内部可见。</OpsElementsNotice>
+              <div className="flex items-start gap-3">
+                <label className="text-sm text-zinc-600 shrink-0 w-[5.5rem] text-right pt-8">
+                  <span className="text-red-500 mr-0.5">*</span>上传要素：
+                </label>
+                <label className="flex-1 flex flex-col items-center justify-center border-2 border-dashed rounded-lg py-10 cursor-pointer hover:bg-muted/30 transition-colors">
+                  <PlusCircle className="h-10 w-10 text-muted-foreground/40 mb-2" strokeWidth={1} />
+                  <span className="text-xs text-muted-foreground">支持Word、PDF、Excel格式的文件，大小不超过5M。</span>
+                  <input type="file" accept=".doc,.docx,.pdf,.xls,.xlsx" className="hidden" onChange={() => { /* stub */ }} />
+                </label>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <OpsElementsNotice>团队策略的新增、编辑在【运维-数据维护-团队策略】中。</OpsElementsNotice>
+              {renderStrategySelectors(teamTree, teamL1, setTeamL1, teamL2, setTeamL2, teamL3s, setTeamL3s)}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
+          <button
+            onClick={handleConfirm}
+            disabled={saving || loading}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-60"
+          >
+            {saving ? "保存中…" : "确定"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface OpsNavShareRow {
+  id: number
+  name: string
+  share_frequency: string | null
+  updated_at: string | null
+}
+
+function OpsPermissionDialog({
+  open,
+  beian_hao,
+  product_name,
+  onClose,
+}: {
+  open: boolean
+  beian_hao: string | null
+  product_name: string
+  onClose: () => void
+}) {
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [rows, setRows] = useState<OpsNavShareRow[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setKwInput("")
+    setKeyword("")
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !beian_hao) return
+    setLoading(true)
+    const params = new URLSearchParams({ beian_hao })
+    if (keyword) params.set("keyword", keyword)
+    fetch(`/ma/api/ops/fund-permissions?${params}`)
+      .then((r) => r.json())
+      .then((json) => setRows(Array.isArray(json.data) ? json.data : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false))
+  }, [open, beian_hao, keyword])
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[760px] flex flex-col max-h-[85vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">权限管理</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="px-6 pt-4 pb-2 flex items-center gap-2 flex-shrink-0">
+          <span className="h-2.5 w-2.5 rounded-full border-2 border-red-500 shrink-0" />
+          <span className="font-semibold text-base">{product_name}</span>
+        </div>
+
+        <div className="px-6 pb-3 flex-shrink-0">
+          <span className="inline-flex items-center px-3 py-1 rounded-full border border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 text-sm font-medium">
+            净值分享
+          </span>
+        </div>
+
+        <div className="px-6 pb-4 flex-shrink-0">
+          <OpsElementsNotice>
+            将本产品的团队净值同步给以下人员及机构。设置后，每天同步一次净值数据。
+          </OpsElementsNotice>
+        </div>
+
+        <div className="px-6 pb-3 flex items-center justify-between gap-4 flex-shrink-0">
+          <div className="flex items-center border rounded px-3 h-8 gap-2 bg-background flex-1 max-w-sm">
+            <input
+              className="flex-1 text-sm outline-none bg-transparent placeholder:text-muted-foreground/50"
+              placeholder="请输入名称，回车搜索"
+              value={kwInput}
+              onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput.trim())}
+            />
+          </div>
+          <button type="button" className="text-sm text-blue-600 hover:text-blue-700 shrink-0 transition-colors">
+            添加人员
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-auto min-h-[240px] px-6 pb-6">
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-muted/40 border-b">
+                <th className="px-3 py-2.5 text-left font-semibold text-zinc-500 w-14">序号</th>
+                <th className="px-3 py-2.5 text-left font-semibold text-zinc-500">人员/机构名称</th>
+                <th className="px-3 py-2.5 text-left font-semibold text-zinc-500 w-28">
+                  <span className="inline-flex items-center gap-1">
+                    分享频率
+                    <Filter className="h-3 w-3 text-muted-foreground/60" strokeWidth={1.5} />
+                  </span>
+                </th>
+                <th className="px-3 py-2.5 text-left font-semibold text-zinc-500 w-36">最后修改</th>
+                <th className="px-3 py-2.5 text-left font-semibold text-zinc-500 w-16">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={5} className="py-16 text-center text-muted-foreground">加载中…</td></tr>
+              ) : rows.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-16 text-center text-muted-foreground">
+                    <div className="flex flex-col items-center gap-2">
+                      <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                      <span>暂无数据</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : rows.map((row, i) => (
+                <tr key={row.id} className="border-b hover:bg-muted/20 transition-colors">
+                  <td className="px-3 py-2.5 tabular-nums text-muted-foreground">{i + 1}</td>
+                  <td className="px-3 py-2.5">{row.name}</td>
+                  <td className="px-3 py-2.5 text-muted-foreground">{row.share_frequency ?? "—"}</td>
+                  <td className="px-3 py-2.5 tabular-nums text-muted-foreground whitespace-nowrap">
+                    {row.updated_at ? row.updated_at.slice(0, 16).replace("T", " ") : "—"}
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <button type="button" className="text-sm text-blue-600 hover:text-blue-700 transition-colors">编辑</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface OpsNoteEntry {
+  id: number
+  note: string
+  updated_by: string
+  updated_at: string
+}
+
+function fmtNoteTime(iso: string | null | undefined) {
+  if (!iso) return ""
+  return iso.slice(0, 10)
+}
+
+function OpsTeamNoteDialog({
+  open,
+  beian_hao,
+  product_name,
+  onClose,
+  onSaved,
+}: {
+  open: boolean
+  beian_hao: string | null
+  product_name: string
+  onClose: () => void
+  onSaved?: () => void
+}) {
+  const [notes, setNotes] = useState<OpsNoteEntry[]>([])
+  const [loading, setLoading] = useState(false)
+  const [noteText, setNoteText] = useState("")
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setNoteText("")
+    setEditingId(null)
+  }, [open, beian_hao])
+
+  useEffect(() => {
+    if (!open || !beian_hao) return
+    setLoading(true)
+    fetch(`/ma/api/ops/fund-notes?beian_hao=${encodeURIComponent(beian_hao)}`)
+      .then((r) => r.json())
+      .then((json) => setNotes(Array.isArray(json.data) ? json.data : []))
+      .catch(() => setNotes([]))
+      .finally(() => setLoading(false))
+  }, [open, beian_hao])
+
+  async function handleSave() {
+    if (!beian_hao || !noteText.trim()) return
+    setSaving(true)
+    try {
+      const res = await fetch("/ma/api/ops/fund-notes", {
+        method: editingId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editingId ? { id: editingId, note: noteText.trim() } : { beian_hao, note: noteText.trim() }),
+      })
+      const json = await res.json()
+      if (json.record) {
+        setNotes((prev) => {
+          if (editingId) return prev.map((n) => (n.id === editingId ? json.record : n))
+          return [json.record, ...prev]
+        })
+        setNoteText("")
+        setEditingId(null)
+        onSaved?.()
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleDelete(id: number) {
+    await fetch(`/ma/api/ops/fund-notes?id=${id}`, { method: "DELETE" })
+    setNotes((prev) => prev.filter((n) => n.id !== id))
+    if (editingId === id) {
+      setEditingId(null)
+      setNoteText("")
+    }
+    onSaved?.()
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="bg-background rounded-lg shadow-xl w-full max-w-[580px] flex flex-col max-h-[85vh]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">团队备注管理</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-6 py-5 flex flex-col gap-4">
+          <div className="flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full border-2 border-red-500 shrink-0" />
+            <span className="font-semibold text-sm">{product_name}</span>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <label className="text-sm text-foreground">
+              <span className="text-red-500 mr-0.5">*</span>团队备注
+            </label>
+            <textarea
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value.slice(0, 250))}
+              placeholder="请输入不大于250字的备注"
+              rows={5}
+              className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+            />
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted-foreground">{noteText.length}/250</span>
+              <button
+                type="button"
+                disabled={saving || !noteText.trim()}
+                onClick={handleSave}
+                className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-lg bg-muted/40 border border-border/60 divide-y divide-border/60 min-h-[80px]">
+            {loading ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">加载中…</div>
+            ) : notes.length === 0 ? (
+              <div className="py-8 text-center text-sm text-muted-foreground">暂无备注</div>
+            ) : notes.map((entry) => (
+              <div key={entry.id} className="px-4 py-3 flex items-start gap-3">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm text-foreground break-words">{entry.note}</p>
+                  <p className="text-xs text-muted-foreground mt-1.5">
+                    {fmtNoteTime(entry.updated_at)}{entry.updated_by ? ` ${entry.updated_by}` : ""}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => { setEditingId(entry.id); setNoteText(entry.note) }}
+                    className="p-1.5 text-muted-foreground hover:text-foreground transition-colors"
+                    title="编辑"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDelete(entry.id)}
+                    className="p-1.5 text-muted-foreground hover:text-red-500 transition-colors"
+                    title="删除"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OpsSyncNavDialog({
+  open,
+  beian_hao,
+  product_name,
+  onClose,
+  onSynced,
+}: {
+  open: boolean
+  beian_hao: string | null
+  product_name: string
+  onClose: () => void
+  onSynced?: () => void
+}) {
+  const [mode, setMode] = useState<"all" | "from_date">("all")
+  const [startDate, setStartDate] = useState("")
+  const [syncing, setSyncing] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setMode("all")
+    setStartDate("")
+    setSyncing(false)
+  }, [open, beian_hao])
+
+  async function handleSync() {
+    if (!beian_hao || syncing) return
+    if (mode === "from_date" && !startDate) return
+    setSyncing(true)
+    try {
+      onSynced?.()
+      onClose()
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[480px] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">同步净值</span>
+        </div>
+
+        <div className="px-6 pt-4 pb-2 flex items-center gap-2 flex-shrink-0">
+          <span className="w-1 h-4 bg-red-500 shrink-0" />
+          <span className="font-semibold text-base">{product_name}</span>
+        </div>
+
+        <div className="px-6 pb-4 flex-shrink-0">
+          <OpsElementsNotice>点击确定后，会将平台净值同步到团队净值。</OpsElementsNotice>
+        </div>
+
+        <div className="px-6 pb-5 flex flex-col gap-3 flex-shrink-0">
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="radio"
+              name="syncNavMode"
+              checked={mode === "all"}
+              onChange={() => setMode("all")}
+              className="accent-red-500"
+            />
+            全部
+          </label>
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="radio"
+              name="syncNavMode"
+              checked={mode === "from_date"}
+              onChange={() => setMode("from_date")}
+              className="accent-red-500"
+            />
+            选定开始日期
+          </label>
+          {mode === "from_date" && (
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="ml-6 h-8 w-44 rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors"
+          >
+            取消
+          </button>
+          <button
+            disabled={syncing || (mode === "from_date" && !startDate)}
+            onClick={() => void handleSync()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {syncing ? "同步中…" : "同步"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+interface OpsScaleRow {
+  id: string
+  date: string
+  amount: string
+  source: string
+}
+
+interface OpsScaleBatchPreviewRow {
+  seq: number
+  date: string
+  amount: string
+}
+
+const SCALE_UPLOAD_MAX_BYTES = 3 * 1024 * 1024
+const SCALE_UPLOAD_ACCEPT = ".xlsx,.xls,.csv"
+
+function parseScaleCsvPreview(text: string): OpsScaleBatchPreviewRow[] {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean)
+  if (lines.length < 2) return []
+  const rows: OpsScaleBatchPreviewRow[] = []
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",").map((c) => c.trim().replace(/^"|"$/g, ""))
+    if (cols.length >= 2 && cols[0] && cols[1]) {
+      rows.push({ seq: rows.length + 1, date: cols[0], amount: cols[1] })
+    }
+  }
+  return rows
+}
+
+function downloadScaleUploadTemplate() {
+  const csv = "\uFEFF日期,管理规模\n2024-01-01,1000000\n"
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
+  const a = document.createElement("a")
+  a.href = URL.createObjectURL(blob)
+  a.download = "规模批量上传模板.csv"
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function OpsAddScaleDialog({
+  open,
+  onClose,
+  onConfirmSingle,
+  onConfirmBatch,
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirmSingle: (date: string, amount: string) => void
+  onConfirmBatch: (rows: OpsScaleBatchPreviewRow[]) => void
+}) {
+  const [tab, setTab] = useState<"single" | "batch">("single")
+  const [date, setDate] = useState("")
+  const [amount, setAmount] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [batchFile, setBatchFile] = useState<File | null>(null)
+  const [batchPreview, setBatchPreview] = useState<OpsScaleBatchPreviewRow[]>([])
+  const [batchError, setBatchError] = useState("")
+  const [isDragOver, setIsDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    setTab("single")
+    setDate("")
+    setAmount("")
+    setSaving(false)
+    setBatchFile(null)
+    setBatchPreview([])
+    setBatchError("")
+    setIsDragOver(false)
+  }, [open])
+
+  async function handleBatchFile(file: File) {
+    setBatchError("")
+    if (file.size > SCALE_UPLOAD_MAX_BYTES) {
+      setBatchFile(null)
+      setBatchPreview([])
+      setBatchError("文件大小不能超过3M")
+      return
+    }
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? ""
+    if (!["xlsx", "xls", "csv"].includes(ext)) {
+      setBatchFile(null)
+      setBatchPreview([])
+      setBatchError("只能上传 Excel 文件或 CSV 文件")
+      return
+    }
+    setBatchFile(file)
+    if (ext === "csv") {
+      const text = await file.text()
+      setBatchPreview(parseScaleCsvPreview(text))
+    } else {
+      setBatchPreview([])
+    }
+  }
+
+  async function handleConfirm() {
+    if (saving) return
+    if (tab === "single") {
+      if (!date || !amount.trim()) return
+      setSaving(true)
+      try {
+        onConfirmSingle(date, amount.trim())
+        onClose()
+      } finally {
+        setSaving(false)
+      }
+      return
+    }
+    if (!batchFile) return
+    setSaving(true)
+    try {
+      onConfirmBatch(batchPreview)
+      onClose()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[560px] flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">添加规模</span>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="px-6 pt-4 pb-3 flex items-center gap-2 flex-shrink-0">
+          {([["single", "单条上传"], ["batch", "批量上传"]] as const).map(([key, label]) => (
+            <span
+              key={key}
+              onClick={() => setTab(key)}
+              className={[
+                "inline-flex items-center px-3 py-1 rounded-full border text-sm cursor-pointer transition-colors",
+                tab === key
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 pb-4 min-h-[240px]">
+          {tab === "single" ? (
+            <div className="space-y-4 pt-2">
+              <div className="flex items-start gap-4">
+                <DirectFormLabel>日期：</DirectFormLabel>
+                <div className="flex-1 relative">
+                  <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+              </div>
+              <div className="flex items-start gap-4">
+                <DirectFormLabel>管理规模：</DirectFormLabel>
+                <div className="flex-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder=""
+                    className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <span className="text-sm text-zinc-500 shrink-0">元</span>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div
+                className={[
+                  "relative flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-8 text-center transition-colors cursor-pointer",
+                  isDragOver ? "border-red-400 bg-red-50/50 dark:bg-red-950/20" : "border-border hover:border-red-300 hover:bg-muted/30",
+                ].join(" ")}
+                onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+                onDragEnter={(e) => { e.preventDefault(); setIsDragOver(true) }}
+                onDragLeave={() => setIsDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setIsDragOver(false)
+                  const file = e.dataTransfer.files?.[0]
+                  if (file) void handleBatchFile(file)
+                }}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={SCALE_UPLOAD_ACCEPT}
+                  className="sr-only"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) void handleBatchFile(file)
+                    e.target.value = ""
+                  }}
+                />
+                <Inbox className="h-10 w-10 text-red-500" strokeWidth={1.25} />
+                <p className="text-sm">
+                  将文件拖到此处，或
+                  <span className="text-blue-600 dark:text-blue-400">点击上传</span>
+                </p>
+                {batchFile && <p className="text-xs text-muted-foreground">{batchFile.name}</p>}
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                只能上传 Excel 文件或 CSV 文件，且大小不超过 3M。
+                <button type="button" onClick={downloadScaleUploadTemplate} className="text-blue-600 dark:text-blue-400 hover:underline ml-1">
+                  点击下载批量上传模板
+                </button>
+              </p>
+              {batchError && <p className="text-xs text-red-500">{batchError}</p>}
+              <div className="rounded-lg border overflow-hidden">
+                <table className="w-full text-sm border-collapse">
+                  <thead>
+                    <tr className="bg-muted/40 border-b">
+                      <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-16">序号</th>
+                      <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">日期</th>
+                      <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">管理规模</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {batchPreview.length === 0 ? (
+                      <tr>
+                        <td colSpan={3} className="py-12 text-center text-muted-foreground">
+                          <div className="flex flex-col items-center gap-2">
+                            <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                            <span className="text-sm">暂无数据</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : batchPreview.map((row) => (
+                      <tr key={row.seq} className="border-b last:border-b-0">
+                        <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{row.seq}</td>
+                        <td className="px-4 py-2.5 tabular-nums">{row.date}</td>
+                        <td className="px-4 py-2.5 tabular-nums">{row.amount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0">
+          <button onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
+          <button
+            disabled={saving || (tab === "single" ? !date || !amount.trim() : !batchFile)}
+            onClick={() => void handleConfirm()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? "处理中…" : tab === "batch" ? "上传" : "确定"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OpsScaleManageDialog({
+  open,
+  product_name,
+  onClose,
+}: {
+  open: boolean
+  beian_hao: string | null
+  product_name: string
+  onClose: () => void
+}) {
+  const [rows, setRows] = useState<OpsScaleRow[]>([])
+  const [showAddDialog, setShowAddDialog] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    setRows([])
+    setShowAddDialog(false)
+  }, [open, product_name])
+
+  function fmtScaleAmount(v: string): string {
+    const n = parseFloat(v.replace(/,/g, ""))
+    if (isNaN(n)) return v
+    return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  }
+
+  function handleExport() {
+    if (rows.length === 0) return
+    const escape = (v: string) => {
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const csv = [
+      "日期,管理规模,来源",
+      ...rows.map((r) => [escape(r.date), escape(r.amount), escape(r.source)].join(",")),
+    ].join("\n")
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `${product_name}_规模数据.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  function addSingleRow(date: string, amount: string) {
+    setRows((prev) => [{
+      id: `${date}-${amount}-${Date.now()}`,
+      date,
+      amount,
+      source: "手动录入",
+    }, ...prev])
+  }
+
+  function addBatchRows(batchRows: OpsScaleBatchPreviewRow[]) {
+    if (batchRows.length === 0) return
+    setRows((prev) => [
+      ...batchRows.map((r) => ({
+        id: `${r.date}-${r.amount}-${r.seq}-${Date.now()}`,
+        date: r.date,
+        amount: r.amount,
+        source: "批量上传",
+      })),
+      ...prev,
+    ])
+  }
+
+  function handleDelete(id: string) {
+    setRows((prev) => prev.filter((r) => r.id !== id))
+  }
+
+  if (!open) return null
+
+  return (
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+        <div
+          className="bg-background rounded-lg shadow-xl w-full max-w-[760px] flex flex-col max-h-[85vh]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+            <span className="font-semibold text-base">规模管理</span>
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+          </div>
+
+          <div className="px-6 pt-4 pb-3 flex items-center justify-between gap-4 flex-shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-1 h-4 bg-red-500 shrink-0" />
+              <span className="font-semibold text-base truncate">{product_name}</span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                className="px-3 py-1.5 rounded border text-sm hover:bg-muted transition-colors"
+              >
+                估值表导入
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowAddDialog(true)}
+                className="px-3 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors"
+              >
+                添加规模数据
+              </button>
+              <button
+                type="button"
+                disabled={rows.length === 0}
+                onClick={handleExport}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded border text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:bg-muted"
+              >
+                <Download className="h-3.5 w-3.5" />
+                导出
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-auto min-h-[280px] px-6 pb-6">
+            <table className="w-full text-sm border-collapse border rounded-lg overflow-hidden">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-muted/40 border-b">
+                  <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-16">序号</th>
+                  <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-32">日期</th>
+                  <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">管理规模</th>
+                  <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-28">来源</th>
+                  <th className="px-4 py-2.5 text-center font-semibold text-zinc-500 w-20">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="py-16 text-center text-muted-foreground">
+                      <div className="flex flex-col items-center gap-2">
+                        <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                        <span className="text-sm">暂无数据</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : rows.map((row, i) => (
+                  <tr key={row.id} className="border-b last:border-b-0">
+                    <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{i + 1}</td>
+                    <td className="px-4 py-2.5 tabular-nums">{row.date}</td>
+                    <td className="px-4 py-2.5 tabular-nums">{fmtScaleAmount(row.amount)}</td>
+                    <td className="px-4 py-2.5 text-muted-foreground">{row.source}</td>
+                    <td className="px-4 py-2.5 text-center">
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(row.id)}
+                        className="p-1 text-muted-foreground hover:text-red-500 transition-colors"
+                        title="删除"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <OpsAddScaleDialog
+        open={showAddDialog}
+        onClose={() => setShowAddDialog(false)}
+        onConfirmSingle={addSingleRow}
+        onConfirmBatch={addBatchRows}
+      />
+    </>
+  )
+}
+
+function TrackingRowMenu({
+  beian_hao,
+  product_name,
+  onQueryElements,
+  onEditTags,
+  onEditStrategy,
+  onNoteManage,
+  onRemove,
+}: {
+  beian_hao: string
+  product_name: string
+  onQueryElements: () => void
+  onEditTags: () => void
+  onEditStrategy: () => void
+  onNoteManage: () => void
+  onRemove: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => { setMounted(true) }, [])
+
+  function handleToggle(e: React.MouseEvent<HTMLButtonElement>) {
+    if (open) { setOpen(false); setPos(null); return }
+    const rect = e.currentTarget.getBoundingClientRect()
+    setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    setOpen(true)
+  }
+  function close() { setOpen(false); setPos(null) }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest"
+      >
+        ···
+      </button>
+      {mounted && open && pos && createPortal(
+        <>
+          <div className="fixed inset-0 z-[100]" onClick={close} />
+          <div
+            className="fixed z-[101] bg-background border rounded-lg shadow-lg py-1 min-w-[148px]"
+            style={{ top: pos.top, right: pos.right }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => { onQueryElements(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><FileSearch className="h-3.5 w-3.5 text-muted-foreground shrink-0" />查询要素</button>
+            <button onClick={() => { onEditTags(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑标签</button>
+            <button onClick={() => { onEditStrategy(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑策略</button>
+            <button onClick={() => { onNoteManage(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理</button>
+            <button onClick={close} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />估值表分析</button>
+            <button onClick={close} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Star className="h-3.5 w-3.5 text-muted-foreground shrink-0" />收藏</button>
+            <div className="border-t my-1" />
+            <button onClick={() => { onRemove(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500"><MinusCircle className="h-3.5 w-3.5 shrink-0" />取消跟踪</button>
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+interface OpsProductRowMenuItem {
+  label: string
+  icon: typeof FileSearch
+  onClick?: () => void
+  destructive?: boolean
+}
+
+function OpsProductRowMenu({
+  beian_hao,
+  onElementsManage,
+  onPermissionManage,
+  onNoteManage,
+  onScaleManage,
+  extraItems = [],
+  footerItems = [],
+}: {
+  rowKey?: string
+  openRowMenu?: string | null
+  onOpenChange?: (key: string | null) => void
+  beian_hao: string | null
+  onElementsManage: () => void
+  onPermissionManage: () => void
+  onNoteManage: () => void
+  onScaleManage?: () => void
+  extraItems?: OpsProductRowMenuItem[]
+  footerItems?: OpsProductRowMenuItem[]
+}) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => { setMounted(true) }, [])
+
+  function handleToggle(e: React.MouseEvent<HTMLButtonElement>) {
+    if (open) { setOpen(false); setPos(null); return }
+    const rect = e.currentTarget.getBoundingClientRect()
+    setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    setOpen(true)
+  }
+  function close() { setOpen(false); setPos(null) }
+
+  const standardStubs: OpsProductRowMenuItem[] = [
+    { label: "台账管理", icon: ClipboardList },
+    { label: "估值表管理", icon: BarChart2 },
+  ]
+
+  function renderItem(item: OpsProductRowMenuItem, i: number) {
+    const Icon = item.icon
+    return (
+      <button
+        key={`${item.label}-${i}`}
+        onClick={() => { item.onClick?.(); close() }}
+        className={[
+          "w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground",
+          item.destructive ? "!text-red-500" : "",
+        ].join(" ")}
+      >
+        <Icon className={["h-3.5 w-3.5 shrink-0", item.destructive ? "" : "text-muted-foreground"].join(" ")} />
+        {item.label}
+      </button>
+    )
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest"
+      >
+        ···
+      </button>
+      {mounted && open && pos && createPortal(
+        <>
+          <div className="fixed inset-0 z-[100]" onClick={close} />
+          <div
+            className="fixed z-[101] bg-background border rounded-lg shadow-lg py-1 min-w-[148px]"
+            style={{ top: pos.top, right: pos.right }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => { if (beian_hao) onElementsManage(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+            >
+              <FileSearch className="h-3.5 w-3.5 text-muted-foreground shrink-0" />要素管理
+            </button>
+            <button
+              onClick={() => { if (beian_hao) onPermissionManage(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+            >
+              <Key className="h-3.5 w-3.5 text-muted-foreground shrink-0" />权限管理
+            </button>
+            <button
+              onClick={() => { if (beian_hao) onNoteManage(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+            >
+              <StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理
+            </button>
+            {standardStubs.map(renderItem)}
+            {extraItems.map(renderItem)}
+            <button
+              onClick={() => { if (beian_hao) onScaleManage?.(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+            >
+              <TrendingUp className="h-3.5 w-3.5 text-muted-foreground shrink-0" />规模管理
+            </button>
+            {footerItems.length > 0 && <div className="border-t my-1" />}
+            {footerItems.map(renderItem)}
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+function OperationsDirectView() {
+  const [fundClass, setFundClass] = useState<DirectFundClass>("private")
+  const [strategySource, setStrategySource] = useState<"company" | "platform">("platform")
+  const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
+  const [strategyL1, setStrategyL1] = useState("")
+  const [holdingStatus, setHoldingStatus] = useState<DirectHoldingStatus>("holding")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [sortKey, setSortKey] = useState<DirectSortKey>("product_name")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [data, setData] = useState<DirectFundRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
+  const [showAddDirectDialog, setShowAddDirectDialog] = useState(false)
+  const [addDirectInvestor, setAddDirectInvestor] = useState("")
+  const [addDirectFundClass, setAddDirectFundClass] = useState<"private" | "public">("private")
+  const [addDirectFundSearch, setAddDirectFundSearch] = useState("")
+  const [addDirectFundResults, setAddDirectFundResults] = useState<{ beian_hao: string; product_name: string; short_name: string | null; strategy_one: string | null }[]>([])
+  const [addDirectFundSelected, setAddDirectFundSelected] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [addDirectFundLoading, setAddDirectFundLoading] = useState(false)
+  const [addDirectFundShowDropdown, setAddDirectFundShowDropdown] = useState(false)
+  const [addDirectNavSource, setAddDirectNavSource] = useState("team")
+  const [addDirectTxType, setAddDirectTxType] = useState("申购")
+  const [addDirectApplyDate, setAddDirectApplyDate] = useState("")
+  const [addDirectConfirmDate, setAddDirectConfirmDate] = useState("")
+  const [addDirectNetAmount, setAddDirectNetAmount] = useState("")
+  const [addDirectShares, setAddDirectShares] = useState("")
+  const [addDirectUnitNav, setAddDirectUnitNav] = useState("")
+  const [addDirectFee, setAddDirectFee] = useState("")
+  const [addDirectSaving, setAddDirectSaving] = useState(false)
+  const [addDirectError, setAddDirectError] = useState<string | null>(null)
+  const [dataReloadKey, setDataReloadKey] = useState(0)
+  const addDirectSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [showDirectFieldConfig, setShowDirectFieldConfig] = useState(false)
+  const [directFieldConfigSelected, setDirectFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [showDirectAuditLog, setShowDirectAuditLog] = useState(false)
+  const [directElementsDialog, setDirectElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [directPermissionDialog, setDirectPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [directNoteDialog, setDirectNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [directScaleDialog, setDirectScaleDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    const params = new URLSearchParams({ strategy_source: strategySource, pool: "all" })
+    fetch(`/ma/api/tracking-funds/strategies?${params}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
+      .catch(() => {})
+  }, [strategySource])
+
+  useEffect(() => {
+    setPage(1)
+  }, [fundClass, strategySource, strategyL1, holdingStatus, keyword, pageSize])
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      fund_class: fundClass,
+      strategy_source: strategySource,
+      holding_status: holdingStatus,
+      keyword,
+      sort: sortKey,
+      dir: sortDir,
+    })
+    if (strategyL1) params.set("strategy_l1", strategyL1)
+    fetch(`/ma/api/ops/direct-funds/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setData(json.data ?? [])
+        setTotal(json.total ?? 0)
+        setSelected(new Set())
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+        setSelected(new Set())
+      })
+      .finally(() => setLoading(false))
+  }, [page, pageSize, fundClass, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, dataReloadKey])
+
+  useEffect(() => {
+    if (!showAddDirectDialog) return
+    if (!addDirectFundSearch.trim()) {
+      setAddDirectFundResults([])
+      setAddDirectFundShowDropdown(false)
+      return
+    }
+    if (addDirectSearchRef.current) clearTimeout(addDirectSearchRef.current)
+    addDirectSearchRef.current = setTimeout(async () => {
+      setAddDirectFundLoading(true)
+      try {
+        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(addDirectFundSearch.trim())}`)
+        const json = await res.json()
+        setAddDirectFundResults(Array.isArray(json) ? json : [])
+        setAddDirectFundShowDropdown(true)
+      } catch {
+        setAddDirectFundResults([])
+      } finally {
+        setAddDirectFundLoading(false)
+      }
+    }, 250)
+    return () => {
+      if (addDirectSearchRef.current) clearTimeout(addDirectSearchRef.current)
+    }
+  }, [addDirectFundSearch, showAddDirectDialog])
+
+  function openAddDirectDialog() {
+    setAddDirectInvestor("")
+    setAddDirectFundClass("private")
+    setAddDirectFundSearch("")
+    setAddDirectFundResults([])
+    setAddDirectFundSelected(null)
+    setAddDirectFundShowDropdown(false)
+    setAddDirectNavSource("team")
+    setAddDirectTxType("申购")
+    setAddDirectApplyDate("")
+    setAddDirectConfirmDate("")
+    setAddDirectNetAmount("")
+    setAddDirectShares("")
+    setAddDirectUnitNav("")
+    setAddDirectFee("")
+    setAddDirectError(null)
+    setShowAddDirectDialog(true)
+  }
+
+  async function submitAddDirect() {
+    if (!addDirectInvestor.trim()) { setAddDirectError("请选择投资者名称"); return }
+    if (!addDirectFundSelected) { setAddDirectError("请选择基金"); return }
+    if (!addDirectApplyDate) { setAddDirectError("请输入交易申请日期"); return }
+    if (!addDirectConfirmDate) { setAddDirectError("请输入交易确认日期"); return }
+    if (!addDirectNetAmount.trim()) { setAddDirectError("请输入确认净额"); return }
+    if (!addDirectShares.trim()) { setAddDirectError("请输入确认份额"); return }
+    if (!addDirectUnitNav.trim()) { setAddDirectError("请输入单位净值"); return }
+    setAddDirectSaving(true)
+    setAddDirectError(null)
+    try {
+      const res = await fetch("/ma/api/ops/direct-funds", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          investor_name: addDirectInvestor.trim(),
+          fund_class: addDirectFundClass,
+          beian_hao: addDirectFundSelected.beian_hao,
+          product_name: addDirectFundSelected.product_name,
+          nav_source: addDirectNavSource,
+          transaction_type: addDirectTxType,
+          apply_date: addDirectApplyDate,
+          confirm_date: addDirectConfirmDate,
+          net_amount: addDirectNetAmount.trim(),
+          shares: addDirectShares.trim(),
+          unit_nav: addDirectUnitNav.trim(),
+          fee: addDirectFee.trim() || null,
+        }),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        setAddDirectError(d.error || "提交失败")
+        return
+      }
+      setShowAddDirectDialog(false)
+      setDataReloadKey((k) => k + 1)
+    } catch {
+      setAddDirectError("提交失败，请稍后重试")
+    } finally {
+      setAddDirectSaving(false)
+    }
+  }
+
+  function handleSort(col: DirectSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function DirectSortIcon({ col }: { col: DirectSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function toggleAll() {
+    if (selected.size === data.length && data.length > 0) setSelected(new Set())
+    else setSelected(new Set(data.map((r) => r.beian_hao)))
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const rows = selected.size > 0 ? data.filter((r) => selected.has(r.beian_hao)) : data
+    const headers = ["产品名称", "备案编码", "单位净值", "净值日期", "涨跌幅", "持仓市值(元)", "持仓份额", "估值表日期"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav),
+        escape(r.latest_nav_date), escape(r.latest_price_change), escape(r.holding_mv),
+        escape(r.holding_shares), escape(r.valuation_date),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `直投产品_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  return (
+    <div className="flex flex-col h-full min-w-0">
+      {/* Filters */}
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">基金分类：</span>
+          <div className="flex items-center gap-1">
+            {([
+              ["private", "私募"],
+              ["public", "公募"],
+              ["team", "团队自建"],
+            ] as const).map(([fc, label]) => (
+              <span
+                key={fc}
+                onClick={() => setFundClass(fc)}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  fundClass === fc
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <select
+                value={strategySource}
+                onChange={(e) => {
+                  const next = e.target.value as "company" | "platform"
+                  if (strategySource === next) return
+                  setStrategySource(next)
+                  setStrategyL1("")
+                  setPage(1)
+                }}
+                className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="company">团队策略</option>
+                <option value="platform">平台策略</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <span
+              onClick={() => { setStrategyL1(""); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                !strategyL1
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </span>
+            {strategyHierarchy.map((node) => (
+              <span
+                key={node.l1}
+                onClick={() => {
+                  const next = strategyL1 === node.l1 ? "" : node.l1
+                  setStrategyL1(next)
+                  setPage(1)
+                }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                  strategyL1 === node.l1
+                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    : "border-border text-zinc-500 hover:bg-muted/60",
+                ].join(" ")}
+              >
+                {node.l1}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">持仓状态：</span>
+          <div className="flex items-center gap-1">
+            {([
+              ["holding", "持仓中"],
+              ["cleared", "已清仓"],
+            ] as const).map(([st, label]) => (
+              <span
+                key={st}
+                onClick={() => { setHoldingStatus(st); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  holdingStatus === st
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+          <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-72">
+            <input
+              className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+              placeholder="请输入产品/产品备案号，按回车搜索"
+              value={kwInput}
+              onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+            />
+            <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+              <Search className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Toolbar */}
+      <div className="flex items-center justify-end gap-3 mb-3 flex-shrink-0 text-xs text-zinc-600">
+        <button
+          onClick={() => setShowDirectAuditLog(true)}
+          className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <ClipboardList className="h-3.5 w-3.5" /> 操作日志
+        </button>
+        <button
+          disabled={selected.size === 0}
+          className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
+          批量上传要素
+        </button>
+        <button
+          onClick={() => setShowDirectFieldConfig(true)}
+          className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Settings2 className="h-3.5 w-3.5" /> 字段配置
+        </button>
+        <button
+          onClick={handleExport}
+          className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Download className="h-3.5 w-3.5" /> 导出
+        </button>
+        <button
+          disabled={selected.size === 0}
+          className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
+          批量操作
+          {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
+        </button>
+        <button
+          onClick={openAddDirectDialog}
+          className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
+          添加直投
+        </button>
+      </div>
+
+      {/* Table */}
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+              <th className={`${thBase} w-8 px-2`}>
+                <input type="checkbox" className="rounded h-3 w-3"
+                  checked={selected.size === data.length && data.length > 0}
+                  onChange={toggleAll} />
+              </th>
+              <th className={`${thBase} w-10`}>序号</th>
+              <th className={`${thSort} min-w-[180px]`} onClick={() => handleSort("product_name")}>产品名称<DirectSortIcon col="product_name" /></th>
+              <th className={`${thBase} min-w-[90px]`}>备案编码</th>
+              <th className={`${thSort} min-w-[90px]`} onClick={() => handleSort("latest_nav")}>单位净值<DirectSortIcon col="latest_nav" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>净值日期<DirectSortIcon col="latest_nav_date" /></th>
+              <th className={`${thSort} text-right min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<DirectSortIcon col="latest_price_change" /></th>
+              <th className={`${thSort} text-right min-w-[110px]`} onClick={() => handleSort("holding_mv")}>持仓市值(元)<DirectSortIcon col="holding_mv" /></th>
+              <th className={`${thSort} text-right min-w-[90px]`} onClick={() => handleSort("holding_shares")}>持仓份额<DirectSortIcon col="holding_shares" /></th>
+              <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
+              <th className={`${thBase} text-center w-16`}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : data.map((row, i) => {
+              const isSelected = selected.has(row.beian_hao)
+              const cell = `border-b px-3 py-2 ${isSelected ? "bg-blue-50 dark:bg-blue-950/40" : ""} group-hover:bg-muted transition-colors`
+              return (
+                <tr key={row.beian_hao} className="group">
+                  <td className={`${cell} px-2 text-center`}>
+                    <input type="checkbox" className="rounded h-3 w-3"
+                      checked={isSelected}
+                      onChange={() => {
+                        const s = new Set(selected)
+                        isSelected ? s.delete(row.beian_hao) : s.add(row.beian_hao)
+                        setSelected(s)
+                      }} />
+                  </td>
+                  <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
+                  <td className={cell}>
+                    <a
+                      href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[220px]"
+                      title={row.product_name}
+                    >{row.short_name || row.product_name}</a>
+                    {row.strategy_l1 && (
+                      <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
+                        {row.strategy_l1}
+                      </span>
+                    )}
+                  </td>
+                  <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao}</td>
+                  <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
+                  <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                  <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                  <td className={`${cell} text-right tabular-nums`}>{row.holding_mv ?? "—"}</td>
+                  <td className={`${cell} text-right tabular-nums`}>{row.holding_shares ?? "—"}</td>
+                  <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
+                  <td className={`${cell} text-center`}>
+                    <div className="relative flex items-center justify-center">
+                      <OpsProductRowMenu
+                        rowKey={row.beian_hao}
+                        openRowMenu={openRowMenu}
+                        onOpenChange={setOpenRowMenu}
+                        beian_hao={row.beian_hao}
+                        onElementsManage={() => setDirectElementsDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
+                        onPermissionManage={() => setDirectPermissionDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
+                        onNoteManage={() => setDirectNoteDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
+                        onScaleManage={() => setDirectScaleDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
+                        footerItems={[{ label: "移除", icon: MinusCircle, destructive: true }]}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between pt-3 flex-shrink-0">
+        <span className="text-sm text-zinc-500">
+          共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条
+        </span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+          <div className="relative ml-3">
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {[50, 100, 200].map((n) => (
+                <option key={n} value={n}>{n} 条/页</option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
+        </div>
+      </div>
+
+      {showAddDirectDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowAddDirectDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-full max-w-[560px] max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 pt-5 pb-4 border-b">
+              <span className="font-semibold text-base">添加基金</span>
+              <button onClick={() => setShowAddDirectDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5">
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>投资者名称：</DirectFormLabel>
+                <div className="flex-1 relative">
+                  <select
+                    value={addDirectInvestor}
+                    onChange={(e) => setAddDirectInvestor(e.target.value)}
+                    className="w-full h-9 appearance-none rounded border border-border bg-background pl-3 pr-8 text-sm text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="">请选择投资者名称</option>
+                    <option value="团队主账户">团队主账户</option>
+                    <option value="FOF账户">FOF账户</option>
+                    <option value="直投账户">直投账户</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>基金名称：</DirectFormLabel>
+                <div className="flex-1 flex flex-col gap-0 min-w-0">
+                  <div className="flex items-center border rounded overflow-visible">
+                    <div className="relative shrink-0">
+                      <select
+                        value={addDirectFundClass}
+                        onChange={(e) => setAddDirectFundClass(e.target.value as "private" | "public")}
+                        className="h-9 appearance-none pl-3 pr-7 text-sm bg-muted/40 border-r text-zinc-700 dark:text-zinc-300 focus:outline-none cursor-pointer"
+                      >
+                        <option value="private">私募基金</option>
+                        <option value="public">公募基金</option>
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                    </div>
+                    <div className="flex flex-1 items-center px-3 gap-2 min-w-0 relative">
+                      {addDirectFundSelected ? (
+                        <div className="flex flex-1 items-center justify-between h-9 min-w-0">
+                          <div className="flex flex-col leading-tight min-w-0">
+                            <span className="text-sm font-medium truncate">{addDirectFundSelected.product_name}</span>
+                            <span className="text-xs text-muted-foreground truncate">{addDirectFundSelected.beian_hao}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => { setAddDirectFundSelected(null); setAddDirectFundSearch(""); setAddDirectFundShowDropdown(false) }}
+                            className="text-muted-foreground hover:text-foreground text-base leading-none ml-2 shrink-0">×</button>
+                        </div>
+                      ) : (
+                        <>
+                          <input
+                            autoFocus
+                            type="text"
+                            value={addDirectFundSearch}
+                            onChange={(e) => { setAddDirectFundSearch(e.target.value); setAddDirectFundSelected(null) }}
+                            onFocus={() => { if (addDirectFundResults.length > 0) setAddDirectFundShowDropdown(true) }}
+                            placeholder="输入基金名称/备案号搜索"
+                            className="flex-1 h-9 text-sm bg-transparent outline-none placeholder:text-muted-foreground/50 min-w-0"
+                          />
+                          {addDirectFundLoading
+                            ? <svg className="h-3.5 w-3.5 animate-spin text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" /></svg>
+                            : <Search className="h-3.5 w-3.5 text-zinc-400 shrink-0" />}
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {addDirectFundShowDropdown && addDirectFundResults.length > 0 && !addDirectFundSelected && (
+                    <div className="relative z-50">
+                      <div className="absolute left-0 right-0 top-0 bg-background border rounded-lg shadow-xl max-h-48 overflow-y-auto">
+                        {addDirectFundResults.map((r) => (
+                          <button
+                            key={r.beian_hao}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setAddDirectFundSelected({ beian_hao: r.beian_hao, product_name: r.product_name })
+                              setAddDirectFundSearch("")
+                              setAddDirectFundShowDropdown(false)
+                            }}
+                            className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
+                          >
+                            <div className="text-sm truncate">{r.product_name}</div>
+                            <div className="text-xs text-muted-foreground truncate">{r.beian_hao}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {addDirectFundShowDropdown && addDirectFundResults.length === 0 && !addDirectFundLoading && addDirectFundSearch.trim() && !addDirectFundSelected && (
+                    <div className="relative z-50">
+                      <div className="absolute left-0 right-0 top-0 bg-background border rounded-lg shadow-xl px-4 py-3 text-sm text-muted-foreground">
+                        未找到匹配的基金
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    净值来源<DirectFormHint />：
+                  </span>
+                </DirectFormLabel>
+                <div className="flex-1 relative">
+                  <select
+                    value={addDirectNavSource}
+                    onChange={(e) => setAddDirectNavSource(e.target.value)}
+                    className="w-full h-9 appearance-none rounded border border-border bg-background pl-3 pr-8 text-sm text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="team">团队净值</option>
+                    <option value="platform">平台净值</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>交易类型：</DirectFormLabel>
+                <div className="flex-1 relative">
+                  <select
+                    value={addDirectTxType}
+                    onChange={(e) => setAddDirectTxType(e.target.value)}
+                    className="w-full h-9 appearance-none rounded border border-border bg-background pl-3 pr-8 text-sm text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="申购">申购</option>
+                    <option value="认购">认购</option>
+                    <option value="赎回">赎回</option>
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400" />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>申请日期：</DirectFormLabel>
+                <div className="flex-1 relative">
+                  <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="date"
+                    value={addDirectApplyDate}
+                    onChange={(e) => setAddDirectApplyDate(e.target.value)}
+                    placeholder="请输入交易申请日期"
+                    className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>确认日期：</DirectFormLabel>
+                <div className="flex-1 relative">
+                  <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="date"
+                    value={addDirectConfirmDate}
+                    onChange={(e) => setAddDirectConfirmDate(e.target.value)}
+                    placeholder="请输入交易确认日期"
+                    className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>
+                  <span className="inline-flex items-center justify-end gap-0.5">
+                    确认净额<DirectFormHint />：
+                  </span>
+                </DirectFormLabel>
+                <div className="flex-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={addDirectNetAmount}
+                    onChange={(e) => setAddDirectNetAmount(e.target.value)}
+                    placeholder="输入确认净额"
+                    className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <span className="text-sm text-zinc-500 shrink-0">(元)</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>确认份额：</DirectFormLabel>
+                <div className="flex-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={addDirectShares}
+                    onChange={(e) => setAddDirectShares(e.target.value)}
+                    placeholder="输入确认份额"
+                    className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <span className="text-sm text-zinc-500 shrink-0">(份)</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-4">
+                <DirectFormLabel>确认单位净值：</DirectFormLabel>
+                <div className="flex-1">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={addDirectUnitNav}
+                    onChange={(e) => setAddDirectUnitNav(e.target.value)}
+                    placeholder="请输入单位净值"
+                    className="w-full h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 mb-2">
+                <DirectFormLabel required={false}>交易费用：</DirectFormLabel>
+                <div className="flex-1 flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={addDirectFee}
+                    onChange={(e) => setAddDirectFee(e.target.value)}
+                    placeholder="选填"
+                    className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                  <span className="text-sm text-zinc-500 shrink-0">(元)</span>
+                </div>
+              </div>
+
+              {addDirectError && (
+                <p className="text-sm text-red-500 mt-3 text-center">{addDirectError}</p>
+              )}
+            </div>
+            <div className="flex items-center justify-end gap-3 px-6 py-4 border-t bg-muted/20">
+              <button
+                type="button"
+                onClick={() => setShowAddDirectDialog(false)}
+                className="px-5 py-1.5 border rounded text-sm hover:bg-muted transition-colors">
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={submitAddDirect}
+                disabled={addDirectSaving}
+                className="px-5 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-50">
+                {addDirectSaving ? "提交中…" : "确定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <DirectFieldConfigDialog
+        open={showDirectFieldConfig}
+        selected={directFieldConfigSelected}
+        onClose={() => setShowDirectFieldConfig(false)}
+        onConfirm={(fields) => {
+          setDirectFieldConfigSelected(fields)
+          setShowDirectFieldConfig(false)
+        }}
+      />
+
+      <OpsAuditLogDialog
+        open={showDirectAuditLog}
+        onClose={() => setShowDirectAuditLog(false)}
+      />
+      <OpsEditElementsDialog
+        open={!!directElementsDialog}
+        beian_hao={directElementsDialog?.beian_hao ?? null}
+        product_name={directElementsDialog?.product_name ?? ""}
+        onClose={() => setDirectElementsDialog(null)}
+      />
+      <OpsPermissionDialog
+        open={!!directPermissionDialog}
+        beian_hao={directPermissionDialog?.beian_hao ?? null}
+        product_name={directPermissionDialog?.product_name ?? ""}
+        onClose={() => setDirectPermissionDialog(null)}
+      />
+      <OpsTeamNoteDialog
+        open={!!directNoteDialog}
+        beian_hao={directNoteDialog?.beian_hao ?? null}
+        product_name={directNoteDialog?.product_name ?? ""}
+        onClose={() => setDirectNoteDialog(null)}
+      />
+      <OpsScaleManageDialog
+        open={!!directScaleDialog}
+        beian_hao={directScaleDialog?.beian_hao ?? null}
+        product_name={directScaleDialog?.product_name ?? ""}
+        onClose={() => setDirectScaleDialog(null)}
+      />
+    </div>
+  )
+}
+
+// ─── OperationsFofUnderlyingView ───────────────────────────────────────────
+
+type FofSortKey = "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change"
+
+interface FofUnderlyingRow {
+  id: string
+  beian_hao: string | null
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  nav_estimated: boolean
+  valuation_date: string | null
+}
+
+function OperationsFofUnderlyingView() {
+  const [fundClass, setFundClass] = useState<"private" | "public">("private")
+  const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
+  const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
+  const [strategyL1, setStrategyL1] = useState("")
+  const [holdingStatus, setHoldingStatus] = useState<"holding" | "cleared">("holding")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [fofFundInput, setFofFundInput] = useState("")
+  const [fofFundSelected, setFofFundSelected] = useState<{ register_number: string; product_name: string } | null>(null)
+  const [fofFundOptions, setFofFundOptions] = useState<{ register_number: string; product_name: string }[]>([])
+  const [fofFundShowDropdown, setFofFundShowDropdown] = useState(false)
+  const [sortKey, setSortKey] = useState<FofSortKey | "">("")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [data, setData] = useState<FofUnderlyingRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
+  const [showFofFieldConfig, setShowFofFieldConfig] = useState(false)
+  const [fofFieldConfigSelected, setFofFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [showFofAuditLog, setShowFofAuditLog] = useState(false)
+  const [fofElementsDialog, setFofElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [fofPermissionDialog, setFofPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [fofNoteDialog, setFofNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [fofSyncNavDialog, setFofSyncNavDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [fofScaleDialog, setFofScaleDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
+  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fofFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    const params = new URLSearchParams({ strategy_source: strategySource, pool: "all" })
+    fetch(`/ma/api/tracking-funds/strategies?${params}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
+      .catch(() => {})
+  }, [strategySource])
+
+  useEffect(() => {
+    setPage(1)
+  }, [fundClass, strategySource, strategyL1, holdingStatus, keyword, pageSize, fofFundSelected?.register_number])
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      strategy_source: strategySource,
+      holding_status: holdingStatus,
+      keyword,
+      dir: sortDir,
+    })
+    if (sortKey) params.set("sort", sortKey)
+    if (strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
+    else if (strategyL1) params.set("strategy_l1", strategyL1)
+    fetch(`/ma/api/ops/fof-underlying/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setData(json.data ?? [])
+        setTotal(json.total ?? 0)
+        setSelected(new Set())
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+        setSelected(new Set())
+      })
+      .finally(() => setLoading(false))
+  }, [page, pageSize, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, fofFundSelected?.register_number])
+
+  useEffect(() => {
+    fetch("/ma/api/ops/fof-underlying/fof-funds")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setFofFundOptions(d) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (fofFundSearchRef.current) clearTimeout(fofFundSearchRef.current)
+    fofFundSearchRef.current = setTimeout(() => {
+      const q = fofFundInput.trim()
+      fetch(`/ma/api/ops/fof-underlying/fof-funds${q ? `?q=${encodeURIComponent(q)}` : ""}`)
+        .then((r) => r.json())
+        .then((d) => { if (Array.isArray(d)) setFofFundOptions(d) })
+        .catch(() => setFofFundOptions([]))
+    }, 200)
+    return () => { if (fofFundSearchRef.current) clearTimeout(fofFundSearchRef.current) }
+  }, [fofFundInput])
+
+  function handleSort(col: FofSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function FofSortIcon({ col }: { col: FofSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function toggleAll() {
+    if (selected.size === data.length && data.length > 0) setSelected(new Set())
+    else setSelected(new Set(data.map((r) => r.id)))
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const rows = selected.size > 0 ? data.filter((r) => selected.has(r.id)) : data
+    const headers = ["产品名称", "备案编码", "单位净值", "净值日期", "涨跌幅", "估值表日期"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav),
+        escape(r.latest_nav_date), escape(r.latest_price_change), escape(r.valuation_date),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `FOF底层_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  return (
+    <div className="flex flex-col h-full min-w-0">
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">基金分类：</span>
+          <div className="flex items-center gap-1">
+            {([["private", "私募"], ["public", "公募"]] as const).map(([fc, label]) => (
+              <span
+                key={fc}
+                onClick={() => setFundClass(fc)}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  fundClass === fc
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <select
+                value={strategySource}
+                onChange={(e) => {
+                  const next = e.target.value as "company" | "platform"
+                  if (strategySource === next) return
+                  setStrategySource(next)
+                  setStrategyL1("")
+                  setPage(1)
+                }}
+                className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="company">团队策略</option>
+                <option value="platform">平台策略</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <span
+              onClick={() => { setStrategyL1(""); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                !strategyL1
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </span>
+            {strategyHierarchy.map((node) => (
+              <span
+                key={node.l1}
+                onClick={() => { setStrategyL1(strategyL1 === node.l1 ? "" : node.l1); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                  strategyL1 === node.l1
+                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    : "border-border text-zinc-500 hover:bg-muted/60",
+                ].join(" ")}
+              >
+                {node.l1}
+              </span>
+            ))}
+            <span
+              onClick={() => { setStrategyL1(strategyL1 === "__unconfigured__" ? "" : "__unconfigured__"); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                strategyL1 === "__unconfigured__"
+                  ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                  : "border-border text-zinc-500 hover:bg-muted/60",
+              ].join(" ")}
+            >
+              策略未配置
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">持仓状态：</span>
+          <div className="flex items-center gap-1">
+            {([["holding", "持仓中"], ["cleared", "已清仓"]] as const).map(([st, label]) => (
+              <span
+                key={st}
+                onClick={() => { setHoldingStatus(st); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  holdingStatus === st
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2 gap-6 flex-wrap">
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+            <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-72">
+              <input
+                className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+                placeholder="请输入产品/产品备案号，按回车搜索"
+                value={kwInput}
+                onChange={(e) => setKwInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+              />
+              <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <Search className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 pr-3">FOF基金：</span>
+            <div className="relative w-64">
+              {fofFundSelected ? (
+                <div className="flex items-center justify-between border rounded h-7 px-2 bg-background">
+                  <span className="text-xs truncate">{fofFundSelected.product_name}</span>
+                  <button
+                    type="button"
+                    onClick={() => { setFofFundSelected(null); setFofFundInput("") }}
+                    className="text-muted-foreground hover:text-foreground ml-1 shrink-0">×</button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    className="w-full h-7 border rounded px-2 text-xs bg-background outline-none placeholder:text-muted-foreground/50"
+                    placeholder="请输入并选择FOF基金"
+                    value={fofFundInput}
+                    onChange={(e) => { setFofFundInput(e.target.value); setFofFundShowDropdown(true) }}
+                    onFocus={() => setFofFundShowDropdown(true)}
+                  />
+                  {fofFundShowDropdown && fofFundOptions.length > 0 && (
+                    <>
+                      <div className="fixed inset-0 z-20" onClick={() => setFofFundShowDropdown(false)} />
+                      <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                        {fofFundOptions.map((opt) => (
+                          <button
+                            key={opt.register_number}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setFofFundSelected(opt)
+                              setFofFundInput("")
+                              setFofFundShowDropdown(false)
+                            }}
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors truncate"
+                          >
+                            {opt.product_name}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-3 mb-3 flex-shrink-0 text-xs text-zinc-600">
+        <button onClick={() => setShowFofAuditLog(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <ClipboardList className="h-3.5 w-3.5" /> 操作日志
+        </button>
+        <button disabled={selected.size === 0} className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
+          批量上传要素
+        </button>
+        <button onClick={() => setShowFofFieldConfig(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Settings2 className="h-3.5 w-3.5" /> 字段配置
+        </button>
+        <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Download className="h-3.5 w-3.5" /> 导出
+        </button>
+        <button disabled={selected.size === 0} className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
+          批量操作
+          {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
+        </button>
+      </div>
+
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 960 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+              <th className={`${thBase} w-8 px-2`}>
+                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+              </th>
+              <th className={`${thBase} w-10`}>序号</th>
+              <th className={`${thSort} min-w-[180px]`} onClick={() => handleSort("product_name")}>产品名称<FofSortIcon col="product_name" /></th>
+              <th className={`${thBase} min-w-[90px]`}>备案编码</th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>单位净值<FofSortIcon col="latest_nav" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>净值日期<FofSortIcon col="latest_nav_date" /></th>
+              <th className={`${thSort} text-right min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<FofSortIcon col="latest_price_change" /></th>
+              <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
+              <th className={`${thBase} text-center w-20`}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : data.map((row, i) => {
+              const isSelected = selected.has(row.id)
+              const cell = `border-b px-3 py-2 ${isSelected ? "bg-blue-50 dark:bg-blue-950/40" : ""} group-hover:bg-muted transition-colors`
+              return (
+                <tr key={row.id} className="group">
+                  <td className={`${cell} px-2 text-center`}>
+                    <input type="checkbox" className="rounded h-3 w-3" checked={isSelected}
+                      onChange={() => {
+                        const s = new Set(selected)
+                        isSelected ? s.delete(row.id) : s.add(row.id)
+                        setSelected(s)
+                      }} />
+                  </td>
+                  <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
+                  <td className={cell}>
+                    {row.beian_hao ? (
+                      <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
+                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[220px]" title={row.product_name}>
+                        {row.short_name || row.product_name}
+                      </a>
+                    ) : (
+                      <span className="font-medium truncate block max-w-[220px]" title={row.product_name}>{row.short_name || row.product_name}</span>
+                    )}
+                    {row.strategy_l1 && (
+                      <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-zinc-300/80 text-zinc-600 bg-zinc-50 dark:bg-zinc-800/50 dark:text-zinc-400">
+                        {row.strategy_l1}
+                      </span>
+                    )}
+                  </td>
+                  <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
+                  <td className={`${cell} tabular-nums`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
+                      {row.nav_estimated && row.latest_nav && (
+                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800">预估</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                  <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                  <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
+                  <td className={`${cell} text-center`}>
+                    <div className="flex items-center justify-center gap-1">
+                      {row.beian_hao && (
+                        <div
+                          onMouseEnter={(e) => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                            hoverTimeout.current = setTimeout(() => {
+                              setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                              setHoverChartRow(row.beian_hao)
+                            }, 200)
+                          }}
+                          onMouseLeave={() => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                          }}>
+                          <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                            <LineChart className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
+                      <OpsProductRowMenu
+                        rowKey={row.id}
+                        openRowMenu={openRowMenu}
+                        onOpenChange={setOpenRowMenu}
+                        beian_hao={row.beian_hao}
+                        onElementsManage={() => setFofElementsDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onPermissionManage={() => setFofPermissionDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onNoteManage={() => setFofNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onScaleManage={() => setFofScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        extraItems={[{
+                          label: "同步净值",
+                          icon: RefreshCw,
+                          onClick: () => setFofSyncNavDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
+                        }]}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {hoverChartRow && hoverChartPos && (
+        <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
+          style={{ left: hoverChartPos.x, top: hoverChartPos.y }}
+          onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+          onMouseLeave={() => setHoverChartRow(null)}>
+          <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
+        </div>
+      )}
+
+      <div className="flex items-center justify-between pt-3 flex-shrink-0">
+        <span className="text-sm text-zinc-500">
+          共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条
+        </span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`fof-e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+          <div className="relative ml-3">
+            <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring">
+              {[50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
+        </div>
+      </div>
+
+      <DirectFieldConfigDialog
+        open={showFofFieldConfig}
+        selected={fofFieldConfigSelected}
+        onClose={() => setShowFofFieldConfig(false)}
+        onConfirm={(fields) => { setFofFieldConfigSelected(fields); setShowFofFieldConfig(false) }}
+      />
+      <OpsAuditLogDialog open={showFofAuditLog} onClose={() => setShowFofAuditLog(false)} />
+      <OpsEditElementsDialog
+        open={!!fofElementsDialog}
+        beian_hao={fofElementsDialog?.beian_hao ?? null}
+        product_name={fofElementsDialog?.product_name ?? ""}
+        onClose={() => setFofElementsDialog(null)}
+      />
+      <OpsPermissionDialog
+        open={!!fofPermissionDialog}
+        beian_hao={fofPermissionDialog?.beian_hao ?? null}
+        product_name={fofPermissionDialog?.product_name ?? ""}
+        onClose={() => setFofPermissionDialog(null)}
+      />
+      <OpsTeamNoteDialog
+        open={!!fofNoteDialog}
+        beian_hao={fofNoteDialog?.beian_hao ?? null}
+        product_name={fofNoteDialog?.product_name ?? ""}
+        onClose={() => setFofNoteDialog(null)}
+      />
+      <OpsSyncNavDialog
+        open={!!fofSyncNavDialog}
+        beian_hao={fofSyncNavDialog?.beian_hao ?? null}
+        product_name={fofSyncNavDialog?.product_name ?? ""}
+        onClose={() => setFofSyncNavDialog(null)}
+      />
+      <OpsScaleManageDialog
+        open={!!fofScaleDialog}
+        beian_hao={fofScaleDialog?.beian_hao ?? null}
+        product_name={fofScaleDialog?.product_name ?? ""}
+        onClose={() => setFofScaleDialog(null)}
+      />
+    </div>
+  )
+}
+
+// ─── OperationsManagedProductsView ───────────────────────────────────────────
+
+type ManagedSortKey =
+  | "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change"
+  | "custody_balance" | "net_asset_value"
+
+interface ManagedProductRow {
+  id: string
+  beian_hao: string | null
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  custody_balance: string | null
+  net_asset_value: string | null
+  valuation_date: string | null
+}
+
+function fmtMoney(v: string | null | undefined): string {
+  if (!v) return "—"
+  const n = parseFloat(v)
+  if (isNaN(n)) return "—"
+  return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function OperationsManagedProductsView() {
+  const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
+  const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
+  const [strategyL1, setStrategyL1] = useState("")
+  const [teamTagMode, setTeamTagMode] = useState<"and" | "or">("and")
+  const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
+  const [teamTags, setTeamTags] = useState<string[]>([])
+  const [runStatus, setRunStatus] = useState<"running" | "liquidated">("running")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [sortKey, setSortKey] = useState<ManagedSortKey | "">("")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [data, setData] = useState<ManagedProductRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
+  const [showManagedFieldConfig, setShowManagedFieldConfig] = useState(false)
+  const [managedFieldConfigSelected, setManagedFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [showManagedAuditLog, setShowManagedAuditLog] = useState(false)
+  const [managedElementsDialog, setManagedElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [managedPermissionDialog, setManagedPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [managedNoteDialog, setManagedNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [managedSyncNavDialog, setManagedSyncNavDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [managedScaleDialog, setManagedScaleDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
+  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const params = new URLSearchParams({ strategy_source: strategySource, pool: "all" })
+    fetch(`/ma/api/tracking-funds/strategies?${params}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
+      .catch(() => {})
+  }, [strategySource])
+
+  useEffect(() => {
+    setPage(1)
+  }, [strategySource, strategyL1, teamTagMode, teamTags.join("\u0001"), runStatus, keyword, pageSize])
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      strategy_source: strategySource,
+      run_status: runStatus,
+      team_tag_mode: teamTagMode,
+      keyword,
+      dir: sortDir,
+    })
+    if (sortKey) params.set("sort", sortKey)
+    if (strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
+    else if (strategyL1) params.set("strategy_l1", strategyL1)
+    teamTags.forEach((t) => params.append("team_tag", t))
+    fetch(`/ma/api/ops/managed-products/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setData(json.data ?? [])
+        setTotal(json.total ?? 0)
+        setSelected(new Set())
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+        setSelected(new Set())
+      })
+      .finally(() => setLoading(false))
+  }, [page, pageSize, strategySource, strategyL1, teamTagMode, teamTags, runStatus, keyword, sortKey, sortDir])
+
+  function toggleTeamTag(tag: string) {
+    setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
+  }
+
+  function handleSort(col: ManagedSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function ManagedSortIcon({ col }: { col: ManagedSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function toggleAll() {
+    if (selected.size === data.length && data.length > 0) setSelected(new Set())
+    else setSelected(new Set(data.map((r) => r.id)))
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const rows = selected.size > 0 ? data.filter((r) => selected.has(r.id)) : data
+    const headers = ["产品名称", "备案编码", "单位净值", "净值日期", "涨跌幅", "托管户余额", "资产净值", "估值表日期"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav),
+        escape(r.latest_nav_date), escape(r.latest_price_change), escape(r.custody_balance),
+        escape(r.net_asset_value), escape(r.valuation_date),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `在管产品_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  return (
+    <div className="flex flex-col h-full min-w-0">
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <select
+                value={strategySource}
+                onChange={(e) => {
+                  const next = e.target.value as "company" | "platform"
+                  if (strategySource === next) return
+                  setStrategySource(next)
+                  setStrategyL1("")
+                  setPage(1)
+                }}
+                className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="company">团队策略</option>
+                <option value="platform">平台策略</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <span
+              onClick={() => { setStrategyL1(""); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                !strategyL1
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </span>
+            {strategyHierarchy.map((node) => (
+              <span
+                key={node.l1}
+                onClick={() => { setStrategyL1(strategyL1 === node.l1 ? "" : node.l1); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                  strategyL1 === node.l1
+                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    : "border-border text-zinc-500 hover:bg-muted/60",
+                ].join(" ")}
+              >
+                {node.l1}
+              </span>
+            ))}
+            <span
+              onClick={() => { setStrategyL1(strategyL1 === "__unconfigured__" ? "" : "__unconfigured__"); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                strategyL1 === "__unconfigured__"
+                  ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                  : "border-border text-zinc-500 hover:bg-muted/60",
+              ].join(" ")}
+            >
+              策略未配置
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队标签：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <select
+                value={teamTagMode}
+                onChange={(e) => { setTeamTagMode(e.target.value as "and" | "or"); setPage(1) }}
+                className="h-7 min-w-[5.75rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="and">交集（且）</option>
+                <option value="or">并集（或）</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <span
+              onClick={() => { setTeamTags([]); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                teamTags.length === 0
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </span>
+            {teamTagOptions.map((tag) => (
+              <span
+                key={tag}
+                onClick={() => toggleTeamTag(tag)}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                  teamTags.includes(tag)
+                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    : "border-border text-zinc-500 hover:bg-muted/60",
+                ].join(" ")}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">运行状态：</span>
+          <div className="flex items-center gap-1">
+            {([["running", "运行中"], ["liquidated", "已清盘"]] as const).map(([st, label]) => (
+              <span
+                key={st}
+                onClick={() => { setRunStatus(st); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  runStatus === st
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+          <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
+            <input
+              className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+              placeholder="请输入产品/产品备案号，按回车搜索"
+              value={kwInput}
+              onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+            />
+            <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+              <Search className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-3 mb-3 flex-shrink-0 text-xs text-zinc-600">
+        <button onClick={() => setShowManagedAuditLog(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <ClipboardList className="h-3.5 w-3.5" /> 操作日志
+        </button>
+        <button disabled={selected.size === 0} className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
+          批量上传要素
+        </button>
+        <button onClick={() => setShowManagedFieldConfig(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Settings2 className="h-3.5 w-3.5" /> 字段配置
+        </button>
+        <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Download className="h-3.5 w-3.5" /> 导出
+        </button>
+        <button disabled={selected.size === 0} className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
+          批量操作
+          {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
+        </button>
+        <button className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
+          添加产品
+        </button>
+      </div>
+
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+              <th className={`${thBase} w-8 px-2`}>
+                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+              </th>
+              <th className={`${thBase} w-10`}>序号</th>
+              <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("product_name")}>产品名称<ManagedSortIcon col="product_name" /></th>
+              <th className={`${thBase} min-w-[90px]`}>备案编码</th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>单位净值<ManagedSortIcon col="latest_nav" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>净值日期<ManagedSortIcon col="latest_nav_date" /></th>
+              <th className={`${thSort} text-right min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<ManagedSortIcon col="latest_price_change" /></th>
+              <th className={`${thSort} text-right min-w-[100px]`} onClick={() => handleSort("custody_balance")}>托管户余额<ManagedSortIcon col="custody_balance" /></th>
+              <th className={`${thSort} text-right min-w-[120px]`} onClick={() => handleSort("net_asset_value")}>资产净值<ManagedSortIcon col="net_asset_value" /></th>
+              <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
+              <th className={`${thBase} text-center w-20`}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : data.map((row, i) => {
+              const isSelected = selected.has(row.id)
+              const cell = `border-b px-3 py-2 ${isSelected ? "bg-blue-50 dark:bg-blue-950/40" : ""} group-hover:bg-muted transition-colors`
+              return (
+                <tr key={row.id} className="group">
+                  <td className={`${cell} px-2 text-center`}>
+                    <input type="checkbox" className="rounded h-3 w-3" checked={isSelected}
+                      onChange={() => {
+                        const s = new Set(selected)
+                        isSelected ? s.delete(row.id) : s.add(row.id)
+                        setSelected(s)
+                      }} />
+                  </td>
+                  <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
+                  <td className={cell}>
+                    {row.beian_hao ? (
+                      <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
+                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[200px]" title={row.product_name}>
+                        {row.short_name || row.product_name}
+                      </a>
+                    ) : (
+                      <span className="font-medium truncate block max-w-[200px]" title={row.product_name}>{row.short_name || row.product_name}</span>
+                    )}
+                    {row.strategy_l1 && (
+                      <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-zinc-300/80 text-zinc-600 bg-zinc-50 dark:bg-zinc-800/50 dark:text-zinc-400">
+                        {row.strategy_l1}
+                      </span>
+                    )}
+                  </td>
+                  <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
+                  <td className={`${cell} tabular-nums`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
+                      {row.latest_nav && (
+                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800">团队</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                  <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                  <td className={`${cell} text-right tabular-nums`}>{fmtMoney(row.custody_balance)}</td>
+                  <td className={`${cell} text-right tabular-nums font-medium`}>{fmtMoney(row.net_asset_value)}</td>
+                  <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
+                  <td className={`${cell} text-center`}>
+                    <div className="flex items-center justify-center gap-1">
+                      {row.beian_hao && (
+                        <div
+                          onMouseEnter={(e) => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                            hoverTimeout.current = setTimeout(() => {
+                              setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                              setHoverChartRow(row.beian_hao)
+                            }, 200)
+                          }}
+                          onMouseLeave={() => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                          }}>
+                          <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                            <LineChart className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      )}
+                      <OpsProductRowMenu
+                        rowKey={row.id}
+                        openRowMenu={openRowMenu}
+                        onOpenChange={setOpenRowMenu}
+                        beian_hao={row.beian_hao}
+                        onElementsManage={() => setManagedElementsDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onPermissionManage={() => setManagedPermissionDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onNoteManage={() => setManagedNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onScaleManage={() => setManagedScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        extraItems={[{
+                          label: "同步净值",
+                          icon: RefreshCw,
+                          onClick: () => setManagedSyncNavDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
+                        }]}
+                        footerItems={[{ label: "移出列表", icon: MinusCircle, destructive: true }]}
+                      />
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {hoverChartRow && hoverChartPos && (
+        <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
+          style={{ left: hoverChartPos.x, top: hoverChartPos.y }}
+          onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+          onMouseLeave={() => setHoverChartRow(null)}>
+          <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
+        </div>
+      )}
+
+      <div className="flex items-center justify-between pt-3 flex-shrink-0">
+        <span className="text-sm text-zinc-500">
+          共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条
+        </span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+          <div className="relative ml-3">
+            <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring">
+              {[50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
+        </div>
+      </div>
+
+      <DirectFieldConfigDialog
+        open={showManagedFieldConfig}
+        selected={managedFieldConfigSelected}
+        onClose={() => setShowManagedFieldConfig(false)}
+        onConfirm={(fields) => { setManagedFieldConfigSelected(fields); setShowManagedFieldConfig(false) }}
+      />
+      <OpsAuditLogDialog open={showManagedAuditLog} onClose={() => setShowManagedAuditLog(false)} />
+      <OpsEditElementsDialog
+        open={!!managedElementsDialog}
+        beian_hao={managedElementsDialog?.beian_hao ?? null}
+        product_name={managedElementsDialog?.product_name ?? ""}
+        onClose={() => setManagedElementsDialog(null)}
+      />
+      <OpsPermissionDialog
+        open={!!managedPermissionDialog}
+        beian_hao={managedPermissionDialog?.beian_hao ?? null}
+        product_name={managedPermissionDialog?.product_name ?? ""}
+        onClose={() => setManagedPermissionDialog(null)}
+      />
+      <OpsTeamNoteDialog
+        open={!!managedNoteDialog}
+        beian_hao={managedNoteDialog?.beian_hao ?? null}
+        product_name={managedNoteDialog?.product_name ?? ""}
+        onClose={() => setManagedNoteDialog(null)}
+      />
+      <OpsSyncNavDialog
+        open={!!managedSyncNavDialog}
+        beian_hao={managedSyncNavDialog?.beian_hao ?? null}
+        product_name={managedSyncNavDialog?.product_name ?? ""}
+        onClose={() => setManagedSyncNavDialog(null)}
+      />
+      <OpsScaleManageDialog
+        open={!!managedScaleDialog}
+        beian_hao={managedScaleDialog?.beian_hao ?? null}
+        product_name={managedScaleDialog?.product_name ?? ""}
+        onClose={() => setManagedScaleDialog(null)}
+      />
     </div>
   )
 }
@@ -4843,6 +9297,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
   const portfolioType = sideItem === "port-live" ? "live" : "simulated"
   const [scopeTab, setScopeTab] = useState<"team" | "mine">("team")
   const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
+  const [personalTagOptions, setPersonalTagOptions] = useState<string[]>([])
   const [teamTags, setTeamTags] = useState<string[]>([])
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
@@ -4871,6 +9326,12 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name))
+      })
+      .catch(() => {})
+    fetch("/ma/api/ops/team-tags?category=portfolio_personal")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d)) setPersonalTagOptions(d.map((t: { name: string }) => t.name))
       })
       .catch(() => {})
   }, [])
@@ -4988,7 +9449,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
         {(["team", "mine"] as const).map((t) => (
           <button
             key={t}
-            onClick={() => setScopeTab(t)}
+            onClick={() => { setScopeTab(t); setTeamTags([]) }}
             className={[
               "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
               scopeTab === t
@@ -5005,7 +9466,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
       <div className="flex items-center justify-between gap-4 mb-3 flex-shrink-0 flex-wrap">
         <div className="flex items-center gap-4 flex-wrap flex-1 min-w-0">
           <div className="flex items-center gap-2 text-sm">
-            <span className="text-zinc-500 shrink-0">团队标签：</span>
+            <span className="text-zinc-500 shrink-0">{scopeTab === "team" ? "团队标签：" : "个人标签："}</span>
             <button
               onClick={() => setTeamTags([])}
               className={[
@@ -5017,7 +9478,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
             >
               不限
             </button>
-            {teamTagOptions.map((tag) => (
+            {(scopeTab === "team" ? teamTagOptions : personalTagOptions).map((tag) => (
               <button
                 key={tag}
                 onClick={() => toggleTeamTag(tag)}
@@ -5255,7 +9716,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
                 className={[
                   "w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
                   btn === page
-                    ? "bg-zinc-900 text-white border-zinc-900 font-medium shadow-sm dark:bg-zinc-100 dark:text-zinc-900 dark:border-zinc-100"
+                    ? "bg-red-500 text-white border-red-500 font-medium shadow-sm"
                     : "text-foreground hover:bg-muted border-border",
                 ].join(" ")}>
                 {btn}
@@ -5335,8 +9796,6 @@ export default function PrivateFundsPage() {
     return TAB_DEFAULT_SIDE[tab] ?? "private-funds"
   })
 
-  const sidebarItems = sidebarMap[activeTab] ?? []
-
   function handleTabChange(tab: string) {
     setActiveTab(tab)
     if (TAB_DEFAULT_SIDE[tab]) setActiveSideItem(TAB_DEFAULT_SIDE[tab])
@@ -5354,7 +9813,7 @@ export default function PrivateFundsPage() {
               className={[
                 "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
                 activeTab === item.key
-                  ? "text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-zinc-900 after:rounded-full dark:after:bg-zinc-100"
+                  ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
                   : "text-muted-foreground hover:text-foreground",
               ].join(" ")}
             >
@@ -5366,29 +9825,52 @@ export default function PrivateFundsPage() {
 
       {/* Body: sidebar + content */}
       <div className="flex flex-1 min-h-0">
-        {sidebarItems.length > 0 && (
+        {activeTab === "funds" && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
-            <nav className="flex flex-col gap-0.5 p-3 pt-4">
-              {sidebarItems.map((item) => (
-                <button
-                  key={item.key}
-                  onClick={() => setActiveSideItem(item.key)}
-                  className={[
-                    "w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors focus:outline-none",
-                    activeSideItem === item.key
-                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 font-semibold"
-                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                  ].join(" ")}
-                >
-                  {item.label}
-                </button>
-              ))}
+            <div className="flex items-center gap-2 px-4 py-4 border-b">
+              <div className="h-7 w-7 rounded-md bg-red-500 flex items-center justify-center flex-shrink-0">
+                <Database className="h-3.5 w-3.5 text-white" />
+              </div>
+              <span className="text-sm font-semibold text-foreground">基金数据库</span>
+            </div>
+            <nav className="flex flex-col pt-2 pb-4 overflow-y-auto">
+              {fundsSidebarGroups.map((group) => {
+                const hasActive = group.items.some((i) => i.key === activeSideItem)
+                return (
+                  <div key={group.label}>
+                    <div className={[
+                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                    ].join(" ")}>{group.label}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        onClick={() => setActiveSideItem(item.key)}
+                        className={[
+                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                          activeSideItem === item.key
+                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
+                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                        ].join(" ")}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
             </nav>
           </aside>
         )}
         {activeTab === "investment" && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
-            <nav className="flex flex-col pt-3 pb-4">
+            <div className="flex items-center gap-2 px-4 py-4 border-b">
+              <div className="h-7 w-7 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+                <LineChart className="h-3.5 w-3.5 text-white" />
+              </div>
+              <span className="text-sm font-semibold text-foreground">投资分析</span>
+            </div>
+            <nav className="flex flex-col pt-2 pb-4">
               {investmentSidebarGroups.map((group) => {
                 const hasActive = group.items.some((i) => i.key === activeSideItem)
                 return (
@@ -5404,7 +9886,7 @@ export default function PrivateFundsPage() {
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
-                            ? "text-red-600 dark:text-red-400 font-medium before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500 before:rounded-full"
+                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
                             : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
                         ].join(" ")}
                       >
@@ -5420,7 +9902,17 @@ export default function PrivateFundsPage() {
 
         {activeTab === "operations" && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
-            <nav className="flex flex-col pt-3 pb-4">
+            <div className="flex items-center gap-2 px-4 py-4 border-b">
+              <div className="h-7 w-7 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+                <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="white" aria-hidden="true">
+                  <circle cx="8" cy="3.5" r="1.8" />
+                  <circle cx="4" cy="12" r="1.8" />
+                  <circle cx="12" cy="12" r="1.8" />
+                </svg>
+              </div>
+              <span className="text-sm font-semibold text-foreground">产品运维</span>
+            </div>
+            <nav className="flex flex-col pt-2 pb-4">
               {operationsSidebarGroups.map((group) => {
                 const hasActive = group.items.some((i) => i.key === activeSideItem)
                 return (
@@ -5436,7 +9928,7 @@ export default function PrivateFundsPage() {
                         className={[
                           "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
                           activeSideItem === item.key
-                            ? "text-red-600 dark:text-red-400 font-medium before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500 before:rounded-full"
+                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:right-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
                             : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
                         ].join(" ")}
                       >
@@ -5491,12 +9983,21 @@ export default function PrivateFundsPage() {
         {/* Page content area */}
         <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
+          {activeTab === "funds" && activeSideItem !== "private-funds" && (
+            <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+              该功能正在建设中，敬请期待
+            </div>
+          )}
           {activeTab === "portfolio" && (activeSideItem === "port-simulated" || activeSideItem === "port-live" || activeSideItem === "port-new") && (
             <PortfolioView sideItem={activeSideItem} />
           )}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
           {activeTab === "operations" && activeSideItem === "ops-strategy-tags" && <OperationsStrategyTagsView initialOpsTab={(searchParams.get("ops") as "strategies" | "tags" | "fields") || "strategies"} />}
-          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && (
+          {activeTab === "operations" && activeSideItem === "ops-tracking" && <InvestmentTrackingView variant="operations" />}
+          {activeTab === "operations" && activeSideItem === "ops-direct" && <OperationsDirectView />}
+          {activeTab === "operations" && activeSideItem === "ops-fof" && <OperationsFofUnderlyingView />}
+          {activeTab === "operations" && activeSideItem === "ops-active-funds" && <OperationsManagedProductsView />}
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

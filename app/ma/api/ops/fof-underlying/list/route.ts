@@ -1,0 +1,147 @@
+import { NextResponse } from "next/server"
+import { query, fmtIso } from "@/lib/db"
+
+export const runtime = "nodejs"
+export const dynamic = "force-dynamic"
+
+const ALLOWED_SORT: Record<string, string> = {
+  product_name: "f.product_name",
+  latest_nav: "f.latest_unit_nav",
+  latest_nav_date: "f.latest_nav_date",
+  latest_price_change: "f.latest_return_pct",
+}
+
+interface FofRow {
+  id: string
+  beian_hao: string | null
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  nav_estimated: boolean
+  valuation_date: string | null
+}
+
+export async function GET(req: Request) {
+  try {
+    const { searchParams } = new URL(req.url)
+    const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10))
+    const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10)))
+    const offset = (page - 1) * pageSize
+    const keyword = (searchParams.get("keyword") || "").trim()
+    const strategySource = searchParams.get("strategy_source") === "platform" ? "platform" : "company"
+    const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
+    const holdingStatus = searchParams.get("holding_status") || "holding"
+    const sortParam = searchParams.get("sort") || ""
+    const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
+    const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
+    const sortCol = sortKey === "sequence_no" ? "f.sequence_no" : ALLOWED_SORT[sortKey]
+
+    const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
+    const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
+
+    const conditions: string[] = ["1=1"]
+    const params: unknown[] = []
+    let pi = 1
+
+    if (keyword) {
+      conditions.push(`(
+        f.product_name ILIKE $${pi}
+        OR COALESCE(b.beian_hao, o.register_number, '') ILIKE $${pi}
+      )`)
+      params.push(`%${keyword}%`)
+      pi++
+    }
+
+    if (strategyL1 === "__unconfigured__") {
+      conditions.push(`${strategyExpr} IS NULL`)
+    } else if (strategyL1) {
+      conditions.push(`${strategyExpr} = $${pi}`)
+      params.push(strategyL1)
+      pi++
+    }
+
+    if (holdingStatus === "holding") {
+      conditions.push(`COALESCE(f.market_value, 0) > 0`)
+    } else if (holdingStatus === "cleared") {
+      conditions.push(`COALESCE(f.market_value, 0) <= 0`)
+    }
+
+    const where = conditions.join(" AND ")
+
+    const baseFrom = `
+      FROM fof_underlying_summary f
+      LEFT JOIN LATERAL (
+        SELECT beian_hao, short_name, strategy_company
+        FROM private_fund_info_bfl
+        WHERE product_name = f.product_name OR short_name = f.product_name
+        LIMIT 1
+      ) b ON true
+      LEFT JOIN LATERAL (
+        SELECT register_number, fund_short_name, company_strategy_one, platform_strategy_one
+        FROM type6_ops_team_full
+        WHERE fund_name = f.product_name OR fund_short_name = f.product_name
+        ORDER BY updated_at DESC NULLS LAST, id DESC
+        LIMIT 1
+      ) o ON true
+    `
+
+    const countRows = await query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`,
+      params,
+    )
+    const total = parseInt(countRows[0]?.n || "0", 10)
+
+    const rows = await query<{
+      id: string
+      beian_hao: string | null
+      product_name: string
+      short_name: string | null
+      strategy_l1: string | null
+      latest_unit_nav: string | null
+      latest_nav_date: string | Date | null
+      latest_return_pct: string | null
+    }>(
+      `SELECT
+         f.id::text AS id,
+         COALESCE(b.beian_hao, o.register_number) AS beian_hao,
+         f.product_name,
+         COALESCE(b.short_name, o.fund_short_name, f.product_name) AS short_name,
+         ${strategyExpr} AS strategy_l1,
+         f.latest_unit_nav::text AS latest_unit_nav,
+         f.latest_nav_date,
+         f.latest_return_pct::text AS latest_return_pct
+       ${baseFrom}
+       WHERE ${where}
+       ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC
+       LIMIT $${pi} OFFSET $${pi + 1}`,
+      [...params, pageSize, offset],
+    )
+
+    const data: FofRow[] = rows.map((r) => ({
+      id: r.id,
+      beian_hao: r.beian_hao,
+      product_name: r.product_name,
+      short_name: r.short_name,
+      strategy_l1: r.strategy_l1,
+      latest_nav: r.latest_unit_nav,
+      latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
+      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct) / 100) : null,
+      nav_estimated: r.latest_unit_nav != null,
+      valuation_date: null,
+    }))
+
+    return NextResponse.json({
+      data,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    })
+  } catch (err) {
+    console.error("[fof-underlying/list]", err)
+    return NextResponse.json({ error: "Failed to load FOF underlying data" }, { status: 500 })
+  }
+}
