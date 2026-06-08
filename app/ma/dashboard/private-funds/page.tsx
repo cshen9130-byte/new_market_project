@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2 } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye } from "lucide-react"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -9300,6 +9300,712 @@ function OperationsManagedProductsView() {
   )
 }
 
+// ─── InvestmentTrackingManagersView ─────────────────────────────────────────
+
+const TRACKING_MGR_TABS = ["基础信息", "跟踪产品", "FOF底层", "尽调报告", "尽调问卷", "投资笔记", "评分表", "管理人资料"] as const
+
+type TrackingMgrSortKey = "manager_name" | "mgmt_scale" | "active_product_count" | "inception_date" | "tracking_date"
+
+interface TrackingManagerRow {
+  id: number
+  seq_no: number | null
+  manager_name: string
+  core_strategy: string | null
+  mgmt_scale: string | null
+  active_product_count: number | null
+  inception_date: string | null
+  member_type: string | null
+  registration_no: string
+  contact_person: string | null
+  tracking_date: string | null
+}
+
+type TrackingProductSortKey =
+  | "seq_no" | "manager_name" | "product_name" | "beian_hao" | "unit_nav" | "nav_date" | "price_change"
+  | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y"
+
+interface TrackingProductRow {
+  id: number
+  seq_no: number | null
+  manager_name: string
+  product_name: string
+  beian_hao: string
+  unit_nav: string | null
+  nav_date: string | null
+  price_change: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+}
+
+function fmtMgrCell(v: string | number | null | undefined): string {
+  if (v == null || v === "" || v === "-") return "—"
+  return String(v)
+}
+
+function InvestmentTrackingManagersView() {
+  const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
+  const [activeTab, setActiveTab] = useState<string>("基础信息")
+  const [coreStrategy, setCoreStrategy] = useState("")
+  const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
+  const [teamTags, setTeamTags] = useState<string[]>([])
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
+  const [sortKey, setSortKey] = useState<TrackingMgrSortKey>("tracking_date")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
+  const [productSortKey, setProductSortKey] = useState<TrackingProductSortKey>("seq_no")
+  const [productSortDir, setProductSortDir] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [jumpVal, setJumpVal] = useState("")
+  const [data, setData] = useState<TrackingManagerRow[]>([])
+  const [productData, setProductData] = useState<TrackingProductRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [productTotal, setProductTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [productLoading, setProductLoading] = useState(false)
+  const [productSelected, setProductSelected] = useState<Set<number>>(new Set())
+  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
+  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [showAuditLog, setShowAuditLog] = useState(false)
+  const [favorites, setFavorites] = useState<Set<number>>(() => {
+    if (typeof window === "undefined") return new Set()
+    try {
+      const raw = localStorage.getItem("tracking_mgr_favorites")
+      return raw ? new Set(JSON.parse(raw) as number[]) : new Set()
+    } catch {
+      return new Set()
+    }
+  })
+
+  useEffect(() => {
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    setPage(1)
+  }, [coreStrategy, keyword, pageSize, trackTab, activeTab])
+
+  useEffect(() => {
+    if (trackTab !== "team" || activeTab !== "基础信息") return
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: favoritesOnly ? "1" : String(page),
+      pageSize: favoritesOnly ? "100000" : String(pageSize),
+      sort: sortKey,
+      dir: sortDir,
+      keyword,
+    })
+    if (coreStrategy) params.set("core_strategy", coreStrategy)
+    fetch(`/ma/api/tracking-managers/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        let rows: TrackingManagerRow[] = json.data ?? []
+        if (favoritesOnly) {
+          rows = rows.filter((r) => favorites.has(r.id))
+          setTotal(rows.length)
+          const start = (page - 1) * pageSize
+          setData(rows.slice(start, start + pageSize))
+        } else {
+          setData(rows)
+          setTotal(json.total ?? 0)
+        }
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+      })
+      .finally(() => setLoading(false))
+  }, [trackTab, activeTab, page, pageSize, sortKey, sortDir, keyword, coreStrategy, favoritesOnly, favorites])
+
+  useEffect(() => {
+    if (trackTab !== "team" || activeTab !== "跟踪产品") return
+    setProductLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      sort: productSortKey,
+      dir: productSortDir,
+      keyword,
+    })
+    fetch(`/ma/api/tracking-products/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setProductData(json.data ?? [])
+        setProductTotal(json.total ?? 0)
+      })
+      .catch(() => {
+        setProductData([])
+        setProductTotal(0)
+      })
+      .finally(() => setProductLoading(false))
+  }, [trackTab, activeTab, page, pageSize, productSortKey, productSortDir, keyword])
+
+  function toggleFavorite(id: number) {
+    setFavorites((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      localStorage.setItem("tracking_mgr_favorites", JSON.stringify([...next]))
+      return next
+    })
+  }
+
+  function toggleTeamTag(tag: string) {
+    setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
+    setPage(1)
+  }
+
+  function handleSort(col: TrackingMgrSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function handleProductSort(col: TrackingProductSortKey) {
+    if (productSortKey === col) setProductSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setProductSortKey(col); setProductSortDir("desc") }
+    setPage(1)
+  }
+
+  function toggleProductSelected(id: number) {
+    setProductSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleAllProducts(checked: boolean) {
+    if (checked) setProductSelected(new Set(productData.map((r) => r.id)))
+    else setProductSelected(new Set())
+  }
+
+  function MgrSortIcon({ col }: { col: TrackingMgrSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function ProductSortIcon({ col }: { col: TrackingProductSortKey }) {
+    if (productSortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return productSortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function jumpTo() {
+    const n = parseInt(jumpVal)
+    if (!isNaN(n)) { setPage(Math.min(totalPages, Math.max(1, n))); setJumpVal("") }
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  async function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const params = new URLSearchParams({ export: "1", sort: sortKey, dir: sortDir, keyword })
+    if (coreStrategy) params.set("core_strategy", coreStrategy)
+    const json = await fetch(`/ma/api/tracking-managers/list?${params}`).then((r) => r.json())
+    const rows: TrackingManagerRow[] = json.data ?? []
+    const headers = ["序号", "管理人名称", "核心策略", "管理规模", "运作中产品数", "成立日期", "会员类型", "登记编号", "对接人", "跟踪日期"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.seq_no != null ? String(r.seq_no) : ""),
+        escape(r.manager_name), escape(r.core_strategy), escape(r.mgmt_scale),
+        escape(r.active_product_count != null ? String(r.active_product_count) : ""),
+        escape(r.inception_date), escape(r.member_type), escape(r.registration_no),
+        escape(r.contact_person), escape(r.tracking_date),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `跟踪管理人_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  async function handleProductExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const params = new URLSearchParams({ export: "1", sort: productSortKey, dir: productSortDir, keyword })
+    const json = await fetch(`/ma/api/tracking-products/list?${params}`).then((r) => r.json())
+    const rows: TrackingProductRow[] = json.data ?? []
+    const headers = ["序号", "管理人名称", "产品名称", "备案编码", "单位净值", "净值日期", "涨跌幅", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.seq_no != null ? String(r.seq_no) : ""),
+        escape(r.manager_name), escape(r.product_name), escape(r.beian_hao),
+        escape(r.unit_nav), escape(r.nav_date), escape(r.price_change),
+        escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `跟踪产品_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const activeTotal = activeTab === "跟踪产品" ? productTotal : total
+  const activeLoading = activeTab === "跟踪产品" ? productLoading : loading
+  const totalPages = Math.max(1, Math.ceil(activeTotal / pageSize))
+  const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+  const tdBase = "px-3 py-2.5 text-sm text-zinc-700 dark:text-zinc-300 whitespace-nowrap"
+
+  return (
+    <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
+      <div className="flex items-center gap-0 border-b mb-4 flex-shrink-0">
+        {(["team", "mine"] as const).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTrackTab(t)}
+            className={[
+              "px-5 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px",
+              trackTab === t
+                ? "border-red-500 text-red-600 dark:text-red-400"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+          >
+            {t === "team" ? "团队跟踪" : "我的跟踪"}
+          </button>
+        ))}
+      </div>
+
+      {trackTab === "mine" ? (
+        <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+          我的跟踪功能正在建设中，敬请期待
+        </div>
+      ) : (
+        <>
+          <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+            <div className="flex items-start px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">核心策略：</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  onClick={() => { setCoreStrategy(""); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    !coreStrategy
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  不限
+                </span>
+                {TRACK_STRATEGIES.filter((s) => s !== "不限").map((s) => (
+                  <span
+                    key={s}
+                    onClick={() => { setCoreStrategy(coreStrategy === s ? "" : s); setPage(1) }}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                      coreStrategy === s
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                        : "border-border text-zinc-500 hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {s}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center px-4 py-2">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队标签：</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span
+                  onClick={() => { setTeamTags([]); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    teamTags.length === 0
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  不限
+                </span>
+                {teamTagOptions.map((tag) => (
+                  <span
+                    key={tag}
+                    onClick={() => toggleTeamTag(tag)}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                      teamTags.includes(tag)
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                        : "border-border text-zinc-500 hover:bg-muted/60",
+                    ].join(" ")}
+                  >
+                    {tag}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="flex items-center px-4 py-2 gap-4">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">对接人：</span>
+              <span className="text-zinc-400 text-xs">—</span>
+            </div>
+            <div className="flex items-center px-4 py-2 gap-4">
+              <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+              <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
+                <input
+                  className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+                  placeholder={activeTab === "跟踪产品" ? "请输入管理人名称，回车搜索" : "请输入跟踪管理人名称，回车搜索"}
+                  value={kwInput}
+                  onChange={(e) => setKwInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+                />
+                <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+                  <Search className="h-3 w-3" />
+                </button>
+              </div>
+              <label className="inline-flex items-center gap-1.5 text-xs text-zinc-600 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="rounded h-3 w-3"
+                  checked={favoritesOnly}
+                  onChange={(e) => { setFavoritesOnly(e.target.checked); setPage(1) }}
+                />
+                收藏
+              </label>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between mb-3 flex-shrink-0">
+            <div className="flex items-center gap-0 border-b overflow-x-auto">
+              {TRACKING_MGR_TABS.map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={[
+                    "px-4 py-2 text-xs font-medium transition-colors border-b-2 -mb-px whitespace-nowrap",
+                    activeTab === tab
+                      ? "border-red-500 text-red-600 dark:text-red-400"
+                      : "border-transparent text-muted-foreground hover:text-foreground",
+                  ].join(" ")}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+            <div className="flex items-center gap-3 text-xs text-zinc-600 flex-shrink-0 ml-4">
+              <button onClick={() => setShowAuditLog(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                <ClipboardList className="h-3.5 w-3.5" /> 操作日志
+              </button>
+              <button className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
+                <LayoutTemplate className="h-3.5 w-3.5" />
+              </button>
+              <button className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
+                <PlusCircle className="h-3.5 w-3.5" /> 添加管理人
+              </button>
+            </div>
+          </div>
+
+          {activeTab !== "基础信息" && activeTab !== "跟踪产品" ? (
+            <div className="flex items-center justify-center h-40 text-muted-foreground text-sm border rounded-lg">
+              {activeTab}功能正在建设中，敬请期待
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-end gap-3 mb-3 flex-shrink-0 text-xs text-zinc-600">
+                <button className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
+                  <Settings2 className="h-3.5 w-3.5" /> 字段配置
+                </button>
+                <button
+                  onClick={activeTab === "跟踪产品" ? handleProductExport : handleExport}
+                  className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                >
+                  <Download className="h-3.5 w-3.5" /> 导出
+                </button>
+              </div>
+
+              <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+                {activeTab === "跟踪产品" ? (
+                  <table className="text-sm border-collapse w-full" style={{ minWidth: 1500 }}>
+                    <thead className="sticky top-0 z-20">
+                      <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+                        <th className={`${thBase} w-10`}>
+                          <input
+                            type="checkbox"
+                            className="rounded h-3 w-3"
+                            checked={productData.length > 0 && productSelected.size === productData.length}
+                            onChange={(e) => toggleAllProducts(e.target.checked)}
+                          />
+                        </th>
+                        <th className={`${thBase} w-12`}>序号</th>
+                        <th className={`${thSort} min-w-[140px]`} onClick={() => handleProductSort("manager_name")}>
+                          管理人名称<ProductSortIcon col="manager_name" />
+                        </th>
+                        <th className={`${thSort} min-w-[200px]`} onClick={() => handleProductSort("product_name")}>
+                          产品名称<ProductSortIcon col="product_name" />
+                        </th>
+                        <th className={`${thSort} min-w-[100px]`} onClick={() => handleProductSort("beian_hao")}>
+                          备案编码<ProductSortIcon col="beian_hao" />
+                        </th>
+                        <th className={`${thSort} min-w-[90px] text-right`} onClick={() => handleProductSort("unit_nav")}>
+                          单位净值<ProductSortIcon col="unit_nav" />
+                        </th>
+                        <th className={`${thSort} min-w-[100px]`} onClick={() => handleProductSort("nav_date")}>
+                          净值日期<ProductSortIcon col="nav_date" />
+                        </th>
+                        <th className={`${thSort} min-w-[80px] text-right`} onClick={() => handleProductSort("price_change")}>
+                          涨跌幅<ProductSortIcon col="price_change" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleProductSort("ret_1w")}>
+                          近一周收益<ProductSortIcon col="ret_1w" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleProductSort("ret_1m")}>
+                          近一月收益<ProductSortIcon col="ret_1m" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleProductSort("ret_3m")}>
+                          近三月收益<ProductSortIcon col="ret_3m" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleProductSort("ret_6m")}>
+                          近六月收益<ProductSortIcon col="ret_6m" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleProductSort("ret_1y")}>
+                          近一年收益<ProductSortIcon col="ret_1y" />
+                        </th>
+                        <th className={`${thBase} text-center w-16`}>走势</th>
+                        <th className={`${thBase} text-center w-16`}>资料</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeLoading ? (
+                        <tr><td colSpan={15} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                      ) : productData.length === 0 ? (
+                        <tr>
+                          <td colSpan={15} className="py-20 text-center text-muted-foreground">
+                            <div className="flex flex-col items-center gap-2">
+                              <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                              <span>暂无数据</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : productData.map((row, idx) => (
+                        <tr key={row.id} className="border-b hover:bg-muted/30 transition-colors">
+                          <td className={tdBase}>
+                            <input
+                              type="checkbox"
+                              className="rounded h-3 w-3"
+                              checked={productSelected.has(row.id)}
+                              onChange={() => toggleProductSelected(row.id)}
+                            />
+                          </td>
+                          <td className={tdBase}>{row.seq_no ?? (page - 1) * pageSize + idx + 1}</td>
+                          <td className={tdBase}>
+                            <span className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                              {row.manager_name}
+                            </span>
+                          </td>
+                          <td className={`${tdBase} max-w-[240px] truncate`} title={row.product_name}>{row.product_name}</td>
+                          <td className={tdBase}>{row.beian_hao}</td>
+                          <td className={`${tdBase} text-right tabular-nums`}>
+                            {row.unit_nav ? parseFloat(row.unit_nav).toFixed(4) : "—"}
+                          </td>
+                          <td className={`${tdBase} tabular-nums`}>{fmtMgrCell(row.nav_date)}</td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.price_change} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_1w} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_1m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_3m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_6m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_1y} /></td>
+                          <td className={`${tdBase} text-center`}>
+                            <div className="flex items-center justify-center"
+                              onMouseEnter={(e) => {
+                                if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                                hoverTimeout.current = setTimeout(() => {
+                                  setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                                  setHoverChartRow(row.beian_hao)
+                                }, 200)
+                              }}
+                              onMouseLeave={() => {
+                                if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                                hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                              }}>
+                              <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                                <LineChart className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                          <td className={`${tdBase} text-center text-muted-foreground`}>—</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                <table className="text-sm border-collapse w-full" style={{ minWidth: 1200 }}>
+                  <thead className="sticky top-0 z-20">
+                    <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+                      <th className={`${thBase} w-12`}>序号</th>
+                      <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("manager_name")}>
+                        管理人名称<MgrSortIcon col="manager_name" />
+                      </th>
+                      <th className={`${thBase} min-w-[90px]`}>核心策略</th>
+                      <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("mgmt_scale")}>
+                        管理规模<MgrSortIcon col="mgmt_scale" />
+                      </th>
+                      <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("active_product_count")}>
+                        运作中产品数<MgrSortIcon col="active_product_count" />
+                      </th>
+                      <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("inception_date")}>
+                        成立日期<MgrSortIcon col="inception_date" />
+                      </th>
+                      <th className={`${thBase} min-w-[90px]`}>会员类型</th>
+                      <th className={`${thBase} min-w-[100px]`}>登记编号</th>
+                      <th className={`${thBase} min-w-[80px]`}>对接人</th>
+                      <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("tracking_date")}>
+                        跟踪日期<MgrSortIcon col="tracking_date" />
+                      </th>
+                      <th className={`${thBase} text-center w-24`}>操作</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeLoading ? (
+                      <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                    ) : data.length === 0 ? (
+                      <tr>
+                        <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                          <div className="flex flex-col items-center gap-2">
+                            <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                            <span>暂无数据</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : data.map((row, idx) => (
+                      <tr key={row.id} className="border-b hover:bg-muted/30 transition-colors">
+                        <td className={tdBase}>{row.seq_no ?? (page - 1) * pageSize + idx + 1}</td>
+                        <td className={tdBase}>
+                          <span className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                            {row.manager_name}
+                          </span>
+                        </td>
+                        <td className={tdBase}>{fmtMgrCell(row.core_strategy)}</td>
+                        <td className={tdBase}>{fmtMgrCell(row.mgmt_scale)}</td>
+                        <td className={tdBase}>{fmtMgrCell(row.active_product_count)}</td>
+                        <td className={tdBase}>{fmtMgrCell(row.inception_date)}</td>
+                        <td className={tdBase}>{fmtMgrCell(row.member_type)}</td>
+                        <td className={tdBase}>{row.registration_no}</td>
+                        <td className={tdBase}>{fmtMgrCell(row.contact_person)}</td>
+                        <td className={tdBase}>{fmtMgrCell(row.tracking_date)}</td>
+                        <td className={`${tdBase} text-center`}>
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              onClick={() => toggleFavorite(row.id)}
+                              className="text-muted-foreground hover:text-amber-500 transition-colors"
+                              title="收藏"
+                            >
+                              <Star className={`h-3.5 w-3.5 ${favorites.has(row.id) ? "fill-amber-400 text-amber-400" : ""}`} />
+                            </button>
+                            <button className="text-muted-foreground hover:text-foreground transition-colors" title="编辑">
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button className="text-muted-foreground hover:text-foreground transition-colors" title="查看">
+                              <Eye className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between mt-3 flex-shrink-0 text-xs text-zinc-600">
+                <span>共 {activeTotal} 条</span>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+                    className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+                  {pageButtons().map((btn, idx) =>
+                    btn === "…" ? (
+                      <span key={`e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+                    ) : (
+                      <button key={btn} onClick={() => setPage(btn as number)}
+                        className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                          btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                        {btn}
+                      </button>
+                    )
+                  )}
+                  <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+                    className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+                  <div className="flex items-center gap-1 ml-2">
+                    <span>跳至</span>
+                    <input
+                      className="w-10 h-7 border rounded text-center text-xs outline-none focus:ring-1 focus:ring-ring"
+                      value={jumpVal}
+                      onChange={(e) => setJumpVal(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && jumpTo()}
+                    />
+                    <span>页</span>
+                  </div>
+                  <div className="relative ml-3">
+                    <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+                      className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring">
+                      {[50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      )}
+
+      {hoverChartRow && hoverChartPos && activeTab === "跟踪产品" && (() => {
+        const popupW = 356
+        const popupH = 210
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
+        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
+        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
+        const hoverRow = productData.find((r) => r.beian_hao === hoverChartRow)
+        return (
+          <div
+            className="fixed z-[9999] bg-background border rounded-xl shadow-2xl"
+            style={{ left, top, width: popupW }}
+            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+            onMouseLeave={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current); hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150) }}>
+            <div className="px-3 pt-3 pb-1 font-semibold text-sm border-b">收益走势</div>
+            <TrendHoverChart beian_hao={hoverChartRow} productName={hoverRow?.product_name ?? ""} />
+          </div>
+        )
+      })()}
+
+      <OpsAuditLogDialog open={showAuditLog} onClose={() => setShowAuditLog(false)} />
+    </div>
+  )
+}
+
 // ─── PortfolioView ─────────────────────────────────────────────────────────
 
 type PortfolioSortKey =
@@ -10024,6 +10730,7 @@ export default function PrivateFundsPage() {
             <PortfolioView sideItem={activeSideItem} />
           )}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
+          {activeTab === "investment" && activeSideItem === "inv-tracking-mgr" && <InvestmentTrackingManagersView />}
           {activeTab === "operations" && activeSideItem === "ops-strategy-tags" && <OperationsStrategyTagsView initialOpsTab={(searchParams.get("ops") as "strategies" | "tags" | "fields") || "strategies"} />}
           {activeTab === "operations" && activeSideItem === "ops-tracking" && <InvestmentTrackingView variant="operations" />}
           {activeTab === "operations" && activeSideItem === "ops-direct" && <OperationsDirectView />}
