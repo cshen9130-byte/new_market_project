@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import {
+  getStoredTeamStrategies,
+  mergeStrategyTrees,
+} from "@/lib/server/ops-team-strategies"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -87,7 +91,7 @@ export async function GET(req: Request) {
     }
   }
 
-  const result = Array.from(l1Map.entries())
+  const fundResult = Array.from(l1Map.entries())
     .sort(([a], [b]) => a.localeCompare(b, "zh"))
     .map(([l1, l2Map]) => ({
       l1,
@@ -99,5 +103,14 @@ export async function GET(req: Request) {
         })),
     }))
 
-  return NextResponse.json(result)
+  if (strategySource !== "company") {
+    return NextResponse.json(fundResult)
+  }
+
+  const customTree = await getStoredTeamStrategies()
+  if (!customTree.length) {
+    return NextResponse.json(fundResult)
+  }
+
+  return NextResponse.json(mergeStrategyTrees(customTree, fundResult))
 }

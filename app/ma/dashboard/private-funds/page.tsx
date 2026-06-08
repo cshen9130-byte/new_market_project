@@ -5004,6 +5004,7 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
   const [opsTab, setOpsTab] = useState<"strategies" | "tags" | "fields">(initialOpsTab)
   const [strategies, setStrategies] = useState<OpsStrategyL1[]>([])
   const [loading, setLoading] = useState(false)
+  const [strategySaving, setStrategySaving] = useState(false)
   const [expandedL1, setExpandedL1] = useState<Set<string>>(new Set())
   const [expandedL2, setExpandedL2] = useState<Set<string>>(new Set())
   const [showNewL1Modal, setShowNewL1Modal] = useState(false)
@@ -5015,6 +5016,45 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
   const [editL3Names, setEditL3Names] = useState<string[]>([])
   const [editingKey, setEditingKey] = useState<{ l1: string } | null>(null)
   const [editName, setEditName] = useState("")
+
+  function currentUserName(): string {
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      return u?.name || u?.email || ""
+    } catch { return "" }
+  }
+
+  function loadStrategies() {
+    setLoading(true)
+    Promise.all([
+      fetch("/ma/api/ops/team-strategies").then((r) => r.json()),
+      fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all").then((r) => r.json()),
+    ])
+      .then(([customData, fundData]) => {
+        const customTree = Array.isArray(customData?.tree) ? customData.tree as OpsStrategyL1[] : []
+        const fundTree = Array.isArray(fundData) ? fundData as OpsStrategyL1[] : []
+        setStrategies(customTree.length > 0 ? customTree : fundTree)
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }
+
+  async function persistStrategies(next: OpsStrategyL1[]) {
+    setStrategies(next)
+    setStrategySaving(true)
+    try {
+      const res = await fetch("/ma/api/ops/team-strategies", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tree: next, user_name: currentUserName() }),
+      })
+      if (!res.ok) loadStrategies()
+    } catch {
+      loadStrategies()
+    } finally {
+      setStrategySaving(false)
+    }
+  }
 
   function openEditL3Modal(l1: string, l2: string) {
     const l2Node = strategies.find((s) => s.l1 === l1)?.l2s.find((n) => n.l2 === l2)
@@ -5032,13 +5072,14 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
       seen.add(name)
       names.push(name)
     }
-    setStrategies((prev) => prev.map((s) => {
+    const next = strategies.map((s) => {
       if (s.l1 !== editL3Modal.l1) return s
       return {
         ...s,
         l2s: s.l2s.map((n) => n.l2 !== editL3Modal.l2 ? n : { ...n, l3s: names }),
       }
-    }))
+    })
+    void persistStrategies(next)
     if (names.length > 0) {
       setExpandedL1((prev) => new Set(prev).add(editL3Modal.l1))
       setExpandedL2((prev) => new Set(prev).add(opsL2Key(editL3Modal.l1, editL3Modal.l2)))
@@ -5070,16 +5111,17 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
     if (names.length === 0) return
 
     if (addChildModal.level === 2) {
-      setStrategies((prev) => prev.map((s) => {
+      const next = strategies.map((s) => {
         if (s.l1 !== addChildModal.l1) return s
         const existing = new Set(s.l2s.map((n) => n.l2))
         const newL2s = names.filter((n) => !existing.has(n)).map((n) => ({ l2: n, l3s: [] }))
         return { ...s, l2s: [...s.l2s, ...newL2s] }
-      }))
+      })
+      void persistStrategies(next)
       setExpandedL1((prev) => new Set(prev).add(addChildModal.l1))
     } else if (addChildModal.l2) {
       const { l1, l2 } = addChildModal
-      setStrategies((prev) => prev.map((s) => {
+      const next = strategies.map((s) => {
         if (s.l1 !== l1) return s
         return {
           ...s,
@@ -5090,7 +5132,8 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
             return { ...n, l3s: [...n.l3s, ...newL3s] }
           }),
         }
-      }))
+      })
+      void persistStrategies(next)
       setExpandedL1((prev) => new Set(prev).add(l1))
       setExpandedL2((prev) => new Set(prev).add(opsL2Key(l1, l2)))
     }
@@ -5112,14 +5155,7 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
     )
   }
 
-  useEffect(() => {
-    setLoading(true)
-    fetch("/ma/api/tracking-funds/strategies?strategy_source=company&pool=all")
-      .then((r) => r.json())
-      .then((d) => Array.isArray(d) ? setStrategies(d) : null)
-      .catch(() => {})
-      .finally(() => setLoading(false))
-  }, [])
+  useEffect(() => { loadStrategies() }, [])
 
   function toggleExpandL1(l1: string) {
     setExpandedL1((prev) => {
@@ -5322,15 +5358,15 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
                           className="text-muted-foreground hover:text-red-500 transition-colors"
                           onClick={() => {
                             if (row.type === "l1") {
-                              setStrategies((prev) => prev.filter((s) => s.l1 !== row.l1))
+                              void persistStrategies(strategies.filter((s) => s.l1 !== row.l1))
                               setExpandedL1((prev) => { const next = new Set(prev); next.delete(row.l1); return next })
                             } else if (row.type === "l2") {
-                              setStrategies((prev) => prev.map((s) =>
+                              void persistStrategies(strategies.map((s) =>
                                 s.l1 !== row.l1 ? s : { ...s, l2s: s.l2s.filter((x) => x.l2 !== row.l2) }
                               ))
                               setExpandedL2((prev) => { const next = new Set(prev); next.delete(opsL2Key(row.l1, row.l2)); return next })
                             } else {
-                              setStrategies((prev) => prev.map((s) =>
+                              void persistStrategies(strategies.map((s) =>
                                 s.l1 !== row.l1 ? s : {
                                   ...s,
                                   l2s: s.l2s.map((n) =>
@@ -5384,8 +5420,8 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
                 value={newL1Name}
                 onChange={(e) => setNewL1Name(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && newL1Name.trim()) {
-                    setStrategies((prev) => [...prev, { l1: newL1Name.trim(), l2s: [] }])
+                  if (e.key === "Enter" && newL1Name.trim() && !strategySaving) {
+                    void persistStrategies([...strategies, { l1: newL1Name.trim(), l2s: [] }])
                     setShowNewL1Modal(false)
                   }
                 }}
@@ -5397,13 +5433,13 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
               <button
                 onClick={() => {
                   if (newL1Name.trim()) {
-                    setStrategies((prev) => [...prev, { l1: newL1Name.trim(), l2s: [] }])
+                    void persistStrategies([...strategies, { l1: newL1Name.trim(), l2s: [] }])
                     setShowNewL1Modal(false)
                   }
                 }}
-                disabled={!newL1Name.trim()}
+                disabled={!newL1Name.trim() || strategySaving}
                 className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
-                确 定
+                {strategySaving ? "保存中…" : "确 定"}
               </button>
             </div>
           </div>
@@ -5532,8 +5568,8 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && editName.trim()) {
-                    setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
+                  if (e.key === "Enter" && editName.trim() && !strategySaving) {
+                    void persistStrategies(strategies.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
                     setEditingKey(null)
                   }
                 }}
@@ -5545,13 +5581,13 @@ function OperationsStrategyTagsView({ initialOpsTab = "strategies" }: { initialO
               <button
                 onClick={() => {
                   if (editName.trim()) {
-                    setStrategies((prev) => prev.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
+                    void persistStrategies(strategies.map((s) => s.l1 === editingKey.l1 ? { ...s, l1: editName.trim() } : s))
                     setEditingKey(null)
                   }
                 }}
-                disabled={!editName.trim()}
+                disabled={!editName.trim() || strategySaving}
                 className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
-                确 定
+                {strategySaving ? "保存中…" : "确 定"}
               </button>
             </div>
           </div>
