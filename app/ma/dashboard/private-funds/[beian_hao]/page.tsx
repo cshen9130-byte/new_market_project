@@ -1375,104 +1375,103 @@ export default function PrivateFundDetailPage() {
         </div>
       </div>
 
-      {/* ── Key info band ── */}
-      <div className="flex items-start gap-8 py-4 mb-4 border-y border-zinc-100">
-
-        {/* LEFT: all metric cells – flex-1 + justify-between to fill the row */}
-        <div className="flex flex-wrap items-start gap-x-16 gap-y-3">
+      {/* ── Key info band – single row; fluid type/spacing via container width (cqw) ── */}
+      <div className="@container py-[clamp(0.625rem,1.2cqw,1rem)] mb-4 border-y border-zinc-100">
+        <div className="flex flex-nowrap items-start w-full gap-[clamp(0.25rem,1.2cqw,2rem)]">
 
         {/* 单位净值 – hero number */}
-        <div className="min-w-[120px]">
-          <div className="text-[2rem] font-bold tabular-nums leading-none" style={{ color: RED }}>
+        <div className="shrink-0">
+          <div className="text-[clamp(0.875rem,3.8cqw,2rem)] font-bold tabular-nums leading-none" style={{ color: RED }}>
             {fmt(metrics.latest_nav, 4)}
           </div>
-          <div className="text-xs text-zinc-500 mt-1">单位净值（{metrics.latest_nav_date ?? ""}）</div>
+          <div className="text-[clamp(0.5rem,1.1cqw,0.75rem)] text-zinc-500 mt-0.5 whitespace-nowrap">单位净值（{metrics.latest_nav_date ?? ""}）</div>
         </div>
 
         {/* 累计净值 + 复权净值 */}
-        <div className="flex flex-col gap-1 justify-center">
-          <div className="text-xs text-zinc-500">
+        <div className="shrink-0 flex flex-col gap-0.5 justify-center text-[clamp(0.5rem,1.1cqw,0.75rem)] text-zinc-500">
+          <div className="whitespace-nowrap">
             累计净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav, 4)}</span>
           </div>
-          <div className="text-xs text-zinc-500">
+          <div className="whitespace-nowrap">
             复权净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav_reinvested, 4)}</span>
           </div>
         </div>
 
-        {/* Divider */}
-        <div className="hidden sm:block w-px self-stretch bg-zinc-100" />
+        <div className="hidden @[52rem]:block w-px self-stretch bg-zinc-100 shrink-0" />
 
+        {/* Performance metrics – flex-1 spreads evenly in remaining space */}
+        <div className="flex flex-1 flex-nowrap items-start justify-between min-w-0 gap-[clamp(0.125rem,0.7cqw,1.25rem)]">
         {/* 成立以来收益 */}
-        <div className="flex flex-col items-start gap-0.5">
-          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: RED }}>
+        <div className="min-w-0 flex flex-col items-start gap-0.5">
+          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: RED }}>
             {metrics.ret_since_inception !== null ? "+" + metrics.ret_since_inception + "%" : "—"}
           </span>
-          <span className="text-xs text-zinc-500">成立以来收益</span>
+          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来收益</span>
         </div>
 
         {/* 今年以来收益 */}
-        <div className="flex flex-col items-start gap-0.5">
-          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: RED }}>
+        <div className="min-w-0 flex flex-col items-start gap-0.5">
+          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: RED }}>
             {metrics.ytd_ret !== null
               ? (parseFloat(metrics.ytd_ret) > 0 ? "+" : "") + metrics.ytd_ret + "%"
               : "—"}
           </span>
-          <span className="text-xs text-zinc-500">今年以来收益</span>
+          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">今年以来收益</span>
         </div>
 
         {/* 成立以来年化 */}
-        <div className="flex flex-col items-start gap-0.5">
-          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: RED }}>
+        <div className="min-w-0 flex flex-col items-start gap-0.5">
+          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: RED }}>
             {metrics.ann_ret !== null ? "+" + metrics.ann_ret + "%" : "—"}
           </span>
-          <span className="text-xs text-zinc-500">成立以来年化</span>
+          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来年化</span>
         </div>
 
-        {/* Divider */}
-        <div className="hidden sm:block w-px self-stretch bg-zinc-100" />
-
         {/* 最大回撤 */}
-        <div className="flex flex-col items-start gap-0.5">
-          <span className="text-[1.4rem] font-bold tabular-nums" style={{ color: GREEN }}>
+        <div className="min-w-0 flex flex-col items-start gap-0.5">
+          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: GREEN }}>
             {metrics.max_drawdown !== null ? "-" + metrics.max_drawdown + "%" : "—"}
           </span>
-          <span className="text-xs text-zinc-500">成立以来最大回撤</span>
+          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来最大回撤</span>
         </div>
 
         {/* 夏普比率 – computed since inception */}
         {metrics.sharpe_since_inception && (
-          <div className="flex flex-col items-start gap-0.5">
-            <span className="text-[1.4rem] font-bold tabular-nums text-zinc-800">
+          <div className="min-w-0 flex flex-col items-start gap-0.5">
+            <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums text-zinc-800 leading-tight whitespace-nowrap">
               {metrics.sharpe_since_inception}
             </span>
-            <span className="text-xs text-zinc-500">成立以来夏普比率</span>
+            <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来夏普比率</span>
           </div>
         )}
+        </div>
 
-        </div>{/* end LEFT */}
+        <div className="hidden @[52rem]:block w-px self-stretch bg-zinc-100 shrink-0" />
 
-        {/* RIGHT: 备案 / 管理人 info block */}
-        <div className="shrink-0 grid grid-cols-2 gap-x-8 self-center">
-          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-zinc-500">
-            <span>备案编号：</span>
+        {/* 备案 / 管理人 info block */}
+        <div className="shrink-0 grid grid-cols-2 gap-x-[clamp(0.375rem,1.5cqw,2rem)] self-center text-[clamp(0.5rem,1cqw,0.75rem)] text-zinc-500">
+          <div className="grid grid-cols-[auto_1fr] gap-x-[clamp(0.25rem,0.8cqw,0.75rem)] gap-y-0.5">
+            <span className="whitespace-nowrap">备案编号：</span>
             <span className="font-medium text-zinc-800">{info.beian_hao}</span>
-            <span>产品成立时间：</span>
-            <span className="font-medium text-zinc-800">{info.inception_date?.slice(0, 10) ?? "—"}</span>
-            <span>基金经理：</span>
+            <span className="whitespace-nowrap">产品成立时间：</span>
+            <span className="font-medium text-zinc-800 whitespace-nowrap">{info.inception_date?.slice(0, 10) ?? "—"}</span>
+            <span className="whitespace-nowrap">基金经理：</span>
             <span className="font-medium text-zinc-800">{info.manager_names || "—"}</span>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-zinc-500">
-            <span>私募管理人：</span>
+          <div className="grid grid-cols-[auto_1fr] gap-x-[clamp(0.25rem,0.8cqw,0.75rem)] gap-y-0.5">
+            <span className="whitespace-nowrap">私募管理人：</span>
             <span className="font-medium text-zinc-800">{info.manager || "—"}</span>
-            <span>公司管理规模：</span>
-            <span className="font-medium text-zinc-800">{info.scale || "—"}</span>
+            <span className="whitespace-nowrap">公司管理规模：</span>
+            <span className="font-medium text-zinc-800 whitespace-nowrap">{info.scale || "—"}</span>
             {info.benchmark && (
               <>
-                <span>业绩基准：</span>
+                <span className="whitespace-nowrap">业绩基准：</span>
                 <span className="font-medium text-zinc-800">{info.benchmark}</span>
               </>
             )}
           </div>
+        </div>
+
         </div>
       </div>
 
