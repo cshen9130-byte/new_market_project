@@ -5,6 +5,7 @@ import type React from "react"
 import { useParams } from "next/navigation"
 import {
   Area,
+  Line,
   ComposedChart,
   XAxis,
   YAxis,
