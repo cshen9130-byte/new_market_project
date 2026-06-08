@@ -45,8 +45,255 @@ const LEFT_NAV = [
   { group: "团队管理", items: ["评分设置", "指令设置", "报告设置"] },
 ]
 
+const SECTION_FROM_PARAM: Record<string, string> = {
+  "personal-tags": "个人标签",
+}
+
+const PERSONAL_TAG_CATEGORIES = [
+  { key: "fund_personal", param: "fund", label: "基金" },
+  { key: "portfolio_personal", param: "portfolio", label: "组合" },
+  { key: "compare_personal", param: "compare", label: "对比" },
+  { key: "note_personal", param: "note", label: "笔记" },
+] as const
+
 const TABS = ["计算设置", "指标模板", "对比分析模板", "常用基准"] as const
 type Tab = typeof TABS[number]
+
+interface PersonalTagRow {
+  id: number
+  category: string
+  name: string
+  created_by: string
+  updated_by: string
+  created_at: string
+  updated_at: string
+}
+
+function fmtTagDateTime(iso: string | null) {
+  if (!iso) return "—"
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return iso
+  const pad = (n: number) => String(n).padStart(2, "0")
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+function currentUserName(): string {
+  try {
+    const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+    return u?.name || u?.email || ""
+  } catch {
+    return ""
+  }
+}
+
+function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: string }) {
+  const initialKey = PERSONAL_TAG_CATEGORIES.find((c) => c.param === initialCategory)?.key ?? "fund_personal"
+  const [tagCategory, setTagCategory] = useState(initialKey)
+  const [tags, setTags] = useState<PersonalTagRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showNewModal, setShowNewModal] = useState(false)
+  const [newTagName, setNewTagName] = useState("")
+  const [newTagSaving, setNewTagSaving] = useState(false)
+  const [editingTag, setEditingTag] = useState<PersonalTagRow | null>(null)
+  const [editTagName, setEditTagName] = useState("")
+  const [editTagSaving, setEditTagSaving] = useState(false)
+
+  function loadTags(cat: string) {
+    const owner = currentUserName()
+    setLoading(true)
+    fetch(`/ma/api/ops/team-tags?category=${encodeURIComponent(cat)}&owner=${encodeURIComponent(owner)}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setTags(d) : setTags([]))
+      .catch(() => setTags([]))
+      .finally(() => setLoading(false))
+  }
+
+  useEffect(() => { loadTags(tagCategory) }, [tagCategory])
+
+  async function createTag() {
+    if (!newTagName.trim()) return
+    setNewTagSaving(true)
+    try {
+      const res = await fetch("/ma/api/ops/team-tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: tagCategory, name: newTagName.trim(), user_name: currentUserName() }),
+      })
+      if (res.ok) {
+        setShowNewModal(false)
+        setNewTagName("")
+        loadTags(tagCategory)
+      }
+    } finally {
+      setNewTagSaving(false)
+    }
+  }
+
+  async function saveEditTag() {
+    if (!editingTag || !editTagName.trim()) return
+    setEditTagSaving(true)
+    try {
+      const res = await fetch(`/ma/api/ops/team-tags/${editingTag.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: editTagName.trim(), user_name: currentUserName() }),
+      })
+      if (res.ok) {
+        setEditingTag(null)
+        loadTags(tagCategory)
+      }
+    } finally {
+      setEditTagSaving(false)
+    }
+  }
+
+  async function deleteTag(id: number) {
+    await fetch(`/ma/api/ops/team-tags/${id}`, { method: "DELETE" })
+    setTags((prev) => prev.filter((t) => t.id !== id))
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-zinc-500 font-medium">分类：</span>
+          {PERSONAL_TAG_CATEGORIES.map((c) => (
+            <button
+              key={c.key}
+              onClick={() => setTagCategory(c.key)}
+              className={[
+                "px-3 py-1 rounded text-sm font-medium transition-all border",
+                tagCategory === c.key
+                  ? "bg-red-50 text-red-500 border-red-300 dark:bg-red-950/20 dark:border-red-700"
+                  : "border-transparent text-zinc-600 dark:text-zinc-400 hover:text-foreground",
+              ].join(" ")}
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => { setNewTagName(""); setShowNewModal(true) }}
+          className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
+        >
+          新增标签
+        </button>
+      </div>
+
+      <div className="overflow-auto rounded border">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-muted/40 border-b">
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">标签名称</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">最后修改</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 w-24">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={4} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : tags.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : tags.map((tag, i) => (
+              <tr key={tag.id} className="border-b hover:bg-muted/20 transition-colors">
+                <td className="px-4 py-3 text-muted-foreground tabular-nums">{i + 1}</td>
+                <td className="px-4 py-3 font-medium">{tag.name}</td>
+                <td className="px-4 py-3 tabular-nums text-muted-foreground">{fmtTagDateTime(tag.updated_at)}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-3">
+                    <button
+                      title="编辑"
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => { setEditingTag(tag); setEditTagName(tag.name) }}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
+                    </button>
+                    <button
+                      title="删除"
+                      className="text-muted-foreground hover:text-red-500 transition-colors"
+                      onClick={() => deleteTag(tag.id)}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showNewModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNewModal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[360px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <span className="font-semibold text-base">新建标签</span>
+              <button onClick={() => setShowNewModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-8">
+              <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0">标签名称：</label>
+              <input
+                autoFocus
+                className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                value={newTagName}
+                onChange={(e) => setNewTagName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !newTagSaving && createTag()}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowNewModal(false)} className="px-5 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={createTag}
+                disabled={!newTagName.trim() || newTagSaving}
+                className="px-5 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {newTagSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editingTag && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditingTag(null)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">编辑标签</span>
+              <button onClick={() => setEditingTag(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-6">
+              <label className="text-sm font-medium text-zinc-700 dark:text-zinc-300 shrink-0">标签名称：</label>
+              <input
+                autoFocus
+                className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                placeholder="请输入标签名称"
+                value={editTagName}
+                onChange={(e) => setEditTagName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !editTagSaving && saveEditTag()}
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setEditingTag(null)} className="px-4 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                onClick={saveEditTag}
+                disabled={!editTagName.trim() || editTagSaving}
+                className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {editTagSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 function readLS<T>(key: string, fallback: T): T {
@@ -527,13 +774,18 @@ function PlaceholderPanel({ title }: { title: string }) {
 export default function SettingsPage() {
   const searchParams = useSearchParams()
   const initialTab = (searchParams.get("tab") === "metric-templates" ? "指标模板" : "计算设置") as Tab
+  const sectionParam = searchParams.get("section") || ""
+  const categoryParam = searchParams.get("category") || "fund"
   const [activeTab, setActiveTab] = useState<Tab>(initialTab)
-  const [activeLeft, setActiveLeft] = useState("个人配置")
+  const [activeLeft, setActiveLeft] = useState(
+    SECTION_FROM_PARAM[sectionParam] ?? "个人配置"
+  )
 
-  // sync tab from URL on mount
   useEffect(() => {
     if (searchParams.get("tab") === "metric-templates") setActiveTab("指标模板")
-  }, [])
+    const section = searchParams.get("section") || ""
+    if (SECTION_FROM_PARAM[section]) setActiveLeft(SECTION_FROM_PARAM[section])
+  }, [searchParams])
 
   return (
     <div className="flex h-full min-h-screen bg-background">
@@ -569,7 +821,11 @@ export default function SettingsPage() {
       {/* Main content */}
       <main className="flex-1 overflow-y-auto">
         {/* Only 个人配置 shows the tabbed content; others show placeholder */}
-        {activeLeft !== "个人配置" ? (
+        {activeLeft === "个人标签" ? (
+          <div className="p-8">
+            <PersonalTagsPanel initialCategory={categoryParam} />
+          </div>
+        ) : activeLeft !== "个人配置" ? (
           <div className="p-8">
             <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-6">{activeLeft}</h2>
             <PlaceholderPanel title={activeLeft} />

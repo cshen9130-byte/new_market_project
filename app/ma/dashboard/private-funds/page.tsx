@@ -22,7 +22,7 @@ const fundsSidebarGroups: SidebarGroup[] = [
     label: "私募数据库",
     items: [
       { key: "private-funds", label: "私募基金" },
-      { key: "fund-managers-org", label: "管理人库" },
+      { key: "fund-managers-org", label: "私募管理人" },
       { key: "fund-managers", label: "基金经理" },
     ],
   },
@@ -1387,6 +1387,12 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [editTagSelected, setEditTagSelected] = useState<string[]>([])
   const [editTagTeamTags, setEditTagTeamTags] = useState<string[]>([])
   const [editTagSaving, setEditTagSaving] = useState(false)
+  const [showPersonalEditTagDialog, setShowPersonalEditTagDialog] = useState(false)
+  const [editPersonalTagBeianHao, setEditPersonalTagBeianHao] = useState<string | null>(null)
+  const [editPersonalTagName, setEditPersonalTagName] = useState("")
+  const [editPersonalTagSelected, setEditPersonalTagSelected] = useState<string[]>([])
+  const [editPersonalTagOptions, setEditPersonalTagOptions] = useState<string[]>([])
+  const [editPersonalTagSaving, setEditPersonalTagSaving] = useState(false)
   const [showBatchStrategyDialog, setShowBatchStrategyDialog] = useState(false)
   const [batchStrategyL1, setBatchStrategyL1] = useState("")
   const [batchStrategyL2, setBatchStrategyL2] = useState("")
@@ -1405,6 +1411,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [noteName, setNoteName] = useState("")
   const [noteText, setNoteText] = useState("")
   const [noteSaving, setNoteSaving] = useState(false)
+  const [showPersonalNoteDialog, setShowPersonalNoteDialog] = useState(false)
+  const [personalNoteBeianHao, setPersonalNoteBeianHao] = useState<string | null>(null)
+  const [personalNoteName, setPersonalNoteName] = useState("")
+  const [personalNoteText, setPersonalNoteText] = useState("")
+  const [personalNoteSaving, setPersonalNoteSaving] = useState(false)
   // Notes map: beian_hao -> note record (null means no note)
   const [fundNotes, setFundNotes] = useState<Record<string, { note: string; updated_by: string; updated_at: string } | undefined>>({})
   const [openNotePopup, setOpenNotePopup] = useState<string | null>(null)
@@ -1447,7 +1458,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [myFundClass, setMyFundClass] = useState<"private" | "public">("private")
   const [myOrgSize, setMyOrgSize] = useState("不限")
   const [myKwInput, setMyKwInput] = useState("")
+  const [myKeyword, setMyKeyword] = useState("")
   const [myPersonalTagMode, setMyPersonalTagMode] = useState<"and" | "or">("and")
+  const [myPersonalTagOptions, setMyPersonalTagOptions] = useState<string[]>([])
+  const [myPersonalTags, setMyPersonalTags] = useState<string[]>([])
   const [teamCutoffDate, setTeamCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
   const [showTeamDatePicker, setShowTeamDatePicker] = useState(false)
   const [mineCutoffDate, setMineCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
@@ -1486,6 +1500,55 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
   const isSupportedPool = pools.some((p) => p.key === activePool)
   const sourcePool = isSupportedPool ? activePool : "bfl"
+  const isMineTab = !isOps && trackTab === "mine"
+  const isMyPoolSupported = myActivePool === "mine_all" || myActivePool === "mine_default" || myActivePool.startsWith("mine_custom_")
+  const listPool = isMineTab ? myActivePool : sourcePool
+  const listPoolSupported = isMineTab ? isMyPoolSupported : isSupportedPool
+
+  function currentUserId(): string {
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      return u?.id ?? ""
+    } catch {
+      return ""
+    }
+  }
+
+  function userFetchHeaders(): Record<string, string> {
+    const id = currentUserId()
+    return id ? { "x-market-user-id": id } : {}
+  }
+
+  function currentUserName(): string {
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      return u?.name || u?.email || ""
+    } catch {
+      return ""
+    }
+  }
+
+  function personalTagsSettingsUrl() {
+    return "/ma/dashboard/settings?section=personal-tags&category=fund"
+  }
+
+  function loadPersonalTagOptions() {
+    const owner = encodeURIComponent(currentUserName())
+    return fetch(`/ma/api/ops/team-tags?category=fund_personal&owner=${owner}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!Array.isArray(d)) return
+        const names = d.map((t: { name: string }) => t.name)
+        setEditPersonalTagOptions(names)
+        setMyPersonalTagOptions(names)
+      })
+      .catch(() => {})
+  }
+
+  function toggleMyPersonalTag(tag: string) {
+    setMyPersonalTags((prev) => prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag])
+    setPage(1)
+  }
 
   // Derived hierarchy slices
   const l2Options = strategyL1
@@ -1514,6 +1577,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
   const totalPages = Math.max(1, Math.ceil(total / 50))
   const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}\u0000${teamCutoffDate}\u0000${dataReloadKey}`
+  const mineFilterKey = `${myActivePool}\u0000${myOrgSize}\u0000${myKeyword}\u0000${mineCutoffDate}\u0000${myPersonalTagMode}\u0000${myPersonalTags.join("\u0001")}\u0000${dataReloadKey}`
 
   function handleSort(col: string) {
     if (sortCol === col) setSortDir((d) => (d === "desc" ? "asc" : "desc"))
@@ -1550,6 +1614,20 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     } catch { /* ignore */ }
   }
 
+  async function openPersonalNoteDialog(beian_hao: string, product_name: string) {
+    setPersonalNoteBeianHao(beian_hao)
+    setPersonalNoteName(product_name)
+    setPersonalNoteText("")
+    setShowPersonalNoteDialog(true)
+    try {
+      const res = await fetch(`/ma/api/tracking-funds/personal-fund-note?beian_hao=${encodeURIComponent(beian_hao)}`, {
+        headers: userFetchHeaders(),
+      })
+      const d = await res.json()
+      setPersonalNoteText(d.note ?? "")
+    } catch { /* ignore */ }
+  }
+
   async function openEditStrategyDialog(beian_hao: string, product_name: string) {
     // pre-load current strategy from type6_ops_team_full via the strategies endpoint
     setEditStrategyBeianHao(beian_hao)
@@ -1581,22 +1659,43 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     if (Array.isArray(teamTagsRes)) setEditTagTeamTags(teamTagsRes.map((t: { name: string }) => t.name))
   }
 
-  async function handleTrackExport(filename: string) {
+  async function openPersonalEditTagDialog(beian_hao: string, product_name: string) {
+    setEditPersonalTagBeianHao(beian_hao)
+    setEditPersonalTagName(product_name)
+    setEditPersonalTagSelected([])
+    setEditPersonalTagOptions([])
+    setShowPersonalEditTagDialog(true)
+    const [tagsRes, personalTagsRes] = await Promise.all([
+      fetch(`/ma/api/tracking-funds/personal-fund-tags?beian_hao=${encodeURIComponent(beian_hao)}`, { headers: userFetchHeaders() }).then((r) => r.json()).catch(() => []),
+      fetch(`/ma/api/ops/team-tags?category=fund_personal&owner=${encodeURIComponent(currentUserName())}`).then((r) => r.json()).catch(() => []),
+    ])
+    if (Array.isArray(tagsRes)) setEditPersonalTagSelected(tagsRes)
+    if (Array.isArray(personalTagsRes)) setEditPersonalTagOptions(personalTagsRes.map((t: { name: string }) => t.name))
+  }
+
+  async function handleTrackExport(
+    filename: string,
+    opts?: { pool?: string; keyword?: string; orgSize?: string; cutoff?: string }
+  ) {
     const escape = (v: string | null | undefined) => {
       if (!v) return ""
       const s = String(v)
       return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
     }
+    const exportPool = opts?.pool ?? sourcePool
+    const exportKeyword = opts?.keyword ?? keyword
+    const exportOrgSize = opts?.orgSize ?? orgSizeFilter
+    const exportCutoff = opts?.cutoff ?? teamCutoffDate
     const params = new URLSearchParams({
-      export: "1", sort: sortCol, dir: sortDir, keyword,
-      pool: sourcePool,
+      export: "1", sort: sortCol, dir: sortDir, keyword: exportKeyword,
+      pool: exportPool,
       strategy_l1: strategyL1,
       strategy_l2: strategyL2,
       strategy_l3: strategyL3,
       strategy_source: strategySource,
-      org_size: orgSizeFilter,
+      org_size: exportOrgSize,
       team_tag_mode: teamTagMode,
-      cutoff: teamCutoffDate,
+      cutoff: exportCutoff,
     })
     teamTags.forEach((tag) => params.append("team_tag", tag))
     const json = await fetch(`/ma/api/tracking-funds/list?${params}`).then((r) => r.json())
@@ -1658,40 +1757,65 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }
 
   useEffect(() => {
-    if (!isSupportedPool) {
+    if (!listPoolSupported) {
       setData([])
       setTotal(0)
       return
     }
     setLoading(true)
     const params = new URLSearchParams({
-      page: String(page), sort: sortCol, dir: sortDir, keyword,
-      pool: sourcePool,
-      strategy_l1: strategyL1,
-      strategy_l2: strategyL2,
-      strategy_l3: strategyL3,
+      page: String(page), sort: sortCol, dir: sortDir,
+      pool: listPool,
       strategy_source: strategySource,
-      org_size: orgSizeFilter,
+      cutoff: isMineTab ? mineCutoffDate : teamCutoffDate,
+      org_size: isMineTab ? myOrgSize : orgSizeFilter,
+      keyword: isMineTab ? myKeyword : keyword,
       team_tag_mode: teamTagMode,
-      cutoff: teamCutoffDate,
     })
-    teamTags.forEach((tag) => params.append("team_tag", tag))
-    fetch(`/ma/api/tracking-funds/list?${params}`)
+    if (!isMineTab) {
+      params.set("strategy_l1", strategyL1)
+      params.set("strategy_l2", strategyL2)
+      params.set("strategy_l3", strategyL3)
+      teamTags.forEach((tag) => params.append("team_tag", tag))
+    } else {
+      params.set("personal_tag_mode", myPersonalTagMode)
+      myPersonalTags.forEach((tag) => params.append("personal_tag", tag))
+    }
+    fetch(`/ma/api/tracking-funds/list?${params}`, {
+      headers: isMineTab ? userFetchHeaders() : {},
+    })
       .then((r) => r.json())
       .then((d) => { setData(d.data ?? []); setTotal(d.total ?? 0) })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [activePool, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey])
+  }, [listPool, listPoolSupported, isMineTab, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
+
+  useEffect(() => {
+    setPage(1)
+    setSelected(new Set())
+  }, [trackTab, myActivePool, myOrgSize, myKeyword, myPersonalTags.join("\u0001")])
+
+  useEffect(() => {
+    if (!isMineTab) return
+    loadPersonalTagOptions()
+  }, [isMineTab, dataReloadKey])
+
+  useEffect(() => {
+    setFundNotes({})
+  }, [trackTab])
 
   // Batch-load notes for current page rows
   useEffect(() => {
     if (data.length === 0) return
     const ids = data.map((r) => r.beian_hao).join(",")
-    fetch(`/ma/api/tracking-funds/fund-note?beian_haos=${encodeURIComponent(ids)}`)
+    const noteUrl = isMineTab
+      ? `/ma/api/tracking-funds/personal-fund-note?beian_haos=${encodeURIComponent(ids)}`
+      : `/ma/api/tracking-funds/fund-note?beian_haos=${encodeURIComponent(ids)}`
+    fetch(noteUrl, { headers: isMineTab ? userFetchHeaders() : {} })
       .then((r) => r.json())
       .then((d) => { if (d && typeof d === "object" && !d.error) setFundNotes((prev) => ({ ...prev, ...d })) })
       .catch(() => {})
-  }, [data])
+  }, [data, isMineTab])
 
   // Debounced search for 添加跟踪产品 dialog
   useEffect(() => {
@@ -2606,7 +2730,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             {myPools.map((p) => (
               <button
                 key={p.key}
-                onClick={() => setMyActivePool(p.key)}
+                onClick={() => { setMyActivePool(p.key); setPage(1); setSelected(new Set()) }}
                 className={[
                   "w-full text-left px-3 py-2 rounded text-sm transition-colors",
                   myActivePool === p.key
@@ -2660,11 +2784,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             {/* 个人标签 */}
             <div className="flex items-center px-4 py-2">
               <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">个人标签：</span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative">
                   <select
                     value={myPersonalTagMode}
-                    onChange={(e) => setMyPersonalTagMode(e.target.value as "and" | "or")}
+                    onChange={(e) => { setMyPersonalTagMode(e.target.value as "and" | "or"); setPage(1) }}
                     className="h-7 min-w-[5.75rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
                   >
                     <option value="and">交集（且）</option>
@@ -2672,7 +2796,31 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   </select>
                   <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
                 </div>
-                <span className="inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20">不限</span>
+                <span
+                  onClick={() => { setMyPersonalTags([]); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    myPersonalTags.length === 0
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  不限
+                </span>
+                {myPersonalTagOptions.map((tag) => (
+                  <span
+                    key={tag}
+                    onClick={() => toggleMyPersonalTag(tag)}
+                    className={[
+                      "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                      myPersonalTags.includes(tag)
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                        : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                    ].join(" ")}
+                  >
+                    {tag}
+                  </span>
+                ))}
               </div>
             </div>
             {/* 管理人规模 */}
@@ -2706,8 +2854,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   placeholder="输入产品/产品备案号，回车搜索"
                   value={myKwInput}
                   onChange={(e) => setMyKwInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && setMyKeyword(myKwInput)}
                 />
-                <button className="text-muted-foreground hover:text-foreground transition-colors">
+                <button
+                  onClick={() => setMyKeyword(myKwInput)}
+                  className="text-muted-foreground hover:text-foreground transition-colors">
                   <Search className="h-3 w-3" />
                 </button>
               </div>
@@ -2824,7 +2975,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       <button onClick={() => { setShowMineMoreMenu(false); setShowAuditLogDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                         <ClipboardList className="h-3.5 w-3.5 text-zinc-400" /> 操作日志
                       </button>
-                      <button onClick={() => { setShowMineMoreMenu(false); handleTrackExport(`我的跟踪_${new Date().toISOString().slice(0, 10)}.csv`) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                      <button onClick={() => { setShowMineMoreMenu(false); handleTrackExport(`我的跟踪_${new Date().toISOString().slice(0, 10)}.csv`, { pool: myActivePool, keyword: myKeyword, orgSize: myOrgSize, cutoff: mineCutoffDate }) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                         <Download className="h-3.5 w-3.5 text-zinc-400" /> 导出
                       </button>
                     </div>
@@ -2890,17 +3041,147 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </tr>
               </thead>
               <tbody>
-                <tr>
-                  <td colSpan={13} className="py-20 text-center text-muted-foreground">
-                    <div className="flex flex-col items-center gap-2">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
-                      <span>暂无数据</span>
-                    </div>
-                  </td>
-                </tr>
+                {loading ? (
+                  <tr><td colSpan={13} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                ) : !isMyPoolSupported ? (
+                  <tr><td colSpan={13} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
+                ) : data.length === 0 ? (
+                  <tr>
+                    <td colSpan={13} className="py-20 text-center text-muted-foreground">
+                      <div className="flex flex-col items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+                        <span>暂无数据</span>
+                      </div>
+                    </td>
+                  </tr>
+                ) : data.map((row, i) => {
+                  const isSelected = selected.has(row.beian_hao)
+                  const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
+                  const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/40" : "group-hover:bg-muted"
+                  const cell = `border-b px-3 py-2 ${bg} ${hoverBg} transition-colors`
+                  return (
+                    <tr key={row.beian_hao} className="group">
+                      <td className={`${cell} px-2 text-center`}>
+                        <input type="checkbox" className="rounded h-3 w-3"
+                          checked={isSelected}
+                          onChange={() => {
+                            const s = new Set(selected)
+                            isSelected ? s.delete(row.beian_hao) : s.add(row.beian_hao)
+                            setSelected(s)
+                          }} />
+                      </td>
+                      <td className={`${cell} text-center tabular-nums`}>{(page - 1) * 50 + i + 1}</td>
+                      <td className={cell}>
+                        <a
+                          href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[240px]"
+                          title={row.product_name}
+                        >{row.short_name || row.product_name}</a>
+                        {row.strategy_l1 && (
+                          <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
+                            {row.strategy_l1}
+                          </span>
+                        )}
+                      </td>
+                      <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                      <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
+                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1w} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 7)}</div>}
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1m} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 30)}</div>}
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_3m} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 91)}</div>}
+                      </td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_6m} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 182)}</div>}
+                      </td>
+                      <td className={`${cell} text-center`}>
+                        <div className="flex items-center justify-center"
+                          onMouseEnter={(e) => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                            hoverTimeout.current = setTimeout(() => {
+                              setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                              setHoverChartRow(row.beian_hao)
+                            }, 200)
+                          }}
+                          onMouseLeave={() => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                          }}>
+                          <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
+                        </div>
+                      </td>
+                      <td className={`${cell} text-center`}>
+                        {fundNotes[row.beian_hao] ? (
+                          <button
+                            onClick={(e) => {
+                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                              setNotePopupPos({ x: rect.left, y: rect.bottom + 4 })
+                              setOpenNotePopup(openNotePopup === row.beian_hao ? null : row.beian_hao)
+                            }}
+                            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                          </button>
+                        ) : (
+                          <span className="text-muted-foreground">—</span>
+                        )}
+                      </td>
+                      <td className={`${cell} text-center`}>
+                        <PersonalTrackingRowMenu
+                          onUntrack={() => { setBatchContextPool(myActivePool); setBatchConfirmTitle("取消跟踪"); setBatchConfirmMessage(`确定要将「${row.product_name}」从当前产品池中移除吗？`); setBatchConfirmAction("remove"); setSelected(new Set([row.beian_hao])); setShowBatchConfirmDialog(true) }}
+                          onEditTags={() => openPersonalEditTagDialog(row.beian_hao, row.product_name)}
+                          onNoteManage={() => openPersonalNoteDialog(row.beian_hao, row.product_name)}
+                        />
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
+          {isMyPoolSupported && (
+            <div className="flex items-center justify-between pt-3 flex-shrink-0">
+              <span className="text-sm text-zinc-500">共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 只基金</span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+                  className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+                {pageButtons().map((btn, idx) =>
+                  btn === "…" ? (
+                    <span key={`me${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+                  ) : (
+                    <button key={btn} onClick={() => setPage(btn as number)}
+                      className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                        btn === page
+                          ? "bg-zinc-900 text-white border-zinc-900 font-medium dark:bg-zinc-100 dark:text-zinc-900"
+                          : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                      {btn}
+                    </button>
+                  )
+                )}
+                <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+                  className="w-7 h-7 flex items-center justify-center rounded border text-sm text-foreground hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+                <div className="flex items-center gap-1 ml-3 text-sm text-foreground">
+                  跳至
+                  <input type="number" min={1} max={totalPages} value={jumpVal}
+                    onChange={(e) => setJumpVal(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && jumpTo()}
+                    className="w-12 h-7 border rounded px-2 text-center bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+                  页
+                  <button onClick={jumpTo} className="h-7 px-2 border rounded text-xs hover:bg-muted transition-colors">GO</button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       )}
@@ -3279,6 +3560,95 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           </div>
         )
       })()}
+
+      {/* ── 个人编辑产品标签 Dialog ── */}
+      {showPersonalEditTagDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowPersonalEditTagDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">编辑产品标签</span>
+              <button onClick={() => setShowPersonalEditTagDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
+                <span className="font-semibold text-sm">{editPersonalTagName}</span>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-16 text-right pt-2">标签：</span>
+                <div className="flex-1">
+                  <div className="flex items-center border rounded px-3 py-1.5 gap-2 flex-wrap min-h-[36px] bg-background">
+                    {editPersonalTagSelected.map((t) => (
+                      <span key={t} className="inline-flex items-center gap-1 bg-red-50 border border-red-300 text-red-500 rounded px-2 py-0.5 text-xs">
+                        {t}
+                        <button onClick={() => setEditPersonalTagSelected((p) => p.filter((x) => x !== t))} className="leading-none hover:text-red-700">×</button>
+                      </span>
+                    ))}
+                    {editPersonalTagSelected.length === 0 && <span className="text-sm text-muted-foreground/40">请选择标签</span>}
+                  </div>
+                </div>
+                <button onClick={() => setEditPersonalTagSelected([])} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0 pt-2">清空</button>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-16 text-right pt-1.5">个人标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {editPersonalTagOptions.length === 0 && (
+                    <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                  )}
+                  {editPersonalTagOptions.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setEditPersonalTagSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        editPersonalTagSelected.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                  <button
+                    onClick={() => window.open(personalTagsSettingsUrl(), "_blank")}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                    设置
+                  </button>
+                  <button
+                    onClick={() => loadPersonalTagOptions()}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                    刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button onClick={() => setShowPersonalEditTagDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                disabled={editPersonalTagSaving}
+                onClick={async () => {
+                  if (!editPersonalTagBeianHao) return
+                  setEditPersonalTagSaving(true)
+                  try {
+                    await fetch("/ma/api/tracking-funds/personal-fund-tags", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+                      body: JSON.stringify({ beian_hao: editPersonalTagBeianHao, tags: editPersonalTagSelected }),
+                    })
+                    setShowPersonalEditTagDialog(false)
+                    loadPersonalTagOptions()
+                    setDataReloadKey((k) => k + 1)
+                  } finally {
+                    setEditPersonalTagSaving(false)
+                  }
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {editPersonalTagSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Batch add tag dialog */}
       {/* ── 编辑标签 Dialog ── */}
@@ -4299,9 +4669,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             <div className="fixed inset-0 z-40" onClick={() => setOpenNotePopup(null)} />
             <div className="fixed z-50 bg-background border rounded-xl shadow-2xl py-3" style={{ left, top: notePopupPos.y, width: popW }}>
               <div className="flex items-center justify-between px-4 pb-2 border-b mb-2">
-                <span className="font-semibold text-sm">团队备注</span>
+                <span className="font-semibold text-sm">{isMineTab ? "个人备注" : "团队备注"}</span>
                 <button
-                  onClick={() => { setOpenNotePopup(null); openNoteDialog(openNotePopup, noteRow?.product_name ?? "") }}
+                  onClick={() => {
+                    setOpenNotePopup(null)
+                    if (isMineTab) openPersonalNoteDialog(openNotePopup, noteRow?.product_name ?? "")
+                    else openNoteDialog(openNotePopup, noteRow?.product_name ?? "")
+                  }}
                   className="text-xs text-red-500 hover:text-red-600 transition-colors">添加</button>
               </div>
               <div className="px-4 pb-2">
@@ -4316,7 +4690,14 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </span>
                 <button
                   onClick={async () => {
-                    await fetch(`/ma/api/tracking-funds/fund-note?beian_hao=${encodeURIComponent(openNotePopup)}`, { method: "DELETE" })
+                    if (isMineTab) {
+                      await fetch(`/ma/api/tracking-funds/personal-fund-note?beian_hao=${encodeURIComponent(openNotePopup)}`, {
+                        method: "DELETE",
+                        headers: userFetchHeaders(),
+                      })
+                    } else {
+                      await fetch(`/ma/api/tracking-funds/fund-note?beian_hao=${encodeURIComponent(openNotePopup)}`, { method: "DELETE" })
+                    }
                     setFundNotes((prev) => { const n = { ...prev }; delete n[openNotePopup]; return n })
                     setOpenNotePopup(null)
                   }}
@@ -4328,6 +4709,66 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           </>
         )
       })()}
+
+      {/* ── 个人备注管理 Dialog ── */}
+      {showPersonalNoteDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowPersonalNoteDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[580px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">个人备注管理</span>
+              <button onClick={() => setShowPersonalNoteDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full border-2 border-red-500 flex-shrink-0" />
+                <span className="font-semibold text-sm">{personalNoteName}</span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm text-foreground">
+                  <span className="text-red-500 mr-0.5">*</span>个人备注
+                </label>
+                <textarea
+                  value={personalNoteText}
+                  onChange={(e) => setPersonalNoteText(e.target.value.slice(0, 250))}
+                  placeholder="请输入不大于250字的备注"
+                  rows={5}
+                  className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end px-6 py-3 border-t flex-shrink-0">
+              <button
+                disabled={personalNoteSaving}
+                onClick={async () => {
+                  if (!personalNoteBeianHao) return
+                  setPersonalNoteSaving(true)
+                  try {
+                    const res = await fetch("/ma/api/tracking-funds/personal-fund-note", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+                      body: JSON.stringify({ beian_hao: personalNoteBeianHao, note: personalNoteText }),
+                    })
+                    const d = await res.json()
+                    if (personalNoteText.trim()) {
+                      setFundNotes((prev) => ({
+                        ...prev,
+                        [personalNoteBeianHao]: d.record ?? { note: personalNoteText, updated_by: "", updated_at: new Date().toISOString() },
+                      }))
+                    } else {
+                      setFundNotes((prev) => { const n = { ...prev }; delete n[personalNoteBeianHao]; return n })
+                    }
+                    setShowPersonalNoteDialog(false)
+                  } finally {
+                    setPersonalNoteSaving(false)
+                  }
+                }}
+                className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                {personalNoteSaving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── 备注管理 Dialog ── */}
       {showNoteDialog && (
@@ -7245,6 +7686,63 @@ function OpsScaleManageDialog({
   )
 }
 
+function PersonalTrackingRowMenu({
+  onUntrack,
+  onEditTags,
+  onNoteManage,
+}: {
+  onUntrack: () => void
+  onEditTags: () => void
+  onNoteManage: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => { setMounted(true) }, [])
+
+  function handleToggle(e: React.MouseEvent<HTMLButtonElement>) {
+    if (open) { setOpen(false); setPos(null); return }
+    const rect = e.currentTarget.getBoundingClientRect()
+    setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    setOpen(true)
+  }
+  function close() { setOpen(false); setPos(null) }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleToggle}
+        className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest"
+      >
+        ···
+      </button>
+      {mounted && open && pos && createPortal(
+        <>
+          <div className="fixed inset-0 z-[100]" onClick={close} />
+          <div
+            className="fixed z-[101] bg-background border rounded-lg shadow-lg py-1 min-w-[132px]"
+            style={{ top: pos.top, right: pos.right }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button onClick={() => { onUntrack(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground">
+              <Heart className="h-3.5 w-3.5 fill-red-500 text-red-500 shrink-0" />已跟踪
+            </button>
+            <button onClick={() => { onEditTags(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground">
+              <Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑标签
+            </button>
+            <button onClick={() => { onNoteManage(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground">
+              <StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理
+            </button>
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
+  )
+}
+
 function TrackingRowMenu({
   beian_hao,
   product_name,
@@ -9340,6 +9838,13 @@ interface TrackingProductRow {
   ret_1y: string | null
 }
 
+type TrackingFofSortKey = TrackingProductSortKey | "sharpe_1y" | "calmar_1y"
+
+interface TrackingFofUnderlyingRow extends TrackingProductRow {
+  sharpe_1y: string | null
+  calmar_1y: string | null
+}
+
 function fmtMgrCell(v: string | number | null | undefined): string {
   if (v == null || v === "" || v === "-") return "—"
   return String(v)
@@ -9358,20 +9863,51 @@ function InvestmentTrackingManagersView() {
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
   const [productSortKey, setProductSortKey] = useState<TrackingProductSortKey>("seq_no")
   const [productSortDir, setProductSortDir] = useState<"asc" | "desc">("asc")
+  const [fofSortKey, setFofSortKey] = useState<TrackingFofSortKey>("seq_no")
+  const [fofSortDir, setFofSortDir] = useState<"asc" | "desc">("asc")
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
   const [jumpVal, setJumpVal] = useState("")
   const [data, setData] = useState<TrackingManagerRow[]>([])
   const [productData, setProductData] = useState<TrackingProductRow[]>([])
+  const [fofData, setFofData] = useState<TrackingFofUnderlyingRow[]>([])
   const [total, setTotal] = useState(0)
   const [productTotal, setProductTotal] = useState(0)
+  const [fofTotal, setFofTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [productLoading, setProductLoading] = useState(false)
+  const [fofLoading, setFofLoading] = useState(false)
   const [productSelected, setProductSelected] = useState<Set<number>>(new Set())
+  const [fofSelected, setFofSelected] = useState<Set<number>>(new Set())
   const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
   const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [showAuditLog, setShowAuditLog] = useState(false)
+  const [showAddMgrMenu, setShowAddMgrMenu] = useState(false)
+  const [showSingleAddMgrDialog, setShowSingleAddMgrDialog] = useState(false)
+  const [addMgrSearch, setAddMgrSearch] = useState("")
+  const [addMgrSelected, setAddMgrSelected] = useState<{ manager_name: string; registration_no: string | null } | null>(null)
+  const [addMgrResults, setAddMgrResults] = useState<{ manager_name: string; registration_no: string | null }[]>([])
+  const [addMgrShowDropdown, setAddMgrShowDropdown] = useState(false)
+  const [addMgrLoading, setAddMgrLoading] = useState(false)
+  const [addMgrContact, setAddMgrContact] = useState("")
+  const [addMgrSelectedTags, setAddMgrSelectedTags] = useState<string[]>([])
+  const [addMgrSaving, setAddMgrSaving] = useState(false)
+  const [addMgrError, setAddMgrError] = useState<string | null>(null)
+  const [showBatchAddMgrDialog, setShowBatchAddMgrDialog] = useState(false)
+  const [batchMgrText, setBatchMgrText] = useState("")
+  const [batchMgrSearching, setBatchMgrSearching] = useState(false)
+  const [batchMgrResults, setBatchMgrResults] = useState<{ manager_name: string; registration_no: string | null }[]>([])
+  const [batchMgrChecked, setBatchMgrChecked] = useState<Set<string>>(new Set())
+  const [batchMgrContact, setBatchMgrContact] = useState("")
+  const [batchMgrSelectedTags, setBatchMgrSelectedTags] = useState<string[]>([])
+  const [batchMgrSaving, setBatchMgrSaving] = useState(false)
+  const [batchMgrError, setBatchMgrError] = useState<string | null>(null)
+  const [mgrListRefresh, setMgrListRefresh] = useState(0)
+  const addMgrSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const addMgrDialogOpenedAt = useRef(0)
+  const batchMgrDialogOpenedAt = useRef(0)
+  const [mgrMounted, setMgrMounted] = useState(false)
   const [favorites, setFavorites] = useState<Set<number>>(() => {
     if (typeof window === "undefined") return new Set()
     try {
@@ -9388,6 +9924,8 @@ function InvestmentTrackingManagersView() {
       .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
       .catch(() => {})
   }, [])
+
+  useEffect(() => { setMgrMounted(true) }, [])
 
   useEffect(() => {
     setPage(1)
@@ -9423,7 +9961,31 @@ function InvestmentTrackingManagersView() {
         setTotal(0)
       })
       .finally(() => setLoading(false))
-  }, [trackTab, activeTab, page, pageSize, sortKey, sortDir, keyword, coreStrategy, favoritesOnly, favorites])
+  }, [trackTab, activeTab, page, pageSize, sortKey, sortDir, keyword, coreStrategy, favoritesOnly, favorites, mgrListRefresh])
+
+  useEffect(() => {
+    if (!showSingleAddMgrDialog) return
+    if (!addMgrSearch.trim()) {
+      setAddMgrResults([])
+      setAddMgrShowDropdown(false)
+      return
+    }
+    if (addMgrSearchRef.current) clearTimeout(addMgrSearchRef.current)
+    addMgrSearchRef.current = setTimeout(async () => {
+      setAddMgrLoading(true)
+      try {
+        const res = await fetch(`/ma/api/tracking-managers/search?q=${encodeURIComponent(addMgrSearch.trim())}`)
+        const json = await res.json()
+        setAddMgrResults(Array.isArray(json) ? json : [])
+        setAddMgrShowDropdown(true)
+      } catch {
+        setAddMgrResults([])
+      } finally {
+        setAddMgrLoading(false)
+      }
+    }, 300)
+    return () => { if (addMgrSearchRef.current) clearTimeout(addMgrSearchRef.current) }
+  }, [addMgrSearch, showSingleAddMgrDialog])
 
   useEffect(() => {
     if (trackTab !== "team" || activeTab !== "跟踪产品") return
@@ -9448,6 +10010,29 @@ function InvestmentTrackingManagersView() {
       .finally(() => setProductLoading(false))
   }, [trackTab, activeTab, page, pageSize, productSortKey, productSortDir, keyword])
 
+  useEffect(() => {
+    if (trackTab !== "team" || activeTab !== "FOF底层") return
+    setFofLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      sort: fofSortKey,
+      dir: fofSortDir,
+      keyword,
+    })
+    fetch(`/ma/api/tracking-fof-underlying/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setFofData(json.data ?? [])
+        setFofTotal(json.total ?? 0)
+      })
+      .catch(() => {
+        setFofData([])
+        setFofTotal(0)
+      })
+      .finally(() => setFofLoading(false))
+  }, [trackTab, activeTab, page, pageSize, fofSortKey, fofSortDir, keyword])
+
   function toggleFavorite(id: number) {
     setFavorites((prev) => {
       const next = new Set(prev)
@@ -9463,6 +10048,52 @@ function InvestmentTrackingManagersView() {
     setPage(1)
   }
 
+  function openSingleAddMgrDialog() {
+    addMgrDialogOpenedAt.current = Date.now()
+    setShowAddMgrMenu(false)
+    setAddMgrSearch("")
+    setAddMgrSelected(null)
+    setAddMgrResults([])
+    setAddMgrShowDropdown(false)
+    setAddMgrContact("")
+    setAddMgrSelectedTags([])
+    setAddMgrError(null)
+    setShowSingleAddMgrDialog(true)
+  }
+
+  function closeSingleAddMgrDialog() {
+    setShowSingleAddMgrDialog(false)
+  }
+
+  function mgrResultKey(r: { manager_name: string; registration_no: string | null }) {
+    return r.registration_no || r.manager_name
+  }
+
+  function openBatchAddMgrDialog() {
+    batchMgrDialogOpenedAt.current = Date.now()
+    setShowAddMgrMenu(false)
+    setBatchMgrText("")
+    setBatchMgrResults([])
+    setBatchMgrChecked(new Set())
+    setBatchMgrContact("")
+    setBatchMgrSelectedTags([])
+    setBatchMgrError(null)
+    setShowBatchAddMgrDialog(true)
+  }
+
+  function closeBatchAddMgrDialog() {
+    setShowBatchAddMgrDialog(false)
+  }
+
+  function refreshTeamTagOptions() {
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
+      .catch(() => {})
+  }
+
+  const addMgrContactOptions = [...new Set(data.map((r) => r.contact_person).filter(Boolean))] as string[]
+
   function handleSort(col: TrackingMgrSortKey) {
     if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
     else { setSortKey(col); setSortDir("desc") }
@@ -9472,6 +10103,12 @@ function InvestmentTrackingManagersView() {
   function handleProductSort(col: TrackingProductSortKey) {
     if (productSortKey === col) setProductSortDir((d) => (d === "asc" ? "desc" : "asc"))
     else { setProductSortKey(col); setProductSortDir("desc") }
+    setPage(1)
+  }
+
+  function handleFofSort(col: TrackingFofSortKey) {
+    if (fofSortKey === col) setFofSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setFofSortKey(col); setFofSortDir("desc") }
     setPage(1)
   }
 
@@ -9489,6 +10126,20 @@ function InvestmentTrackingManagersView() {
     else setProductSelected(new Set())
   }
 
+  function toggleFofSelected(id: number) {
+    setFofSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function toggleAllFof(checked: boolean) {
+    if (checked) setFofSelected(new Set(fofData.map((r) => r.id)))
+    else setFofSelected(new Set())
+  }
+
   function MgrSortIcon({ col }: { col: TrackingMgrSortKey }) {
     if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return sortDir === "asc"
@@ -9499,6 +10150,13 @@ function InvestmentTrackingManagersView() {
   function ProductSortIcon({ col }: { col: TrackingProductSortKey }) {
     if (productSortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return productSortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function FofSortIcon({ col }: { col: TrackingFofSortKey }) {
+    if (fofSortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return fofSortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
@@ -9574,8 +10232,36 @@ function InvestmentTrackingManagersView() {
     URL.revokeObjectURL(a.href)
   }
 
-  const activeTotal = activeTab === "跟踪产品" ? productTotal : total
-  const activeLoading = activeTab === "跟踪产品" ? productLoading : loading
+  async function handleFofExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const params = new URLSearchParams({ export: "1", sort: fofSortKey, dir: fofSortDir, keyword })
+    const json = await fetch(`/ma/api/tracking-fof-underlying/list?${params}`).then((r) => r.json())
+    const rows: TrackingFofUnderlyingRow[] = json.data ?? []
+    const headers = ["序号", "管理人名称", "产品名称", "备案编码", "单位净值", "净值日期", "涨跌幅", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.seq_no != null ? String(r.seq_no) : ""),
+        escape(r.manager_name), escape(r.product_name), escape(r.beian_hao),
+        escape(r.unit_nav), escape(r.nav_date), escape(r.price_change),
+        escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m), escape(r.ret_1y),
+        escape(r.sharpe_1y), escape(r.calmar_1y),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `FOF底层_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const activeTotal = activeTab === "跟踪产品" ? productTotal : activeTab === "FOF底层" ? fofTotal : total
+  const activeLoading = activeTab === "跟踪产品" ? productLoading : activeTab === "FOF底层" ? fofLoading : loading
   const totalPages = Math.max(1, Math.ceil(activeTotal / pageSize))
   const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
   const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
@@ -9676,7 +10362,7 @@ function InvestmentTrackingManagersView() {
               <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
                 <input
                   className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
-                  placeholder={activeTab === "跟踪产品" ? "请输入管理人名称，回车搜索" : "请输入跟踪管理人名称，回车搜索"}
+                  placeholder={activeTab === "跟踪产品" || activeTab === "FOF底层" ? "请输入管理人名称，回车搜索" : "请输入跟踪管理人名称，回车搜索"}
                   value={kwInput}
                   onChange={(e) => setKwInput(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
@@ -9721,13 +10407,50 @@ function InvestmentTrackingManagersView() {
               <button className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
                 <LayoutTemplate className="h-3.5 w-3.5" />
               </button>
-              <button className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
-                <PlusCircle className="h-3.5 w-3.5" /> 添加管理人
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setShowAddMgrMenu((v) => !v)}
+                  className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors"
+                >
+                  <PlusCircle className="h-3.5 w-3.5" /> 添加管理人
+                </button>
+                {showAddMgrMenu && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowAddMgrMenu(false)} />
+                    <div
+                      className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[100px]"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          openSingleAddMgrDialog()
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                      >
+                        单只添加
+                      </button>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => {
+                          e.preventDefault()
+                          e.stopPropagation()
+                          openBatchAddMgrDialog()
+                        }}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                      >
+                        批量添加
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
-          {activeTab !== "基础信息" && activeTab !== "跟踪产品" ? (
+          {activeTab !== "基础信息" && activeTab !== "跟踪产品" && activeTab !== "FOF底层" ? (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm border rounded-lg">
               {activeTab}功能正在建设中，敬请期待
             </div>
@@ -9738,7 +10461,7 @@ function InvestmentTrackingManagersView() {
                   <Settings2 className="h-3.5 w-3.5" /> 字段配置
                 </button>
                 <button
-                  onClick={activeTab === "跟踪产品" ? handleProductExport : handleExport}
+                  onClick={activeTab === "跟踪产品" ? handleProductExport : activeTab === "FOF底层" ? handleFofExport : handleExport}
                   className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
                 >
                   <Download className="h-3.5 w-3.5" /> 导出
@@ -9830,12 +10553,134 @@ function InvestmentTrackingManagersView() {
                             {row.unit_nav ? parseFloat(row.unit_nav).toFixed(4) : "—"}
                           </td>
                           <td className={`${tdBase} tabular-nums`}>{fmtMgrCell(row.nav_date)}</td>
-                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.price_change} /></td>
-                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_1w} /></td>
-                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_1m} /></td>
-                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_3m} /></td>
-                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_6m} /></td>
-                          <td className={`${tdBase} text-right tabular-nums`}><TrackPctCell value={row.ret_1y} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.price_change} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_1w} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_1m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_3m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_6m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_1y} /></td>
+                          <td className={`${tdBase} text-center`}>
+                            <div className="flex items-center justify-center"
+                              onMouseEnter={(e) => {
+                                if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                                const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                                hoverTimeout.current = setTimeout(() => {
+                                  setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                                  setHoverChartRow(row.beian_hao)
+                                }, 200)
+                              }}
+                              onMouseLeave={() => {
+                                if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                                hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                              }}>
+                              <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                                <LineChart className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+                          </td>
+                          <td className={`${tdBase} text-center text-muted-foreground`}>—</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : activeTab === "FOF底层" ? (
+                  <table className="text-sm border-collapse w-full" style={{ minWidth: 1700 }}>
+                    <thead className="sticky top-0 z-20">
+                      <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+                        <th className={`${thBase} w-10`}>
+                          <input
+                            type="checkbox"
+                            className="rounded h-3 w-3"
+                            checked={fofData.length > 0 && fofSelected.size === fofData.length}
+                            onChange={(e) => toggleAllFof(e.target.checked)}
+                          />
+                        </th>
+                        <th className={`${thBase} w-12`}>序号</th>
+                        <th className={`${thSort} min-w-[140px]`} onClick={() => handleFofSort("manager_name")}>
+                          管理人名称<FofSortIcon col="manager_name" />
+                        </th>
+                        <th className={`${thSort} min-w-[200px]`} onClick={() => handleFofSort("product_name")}>
+                          产品名称<FofSortIcon col="product_name" />
+                        </th>
+                        <th className={`${thSort} min-w-[100px]`} onClick={() => handleFofSort("beian_hao")}>
+                          备案编码<FofSortIcon col="beian_hao" />
+                        </th>
+                        <th className={`${thSort} min-w-[90px] text-right`} onClick={() => handleFofSort("unit_nav")}>
+                          单位净值<FofSortIcon col="unit_nav" />
+                        </th>
+                        <th className={`${thSort} min-w-[100px]`} onClick={() => handleFofSort("nav_date")}>
+                          净值日期<FofSortIcon col="nav_date" />
+                        </th>
+                        <th className={`${thSort} min-w-[80px] text-right`} onClick={() => handleFofSort("price_change")}>
+                          涨跌幅<FofSortIcon col="price_change" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleFofSort("ret_1w")}>
+                          近一周收益<FofSortIcon col="ret_1w" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleFofSort("ret_1m")}>
+                          近一月收益<FofSortIcon col="ret_1m" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleFofSort("ret_3m")}>
+                          近三月收益<FofSortIcon col="ret_3m" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleFofSort("ret_6m")}>
+                          近六月收益<FofSortIcon col="ret_6m" />
+                        </th>
+                        <th className={`${thSort} min-w-[88px] text-right`} onClick={() => handleFofSort("ret_1y")}>
+                          近一年收益<FofSortIcon col="ret_1y" />
+                        </th>
+                        <th className={`${thSort} min-w-[100px] text-right`} onClick={() => handleFofSort("sharpe_1y")}>
+                          近一年夏普比率<FofSortIcon col="sharpe_1y" />
+                        </th>
+                        <th className={`${thSort} min-w-[100px] text-right`} onClick={() => handleFofSort("calmar_1y")}>
+                          近一年卡玛比率<FofSortIcon col="calmar_1y" />
+                        </th>
+                        <th className={`${thBase} text-center w-16`}>走势</th>
+                        <th className={`${thBase} text-center w-16`}>资料</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeLoading ? (
+                        <tr><td colSpan={17} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                      ) : fofData.length === 0 ? (
+                        <tr>
+                          <td colSpan={17} className="py-20 text-center text-muted-foreground">
+                            <div className="flex flex-col items-center gap-2">
+                              <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                              <span>暂无数据</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : fofData.map((row, idx) => (
+                        <tr key={row.id} className="border-b hover:bg-muted/30 transition-colors">
+                          <td className={tdBase}>
+                            <input
+                              type="checkbox"
+                              className="rounded h-3 w-3"
+                              checked={fofSelected.has(row.id)}
+                              onChange={() => toggleFofSelected(row.id)}
+                            />
+                          </td>
+                          <td className={tdBase}>{row.seq_no ?? (page - 1) * pageSize + idx + 1}</td>
+                          <td className={tdBase}>
+                            <span className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                              {row.manager_name}
+                            </span>
+                          </td>
+                          <td className={`${tdBase} max-w-[240px] truncate`} title={row.product_name}>{row.product_name}</td>
+                          <td className={tdBase}>{row.beian_hao}</td>
+                          <td className={`${tdBase} text-right tabular-nums`}>
+                            {row.unit_nav ? parseFloat(row.unit_nav).toFixed(4) : "—"}
+                          </td>
+                          <td className={`${tdBase} tabular-nums`}>{fmtMgrCell(row.nav_date)}</td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.price_change} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_1w} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_1m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_3m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_6m} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><PctCell value={row.ret_1y} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackRatioCell value={row.sharpe_1y} /></td>
+                          <td className={`${tdBase} text-right tabular-nums`}><TrackRatioCell value={row.calmar_1y} /></td>
                           <td className={`${tdBase} text-center`}>
                             <div className="flex items-center justify-center"
                               onMouseEnter={(e) => {
@@ -9981,14 +10826,15 @@ function InvestmentTrackingManagersView() {
         </>
       )}
 
-      {hoverChartRow && hoverChartPos && activeTab === "跟踪产品" && (() => {
+      {hoverChartRow && hoverChartPos && (activeTab === "跟踪产品" || activeTab === "FOF底层") && (() => {
         const popupW = 356
         const popupH = 210
         const vw = typeof window !== "undefined" ? window.innerWidth : 1920
         const vh = typeof window !== "undefined" ? window.innerHeight : 1080
         const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
         const top = Math.min(hoverChartPos.y, vh - popupH - 8)
-        const hoverRow = productData.find((r) => r.beian_hao === hoverChartRow)
+        const chartRows = activeTab === "FOF底层" ? fofData : productData
+        const hoverRow = chartRows.find((r) => r.beian_hao === hoverChartRow)
         return (
           <div
             className="fixed z-[9999] bg-background border rounded-xl shadow-2xl"
@@ -10000,6 +10846,466 @@ function InvestmentTrackingManagersView() {
           </div>
         )
       })()}
+
+      {mgrMounted && showSingleAddMgrDialog && createPortal(
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40"
+          onMouseDown={(e) => {
+            if (e.target !== e.currentTarget) return
+            if (Date.now() - addMgrDialogOpenedAt.current < 200) return
+            closeSingleAddMgrDialog()
+          }}
+        >
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">添加管理人</span>
+              <button type="button" onClick={closeSingleAddMgrDialog} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4">
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-16 text-right pt-2"><span className="text-red-500 mr-0.5">*</span>管理人：</span>
+                <div className="flex flex-1 flex-col gap-0 relative">
+                  {addMgrSelected ? (
+                    <div className="flex items-center justify-between border rounded px-3 h-9">
+                      <div className="flex flex-col leading-tight min-w-0">
+                        <span className="text-sm font-medium truncate">{addMgrSelected.manager_name}</span>
+                        {addMgrSelected.registration_no && (
+                          <span className="text-xs text-muted-foreground truncate">{addMgrSelected.registration_no}</span>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => { setAddMgrSelected(null); setAddMgrSearch(""); setAddMgrShowDropdown(false) }}
+                        className="text-muted-foreground hover:text-foreground text-base leading-none ml-2 shrink-0"
+                      >×</button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center border rounded px-3 h-9 gap-2">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={addMgrSearch}
+                        onChange={(e) => { setAddMgrSearch(e.target.value); setAddMgrSelected(null) }}
+                        onFocus={() => { if (addMgrResults.length > 0) setAddMgrShowDropdown(true) }}
+                        placeholder="输入关键字搜索"
+                        className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/50"
+                      />
+                      {addMgrLoading
+                        ? <svg className="h-3.5 w-3.5 animate-spin text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round"/></svg>
+                        : <Search className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                      }
+                    </div>
+                  )}
+                  {addMgrShowDropdown && addMgrResults.length > 0 && !addMgrSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                      {addMgrResults.map((r, idx) => (
+                        <button
+                          key={`${r.manager_name}-${r.registration_no ?? idx}`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setAddMgrSelected(r)
+                            setAddMgrSearch("")
+                            setAddMgrShowDropdown(false)
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-muted transition-colors"
+                        >
+                          <div className="text-sm truncate">{r.manager_name}</div>
+                          {r.registration_no && <div className="text-xs text-muted-foreground truncate">{r.registration_no}</div>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {addMgrShowDropdown && addMgrResults.length === 0 && !addMgrLoading && addMgrSearch.trim() && !addMgrSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl px-4 py-3 text-sm text-muted-foreground">
+                      未找到匹配的管理人
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-sm shrink-0 w-16 text-right">对接人：</span>
+                <div className="relative flex-1">
+                  <select
+                    value={addMgrContact}
+                    onChange={(e) => setAddMgrContact(e.target.value)}
+                    className="w-full h-9 appearance-none border rounded px-3 pr-8 text-sm bg-background text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="">请选择对接人</option>
+                    {addMgrContactOptions.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-sm shrink-0 w-16 text-right">标签：</span>
+                <div className="flex flex-1 items-center flex-wrap border rounded px-3 min-h-[36px] gap-1.5 py-1">
+                  {addMgrSelectedTags.map((tag) => (
+                    <span key={tag} className="inline-flex items-center gap-1 bg-muted text-zinc-700 dark:text-zinc-200 rounded px-2 py-0.5 text-xs">
+                      {tag}
+                      <button onClick={() => setAddMgrSelectedTags((p) => p.filter((t) => t !== tag))} className="hover:text-red-500 leading-none ml-0.5">×</button>
+                    </span>
+                  ))}
+                  {addMgrSelectedTags.length === 0 && (
+                    <span className="text-sm text-muted-foreground/40">请选择标签</span>
+                  )}
+                </div>
+                <button
+                  onClick={() => setAddMgrSelectedTags([])}
+                  className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0"
+                >
+                  清空
+                </button>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-16 text-right pt-1.5">团队标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {teamTagOptions.length === 0 && (
+                    <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                  )}
+                  {teamTagOptions.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setAddMgrSelectedTags((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        addMgrSelectedTags.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                  <button
+                    onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=tags", "_blank")}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1"
+                  >
+                    <Settings2 className="h-3 w-3" /> 设置
+                  </button>
+                  <button
+                    onClick={refreshTeamTagOptions}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors"
+                  >
+                    <RefreshCw className="h-3 w-3" /> 刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 px-6 py-4 border-t flex-shrink-0">
+              {addMgrError && (
+                <p className="text-xs text-red-500 text-right">
+                  {addMgrError === "already_exists" ? "该管理人已在跟踪列表中" : `添加失败：${addMgrError}`}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowSingleAddMgrDialog(false)}
+                  disabled={addMgrSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  取 消
+                </button>
+                <button
+                  disabled={!addMgrSelected || addMgrSaving}
+                  onClick={async () => {
+                    if (!addMgrSelected) return
+                    setAddMgrSaving(true)
+                    setAddMgrError(null)
+                    try {
+                      const res = await fetch("/ma/api/tracking-managers", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          manager_name: addMgrSelected.manager_name,
+                          registration_no: addMgrSelected.registration_no || addMgrSelected.manager_name,
+                          contact_person: addMgrContact || null,
+                        }),
+                      })
+                      const json = await res.json()
+                      if (!res.ok) {
+                        setAddMgrError(json.error || "unknown")
+                        return
+                      }
+                      setShowSingleAddMgrDialog(false)
+                      setActiveTab("基础信息")
+                      setMgrListRefresh((n) => n + 1)
+                    } catch {
+                      setAddMgrError("network_error")
+                    } finally {
+                      setAddMgrSaving(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm rounded bg-red-500 hover:bg-red-600 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {addMgrSaving ? "提交中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {mgrMounted && showBatchAddMgrDialog && createPortal(
+        <div
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40"
+          onMouseDown={(e) => {
+            if (e.target !== e.currentTarget) return
+            if (Date.now() - batchMgrDialogOpenedAt.current < 200) return
+            closeBatchAddMgrDialog()
+          }}
+        >
+          <div className="bg-background rounded-lg shadow-xl w-[780px] max-h-[90vh] flex flex-col p-6" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5 shrink-0">
+              <span className="font-semibold text-base">添加跟踪管理人</span>
+              <button type="button" onClick={closeBatchAddMgrDialog} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+
+            <div className="mb-5 shrink-0">
+              <div className="flex items-center gap-1 mb-3">
+                <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                <span className="font-medium text-sm">添加管理人</span>
+              </div>
+              <div className="flex gap-3" style={{ height: 220 }}>
+                <div className="flex flex-col flex-1">
+                  <div className="text-xs text-muted-foreground mb-1">剪贴板</div>
+                  <textarea
+                    className="flex-1 w-full border rounded p-2 text-sm bg-transparent resize-none outline-none placeholder:text-muted-foreground/40 focus:ring-1 focus:ring-ring"
+                    placeholder={"将管理人全称/简称/登记编号粘贴至此，内容要\n分行，如：\n     xxxxx1\n     xxxxx2\n     xxxxx3"}
+                    value={batchMgrText}
+                    onChange={(e) => setBatchMgrText(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center shrink-0">
+                  <button
+                    type="button"
+                    disabled={batchMgrSearching || !batchMgrText.trim()}
+                    onClick={async () => {
+                      const keywords = batchMgrText.split("\n").map((l) => l.trim()).filter(Boolean)
+                      if (keywords.length === 0) return
+                      setBatchMgrSearching(true)
+                      setBatchMgrResults([])
+                      setBatchMgrChecked(new Set())
+                      try {
+                        const res = await fetch("/ma/api/tracking-managers/batch-search", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ keywords }),
+                        })
+                        const json = await res.json()
+                        const found: { manager_name: string; registration_no: string | null }[] = json.results ?? []
+                        setBatchMgrResults(found)
+                        setBatchMgrChecked(new Set(found.map(mgrResultKey)))
+                      } catch {
+                        // ignore
+                      } finally {
+                        setBatchMgrSearching(false)
+                      }
+                    }}
+                    className="bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded px-3 py-1.5 text-sm font-medium transition-colors whitespace-nowrap"
+                  >
+                    {batchMgrSearching
+                      ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round"/></svg>
+                      : "搜索 >"}
+                  </button>
+                </div>
+                <div className="flex flex-col flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-muted-foreground">搜索成功</span>
+                    {batchMgrResults.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => { setBatchMgrResults([]); setBatchMgrChecked(new Set()) }}
+                        className="text-xs text-blue-500 hover:text-blue-600 transition-colors"
+                      >
+                        删除
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex-1 border rounded overflow-auto">
+                    {batchMgrResults.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-2">
+                        <Inbox className="h-9 w-9 opacity-30" strokeWidth={1} />
+                        <span className="text-xs">暂无数据</span>
+                      </div>
+                    ) : (
+                      <table className="w-full text-xs border-collapse">
+                        <thead className="sticky top-0 bg-muted/60">
+                          <tr>
+                            <th className="w-8 px-2 py-1.5 text-left">
+                              <input
+                                type="checkbox"
+                                className="rounded h-3 w-3"
+                                checked={batchMgrChecked.size === batchMgrResults.length}
+                                onChange={(e) => setBatchMgrChecked(e.target.checked ? new Set(batchMgrResults.map(mgrResultKey)) : new Set())}
+                              />
+                            </th>
+                            <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">管理人简称</th>
+                            <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">登记编号</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {batchMgrResults.map((r) => {
+                            const key = mgrResultKey(r)
+                            return (
+                              <tr key={key} className="border-t hover:bg-muted/30 transition-colors">
+                                <td className="px-2 py-1.5">
+                                  <input
+                                    type="checkbox"
+                                    className="rounded h-3 w-3"
+                                    checked={batchMgrChecked.has(key)}
+                                    onChange={(e) => {
+                                      const next = new Set(batchMgrChecked)
+                                      if (e.target.checked) next.add(key)
+                                      else next.delete(key)
+                                      setBatchMgrChecked(next)
+                                    }}
+                                  />
+                                </td>
+                                <td className="px-2 py-1.5 max-w-[160px] truncate" title={r.manager_name}>{r.manager_name}</td>
+                                <td className="px-2 py-1.5 text-muted-foreground">{r.registration_no || "—"}</td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-5 shrink-0">
+              <div className="flex items-center gap-1 mb-3">
+                <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                <span className="font-medium text-sm">设置项</span>
+              </div>
+              <div className="flex items-center gap-3 mb-2.5">
+                <span className="text-sm shrink-0 w-[5.5rem] text-right">统一对接人：</span>
+                <div className="relative flex-1">
+                  <select
+                    value={batchMgrContact}
+                    onChange={(e) => setBatchMgrContact(e.target.value)}
+                    className="w-full h-9 appearance-none border rounded px-3 pr-8 text-sm bg-background text-zinc-700 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    <option value="">请选择对接人</option>
+                    {addMgrContactOptions.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                </div>
+              </div>
+              <div className="flex items-center gap-3 mb-2.5">
+                <span className="text-sm shrink-0 w-[5.5rem] text-right">标签：</span>
+                <div className="flex flex-1 items-center flex-wrap border rounded px-3 min-h-[36px] gap-1.5 py-1">
+                  {batchMgrSelectedTags.map((tag) => (
+                    <span key={tag} className="inline-flex items-center gap-1 bg-muted text-zinc-700 dark:text-zinc-200 rounded px-2 py-0.5 text-xs">
+                      {tag}
+                      <button type="button" onClick={() => setBatchMgrSelectedTags((p) => p.filter((t) => t !== tag))} className="hover:text-red-500 leading-none ml-0.5">×</button>
+                    </span>
+                  ))}
+                  {batchMgrSelectedTags.length === 0 && (
+                    <span className="text-sm text-muted-foreground/40">请选择标签</span>
+                  )}
+                </div>
+                <button type="button" onClick={() => setBatchMgrSelectedTags([])} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0">清空</button>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[5.5rem] text-right pt-1.5">团队标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {teamTagOptions.length === 0 && (
+                    <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                  )}
+                  {teamTagOptions.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => setBatchMgrSelectedTags((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        batchMgrSelectedTags.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=tags", "_blank")}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1"
+                  >
+                    <Settings2 className="h-3 w-3" /> 设置
+                  </button>
+                  <button
+                    type="button"
+                    onClick={refreshTeamTagOptions}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors"
+                  >
+                    <RefreshCw className="h-3 w-3" /> 刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 shrink-0">
+              {batchMgrError && (
+                <p className="text-xs text-red-500 text-right">{batchMgrError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeBatchAddMgrDialog}
+                  disabled={batchMgrSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  取 消
+                </button>
+                <button
+                  type="button"
+                  disabled={batchMgrChecked.size === 0 || batchMgrSaving}
+                  onClick={async () => {
+                    const toAdd = batchMgrResults.filter((r) => batchMgrChecked.has(mgrResultKey(r)))
+                    if (toAdd.length === 0) return
+                    setBatchMgrSaving(true)
+                    setBatchMgrError(null)
+                    try {
+                      const results = await Promise.all(
+                        toAdd.map((r) =>
+                          fetch("/ma/api/tracking-managers", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              manager_name: r.manager_name,
+                              registration_no: r.registration_no || r.manager_name,
+                              contact_person: batchMgrContact || null,
+                            }),
+                          }).then((res) => res.json()),
+                        ),
+                      )
+                      const failed = results.filter((r) => r.error && r.error !== "already_exists")
+                      if (failed.length > 0) {
+                        setBatchMgrError(`${failed.length} 个添加失败`)
+                      } else {
+                        closeBatchAddMgrDialog()
+                        setActiveTab("基础信息")
+                        setMgrListRefresh((n) => n + 1)
+                      }
+                    } catch {
+                      setBatchMgrError("网络错误，请重试")
+                    } finally {
+                      setBatchMgrSaving(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {batchMgrSaving ? "保存中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
 
       <OpsAuditLogDialog open={showAuditLog} onClose={() => setShowAuditLog(false)} />
     </div>
@@ -10490,6 +11796,403 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
   )
 }
 
+// ─── PrivateFundManagersView ────────────────────────────────────────────────
+
+const MGR_MEMBER_TYPES = ["普通会员", "观察会员"] as const
+const MGR_INCEPTION_OPTS = ["不限", "6个月以内", "6个月-1年", "1-3年", "3-5年", "5年以上"] as const
+const MGR_PRODUCT_COUNT_OPTS = ["不限", "0-10", "10-50", "50-100", "100-500", "500以上"] as const
+
+type MgrListSortKey = "manager_name" | "mgmt_scale" | "active_product_count" | "inception_date" | "registration_no" | "seq_no"
+
+interface PrivateFundManagerRow {
+  id: number
+  seq_no: number | null
+  manager_name: string
+  core_strategy: string | null
+  mgmt_scale: string | null
+  active_product_count: number | null
+  inception_date: string | null
+  member_type: string | null
+  registration_no: string
+}
+
+function StrategyTags({ value }: { value: string | null }) {
+  if (!value || value === "-") return <span>—</span>
+  const parts = value.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
+  if (parts.length === 0) return <span>—</span>
+  return (
+    <div className="flex flex-wrap gap-1 max-w-[220px]">
+      {parts.map((tag) => (
+        <span key={tag} className="inline-flex px-1.5 py-0.5 rounded text-[11px] border border-border text-zinc-600 dark:text-zinc-400 bg-muted/30">
+          {tag}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function PrivateFundManagersView() {
+  const [coreStrategy, setCoreStrategy] = useState("")
+  const [mgmtScale, setMgmtScale] = useState("")
+  const [memberType, setMemberType] = useState("")
+  const [inceptionPeriod, setInceptionPeriod] = useState("")
+  const [productCount, setProductCount] = useState("")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
+  const [sortKey, setSortKey] = useState<MgrListSortKey>("seq_no")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [jumpVal, setJumpVal] = useState("")
+  const [data, setData] = useState<PrivateFundManagerRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [favorites, setFavorites] = useState<Set<number>>(() => {
+    if (typeof window === "undefined") return new Set()
+    try {
+      const raw = localStorage.getItem("private_fund_mgr_favorites")
+      return raw ? new Set(JSON.parse(raw) as number[]) : new Set()
+    } catch {
+      return new Set()
+    }
+  })
+
+  useEffect(() => {
+    setPage(1)
+  }, [coreStrategy, mgmtScale, memberType, inceptionPeriod, productCount, keyword, pageSize])
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: favoritesOnly ? "1" : String(page),
+      pageSize: favoritesOnly ? "100000" : String(pageSize),
+      sort: sortKey,
+      dir: sortDir,
+      keyword,
+    })
+    if (coreStrategy) params.set("core_strategy", coreStrategy)
+    if (mgmtScale) params.set("mgmt_scale", mgmtScale)
+    if (memberType) params.set("member_type", memberType)
+    if (inceptionPeriod && inceptionPeriod !== "不限") params.set("inception", inceptionPeriod)
+    if (productCount && productCount !== "不限") params.set("product_count", productCount)
+    fetch(`/ma/api/private-fund-managers/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        let rows: PrivateFundManagerRow[] = json.data ?? []
+        if (favoritesOnly) {
+          rows = rows.filter((r) => favorites.has(r.id))
+          setTotal(rows.length)
+          const start = (page - 1) * pageSize
+          setData(rows.slice(start, start + pageSize))
+        } else {
+          setData(rows)
+          setTotal(json.total ?? 0)
+        }
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+      })
+      .finally(() => setLoading(false))
+  }, [page, pageSize, sortKey, sortDir, keyword, coreStrategy, mgmtScale, memberType, inceptionPeriod, productCount, favoritesOnly, favorites])
+
+  function toggleFavorite(id: number) {
+    setFavorites((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      localStorage.setItem("private_fund_mgr_favorites", JSON.stringify([...next]))
+      return next
+    })
+  }
+
+  function handleSort(col: MgrListSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("asc") }
+    setPage(1)
+  }
+
+  function MgrSortIcon({ col }: { col: MgrListSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function jumpTo() {
+    const n = parseInt(jumpVal)
+    if (!isNaN(n)) { setPage(Math.min(totalPages, Math.max(1, n))); setJumpVal("") }
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  async function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const params = new URLSearchParams({ export: "1", sort: sortKey, dir: sortDir, keyword })
+    if (coreStrategy) params.set("core_strategy", coreStrategy)
+    if (mgmtScale) params.set("mgmt_scale", mgmtScale)
+    if (memberType) params.set("member_type", memberType)
+    if (inceptionPeriod && inceptionPeriod !== "不限") params.set("inception", inceptionPeriod)
+    if (productCount && productCount !== "不限") params.set("product_count", productCount)
+    const json = await fetch(`/ma/api/private-fund-managers/list?${params}`).then((r) => r.json())
+    const rows: PrivateFundManagerRow[] = json.data ?? []
+    const headers = ["序号", "管理人名称", "核心策略", "管理规模", "成立日期", "运作中产品数", "会员类型", "登记编号"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.seq_no != null ? String(r.seq_no) : ""),
+        escape(r.manager_name), escape(r.core_strategy), escape(r.mgmt_scale),
+        escape(r.inception_date),
+        escape(r.active_product_count != null ? String(r.active_product_count) : ""),
+        escape(r.member_type), escape(r.registration_no),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `私募管理人_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+  const tdBase = "px-3 py-2.5 text-sm text-zinc-700 dark:text-zinc-300 whitespace-nowrap"
+
+  const chipCls = (active: boolean) => [
+    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+    active
+      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+      : "border-border text-zinc-500 hover:bg-muted/60",
+  ].join(" ")
+
+  return (
+    <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">核心策略：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span onClick={() => { setCoreStrategy(""); setPage(1) }} className={chipCls(!coreStrategy)}>不限</span>
+            {TRACK_STRATEGIES.filter((s) => s !== "不限").map((s) => (
+              <span key={s} onClick={() => { setCoreStrategy(coreStrategy === s ? "" : s); setPage(1) }} className={chipCls(coreStrategy === s)}>
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">管理规模：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span onClick={() => { setMgmtScale(""); setPage(1) }} className={chipCls(!mgmtScale)}>不限</span>
+            {ORG_SIZE_OPTS.filter((s) => s !== "不限").map((s) => (
+              <span key={s} onClick={() => { setMgmtScale(mgmtScale === s ? "" : s); setPage(1) }} className={chipCls(mgmtScale === s)}>
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2 gap-6 flex-wrap">
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-400 shrink-0">成立时间：</span>
+            <select
+              value={inceptionPeriod || "不限"}
+              onChange={(e) => { setInceptionPeriod(e.target.value === "不限" ? "" : e.target.value); setPage(1) }}
+              className="h-7 rounded border border-border bg-background px-2 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {MGR_INCEPTION_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-zinc-400 shrink-0">产品数量：</span>
+            <select
+              value={productCount || "不限"}
+              onChange={(e) => { setProductCount(e.target.value === "不限" ? "" : e.target.value); setPage(1) }}
+              className="h-7 rounded border border-border bg-background px-2 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {MGR_PRODUCT_COUNT_OPTS.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">会员类型：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span onClick={() => { setMemberType(""); setPage(1) }} className={chipCls(!memberType)}>不限</span>
+            {MGR_MEMBER_TYPES.map((s) => (
+              <span key={s} onClick={() => { setMemberType(memberType === s ? "" : s); setPage(1) }} className={chipCls(memberType === s)}>
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2 gap-4">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+          <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
+            <input
+              className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+              placeholder="请输入管理人名称/编号，按回车搜索"
+              value={kwInput}
+              onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+            />
+            <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+              <Search className="h-3 w-3" />
+            </button>
+          </div>
+          <label className="inline-flex items-center gap-1.5 text-xs text-zinc-600 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="rounded h-3 w-3"
+              checked={favoritesOnly}
+              onChange={(e) => { setFavoritesOnly(e.target.checked); setPage(1) }}
+            />
+            收藏
+          </label>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-3 mb-3 flex-shrink-0 text-xs text-zinc-600">
+        <button className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
+          <Settings2 className="h-3.5 w-3.5" /> 字段配置
+        </button>
+        <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Download className="h-3.5 w-3.5" /> 导出
+        </button>
+      </div>
+
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+              <th className={`${thSort} w-12`} onClick={() => handleSort("seq_no")}>
+                序号<MgrSortIcon col="seq_no" />
+              </th>
+              <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("manager_name")}>
+                管理人名称<MgrSortIcon col="manager_name" />
+              </th>
+              <th className={`${thBase} min-w-[180px]`}>核心策略</th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("mgmt_scale")}>
+                管理规模<MgrSortIcon col="mgmt_scale" />
+              </th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("inception_date")}>
+                成立日期<MgrSortIcon col="inception_date" />
+              </th>
+              <th className={`${thSort} min-w-[110px]`} onClick={() => handleSort("active_product_count")}>
+                运作中产品数<MgrSortIcon col="active_product_count" />
+              </th>
+              <th className={`${thBase} min-w-[90px]`}>会员类型</th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("registration_no")}>
+                登记编号<MgrSortIcon col="registration_no" />
+              </th>
+              <th className={`${thBase} text-center w-16`}>报告</th>
+              <th className={`${thBase} text-center w-24`}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={10} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={10} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : data.map((row, idx) => (
+              <tr key={row.id} className="border-b hover:bg-muted/30 transition-colors">
+                <td className={tdBase}>{row.seq_no ?? (page - 1) * pageSize + idx + 1}</td>
+                <td className={tdBase}>
+                  <span className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                    {row.manager_name}
+                  </span>
+                </td>
+                <td className={tdBase}><StrategyTags value={row.core_strategy} /></td>
+                <td className={tdBase}>{fmtMgrCell(row.mgmt_scale)}</td>
+                <td className={tdBase}>{fmtMgrCell(row.inception_date)}</td>
+                <td className={tdBase}>{fmtMgrCell(row.active_product_count)}</td>
+                <td className={tdBase}>{fmtMgrCell(row.member_type)}</td>
+                <td className={tdBase}>{row.registration_no}</td>
+                <td className={`${tdBase} text-center`}>
+                  <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled title="报告">
+                    <FileSearch className="h-3.5 w-3.5" />
+                  </button>
+                </td>
+                <td className={`${tdBase} text-center`}>
+                  <div className="inline-flex items-center gap-2">
+                    <button
+                      onClick={() => toggleFavorite(row.id)}
+                      className="text-muted-foreground hover:text-amber-500 transition-colors"
+                      title="收藏"
+                    >
+                      <Heart className={`h-3.5 w-3.5 ${favorites.has(row.id) ? "fill-red-500 text-red-500" : ""}`} />
+                    </button>
+                    <button className="text-muted-foreground hover:text-foreground transition-colors opacity-50 cursor-not-allowed" title="查看" disabled>
+                      <Eye className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between mt-3 flex-shrink-0 text-xs text-zinc-600">
+        <span>共 {total} 条</span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+          <div className="flex items-center gap-1 ml-2">
+            <span>跳至</span>
+            <input
+              className="w-10 h-7 border rounded text-center text-xs outline-none focus:ring-1 focus:ring-ring"
+              value={jumpVal}
+              onChange={(e) => setJumpVal(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && jumpTo()}
+            />
+            <span>页</span>
+          </div>
+          <div className="relative ml-3">
+            <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring">
+              {[50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PrivateFundView() {
   const [filters, setFilters] = useState<FilterState>({ strategyFilters: [], keyword: "", manager: "", metricTab: "收益", period: "本周", range: "不限", inceptionPeriod: "", navDatePeriod: "", navFrequency: "" })
   const [templates, setTemplates] = useState<SavedTemplate[]>(() => loadTemplates())
@@ -10721,7 +12424,8 @@ export default function PrivateFundsPage() {
         {/* Page content area */}
         <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
-          {activeTab === "funds" && activeSideItem !== "private-funds" && (
+          {activeTab === "funds" && activeSideItem === "fund-managers-org" && <PrivateFundManagersView />}
+          {activeTab === "funds" && activeSideItem !== "private-funds" && activeSideItem !== "fund-managers-org" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

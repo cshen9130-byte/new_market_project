@@ -31,17 +31,27 @@ interface TagRow {
   updated_at: string
 }
 
+function isPersonalCategory(category: string) {
+  return category.endsWith("_personal")
+}
+
 export async function GET(req: Request) {
   try {
     await ensureTable()
     const { searchParams } = new URL(req.url)
     const category = searchParams.get("category") || "fund"
+    const owner = (searchParams.get("owner") || "").trim()
     const rows = await query<TagRow>(
-      `SELECT id, category, name, created_by, updated_by, created_at, updated_at
-       FROM ops_team_tags
-       WHERE category = $1
-       ORDER BY id`,
-      [category]
+      isPersonalCategory(category)
+        ? `SELECT id, category, name, created_by, updated_by, created_at, updated_at
+           FROM ops_team_tags
+           WHERE category = $1 AND ($2 = '' OR created_by = $2)
+           ORDER BY id`
+        : `SELECT id, category, name, created_by, updated_by, created_at, updated_at
+           FROM ops_team_tags
+           WHERE category = $1
+           ORDER BY id`,
+      isPersonalCategory(category) ? [category, owner] : [category]
     )
     return NextResponse.json(rows)
   } catch (e: any) {

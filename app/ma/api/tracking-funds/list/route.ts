@@ -282,7 +282,8 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
   const requestedPool = searchParams.get("pool")
-  const isCustomPool = requestedPool ? (requestedPool.startsWith("custom_") || requestedPool.startsWith("mine_custom_") || requestedPool === "mine_default") : false
+  const isMineAllPool = requestedPool === "mine_all"
+  const isCustomPool = requestedPool ? (requestedPool.startsWith("custom_") || requestedPool.startsWith("mine_custom_") || requestedPool === "mine_default" || isMineAllPool) : false
   const KNOWN_POOLS = new Set(["bfl", "tracking", "selected", "core", "hy", "fof", "all"])
   if (requestedPool && !KNOWN_POOLS.has(requestedPool) && !isCustomPool) {
     return NextResponse.json({ page, pageSize: 50, total: 0, totalPages: 0, data: [] })
@@ -300,6 +301,9 @@ export async function GET(req: Request) {
   const orgSize = (searchParams.get("org_size") || "").trim()
   const teamTagMode = searchParams.get("team_tag_mode") === "or" ? "or" : "and"
   const teamTags = searchParams.getAll("team_tag").map((s) => s.trim()).filter(Boolean)
+  const personalTagMode = searchParams.get("personal_tag_mode") === "or" ? "or" : "and"
+  const personalTags = searchParams.getAll("personal_tag").map((s) => s.trim()).filter(Boolean)
+  const personalUserKey = String(req.headers.get("x-market-user-id") || "").trim()
   const strategySource = normalizeStrategySource((searchParams.get("strategy_source") || "").trim().toLowerCase())
   const cutoffRaw = (searchParams.get("cutoff") || "").trim()
   const cutoffExpr = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw) ? `'${cutoffRaw}'::date` : "CURRENT_DATE"
@@ -419,7 +423,7 @@ export async function GET(req: Request) {
           END AS strategy_company
         ) tag_data
         WHERE p.register_number IS NOT NULL
-          ${isCustomPool ? "AND p.pool_key = $1" : ""}
+          ${isCustomPool ? (isMineAllPool ? "AND (p.pool_key = 'mine_default' OR p.pool_key LIKE 'mine_custom_%')" : "AND p.pool_key = $1") : ""}
       )`
     : `WITH source AS (
         SELECT
@@ -437,8 +441,8 @@ export async function GET(req: Request) {
         FROM private_fund_info_bfl
       )`
 
-  // For custom pools, pool_key is always the first param ($1)
-  const filterParams: (string | number)[] = isCustomPool && requestedPool ? [requestedPool] : []
+  // For custom pools, pool_key is always the first param ($1) unless listing all mine pools
+  const filterParams: (string | number)[] = isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
   const where: string[] = []
 
   if (strategyL1) {
@@ -463,6 +467,20 @@ export async function GET(req: Request) {
       return `POSITION(',' || $${filterParams.length} || ',' IN ',' || regexp_replace(COALESCE(i.strategy_company, ''), '\\s+', '', 'g') || ',') > 0`
     })
     where.push(teamTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+  }
+  if (personalTags.length > 0 && personalUserKey) {
+    filterParams.push(personalUserKey)
+    const userKeyParam = filterParams.length
+    const clauses = personalTags.map((tag) => {
+      filterParams.push(tag)
+      return `EXISTS (
+        SELECT 1 FROM ops_personal_fund_tags pt
+        WHERE pt.beian_hao = i.beian_hao
+          AND pt.user_key = $${userKeyParam}
+          AND pt.tag_name = $${filterParams.length}
+      )`
+    })
+    where.push(personalTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
   }
   const scaleValue = ORG_SIZE_SCALE[orgSize]
   if (scaleValue) {
@@ -552,6 +570,18 @@ export async function GET(req: Request) {
   ].join("\n")
 
   try {
+    if (personalTags.length > 0) {
+      await query(`
+        CREATE TABLE IF NOT EXISTS ops_personal_fund_tags (
+          id         SERIAL PRIMARY KEY,
+          beian_hao  VARCHAR(64) NOT NULL,
+          tag_name   VARCHAR(255) NOT NULL,
+          user_key   VARCHAR(255) NOT NULL DEFAULT '',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (beian_hao, tag_name, user_key)
+        )
+      `)
+    }
     const [rows, countRow] = await Promise.all([
       query<TrackRow>(
         `${sourceCte}

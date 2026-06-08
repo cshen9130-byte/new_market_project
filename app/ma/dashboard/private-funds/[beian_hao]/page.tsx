@@ -37,7 +37,7 @@ const fundsSidebarGroups = [
     label: "私募数据库",
     items: [
       { key: "private-funds", label: "私募基金" },
-      { key: "fund-managers-org", label: "管理人库" },
+      { key: "fund-managers-org", label: "私募管理人" },
       { key: "fund-managers", label: "基金经理" },
     ],
   },
