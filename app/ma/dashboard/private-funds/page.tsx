@@ -186,7 +186,7 @@ function FilterPill({ label, active, onClick, variant = "primary" }: {
   const base = "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors whitespace-nowrap"
   const activePrimary = "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
   const inactivePrimary = "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
-  const activeMuted = "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+  const activeMuted = "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
   const inactiveMuted = "border-border text-zinc-500 hover:bg-muted/60"
 
   return (
@@ -1886,7 +1886,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     className={[
                       "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                       strategyL1 === node.l1
-                        ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                         : "border-border text-zinc-500 hover:bg-muted/60",
                     ].join(" ")}
                   >
@@ -1921,7 +1921,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       className={[
                         "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                         strategyL2 === node.l2
-                          ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                           : "border-border text-zinc-500 hover:bg-muted/60",
                       ].join(" ")}
                     >
@@ -1954,7 +1954,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       className={[
                         "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                         strategyL3 === v
-                          ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                           : "border-border text-zinc-500 hover:bg-muted/60",
                       ].join(" ")}
                     >
@@ -1997,7 +1997,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     className={[
                       "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                       teamTags.includes(tag)
-                        ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                         : "border-border text-zinc-500 hover:bg-muted/60",
                     ].join(" ")}
                   >
@@ -2019,9 +2019,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     className={[
                       "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                       orgSizeFilter === s
-                        ? s === "不限"
-                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
-                          : "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                         : s === "不限"
                           ? "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
                           : "border-border text-zinc-500 hover:bg-muted/60",
@@ -2688,9 +2686,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     className={[
                       "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                       myOrgSize === s
-                        ? s === "不限"
-                          ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
-                          : "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                        ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                         : s === "不限"
                           ? "border-border text-zinc-500 hover:border-red-300 hover:text-red-500"
                           : "border-border text-zinc-500 hover:bg-muted/60",
@@ -7728,7 +7724,7 @@ function OperationsDirectView() {
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                   strategyL1 === node.l1
-                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                     : "border-border text-zinc-500 hover:bg-muted/60",
                 ].join(" ")}
               >
@@ -8458,7 +8454,7 @@ function OperationsFofUnderlyingView() {
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                   strategyL1 === node.l1
-                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                     : "border-border text-zinc-500 hover:bg-muted/60",
                 ].join(" ")}
               >
@@ -8470,7 +8466,7 @@ function OperationsFofUnderlyingView() {
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                 strategyL1 === "__unconfigured__"
-                  ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                   : "border-border text-zinc-500 hover:bg-muted/60",
               ].join(" ")}
             >
@@ -8985,7 +8981,7 @@ function OperationsManagedProductsView() {
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                   strategyL1 === node.l1
-                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                     : "border-border text-zinc-500 hover:bg-muted/60",
                 ].join(" ")}
               >
@@ -8997,7 +8993,7 @@ function OperationsManagedProductsView() {
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                 strategyL1 === "__unconfigured__"
-                  ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                   : "border-border text-zinc-500 hover:bg-muted/60",
               ].join(" ")}
             >
@@ -9037,7 +9033,7 @@ function OperationsManagedProductsView() {
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                   teamTags.includes(tag)
-                    ? "border-zinc-400 text-zinc-700 bg-zinc-100 dark:bg-zinc-800 dark:text-zinc-200"
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
                     : "border-border text-zinc-500 hover:bg-muted/60",
                 ].join(" ")}
               >
