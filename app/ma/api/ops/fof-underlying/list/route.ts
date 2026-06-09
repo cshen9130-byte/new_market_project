@@ -42,7 +42,7 @@ export async function GET(req: Request) {
     const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
 
-    const conditions: string[] = ["1=1"]
+    const conditions: string[] = ["f.product_name <> '合计'"]
     const params: unknown[] = []
     let pi = 1
 

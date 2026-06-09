@@ -7770,11 +7770,15 @@ function InvestmentManagedProductRowMenu({
   onEditTags,
   onEditStrategy,
   onNoteManage,
+  onValuationAnalysis,
+  onFavorite,
 }: {
   onQueryElements: () => void
   onEditTags: () => void
   onEditStrategy: () => void
   onNoteManage: () => void
+  onValuationAnalysis?: () => void
+  onFavorite?: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
@@ -7811,6 +7815,12 @@ function InvestmentManagedProductRowMenu({
             <button onClick={() => { onEditTags(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑标签</button>
             <button onClick={() => { onEditStrategy(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑策略</button>
             <button onClick={() => { onNoteManage(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理</button>
+            {onValuationAnalysis && (
+              <button onClick={() => { onValuationAnalysis(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />估值表分析</button>
+            )}
+            {onFavorite && (
+              <button onClick={() => { onFavorite(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Star className="h-3.5 w-3.5 text-muted-foreground shrink-0" />收藏</button>
+            )}
           </div>
         </>,
         document.body,
@@ -10295,7 +10305,7 @@ function InvestmentManagedProductsView() {
           </div>
         </div>
         <div className="flex items-center px-4 py-2 gap-4">
-          <div className="flex items-center flex-1">
+          <div className="flex items-center">
             <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">运行状态：</span>
             <div className="flex items-center gap-1">
               {([["running", "运行中"], ["liquidated", "已清盘"]] as const).map(([st, label]) => (
@@ -10312,32 +10322,6 @@ function InvestmentManagedProductsView() {
                   {label}
                 </span>
               ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5 text-zinc-500 shrink-0">
-            <span>指标计算截止日期</span>
-            <span className="text-zinc-400">①</span>
-            <div className="relative">
-              <button
-                onClick={() => setShowDatePicker((v) => !v)}
-                className="inline-flex items-center gap-1 border rounded px-1.5 py-0.5 text-zinc-600 hover:bg-muted cursor-pointer transition-colors">
-                <CalendarDays className="h-3 w-3" />
-                <span className="tabular-nums">{cutoffDate}</span>
-                <ChevronDown className="h-3 w-3" />
-              </button>
-              {showDatePicker && (
-                <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg p-3" onClick={(e) => e.stopPropagation()}>
-                  <input
-                    type="date"
-                    value={cutoffDate}
-                    max={new Date().toISOString().slice(0, 10)}
-                    onChange={(e) => { if (e.target.value) { setCutoffDate(e.target.value); setShowDatePicker(false) } }}
-                    className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
-                    autoFocus
-                  />
-                </div>
-              )}
-              {showDatePicker && <div className="fixed inset-0 z-30" onClick={() => setShowDatePicker(false)} />}
             </div>
           </div>
         </div>
@@ -10358,7 +10342,33 @@ function InvestmentManagedProductsView() {
         </div>
       </div>
 
-      <div className="flex items-center justify-end gap-1.5 mb-3 flex-shrink-0 text-xs">
+      <div className="relative z-50 flex items-center justify-between gap-1.5 mb-3 flex-shrink-0 text-xs">
+        <div className="flex items-center gap-1.5 text-zinc-600">
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">指标计算截止日期</span>
+          <div className="relative">
+            <button
+              onClick={() => setShowDatePicker((v) => !v)}
+              className="inline-flex items-center gap-1 border rounded px-1.5 py-0.5 text-zinc-600 hover:bg-muted cursor-pointer transition-colors">
+              <CalendarDays className="h-3 w-3" />
+              <span className="tabular-nums">{cutoffDate}</span>
+              <ChevronDown className="h-3 w-3" />
+            </button>
+            {showDatePicker && (
+              <div className="absolute left-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-lg p-3" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="date"
+                  value={cutoffDate}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => { if (e.target.value) { setCutoffDate(e.target.value); setShowDatePicker(false) } }}
+                  className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
+                  autoFocus
+                />
+              </div>
+            )}
+            {showDatePicker && <div className="fixed inset-0 z-40" onClick={() => setShowDatePicker(false)} />}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
         <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
           <input type="checkbox" defaultChecked className="rounded h-3 w-3 accent-zinc-700" />
           计算指标
@@ -10491,8 +10501,8 @@ function InvestmentManagedProductsView() {
           </button>
           {showMoreMenu && (
             <>
-              <div className="fixed inset-0 z-30" onClick={() => setShowMoreMenu(false)} />
-              <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
+              <div className="fixed inset-0 z-40" onClick={() => setShowMoreMenu(false)} />
+              <div className="absolute right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-lg py-1 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
                 <button onClick={() => { setShowMoreMenu(false); setShowInvFieldConfig(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                   <Settings2 className="h-3.5 w-3.5 text-zinc-400" /> 字段配置
                 </button>
@@ -10502,6 +10512,7 @@ function InvestmentManagedProductsView() {
               </div>
             </>
           )}
+        </div>
         </div>
       </div>
 
@@ -11195,6 +11206,1579 @@ function InvestmentManagedProductsView() {
           initial={invAddedCols}
           onClose={() => setShowInvAddMetric(false)}
           onConfirm={(cols) => { setInvAddedCols(cols); setInvActiveTemplate(null); setShowInvAddMetric(false) }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── InvestmentFofOverviewView ───────────────────────────────────────────────
+
+type FofOverviewSortKey =
+  | "product_name" | "latest_nav" | "latest_nav_date" | "latest_price_change"
+  | "market_value" | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y"
+  | "sharpe_1y" | "calmar_1y"
+
+interface FofOverviewRow {
+  id: string
+  beian_hao: string | null
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  market_value: string | null
+  ret_1w?: string | null
+  ret_1m?: string | null
+  ret_3m?: string | null
+  ret_6m?: string | null
+  ret_1y?: string | null
+  sharpe_1y?: string | null
+  calmar_1y?: string | null
+}
+
+type FofDetailSortKey =
+  | "fof_fund_name" | "product_name" | "beian_hao" | "unit_nav" | "nav_date" | "price_change"
+  | "investment_shares" | "market_value" | "market_value_pct"
+  | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y" | "sharpe_1y" | "calmar_1y"
+
+interface FofDetailRow {
+  id: string
+  seq_no: number | null
+  fof_fund_name: string
+  product_name: string
+  beian_hao: string | null
+  unit_nav: string | null
+  nav_date: string | null
+  price_change: string | null
+  investment_shares: string | null
+  market_value: string | null
+  market_value_pct: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
+}
+
+function fmtPct4(v: string | null) {
+  if (!v) return "—"
+  const n = parseFloat(v)
+  if (isNaN(n)) return "—"
+  return (n >= 0 ? "+" : "") + n.toFixed(4) + "%"
+}
+
+function FofDetailPctCell({ value }: { value: string | null }) {
+  if (!value) return <span className="text-muted-foreground">—</span>
+  const n = parseFloat(value)
+  if (isNaN(n)) return <span className="text-muted-foreground">—</span>
+  const cls = n > 0 ? "text-red-500" : n < 0 ? "text-green-600" : "text-foreground"
+  return <span className={cls}>{n > 0 ? "+" : ""}{n.toFixed(2)}%</span>
+}
+
+function InvestmentFofOverviewView() {
+  const [viewTab, setViewTab] = useState<"summary" | "detail">("summary")
+  const [fundClass, setFundClass] = useState<"private" | "public">("private")
+  const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
+  const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
+  const [strategyL1, setStrategyL1] = useState("")
+  const [teamTagMode, setTeamTagMode] = useState<"and" | "or">("and")
+  const [teamTagOptions, setTeamTagOptions] = useState<string[]>([])
+  const [teamTags, setTeamTags] = useState<string[]>([])
+  const [holdingStatus, setHoldingStatus] = useState<"holding" | "cleared">("holding")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [fofFundInput, setFofFundInput] = useState("")
+  const [fofFundSelected, setFofFundSelected] = useState<{ register_number: string; product_name: string } | null>(null)
+  const [fofFundOptions, setFofFundOptions] = useState<{ register_number: string; product_name: string }[]>([])
+  const [fofFundShowDropdown, setFofFundShowDropdown] = useState(false)
+  const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [detailValuationDate, setDetailValuationDate] = useState("")
+  const [showDatePicker, setShowDatePicker] = useState(false)
+  const [showInterval, setShowInterval] = useState(false)
+  const [favoritesOnly, setFavoritesOnly] = useState(false)
+  const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const [showFofFieldConfig, setShowFofFieldConfig] = useState(false)
+  const [fofFieldConfigSelected, setFofFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [showFofAddMetric, setShowFofAddMetric] = useState(false)
+  const [fofAddedCols, setFofAddedCols] = useState<AddedCol[]>([])
+  const [showFofTemplateMenu, setShowFofTemplateMenu] = useState(false)
+  const [fofMetricTemplates, setFofMetricTemplates] = useState<{ name: string; items: { period: string; metric: string }[] }[]>(() => loadTrackingMetricTemplates())
+  const [fofActiveTemplate, setFofActiveTemplate] = useState<string | null>(null)
+  const [sortKey, setSortKey] = useState<FofOverviewSortKey | "">("")
+  const [detailSortKey, setDetailSortKey] = useState<FofDetailSortKey | "">("")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [data, setData] = useState<FofOverviewRow[]>([])
+  const [fofDetailData, setFofDetailData] = useState<FofDetailRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [totalMarketValue, setTotalMarketValue] = useState("0")
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
+  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const fofFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [showFofElementsDialog, setShowFofElementsDialog] = useState(false)
+  const [fofElementsBeianHao, setFofElementsBeianHao] = useState<string | null>(null)
+  const [fofElementsName, setFofElementsName] = useState("")
+  const [fofElementsData, setFofElementsData] = useState<Record<string, string | null> | null>(null)
+  const [fofElementsLoading, setFofElementsLoading] = useState(false)
+  const [showFofTagDialog, setShowFofTagDialog] = useState(false)
+  const [fofTagBeianHao, setFofTagBeianHao] = useState<string | null>(null)
+  const [fofTagName, setFofTagName] = useState("")
+  const [fofTagSelected, setFofTagSelected] = useState<string[]>([])
+  const [fofTagTeamTags, setFofTagTeamTags] = useState<string[]>([])
+  const [fofTagSaving, setFofTagSaving] = useState(false)
+  const [showFofStrategyDialog, setShowFofStrategyDialog] = useState(false)
+  const [fofStrategyBeianHao, setFofStrategyBeianHao] = useState<string | null>(null)
+  const [fofStrategyName, setFofStrategyName] = useState("")
+  const [fofStrategyL1, setFofStrategyL1] = useState("")
+  const [fofStrategyL2, setFofStrategyL2] = useState("")
+  const [fofStrategyL3, setFofStrategyL3] = useState("")
+  const [fofStrategySaving, setFofStrategySaving] = useState(false)
+  const [showFofNoteDialog, setShowFofNoteDialog] = useState(false)
+  const [fofNoteBeianHao, setFofNoteBeianHao] = useState<string | null>(null)
+  const [fofNoteName, setFofNoteName] = useState("")
+  const [fofNoteText, setFofNoteText] = useState("")
+  const [fofNoteSaving, setFofNoteSaving] = useState(false)
+  const [fofFavorites, setFofFavorites] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("fof_underlying_favorites")
+      return raw ? new Set(JSON.parse(raw) as string[]) : new Set()
+    } catch { return new Set() }
+  })
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  useEffect(() => {
+    if (!showFofElementsDialog || !fofElementsBeianHao) return
+    setFofElementsData(null)
+    setFofElementsLoading(true)
+    fetch(`/ma/api/tracking-funds/fund-elements?beian_hao=${encodeURIComponent(fofElementsBeianHao)}`)
+      .then((r) => r.json())
+      .then((d) => { setFofElementsData(d); setFofElementsLoading(false) })
+      .catch(() => setFofElementsLoading(false))
+  }, [showFofElementsDialog, fofElementsBeianHao])
+
+  function openFofElementsDialog(beian_hao: string | null, product_name: string) {
+    if (!beian_hao) return
+    setFofElementsBeianHao(beian_hao)
+    setFofElementsName(product_name)
+    setShowFofElementsDialog(true)
+  }
+
+  async function openFofTagDialog(beian_hao: string | null, product_name: string) {
+    if (!beian_hao) return
+    setFofTagBeianHao(beian_hao)
+    setFofTagName(product_name)
+    setFofTagSelected([])
+    setFofTagTeamTags([])
+    setShowFofTagDialog(true)
+    const [tagsRes, teamTagsRes] = await Promise.all([
+      fetch(`/ma/api/tracking-funds/fund-tags?beian_hao=${encodeURIComponent(beian_hao)}`).then((r) => r.json()).catch(() => []),
+      fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).catch(() => []),
+    ])
+    if (Array.isArray(tagsRes)) setFofTagSelected(tagsRes)
+    if (Array.isArray(teamTagsRes)) setFofTagTeamTags(teamTagsRes.map((t: { name: string }) => t.name))
+  }
+
+  async function openFofStrategyDialog(beian_hao: string | null, product_name: string) {
+    if (!beian_hao) return
+    setFofStrategyBeianHao(beian_hao)
+    setFofStrategyName(product_name)
+    setFofStrategyL1("")
+    setFofStrategyL2("")
+    setFofStrategyL3("")
+    setShowFofStrategyDialog(true)
+    try {
+      const res = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`)
+      const d = await res.json()
+      if (d?.strategy_l1) setFofStrategyL1(d.strategy_l1)
+      if (d?.strategy_l2) setFofStrategyL2(d.strategy_l2)
+      if (d?.strategy_l3) setFofStrategyL3(d.strategy_l3)
+    } catch { /* ignore */ }
+  }
+
+  async function openFofNoteDialog(beian_hao: string | null, product_name: string) {
+    if (!beian_hao) return
+    setFofNoteBeianHao(beian_hao)
+    setFofNoteName(product_name)
+    setFofNoteText("")
+    setShowFofNoteDialog(true)
+    try {
+      const res = await fetch(`/ma/api/tracking-funds/fund-note?beian_hao=${encodeURIComponent(beian_hao)}`)
+      const d = await res.json()
+      setFofNoteText(d.note ?? "")
+    } catch { /* ignore */ }
+  }
+
+  function toggleFofFavorite(id: string) {
+    setFofFavorites((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      localStorage.setItem("fof_underlying_favorites", JSON.stringify([...next]))
+      return next
+    })
+  }
+
+  useEffect(() => {
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    const params = new URLSearchParams({ strategy_source: strategySource, pool: "all" })
+    fetch(`/ma/api/tracking-funds/strategies?${params}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
+      .catch(() => {})
+  }, [strategySource])
+
+  useEffect(() => {
+    setPage(1)
+  }, [viewTab, fundClass, strategySource, strategyL1, teamTagMode, teamTags.join("\u0001"), holdingStatus, keyword, pageSize, cutoffDate, fofFundSelected?.register_number, favoritesOnly])
+
+  useEffect(() => {
+    if (viewTab === "detail") return
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: favoritesOnly ? "1" : String(page),
+      pageSize: favoritesOnly ? "100000" : String(pageSize),
+      strategy_source: strategySource,
+      holding_status: holdingStatus,
+      team_tag_mode: teamTagMode,
+      keyword,
+      cutoff: cutoffDate,
+      dir: sortDir,
+    })
+    if (sortKey) params.set("sort", sortKey)
+    if (strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
+    else if (strategyL1) params.set("strategy_l1", strategyL1)
+    if (fofFundSelected?.register_number) params.set("fof_register_number", fofFundSelected.register_number)
+    teamTags.forEach((t) => params.append("team_tag", t))
+    fetch(`/ma/api/investment/fof-overview/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        let rows: FofOverviewRow[] = json.data ?? []
+        if (favoritesOnly) {
+          rows = rows.filter((r) => fofFavorites.has(r.id))
+          const totalMv = rows.reduce((sum, r) => sum + (parseFloat(r.market_value ?? "0") || 0), 0)
+          setTotal(rows.length)
+          setTotalMarketValue(String(totalMv))
+          const start = (page - 1) * pageSize
+          setData(rows.slice(start, start + pageSize))
+        } else {
+          setData(rows)
+          setTotal(json.total ?? 0)
+          setTotalMarketValue(json.totalMarketValue ?? "0")
+        }
+        setSelected(new Set())
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+        setTotalMarketValue("0")
+        setSelected(new Set())
+      })
+      .finally(() => setLoading(false))
+  }, [viewTab, page, pageSize, fundClass, strategySource, strategyL1, teamTagMode, teamTags, holdingStatus, keyword, sortKey, sortDir, cutoffDate, fofFundSelected?.register_number, favoritesOnly, fofFavorites])
+
+  useEffect(() => {
+    if (viewTab !== "detail") return
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      keyword,
+      dir: sortDir,
+    })
+    if (detailSortKey) params.set("sort", detailSortKey)
+    if (fofFundSelected?.product_name) params.set("fof_fund_name", fofFundSelected.product_name)
+    if (detailValuationDate) params.set("valuation_date", detailValuationDate)
+    fetch(`/ma/api/investment/fof-underlying-detail/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setFofDetailData(json.data ?? [])
+        setTotal(json.total ?? 0)
+        setTotalMarketValue(json.totalMarketValue ?? "0")
+        setSelected(new Set())
+      })
+      .catch(() => {
+        setFofDetailData([])
+        setTotal(0)
+        setTotalMarketValue("0")
+        setSelected(new Set())
+      })
+      .finally(() => setLoading(false))
+  }, [viewTab, page, pageSize, keyword, detailSortKey, sortDir, fofFundSelected?.product_name, detailValuationDate])
+
+  useEffect(() => {
+    fetch("/ma/api/ops/fof-underlying/fof-funds")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setFofFundOptions(d) })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (fofFundSearchRef.current) clearTimeout(fofFundSearchRef.current)
+    fofFundSearchRef.current = setTimeout(() => {
+      const q = fofFundInput.trim()
+      fetch(`/ma/api/ops/fof-underlying/fof-funds${q ? `?q=${encodeURIComponent(q)}` : ""}`)
+        .then((r) => r.json())
+        .then((d) => { if (Array.isArray(d)) setFofFundOptions(d) })
+        .catch(() => setFofFundOptions([]))
+    }, 200)
+    return () => { if (fofFundSearchRef.current) clearTimeout(fofFundSearchRef.current) }
+  }, [fofFundInput])
+
+  function toggleTeamTag(tag: string) {
+    setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
+  }
+
+  function handleSort(col: FofOverviewSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function handleDetailSort(col: FofDetailSortKey) {
+    if (detailSortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setDetailSortKey(col); setSortDir("desc") }
+    setPage(1)
+  }
+
+  function FofOverviewSortIcon({ col }: { col: FofOverviewSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function FofDetailSortIcon({ col }: { col: FofDetailSortKey }) {
+    if (detailSortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function toggleAll() {
+    const rows = viewTab === "detail" ? fofDetailData : data
+    if (selected.size === rows.length && rows.length > 0) setSelected(new Set())
+    else setSelected(new Set(rows.map((r) => r.id)))
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    if (viewTab === "detail") {
+      const rows = selected.size > 0 ? fofDetailData.filter((r) => selected.has(r.id)) : fofDetailData
+      const headers = ["FOF基金", "底层基金", "备案编码", "单位净值", "净值日期", "涨跌幅", "投资份额", "市值", "市值占比", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
+      const csvRows = [
+        headers.join(","),
+        ...rows.map((r) => [
+          escape(r.fof_fund_name), escape(r.product_name), escape(r.beian_hao),
+          escape(r.unit_nav), escape(r.nav_date), escape(r.price_change),
+          escape(r.investment_shares), escape(r.market_value), escape(r.market_value_pct),
+          escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m),
+          escape(r.ret_1y), escape(r.sharpe_1y), escape(r.calmar_1y),
+        ].join(",")),
+      ]
+      const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+      const a = document.createElement("a")
+      a.href = URL.createObjectURL(blob)
+      a.download = `FOF底层明细_${new Date().toISOString().slice(0, 10)}.csv`
+      a.click()
+      URL.revokeObjectURL(a.href)
+      return
+    }
+    const rows = selected.size > 0 ? data.filter((r) => selected.has(r.id)) : data
+    const headers = ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "最新涨跌幅", "市值", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.short_name || r.product_name), escape(r.beian_hao), escape(r.latest_nav_date),
+        escape(r.latest_nav), escape(r.latest_price_change), escape(r.market_value),
+        escape(r.ret_1w), escape(r.ret_1m), escape(r.ret_3m), escape(r.ret_6m),
+        escape(r.ret_1y), escape(r.sharpe_1y), escape(r.calmar_1y),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `FOF底层汇总_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const colSpan = 17 + fofAddedCols.length
+  const detailColSpan = 18 + fofAddedCols.length
+  const fofStickyHeadBg = "bg-muted dark:bg-zinc-900"
+  const fofStickyCellBg = "bg-background dark:bg-background"
+  const fofStickyHeadZ = "z-40"
+  const fofStickyBodyZ = "z-20"
+  const fofStickyLeftShadow = "shadow-[4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[4px_0_8px_-4px_rgba(0,0,0,0.35)]"
+  const fofStickyRightShadow = "shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.35)]"
+  const fofStickyChkW = 32
+  const fofStickySeqW = 40
+  const fofStickyNameW = 200
+  const fofStickyLeftSeq = fofStickyChkW
+  const fofStickyLeftName = fofStickyChkW + fofStickySeqW
+  const fofStickyRightColW = 64
+  const fofStickyOpsColW = 80
+  const fofStickyRight = { ops: 0, docs: fofStickyOpsColW, trend: fofStickyOpsColW + fofStickyRightColW }
+  const fofStickyRightColStyle = (right: number, width = fofStickyRightColW): CSSProperties => ({
+    right,
+    width,
+    minWidth: width,
+    maxWidth: width,
+  })
+  const fofScrollMinW = 2500 + fofAddedCols.length * 96
+  const fofDetailStickyChkW = 32
+  const fofDetailStickySeqW = 40
+  const fofDetailStickyFofW = 160
+  const fofDetailStickyProductW = 160
+  const fofDetailStickyLeftSeq = fofDetailStickyChkW
+  const fofDetailStickyLeftFof = fofDetailStickyChkW + fofDetailStickySeqW
+  const fofDetailStickyLeftProduct = fofDetailStickyLeftFof + fofDetailStickyFofW
+  const fofDetailScrollMinW = 2800 + fofAddedCols.length * 96
+  const fofScrollCell = `border-b px-3 py-2 bg-background group-hover:bg-muted transition-colors`
+  const fofScrollHead = `${thBase} sticky top-0 z-10 bg-muted dark:bg-zinc-900`
+  const fofScrollHeadSort = `${thSort} sticky top-0 z-10 bg-muted dark:bg-zinc-900`
+  const fofStickyRightTh = `sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} text-center text-xs font-semibold text-zinc-500 dark:text-zinc-400 whitespace-nowrap select-none px-2 py-3 overflow-hidden`
+  const fofStickyRightTd = `sticky ${fofStickyBodyZ} text-center px-2 overflow-hidden box-border`
+
+  return (
+    <div className="flex flex-col h-full min-w-0">
+      <div className="flex items-center gap-0 mb-3 border-b flex-shrink-0">
+        {([["summary", "底层汇总"], ["detail", "底层明细"]] as const).map(([key, label]) => (
+          <button
+            key={key}
+            onClick={() => { setViewTab(key); setPage(1); setSelected(new Set()) }}
+            className={[
+              "px-4 py-2 text-sm font-medium transition-colors relative",
+              viewTab === key
+                ? "text-red-500 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500"
+                : "text-zinc-500 hover:text-foreground",
+            ].join(" ")}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {viewTab === "summary" ? (
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">基金分类：</span>
+          <div className="flex items-center gap-1">
+            {([["private", "私募"], ["public", "公募"]] as const).map(([fc, label]) => (
+              <span
+                key={fc}
+                onClick={() => setFundClass(fc)}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  fundClass === fc
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
+          <div className="flex items-center gap-2 flex-wrap flex-1">
+            <div className="relative">
+              <select
+                value={strategySource}
+                onChange={(e) => {
+                  const next = e.target.value as "company" | "platform"
+                  if (strategySource === next) return
+                  setStrategySource(next)
+                  setStrategyL1("")
+                  setPage(1)
+                }}
+                className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="company">团队策略</option>
+                <option value="platform">平台策略</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <span
+              onClick={() => { setStrategyL1(""); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                !strategyL1
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </span>
+            {strategyHierarchy.map((node) => (
+              <span
+                key={node.l1}
+                onClick={() => { setStrategyL1(strategyL1 === node.l1 ? "" : node.l1); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                  strategyL1 === node.l1
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                    : "border-border text-zinc-500 hover:bg-muted/60",
+                ].join(" ")}
+              >
+                {node.l1}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">团队标签：</span>
+          <div className="flex items-center gap-2 flex-wrap flex-1">
+            <div className="relative">
+              <select
+                value={teamTagMode}
+                onChange={(e) => { setTeamTagMode(e.target.value as "and" | "or"); setPage(1) }}
+                className="h-7 min-w-[5.75rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="and">交集（且）</option>
+                <option value="or">并集（或）</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <span
+              onClick={() => { setTeamTags([]); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                teamTags.length === 0
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </span>
+            {teamTagOptions.map((tag) => (
+              <span
+                key={tag}
+                onClick={() => toggleTeamTag(tag)}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                  teamTags.includes(tag)
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                    : "border-border text-zinc-500 hover:bg-muted/60",
+                ].join(" ")}
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2 gap-4">
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">持仓状态：</span>
+            <div className="flex items-center gap-1">
+              {([["holding", "持仓中"], ["cleared", "已清仓"]] as const).map(([st, label]) => (
+                <span
+                  key={st}
+                  onClick={() => { setHoldingStatus(st); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                    holdingStatus === st
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                      : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                  ].join(" ")}
+                >
+                  {label}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2 gap-6 flex-wrap">
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+            <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
+              <input
+                className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+                placeholder="请输入产品/产品备案号，按回车搜索"
+                value={kwInput}
+                onChange={(e) => setKwInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+              />
+              <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <Search className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 pr-3">FOF基金：</span>
+            <div className="relative w-64">
+              {fofFundSelected ? (
+                <div className="flex items-center justify-between border rounded h-7 px-2 bg-background">
+                  <span className="text-xs truncate">{fofFundSelected.product_name}</span>
+                  <button
+                    type="button"
+                    onClick={() => { setFofFundSelected(null); setFofFundInput("") }}
+                    className="text-muted-foreground hover:text-foreground ml-1 shrink-0">×</button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    className="w-full h-7 border rounded px-2 text-xs bg-background outline-none placeholder:text-muted-foreground/50"
+                    placeholder="请输入并选择FOF基金"
+                    value={fofFundInput}
+                    onChange={(e) => { setFofFundInput(e.target.value); setFofFundShowDropdown(true) }}
+                    onFocus={() => setFofFundShowDropdown(true)}
+                  />
+                  {fofFundShowDropdown && fofFundOptions.length > 0 && (
+                    <>
+                      <div className="fixed inset-0 z-20" onClick={() => setFofFundShowDropdown(false)} />
+                      <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                        {fofFundOptions.map((opt) => (
+                          <button
+                            key={opt.register_number}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setFofFundSelected(opt)
+                              setFofFundInput("")
+                              setFofFundShowDropdown(false)
+                            }}
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors truncate"
+                          >
+                            {opt.product_name}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+      ) : (
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden flex-shrink-0">
+        <div className="flex items-center px-4 py-2 gap-6 flex-wrap">
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+            <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
+              <input
+                className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+                placeholder="请输入产品/产品备案号，按回车搜索"
+                value={kwInput}
+                onChange={(e) => setKwInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+              />
+              <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <Search className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+          <div className="flex items-center">
+            <span className="text-zinc-400 shrink-0 pr-3">FOF基金：</span>
+            <div className="relative w-64">
+              {fofFundSelected ? (
+                <div className="flex items-center justify-between border rounded h-7 px-2 bg-background">
+                  <span className="text-xs truncate">{fofFundSelected.product_name}</span>
+                  <button
+                    type="button"
+                    onClick={() => { setFofFundSelected(null); setFofFundInput("") }}
+                    className="text-muted-foreground hover:text-foreground ml-1 shrink-0">×</button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    className="w-full h-7 border rounded px-2 text-xs bg-background outline-none placeholder:text-muted-foreground/50"
+                    placeholder="请输入并选择FOF基金"
+                    value={fofFundInput}
+                    onChange={(e) => { setFofFundInput(e.target.value); setFofFundShowDropdown(true) }}
+                    onFocus={() => setFofFundShowDropdown(true)}
+                  />
+                  {fofFundShowDropdown && fofFundOptions.length > 0 && (
+                    <>
+                      <div className="fixed inset-0 z-20" onClick={() => setFofFundShowDropdown(false)} />
+                      <div className="absolute left-0 right-0 top-full mt-1 z-30 bg-background border rounded-lg shadow-lg max-h-40 overflow-y-auto">
+                        {fofFundOptions.map((opt) => (
+                          <button
+                            key={opt.register_number}
+                            type="button"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setFofFundSelected(opt)
+                              setFofFundInput("")
+                              setFofFundShowDropdown(false)
+                            }}
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-muted transition-colors truncate"
+                          >
+                            {opt.product_name}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+      )}
+
+      <div className="relative z-50 flex items-center justify-between gap-1.5 mb-3 flex-shrink-0 text-xs">
+        <div className="flex items-center gap-1.5 text-zinc-600">
+          <span className="font-medium text-zinc-800 dark:text-zinc-200">{viewTab === "detail" ? "估值日期" : "指标计算截止日期"}</span>
+          <div className="relative">
+            <button
+              onClick={() => setShowDatePicker((v) => !v)}
+              className="inline-flex items-center gap-1 border rounded px-1.5 py-0.5 text-zinc-600 hover:bg-muted cursor-pointer transition-colors">
+              <CalendarDays className="h-3 w-3" />
+              <span className="tabular-nums">{viewTab === "detail" ? (detailValuationDate || "不限") : cutoffDate}</span>
+              <ChevronDown className="h-3 w-3" />
+            </button>
+            {showDatePicker && (
+              <div className="absolute left-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-lg p-3" onClick={(e) => e.stopPropagation()}>
+                {viewTab === "detail" && (
+                  <button
+                    type="button"
+                    onClick={() => { setDetailValuationDate(""); setShowDatePicker(false); setPage(1) }}
+                    className="mb-2 block text-xs text-blue-600 hover:underline"
+                  >
+                    清除筛选
+                  </button>
+                )}
+                <input
+                  type="date"
+                  value={viewTab === "detail" ? detailValuationDate : cutoffDate}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={(e) => {
+                    if (!e.target.value) return
+                    if (viewTab === "detail") { setDetailValuationDate(e.target.value); setPage(1) }
+                    else setCutoffDate(e.target.value)
+                    setShowDatePicker(false)
+                  }}
+                  className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
+                  autoFocus
+                />
+              </div>
+            )}
+            {showDatePicker && <div className="fixed inset-0 z-40" onClick={() => setShowDatePicker(false)} />}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5">
+        {viewTab === "summary" && (
+        <>
+        <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
+          <input type="checkbox" defaultChecked className="rounded h-3 w-3 accent-zinc-700" />
+          计算指标
+        </label>
+        <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
+          <input type="checkbox" checked={showInterval} onChange={(e) => setShowInterval(e.target.checked)} className="rounded h-3 w-3 accent-zinc-700" />
+          显示区间
+        </label>
+        <label className="inline-flex items-center gap-1 text-zinc-600 cursor-pointer hover:text-foreground">
+          <input
+            type="checkbox"
+            checked={favoritesOnly}
+            onChange={(e) => { setFavoritesOnly(e.target.checked); setPage(1) }}
+            className="rounded h-3 w-3 accent-zinc-700"
+          />
+          <Heart className="h-3 w-3" /> 收藏
+        </label>
+        </>
+        )}
+        <div className="relative">
+          <button
+            onClick={() => {
+              setFofMetricTemplates(loadTrackingMetricTemplates())
+              setShowFofTemplateMenu((v) => !v)
+            }}
+            className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+            <LayoutTemplate className="h-3 w-3" />
+            {fofActiveTemplate ?? "默认模板"}
+            <ChevronDown className="h-3 w-3" />
+          </button>
+          {showFofTemplateMenu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowFofTemplateMenu(false)} />
+              <div className="absolute right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-lg py-1 min-w-[160px]" onClick={(e) => e.stopPropagation()}>
+                <button
+                  onClick={() => { setFofAddedCols([]); setFofActiveTemplate(null); setShowFofTemplateMenu(false) }}
+                  className={[
+                    "w-full text-left px-4 py-2 text-sm transition-colors flex items-center gap-2",
+                    fofActiveTemplate === null ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-muted",
+                  ].join(" ")}>
+                  <LayoutTemplate className="h-3.5 w-3.5 text-zinc-400" /> 默认模板
+                </button>
+                {fofMetricTemplates.map((t, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setFofAddedCols(buildAddedColsFromItems(t.items))
+                      setFofActiveTemplate(t.name)
+                      setShowFofTemplateMenu(false)
+                    }}
+                    className={[
+                      "w-full text-left px-4 py-2 text-sm transition-colors truncate",
+                      fofActiveTemplate === t.name ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-muted",
+                    ].join(" ")}>
+                    {t.name}
+                  </button>
+                ))}
+                <div className="border-t my-1" />
+                <button
+                  onClick={() => { setShowFofTemplateMenu(false); window.open("/ma/dashboard/settings?tab=metric-templates", "_blank") }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500">
+                  <Settings2 className="h-3.5 w-3.5" /> 管理模板
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+        <button
+          onClick={() => setShowFofAddMetric(true)}
+          className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+          <PlusCircle className="h-3 w-3" />
+          {fofAddedCols.length > 0 ? `添加指标(${fofAddedCols.length})` : "添加指标"}
+        </button>
+        {viewTab === "summary" ? (
+        <>
+        <button disabled={selected.size === 0} className="inline-flex items-center gap-1 border border-border/50 rounded px-2 py-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-zinc-600 hover:text-foreground hover:bg-muted/60">
+          批量操作
+          {selected.size > 0 && <span className="text-xs text-red-500">({selected.size})</span>}
+        </button>
+        <div className="relative">
+          <button
+            onClick={() => setShowMoreMenu((v) => !v)}
+            className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+            ⊕ 更多
+          </button>
+          {showMoreMenu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setShowMoreMenu(false)} />
+              <div className="absolute right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-lg py-1 min-w-[120px]" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => { setShowMoreMenu(false); setShowFofFieldConfig(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                  <Settings2 className="h-3.5 w-3.5 text-zinc-400" /> 字段配置
+                </button>
+                <button onClick={() => { setShowMoreMenu(false); handleExport() }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                  <Download className="h-3.5 w-3.5 text-zinc-400" /> 导出
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+        </>
+        ) : (
+        <>
+        <button
+          onClick={() => setShowFofFieldConfig(true)}
+          className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+          <Settings2 className="h-3 w-3" />
+          字段配置
+        </button>
+        <button
+          onClick={handleExport}
+          className="inline-flex items-center gap-1 text-zinc-600 hover:text-foreground border border-border/50 rounded px-2 py-1 hover:bg-muted/60 transition-colors">
+          <Download className="h-3 w-3" />
+          导出
+        </button>
+        </>
+        )}
+        </div>
+      </div>
+
+      {viewTab === "summary" ? (
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-separate border-spacing-0" style={{ minWidth: fofScrollMinW }}>
+          <thead>
+            <tr className="border-b">
+              <th
+                style={{ left: 0, width: fofStickyChkW, minWidth: fofStickyChkW, maxWidth: fofStickyChkW }}
+                className={`${thBase} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} px-2 text-center box-border`}
+              >
+                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+              </th>
+              <th
+                style={{ left: fofStickyLeftSeq, width: fofStickySeqW, minWidth: fofStickySeqW, maxWidth: fofStickySeqW }}
+                className={`${thBase} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} text-center box-border`}
+              >
+                序号
+              </th>
+              <th
+                style={{ left: fofStickyLeftName, width: fofStickyNameW, minWidth: fofStickyNameW, maxWidth: fofStickyNameW }}
+                className={`${thSort} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${fofStickyLeftShadow}`}
+                onClick={() => handleSort("product_name")}
+              >
+                产品名称<FofOverviewSortIcon col="product_name" />
+              </th>
+              <th className={`${fofScrollHeadSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<FofOverviewSortIcon col="latest_nav_date" /></th>
+              <th className={`${fofScrollHeadSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>最新单位净值<FofOverviewSortIcon col="latest_nav" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("latest_price_change")}>最新涨跌幅<FofOverviewSortIcon col="latest_price_change" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[120px]`} onClick={() => handleSort("market_value")}>市值<FofOverviewSortIcon col="market_value" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
+                <div>近一周收益<FofOverviewSortIcon col="ret_1w" /></div>
+                {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 7)}</div>}
+              </th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1m")}>
+                <div>近一月收益<FofOverviewSortIcon col="ret_1m" /></div>
+                {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 30)}</div>}
+              </th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_3m")}>
+                <div>近三月收益<FofOverviewSortIcon col="ret_3m" /></div>
+                {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 91)}</div>}
+              </th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_6m")}>
+                <div>近六月收益<FofOverviewSortIcon col="ret_6m" /></div>
+                {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 182)}</div>}
+              </th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1y")}>
+                <div>近一年收益<FofOverviewSortIcon col="ret_1y" /></div>
+                {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 365)}</div>}
+              </th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[98px]`} onClick={() => handleSort("sharpe_1y")}>近一年夏普比率<FofOverviewSortIcon col="sharpe_1y" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[98px]`} onClick={() => handleSort("calmar_1y")}>近一年卡玛比率<FofOverviewSortIcon col="calmar_1y" /></th>
+              {fofAddedCols.map((col) => (
+                <th key={col.id} className={`${fofScrollHead} text-right min-w-[96px]`}>{col.label}</th>
+              ))}
+              <th style={fofStickyRightColStyle(fofStickyRight.trend)} className={`${fofStickyRightTh} border-l border-zinc-200 dark:border-zinc-700 ${fofStickyRightShadow}`}>走势</th>
+              <th style={fofStickyRightColStyle(fofStickyRight.docs)} className={fofStickyRightTh}>资料</th>
+              <th style={fofStickyRightColStyle(fofStickyRight.ops, fofStickyOpsColW)} className={fofStickyRightTh}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={colSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={colSpan} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <>
+                {data.map((row, i) => {
+                  const isSelected = selected.has(row.id)
+                  const rowBg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : fofStickyCellBg
+                  const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/40" : "group-hover:bg-muted"
+                  const scrollCell = `${fofScrollCell} ${isSelected ? "!bg-blue-50 dark:!bg-blue-950/40 group-hover:!bg-blue-100 dark:group-hover:!bg-blue-900/40" : ""}`
+                  const stickyCell = `border-b px-3 py-2 ${rowBg} ${hoverBg} transition-colors ${fofStickyBodyZ}`
+                  const stickyLeftChk = `${stickyCell} sticky text-center box-border`
+                  const stickyLeftSeq = `${stickyCell} sticky text-center tabular-nums text-muted-foreground box-border`
+                  const stickyLeftProduct = `${stickyCell} sticky border-r border-zinc-200 dark:border-zinc-700 ${fofStickyLeftShadow} box-border`
+                  const stickyRightTrend = `${fofStickyRightTd} ${rowBg} ${hoverBg} transition-colors border-b border-l border-zinc-200 dark:border-zinc-700 ${fofStickyRightShadow}`
+                  const stickyRightDocs = `${fofStickyRightTd} ${rowBg} ${hoverBg} transition-colors border-b text-muted-foreground`
+                  const stickyRightOps = `${fofStickyRightTd} ${rowBg} ${hoverBg} transition-colors border-b`
+                  return (
+                    <tr key={row.id} className="group" style={{ height: 52 }}>
+                      <td
+                        style={{ left: 0, width: fofStickyChkW, minWidth: fofStickyChkW, maxWidth: fofStickyChkW }}
+                        className={`${stickyLeftChk} px-2`}
+                      >
+                        <input type="checkbox" className="rounded h-3 w-3" checked={isSelected}
+                          onChange={() => {
+                            const s = new Set(selected)
+                            isSelected ? s.delete(row.id) : s.add(row.id)
+                            setSelected(s)
+                          }} />
+                      </td>
+                      <td
+                        style={{ left: fofStickyLeftSeq, width: fofStickySeqW, minWidth: fofStickySeqW, maxWidth: fofStickySeqW }}
+                        className={stickyLeftSeq}
+                      >
+                        {(page - 1) * pageSize + i + 1}
+                      </td>
+                      <td
+                        style={{ left: fofStickyLeftName, width: fofStickyNameW, minWidth: fofStickyNameW, maxWidth: fofStickyNameW }}
+                        className={stickyLeftProduct}
+                      >
+                        {row.beian_hao ? (
+                          <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
+                            className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate leading-5" title={row.product_name}>
+                            {row.short_name || row.product_name}
+                          </a>
+                        ) : (
+                          <span className="font-medium truncate block leading-5" title={row.product_name}>{row.short_name || row.product_name}</span>
+                        )}
+                        {row.strategy_l1 && (
+                          <div className="flex items-center gap-1 mt-0.5">
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
+                            <span className="text-[10px] text-muted-foreground truncate">{row.strategy_l1}</span>
+                          </div>
+                        )}
+                      </td>
+                      <td className={`${scrollCell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                      <td className={`${scrollCell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums font-medium`}>{fmtMoney(row.market_value)}</td>
+                      <td className={`${scrollCell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1w ?? null} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 7)}</div>}
+                      </td>
+                      <td className={`${scrollCell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1m ?? null} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 30)}</div>}
+                      </td>
+                      <td className={`${scrollCell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_3m ?? null} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 91)}</div>}
+                      </td>
+                      <td className={`${scrollCell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_6m ?? null} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 182)}</div>}
+                      </td>
+                      <td className={`${scrollCell} text-right tabular-nums`}>
+                        <TrackPctCell value={row.ret_1y ?? null} />
+                        {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 365)}</div>}
+                      </td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><TrackRatioCell value={row.sharpe_1y ?? null} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><TrackRatioCell value={row.calmar_1y ?? null} /></td>
+                      {fofAddedCols.map((col) => (
+                        <td key={col.id} className={`${scrollCell} text-right tabular-nums`}>—</td>
+                      ))}
+                      <td style={fofStickyRightColStyle(fofStickyRight.trend)} className={stickyRightTrend}>
+                        <div className="flex items-center justify-center"
+                          onMouseEnter={(e) => {
+                            if (!row.beian_hao) return
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+                            hoverTimeout.current = setTimeout(() => {
+                              setHoverChartPos({ x: rect.right + 8, y: rect.top })
+                              setHoverChartRow(row.beian_hao)
+                            }, 200)
+                          }}
+                          onMouseLeave={() => {
+                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                            hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+                          }}>
+                          <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                            <LineChart className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                      <td style={fofStickyRightColStyle(fofStickyRight.docs)} className={stickyRightDocs}>—</td>
+                      <td style={fofStickyRightColStyle(fofStickyRight.ops, fofStickyOpsColW)} className={stickyRightOps}>
+                        <div className="flex items-center justify-center gap-0.5">
+                          <button
+                            type="button"
+                            disabled={!row.beian_hao}
+                            onClick={() => openFofElementsDialog(row.beian_hao, row.product_name)}
+                            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <FileSearch className="h-3.5 w-3.5" />
+                          </button>
+                          <InvestmentManagedProductRowMenu
+                            onQueryElements={() => openFofElementsDialog(row.beian_hao, row.product_name)}
+                            onEditTags={() => openFofTagDialog(row.beian_hao, row.product_name)}
+                            onEditStrategy={() => openFofStrategyDialog(row.beian_hao, row.product_name)}
+                            onNoteManage={() => openFofNoteDialog(row.beian_hao, row.product_name)}
+                            onValuationAnalysis={() => window.open("/ma/dashboard/tools/valuation", "_blank")}
+                            onFavorite={() => toggleFofFavorite(row.id)}
+                          />
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+                <tr className="bg-muted font-medium">
+                  <td
+                    style={{ left: 0, width: fofStickyChkW, minWidth: fofStickyChkW, maxWidth: fofStickyChkW }}
+                    className={`border-b px-2 py-2 sticky ${fofStickyBodyZ} bg-muted box-border`}
+                  />
+                  <td
+                    style={{ left: fofStickyLeftSeq, width: fofStickySeqW, minWidth: fofStickySeqW, maxWidth: fofStickySeqW }}
+                    className={`border-b px-2 py-2 sticky ${fofStickyBodyZ} bg-muted box-border`}
+                  />
+                  <td
+                    style={{ left: fofStickyLeftName, width: fofStickyNameW, minWidth: fofStickyNameW, maxWidth: fofStickyNameW }}
+                    className={`border-b px-3 py-2 text-zinc-600 sticky ${fofStickyBodyZ} bg-muted border-r border-zinc-200 dark:border-zinc-700 ${fofStickyLeftShadow} box-border`}
+                  >
+                    合计
+                  </td>
+                  <td className="border-b px-3 py-2 bg-muted" colSpan={3} />
+                  <td className="border-b px-3 py-2 text-right tabular-nums bg-muted">{fmtMoney(totalMarketValue)}</td>
+                  <td className="border-b px-3 py-2 bg-muted" colSpan={7 + fofAddedCols.length} />
+                  <td style={fofStickyRightColStyle(fofStickyRight.trend)} className={`border-b py-2 sticky ${fofStickyBodyZ} bg-muted border-l border-zinc-200 dark:border-zinc-700 ${fofStickyRightShadow}`} />
+                  <td style={fofStickyRightColStyle(fofStickyRight.docs)} className={`border-b py-2 sticky ${fofStickyBodyZ} bg-muted`} />
+                  <td style={fofStickyRightColStyle(fofStickyRight.ops, fofStickyOpsColW)} className={`border-b py-2 sticky ${fofStickyBodyZ} bg-muted`} />
+                </tr>
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
+      ) : (
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-separate border-spacing-0" style={{ minWidth: fofDetailScrollMinW }}>
+          <thead>
+            <tr className="border-b">
+              <th style={{ left: 0, width: fofDetailStickyChkW, minWidth: fofDetailStickyChkW, maxWidth: fofDetailStickyChkW }} className={`${thBase} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} px-2 text-center box-border`}>
+                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === fofDetailData.length && fofDetailData.length > 0} onChange={toggleAll} />
+              </th>
+              <th style={{ left: fofDetailStickyLeftSeq, width: fofDetailStickySeqW, minWidth: fofDetailStickySeqW, maxWidth: fofDetailStickySeqW }} className={`${thBase} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} text-center box-border`}>序号</th>
+              <th style={{ left: fofDetailStickyLeftFof, width: fofDetailStickyFofW, minWidth: fofDetailStickyFofW, maxWidth: fofDetailStickyFofW }} className={`${thSort} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} box-border`} onClick={() => handleDetailSort("fof_fund_name")}>FOF基金<FofDetailSortIcon col="fof_fund_name" /></th>
+              <th style={{ left: fofDetailStickyLeftProduct, width: fofDetailStickyProductW, minWidth: fofDetailStickyProductW, maxWidth: fofDetailStickyProductW }} className={`${thSort} sticky top-0 ${fofStickyHeadZ} ${fofStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${fofStickyLeftShadow}`} onClick={() => handleDetailSort("product_name")}>底层基金<FofDetailSortIcon col="product_name" /></th>
+              <th className={`${fofScrollHeadSort} min-w-[100px]`} onClick={() => handleDetailSort("beian_hao")}>备案编码<FofDetailSortIcon col="beian_hao" /></th>
+              <th className={`${fofScrollHeadSort} min-w-[90px]`} onClick={() => handleDetailSort("unit_nav")}>单位净值<FofDetailSortIcon col="unit_nav" /></th>
+              <th className={`${fofScrollHeadSort} min-w-[100px]`} onClick={() => handleDetailSort("nav_date")}>净值日期<FofDetailSortIcon col="nav_date" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[80px]`} onClick={() => handleDetailSort("price_change")}>涨跌幅<FofDetailSortIcon col="price_change" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[120px]`} onClick={() => handleDetailSort("investment_shares")}>投资份额<FofDetailSortIcon col="investment_shares" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[120px]`} onClick={() => handleDetailSort("market_value")}>市值<FofDetailSortIcon col="market_value" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[100px]`} onClick={() => handleDetailSort("market_value_pct")}>市值占比<FofDetailSortIcon col="market_value_pct" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleDetailSort("ret_1w")}>近一周收益<FofDetailSortIcon col="ret_1w" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleDetailSort("ret_1m")}>近一月收益<FofDetailSortIcon col="ret_1m" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleDetailSort("ret_3m")}>近三月收益<FofDetailSortIcon col="ret_3m" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleDetailSort("ret_6m")}>近六月收益<FofDetailSortIcon col="ret_6m" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleDetailSort("ret_1y")}>近一年收益<FofDetailSortIcon col="ret_1y" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[98px]`} onClick={() => handleDetailSort("sharpe_1y")}>近一年夏普比率<FofDetailSortIcon col="sharpe_1y" /></th>
+              <th className={`${fofScrollHeadSort} text-right min-w-[98px]`} onClick={() => handleDetailSort("calmar_1y")}>近一年卡玛比率<FofDetailSortIcon col="calmar_1y" /></th>
+              {fofAddedCols.map((col) => (
+                <th key={col.id} className={`${fofScrollHead} text-right min-w-[96px]`}>{col.label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={detailColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : fofDetailData.length === 0 ? (
+              <tr>
+                <td colSpan={detailColSpan} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : (
+              <>
+                {fofDetailData.map((row, i) => {
+                  const isSelected = selected.has(row.id)
+                  const rowBg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : fofStickyCellBg
+                  const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/40" : "group-hover:bg-muted"
+                  const scrollCell = `${fofScrollCell} ${isSelected ? "!bg-blue-50 dark:!bg-blue-950/40 group-hover:!bg-blue-100 dark:group-hover:!bg-blue-900/40" : ""}`
+                  const stickyCell = `border-b px-3 py-2 ${rowBg} ${hoverBg} transition-colors ${fofStickyBodyZ}`
+                  const stickyLeftChk = `${stickyCell} sticky text-center box-border`
+                  const stickyLeftSeq = `${stickyCell} sticky text-center tabular-nums text-muted-foreground box-border`
+                  const stickyLeftFof = `${stickyCell} sticky box-border`
+                  const stickyLeftProduct = `${stickyCell} sticky border-r border-zinc-200 dark:border-zinc-700 ${fofStickyLeftShadow} box-border`
+                  return (
+                    <tr key={row.id} className="group" style={{ height: 52 }}>
+                      <td style={{ left: 0, width: fofDetailStickyChkW, minWidth: fofDetailStickyChkW, maxWidth: fofDetailStickyChkW }} className={`${stickyLeftChk} px-2`}>
+                        <input type="checkbox" className="rounded h-3 w-3" checked={isSelected}
+                          onChange={() => {
+                            const s = new Set(selected)
+                            isSelected ? s.delete(row.id) : s.add(row.id)
+                            setSelected(s)
+                          }} />
+                      </td>
+                      <td style={{ left: fofDetailStickyLeftSeq, width: fofDetailStickySeqW, minWidth: fofDetailStickySeqW, maxWidth: fofDetailStickySeqW }} className={stickyLeftSeq}>
+                        {row.seq_no ?? (page - 1) * pageSize + i + 1}
+                      </td>
+                      <td style={{ left: fofDetailStickyLeftFof, width: fofDetailStickyFofW, minWidth: fofDetailStickyFofW, maxWidth: fofDetailStickyFofW }} className={stickyLeftFof}>
+                        <span className="font-medium text-blue-600 dark:text-blue-400 block truncate leading-5" title={row.fof_fund_name}>{row.fof_fund_name}</span>
+                      </td>
+                      <td style={{ left: fofDetailStickyLeftProduct, width: fofDetailStickyProductW, minWidth: fofDetailStickyProductW, maxWidth: fofDetailStickyProductW }} className={stickyLeftProduct}>
+                        {row.beian_hao ? (
+                          <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
+                            className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate leading-5" title={row.product_name}>
+                            {row.product_name}
+                          </a>
+                        ) : (
+                          <span className="font-medium text-blue-600 dark:text-blue-400 block truncate leading-5" title={row.product_name}>{row.product_name}</span>
+                        )}
+                      </td>
+                      <td className={`${scrollCell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
+                      <td className={`${scrollCell} tabular-nums font-medium`}>{row.unit_nav ? parseFloat(row.unit_nav).toFixed(4) : "—"}</td>
+                      <td className={`${scrollCell} tabular-nums`}>{row.nav_date ?? "—"}</td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><FofDetailPctCell value={row.price_change} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}>{row.investment_shares ? parseFloat(row.investment_shares).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}</td>
+                      <td className={`${scrollCell} text-right tabular-nums font-medium`}>{fmtMoney(row.market_value)}</td>
+                      <td className={`${scrollCell} text-right tabular-nums`}>
+                        {row.market_value_pct ? (
+                          <span className={parseFloat(row.market_value_pct) > 0 ? "text-red-500" : parseFloat(row.market_value_pct) < 0 ? "text-green-600" : ""}>
+                            {fmtPct4(row.market_value_pct)}
+                          </span>
+                        ) : "—"}
+                      </td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><FofDetailPctCell value={row.ret_1w} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><FofDetailPctCell value={row.ret_1m} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><FofDetailPctCell value={row.ret_3m} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><FofDetailPctCell value={row.ret_6m} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><FofDetailPctCell value={row.ret_1y} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><TrackRatioCell value={row.sharpe_1y} /></td>
+                      <td className={`${scrollCell} text-right tabular-nums`}><TrackRatioCell value={row.calmar_1y} /></td>
+                      {fofAddedCols.map((col) => (
+                        <td key={col.id} className={`${scrollCell} text-right tabular-nums`}>—</td>
+                      ))}
+                    </tr>
+                  )
+                })}
+                <tr className="bg-muted font-medium">
+                  <td style={{ left: 0, width: fofDetailStickyChkW, minWidth: fofDetailStickyChkW, maxWidth: fofDetailStickyChkW }} className={`border-b px-2 py-2 sticky ${fofStickyBodyZ} bg-muted box-border`} />
+                  <td style={{ left: fofDetailStickyLeftSeq, width: fofDetailStickySeqW, minWidth: fofDetailStickySeqW, maxWidth: fofDetailStickySeqW }} className={`border-b px-2 py-2 sticky ${fofStickyBodyZ} bg-muted box-border`} />
+                  <td style={{ left: fofDetailStickyLeftFof, width: fofDetailStickyFofW, minWidth: fofDetailStickyFofW, maxWidth: fofDetailStickyFofW }} className={`border-b px-3 py-2 text-zinc-600 sticky ${fofStickyBodyZ} bg-muted box-border`} colSpan={2}>合计</td>
+                  <td className="border-b px-3 py-2 bg-muted" colSpan={5} />
+                  <td className="border-b px-3 py-2 text-right tabular-nums bg-muted">{fmtMoney(totalMarketValue)}</td>
+                  <td className="border-b px-3 py-2 bg-muted" colSpan={8 + fofAddedCols.length} />
+                </tr>
+              </>
+            )}
+          </tbody>
+        </table>
+      </div>
+      )}
+
+      {viewTab === "summary" && hoverChartRow && hoverChartPos && (
+        <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
+          style={{ left: hoverChartPos.x, top: hoverChartPos.y }}
+          onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+          onMouseLeave={() => setHoverChartRow(null)}>
+          <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
+        </div>
+      )}
+
+      <div className="flex items-center justify-between pt-3 flex-shrink-0">
+        <span className="text-sm text-zinc-500">
+          共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条
+        </span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`fof-ov-e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+          <div className="relative ml-3">
+            <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring">
+              {[50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
+        </div>
+      </div>
+
+      {showFofElementsDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowFofElementsDialog(false)}>
+          <div className="bg-background rounded-lg shadow-2xl w-[780px] max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">产品要素</span>
+              <button onClick={() => setShowFofElementsDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="overflow-y-auto flex-1 px-6 py-5">
+              <h2 className="text-lg font-bold mb-5 pl-3 border-l-4 border-red-500">{fofElementsName}</h2>
+              {fofElementsLoading && (
+                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">加载中…</div>
+              )}
+              {!fofElementsLoading && fofElementsData && fofElementsData.error && (
+                <div className="text-sm text-muted-foreground py-8 text-center">暂无产品要素数据</div>
+              )}
+              {!fofElementsLoading && fofElementsData && !fofElementsData.error && (() => {
+                const d = fofElementsData
+                const val = (v: string | null | undefined) => v || "—"
+                const Row2 = ({ l1, v1, l2, v2 }: { l1: string; v1?: string | null; l2?: string; v2?: string | null }) => (
+                  <tr className="border-b border-border/50 last:border-0">
+                    <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l1}</td>
+                    <td className="py-2 px-4 text-sm text-foreground">{val(v1)}</td>
+                    {l2 !== undefined && <>
+                      <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">{l2}</td>
+                      <td className="py-2 px-4 text-sm text-foreground">{val(v2)}</td>
+                    </>}
+                  </tr>
+                )
+                return (
+                  <>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
+                      <span className="text-sm font-semibold">基本信息</span>
+                    </div>
+                    <table className="w-full border border-border rounded-lg overflow-hidden mb-5 text-sm">
+                      <tbody>
+                        <Row2 l1="产品全称" v1={d.fund_name as string} l2="备案编号" v2={d.register_number as string} />
+                        <Row2 l1="投资顾问" v1={d.advisor as string} l2="基金管理人" v2={d.fund_manager as string} />
+                        <Row2 l1="成立日期" v1={d.inception_date as string} l2="备案日期" v2={d.puton_date as string} />
+                        <tr className="border-b border-border/50 last:border-0">
+                          <td className="py-2 px-3 text-sm text-muted-foreground bg-muted/30 w-[100px] whitespace-nowrap">托管券商</td>
+                          <td className="py-2 px-4 text-sm text-foreground" colSpan={3}>{val(d.custodian as string)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="h-2 w-2 rounded-full bg-red-500 flex-shrink-0" />
+                      <span className="text-sm font-semibold">申赎信息</span>
+                    </div>
+                    <table className="w-full border border-border rounded-lg overflow-hidden text-sm">
+                      <tbody>
+                        <Row2 l1="开放日" v1={d.open_day as string} l2="是否可临开" v2={d.is_temporary_open as string} />
+                        <Row2 l1="申购费" v1={d.fee_purchase as string} l2="追加限制" v2={d.add_amount as string} />
+                        <Row2 l1="赎回费" v1={d.fee_redeem as string} l2="风险等级" v2={null} />
+                        <Row2 l1="预警线" v1={d.precautious_line as string} l2="封闭期" v2={d.closed_period as string} />
+                        <Row2 l1="平仓线" v1={d.stop_line as string} l2="锁定期说明" v2={null} />
+                        <Row2 l1="管理费率" v1={d.fee_manage_rate as string} l2="托管费" v2={d.fee_trust as string} />
+                      </tbody>
+                    </table>
+                  </>
+                )
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFofTagDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowFofTagDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">跟踪产品编辑</span>
+              <button onClick={() => setShowFofTagDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
+                <span className="font-semibold text-sm">{fofTagName}</span>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-16 text-right pt-2 whitespace-nowrap">标签：</span>
+                <div className="flex-1 flex flex-wrap gap-1 min-h-[36px] border rounded px-3 py-1.5">
+                  {fofTagSelected.map((t) => (
+                    <span key={t} className="inline-flex items-center gap-1 bg-red-50 border border-red-300 text-red-500 rounded px-2 py-0.5 text-xs">
+                      {t}
+                      <button onClick={() => setFofTagSelected((p) => p.filter((x) => x !== t))} className="leading-none hover:text-red-700">×</button>
+                    </span>
+                  ))}
+                  {fofTagSelected.length === 0 && <span className="text-xs text-muted-foreground">请选择标签</span>}
+                </div>
+                <button onClick={() => setFofTagSelected([])} className="text-sm text-blue-500 hover:text-blue-600 shrink-0 pt-2">清空</button>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-16 text-right pt-1.5 whitespace-nowrap">团队标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {fofTagTeamTags.map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => setFofTagSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        fofTagSelected.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button onClick={() => setShowFofTagDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                disabled={fofTagSaving}
+                onClick={async () => {
+                  if (!fofTagBeianHao) return
+                  setFofTagSaving(true)
+                  try {
+                    await fetch("/ma/api/tracking-funds/fund-tags", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ beian_hao: fofTagBeianHao, tags: fofTagSelected }),
+                    })
+                    setShowFofTagDialog(false)
+                  } finally {
+                    setFofTagSaving(false)
+                  }
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50">
+                {fofTagSaving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showFofStrategyDialog && (() => {
+        const fofL2Opts = fofStrategyL1 ? (strategyHierarchy.find((n) => n.l1 === fofStrategyL1)?.l2s ?? []) : []
+        const fofL3Opts = fofStrategyL2 ? (fofL2Opts.find((n) => n.l2 === fofStrategyL2)?.l3s ?? []) : []
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowFofStrategyDialog(false)}>
+            <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+                <span className="font-semibold text-base">编辑团队策略</span>
+                <button onClick={() => setShowFofStrategyDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+              </div>
+              <div className="px-6 py-5 flex flex-col gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
+                  <span className="font-semibold text-sm">{fofStrategyName}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">一级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={fofStrategyL1}
+                      onChange={(e) => { setFofStrategyL1(e.target.value); setFofStrategyL2(""); setFofStrategyL3("") }}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring">
+                      <option value="">请选择一级策略</option>
+                      {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">二级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={fofStrategyL2}
+                      onChange={(e) => { setFofStrategyL2(e.target.value); setFofStrategyL3("") }}
+                      disabled={fofL2Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50">
+                      <option value="">{fofStrategyL1 ? "请选择二级策略" : "请先选择一级策略"}</option>
+                      {fofL2Opts.map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={fofStrategyL3}
+                      onChange={(e) => setFofStrategyL3(e.target.value)}
+                      disabled={fofL3Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50">
+                      <option value="">{fofStrategyL2 ? "请选择三级策略" : "请先选择一级策略"}</option>
+                      {fofL3Opts.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+                <button onClick={() => setShowFofStrategyDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+                <button
+                  disabled={!fofStrategyL1 || fofStrategySaving}
+                  onClick={async () => {
+                    if (!fofStrategyBeianHao || !fofStrategyL1) return
+                    setFofStrategySaving(true)
+                    try {
+                      await fetch(`/ma/api/private-funds/${encodeURIComponent(fofStrategyBeianHao)}/strategy`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          strategy_l1: fofStrategyL1 || null,
+                          strategy_l2: fofStrategyL2 || null,
+                          strategy_l3: fofStrategyL3 || null,
+                        }),
+                      })
+                      setShowFofStrategyDialog(false)
+                    } finally {
+                      setFofStrategySaving(false)
+                    }
+                  }}
+                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50">
+                  {fofStrategySaving ? "保存中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {showFofNoteDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowFofNoteDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[580px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">团队备注管理</span>
+              <button onClick={() => setShowFofNoteDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-red-500 flex-shrink-0" />
+                <span className="font-semibold text-sm">{fofNoteName}</span>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm text-foreground"><span className="text-red-500 mr-0.5">*</span>团队备注</label>
+                <textarea
+                  value={fofNoteText}
+                  onChange={(e) => setFofNoteText(e.target.value.slice(0, 250))}
+                  placeholder="请输入不大于250字的备注"
+                  rows={5}
+                  className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-y focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground"
+                />
+                <div className="text-right text-xs text-muted-foreground">{fofNoteText.length}/250</div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end px-6 py-3 border-t flex-shrink-0">
+              <button
+                disabled={fofNoteSaving}
+                onClick={async () => {
+                  if (!fofNoteBeianHao) return
+                  setFofNoteSaving(true)
+                  try {
+                    await fetch("/ma/api/tracking-funds/fund-note", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ beian_hao: fofNoteBeianHao, note: fofNoteText }),
+                    })
+                    setShowFofNoteDialog(false)
+                  } finally {
+                    setFofNoteSaving(false)
+                  }
+                }}
+                className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50">
+                {fofNoteSaving ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <DirectFieldConfigDialog
+        open={showFofFieldConfig}
+        selected={fofFieldConfigSelected}
+        onClose={() => setShowFofFieldConfig(false)}
+        onConfirm={(fields) => { setFofFieldConfigSelected(fields); setShowFofFieldConfig(false) }}
+      />
+
+      {showFofAddMetric && (
+        <AddMetricModal
+          initial={fofAddedCols}
+          onClose={() => setShowFofAddMetric(false)}
+          onConfirm={(cols) => { setFofAddedCols(cols); setFofActiveTemplate(null); setShowFofAddMetric(false) }}
         />
       )}
     </div>
@@ -13837,7 +15421,8 @@ export default function PrivateFundsPage() {
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
           {activeTab === "investment" && activeSideItem === "inv-tracking-mgr" && <InvestmentTrackingManagersView />}
           {activeTab === "investment" && activeSideItem === "inv-active" && <InvestmentManagedProductsView />}
-          {activeTab === "investment" && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-active" && (
+          {activeTab === "investment" && activeSideItem === "inv-fof" && <InvestmentFofOverviewView />}
+          {activeTab === "investment" && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>
