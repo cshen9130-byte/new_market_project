@@ -15353,6 +15353,7 @@ function PrivateFundManagersView() {
   return (
     <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
       <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+
         <div className="flex items-start px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">核心策略：</span>
           <div className="flex items-center gap-2 flex-wrap">
@@ -15597,6 +15598,296 @@ function PrivateFundView() {
   )
 }
 
+// ─── PrivateFundManagersPersonalView ────────────────────────────────────────
+
+const MGR_PERSONAL_EXP_OPTS = ["不限", "20年以上", "15-20年", "10-15年", "5-10年", "0-5年"] as const
+
+type MgrPersonalSortKey = "seq_no" | "manager_name" | "private_fund_manager_company" | "years_of_experience" | "funds_under_management" | "representative_fund" | "tenure_return_pct"
+
+interface PrivateFundManagerPersonalRow {
+  id: number
+  seq_no: number
+  manager_name: string
+  private_fund_manager_company: string
+  years_of_experience: number | null
+  funds_under_management: number | null
+  representative_fund: string | null
+  tenure_return_pct: number | null
+}
+
+function PrivateFundManagersPersonalView() {
+  const [yearsExp, setYearsExp] = useState("")
+  const [companyKeyword, setCompanyKeyword] = useState("")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [sortKey, setSortKey] = useState<MgrPersonalSortKey>("seq_no")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [jumpVal, setJumpVal] = useState("")
+  const [data, setData] = useState<PrivateFundManagerPersonalRow[]>()
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    setPage(1)
+  }, [yearsExp, companyKeyword, keyword, pageSize])
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      sort: sortKey,
+      dir: sortDir,
+      keyword,
+      company_keyword: companyKeyword,
+    })
+    if (yearsExp && yearsExp !== "不限") params.set("years_of_experience", yearsExp)
+
+    fetch(`/ma/api/private-fund-managers/list-details?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setData(json.data ?? [])
+        setTotal(json.total ?? 0)
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+      })
+      .finally(() => setLoading(false))
+  }, [page, pageSize, sortKey, sortDir, keyword, companyKeyword, yearsExp])
+
+  function handleSort(col: MgrPersonalSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("asc") }
+    setPage(1)
+  }
+
+  function SortIcon({ col }: { col: MgrPersonalSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+  const tdBase = "px-3 py-2.5 text-sm text-zinc-700 dark:text-zinc-300 whitespace-nowrap"
+
+  function jumpTo() {
+    const n = parseInt(jumpVal)
+    if (!isNaN(n)) { setPage(Math.min(totalPages, Math.max(1, n))); setJumpVal("") }
+  }
+
+  function pageButtons(): (number | "…")[] {
+    const btns: (number | "…")[] = []
+    const lo = Math.max(1, page - 2)
+    const hi = Math.min(totalPages, page + 2)
+    if (lo > 1) { btns.push(1); if (lo > 2) btns.push("…") }
+    for (let i = lo; i <= hi; i++) btns.push(i)
+    if (hi < totalPages) { if (hi < totalPages - 1) btns.push("…"); btns.push(totalPages) }
+    return btns
+  }
+
+  async function handleExport() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const params = new URLSearchParams({ export: "1", sort: sortKey, dir: sortDir, keyword, company_keyword: companyKeyword })
+    if (yearsExp && yearsExp !== "不限") params.set("years_of_experience", yearsExp)
+
+    const json = await fetch(`/ma/api/private-fund-managers/list-details?${params}`).then((r) => r.json())
+    const rows: PrivateFundManagerPersonalRow[] = json.data ?? []
+    const headers = ["序号", "基金经理", "私募管理人", "从业年限", "在管基金数", "代表基金", "任职区间收益"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.seq_no != null ? String(r.seq_no) : ""),
+        escape(r.manager_name),
+        escape(r.private_fund_manager_company),
+        escape(r.years_of_experience != null ? String(r.years_of_experience) : ""),
+        escape(r.funds_under_management != null ? String(r.funds_under_management) : ""),
+        escape(r.representative_fund),
+        escape(r.tenure_return_pct != null ? `${r.tenure_return_pct}%` : ""),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `基金经理_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  const chipCls = (active: boolean) => [
+    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+    active
+      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+      : "border-border text-zinc-500 hover:bg-muted/60",
+  ].join(" ")
+
+  return (
+    <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[5rem] text-right pr-3 pt-1">从业年限：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span onClick={() => { setYearsExp(""); setPage(1) }} className={chipCls(!yearsExp)}>不限</span>
+            {MGR_PERSONAL_EXP_OPTS.filter((s) => s !== "不限").map((s) => (
+              <span key={s} onClick={() => { setYearsExp(yearsExp === s ? "" : s); setPage(1) }} className={chipCls(yearsExp === s)}>
+                {s}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2 gap-4">
+          <span className="text-zinc-400 shrink-0 w-[5rem] text-right pr-3">私募管理人：</span>
+          <div className="flex items-center border rounded px-2 h-7 bg-background w-80">
+            <input
+              className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+              placeholder="请输入私募管理人名称"
+              value={companyKeyword}
+              onChange={(e) => setCompanyKeyword(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2 gap-4">
+          <span className="text-zinc-400 shrink-0 w-[5rem] text-right pr-3">关 键 字：</span>
+          <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
+            <input
+              className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+              placeholder="请输入基金经理名字"
+              value={kwInput}
+              onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+            />
+            <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+              <Search className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-3 mb-3 flex-shrink-0 text-xs text-zinc-600">
+        <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Download className="h-3.5 w-3.5" /> 导出
+        </button>
+      </div>
+
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+              <th className={`${thSort} w-12`} onClick={() => handleSort("seq_no")}>
+                序号<SortIcon col="seq_no" />
+              </th>
+              <th className={`${thSort} min-w-[140px]`} onClick={() => handleSort("manager_name")}>
+                基金经理<SortIcon col="manager_name" />
+              </th>
+              <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("private_fund_manager_company")}>
+                私募管理人<SortIcon col="private_fund_manager_company" />
+              </th>
+              <th className={`${thSort} min-w-[120px]`} onClick={() => handleSort("years_of_experience")}>
+                从业年限<SortIcon col="years_of_experience" />
+              </th>
+              <th className={`${thSort} min-w-[120px]`} onClick={() => handleSort("funds_under_management")}>
+                在管基金数<SortIcon col="funds_under_management" />
+              </th>
+              <th className={`${thSort} min-w-[240px]`} onClick={() => handleSort("representative_fund")}>
+                代表基金<SortIcon col="representative_fund" />
+              </th>
+              <th className={`${thSort} min-w-[140px]`} onClick={() => handleSort("tenure_return_pct")}>
+                任职区间收益<SortIcon col="tenure_return_pct" />
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={7} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : !data || data.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : data.map((row) => (
+              <tr key={row.id} className="border-b hover:bg-muted/30 transition-colors">
+                <td className={tdBase}>{row.seq_no}</td>
+                <td className={tdBase}>
+                  <span className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                    {row.manager_name}
+                  </span>
+                </td>
+                <td className={tdBase}>
+                  <span className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                    {row.private_fund_manager_company}
+                  </span>
+                </td>
+                <td className={tdBase}>{row.years_of_experience != null ? row.years_of_experience.toFixed(1) : "—"}</td>
+                <td className={tdBase}>{row.funds_under_management != null ? row.funds_under_management : "—"}</td>
+                <td className={tdBase}>
+                  <div className="truncate max-w-[320px] text-zinc-800 dark:text-zinc-200" title={row.representative_fund || ""}>
+                    {row.representative_fund || "—"}
+                  </div>
+                </td>
+                <td className={`${tdBase} font-medium ${row.tenure_return_pct != null && row.tenure_return_pct > 0 ? "text-red-500" : row.tenure_return_pct != null && row.tenure_return_pct < 0 ? "text-green-500" : ""}`}>
+                  {row.tenure_return_pct != null ? `${row.tenure_return_pct.toFixed(2)}%` : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between mt-3 flex-shrink-0 text-xs text-zinc-600">
+        <span>共 {total} 条</span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`e${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+          <div className="flex items-center gap-1 ml-2">
+            <span>跳至</span>
+            <input
+              className="w-10 h-7 border rounded text-center text-xs outline-none focus:ring-1 focus:ring-ring"
+              value={jumpVal}
+              onChange={(e) => setJumpVal(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && jumpTo()}
+            />
+            <span>页</span>
+          </div>
+          <div className="relative ml-3">
+            <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring">
+              {[50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 export default function PrivateFundsPage() {
   const searchParams = useSearchParams()
   const [activeTab, setActiveTab] = useState(() => searchParams.get("tab") || "funds")
@@ -15795,7 +16086,8 @@ export default function PrivateFundsPage() {
         <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "funds" && activeSideItem === "fund-managers-org" && <PrivateFundManagersView />}
-          {activeTab === "funds" && activeSideItem !== "private-funds" && activeSideItem !== "fund-managers-org" && (
+          {activeTab === "funds" && activeSideItem === "fund-managers" && <PrivateFundManagersPersonalView />}
+          {activeTab === "funds" && activeSideItem !== "private-funds" && activeSideItem !== "fund-managers-org" && activeSideItem !== "fund-managers" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>
