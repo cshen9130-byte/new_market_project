@@ -89,6 +89,7 @@ emailpass.txt
 
 # Downloaded settlement xlsx files — only at repo root (one-off download scripts)
 /*.xlsx
+FOF底层明细.xlsx
 
 # Settlement email config (contains credentials)
 data/settlement_email_config.json

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback, type CSSProperties } from "re
 import { createPortal } from "react-dom"
 import { useSearchParams } from "next/navigation"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye } from "lucide-react"
+import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -94,7 +95,7 @@ const portfolioSidebarGroups: SidebarGroup[] = [
 
 const TAB_DEFAULT_SIDE: Record<string, string> = {
   funds: "private-funds",
-  portfolio: "port-simulated",
+  portfolio: "port-new",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
 }
@@ -14297,6 +14298,340 @@ function InvestmentTrackingManagersView() {
   )
 }
 
+// ─── PortfolioNewView ──────────────────────────────────────────────────────
+
+function PortfolioBuildIcon({ variant }: { variant: "free" | "model" }) {
+  const gradId = `portfolio-cube-fill-${variant}`
+  return (
+    <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-red-100 via-rose-100 to-pink-200 dark:from-red-950/40 dark:via-rose-950/30 dark:to-pink-950/20 flex items-center justify-center flex-shrink-0 shadow-sm">
+      <svg viewBox="0 0 48 48" className="h-9 w-9" fill="none" aria-hidden>
+        <path
+          d="M24 8L38 16V32L24 40L10 32V16L24 8Z"
+          fill={`url(#${gradId})`}
+          stroke="#f87171"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <path d="M24 8V24M24 24L10 16M24 24L38 16M24 24V40" stroke="#fb7185" strokeWidth="1.2" strokeLinejoin="round" />
+        {variant === "free" ? (
+          <path d="M24 14V22M20 18H28" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" />
+        ) : (
+          <path
+            d="M32 12C35 14 36.5 17 36 20.5C35.2 25.8 30.8 29 25.5 28.2C22.8 27.8 20.5 26.2 19 24"
+            stroke="#fff"
+            strokeWidth="2"
+            strokeLinecap="round"
+          />
+        )}
+        <defs>
+          <linearGradient id={gradId} x1="10" y1="8" x2="38" y2="40" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#fda4af" />
+            <stop offset="1" stopColor="#fb7185" />
+          </linearGradient>
+        </defs>
+      </svg>
+    </div>
+  )
+}
+
+const PORTFOLIO_CREATE_OPTIONS = [
+  {
+    key: "free" as const,
+    title: "自由构建",
+    subtitle: "灵活配置，掌控每一步投资",
+    features: [
+      { label: "自由选基", desc: "多种产品类型自由搭配，轻松构建专属投资组合" },
+      { label: "灵活调仓", desc: "支持按照金额或份额进行中频调仓，操作更贴合交易习惯" },
+      { label: "全程掌控", desc: "从配置到交易，每一步由您决定，灵活配置不受限" },
+    ],
+  },
+  {
+    key: "model" as const,
+    title: "模型构建",
+    subtitle: "科学调仓，自动执行",
+    features: [
+      { label: "智能模型", desc: "融合均值方差、风险平价等经典模型，一键生成最优权重方案" },
+      { label: "自动化执行", desc: "系统根据模型输出自动完成调仓，组合调仓无需手动操作" },
+      { label: "省心省力", desc: "模型驱动，精准调仓，告别复杂计算" },
+    ],
+  },
+]
+
+function EfficientFrontierDiagram() {
+  return (
+    <div className="relative w-full max-w-[320px] mx-auto">
+      <svg viewBox="0 0 320 260" className="w-full h-auto" aria-label="有效边界示意图">
+        {/* axes */}
+        <line x1="48" y1="220" x2="300" y2="220" stroke="#d4d4d8" strokeWidth="1.5" />
+        <line x1="48" y1="220" x2="48" y2="24" stroke="#d4d4d8" strokeWidth="1.5" />
+        <polygon points="300,220 294,216 294,224" fill="#a1a1aa" />
+        <polygon points="48,24 44,32 52,32" fill="#a1a1aa" />
+        <text x="302" y="224" className="fill-zinc-500 text-[11px]">σ<tspan baselineShift="sub" fontSize="9">p</tspan></text>
+        <text x="18" y="28" className="fill-zinc-500 text-[11px]">E(r<tspan baselineShift="sub" fontSize="9">p</tspan>)</text>
+
+        {/* inefficient frontier (lower, dashed) */}
+        <path
+          d="M 92 118 C 130 168, 210 198, 278 208"
+          fill="none"
+          stroke="#fca5a5"
+          strokeWidth="1.5"
+          strokeDasharray="5 4"
+        />
+        {/* efficient frontier (upper, solid) */}
+        <path
+          d="M 92 118 C 118 72, 188 42, 278 58"
+          fill="none"
+          stroke="#ef4444"
+          strokeWidth="2"
+        />
+
+        {/* individual assets */}
+        {[
+          [118, 148], [142, 132], [168, 118], [196, 108], [214, 142], [176, 156], [148, 168],
+        ].map(([cx, cy], i) => (
+          <circle key={i} cx={cx} cy={cy} r="4" fill="#fff" stroke="#f87171" strokeWidth="1.5" />
+        ))}
+
+        {/* minimum variance portfolio */}
+        <circle cx="92" cy="118" r="5" fill="#ef4444" stroke="#fff" strokeWidth="1.5" />
+
+        {/* labels */}
+        <text x="58" y="108" className="fill-zinc-700 text-[10px]">最小方差</text>
+        <text x="58" y="120" className="fill-zinc-700 text-[10px]">资产组合</text>
+        <text x="188" y="36" className="fill-red-500 text-[11px] font-medium">有效边界</text>
+        <text x="196" y="196" className="fill-zinc-400 text-[11px]">无效边界</text>
+        <text x="228" y="128" className="fill-zinc-500 text-[10px]">单个资产</text>
+      </svg>
+    </div>
+  )
+}
+
+function RiskParityDiagram() {
+  return (
+    <div className="relative w-full max-w-[320px] mx-auto">
+      <svg viewBox="0 0 320 260" className="w-full h-auto" aria-label="风险平价示意图">
+        <line x1="48" y1="220" x2="300" y2="220" stroke="#d4d4d8" strokeWidth="1.5" />
+        <line x1="48" y1="220" x2="48" y2="24" stroke="#d4d4d8" strokeWidth="1.5" />
+        {[0, 1, 2, 3].map((i) => {
+          const x = 88 + i * 52
+          const h = 72 + (i % 2) * 18
+          return (
+            <g key={i}>
+              <rect x={x} y={220 - h} width="36" height={h} rx="4" fill="#fecaca" stroke="#f87171" strokeWidth="1.2" />
+              <text x={x + 18} y={232} textAnchor="middle" className="fill-zinc-500 text-[10px]">资产{i + 1}</text>
+              <text x={x + 18} y={220 - h - 8} textAnchor="middle" className="fill-red-500 text-[10px] font-medium">RC≈25%</text>
+            </g>
+          )
+        })}
+        <text x="148" y="28" textAnchor="middle" className="fill-zinc-700 text-[11px] font-medium">各资产风险贡献均衡</text>
+      </svg>
+    </div>
+  )
+}
+
+function BlackLittermanDiagram() {
+  return (
+    <div className="relative w-full max-w-[320px] mx-auto">
+      <svg viewBox="0 0 320 260" className="w-full h-auto" aria-label="Black-Litterman 示意图">
+        <rect x="36" y="48" width="96" height="56" rx="8" fill="#fff7ed" stroke="#fdba74" strokeWidth="1.5" />
+        <text x="84" y="72" textAnchor="middle" className="fill-zinc-700 text-[11px] font-medium">市场均衡</text>
+        <text x="84" y="90" textAnchor="middle" className="fill-zinc-500 text-[10px]">隐含收益 π</text>
+
+        <rect x="188" y="48" width="96" height="56" rx="8" fill="#fef2f2" stroke="#fca5a5" strokeWidth="1.5" />
+        <text x="236" y="72" textAnchor="middle" className="fill-zinc-700 text-[11px] font-medium">投资者观点</text>
+        <text x="236" y="90" textAnchor="middle" className="fill-zinc-500 text-[10px]">主观预期 Q</text>
+
+        <path d="M 132 76 L 152 76" stroke="#a1a1aa" strokeWidth="1.5" markerEnd="url(#bl-arrow)" />
+        <path d="M 188 76 L 168 76" stroke="#a1a1aa" strokeWidth="1.5" />
+
+        <rect x="108" y="148" width="104" height="56" rx="8" fill="#fff" stroke="#ef4444" strokeWidth="1.5" />
+        <text x="160" y="172" textAnchor="middle" className="fill-red-600 text-[11px] font-medium">后验预期收益</text>
+        <text x="160" y="190" textAnchor="middle" className="fill-zinc-500 text-[10px]">E[R]</text>
+
+        <path d="M 84 104 L 132 148" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 3" />
+        <path d="M 236 104 L 188 148" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 3" />
+
+        <defs>
+          <marker id="bl-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#a1a1aa" />
+          </marker>
+        </defs>
+      </svg>
+    </div>
+  )
+}
+
+const PORTFOLIO_MODEL_TABS = [
+  { key: "mean-variance", label: "均值方差" },
+  { key: "risk-parity", label: "风险平价" },
+  { key: "black-litterman", label: "Black-Litterman" },
+] as const
+
+type PortfolioModelTab = (typeof PORTFOLIO_MODEL_TABS)[number]["key"]
+
+function PortfolioModelIntroPanel({ activeTab }: { activeTab: PortfolioModelTab }) {
+  if (activeTab === "mean-variance") {
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+        <EfficientFrontierDiagram />
+        <div className="space-y-4 text-sm leading-7 text-zinc-600 dark:text-zinc-400">
+          <p>
+            1952 年，H.M.Markowitz 提出了经典的<strong className="text-foreground font-medium">均值方差模型</strong>。
+            该模型基于以下假设：投资者依据资产收益率的概率分布做出决策，用方差（或标准差）衡量风险，
+            在给定风险水平下追求收益最大化，或在给定收益水平下追求风险最小化。
+          </p>
+          <p>
+            投资组合的风险可表示为：
+            <span className="block my-2 pl-1 font-mono text-[13px] text-foreground">
+              σ<sub>p</sub> = √<span className="inline-block align-middle">(</span>Σ<sub>i,j</sub><sup>n</sup> w<sub>i</sub> w<sub>j</sub> cov(r<sub>i</sub>, r<sub>j</sub>)<span className="inline-block align-middle">)</span>
+            </span>
+          </p>
+          <ul className="space-y-1.5 list-none">
+            <li><span className="text-foreground">w<sub>i</sub></span>：投资于资产 i 的资金比例，且 Σw<sub>i</sub> = 1；</li>
+            <li><span className="text-foreground">E(r<sub>i</sub>)</span>：资产 i 的预期收益率；</li>
+            <li><span className="text-foreground">cov(r<sub>i</sub>, r<sub>j</sub>)</span>：资产 i 与资产 j 收益率之间的协方差。</li>
+          </ul>
+          <p>
+            在目标预期收益 μ 的约束下：
+            <span className="block my-2 pl-1 font-mono text-[13px] text-foreground">Σ w<sub>i</sub> E(r<sub>i</sub>) ≥ μ</span>
+            通过调整权重 w<sub>i</sub>，可以在满足目标收益 μ 的条件下，最小化组合风险 σ<sub>p</sub>。
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (activeTab === "risk-parity") {
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+        <RiskParityDiagram />
+        <div className="space-y-4 text-sm leading-7 text-zinc-600 dark:text-zinc-400">
+          <p>
+            <strong className="text-foreground font-medium">风险平价模型</strong>
+            的核心思想是让组合中各资产对总风险的贡献趋于均衡，而非简单按市值或预期收益分配权重。
+            在低相关资产间分散配置时，通常能获得更稳健的风险收益特征。
+          </p>
+          <p>
+            资产 i 的风险贡献 RC<sub>i</sub> 可表示为：
+            <span className="block my-2 pl-1 font-mono text-[13px] text-foreground">
+              RC<sub>i</sub> = w<sub>i</sub> · (∂σ<sub>p</sub> / ∂w<sub>i</sub>)
+            </span>
+          </p>
+          <p>
+            风险平价目标是在约束 Σw<sub>i</sub> = 1 下，使各资产风险贡献相等：
+            <span className="block my-2 pl-1 font-mono text-[13px] text-foreground">RC<sub>1</sub> = RC<sub>2</sub> = ··· = RC<sub>n</sub></span>
+            该模型常用于多策略、多资产组合的权重初始化与再平衡。
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-start">
+      <BlackLittermanDiagram />
+      <div className="space-y-4 text-sm leading-7 text-zinc-600 dark:text-zinc-400">
+        <p>
+          <strong className="text-foreground font-medium">Black-Litterman 模型</strong>
+          将 CAPM 市场均衡隐含收益与投资者主观观点进行贝叶斯融合，
+          在保留市场基准的同时纳入主动判断，避免均值方差优化对输入参数过于敏感的问题。
+        </p>
+        <p>
+          后验预期收益可概括为：
+          <span className="block my-2 pl-1 font-mono text-[13px] text-foreground">
+            E[R] = [(τΣ)<sup>-1</sup> + P<sup>T</sup>Ω<sup>-1</sup>P]<sup>-1</sup> · [(τΣ)<sup>-1</sup>π + P<sup>T</sup>Ω<sup>-1</sup>Q]
+          </span>
+        </p>
+        <ul className="space-y-1.5 list-none">
+          <li><span className="text-foreground">π</span>：市场均衡隐含收益；</li>
+          <li><span className="text-foreground">P, Q</span>：投资者观点矩阵与观点收益；</li>
+          <li><span className="text-foreground">Ω</span>：观点置信度，τ 为缩放因子。</li>
+        </ul>
+        <p>融合后的预期收益可进一步代入均值方差框架，生成更稳健的最优权重方案。</p>
+      </div>
+    </div>
+  )
+}
+
+function PortfolioNewView() {
+  const [modelTab, setModelTab] = useState<PortfolioModelTab>("mean-variance")
+
+  function handleCreate(buildType: "free" | "model") {
+    if (buildType === "free") {
+      window.open("/ma/dashboard/private-funds/portfolio/create?build=free", "_blank", "noopener,noreferrer")
+      return
+    }
+    window.alert("模型构建创建功能即将上线，敬请期待")
+  }
+
+  return (
+    <div className="flex flex-col items-center py-6 px-2 max-w-5xl mx-auto w-full">
+      <div className="text-center mb-10">
+        <h1 className="text-2xl font-semibold text-foreground tracking-tight">模型赋能，助力组合构建</h1>
+        <p className="text-sm text-muted-foreground mt-2">请选择组合创建方式</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 w-full">
+        {PORTFOLIO_CREATE_OPTIONS.map((option) => (
+          <div
+            key={option.key}
+            className="bg-background border border-border/80 rounded-2xl shadow-sm p-6 flex flex-col min-h-[360px] hover:shadow-md transition-shadow"
+          >
+            <div className="flex items-start gap-4 mb-6">
+              <PortfolioBuildIcon variant={option.key} />
+              <div className="pt-1 min-w-0">
+                <h2 className="text-lg font-semibold text-foreground">{option.title}</h2>
+                <p className="text-sm text-muted-foreground mt-1">{option.subtitle}</p>
+              </div>
+            </div>
+
+            <ul className="space-y-4 flex-1 mb-8">
+              {option.features.map((feature) => (
+                <li key={feature.label} className="text-sm leading-relaxed">
+                  <span className="font-semibold text-foreground">{feature.label}：</span>
+                  <span className="text-muted-foreground">{feature.desc}</span>
+                </li>
+              ))}
+            </ul>
+
+            <button
+              type="button"
+              onClick={() => handleCreate(option.key)}
+              className="w-full py-2.5 rounded-lg bg-red-600 text-white text-sm font-medium hover:bg-red-700 active:bg-red-800 transition-colors"
+            >
+              立即创建
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="w-full mt-10">
+        <div className="flex items-center gap-6 border-b mb-6">
+          {PORTFOLIO_MODEL_TABS.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setModelTab(tab.key)}
+              className={[
+                "pb-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+                modelTab === tab.key
+                  ? "border-red-500 text-red-600 dark:text-red-400"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="bg-background border border-border/80 rounded-2xl shadow-sm p-6 md:p-8">
+          <PortfolioModelIntroPanel activeTab={modelTab} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── PortfolioView ─────────────────────────────────────────────────────────
 
 type PortfolioSortKey =
@@ -14309,6 +14644,7 @@ interface PortfolioRow {
   team_tags: string[]
   build_type: string | null
   unit_nav: string | null
+  unit_nav_date?: string | null
   size: string | null
   ret_1w: string | null
   ret_1m: string | null
@@ -14320,6 +14656,7 @@ interface PortfolioRow {
   share_status: string | null
   updated_at: string | null
   created_by: string | null
+  isLocal?: boolean
 }
 
 function PortfolioView({ sideItem }: { sideItem: string }) {
@@ -14347,8 +14684,15 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
     if (typeof window === "undefined") return []
     try { return JSON.parse(localStorage.getItem("portfolio_metric_templates") ?? "[]") } catch { return [] }
   })
+  const [localRefresh, setLocalRefresh] = useState(0)
 
   const totalPages = Math.max(1, Math.ceil(total / 50))
+
+  useEffect(() => {
+    const onUpdated = () => setLocalRefresh((n) => n + 1)
+    window.addEventListener("ma-portfolios-updated", onUpdated)
+    return () => window.removeEventListener("ma-portfolios-updated", onUpdated)
+  }, [])
 
   useEffect(() => {
     fetch("/ma/api/ops/team-tags?category=portfolio")
@@ -14384,17 +14728,30 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
     fetch(`/ma/api/portfolios/list?${params}`)
       .then((r) => r.json())
       .then((json) => {
-        setData(json.data ?? [])
-        setTotal(json.total ?? 0)
+        let rows: PortfolioRow[] = json.data ?? []
+        if (scopeTab === "mine" && portfolioType === "simulated") {
+          const localRows = loadLocalPortfolioRows(keyword)
+          const apiIds = new Set(rows.map((r) => r.id))
+          rows = [...localRows.filter((r) => !apiIds.has(r.id)), ...rows]
+        }
+        rows = sortPortfolioRows(rows, sortKey, sortDir)
+        setData(rows)
+        setTotal(rows.length)
         setSelected(new Set())
       })
       .catch(() => {
-        setData([])
-        setTotal(0)
+        if (scopeTab === "mine" && portfolioType === "simulated") {
+          const rows = sortPortfolioRows(loadLocalPortfolioRows(keyword), sortKey, sortDir)
+          setData(rows)
+          setTotal(rows.length)
+        } else {
+          setData([])
+          setTotal(0)
+        }
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [scopeTab, portfolioType, page, sortKey, sortDir, keyword, teamTags, cutoffDate])
+  }, [scopeTab, portfolioType, page, sortKey, sortDir, keyword, teamTags, cutoffDate, localRefresh])
 
   function handleSort(col: PortfolioSortKey) {
     if (col === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
@@ -14461,15 +14818,6 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
   const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 dark:text-zinc-400 whitespace-nowrap select-none"
   const thSort = thBase + " cursor-pointer hover:text-foreground transition-colors"
   const colCount = 17 + addedCols.length
-
-  if (sideItem === "port-new") {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 text-muted-foreground text-sm gap-2">
-        <Briefcase className="h-10 w-10 opacity-30" />
-        <span>新建组合功能正在建设中，敬请期待</span>
-      </div>
-    )
-  }
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -14605,7 +14953,10 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
             <Download className="h-3.5 w-3.5" />
             <span>{selected.size > 0 ? `导出(${selected.size})` : "导出"}</span>
           </button>
-          <button className="inline-flex items-center gap-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg px-3 py-1 text-xs font-medium transition-colors">
+          <button
+            onClick={() => window.open("/ma/dashboard/private-funds/portfolio/create?build=free", "_blank", "noopener,noreferrer")}
+            className="inline-flex items-center gap-1.5 bg-red-500 hover:bg-red-600 text-white rounded-lg px-3 py-1 text-xs font-medium transition-colors"
+          >
             新建组合
           </button>
         </div>
@@ -14623,7 +14974,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
               <th className={`${thSort} border-b min-w-[180px]`} onClick={() => handleSort("name")}>
                 组合名称<PortSortIcon col="name" />
               </th>
-              <th className={`${thBase} border-b min-w-[100px]`}>团队标签</th>
+              <th className={`${thBase} border-b min-w-[100px]`}>{scopeTab === "team" ? "团队标签" : "个人标签"}</th>
               <th className={`${thBase} border-b min-w-[88px]`}>构建类型</th>
               <th className={`${thSort} border-b min-w-[88px]`} onClick={() => handleSort("unit_nav")}>
                 单位净值<PortSortIcon col="unit_nav" />
@@ -14693,7 +15044,18 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
                     />
                   </td>
                   <td className={`${cellBase} text-center tabular-nums text-muted-foreground`}>{(page - 1) * 50 + i + 1}</td>
-                  <td className={`${cellBase} font-medium text-blue-600 dark:text-blue-400`}>{row.name}</td>
+                  <td className={`${cellBase} font-medium`}>
+                    {row.isLocal ? (
+                      <a
+                        href={`/ma/dashboard/private-funds/portfolio/${row.id}`}
+                        className="text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        {row.name}
+                      </a>
+                    ) : (
+                      <span className="text-blue-600 dark:text-blue-400">{row.name}</span>
+                    )}
+                  </td>
                   <td className={cellBase}>
                     <div className="flex flex-wrap gap-1">
                       {row.team_tags.length > 0 ? row.team_tags.map((t) => (
@@ -14702,7 +15064,12 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
                     </div>
                   </td>
                   <td className={cellBase}>{row.build_type ?? "—"}</td>
-                  <td className={`${cellBase} tabular-nums`}>{fmtNum(row.unit_nav)}</td>
+                  <td className={`${cellBase} tabular-nums`}>
+                    <div>{fmtNum(row.unit_nav)}</div>
+                    {row.unit_nav_date && (
+                      <div className="text-[11px] text-muted-foreground">{row.unit_nav_date}</div>
+                    )}
+                  </td>
                   <td className={`${cellBase} text-right tabular-nums`}>{row.size ?? "—"}</td>
                   <td className={`${cellBase} text-right`}><TrackPctCell value={row.ret_1w} /></td>
                   <td className={`${cellBase} text-right`}><TrackPctCell value={row.ret_1m} /></td>
@@ -14715,7 +15082,25 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
                   <td className={`${cellBase} tabular-nums whitespace-nowrap text-xs text-muted-foreground`}>{row.updated_at ?? "—"}</td>
                   <td className={cellBase}>{row.created_by ?? "—"}</td>
                   <td className={`${cellBase} text-center`}>
-                    <button className="text-xs text-blue-500 hover:text-blue-600 hover:underline">编辑</button>
+                    <div className="inline-flex items-center gap-2 text-muted-foreground">
+                      <button type="button" className="hover:text-foreground" title="编辑">
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      {row.isLocal && (
+                        <button
+                          type="button"
+                          className="hover:text-red-500"
+                          title="删除"
+                          onClick={() => {
+                            if (window.confirm(`确定删除组合「${row.name}」吗？`)) {
+                              deletePortfolio(row.id)
+                            }
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                   {addedCols.map((col) => (
                     <td key={col.id} className={`${cellBase} text-right text-muted-foreground`}>—</td>
@@ -15415,7 +15800,8 @@ export default function PrivateFundsPage() {
               该功能正在建设中，敬请期待
             </div>
           )}
-          {activeTab === "portfolio" && (activeSideItem === "port-simulated" || activeSideItem === "port-live" || activeSideItem === "port-new") && (
+          {activeTab === "portfolio" && activeSideItem === "port-new" && <PortfolioNewView />}
+          {activeTab === "portfolio" && (activeSideItem === "port-simulated" || activeSideItem === "port-live") && (
             <PortfolioView sideItem={activeSideItem} />
           )}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
