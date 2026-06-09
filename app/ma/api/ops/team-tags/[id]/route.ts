@@ -14,9 +14,10 @@ interface TagRow {
   updated_at: string
 }
 
-export async function PUT(req: Request, { params }: { params: { id: string } }) {
+export async function PUT(req: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    const id = parseInt(params.id)
+    const { id: idStr } = await context.params
+    const id = parseInt(idStr, 10)
     if (isNaN(id)) return NextResponse.json({ error: "invalid_id" }, { status: 400 })
     const body = await req.json()
     const { name, user_name = "" } = body as Record<string, string>
@@ -32,18 +33,21 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
     )
     if (rows.length === 0) return NextResponse.json({ error: "not_found" }, { status: 404 })
     return NextResponse.json(rows[0])
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }
 
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_req: Request, context: { params: Promise<{ id: string }> }) {
   try {
-    const id = parseInt(params.id)
+    const { id: idStr } = await context.params
+    const id = parseInt(idStr, 10)
     if (isNaN(id)) return NextResponse.json({ error: "invalid_id" }, { status: 400 })
     await query(`DELETE FROM ops_team_tags WHERE id = $1`, [id])
     return NextResponse.json({ ok: true })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

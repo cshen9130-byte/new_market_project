@@ -148,8 +148,12 @@ function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: str
   }
 
   async function deleteTag(id: number) {
-    await fetch(`/ma/api/ops/team-tags/${id}`, { method: "DELETE" })
-    setTags((prev) => prev.filter((t) => t.id !== id))
+    const res = await fetch(`/ma/api/ops/team-tags/${id}`, { method: "DELETE" })
+    if (res.ok) {
+      setTags((prev) => prev.filter((t) => t.id !== id))
+    } else {
+      loadTags(tagCategory)
+    }
   }
 
   return (
