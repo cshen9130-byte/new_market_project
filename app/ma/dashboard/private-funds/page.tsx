@@ -5479,6 +5479,13 @@ type CrawlEmailRow = {
   remark: string
 }
 
+type ImportableEmailOption = {
+  account: string
+  remark: string
+  emailType: string
+  source: string
+}
+
 function OperationsEmailSyncView() {
   const [emailTab, setEmailTab] = useState<"crawl" | "ia" | "parse">("crawl")
   const [rows, setRows] = useState<CrawlEmailRow[]>([])
@@ -5495,6 +5502,10 @@ function OperationsEmailSyncView() {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState<string | null>(null)
+  const [showImportModal, setShowImportModal] = useState(false)
+  const [importOptions, setImportOptions] = useState<ImportableEmailOption[]>([])
+  const [importOptionsLoading, setImportOptionsLoading] = useState(false)
+  const [selectedImportAccounts, setSelectedImportAccounts] = useState<Set<string>>(new Set())
   const [form, setForm] = useState({
     emailType: "",
     account: "",
@@ -5521,14 +5532,48 @@ function OperationsEmailSyncView() {
       .finally(() => setLoading(false))
   }
 
-  async function importFromSenders() {
+  async function openImportModal() {
+    setShowImportModal(true)
+    setImportOptionsLoading(true)
+    setSelectedImportAccounts(new Set())
+    setImportMsg(null)
+    try {
+      const res = await fetch("/ma/api/ops/crawl-emails/importable")
+      const data = await res.json()
+      setImportOptions(Array.isArray(data) ? data : [])
+    } catch {
+      setImportOptions([])
+    } finally {
+      setImportOptionsLoading(false)
+    }
+  }
+
+  function toggleImportAccount(account: string) {
+    setSelectedImportAccounts((prev) => {
+      const next = new Set(prev)
+      if (next.has(account)) next.delete(account)
+      else next.add(account)
+      return next
+    })
+  }
+
+  async function confirmImportSelected() {
+    if (selectedImportAccounts.size === 0) return
     setImporting(true)
     setImportMsg(null)
     try {
-      const res = await fetch("/ma/api/ops/crawl-emails/sync", { method: "POST" })
+      const res = await fetch("/ma/api/ops/crawl-emails/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accounts: [...selectedImportAccounts] }),
+      })
       const data = await res.json()
       setImportMsg(data.message || data.error || (res.ok ? "导入完成" : "导入失败"))
-      if (res.ok) loadRows()
+      if (res.ok) {
+        setShowImportModal(false)
+        setSelectedImportAccounts(new Set())
+        loadRows()
+      }
     } catch {
       setImportMsg("导入失败，请稍后重试")
     } finally {
@@ -5704,11 +5749,11 @@ function OperationsEmailSyncView() {
             </p>
             <div className="flex items-center gap-2 shrink-0">
               <button
-                onClick={() => void importFromSenders()}
+                onClick={() => void openImportModal()}
                 disabled={importing}
                 className="px-4 py-1.5 border border-red-500 text-red-500 text-sm font-medium rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40"
               >
-                {importing ? "导入中…" : "导入发件账号"}
+                导入已配置邮箱
               </button>
               <button
                 onClick={openAddModal}
@@ -5745,13 +5790,13 @@ function OperationsEmailSyncView() {
                     <td colSpan={7} className="py-20 text-center text-muted-foreground">
                       <div className="flex flex-col items-center gap-3">
                         <span>暂无数据</span>
-                        <span className="text-xs max-w-md">可点击「导入发件账号」从「小工具 → 自动发邮件」同步已配置账号（如 净值接收 ch_c7h8@163.com）</span>
+                        <span className="text-xs max-w-md">可点击「导入已配置邮箱」从「小工具 → 自动发邮件」选择要添加的账号</span>
                         <button
-                          onClick={() => void importFromSenders()}
+                          onClick={() => void openImportModal()}
                           disabled={importing}
                           className="px-4 py-1.5 border border-red-500 text-red-500 text-sm rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40"
                         >
-                          {importing ? "导入中…" : "导入发件账号"}
+                          导入已配置邮箱
                         </button>
                       </div>
                     </td>
@@ -5816,6 +5861,67 @@ function OperationsEmailSyncView() {
       {emailTab === "parse" && (
         <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
           暂无解析记录
+        </div>
+      )}
+
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowImportModal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <span className="font-semibold text-base">导入已配置邮箱</span>
+              <button onClick={() => setShowImportModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <p className="text-xs text-muted-foreground mb-4">
+              从「小工具 → 自动发邮件」已配置的发件账号中选择要添加到抓取列表的邮箱。
+            </p>
+            <div className="border rounded max-h-[320px] overflow-y-auto mb-5">
+              {importOptionsLoading ? (
+                <div className="py-12 text-center text-sm text-muted-foreground">加载中…</div>
+              ) : importOptions.length === 0 ? (
+                <div className="py-12 text-center text-sm text-muted-foreground px-4">
+                  暂无可导入的邮箱。请先在「自动发邮件 → 发件账号」中配置，或列表中已包含全部已配置账号。
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {importOptions.map((opt) => (
+                    <label
+                      key={opt.account}
+                      className="flex items-start gap-3 px-4 py-3 hover:bg-muted/30 cursor-pointer transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedImportAccounts.has(opt.account)}
+                        onChange={() => toggleImportAccount(opt.account)}
+                        className="mt-1 rounded border-zinc-300 text-red-500 focus:ring-red-400"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium">{opt.remark || opt.account}</div>
+                        <div className="text-sm text-muted-foreground">{opt.account}</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          {opt.emailType} · 来源：{opt.source}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setShowImportModal(false)}
+                className="px-6 py-1.5 border rounded text-sm hover:bg-muted transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={() => void confirmImportSelected()}
+                disabled={importing || selectedImportAccounts.size === 0}
+                className="px-6 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
+              >
+                {importing ? "导入中…" : "确定"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

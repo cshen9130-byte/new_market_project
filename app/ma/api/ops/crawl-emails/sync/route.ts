@@ -1,38 +1,35 @@
 import { NextResponse } from "next/server"
-import { listCrawlEmails, syncCrawlEmailsFromConfiguredAccounts } from "@/lib/server/crawl-emails"
-import { readSenders } from "@/lib/server/email-dispatch"
+import { importConfiguredEmails, listCrawlEmails } from "@/lib/server/crawl-emails"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-export async function POST() {
+export async function POST(req: Request) {
   try {
-    const senders = readSenders()
-    const changed = await syncCrawlEmailsFromConfiguredAccounts()
-    const total = listCrawlEmails().length
+    const body = await req.json().catch(() => ({}))
+    const accounts = Array.isArray((body as { accounts?: unknown }).accounts)
+      ? (body as { accounts: unknown[] }).accounts.filter((a): a is string => typeof a === "string")
+      : []
 
-    if (senders.length === 0) {
-      return NextResponse.json({
-        imported: changed,
-        total,
-        message: changed > 0
-          ? "已同步已知邮箱；发件账号列表为空，授权码需手动填写或稍后在「自动发邮件」配置后再次导入。"
-          : "发件账号列表为空。已知邮箱已在列表中，授权码请手动填写或稍后在「自动发邮件」配置后再次导入。",
-      })
+    if (accounts.length === 0) {
+      return NextResponse.json({ error: "请选择要导入的邮箱" }, { status: 400 })
     }
 
-    if (changed === 0) {
+    const imported = await importConfiguredEmails(accounts)
+    const total = listCrawlEmails().length
+
+    if (imported === 0) {
       return NextResponse.json({
         imported: 0,
         total,
-        message: "所有发件账号已同步，无需重复导入。",
+        message: "所选邮箱已在列表中或无法导入。",
       })
     }
 
     return NextResponse.json({
-      imported: changed,
+      imported,
       total,
-      message: `已成功同步 ${changed} 个邮箱账号。`,
+      message: `已成功导入 ${imported} 个邮箱。`,
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : "导入失败"

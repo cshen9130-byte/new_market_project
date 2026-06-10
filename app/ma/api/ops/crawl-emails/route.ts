@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server"
-import { createCrawlEmail, listCrawlEmailsReady } from "@/lib/server/crawl-emails"
+import { createCrawlEmail, listCrawlEmails } from "@/lib/server/crawl-emails"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET() {
   try {
-    return NextResponse.json(await listCrawlEmailsReady())
+    return NextResponse.json(listCrawlEmails())
   } catch (e) {
     const message = e instanceof Error ? e.message : "读取失败"
     return NextResponse.json({ error: message }, { status: 500 })

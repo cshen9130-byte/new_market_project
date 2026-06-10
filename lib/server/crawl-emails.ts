@@ -83,6 +83,14 @@ type ImportCandidate = {
   emailType: string
   imapHost: string
   imapPort: number
+  source: string
+}
+
+export type ImportableConfiguredEmail = {
+  account: string
+  remark: string
+  emailType: string
+  source: string
 }
 
 function collectImportCandidates(): ImportCandidate[] {
@@ -103,6 +111,7 @@ function collectImportCandidates(): ImportCandidate[] {
       emailType: imap.emailType,
       imapHost: imap.imapHost,
       imapPort: imap.imapPort,
+      source: "自动发邮件",
     })
   }
 
@@ -123,57 +132,29 @@ function collectImportCandidates(): ImportCandidate[] {
       emailType,
       imapHost,
       imapPort: settlement.imapPort || 993,
+      source: "结算单邮箱",
     })
   }
 
   return [...byAccount.values()]
 }
 
-/** Predefined crawl mailboxes that should always appear in the table. */
-const KNOWN_CRAWL_ACCOUNTS = [
-  {
-    account: "ch_c7h8@163.com",
-    remark: "净值接收",
-    emailType: "163邮箱",
-    imapHost: "imap.163.com",
-    imapPort: 993,
-  },
-] as const
-
-/** Ensure known mailboxes exist as table rows (without credentials until imported). */
-export function ensureKnownCrawlEmails(): void {
-  const rows = readAll()
-  const existing = new Set(rows.map((r) => r.account.trim().toLowerCase()))
-  let changed = false
-
-  for (const known of KNOWN_CRAWL_ACCOUNTS) {
-    if (existing.has(known.account.toLowerCase())) continue
-    const now = new Date().toISOString()
-    rows.push({
-      id: randomUUID(),
-      emailType: known.emailType,
-      account: known.account,
-      pass: "",
-      imapHost: known.imapHost,
-      imapPort: known.imapPort,
-      crawlStatus: "未测试",
-      remark: known.remark,
-      createdAt: now,
-      updatedAt: now,
-    })
-    existing.add(known.account.toLowerCase())
-    changed = true
-  }
-
-  if (changed) writeAll(rows)
+export function listImportableConfiguredEmails(): ImportableConfiguredEmail[] {
+  const existing = new Set(readAll().map((r) => r.account.trim().toLowerCase()))
+  return collectImportCandidates()
+    .filter((c) => !existing.has(c.account.toLowerCase()))
+    .map(({ account, remark, emailType, source }) => ({ account, remark, emailType, source }))
 }
 
-/** Import configured sender/settlement accounts; returns number of rows added or updated. */
-export async function syncCrawlEmailsFromConfiguredAccounts(): Promise<number> {
-  ensureKnownCrawlEmails()
-  let changed = 0
+/** Import only the selected configured accounts. */
+export async function importConfiguredEmails(accounts: string[]): Promise<number> {
+  const selected = new Set(accounts.map((a) => a.trim().toLowerCase()).filter(Boolean))
+  if (selected.size === 0) return 0
 
+  let changed = 0
   for (const candidate of collectImportCandidates()) {
+    if (!selected.has(candidate.account.toLowerCase())) continue
+
     const existing = getCrawlEmailByAccount(candidate.account)
     if (!existing) {
       await createCrawlEmail(candidate)
@@ -199,12 +180,6 @@ export async function syncCrawlEmailsFromConfiguredAccounts(): Promise<number> {
 export function getCrawlEmailByAccount(account: string): CrawlEmailAccount | null {
   const key = account.trim().toLowerCase()
   return readAll().find((r) => r.account.trim().toLowerCase() === key) ?? null
-}
-
-export async function listCrawlEmailsReady(): Promise<CrawlEmailPublic[]> {
-  ensureKnownCrawlEmails()
-  await syncCrawlEmailsFromConfiguredAccounts()
-  return listCrawlEmails()
 }
 
 export function getCrawlEmailById(id: string): CrawlEmailAccount | null {
