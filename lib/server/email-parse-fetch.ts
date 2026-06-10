@@ -1,0 +1,365 @@
+import { ImapFlow } from "imapflow"
+import {
+  getCrawlEmailByAccount,
+  getCrawlEmailById,
+  listCrawlEmails,
+  type CrawlEmailAccount,
+} from "@/lib/server/crawl-emails"
+import {
+  countRecordsMissingSender,
+  getRecordsNeedingSender,
+  patchSenderEmails,
+  replaceEmailParseRecords,
+  type EmailParseRecord,
+  type ParseStepStatus,
+} from "@/lib/server/email-parse-records"
+
+export type EmailParseFetchResult = {
+  emailsScanned: number
+  recordsFound: number
+  errors: string[]
+}
+
+const FUND_EMAIL_RE =
+  /净值|估值|私募|基金份额|业绩报酬|虚拟净值|台账|份额明细|投资者明细|清盘|核算|证券投资基金/u
+
+type AttachmentInfo = { filename: string; part: string }
+
+function collectAttachments(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  node: any,
+  pathStr = "",
+  out: AttachmentInfo[] = [],
+): AttachmentInfo[] {
+  const fname: string =
+    node.dispositionParameters?.filename ??
+    node.dispositionParameters?.name ??
+    node.parameters?.name ??
+    ""
+  const disp: string = (node.disposition ?? "").toLowerCase()
+  if (fname && (disp === "attachment" || fname)) {
+    out.push({ filename: fname, part: pathStr || "1" })
+  }
+  if (Array.isArray(node.childNodes)) {
+    node.childNodes.forEach((child: unknown, i: number) => {
+      collectAttachments(child, pathStr ? `${pathStr}.${i + 1}` : `${i + 1}`, out)
+    })
+  }
+  return out
+}
+
+function collectTextParts(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  node: any,
+  pathStr = "",
+  out: { part: string; mime: string }[] = [],
+): { part: string; mime: string }[] {
+  const fname: string =
+    node.dispositionParameters?.filename ??
+    node.dispositionParameters?.name ??
+    node.parameters?.name ??
+    ""
+  const mime: string = (node.type ?? "").toLowerCase()
+  const subtype: string = (node.subtype ?? "").toLowerCase()
+  const fullMime = subtype ? `${mime}/${subtype}` : mime
+  const disp: string = (node.disposition ?? "").toLowerCase()
+  const isAttachment = disp === "attachment" || !!fname
+
+  if (!isAttachment && (fullMime.includes("text/plain") || fullMime.includes("text/html"))) {
+    out.push({ part: pathStr || "1", mime: fullMime })
+  }
+  if (Array.isArray(node.childNodes)) {
+    node.childNodes.forEach((child: unknown, i: number) => {
+      collectTextParts(child, pathStr ? `${pathStr}.${i + 1}` : `${i + 1}`, out)
+    })
+  }
+  return out
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/tr>/gi, "\n")
+    .replace(/<\/td>/gi, " ")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n\s*\n+/g, "\n")
+    .trim()
+}
+
+function isFundRelated(subject: string, attachments: AttachmentInfo[]): boolean {
+  if (FUND_EMAIL_RE.test(subject)) return true
+  return attachments.some((a) => {
+    const lower = a.filename.toLowerCase()
+    return (lower.endsWith(".xlsx") || lower.endsWith(".xls")) && FUND_EMAIL_RE.test(a.filename)
+  })
+}
+
+function hasTableNav(body: string): boolean {
+  const text = body.replace(/\s+/g, " ")
+  return /单位净值|基金份额净值|资产净值/.test(text) && /\d+\.\d{3,8}/.test(text) && /<table|┌|│|净值日期/u.test(body)
+}
+
+function hasPostTableNav(body: string): boolean {
+  const plain = stripHtml(body)
+  const afterTable = plain.split(/单位净值|基金份额净值/u).slice(1).join("")
+  if (afterTable && /\d+\.\d{3,8}/.test(afterTable)) return true
+  return /累计净值\s*[：:]\s*\d+\.\d{3,8}/u.test(plain)
+}
+
+function hasValuation(subject: string, attachments: AttachmentInfo[]): boolean {
+  if (/估值表|估值/i.test(subject)) return true
+  return attachments.some((a) => /估值表|估值|专用表/i.test(a.filename))
+}
+
+function hasLedger(subject: string, attachments: AttachmentInfo[]): boolean {
+  if (/台账|份额明细|投资者明细|持有人明细/i.test(subject)) return true
+  return attachments.some((a) => /台账|份额明细|投资者明细|持有人明细/i.test(a.filename))
+}
+
+function statusFor(predicate: boolean, relevant: boolean): ParseStepStatus {
+  if (!relevant) return "失败"
+  return predicate ? "成功" : "失败"
+}
+
+type EnvelopeAddress = { name?: string; address?: string; mailbox?: string; host?: string }
+
+function formatSenderEmail(from: EnvelopeAddress[] | undefined): string {
+  const first = from?.[0]
+  if (!first) return ""
+  if (first.address?.trim()) return first.address.trim()
+  if (first.mailbox && first.host) return `${first.mailbox}@${first.host}`.trim()
+  return (first.name ?? "").trim()
+}
+
+function parseEmailRecord(
+  account: CrawlEmailAccount,
+  uid: string,
+  subject: string,
+  sentAt: Date,
+  senderEmail: string,
+  body: string,
+  attachments: AttachmentInfo[],
+): Omit<EmailParseRecord, "id"> {
+  const valuationRelevant = hasValuation(subject, attachments)
+  const ledgerRelevant = hasLedger(subject, attachments)
+  const navRelevant = /净值|虚拟净值|业绩报酬/u.test(subject) || /\.xlsx?$/i.test(attachments.map((a) => a.filename).join(" "))
+
+  return {
+    crawlEmailId: account.id,
+    crawlEmailAccount: account.account,
+    senderEmail,
+    uid,
+    sentAt: sentAt.toISOString(),
+    subject,
+    tableNavStatus: statusFor(hasTableNav(body), navRelevant),
+    postTableNavStatus: statusFor(hasPostTableNav(body), navRelevant),
+    valuationStatus: statusFor(valuationRelevant, valuationRelevant || navRelevant),
+    ledgerStatus: statusFor(ledgerRelevant, ledgerRelevant),
+    parsedAt: new Date().toISOString(),
+  }
+}
+
+async function fetchMailbox(
+  account: CrawlEmailAccount,
+  since: Date,
+  errors: string[],
+): Promise<Omit<EmailParseRecord, "id">[]> {
+  if (!account.pass?.trim()) {
+    errors.push(`${account.account}: 未配置授权码`)
+    return []
+  }
+
+  const client = new ImapFlow({
+    host: account.imapHost,
+    port: account.imapPort || 993,
+    secure: true,
+    auth: { user: account.account, pass: account.pass },
+    logger: false,
+  })
+
+  const records: Omit<EmailParseRecord, "id">[] = []
+
+  await client.connect()
+  try {
+    await client.mailboxOpen("INBOX")
+    const uids = (await client.search({ since })) || []
+
+    for (const uid of uids) {
+      const envMsg = await client.fetchOne(String(uid), {
+        envelope: true,
+        bodyStructure: true,
+        internalDate: true,
+      })
+      const envelope = (envMsg as {
+        envelope?: { subject?: string; date?: Date; from?: { name?: string; address?: string }[] }
+      }).envelope
+      const subject = envelope?.subject ?? ""
+      const senderEmail = formatSenderEmail(envelope?.from)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const structure = (envMsg as any).bodyStructure
+      if (!structure) continue
+
+      const attachments = collectAttachments(structure)
+      if (!isFundRelated(subject, attachments)) continue
+
+      const textParts = collectTextParts(structure)
+      const chunks: string[] = [subject]
+      for (const { part, mime } of textParts) {
+        try {
+          const dl = await client.download(String(uid), part)
+          const bufs: Buffer[] = []
+          for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
+          const buf = Buffer.concat(bufs)
+          const text = buf.toString("utf-8")
+          chunks.push(mime.includes("text/html") ? stripHtml(text) : text)
+        } catch (e) {
+          errors.push(`${account.account} UID ${uid}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+
+      const sentAt =
+        (envMsg as { internalDate?: Date }).internalDate ??
+        envelope?.date ??
+        new Date()
+      records.push(
+        parseEmailRecord(account, String(uid), subject, sentAt, senderEmail, chunks.join("\n"), attachments),
+      )
+    }
+  } finally {
+    try {
+      await client.logout()
+    } catch {
+      // ignore
+    }
+  }
+
+  return records
+}
+
+export async function fetchEmailParseRecords(options?: {
+  crawlEmailId?: string
+  days?: number
+}): Promise<EmailParseFetchResult> {
+  const errors: string[] = []
+  const since = new Date()
+  since.setDate(since.getDate() - (options?.days ?? 31))
+
+  const accounts: CrawlEmailAccount[] = []
+  if (options?.crawlEmailId) {
+    const one = getCrawlEmailById(options.crawlEmailId)
+    if (!one) throw new Error("抓取邮箱不存在")
+    accounts.push(one)
+  } else {
+    for (const pub of listCrawlEmails()) {
+      const full = getCrawlEmailByAccount(pub.account)
+      if (full?.pass?.trim()) accounts.push(full)
+    }
+  }
+
+  if (accounts.length === 0) {
+    const configured = listCrawlEmails()
+    if (configured.length === 0) {
+      throw new Error("请先在「抓取邮箱设置」中添加抓取邮箱")
+    }
+    throw new Error("抓取邮箱未配置授权码，请编辑邮箱并填写授权码")
+  }
+
+  const allRecords: Omit<EmailParseRecord, "id">[] = []
+  let emailsScanned = 0
+
+  for (const account of accounts) {
+    try {
+      const rows = await fetchMailbox(account, since, errors)
+      emailsScanned += rows.length
+      allRecords.push(...rows)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      errors.push(`${account.account}: ${msg}`)
+    }
+  }
+
+  replaceEmailParseRecords(allRecords)
+
+  return {
+    emailsScanned,
+    recordsFound: allRecords.length,
+    errors,
+  }
+}
+
+export async function backfillSenderEmails(options?: {
+  items?: { crawlEmailAccount: string; uid: string }[]
+}): Promise<{ updated: number; errors: string[] }> {
+  const needing = options?.items?.length
+    ? options.items.map((item) => ({
+        crawlEmailAccount: item.crawlEmailAccount,
+        uid: item.uid,
+        crawlEmailId: "",
+      }))
+    : getRecordsNeedingSender()
+  if (needing.length === 0) return { updated: 0, errors: [] }
+
+  const errors: string[] = []
+  const patches: { crawlEmailAccount: string; uid: string; senderEmail: string }[] = []
+  const byAccount = new Map<string, string[]>()
+
+  for (const row of needing) {
+    const list = byAccount.get(row.crawlEmailAccount) ?? []
+    list.push(row.uid)
+    byAccount.set(row.crawlEmailAccount, list)
+  }
+
+  for (const [accountName, uids] of byAccount) {
+    const account = getCrawlEmailByAccount(accountName)
+    if (!account?.pass?.trim()) {
+      errors.push(`${accountName}: 未配置授权码，无法补全发件邮箱`)
+      continue
+    }
+
+    const client = new ImapFlow({
+      host: account.imapHost,
+      port: account.imapPort || 993,
+      secure: true,
+      auth: { user: account.account, pass: account.pass },
+      logger: false,
+    })
+
+    try {
+      await client.connect()
+      await client.mailboxOpen("INBOX")
+
+      for (const uid of uids) {
+        try {
+          const msg = await client.fetchOne(String(uid), { envelope: true })
+          if (!msg) continue
+          const sender = formatSenderEmail(
+            (msg as { envelope?: { from?: EnvelopeAddress[] } }).envelope?.from,
+          )
+          if (sender) {
+            patches.push({ crawlEmailAccount: accountName, uid: String(uid), senderEmail: sender })
+          }
+        } catch (e) {
+          errors.push(`${accountName} UID ${uid}: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    } catch (e) {
+      errors.push(`${accountName}: ${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      try {
+        await client.logout()
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  const updated = patchSenderEmails(patches)
+  return { updated, errors }
+}
+
+export function needsSenderBackfill(): boolean {
+  return countRecordsMissingSender() > 0
+}

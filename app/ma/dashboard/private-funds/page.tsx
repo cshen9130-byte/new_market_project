@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 
 const menuItems = [
@@ -5486,8 +5486,897 @@ type ImportableEmailOption = {
   source: string
 }
 
+type TaAccountRow = {
+  id: string
+  customerName: string
+  taAccount: string
+  linkType: "fof" | "investor" | null
+  fofRegisterNumber: string | null
+  fofProductName: string | null
+  investorName: string | null
+  source: "邮箱抓取" | "手动添加"
+}
+
+type EmailParseRecordRow = {
+  id: string
+  crawlEmailAccount: string
+  uid?: string
+  senderEmail?: string
+  sentAt: string
+  subject: string
+  tableNavStatus: "成功" | "失败"
+  postTableNavStatus: "成功" | "失败"
+  valuationStatus: "成功" | "失败"
+  ledgerStatus: "成功" | "失败"
+}
+
+type ParseStatusFilter = "all" | "成功" | "失败"
+
+type FofFundOption = { register_number: string; product_name: string }
+
+function OperationsTaAccountsPanel() {
+  const [rows, setRows] = useState<TaAccountRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [fetching, setFetching] = useState(false)
+  const [fetchMsg, setFetchMsg] = useState<string | null>(null)
+  const [searchInput, setSearchInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [page, setPage] = useState(1)
+  const pageSize = 10
+  const [portalMounted, setPortalMounted] = useState(false)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [editingRow, setEditingRow] = useState<TaAccountRow | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [addForm, setAddForm] = useState({ customerName: "", taAccount: "" })
+  const [editLinkType, setEditLinkType] = useState<"fof" | "investor">("fof")
+  const [editFofInput, setEditFofInput] = useState("")
+  const [editFofSelected, setEditFofSelected] = useState<FofFundOption | null>(null)
+  const [editFofOptions, setEditFofOptions] = useState<FofFundOption[]>([])
+  const [editFofDropdown, setEditFofDropdown] = useState(false)
+  const [editInvestorName, setEditInvestorName] = useState("")
+  const fetchedOnce = useRef(false)
+
+  function loadRows(q = keyword) {
+    setLoading(true)
+    const params = q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""
+    fetch(`/ma/api/ops/ta-accounts${params}`)
+      .then((r) => r.json())
+      .then((data) => setRows(Array.isArray(data) ? data : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false))
+  }
+
+  async function runFetch() {
+    setFetching(true)
+    setFetchMsg(null)
+    try {
+      const res = await fetch("/ma/api/ops/ta-accounts/fetch", { method: "POST" })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "抓取失败")
+      setFetchMsg(
+        `扫描 ${data.emailsScanned ?? 0} 封邮件，解析 ${data.recordsFound ?? 0} 条，新增 ${data.inserted ?? 0}，更新 ${data.updated ?? 0}，关联 FOF ${data.linked ?? 0} 条`,
+      )
+      loadRows()
+    } catch (e) {
+      setFetchMsg(e instanceof Error ? e.message : "抓取失败")
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  useEffect(() => { setPortalMounted(true) }, [])
+
+  useEffect(() => {
+    if (!fetchedOnce.current) {
+      fetchedOnce.current = true
+      void runFetch()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    loadRows(keyword)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyword])
+
+  useEffect(() => {
+    if (!editFofDropdown) return
+    const q = editFofInput.trim()
+    const timer = setTimeout(() => {
+      fetch(`/ma/api/ops/fof-underlying/fof-funds${q ? `?q=${encodeURIComponent(q)}` : ""}`)
+        .then((r) => r.json())
+        .then((data) => setEditFofOptions(Array.isArray(data) ? data : []))
+        .catch(() => setEditFofOptions([]))
+    }, 200)
+    return () => clearTimeout(timer)
+  }, [editFofInput, editFofDropdown])
+
+  const total = rows.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize)
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+
+  function openEdit(row: TaAccountRow) {
+    setEditingRow(row)
+    setEditLinkType(row.linkType === "investor" ? "investor" : "fof")
+    setEditFofSelected(
+      row.fofRegisterNumber && row.fofProductName
+        ? { register_number: row.fofRegisterNumber, product_name: row.fofProductName }
+        : null,
+    )
+    setEditFofInput("")
+    setEditInvestorName(row.investorName ?? "")
+    setShowEditModal(true)
+  }
+
+  async function saveEdit() {
+    if (!editingRow) return
+    if (editLinkType === "fof" && !editFofSelected) return
+    setSaving(true)
+    try {
+      const payload =
+        editLinkType === "fof"
+          ? {
+              linkType: "fof" as const,
+              fofRegisterNumber: editFofSelected!.register_number,
+              fofProductName: editFofSelected!.product_name,
+              investorName: null,
+            }
+          : {
+              linkType: "investor" as const,
+              fofRegisterNumber: null,
+              fofProductName: null,
+              investorName: editInvestorName.trim() || editingRow.customerName,
+            }
+      const res = await fetch(`/ma/api/ops/ta-accounts/${editingRow.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) return
+      setShowEditModal(false)
+      loadRows()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function saveAdd() {
+    if (!addForm.customerName.trim()) return
+    setSaving(true)
+    try {
+      const res = await fetch("/ma/api/ops/ta-accounts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(addForm),
+      })
+      if (!res.ok) return
+      setShowAddModal(false)
+      setAddForm({ customerName: "", taAccount: "" })
+      loadRows()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteRow(id: string) {
+    if (!confirm("确定删除该 TA 账号？")) return
+    const res = await fetch(`/ma/api/ops/ta-accounts/${id}`, { method: "DELETE" })
+    if (res.ok) loadRows()
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between mt-4 mb-3 gap-4">
+        <div className="flex items-center border rounded px-2 h-8 gap-1.5 bg-background w-72">
+          <input
+            className="flex-1 text-sm outline-none bg-transparent placeholder:text-muted-foreground/50"
+            placeholder="客户名称/TA账号搜索"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && setKeyword(searchInput)}
+          />
+          <button onClick={() => setKeyword(searchInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+            <Search className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => void runFetch()}
+            disabled={fetching}
+            className="px-4 py-1.5 border border-red-500 text-red-500 text-sm font-medium rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40"
+          >
+            {fetching ? "抓取中…" : "邮箱抓取"}
+          </button>
+          <button
+            onClick={() => { setAddForm({ customerName: "", taAccount: "" }); setShowAddModal(true) }}
+            className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
+          >
+            添加TA账号
+          </button>
+        </div>
+      </div>
+      {fetchMsg && (
+        <p className={`text-xs mb-3 ${fetchMsg.includes("失败") || fetchMsg.includes("配置") ? "text-amber-700 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+          {fetchMsg}
+        </p>
+      )}
+
+      <div className="overflow-auto rounded border">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-muted/40 border-b">
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">客户名称</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-36">TA账号</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-44">关联FOF产品</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-28">来源</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 w-24">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={6} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : pageRows.length === 0 ? (
+              <tr><td colSpan={6} className="py-20 text-center text-muted-foreground">暂无 TA 账号数据</td></tr>
+            ) : pageRows.map((row, i) => (
+              <tr key={row.id} className="border-b hover:bg-muted/20 transition-colors">
+                <td className="px-4 py-3 text-muted-foreground tabular-nums">{(page - 1) * pageSize + i + 1}</td>
+                <td className="px-4 py-3">{row.customerName}</td>
+                <td className="px-4 py-3 font-mono text-xs">{row.taAccount || "—"}</td>
+                <td className="px-4 py-3">
+                  {row.fofProductName ? (
+                    <button type="button" className="text-blue-600 hover:underline text-left">{row.fofProductName}</button>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-muted-foreground">{row.source}</td>
+                <td className="px-4 py-3">
+                  <div className="flex items-center justify-end gap-3">
+                    <button title="编辑" className="text-muted-foreground hover:text-foreground transition-colors" onClick={() => openEdit(row)}>
+                      <Pencil className="h-4 w-4" />
+                    </button>
+                    {row.source === "手动添加" && (
+                      <button title="删除" className="text-muted-foreground hover:text-red-500 transition-colors" onClick={() => void deleteRow(row.id)}>
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-end gap-4 mt-4 pt-3 text-sm text-zinc-500">
+        <span>共 {total} 条</span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1} className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30">‹</button>
+          <span className="w-7 h-7 flex items-center justify-center rounded border bg-red-500 text-white text-xs font-medium">{page}</span>
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages || total === 0} className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30">›</button>
+        </div>
+      </div>
+
+      {portalMounted && showAddModal && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={() => setShowAddModal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <span className="font-semibold text-base">添加TA账号</span>
+              <button onClick={() => setShowAddModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="space-y-4 mb-5">
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-24 text-right"><span className="text-red-500 mr-0.5">*</span>客户名称：</label>
+                <input className="flex-1 border rounded px-3 py-2 text-sm bg-background" value={addForm.customerName} onChange={(e) => setAddForm((f) => ({ ...f, customerName: e.target.value }))} />
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-24 text-right">TA账号：</label>
+                <input className="flex-1 border rounded px-3 py-2 text-sm bg-background" value={addForm.taAccount} onChange={(e) => setAddForm((f) => ({ ...f, taAccount: e.target.value }))} />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button type="button" onClick={() => setShowAddModal(false)} className="px-6 py-1.5 border rounded text-sm hover:bg-muted">取消</button>
+              <button type="button" onClick={() => void saveAdd()} disabled={saving || !addForm.customerName.trim()} className="px-6 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 disabled:opacity-40">确定</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {portalMounted && showEditModal && editingRow && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={() => setShowEditModal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <span className="font-semibold text-base">编辑TA账号</span>
+              <button onClick={() => setShowEditModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="space-y-4 mb-4">
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-24 text-right"><span className="text-red-500 mr-0.5">*</span>客户名称：</label>
+                <input readOnly className="flex-1 border rounded px-3 py-2 text-sm bg-muted/40 text-muted-foreground" value={editingRow.customerName} />
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-24 text-right">TA账号：</label>
+                <input readOnly className="flex-1 border rounded px-3 py-2 text-sm bg-muted/40 text-muted-foreground font-mono" value={editingRow.taAccount} />
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-24 text-right">关联：</label>
+                <div className="flex items-center gap-5 text-sm">
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" checked={editLinkType === "fof"} onChange={() => setEditLinkType("fof")} className="text-red-500" />
+                    FOF产品
+                  </label>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input type="radio" checked={editLinkType === "investor"} onChange={() => setEditLinkType("investor")} className="text-red-500" />
+                    投资者
+                  </label>
+                </div>
+              </div>
+              {editLinkType === "fof" ? (
+                <div className="flex items-center gap-3">
+                  <label className="text-sm shrink-0 w-24 text-right"><span className="text-red-500 mr-0.5">*</span>FOF产品：</label>
+                  <div className="relative flex-1">
+                    {editFofSelected ? (
+                      <div className="flex items-center justify-between border rounded px-3 py-2 text-sm bg-background">
+                        <span className="truncate">{editFofSelected.product_name}</span>
+                        <button type="button" onClick={() => setEditFofSelected(null)} className="text-muted-foreground hover:text-foreground ml-2">×</button>
+                      </div>
+                    ) : (
+                      <>
+                        <input
+                          className="w-full border rounded px-3 py-2 text-sm bg-background"
+                          placeholder="请输入并选择FOF产品"
+                          value={editFofInput}
+                          onChange={(e) => { setEditFofInput(e.target.value); setEditFofDropdown(true) }}
+                          onFocus={() => setEditFofDropdown(true)}
+                        />
+                        {editFofDropdown && editFofOptions.length > 0 && (
+                          <>
+                            <div className="fixed inset-0 z-10" onClick={() => setEditFofDropdown(false)} />
+                            <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-background border rounded shadow-lg max-h-40 overflow-y-auto">
+                              {editFofOptions.map((opt) => (
+                                <button
+                                  key={opt.register_number}
+                                  type="button"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => { setEditFofSelected(opt); setEditFofInput(""); setEditFofDropdown(false) }}
+                                  className="w-full text-left px-3 py-2 text-sm hover:bg-muted truncate"
+                                >
+                                  {opt.product_name}
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <label className="text-sm shrink-0 w-24 text-right">投资者：</label>
+                  <input className="flex-1 border rounded px-3 py-2 text-sm bg-background" value={editInvestorName} onChange={(e) => setEditInvestorName(e.target.value)} placeholder={editingRow.customerName} />
+                </div>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground mb-5">
+              若客户为基金产品，需填写关联FOF产品。搜索无结果，请联系客服。
+            </p>
+            <div className="flex justify-end gap-3">
+              <button type="button" onClick={() => setShowEditModal(false)} className="px-6 py-1.5 border rounded text-sm hover:bg-muted">取消</button>
+              <button
+                type="button"
+                onClick={() => void saveEdit()}
+                disabled={saving || (editLinkType === "fof" && !editFofSelected)}
+                className="px-6 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 disabled:opacity-40"
+              >
+                确定
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+function formatParseDateInput(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+function formatParseDateTime(iso: string | null): string {
+  if (!iso) return "—"
+  const d = new Date(iso)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  const h = String(d.getHours()).padStart(2, "0")
+  const min = String(d.getMinutes()).padStart(2, "0")
+  return `${y}-${m}-${day} ${h}:${min}`
+}
+
+function parseStatusClass(status: "成功" | "失败"): string {
+  return status === "成功"
+    ? "text-emerald-600 dark:text-emerald-400"
+    : "text-amber-600 dark:text-amber-400"
+}
+
+function ParseStatusRadios({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: ParseStatusFilter
+  onChange: (v: ParseStatusFilter) => void
+}) {
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-muted-foreground shrink-0">{label}</span>
+      {(["all", "成功", "失败"] as const).map((opt) => (
+        <label key={opt} className="flex items-center gap-1 cursor-pointer whitespace-nowrap">
+          <input
+            type="radio"
+            className="text-red-500"
+            checked={value === opt}
+            onChange={() => onChange(opt)}
+          />
+          <span>{opt === "all" ? "不限" : opt}</span>
+        </label>
+      ))}
+    </div>
+  )
+}
+
+function OperationsParseLogsPanel() {
+  const today = new Date()
+  const defaultFrom = new Date(today)
+  defaultFrom.setDate(defaultFrom.getDate() - 31)
+
+  const [rows, setRows] = useState<EmailParseRecordRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [fetching, setFetching] = useState(false)
+  const [fetchMsg, setFetchMsg] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [total, setTotal] = useState(0)
+  const [stats, setStats] = useState({ total: 0, success: 0, failure: 0, lastUpdatedAt: null as string | null })
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const pageSize = 20
+
+  const [tableNavFilter, setTableNavFilter] = useState<ParseStatusFilter>("all")
+  const [postTableNavFilter, setPostTableNavFilter] = useState<ParseStatusFilter>("all")
+  const [valuationFilter, setValuationFilter] = useState<ParseStatusFilter>("all")
+  const [ledgerFilter, setLedgerFilter] = useState<ParseStatusFilter>("all")
+  const [sentFrom, setSentFrom] = useState(formatParseDateInput(defaultFrom))
+  const [sentTo, setSentTo] = useState(formatParseDateInput(today))
+  const [subjectInput, setSubjectInput] = useState("")
+  const [subjectKeyword, setSubjectKeyword] = useState("")
+
+  const [appliedFilters, setAppliedFilters] = useState({
+    tableNavFilter: "all" as ParseStatusFilter,
+    postTableNavFilter: "all" as ParseStatusFilter,
+    valuationFilter: "all" as ParseStatusFilter,
+    ledgerFilter: "all" as ParseStatusFilter,
+    sentFrom: formatParseDateInput(defaultFrom),
+    sentTo: formatParseDateInput(today),
+    subjectKeyword: "",
+  })
+
+  const fetchedOnce = useRef(false)
+  const backfilledKeys = useRef(new Set<string>())
+
+  function buildQuery(p = page) {
+    const params = new URLSearchParams()
+    if (appliedFilters.tableNavFilter !== "all") params.set("tableNavStatus", appliedFilters.tableNavFilter)
+    if (appliedFilters.postTableNavFilter !== "all") params.set("postTableNavStatus", appliedFilters.postTableNavFilter)
+    if (appliedFilters.valuationFilter !== "all") params.set("valuationStatus", appliedFilters.valuationFilter)
+    if (appliedFilters.ledgerFilter !== "all") params.set("ledgerStatus", appliedFilters.ledgerFilter)
+    if (appliedFilters.sentFrom) params.set("sentFrom", appliedFilters.sentFrom)
+    if (appliedFilters.sentTo) params.set("sentTo", appliedFilters.sentTo)
+    if (appliedFilters.subjectKeyword.trim()) params.set("subject", appliedFilters.subjectKeyword.trim())
+    params.set("page", String(p))
+    params.set("pageSize", String(pageSize))
+    return params.toString()
+  }
+
+  function loadRows(p = page) {
+    setLoading(true)
+    fetch(`/ma/api/ops/email-parse-records?${buildQuery(p)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setRows(Array.isArray(data.rows) ? data.rows : [])
+        setTotal(typeof data.total === "number" ? data.total : 0)
+        if (data.stats) {
+          setStats({
+            total: data.stats.total ?? 0,
+            success: data.stats.success ?? 0,
+            failure: data.stats.failure ?? 0,
+            lastUpdatedAt: data.stats.lastUpdatedAt ?? null,
+          })
+        }
+      })
+      .catch(() => {
+        setRows([])
+        setTotal(0)
+      })
+      .finally(() => setLoading(false))
+  }
+
+  async function runFetch() {
+    setFetching(true)
+    setFetchMsg(null)
+    try {
+      const res = await fetch("/ma/api/ops/email-parse-records/fetch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ days: 31 }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error ?? "抓取失败")
+      setFetchMsg(`扫描 ${data.emailsScanned ?? 0} 封基金相关邮件，解析记录 ${data.recordsFound ?? 0} 条`)
+      setPage(1)
+      loadRows(1)
+    } catch (e) {
+      setFetchMsg(e instanceof Error ? e.message : "抓取失败")
+    } finally {
+      setFetching(false)
+    }
+  }
+
+  function applyQuery() {
+    setSubjectKeyword(subjectInput)
+    setAppliedFilters({
+      tableNavFilter,
+      postTableNavFilter,
+      valuationFilter,
+      ledgerFilter,
+      sentFrom,
+      sentTo,
+      subjectKeyword: subjectInput,
+    })
+    setPage(1)
+  }
+
+  function handleExport() {
+    const headers = ["发送时间", "邮件标题", "收件邮箱", "发件邮箱", "费前净值解析状态", "费后净值解析状态", "估值表抓取状态", "台账抓取状态"]
+    const exportRows = rows.map((row) => [
+      new Date(row.sentAt).toLocaleString("zh-CN"),
+      row.subject,
+      row.crawlEmailAccount,
+      row.senderEmail || "—",
+      row.tableNavStatus,
+      row.postTableNavStatus,
+      row.valuationStatus,
+      row.ledgerStatus,
+    ])
+    const csv = [headers, ...exportRows]
+      .map((line) => line.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .join("\n")
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `解析记录_${formatParseDateInput(new Date())}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  useEffect(() => {
+    loadRows(page)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, appliedFilters])
+
+  useEffect(() => {
+    if (loading || rows.length === 0) return
+    const pending = rows.filter((row) => {
+      if (row.senderEmail?.trim() || !row.uid) return false
+      const key = `${row.crawlEmailAccount}|${row.uid}`
+      if (backfilledKeys.current.has(key)) return false
+      backfilledKeys.current.add(key)
+      return true
+    })
+    if (pending.length > 0) void backfillSendersForRows(pending)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, loading])
+
+  async function backfillSendersForRows(targetRows: EmailParseRecordRow[]) {
+    const items = targetRows
+      .filter((row) => !row.senderEmail?.trim() && row.uid)
+      .map((row) => ({ crawlEmailAccount: row.crawlEmailAccount, uid: row.uid! }))
+    if (items.length === 0) return
+    try {
+      const res = await fetch("/ma/api/ops/email-parse-records/backfill-senders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items }),
+      })
+      const data = await res.json()
+      if (res.ok && (data.updated ?? 0) > 0) loadRows(page)
+    } catch {
+      // ignore; user can retry via 重新解析
+    }
+  }
+
+  useEffect(() => {
+    if (!fetchedOnce.current) {
+      fetchedOnce.current = true
+      void (async () => {
+        const res = await fetch("/ma/api/ops/email-parse-records?page=1&pageSize=1")
+        const data = await res.json()
+        if ((data.total ?? 0) === 0) void runFetch()
+        else loadRows(1)
+      })()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      <p className="text-xs text-muted-foreground mt-4 mb-3 shrink-0">
+        * 仅抓取与基金相关的净值、估值表、台账等邮件，并记录各步骤解析结果。
+      </p>
+
+      <div className="flex items-stretch border rounded mb-4 bg-muted/20 overflow-hidden shrink-0">
+        <div className="flex-1 px-6 py-4">
+          <div className="flex items-center gap-3">
+            <span className="flex items-center justify-center w-9 h-9 rounded-full bg-blue-100 dark:bg-blue-950/50 text-blue-500">
+              <FileText className="h-4 w-4" />
+            </span>
+            <div className="flex items-baseline gap-1.5 text-sm text-foreground">
+              <span>解析总数：</span>
+              <span className="text-2xl font-semibold tabular-nums text-blue-500 leading-none">{stats.total}</span>
+              <span className="text-muted-foreground">封</span>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground mt-2 pl-12">
+            最后更新时间：{formatParseDateTime(stats.lastUpdatedAt)}
+          </p>
+        </div>
+        <div className="w-px bg-border self-stretch" />
+        <div className="flex-1 px-6 py-4 flex items-center gap-3">
+          <span className="flex items-center justify-center w-9 h-9 rounded-full bg-emerald-100 dark:bg-emerald-950/50 text-emerald-500">
+            <CircleCheck className="h-4 w-4" />
+          </span>
+          <div className="flex items-baseline gap-1.5 text-sm text-foreground">
+            <span>费前解析成功：</span>
+            <span className="text-2xl font-semibold tabular-nums text-emerald-500 leading-none">{stats.success}</span>
+            <span className="text-muted-foreground">封</span>
+          </div>
+        </div>
+        <div className="w-px bg-border self-stretch" />
+        <div className="flex-1 px-6 py-4 flex items-center gap-3">
+          <span className="flex items-center justify-center w-9 h-9 rounded-full bg-red-100 dark:bg-red-950/50 text-red-500">
+            <CircleX className="h-4 w-4" />
+          </span>
+          <div className="flex items-baseline gap-1.5 text-sm text-foreground">
+            <span>费前解析失败：</span>
+            <span className="text-2xl font-semibold tabular-nums text-red-500 leading-none">{stats.failure}</span>
+            <span className="text-muted-foreground">封</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="border rounded p-4 mb-4 space-y-3 bg-muted/10 shrink-0">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <ParseStatusRadios label="费前净值解析状态" value={tableNavFilter} onChange={setTableNavFilter} />
+          <ParseStatusRadios label="费后净值解析状态" value={postTableNavFilter} onChange={setPostTableNavFilter} />
+          <ParseStatusRadios label="估值表抓取状态" value={valuationFilter} onChange={setValuationFilter} />
+          <ParseStatusRadios label="台账抓取状态" value={ledgerFilter} onChange={setLedgerFilter} />
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs text-muted-foreground shrink-0">发送时间</span>
+          <input
+            type="date"
+            value={sentFrom}
+            onChange={(e) => setSentFrom(e.target.value)}
+            className="border rounded px-2 py-1 text-sm bg-background"
+          />
+          <span className="text-muted-foreground text-xs">—</span>
+          <input
+            type="date"
+            value={sentTo}
+            onChange={(e) => setSentTo(e.target.value)}
+            className="border rounded px-2 py-1 text-sm bg-background"
+          />
+          <button
+            type="button"
+            onClick={applyQuery}
+            className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm rounded transition-colors"
+          >
+            查询
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mb-3 gap-4 shrink-0">
+        <div className="flex items-center border rounded px-2 h-8 gap-1.5 bg-background w-80">
+          <span className="text-xs text-muted-foreground shrink-0">邮件标题</span>
+          <input
+            className="flex-1 text-sm outline-none bg-transparent placeholder:text-muted-foreground/50"
+            placeholder="搜索邮件标题"
+            value={subjectInput}
+            onChange={(e) => setSubjectInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setSubjectKeyword(subjectInput)
+                setAppliedFilters((f) => ({ ...f, subjectKeyword: subjectInput }))
+                setPage(1)
+              }
+            }}
+          />
+          <button
+            onClick={() => {
+              setSubjectKeyword(subjectInput)
+              setAppliedFilters((f) => ({ ...f, subjectKeyword: subjectInput }))
+              setPage(1)
+            }}
+            className="text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Search className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={rows.length === 0}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 border rounded text-sm hover:bg-muted transition-colors disabled:opacity-40"
+          >
+            <Download className="h-3.5 w-3.5" /> 导出
+          </button>
+          <button
+            type="button"
+            onClick={() => void runFetch()}
+            disabled={fetching}
+            className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors disabled:opacity-40"
+          >
+            {fetching ? "解析中…" : "重新解析"}
+          </button>
+        </div>
+      </div>
+
+      {fetchMsg && (
+        <p className={`text-xs mb-3 shrink-0 ${fetchMsg.includes("失败") ? "text-amber-700 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+          {fetchMsg}
+        </p>
+      )}
+
+      <div className="overflow-auto rounded border flex-1 min-h-0">
+        <table className="w-full text-sm border-collapse" style={{ minWidth: 1320 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 border-b">
+              <th className="px-3 py-3 w-10 sticky left-0 z-30 bg-muted/40 dark:bg-muted/20">
+                <input
+                  type="checkbox"
+                  className="rounded h-3 w-3"
+                  checked={selected.size === rows.length && rows.length > 0}
+                  onChange={() => {
+                    if (selected.size === rows.length) setSelected(new Set())
+                    else setSelected(new Set(rows.map((r) => r.id)))
+                  }}
+                />
+              </th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-12 sticky left-10 z-30 bg-muted/40 dark:bg-muted/20 border-r border-zinc-200 dark:border-zinc-700 whitespace-nowrap">序号</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-36 whitespace-nowrap">发送时间</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 min-w-[320px]">邮件标题</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-40 whitespace-nowrap">收件邮箱</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-44 whitespace-nowrap border-r border-zinc-200 dark:border-zinc-700">发件邮箱</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-28 sticky right-[22.5rem] z-30 bg-muted/40 dark:bg-muted/20 border-l border-zinc-200 dark:border-zinc-700 whitespace-nowrap">费前净值<br />解析状态</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-28 sticky right-[15.5rem] z-30 bg-muted/40 dark:bg-muted/20 whitespace-nowrap">费后净值<br />解析状态</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-24 sticky right-[9.5rem] z-30 bg-muted/40 dark:bg-muted/20 whitespace-nowrap">估值表<br />抓取状态</th>
+              <th className="px-3 py-3 text-left text-xs font-semibold text-zinc-500 w-24 sticky right-14 z-30 bg-muted/40 dark:bg-muted/20 whitespace-nowrap">台账<br />抓取状态</th>
+              <th className="px-3 py-3 text-center text-xs font-semibold text-zinc-500 w-14 sticky right-0 z-30 bg-muted/40 dark:bg-muted/20 whitespace-nowrap">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-3">
+                    <span>暂无解析记录</span>
+                    <button
+                      type="button"
+                      onClick={() => void runFetch()}
+                      disabled={fetching}
+                      className="px-4 py-1.5 bg-red-500 text-white text-sm rounded hover:bg-red-600 disabled:opacity-40"
+                    >
+                      {fetching ? "解析中…" : "开始解析"}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ) : rows.map((row, i) => {
+              const isSelected = selected.has(row.id)
+              const stickyLeftTd = isSelected
+                ? "px-3 py-3 sticky z-10 border-b bg-blue-50/50 dark:bg-blue-950/20"
+                : "px-3 py-3 sticky z-10 border-b bg-background group-hover:bg-muted/20"
+              const stickyRightTd = stickyLeftTd
+              return (
+                <tr key={row.id || `${row.crawlEmailAccount}-${row.sentAt}`} className={`group border-b hover:bg-muted/20 ${isSelected ? "bg-blue-50/50 dark:bg-blue-950/20" : ""}`}>
+                  <td className={`${stickyLeftTd} text-center sticky left-0`}>
+                    <input
+                      type="checkbox"
+                      className="rounded h-3 w-3"
+                      checked={isSelected}
+                      onChange={() => {
+                        const next = new Set(selected)
+                        if (isSelected) next.delete(row.id)
+                        else next.add(row.id)
+                        setSelected(next)
+                      }}
+                    />
+                  </td>
+                  <td className={`${stickyLeftTd} text-muted-foreground tabular-nums sticky left-10 border-r border-zinc-200 dark:border-zinc-700`}>{(page - 1) * pageSize + i + 1}</td>
+                  <td className="px-3 py-3 text-muted-foreground text-xs whitespace-nowrap border-b">
+                    {new Date(row.sentAt).toLocaleString("zh-CN")}
+                  </td>
+                  <td className="px-3 py-3 min-w-[320px] border-b" title={row.subject}>
+                    <span className="block truncate max-w-[480px]">{row.subject}</span>
+                  </td>
+                  <td className="px-3 py-3 text-xs whitespace-nowrap border-b">{row.crawlEmailAccount}</td>
+                  <td className="px-3 py-3 text-xs whitespace-nowrap border-b border-r border-zinc-200 dark:border-zinc-700">{row.senderEmail || "—"}</td>
+                  <td className={`${stickyRightTd} font-medium sticky right-[22.5rem] border-l border-zinc-200 dark:border-zinc-700 ${parseStatusClass(row.tableNavStatus)}`}>{row.tableNavStatus}</td>
+                  <td className={`${stickyRightTd} font-medium sticky right-[15.5rem] ${parseStatusClass(row.postTableNavStatus)}`}>{row.postTableNavStatus}</td>
+                  <td className={`${stickyRightTd} font-medium sticky right-[9.5rem] ${parseStatusClass(row.valuationStatus)}`}>{row.valuationStatus}</td>
+                  <td className={`${stickyRightTd} font-medium sticky right-14 ${parseStatusClass(row.ledgerStatus)}`}>{row.ledgerStatus}</td>
+                  <td className={`${stickyRightTd} text-center sticky right-0`}>
+                    <button
+                      type="button"
+                      title="查看"
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => alert(row.subject)}
+                    >
+                      <Eye className="h-4 w-4 inline" />
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-end gap-4 mt-4 pt-3 text-sm text-zinc-500 shrink-0">
+        <span>共 {total} 条</span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30"
+          >‹</button>
+          <span className="w-7 h-7 flex items-center justify-center rounded border bg-red-500 text-white text-xs font-medium">{page}</span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages || total === 0}
+            className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30"
+          >›</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function OperationsEmailSyncView() {
-  const [emailTab, setEmailTab] = useState<"crawl" | "ia" | "parse">("crawl")
+  const [emailTab, setEmailTab] = useState<"crawl" | "ta" | "parse">("crawl")
   const [rows, setRows] = useState<CrawlEmailRow[]>([])
   const [loading, setLoading] = useState(false)
   const [page, setPage] = useState(1)
@@ -5518,7 +6407,7 @@ function OperationsEmailSyncView() {
 
   const emailTabs = [
     { key: "crawl" as const, label: "抓取邮箱设置" },
-    { key: "ia" as const, label: "IA账号" },
+    { key: "ta" as const, label: "TA账号" },
     { key: "parse" as const, label: "解析记录" },
   ]
 
@@ -5725,8 +6614,8 @@ function OperationsEmailSyncView() {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <div className="flex items-center border-b">
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div className="flex items-center border-b shrink-0">
         {emailTabs.map((t) => (
           <button
             key={t.key}
@@ -5744,7 +6633,7 @@ function OperationsEmailSyncView() {
       </div>
 
       {emailTab === "crawl" && (
-        <>
+        <div className="flex flex-col flex-1 min-h-0 overflow-auto">
           <div className="flex items-center justify-between mt-4 mb-3 gap-4">
             <p className="text-xs text-muted-foreground leading-relaxed">
               说明：设置抓取邮箱以抓取估值表、净值信息。数据信息仅供团队内部使用。如有疑问，请联系客服。
@@ -5853,20 +6742,16 @@ function OperationsEmailSyncView() {
               >›</button>
             </div>
           </div>
-        </>
-      )}
-
-      {emailTab === "ia" && (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          暂无 IA 账号数据
         </div>
       )}
 
-      {emailTab === "parse" && (
-        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
-          暂无解析记录
+      {emailTab === "ta" && (
+        <div className="flex flex-col flex-1 min-h-0 overflow-auto">
+          <OperationsTaAccountsPanel />
         </div>
       )}
+
+      {emailTab === "parse" && <OperationsParseLogsPanel />}
 
       {portalMounted && showImportModal && createPortal(
         <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={() => setShowImportModal(false)}>
@@ -16721,7 +17606,7 @@ export default function PrivateFundsPage() {
         )}
 
         {/* Page content area */}
-        <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5">
+        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "funds" && activeSideItem === "fund-managers-org" && <PrivateFundManagersView />}
           {activeTab === "funds" && activeSideItem === "fund-managers" && <PrivateFundManagersPersonalView />}
