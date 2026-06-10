@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 
 const menuItems = [
@@ -5457,6 +5457,530 @@ function OperationsTeamFieldsTab({
         </div>
       )}
     </>
+  )
+}
+
+const CRAWL_EMAIL_PRESETS = [
+  { label: "163邮箱", imapHost: "imap.163.com", imapPort: 993 },
+  { label: "QQ邮箱", imapHost: "imap.qq.com", imapPort: 993 },
+  { label: "126邮箱", imapHost: "imap.126.com", imapPort: 993 },
+  { label: "企业邮箱", imapHost: "imap.exmail.qq.com", imapPort: 993 },
+  { label: "其他", imapHost: "", imapPort: 993 },
+] as const
+
+type CrawlEmailRow = {
+  id: string
+  emailType: string
+  account: string
+  passMasked: string
+  imapHost: string
+  imapPort: number
+  crawlStatus: "成功" | "失败" | "未测试"
+  remark: string
+}
+
+function OperationsEmailSyncView() {
+  const [emailTab, setEmailTab] = useState<"crawl" | "ia" | "parse">("crawl")
+  const [rows, setRows] = useState<CrawlEmailRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [page, setPage] = useState(1)
+  const pageSize = 10
+  const [showModal, setShowModal] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [showPass, setShowPass] = useState(false)
+  const [checkedPop, setCheckedPop] = useState(false)
+  const [checkedAgreement, setCheckedAgreement] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [importing, setImporting] = useState(false)
+  const [importMsg, setImportMsg] = useState<string | null>(null)
+  const [form, setForm] = useState({
+    emailType: "",
+    account: "",
+    pass: "",
+    imapHost: "",
+    imapPort: 993,
+    remark: "",
+  })
+
+  const emailTabs = [
+    { key: "crawl" as const, label: "抓取邮箱设置" },
+    { key: "ia" as const, label: "IA账号" },
+    { key: "parse" as const, label: "解析记录" },
+  ]
+
+  function loadRows() {
+    setLoading(true)
+    fetch("/ma/api/ops/crawl-emails")
+      .then((r) => r.json())
+      .then((data) => {
+        setRows(Array.isArray(data) ? data : [])
+      })
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false))
+  }
+
+  async function importFromSenders() {
+    setImporting(true)
+    setImportMsg(null)
+    try {
+      const res = await fetch("/ma/api/ops/crawl-emails/sync", { method: "POST" })
+      const data = await res.json()
+      setImportMsg(data.message || data.error || (res.ok ? "导入完成" : "导入失败"))
+      if (res.ok) loadRows()
+    } catch {
+      setImportMsg("导入失败，请稍后重试")
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  useEffect(() => { loadRows() }, [])
+
+  const total = rows.length
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const pageRows = rows.slice((page - 1) * pageSize, page * pageSize)
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+
+  function resolveImapConfig() {
+    const preset = CRAWL_EMAIL_PRESETS.find((p) => p.label === form.emailType)
+    return {
+      imapHost: form.emailType === "其他" ? form.imapHost : (preset?.imapHost ?? form.imapHost),
+      imapPort: preset?.imapPort ?? form.imapPort,
+    }
+  }
+
+  function openAddModal() {
+    setEditingId(null)
+    setShowPass(false)
+    setCheckedPop(false)
+    setCheckedAgreement(false)
+    setTestResult(null)
+    setForm({
+      emailType: "",
+      account: "",
+      pass: "",
+      imapHost: "",
+      imapPort: 993,
+      remark: "",
+    })
+    setShowModal(true)
+  }
+
+  function openEditModal(row: CrawlEmailRow) {
+    setEditingId(row.id)
+    setShowPass(false)
+    setCheckedPop(true)
+    setCheckedAgreement(true)
+    setTestResult(null)
+    setForm({
+      emailType: row.emailType,
+      account: row.account,
+      pass: "",
+      imapHost: row.imapHost,
+      imapPort: row.imapPort,
+      remark: row.remark,
+    })
+    setShowModal(true)
+  }
+
+  const canSave =
+    form.emailType.trim() &&
+    form.account.trim() &&
+    (editingId || form.pass.trim()) &&
+    (editingId || (checkedPop && checkedAgreement))
+
+  const canTest =
+    form.emailType.trim() &&
+    form.account.trim() &&
+    resolveImapConfig().imapHost.trim() &&
+    (form.pass.trim() || !!editingId)
+
+  async function testConnection() {
+    if (!canTest) return
+    const { imapHost, imapPort } = resolveImapConfig()
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const res = await fetch("/ma/api/ops/crawl-emails/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          account: form.account,
+          pass: form.pass.trim() || undefined,
+          imapHost,
+          imapPort,
+          id: editingId || undefined,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setTestResult({ ok: false, message: data.error || "连接失败" })
+        return
+      }
+      setTestResult({ ok: true, message: data.message || "连接成功" })
+    } catch {
+      setTestResult({ ok: false, message: "连接失败" })
+    } finally {
+      setTesting(false)
+    }
+  }
+
+  async function saveRow() {
+    if (!canSave) return
+    setSaving(true)
+    try {
+      const { imapHost, imapPort } = resolveImapConfig()
+      const payload: Record<string, string | number> = {
+        emailType: form.emailType,
+        account: form.account,
+        imapHost,
+        imapPort,
+        remark: form.remark,
+      }
+      if (form.pass.trim()) payload.pass = form.pass
+      const res = await fetch(
+        editingId ? `/ma/api/ops/crawl-emails/${editingId}` : "/ma/api/ops/crawl-emails",
+        {
+          method: editingId ? "PUT" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      )
+      if (!res.ok) return
+      setShowModal(false)
+      loadRows()
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function deleteRow(id: string) {
+    if (!confirm("确定删除该抓取邮箱？")) return
+    try {
+      const res = await fetch(`/ma/api/ops/crawl-emails/${id}`, { method: "DELETE" })
+      if (res.ok) loadRows()
+    } catch {
+      // ignore
+    }
+  }
+
+  function statusClass(status: CrawlEmailRow["crawlStatus"]) {
+    if (status === "成功") return "text-emerald-600 dark:text-emerald-400"
+    if (status === "失败") return "text-red-500"
+    return "text-muted-foreground"
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center border-b">
+        {emailTabs.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setEmailTab(t.key)}
+            className={[
+              "px-5 py-3 text-sm font-medium transition-colors border-b-2 -mb-px",
+              emailTab === t.key
+                ? "border-red-500 text-red-600 dark:text-red-400"
+                : "border-transparent text-muted-foreground hover:text-foreground",
+            ].join(" ")}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {emailTab === "crawl" && (
+        <>
+          <div className="flex items-center justify-between mt-4 mb-3 gap-4">
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              说明：设置抓取邮箱以抓取估值表、净值信息。数据信息仅供团队内部使用。如有疑问，请联系客服。
+            </p>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => void importFromSenders()}
+                disabled={importing}
+                className="px-4 py-1.5 border border-red-500 text-red-500 text-sm font-medium rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40"
+              >
+                {importing ? "导入中…" : "导入发件账号"}
+              </button>
+              <button
+                onClick={openAddModal}
+                className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
+              >
+                添加抓取邮箱
+              </button>
+            </div>
+          </div>
+          {importMsg && (
+            <p className={`text-xs mb-3 ${importMsg.includes("成功") ? "text-emerald-600 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}>
+              {importMsg}
+            </p>
+          )}
+
+          <div className="overflow-auto rounded border">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-muted/40 border-b">
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-28">邮箱类型</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">账户</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-36">邮箱密码/授权码</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-24">抓取状态</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-32">邮箱备注</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 w-24">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={7} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                ) : pageRows.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-20 text-center text-muted-foreground">
+                      <div className="flex flex-col items-center gap-3">
+                        <span>暂无数据</span>
+                        <span className="text-xs max-w-md">可点击「导入发件账号」从「小工具 → 自动发邮件」同步已配置账号（如 净值接收 ch_c7h8@163.com）</span>
+                        <button
+                          onClick={() => void importFromSenders()}
+                          disabled={importing}
+                          className="px-4 py-1.5 border border-red-500 text-red-500 text-sm rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40"
+                        >
+                          {importing ? "导入中…" : "导入发件账号"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ) : pageRows.map((row, i) => (
+                  <tr key={row.id} className="border-b hover:bg-muted/20 transition-colors">
+                    <td className="px-4 py-3 text-muted-foreground tabular-nums">{(page - 1) * pageSize + i + 1}</td>
+                    <td className="px-4 py-3">{row.emailType}</td>
+                    <td className="px-4 py-3">{row.account}</td>
+                    <td className="px-4 py-3 text-muted-foreground tracking-widest">{row.passMasked || "—"}</td>
+                    <td className={`px-4 py-3 font-medium ${statusClass(row.crawlStatus)}`}>{row.crawlStatus}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{row.remark || "—"}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-3">
+                        <button
+                          title="编辑"
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() => openEditModal(row)}
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button
+                          title="删除"
+                          className="text-muted-foreground hover:text-red-500 transition-colors"
+                          onClick={() => void deleteRow(row.id)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-end gap-4 mt-4 pt-3 text-sm text-zinc-500">
+            <span>共 {total} 条</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >‹</button>
+              <span className="w-7 h-7 flex items-center justify-center rounded border bg-red-500 text-white text-xs font-medium">{page}</span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages || total === 0}
+                className="w-7 h-7 flex items-center justify-center rounded border hover:bg-muted transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              >›</button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {emailTab === "ia" && (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          暂无 IA 账号数据
+        </div>
+      )}
+
+      {emailTab === "parse" && (
+        <div className="flex items-center justify-center h-64 text-muted-foreground text-sm">
+          暂无解析记录
+        </div>
+      )}
+
+      {showModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
+          <div className="bg-background border rounded-lg shadow-xl w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <span className="font-semibold text-base">{editingId ? "编辑抓取邮箱" : "添加抓取邮箱"}</span>
+              <button onClick={() => setShowModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+
+            {!editingId && (
+              <div className="mb-5 px-3 py-2.5 rounded border border-amber-200 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
+                根据
+                <button type="button" className="text-blue-600 hover:underline mx-0.5">《抓取邮箱设置》</button>
+                教程填写，如有疑问请联系客服。
+              </div>
+            )}
+
+            <form className="space-y-4 mb-5" autoComplete="off" onSubmit={(e) => e.preventDefault()}>
+              <div className="flex items-center gap-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-24 text-right">
+                  <span className="text-red-500 mr-0.5">*</span>邮箱类型：
+                </label>
+                <select
+                  className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring bg-background text-foreground"
+                  value={form.emailType}
+                  onChange={(e) => {
+                    const preset = CRAWL_EMAIL_PRESETS.find((p) => p.label === e.target.value)
+                    setForm((f) => ({
+                      ...f,
+                      emailType: e.target.value,
+                      imapHost: preset?.imapHost ?? "",
+                      imapPort: preset?.imapPort ?? 993,
+                    }))
+                  }}
+                >
+                  <option value="" disabled>请选择邮箱类型</option>
+                  {CRAWL_EMAIL_PRESETS.map((p) => (
+                    <option key={p.label} value={p.label}>{p.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-24 text-right">
+                  <span className="text-red-500 mr-0.5">*</span>邮箱账户：
+                </label>
+                <input
+                  autoFocus
+                  name="crawl-mailbox-account"
+                  autoComplete="off"
+                  className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                  placeholder="请输入邮箱的登录账户"
+                  value={form.account}
+                  onChange={(e) => setForm((f) => ({ ...f, account: e.target.value }))}
+                />
+              </div>
+              <div className="flex items-start gap-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-24 text-right pt-2">
+                  <span className="text-red-500 mr-0.5">*</span>授权码：
+                </label>
+                <div className="flex-1">
+                  <div className="relative">
+                    <input
+                      type={showPass ? "text" : "password"}
+                      name="crawl-mailbox-auth-code"
+                      autoComplete="new-password"
+                      className="w-full border rounded px-3 py-2 pr-9 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                      placeholder={editingId ? "留空则不修改" : "请输入授权码"}
+                      value={form.pass}
+                      onChange={(e) => setForm((f) => ({ ...f, pass: e.target.value }))}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPass((v) => !v)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      {showPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                  {!editingId && (
+                    <p className="mt-1.5 text-xs text-muted-foreground">联系客服，教您获取授权码</p>
+                  )}
+                </div>
+              </div>
+              {form.emailType === "其他" && (
+                <div className="flex items-center gap-3">
+                  <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-24 text-right">IMAP 服务器：</label>
+                  <input
+                    className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                    placeholder="imap.example.com"
+                    value={form.imapHost}
+                    onChange={(e) => setForm((f) => ({ ...f, imapHost: e.target.value }))}
+                  />
+                </div>
+              )}
+              <div className="flex items-center gap-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-24 text-right">备注：</label>
+                <input
+                  className="flex-1 border rounded px-3 py-2 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                  placeholder="请输入备注"
+                  value={form.remark}
+                  onChange={(e) => setForm((f) => ({ ...f, remark: e.target.value }))}
+                />
+              </div>
+            </form>
+
+            {!editingId && (
+              <div className="space-y-2.5 mb-6">
+                <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checkedPop}
+                    onChange={(e) => setCheckedPop(e.target.checked)}
+                    className="rounded border-zinc-300 text-red-500 focus:ring-red-400"
+                  />
+                  检查并开启POP/IMAP服务/Exchange
+                </label>
+                <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={checkedAgreement}
+                    onChange={(e) => setCheckedAgreement(e.target.checked)}
+                    className="rounded border-zinc-300 text-red-500 focus:ring-red-400"
+                  />
+                  <span>
+                    查看并同意
+                    <button type="button" className="text-blue-600 hover:underline mx-0.5">《数据保密协议》</button>
+                  </span>
+                </label>
+              </div>
+            )}
+
+            <div className="flex items-center justify-between pt-2 gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => void testConnection()}
+                  disabled={!canTest || testing || saving}
+                  className="px-4 py-1.5 border border-red-500 text-red-500 rounded text-sm hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40 shrink-0"
+                >
+                  {testing ? "测试中…" : "测试连接"}
+                </button>
+                {testResult && (
+                  <span className={`text-xs truncate ${testResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-500"}`}>
+                    {testResult.message}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-3 shrink-0">
+                <button onClick={() => setShowModal(false)}
+                  className="px-6 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取消</button>
+                <button
+                  onClick={() => void saveRow()}
+                  disabled={!canSave || saving || testing}
+                  className="px-6 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
+                >
+                  {saving ? "保存中…" : "确定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -16110,7 +16634,8 @@ export default function PrivateFundsPage() {
           {activeTab === "operations" && activeSideItem === "ops-direct" && <OperationsDirectView />}
           {activeTab === "operations" && activeSideItem === "ops-fof" && <OperationsFofUnderlyingView />}
           {activeTab === "operations" && activeSideItem === "ops-active-funds" && <OperationsManagedProductsView />}
-          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && (
+          {activeTab === "operations" && activeSideItem === "ops-email-sync" && <OperationsEmailSyncView />}
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>
