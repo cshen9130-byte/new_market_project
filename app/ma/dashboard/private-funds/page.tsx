@@ -5506,6 +5506,7 @@ function OperationsEmailSyncView() {
   const [importOptions, setImportOptions] = useState<ImportableEmailOption[]>([])
   const [importOptionsLoading, setImportOptionsLoading] = useState(false)
   const [selectedImportAccounts, setSelectedImportAccounts] = useState<Set<string>>(new Set())
+  const [portalMounted, setPortalMounted] = useState(false)
   const [form, setForm] = useState({
     emailType: "",
     account: "",
@@ -5582,6 +5583,7 @@ function OperationsEmailSyncView() {
   }
 
   useEffect(() => { loadRows() }, [])
+  useEffect(() => { setPortalMounted(true) }, [])
 
   const total = rows.length
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -5749,6 +5751,7 @@ function OperationsEmailSyncView() {
             </p>
             <div className="flex items-center gap-2 shrink-0">
               <button
+                type="button"
                 onClick={() => void openImportModal()}
                 disabled={importing}
                 className="px-4 py-1.5 border border-red-500 text-red-500 text-sm font-medium rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40"
@@ -5792,6 +5795,7 @@ function OperationsEmailSyncView() {
                         <span>暂无数据</span>
                         <span className="text-xs max-w-md">可点击「导入已配置邮箱」从「小工具 → 自动发邮件」选择要添加的账号</span>
                         <button
+                          type="button"
                           onClick={() => void openImportModal()}
                           disabled={importing}
                           className="px-4 py-1.5 border border-red-500 text-red-500 text-sm rounded hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors disabled:opacity-40"
@@ -5864,12 +5868,12 @@ function OperationsEmailSyncView() {
         </div>
       )}
 
-      {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowImportModal(false)}>
+      {portalMounted && showImportModal && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={() => setShowImportModal(false)}>
           <div className="bg-background border rounded-lg shadow-xl w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <span className="font-semibold text-base">导入已配置邮箱</span>
-              <button onClick={() => setShowImportModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+              <button type="button" onClick={() => setShowImportModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
             </div>
             <p className="text-xs text-muted-foreground mb-4">
               从「小工具 → 自动发邮件」已配置的发件账号中选择要添加到抓取列表的邮箱。
@@ -5908,12 +5912,14 @@ function OperationsEmailSyncView() {
             </div>
             <div className="flex justify-end gap-3">
               <button
+                type="button"
                 onClick={() => setShowImportModal(false)}
                 className="px-6 py-1.5 border rounded text-sm hover:bg-muted transition-colors"
               >
                 取消
               </button>
               <button
+                type="button"
                 onClick={() => void confirmImportSelected()}
                 disabled={importing || selectedImportAccounts.size === 0}
                 className="px-6 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40"
@@ -5922,11 +5928,12 @@ function OperationsEmailSyncView() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {showModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
+      {portalMounted && showModal && createPortal(
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40" onClick={() => setShowModal(false)}>
           <div className="bg-background border rounded-lg shadow-xl w-[520px] p-6" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <span className="font-semibold text-base">{editingId ? "编辑抓取邮箱" : "添加抓取邮箱"}</span>
@@ -6084,7 +6091,8 @@ function OperationsEmailSyncView() {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
