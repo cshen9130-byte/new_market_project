@@ -801,8 +801,36 @@ function PrivateFundTable({
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [addedCols, setAddedCols] = useState<AddedCol[]>([])
   const [showAddMetric, setShowAddMetric] = useState(false)
+  const tableContainerRef = useRef<HTMLDivElement>(null)
+  const fakeScrollbarRef = useRef<HTMLDivElement>(null)
+  const [tableScrollWidth, setTableScrollWidth] = useState(0)
 
   const sfKey = JSON.stringify(strategyFilters)
+
+  // Sync fake horizontal scrollbar with table container
+  useEffect(() => {
+    const container = tableContainerRef.current
+    const fakeScrollbar = fakeScrollbarRef.current
+    if (!container || !fakeScrollbar) return
+    const onTableScroll = () => { fakeScrollbar.scrollLeft = container.scrollLeft }
+    const onFakeScroll = () => { container.scrollLeft = fakeScrollbar.scrollLeft }
+    container.addEventListener("scroll", onTableScroll)
+    fakeScrollbar.addEventListener("scroll", onFakeScroll)
+    return () => {
+      container.removeEventListener("scroll", onTableScroll)
+      fakeScrollbar.removeEventListener("scroll", onFakeScroll)
+    }
+  }, [])
+
+  // Measure table scroll width to size the fake scrollbar phantom
+  useEffect(() => {
+    const update = () => {
+      if (tableContainerRef.current) setTableScrollWidth(tableContainerRef.current.scrollWidth)
+    }
+    update()
+    const t = setTimeout(update, 100)
+    return () => clearTimeout(t)
+  }, [data, addedCols])
 
   useEffect(() => {
     setPage(1)
@@ -972,7 +1000,10 @@ function PrivateFundTable({
           </button>
         </div>
       </div>
-      <div className="overflow-x-auto rounded-lg border">
+      <div
+        ref={tableContainerRef}
+        className="overflow-x-scroll [scrollbar-width:none] [&::-webkit-scrollbar]:hidden rounded-t-lg border-x border-t"
+      >
         <table className="text-sm border-collapse w-full" style={{ minWidth: 1480 }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
@@ -1138,6 +1169,15 @@ function PrivateFundTable({
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* Fake horizontal scrollbar — sticky at bottom of viewport as you scroll */}
+      <div
+        ref={fakeScrollbarRef}
+        className="overflow-x-auto border-x border-b rounded-b-lg sticky bottom-0 z-10 bg-background"
+        style={{ height: 14 }}
+      >
+        <div style={{ width: tableScrollWidth, height: 1 }} />
       </div>
 
       {/* Pagination */}
@@ -17606,7 +17646,7 @@ export default function PrivateFundsPage() {
         )}
 
         {/* Page content area */}
-        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden p-5">
+        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-y-auto p-5">
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "funds" && activeSideItem === "fund-managers-org" && <PrivateFundManagersView />}
           {activeTab === "funds" && activeSideItem === "fund-managers" && <PrivateFundManagersPersonalView />}
