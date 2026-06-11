@@ -318,7 +318,14 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
         signal: abort.signal,
       })
 
-      if (!res.ok) throw new Error(`请求失败 (${res.status})`)
+      if (!res.ok) {
+        let errMsg = `请求失败 (${res.status})`
+        try {
+          const body = await res.json()
+          if (body?.error) errMsg = body.error
+        } catch { /* ignore parse error */ }
+        throw new Error(errMsg)
+      }
       if (!res.body) throw new Error("无响应体")
 
       const reader = res.body.getReader()

@@ -41,6 +41,9 @@ module.exports = {
         DASHSCOPE_CHAT_MODEL: process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
         DASHSCOPE_EMBEDDING_MODEL: "text-embedding-v4",
 
+        // DeepSeek API key for AI 助手 text chat
+        DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY || "",
+
         // PostgreSQL connection string (set by setup_db.sh → .env)
         DATABASE_URL: process.env.DATABASE_URL || "",
 

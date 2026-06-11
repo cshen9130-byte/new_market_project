@@ -13,10 +13,13 @@ import {
   type EmailParseRecord,
   type ParseStepStatus,
 } from "@/lib/server/email-parse-records"
+import { extractNavData } from "@/lib/server/email-nav-extract"
+import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
 
 export type EmailParseFetchResult = {
   emailsScanned: number
   recordsFound: number
+  navSaved: number
   errors: string[]
 }
 
@@ -162,14 +165,19 @@ function parseEmailRecord(
   }
 }
 
+type FetchMailboxResult = {
+  parseRecords: Omit<EmailParseRecord, "id">[]
+  navRecords: EmailNavInsert[]
+}
+
 async function fetchMailbox(
   account: CrawlEmailAccount,
   since: Date,
   errors: string[],
-): Promise<Omit<EmailParseRecord, "id">[]> {
+): Promise<FetchMailboxResult> {
   if (!account.pass?.trim()) {
     errors.push(`${account.account}: 未配置授权码`)
-    return []
+    return { parseRecords: [], navRecords: [] }
   }
 
   const client = new ImapFlow({
@@ -180,7 +188,8 @@ async function fetchMailbox(
     logger: false,
   })
 
-  const records: Omit<EmailParseRecord, "id">[] = []
+  const parseRecords: Omit<EmailParseRecord, "id">[] = []
+  const navRecords: EmailNavInsert[] = []
 
   await client.connect()
   try {
@@ -224,9 +233,23 @@ async function fetchMailbox(
         (envMsg as { internalDate?: Date }).internalDate ??
         envelope?.date ??
         new Date()
-      records.push(
-        parseEmailRecord(account, String(uid), subject, sentAt, senderEmail, chunks.join("\n"), attachments),
+
+      const bodyText = chunks.join("\n")
+      parseRecords.push(
+        parseEmailRecord(account, String(uid), subject, sentAt, senderEmail, bodyText, attachments),
       )
+
+      const navData = extractNavData(subject, bodyText)
+      if (navData) {
+        navRecords.push({
+          crawlEmailAccount: account.account,
+          emailUid: String(uid),
+          sentAt: sentAt.toISOString(),
+          subject,
+          senderEmail,
+          ...navData,
+        })
+      }
     }
   } finally {
     try {
@@ -236,7 +259,7 @@ async function fetchMailbox(
     }
   }
 
-  return records
+  return { parseRecords, navRecords }
 }
 
 export async function fetchEmailParseRecords(options?: {
@@ -267,25 +290,35 @@ export async function fetchEmailParseRecords(options?: {
     throw new Error("抓取邮箱未配置授权码，请编辑邮箱并填写授权码")
   }
 
-  const allRecords: Omit<EmailParseRecord, "id">[] = []
+  const allParseRecords: Omit<EmailParseRecord, "id">[] = []
+  const allNavRecords: EmailNavInsert[] = []
   let emailsScanned = 0
 
   for (const account of accounts) {
     try {
-      const rows = await fetchMailbox(account, since, errors)
-      emailsScanned += rows.length
-      allRecords.push(...rows)
+      const { parseRecords, navRecords } = await fetchMailbox(account, since, errors)
+      emailsScanned += parseRecords.length
+      allParseRecords.push(...parseRecords)
+      allNavRecords.push(...navRecords)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       errors.push(`${account.account}: ${msg}`)
     }
   }
 
-  replaceEmailParseRecords(allRecords)
+  replaceEmailParseRecords(allParseRecords)
+
+  let navSaved = 0
+  try {
+    navSaved = await upsertEmailNavRecords(allNavRecords)
+  } catch (e) {
+    errors.push(`保存净值数据失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
 
   return {
     emailsScanned,
-    recordsFound: allRecords.length,
+    recordsFound: allParseRecords.length,
+    navSaved,
     errors,
   }
 }

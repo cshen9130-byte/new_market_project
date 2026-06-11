@@ -154,8 +154,13 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify({ model: VISION_MODEL, messages: visionMessages, stream: true }),
     })
     if (!res.ok) {
-      const err = await res.text()
-      return Response.json({ error: err }, { status: res.status })
+      const raw = await res.text()
+      let message = `DashScope API 错误 (${res.status})`
+      try {
+        const parsed = JSON.parse(raw)
+        message = parsed?.message || parsed?.error?.message || parsed?.error || message
+      } catch { /* raw is not JSON */ }
+      return Response.json({ error: message }, { status: 500 })
     }
     return sseResponse(res.body as ReadableStream)
   }

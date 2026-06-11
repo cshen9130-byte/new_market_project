@@ -1,0 +1,94 @@
+/**
+ * PostgreSQL persistence for ops_email_nav_records.
+ * The table is auto-created on first use (idempotent DDL).
+ */
+
+import { query } from "@/lib/db"
+import type { ExtractedNavData } from "./email-nav-extract"
+
+export type EmailNavInsert = ExtractedNavData & {
+  crawlEmailAccount: string
+  emailUid: string
+  sentAt: string | null
+  subject: string
+  senderEmail: string
+}
+
+const CREATE_TABLE_SQL = `
+  CREATE TABLE IF NOT EXISTS ops_email_nav_records (
+    id                   BIGSERIAL PRIMARY KEY,
+    crawl_email_account  TEXT        NOT NULL,
+    email_uid            TEXT        NOT NULL,
+    sent_at              TIMESTAMPTZ,
+    subject              TEXT,
+    sender_email         TEXT,
+    nav_date             DATE,
+    nav                  NUMERIC(16,6),
+    cumulative_nav       NUMERIC(16,6),
+    product_code         TEXT,
+    fund_name            TEXT,
+    source               TEXT,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_email_nav_record UNIQUE (crawl_email_account, email_uid)
+  );
+  CREATE INDEX IF NOT EXISTS idx_email_nav_records_nav_date
+    ON ops_email_nav_records (nav_date DESC);
+  CREATE INDEX IF NOT EXISTS idx_email_nav_records_fund_name
+    ON ops_email_nav_records (fund_name);
+  CREATE INDEX IF NOT EXISTS idx_email_nav_records_product_code
+    ON ops_email_nav_records (product_code);
+`
+
+let tableEnsured = false
+
+export async function ensureEmailNavTable(): Promise<void> {
+  if (tableEnsured) return
+  await query(CREATE_TABLE_SQL)
+  tableEnsured = true
+}
+
+/**
+ * Upsert a batch of extracted NAV records.
+ * On conflict (same account + uid) the nav values are updated in place.
+ *
+ * @returns Number of rows inserted or updated.
+ */
+export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<number> {
+  if (records.length === 0) return 0
+  await ensureEmailNavTable()
+
+  let count = 0
+  for (const r of records) {
+    await query(
+      `INSERT INTO ops_email_nav_records
+         (crawl_email_account, email_uid, sent_at, subject, sender_email,
+          nav_date, nav, cumulative_nav, product_code, fund_name, source)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (crawl_email_account, email_uid) DO UPDATE SET
+         sent_at        = EXCLUDED.sent_at,
+         subject        = EXCLUDED.subject,
+         sender_email   = EXCLUDED.sender_email,
+         nav_date       = EXCLUDED.nav_date,
+         nav            = EXCLUDED.nav,
+         cumulative_nav = EXCLUDED.cumulative_nav,
+         product_code   = EXCLUDED.product_code,
+         fund_name      = EXCLUDED.fund_name,
+         source         = EXCLUDED.source`,
+      [
+        r.crawlEmailAccount,
+        r.emailUid,
+        r.sentAt,
+        r.subject,
+        r.senderEmail,
+        r.navDate,
+        r.nav,
+        r.cumulativeNav,
+        r.productCode,
+        r.fundName,
+        r.source,
+      ],
+    )
+    count++
+  }
+  return count
+}
