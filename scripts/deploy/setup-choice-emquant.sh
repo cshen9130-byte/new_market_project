@@ -29,6 +29,7 @@ DASHSCOPE_API_KEY="${DASHSCOPE_API_KEY:-}"
 DASHSCOPE_BASE_URL="${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
 DASHSCOPE_CHAT_MODEL="${DASHSCOPE_CHAT_MODEL:-qwen-plus}"
 DASHSCOPE_EMBEDDING_MODEL="${DASHSCOPE_EMBEDDING_MODEL:-text-embedding-v4}"
+DASHSCOPE_VISION_MODEL="${DASHSCOPE_VISION_MODEL:-qwen-vl-plus}"
 DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
 DATABASE_URL="${DATABASE_URL:-}"
 BUILD_MEMORY_MB="1024"
@@ -50,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --dashscope-base-url) DASHSCOPE_BASE_URL="$2"; shift 2 ;;
     --dashscope-chat-model) DASHSCOPE_CHAT_MODEL="$2"; shift 2 ;;
     --dashscope-embedding-model) DASHSCOPE_EMBEDDING_MODEL="$2"; shift 2 ;;
+    --dashscope-vision-model) DASHSCOPE_VISION_MODEL="$2"; shift 2 ;;
     --deepseek-api-key) DEEPSEEK_API_KEY="$2"; shift 2 ;;
     --build-memory-mb) BUILD_MEMORY_MB="$2"; shift 2 ;;
     --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
@@ -141,6 +143,7 @@ export DASHSCOPE_API_KEY="$DASHSCOPE_API_KEY"
 export DASHSCOPE_BASE_URL="$DASHSCOPE_BASE_URL"
 export DASHSCOPE_CHAT_MODEL="$DASHSCOPE_CHAT_MODEL"
 export DASHSCOPE_EMBEDDING_MODEL="$DASHSCOPE_EMBEDDING_MODEL"
+export DASHSCOPE_VISION_MODEL="$DASHSCOPE_VISION_MODEL"
 export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY"
 EOF
 
@@ -298,6 +301,7 @@ _upsert_env "DASHSCOPE_API_KEY"         "$DASHSCOPE_API_KEY"
 _upsert_env "DASHSCOPE_BASE_URL"        "$DASHSCOPE_BASE_URL"
 _upsert_env "DASHSCOPE_CHAT_MODEL"      "$DASHSCOPE_CHAT_MODEL"
 _upsert_env "DASHSCOPE_EMBEDDING_MODEL" "$DASHSCOPE_EMBEDDING_MODEL"
+_upsert_env "DASHSCOPE_VISION_MODEL"    "$DASHSCOPE_VISION_MODEL"
 _upsert_env "DEEPSEEK_API_KEY"          "$DEEPSEEK_API_KEY"
 _upsert_env "PYTHON_EXE"               "$PY_EXE_PATH"
 

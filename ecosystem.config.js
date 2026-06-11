@@ -40,6 +40,7 @@ module.exports = {
           process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1",
         DASHSCOPE_CHAT_MODEL: process.env.DASHSCOPE_CHAT_MODEL || "qwen-plus",
         DASHSCOPE_EMBEDDING_MODEL: "text-embedding-v4",
+        DASHSCOPE_VISION_MODEL: process.env.DASHSCOPE_VISION_MODEL || "qwen-vl-plus",
 
         // DeepSeek API key for AI 助手 text chat
         DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY || "",

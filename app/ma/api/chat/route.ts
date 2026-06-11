@@ -7,8 +7,12 @@ const DEEPSEEK_BASE = "https://api.deepseek.com/v1"
 const DEEPSEEK_MODEL = "deepseek-chat"
 
 // DashScope OpenAI-compatible endpoint (used for vision queries)
-const DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-const VISION_MODEL = "qwen-vl-max-latest"
+const DASHSCOPE_BASE =
+  process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1"
+// Override via DASHSCOPE_VISION_MODEL env var; qwen-vl-plus is the most widely
+// accessible vision model — qwen-vl-max-latest requires explicit activation in
+// the Aliyun Model Studio console (will error with "Access denied" if not enabled).
+const VISION_MODEL = process.env.DASHSCOPE_VISION_MODEL || "qwen-vl-plus"
 
 // ── Database schema digest injected into every system message ─────────────────
 const SCHEMA_NOTE = `
