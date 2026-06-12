@@ -9,7 +9,11 @@ Usage
 -----
   python scripts/ma/nightly_etl.py               # normal nightly run
   python scripts/ma/nightly_etl.py --step nhci   # run single step only
+  python scripts/ma/nightly_etl.py --step email_nav_parse
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
+
+Optional env:
+  EMAIL_NAV_ETL_DAYS                    — email lookback window (default 31)
 
 Required env vars (loaded automatically from .env / .env.local):
   DATABASE_URL                          — e.g. postgresql://user:pass@localhost/market_data
@@ -116,6 +120,60 @@ def run_script(
             log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
         elif log_stderr and stderr:
             log.info("[%s] stderr:\n%s", script_name, stderr[:10000])
+        if stdout:
+            first = stdout.find("{")
+            last = stdout.rfind("}")
+            if first != -1 and last > first:
+                try:
+                    return json.loads(stdout[first : last + 1])
+                except json.JSONDecodeError:
+                    pass
+        log.warning("[%s] no valid JSON in stdout", script_name)
+        if stderr:
+            log.warning("[%s] stderr: %s", script_name, stderr[:800])
+        return None
+    except subprocess.TimeoutExpired:
+        log.error("[%s] timed out after %ds", script_name, timeout)
+        return None
+    except Exception as exc:
+        log.error("[%s] exception: %s", script_name, exc)
+        return None
+
+
+def run_node_script(
+    script_name: str,
+    extra_args: list | None = None,
+    timeout: int = 900,
+) -> dict | None:
+    """Run a TypeScript script in scripts/ma/ via tsx and return its JSON stdout."""
+    script_path = SCRIPT_DIR / script_name
+    project_root = SCRIPT_DIR.parent.parent
+    tsx_local = project_root / "node_modules" / ".bin" / (
+        "tsx.cmd" if sys.platform == "win32" else "tsx"
+    )
+
+    if tsx_local.is_file():
+        cmd = [str(tsx_local), str(script_path)] + (extra_args or [])
+    else:
+        npx = "npx.cmd" if sys.platform == "win32" else "npx"
+        cmd = [npx, "--yes", "tsx", str(script_path)] + (extra_args or [])
+
+    env = {**os.environ}
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            cwd=str(project_root),
+        )
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        if result.returncode != 0:
+            log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
+        elif stderr:
+            log.info("[%s] stderr:\n%s", script_name, stderr[:5000])
         if stdout:
             first = stdout.find("{")
             last = stdout.rfind("}")
@@ -2302,6 +2360,42 @@ def step_private_fund_indicators(conn) -> int:
     return updated
 
 
+def step_email_nav_parse(days: int | None = None) -> int:
+    """Crawl fund emails, parse NAV attachments/body, upsert ops_email_nav_records."""
+    lookback = days
+    if lookback is None:
+        try:
+            lookback = int(os.environ.get("EMAIL_NAV_ETL_DAYS", "31"))
+        except ValueError:
+            lookback = 31
+
+    log.info("email_nav_parse: fetching fund emails (last %d days) …", lookback)
+    result = run_node_script("email_nav_etl.ts", extra_args=[f"--days={lookback}"], timeout=900)
+    if not result:
+        log.warning("email_nav_parse: no result from email_nav_etl.ts")
+        return 0
+
+    if result.get("skipped"):
+        log.warning("email_nav_parse: skipped — %s", result.get("error", "not configured"))
+        return 0
+
+    nav_saved = int(result.get("navSaved") or 0)
+    emails_scanned = int(result.get("emailsScanned") or 0)
+    records_found = int(result.get("recordsFound") or 0)
+    errors = result.get("errors") or []
+
+    log.info(
+        "email_nav_parse: emails=%d records=%d nav_saved=%d errors=%d",
+        emails_scanned,
+        records_found,
+        nav_saved,
+        len(errors),
+    )
+    for err in errors[:8]:
+        log.warning("  email_nav_parse: %s", err)
+    return nav_saved
+
+
 def step_warm_mom_cache() -> int:
     """Call the /ma/api/mom-analysis/warm-cache endpoint to pre-compute all chart data."""
     import urllib.request
@@ -2347,6 +2441,7 @@ ORDERED_STEPS = [
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
+    "email_nav_parse",               # crawl fund emails → ops_email_nav_records
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "warm_mom_cache",                # warm MOM dashboard API caches
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
@@ -2459,6 +2554,7 @@ def main():
         "regime_similarity":               lambda: step_regime_similarity(conn),
         "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),
         "money_credit":                    lambda: step_money_credit(conn),
+        "email_nav_parse":                 lambda: step_email_nav_parse(),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),

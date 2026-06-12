@@ -15,7 +15,9 @@ type EmailNavRawRow = {
   nav_date: string
   nav: string
   cumulative_nav: string | null
+  fund_name: string | null
   attachment_filename: string | null
+  subject: string | null
 }
 
 /** Collect every name variant we know for a fund (for email matching). */
@@ -37,43 +39,121 @@ function isAClassFund(beianHao: string, aliases: string[]): boolean {
   return aliases.some((name) => /A类/u.test(name))
 }
 
-/** Pick one email row per date when attachments contain multiple share classes. */
-function dedupeEmailRowsByDate(rows: EmailNavRawRow[], beianHao: string, aliases: string[]): EmailNavPoint[] {
-  const aClass = isAClassFund(beianHao, aliases)
-  const byDate = new Map<string, EmailNavRawRow[]>()
-
-  for (const row of rows) {
-    const list = byDate.get(row.nav_date) ?? []
-    list.push(row)
-    byDate.set(row.nav_date, list)
-  }
-
-  const points: EmailNavPoint[] = []
-  for (const [navDate, group] of byDate) {
-    let candidates = group
-    if (!aClass) {
-      const main = group.filter((r) => !/A类/u.test(r.attachment_filename ?? ""))
-      if (main.length > 0) candidates = main
-    } else {
-      const aRows = group.filter((r) => /A类/u.test(r.attachment_filename ?? ""))
-      if (aRows.length > 0) candidates = aRows
+/** Extract product codes embedded in email metadata, e.g. 资产净值公告_SAVF39_… */
+function extractEmbeddedProductCodes(...parts: Array<string | null | undefined>): string[] {
+  const codes = new Set<string>()
+  for (const part of parts) {
+    const text = (part ?? "").trim()
+    if (!text) continue
+    for (const m of text.matchAll(/资产净值公告_([A-Z0-9]+)_/gi)) {
+      if (m[1]) codes.add(m[1].toUpperCase())
     }
+    for (const m of text.matchAll(/_([A-Z]{1,6}\d+[A-Z]?)_/g)) {
+      if (m[1]) codes.add(m[1].toUpperCase())
+    }
+  }
+  return Array.from(codes)
+}
 
-    const beianHaoTrim = beianHao.trim()
-    const withBeian = beianHaoTrim
-      ? candidates.filter((r) => (r.attachment_filename ?? "").includes(beianHaoTrim))
-      : []
-    const picked = (withBeian.length > 0 ? withBeian : candidates)[0]
-    if (!picked) continue
+function nameMatchesAlias(fundName: string | null, aliases: string[]): boolean {
+  const name = (fundName ?? "").trim()
+  if (!name) return false
+  return aliases.some((alias) => name === alias || name.startsWith(alias))
+}
 
-    points.push({
-      price_date: navDate,
-      nav: picked.nav,
-      cumulative_nav: picked.cumulative_nav ?? picked.nav,
-    })
+/** Reject email rows that belong to a different share class / product code. */
+function emailRowMatchesFund(row: EmailNavRawRow, beianHao: string, aliases: string[]): boolean {
+  const beian = beianHao.trim().toUpperCase()
+  const embedded = extractEmbeddedProductCodes(row.fund_name, row.attachment_filename, row.subject)
+  const meta = `${row.attachment_filename ?? ""} ${row.subject ?? ""} ${row.fund_name ?? ""}`
+
+  if (beian && embedded.length > 0 && !embedded.includes(beian)) return false
+
+  if (beian && meta.toUpperCase().includes(beian)) return true
+
+  if (nameMatchesAlias(row.fund_name, aliases)) {
+    return embedded.length === 0 || embedded.includes(beian)
   }
 
-  return points.sort((a, b) => a.price_date.localeCompare(b.price_date))
+  return false
+}
+
+/** SQL guard: keep rows whose embedded product code matches the fund beian_hao. */
+export function buildEmailNavCodeGuard(
+  recordAlias: string,
+  beianHaoExpr: string,
+): string {
+  const e = recordAlias
+  return `(
+    ${beianHaoExpr} IS NULL OR BTRIM(${beianHaoExpr}) = ''
+    OR COALESCE(${e}.fund_name, '') !~ '资产净值公告_[A-Z0-9]+_'
+    OR COALESCE(${e}.fund_name, '') ILIKE '%资产净值公告\_' || BTRIM(${beianHaoExpr}) || '\_%'
+  )`
+}
+
+/** Pick a single email source stream (one fund_name) instead of mixing per date. */
+function selectEmailSourceStream(
+  rows: EmailNavRawRow[],
+  beianHao: string,
+  aliases: string[],
+): EmailNavRawRow[] {
+  const filtered = rows.filter((row) => emailRowMatchesFund(row, beianHao, aliases))
+  if (filtered.length === 0) return []
+
+  const aClass = isAClassFund(beianHao, aliases)
+  const classFiltered = filtered.filter((row) => {
+    const meta = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""}`
+    return aClass ? /A类/u.test(meta) : !/A类/u.test(meta)
+  })
+  const pool = classFiltered.length > 0 ? classFiltered : filtered
+
+  const byFundName = new Map<string, EmailNavRawRow[]>()
+  for (const row of pool) {
+    const key = (row.fund_name ?? "").trim() || "(unknown)"
+    const list = byFundName.get(key) ?? []
+    list.push(row)
+    byFundName.set(key, list)
+  }
+
+  const beian = beianHao.trim().toUpperCase()
+  let bestKey = ""
+  let bestScore = -Infinity
+
+  for (const [fundName, group] of byFundName) {
+    let score = group.length
+    if (!fundName.startsWith("资产净值公告_")) score += 100
+    if (beian && fundName.toUpperCase().includes(beian)) score += 50
+    if (aliases.some((alias) => fundName === alias)) score += 40
+    if (fundName.startsWith("资产净值公告_")) score -= 10
+    if (score > bestScore) {
+      bestScore = score
+      bestKey = fundName
+    }
+  }
+
+  const stream = byFundName.get(bestKey) ?? []
+  const byDate = new Map<string, EmailNavRawRow>()
+  for (const row of stream) {
+    const prev = byDate.get(row.nav_date)
+    if (!prev) {
+      byDate.set(row.nav_date, row)
+      continue
+    }
+    // Prefer row whose attachment/subject mentions the beian code.
+    const rowHasBeian = beian && `${row.attachment_filename ?? ""}${row.subject ?? ""}`.toUpperCase().includes(beian)
+    const prevHasBeian = beian && `${prev.attachment_filename ?? ""}${prev.subject ?? ""}`.toUpperCase().includes(beian)
+    if (rowHasBeian && !prevHasBeian) byDate.set(row.nav_date, row)
+  }
+
+  return Array.from(byDate.values()).sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+}
+
+function rowsToEmailPoints(rows: EmailNavRawRow[]): EmailNavPoint[] {
+  return rows.map((row) => ({
+    price_date: row.nav_date,
+    nav: row.nav,
+    cumulative_nav: row.cumulative_nav,
+  }))
 }
 
 /** SQL predicate matching an ops_email_nav_records row to a fund. */
@@ -84,24 +164,28 @@ export function buildEmailNavMatchCondition(
   shortNameExpr: string,
 ): string {
   const e = recordAlias
+  const codeGuard = buildEmailNavCodeGuard(e, beianHaoExpr)
   return `(
-    (${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> '' AND (
-      ${e}.product_code = BTRIM(${beianHaoExpr})
-      OR COALESCE(${e}.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
-      OR COALESCE(${e}.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
-    ))
-    OR (BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${productNameExpr}))
-    OR (${shortNameExpr} IS NOT NULL AND BTRIM(${shortNameExpr}) <> '' AND BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${shortNameExpr}))
-    OR (
-      BTRIM(COALESCE(${e}.fund_name, '')) <> ''
-      AND BTRIM(${productNameExpr}) <> ''
-      AND BTRIM(${e}.fund_name) LIKE BTRIM(${productNameExpr}) || '%'
-    )
-    OR (
-      ${shortNameExpr} IS NOT NULL
-      AND BTRIM(${shortNameExpr}) <> ''
-      AND BTRIM(COALESCE(${e}.fund_name, '')) <> ''
-      AND BTRIM(${e}.fund_name) LIKE BTRIM(${shortNameExpr}) || '%'
+    ${codeGuard}
+    AND (
+      (${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> '' AND (
+        ${e}.product_code = BTRIM(${beianHaoExpr})
+        OR COALESCE(${e}.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+        OR COALESCE(${e}.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+      ))
+      OR (BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${productNameExpr}))
+      OR (${shortNameExpr} IS NOT NULL AND BTRIM(${shortNameExpr}) <> '' AND BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${shortNameExpr}))
+      OR (
+        BTRIM(COALESCE(${e}.fund_name, '')) <> ''
+        AND BTRIM(${productNameExpr}) <> ''
+        AND BTRIM(${e}.fund_name) LIKE BTRIM(${productNameExpr}) || '%'
+      )
+      OR (
+        ${shortNameExpr} IS NOT NULL
+        AND BTRIM(${shortNameExpr}) <> ''
+        AND BTRIM(COALESCE(${e}.fund_name, '')) <> ''
+        AND BTRIM(${e}.fund_name) LIKE BTRIM(${shortNameExpr}) || '%'
+      )
     )
   )`
 }
@@ -118,8 +202,8 @@ export function buildEmailNavLatestJoins(
     CASE
       WHEN ${shortNameExpr} IS NOT NULL AND (${shortNameExpr} ILIKE '%A类%' OR ${productNameExpr} ILIKE '%A类%')
         OR ${beianHaoExpr} ~ 'A$'
-        THEN COALESCE(e.attachment_filename, '') ILIKE '%A类%'
-      ELSE COALESCE(e.attachment_filename, '') NOT ILIKE '%A类%'
+        THEN COALESCE(e.fund_name, '') ILIKE '%A类%' OR COALESCE(e.attachment_filename, '') ILIKE '%A类%'
+      ELSE COALESCE(e.fund_name, '') NOT ILIKE '%A类%' AND COALESCE(e.attachment_filename, '') NOT ILIKE '%A类%'
     END
   )`
   return `
@@ -131,8 +215,13 @@ export function buildEmailNavLatestJoins(
         AND e.nav_date <= ${cutoffExpr}
         AND e.nav IS NOT NULL
       ORDER BY
+        CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
         CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
-          AND COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+          AND (
+            COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+            OR COALESCE(e.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+            OR COALESCE(e.fund_name, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+          )
           THEN 0 ELSE 1 END,
         e.nav_date DESC,
         e.id DESC
@@ -147,8 +236,13 @@ export function buildEmailNavLatestJoins(
         AND e.nav_date < en.nav_date
         AND e.nav IS NOT NULL
       ORDER BY
+        CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
         CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
-          AND COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+          AND (
+            COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+            OR COALESCE(e.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+            OR COALESCE(e.fund_name, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+          )
           THEN 0 ELSE 1 END,
         e.nav_date DESC,
         e.id DESC
@@ -180,7 +274,8 @@ export async function loadEmailNavSeries(
   const beian = (beianHao ?? "").trim()
 
   const rows = await query<EmailNavRawRow>(
-    `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text, e.attachment_filename
+    `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
+            e.fund_name, e.attachment_filename, e.subject
      FROM ops_email_nav_records e
      WHERE e.nav_date IS NOT NULL
        AND e.nav IS NOT NULL
@@ -203,7 +298,8 @@ export async function loadEmailNavSeries(
     [beian, aliases],
   )
 
-  return dedupeEmailRowsByDate(rows, beian, aliases)
+  const stream = selectEmailSourceStream(rows, beian, aliases)
+  return rowsToEmailPoints(stream)
 }
 
 export type LegacyNavRow = {
@@ -214,10 +310,17 @@ export type LegacyNavRow = {
   price_change: string
 }
 
-/** Email NAV wins on overlapping dates; legacy rows fill gaps. */
+function hasDistinctCumulative(nav: number, cumulative: number | null): boolean {
+  if (cumulative === null || !Number.isFinite(cumulative)) return false
+  if (!Number.isFinite(nav) || nav <= 0) return false
+  return Math.abs(cumulative - nav) / nav > 0.001
+}
+
+/** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: EmailNavPoint[]): LegacyNavRow[] {
   if (emailRows.length === 0) return legacyRows
 
+  const emailByDate = new Map(emailRows.map((row) => [row.price_date, row]))
   const byDate = new Map<string, LegacyNavRow>()
   for (const row of legacyRows) {
     byDate.set(row.price_date, row)
@@ -226,27 +329,53 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
   for (const row of emailRows) {
     const nav = row.nav ?? row.cumulative_nav
     if (!nav) continue
-    const cum = row.cumulative_nav ?? nav
     byDate.set(row.price_date, {
       price_date: row.price_date,
       nav,
-      cumulative_nav: cum,
-      cum_nav_withdrawal: cum,
+      cumulative_nav: "",
+      cum_nav_withdrawal: "",
       price_change: "",
     })
   }
 
   const merged = Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
+  let prevCum: number | null = null
+  let prevNav: number | null = null
+
   for (let i = 0; i < merged.length; i++) {
-    if (i === 0) {
-      merged[i] = { ...merged[i], price_change: merged[i].price_change || "" }
-      continue
+    const row = merged[i]
+    const nav = parseFloat(row.nav)
+    const emailRow = emailByDate.get(row.price_date)
+    const isEmailDate = Boolean(emailRow)
+
+    if (isEmailDate) {
+      const emailCum = emailRow?.cumulative_nav ? parseFloat(emailRow.cumulative_nav) : NaN
+      if (hasDistinctCumulative(nav, Number.isFinite(emailCum) ? emailCum : null)) {
+        row.cumulative_nav = String(emailCum)
+        row.cum_nav_withdrawal = String(emailCum)
+      } else if (prevCum !== null && prevNav !== null && prevNav > 0 && Number.isFinite(nav)) {
+        const chained = prevCum * (nav / prevNav)
+        row.cumulative_nav = String(chained)
+        row.cum_nav_withdrawal = String(chained)
+      } else {
+        row.cumulative_nav = row.nav
+        row.cum_nav_withdrawal = row.nav
+      }
+    } else if (!row.cumulative_nav) {
+      row.cumulative_nav = row.nav
+      row.cum_nav_withdrawal = row.nav
     }
-    const prev = parseFloat(merged[i - 1].nav)
-    const curr = parseFloat(merged[i].nav)
-    if (Number.isFinite(prev) && prev > 0 && Number.isFinite(curr)) {
-      merged[i] = { ...merged[i], price_change: String(curr / prev - 1) }
+
+    if (i > 0) {
+      const prev = parseFloat(merged[i - 1].nav)
+      if (Number.isFinite(prev) && prev > 0 && Number.isFinite(nav)) {
+        row.price_change = String(nav / prev - 1)
+      }
     }
+
+    prevCum = parseFloat(row.cumulative_nav)
+    prevNav = parseFloat(row.nav)
   }
+
   return merged
 }
