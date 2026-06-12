@@ -159,7 +159,22 @@ export async function GET(
   }
 
   const productName = info.product_name ?? ""
-  const shortName = info.short_name ?? ""
+  let shortName = info.short_name ?? ""
+
+  const bflNameRows = await query<{ product_name: string; short_name: string | null }>(
+    `SELECT product_name, short_name FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
+    [beian_hao],
+  ).catch(() => [] as { product_name: string; short_name: string | null }[])
+
+  const emailNameAliases = [
+    bflNameRows[0]?.product_name,
+    bflNameRows[0]?.short_name,
+    info.product_name,
+    info.short_name,
+  ]
+  if (!shortName && bflNameRows[0]?.short_name) {
+    shortName = bflNameRows[0].short_name
+  }
 
   const bflTrackRows = await query<{ scale: string | null; manager_names: string | null }>(
     `SELECT scale, manager_names
@@ -246,7 +261,7 @@ export async function GET(
     [beian_hao, productName, shortName]
   )
 
-  const emailNavRows = await loadEmailNavSeries(beian_hao, productName, shortName || null)
+  const emailNavRows = await loadEmailNavSeries(beian_hao, productName, shortName || null, emailNameAliases)
   const nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]

@@ -11,6 +11,71 @@ export type EmailNavPoint = {
   cumulative_nav: string | null
 }
 
+type EmailNavRawRow = {
+  nav_date: string
+  nav: string
+  cumulative_nav: string | null
+  attachment_filename: string | null
+}
+
+/** Collect every name variant we know for a fund (for email matching). */
+export function collectFundNameAliases(
+  productName: string,
+  shortName: string | null,
+  extraNames: Array<string | null | undefined> = [],
+): string[] {
+  const out = new Set<string>()
+  for (const raw of [productName, shortName, ...extraNames]) {
+    const name = (raw ?? "").trim()
+    if (name) out.add(name)
+  }
+  return Array.from(out)
+}
+
+function isAClassFund(beianHao: string, aliases: string[]): boolean {
+  if (/A$/i.test(beianHao)) return true
+  return aliases.some((name) => /A类/u.test(name))
+}
+
+/** Pick one email row per date when attachments contain multiple share classes. */
+function dedupeEmailRowsByDate(rows: EmailNavRawRow[], beianHao: string, aliases: string[]): EmailNavPoint[] {
+  const aClass = isAClassFund(beianHao, aliases)
+  const byDate = new Map<string, EmailNavRawRow[]>()
+
+  for (const row of rows) {
+    const list = byDate.get(row.nav_date) ?? []
+    list.push(row)
+    byDate.set(row.nav_date, list)
+  }
+
+  const points: EmailNavPoint[] = []
+  for (const [navDate, group] of byDate) {
+    let candidates = group
+    if (!aClass) {
+      const main = group.filter((r) => !/A类/u.test(r.attachment_filename ?? ""))
+      if (main.length > 0) candidates = main
+    } else {
+      const aRows = group.filter((r) => /A类/u.test(r.attachment_filename ?? ""))
+      if (aRows.length > 0) candidates = aRows
+    }
+
+    const beianHaoTrim = beianHao.trim()
+    const withBeian = beianHaoTrim
+      ? candidates.filter((r) => (r.attachment_filename ?? "").includes(beianHaoTrim))
+      : []
+    const picked = (withBeian.length > 0 ? withBeian : candidates)[0]
+    if (!picked) continue
+
+    points.push({
+      price_date: navDate,
+      nav: picked.nav,
+      cumulative_nav: picked.cumulative_nav ?? picked.nav,
+    })
+  }
+
+  return points.sort((a, b) => a.price_date.localeCompare(b.price_date))
+}
+
 /** SQL predicate matching an ops_email_nav_records row to a fund. */
 export function buildEmailNavMatchCondition(
   recordAlias: string,
@@ -20,9 +85,24 @@ export function buildEmailNavMatchCondition(
 ): string {
   const e = recordAlias
   return `(
-    (${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> '' AND ${e}.product_code = BTRIM(${beianHaoExpr}))
+    (${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> '' AND (
+      ${e}.product_code = BTRIM(${beianHaoExpr})
+      OR COALESCE(${e}.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+      OR COALESCE(${e}.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+    ))
     OR (BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${productNameExpr}))
     OR (${shortNameExpr} IS NOT NULL AND BTRIM(${shortNameExpr}) <> '' AND BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${shortNameExpr}))
+    OR (
+      BTRIM(COALESCE(${e}.fund_name, '')) <> ''
+      AND BTRIM(${productNameExpr}) <> ''
+      AND BTRIM(${e}.fund_name) LIKE BTRIM(${productNameExpr}) || '%'
+    )
+    OR (
+      ${shortNameExpr} IS NOT NULL
+      AND BTRIM(${shortNameExpr}) <> ''
+      AND BTRIM(COALESCE(${e}.fund_name, '')) <> ''
+      AND BTRIM(${e}.fund_name) LIKE BTRIM(${shortNameExpr}) || '%'
+    )
   )`
 }
 
@@ -34,24 +114,44 @@ export function buildEmailNavLatestJoins(
   cutoffExpr: string,
 ): string {
   const match = buildEmailNavMatchCondition("e", beianHaoExpr, productNameExpr, shortNameExpr)
+  const aClassGuard = `(
+    CASE
+      WHEN ${shortNameExpr} IS NOT NULL AND (${shortNameExpr} ILIKE '%A类%' OR ${productNameExpr} ILIKE '%A类%')
+        OR ${beianHaoExpr} ~ 'A$'
+        THEN COALESCE(e.attachment_filename, '') ILIKE '%A类%'
+      ELSE COALESCE(e.attachment_filename, '') NOT ILIKE '%A类%'
+    END
+  )`
   return `
     LEFT JOIN LATERAL (
       SELECT e.nav::numeric AS nav, e.nav_date
       FROM ops_email_nav_records e
       WHERE ${match}
+        AND ${aClassGuard}
         AND e.nav_date <= ${cutoffExpr}
         AND e.nav IS NOT NULL
-      ORDER BY e.nav_date DESC, e.id DESC
+      ORDER BY
+        CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
+          AND COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+          THEN 0 ELSE 1 END,
+        e.nav_date DESC,
+        e.id DESC
       LIMIT 1
     ) en ON true
     LEFT JOIN LATERAL (
       SELECT e.nav::numeric AS nav
       FROM ops_email_nav_records e
       WHERE ${match}
+        AND ${aClassGuard}
         AND en.nav_date IS NOT NULL
         AND e.nav_date < en.nav_date
         AND e.nav IS NOT NULL
-      ORDER BY e.nav_date DESC, e.id DESC
+      ORDER BY
+        CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
+          AND COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+          THEN 0 ELSE 1 END,
+        e.nav_date DESC,
+        e.id DESC
       LIMIT 1
     ) en_prev ON true
   `
@@ -73,31 +173,37 @@ export async function loadEmailNavSeries(
   beianHao: string,
   productName: string,
   shortName: string | null,
+  extraNames: Array<string | null | undefined> = [],
 ): Promise<EmailNavPoint[]> {
   await ensureEmailNavTable()
-  const rows = await query<{ nav_date: string; nav: string; cumulative_nav: string | null }>(
-    `SELECT nav_date::text AS nav_date, nav::text, cumulative_nav::text
+  const aliases = collectFundNameAliases(productName, shortName, extraNames)
+  const beian = (beianHao ?? "").trim()
+
+  const rows = await query<EmailNavRawRow>(
+    `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text, e.attachment_filename
      FROM ops_email_nav_records e
-     WHERE (
-       ($1 <> '' AND e.product_code = $1)
-       OR (BTRIM(COALESCE(e.fund_name, '')) <> '' AND BTRIM(e.fund_name) = BTRIM($2))
-       OR ($3 <> '' AND BTRIM(COALESCE(e.fund_name, '')) <> '' AND BTRIM(e.fund_name) = BTRIM($3))
-     )
-       AND e.nav_date IS NOT NULL
+     WHERE e.nav_date IS NOT NULL
        AND e.nav IS NOT NULL
+       AND (
+         ($1 <> '' AND (
+           e.product_code = $1
+           OR COALESCE(e.attachment_filename, '') ILIKE '%' || $1 || '%'
+           OR COALESCE(e.subject, '') ILIKE '%' || $1 || '%'
+         ))
+         OR EXISTS (
+           SELECT 1 FROM unnest($2::text[]) AS alias(name)
+           WHERE name <> ''
+             AND (
+               BTRIM(e.fund_name) = alias.name
+               OR BTRIM(e.fund_name) LIKE alias.name || '%'
+             )
+         )
+       )
      ORDER BY e.nav_date ASC, e.id ASC`,
-    [beianHao ?? "", productName ?? "", shortName ?? ""],
+    [beian, aliases],
   )
 
-  const byDate = new Map<string, EmailNavPoint>()
-  for (const row of rows) {
-    byDate.set(row.nav_date, {
-      price_date: row.nav_date,
-      nav: row.nav,
-      cumulative_nav: row.cumulative_nav ?? row.nav,
-    })
-  }
-  return Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
+  return dedupeEmailRowsByDate(rows, beian, aliases)
 }
 
 export type LegacyNavRow = {
