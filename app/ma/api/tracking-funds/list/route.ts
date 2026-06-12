@@ -8,52 +8,184 @@ import {
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-const ALLOWED_SORT: Record<string, string> = {
-  product_name:         "i.product_name",
-  latest_nav:           "COALESCE(en.nav, ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
-  latest_nav_date:      "COALESCE(en.nav_date, ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
-  latest_price_change:  "CASE WHEN en.nav IS NOT NULL AND en_prev.nav IS NOT NULL AND en_prev.nav <> 0 THEN (en.nav / en_prev.nav - 1) ELSE COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)::numeric END",
-  ret_1w:               "ret_1w",
-  ret_1m:               "ret_1m",
-  ret_3m:               "ret_3m",
-  ret_6m:               "ret_6m",
-  ret_1y:               "ret_1y",
+interface NavJoinConfig {
+  latestNavJoin: string
+  fallbackNavExpr: string
+  fallbackDateExpr: string
+  fallbackPctExpr: string
+  allowedSort: Record<string, string>
+  navScalarExpr: (days: number, cutoffExpr: string) => string
 }
 
-function navScalarExpr(days: number, cutoffExpr = "CURRENT_DATE"): string {
-  return `COALESCE(
-    (SELECT ngc.nav::numeric FROM private_fund_nav_group ngc
+const TYPE6_LATEST_JOIN = (cutoffExpr: string) => `
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group_type6 n
+      WHERE n.price_date <= ${cutoffExpr}
+        AND (
+          n.beian_hao = i.beian_hao
+          OR n.product_name = i.product_name
+          OR (i.short_name IS NOT NULL AND n.product_name = i.short_name)
+        )
+      ORDER BY
+        CASE
+          WHEN n.beian_hao = i.beian_hao THEN 0
+          WHEN n.product_name = i.product_name THEN 1
+          ELSE 2
+        END,
+        n.price_date DESC
+      LIMIT 1
+    ) nt6 ON true`
+
+const LEGACY_LATEST_JOIN = (cutoffExpr: string) => `
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group
+      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) ng ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group
+      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) ng_name ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) ng_short ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group_hy
+      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) nh ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group_hy
+      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) nh_name ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav_group_hy
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) nh_short ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav
+      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) nf ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav
+      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) nf_name ON true
+    LEFT JOIN LATERAL (
+      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
+      FROM private_fund_nav
+      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
+      ORDER BY price_date DESC LIMIT 1
+    ) nf_short ON true`
+
+function type6ScalarExpr(days: number, cutoffExpr: string): string {
+  return `(SELECT n.nav::numeric
+    FROM private_fund_nav_group_type6 n
+    WHERE n.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
+      AND (
+        n.beian_hao = i.beian_hao
+        OR n.product_name = i.product_name
+        OR (i.short_name IS NOT NULL AND n.product_name = i.short_name)
+      )
+    ORDER BY
+      CASE
+        WHEN n.beian_hao = i.beian_hao THEN 0
+        WHEN n.product_name = i.product_name THEN 1
+        ELSE 2
+      END,
+      n.price_date DESC
+    LIMIT 1)`
+}
+
+function type6ScalarParts(days: number, cutoffExpr: string): string[] {
+  return [type6ScalarExpr(days, cutoffExpr)]
+}
+
+function legacyScalarParts(days: number, cutoffExpr: string): string[] {
+  return [
+    `(SELECT ngc.nav::numeric FROM private_fund_nav_group ngc
      WHERE ngc.beian_hao = i.beian_hao AND ngc.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY ngc.price_date DESC LIMIT 1),
-    (SELECT ngn.nav::numeric FROM private_fund_nav_group ngn
+     ORDER BY ngc.price_date DESC LIMIT 1)`,
+    `(SELECT ngn.nav::numeric FROM private_fund_nav_group ngn
      WHERE ngn.product_name = i.product_name AND ngn.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY ngn.price_date DESC LIMIT 1),
-    (SELECT ngs.nav::numeric FROM private_fund_nav_group ngs
+     ORDER BY ngn.price_date DESC LIMIT 1)`,
+    `(SELECT ngs.nav::numeric FROM private_fund_nav_group ngs
      WHERE i.short_name IS NOT NULL AND ngs.product_name = i.short_name AND ngs.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY ngs.price_date DESC LIMIT 1),
-    (SELECT nhc.nav::numeric FROM private_fund_nav_group_hy nhc
+     ORDER BY ngs.price_date DESC LIMIT 1)`,
+    `(SELECT nhc.nav::numeric FROM private_fund_nav_group_hy nhc
      WHERE nhc.beian_hao = i.beian_hao AND nhc.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY nhc.price_date DESC LIMIT 1),
-    (SELECT nhn.nav::numeric FROM private_fund_nav_group_hy nhn
+     ORDER BY nhc.price_date DESC LIMIT 1)`,
+    `(SELECT nhn.nav::numeric FROM private_fund_nav_group_hy nhn
      WHERE nhn.product_name = i.product_name AND nhn.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY nhn.price_date DESC LIMIT 1),
-    (SELECT nhs.nav::numeric FROM private_fund_nav_group_hy nhs
+     ORDER BY nhn.price_date DESC LIMIT 1)`,
+    `(SELECT nhs.nav::numeric FROM private_fund_nav_group_hy nhs
      WHERE i.short_name IS NOT NULL AND nhs.product_name = i.short_name AND nhs.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY nhs.price_date DESC LIMIT 1),
-    (SELECT nfc.nav::numeric FROM private_fund_nav nfc
+     ORDER BY nhs.price_date DESC LIMIT 1)`,
+    `(SELECT nfc.nav::numeric FROM private_fund_nav nfc
      WHERE nfc.beian_hao = i.beian_hao AND nfc.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY nfc.price_date DESC LIMIT 1),
-    (SELECT nfn.nav::numeric FROM private_fund_nav nfn
+     ORDER BY nfc.price_date DESC LIMIT 1)`,
+    `(SELECT nfn.nav::numeric FROM private_fund_nav nfn
      WHERE nfn.product_name = i.product_name AND nfn.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY nfn.price_date DESC LIMIT 1),
-    (SELECT nfs.nav::numeric FROM private_fund_nav nfs
+     ORDER BY nfn.price_date DESC LIMIT 1)`,
+    `(SELECT nfs.nav::numeric FROM private_fund_nav nfs
      WHERE i.short_name IS NOT NULL AND nfs.product_name = i.short_name AND nfs.price_date <= ${cutoffExpr} - INTERVAL '${days} days'
-     ORDER BY nfs.price_date DESC LIMIT 1)
-  )`
+     ORDER BY nfs.price_date DESC LIMIT 1)`,
+  ]
 }
 
-// Build a LATERAL subquery that gets the closest NAV on or before a given offset
-function navAtOffset(alias: string, days: number, cutoffExpr = "CURRENT_DATE"): string {
+function buildNavJoinConfig(pool: string, cutoffExpr: string): NavJoinConfig {
+  const useType6Only = pool === "bfl_ops"
+  const fallbackNavExpr = useType6Only
+    ? "nt6.nav"
+    : "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)"
+  const fallbackDateExpr = useType6Only
+    ? "nt6.price_date"
+    : "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)"
+  const fallbackPctExpr = useType6Only
+    ? "nt6.price_change"
+    : "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)"
+
+  return {
+    latestNavJoin: useType6Only ? TYPE6_LATEST_JOIN(cutoffExpr) : LEGACY_LATEST_JOIN(cutoffExpr),
+    fallbackNavExpr,
+    fallbackDateExpr,
+    fallbackPctExpr,
+    allowedSort: {
+      product_name: "i.product_name",
+      latest_nav: `COALESCE(en.nav, ${fallbackNavExpr})::numeric`,
+      latest_nav_date: `COALESCE(en.nav_date, ${fallbackDateExpr})`,
+      latest_price_change: `CASE WHEN en.nav IS NOT NULL AND en_prev.nav IS NOT NULL AND en_prev.nav <> 0 THEN (en.nav / en_prev.nav - 1) ELSE ${fallbackPctExpr}::numeric END`,
+      ret_1w: "ret_1w",
+      ret_1m: "ret_1m",
+      ret_3m: "ret_3m",
+      ret_6m: "ret_6m",
+      ret_1y: "ret_1y",
+    },
+    navScalarExpr: (days, cutoff) => {
+      const parts = useType6Only
+        ? type6ScalarParts(days, cutoff)
+        : legacyScalarParts(days, cutoff)
+      return `COALESCE(\n    ${parts.join(",\n    ")}\n  )`
+    },
+  }
+}
+
+function navAtOffset(alias: string, days: number, cutoffExpr: string, navScalarExpr: NavJoinConfig["navScalarExpr"]): string {
   return `LEFT JOIN LATERAL (
     SELECT ${navScalarExpr(days, cutoffExpr)} AS nav
   ) ${alias} ON true`
@@ -194,75 +326,84 @@ function calcOneYearRatios(points: NavSeriesPoint[]): OneYearRatios {
   }
 }
 
-async function loadOneYearSeries(beianHao: string, productName: string, shortName: string | null): Promise<NavSeriesPoint[]> {
+async function loadOneYearSeries(
+  beianHao: string,
+  productName: string,
+  shortName: string | null,
+  pool: string,
+): Promise<NavSeriesPoint[]> {
+  const useType6Only = pool === "bfl_ops"
   const rows = await query<NavSeriesPoint>(
-    `WITH candidates AS (
-       SELECT 1 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-       FROM private_fund_nav_group
-       WHERE beian_hao = $1
-
-       UNION ALL
-
-       SELECT 2 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-       FROM private_fund_nav_group
-       WHERE $2 <> '' AND product_name = $2
-
-       UNION ALL
-
-       SELECT 3 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-       FROM private_fund_nav_group
-       WHERE $3 <> '' AND product_name = $3
-
-       UNION ALL
-
-      SELECT 4 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-      FROM private_fund_nav_group_hy
-      WHERE beian_hao = $1
-
-      UNION ALL
-
-      SELECT 5 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-      FROM private_fund_nav_group_hy
-      WHERE $2 <> '' AND product_name = $2
-
-      UNION ALL
-
-      SELECT 6 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-      FROM private_fund_nav_group_hy
-      WHERE $3 <> '' AND product_name = $3
-
-      UNION ALL
-
-      SELECT 7 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-       FROM private_fund_nav
-       WHERE beian_hao = $1
-
-       UNION ALL
-
-      SELECT 8 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-       FROM private_fund_nav
-       WHERE $2 <> '' AND product_name = $2
-
-       UNION ALL
-
-      SELECT 9 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-       FROM private_fund_nav
-       WHERE $3 <> '' AND product_name = $3
-     ),
-     best AS (
-       SELECT MIN(pri) AS pri FROM candidates
-     )
-     SELECT c.price_date::text AS price_date, c.level::text AS level
-     FROM candidates c
-     JOIN best b ON c.pri = b.pri
-     WHERE c.price_date >= CURRENT_DATE - INTERVAL '370 days'
-     ORDER BY c.price_date ASC`,
+    useType6Only
+      ? `WITH candidates AS (
+           SELECT price_date, COALESCE(cumulative_nav, nav)::numeric AS level,
+             CASE
+               WHEN beian_hao = $1 THEN 0
+               WHEN product_name = $2 THEN 1
+               ELSE 2
+             END AS pri
+           FROM private_fund_nav_group_type6
+           WHERE price_date >= CURRENT_DATE - INTERVAL '370 days'
+             AND (
+               beian_hao = $1
+               OR ($2 <> '' AND product_name = $2)
+               OR ($3 <> '' AND product_name = $3)
+             )
+         ),
+         best AS (SELECT MIN(pri) AS pri FROM candidates)
+         SELECT c.price_date::text AS price_date, c.level::text AS level
+         FROM candidates c
+         JOIN best b ON c.pri = b.pri
+         ORDER BY c.price_date ASC`
+      : `WITH candidates AS (
+           SELECT 1 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+           FROM private_fund_nav_group
+           WHERE beian_hao = $1
+           UNION ALL
+           SELECT 2 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+           FROM private_fund_nav_group
+           WHERE $2 <> '' AND product_name = $2
+           UNION ALL
+           SELECT 3 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+           FROM private_fund_nav_group
+           WHERE $3 <> '' AND product_name = $3
+           UNION ALL
+          SELECT 4 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+          FROM private_fund_nav_group_hy
+          WHERE beian_hao = $1
+          UNION ALL
+          SELECT 5 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+          FROM private_fund_nav_group_hy
+          WHERE $2 <> '' AND product_name = $2
+          UNION ALL
+          SELECT 6 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+          FROM private_fund_nav_group_hy
+          WHERE $3 <> '' AND product_name = $3
+          UNION ALL
+          SELECT 7 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+           FROM private_fund_nav
+           WHERE beian_hao = $1
+           UNION ALL
+          SELECT 8 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+           FROM private_fund_nav
+           WHERE $2 <> '' AND product_name = $2
+           UNION ALL
+          SELECT 9 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
+           FROM private_fund_nav
+           WHERE $3 <> '' AND product_name = $3
+         ),
+         best AS (SELECT MIN(pri) AS pri FROM candidates)
+         SELECT c.price_date::text AS price_date, c.level::text AS level
+         FROM candidates c
+         JOIN best b ON c.pri = b.pri
+         WHERE c.price_date >= CURRENT_DATE - INTERVAL '370 days'
+         ORDER BY c.price_date ASC`,
     [beianHao, productName ?? "", shortName ?? ""]
   )
   return rows
 }
 
-async function addOneYearRiskMetrics(rows: TrackRow[]): Promise<TrackRow[]> {
+async function addOneYearRiskMetrics(rows: TrackRow[], pool: string): Promise<TrackRow[]> {
   if (rows.length === 0) return rows
   const batchSize = 8
   const out: TrackRow[] = []
@@ -271,7 +412,7 @@ async function addOneYearRiskMetrics(rows: TrackRow[]): Promise<TrackRow[]> {
     const batch = rows.slice(i, i + batchSize)
     const enriched = await Promise.all(
       batch.map(async (row) => {
-        const series = await loadOneYearSeries(row.beian_hao, row.product_name, row.short_name)
+        const series = await loadOneYearSeries(row.beian_hao, row.product_name, row.short_name, pool)
         const ratios = calcOneYearRatios(series)
         return { ...row, ...ratios }
       })
@@ -282,17 +423,207 @@ async function addOneYearRiskMetrics(rows: TrackRow[]): Promise<TrackRow[]> {
   return out
 }
 
+const BFL_OPS_SOURCE_CTE = `
+WITH source AS (
+  SELECT DISTINCT ON (o.register_number)
+    o.register_number AS beian_hao,
+    COALESCE(o.fund_short_name, o.fund_name) AS product_name,
+    o.fund_name AS short_name,
+    tag_data.strategy_company,
+    o.company_strategy_one,
+    o.company_strategy_two,
+    o.company_strategy_three,
+    o.platform_strategy_one,
+    o.platform_strategy_two,
+    o.platform_strategy_three
+  FROM type6_ops_team_full o
+  CROSS JOIN LATERAL (
+    SELECT CASE
+      WHEN jsonb_typeof(o.tag->'company') = 'array' THEN (
+        SELECT string_agg(BTRIM(tag_value), ',')
+        FROM jsonb_array_elements_text(o.tag->'company') AS tag_values(tag_value)
+        WHERE BTRIM(tag_value) <> ''
+      )
+      ELSE NULL
+    END AS strategy_company
+  ) tag_data
+  WHERE o.register_number IS NOT NULL
+  ORDER BY o.register_number, o.updated_at DESC NULLS LAST, o.id DESC
+)`
+
+const BFL_OPS_TYPE6_LATEST_CTES = (cutoffExpr: string) => `
+, latest_by_code AS (
+  SELECT DISTINCT ON (beian_hao)
+    beian_hao, nav::numeric AS nav, price_date, price_change::numeric AS price_change
+  FROM private_fund_nav_group_type6
+  WHERE price_date <= ${cutoffExpr}
+  ORDER BY beian_hao, price_date DESC
+),
+latest_by_name AS (
+  SELECT DISTINCT ON (product_name)
+    product_name, nav::numeric AS nav, price_date, price_change::numeric AS price_change
+  FROM private_fund_nav_group_type6
+  WHERE price_date <= ${cutoffExpr}
+  ORDER BY product_name, price_date DESC
+)`
+
+function bflOpsNavExpr(): string {
+  return "COALESCE(lbc.nav, lbn.nav, lbs.nav)"
+}
+
+function bflOpsNavDateExpr(): string {
+  return "COALESCE(lbc.price_date, lbn.price_date, lbs.price_date)"
+}
+
+function bflOpsNavPctExpr(): string {
+  return "COALESCE(lbc.price_change, lbn.price_change, lbs.price_change)"
+}
+
+async function handleBflOpsList(opts: {
+  page: number
+  pageSize: number
+  offset: number
+  sortKey: string
+  sortDir: string
+  cutoffExpr: string
+  keyword: string
+  strategyL1: string
+  strategyL2: string
+  strategyL3: string
+  strategyPrefix: string
+  orgSize: string
+  teamTagMode: string
+  teamTags: string[]
+}): Promise<NextResponse> {
+  const {
+    page, pageSize, offset, sortKey, sortDir, cutoffExpr,
+    keyword, strategyL1, strategyL2, strategyL3, strategyPrefix,
+    orgSize, teamTagMode, teamTags,
+  } = opts
+
+  const strategyL1Expr = `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_one, '')), '')`
+  const strategyL2Expr = `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_two, '')), '')`
+  const strategyL3Expr = `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_three, '')), '')`
+
+  const filterParams: (string | number)[] = []
+  const where: string[] = []
+
+  if (strategyL1) {
+    filterParams.push(strategyL1)
+    where.push(`${strategyL1Expr} = $${filterParams.length}`)
+  }
+  if (strategyL2) {
+    filterParams.push(strategyL2)
+    where.push(`${strategyL2Expr} = $${filterParams.length}`)
+  }
+  if (strategyL3) {
+    filterParams.push(`%${strategyL3}%`)
+    where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
+  }
+  if (keyword) {
+    filterParams.push(`%${keyword}%`)
+    where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+  }
+  if (teamTags.length > 0) {
+    const clauses = teamTags.map((tag) => {
+      filterParams.push(tag)
+      return `POSITION(',' || $${filterParams.length} || ',' IN ',' || regexp_replace(COALESCE(i.strategy_company, ''), '\\s+', '', 'g') || ',') > 0`
+    })
+    where.push(teamTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+  }
+  const scaleValue = ORG_SIZE_SCALE[orgSize]
+  if (scaleValue) {
+    filterParams.push(scaleValue)
+    where.push(`EXISTS (
+      SELECT 1 FROM basicinfo_bfl_track b
+      WHERE b.scale = $${filterParams.length}
+        AND (b.record_key = i.beian_hao OR b.register_number = i.beian_hao)
+    )`)
+  }
+
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
+  const pLimit = filterParams.length + 1
+  const pOffset = filterParams.length + 2
+
+  const allowedSort: Record<string, string> = {
+    product_name: "i.product_name",
+    latest_nav: `${bflOpsNavExpr()}::numeric`,
+    latest_nav_date: bflOpsNavDateExpr(),
+    latest_price_change: `${bflOpsNavPctExpr()}::numeric`,
+    ret_1w: "ret_1w",
+    ret_1m: "ret_1m",
+    ret_3m: "ret_3m",
+    ret_6m: "ret_6m",
+    ret_1y: "ret_1y",
+  }
+  const orderCol = allowedSort[sortKey] ?? "i.product_name"
+  const orderSql = `${orderCol} ${sortDir} NULLS LAST`
+  const sourceWithNav = `${BFL_OPS_SOURCE_CTE}${BFL_OPS_TYPE6_LATEST_CTES(cutoffExpr)}`
+
+  try {
+    const [rows, countRow] = await Promise.all([
+      query<TrackRow>(
+        `${sourceWithNav}
+         SELECT
+           i.beian_hao,
+           i.product_name,
+           i.short_name,
+           ${strategyL1Expr} AS strategy_l1,
+           ${strategyL2Expr} AS strategy_l2,
+           NULL::text AS manager,
+           NULL::text AS inception_date,
+           ${bflOpsNavExpr()}::text AS latest_nav,
+           ${bflOpsNavDateExpr()}::text AS latest_nav_date,
+           ${bflOpsNavPctExpr()}::text AS latest_price_change,
+           NULL::text AS ret_1w,
+           NULL::text AS ret_1m,
+           NULL::text AS ret_3m,
+           NULL::text AS ret_6m,
+           NULL::text AS ret_1y,
+           NULL::text AS sharpe_1y,
+           NULL::text AS calmar_1y
+         FROM source i
+         LEFT JOIN latest_by_code lbc ON lbc.beian_hao = i.beian_hao
+         LEFT JOIN latest_by_name lbn ON lbn.product_name = i.product_name AND lbc.nav IS NULL
+         LEFT JOIN latest_by_name lbs ON lbs.product_name = i.short_name AND lbc.nav IS NULL AND lbn.nav IS NULL
+           AND i.short_name IS NOT NULL AND i.short_name <> i.product_name
+         ${whereClause}
+         ORDER BY ${orderSql}
+         LIMIT $${pLimit} OFFSET $${pOffset}`,
+        [...filterParams, pageSize, offset],
+      ),
+      query<{ total: string }>(
+        `${BFL_OPS_SOURCE_CTE}
+         SELECT COUNT(*) AS total FROM source i ${whereClause}`,
+        filterParams,
+      ),
+    ])
+
+    const total = parseInt(countRow[0]?.total ?? "0")
+    return NextResponse.json({
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+      data: rows,
+    })
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e)
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
   const requestedPool = searchParams.get("pool")
   const isMineAllPool = requestedPool === "mine_all"
   const isCustomPool = requestedPool ? (requestedPool.startsWith("custom_") || requestedPool.startsWith("mine_custom_") || requestedPool === "mine_default" || isMineAllPool) : false
-  const KNOWN_POOLS = new Set(["bfl", "tracking", "selected", "core", "hy", "fof", "all"])
+  const KNOWN_POOLS = new Set(["bfl_ops", "bfl", "tracking", "selected", "core", "hy", "fof", "all"])
   if (requestedPool && !KNOWN_POOLS.has(requestedPool) && !isCustomPool) {
     return NextResponse.json({ page, pageSize: 50, total: 0, totalPages: 0, data: [] })
   }
-  const pool = requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all" || isCustomPool ? requestedPool : "bfl"
+  const pool = requestedPool === "bfl_ops" || requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all" || isCustomPool ? requestedPool : "bfl"
   const isExport = searchParams.get("export") === "1"
   const pageSize = isExport ? 100000 : 50
   const offset   = isExport ? 0 : (page - 1) * pageSize
@@ -311,10 +642,31 @@ export async function GET(req: Request) {
   const strategySource = normalizeStrategySource((searchParams.get("strategy_source") || "").trim().toLowerCase())
   const cutoffRaw = (searchParams.get("cutoff") || "").trim()
   const cutoffExpr = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw) ? `'${cutoffRaw}'::date` : "CURRENT_DATE"
-  const orderCol = ALLOWED_SORT[sortKey] ?? "i.product_name"
+  const strategyPrefix = strategySource === "platform" ? "platform" : "company"
+
+  if (pool === "bfl_ops") {
+    return handleBflOpsList({
+      page,
+      pageSize,
+      offset,
+      sortKey,
+      sortDir,
+      cutoffExpr,
+      keyword,
+      strategyL1,
+      strategyL2,
+      strategyL3,
+      strategyPrefix,
+      orgSize,
+      teamTagMode,
+      teamTags,
+    })
+  }
+
+  const navConfig = buildNavJoinConfig(pool, cutoffExpr)
+  const orderCol = navConfig.allowedSort[sortKey] ?? "i.product_name"
 
   const sourceJsonExpr = rawStrategyJsonExpr("i")
-  const strategyPrefix = strategySource === "platform" ? "platform" : "company"
   const isExternalPool = pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || isCustomPool
   const sourceTable = pool === "selected" ? "selected_pool" : pool === "core" ? "core_pool" : pool === "hy" ? "hy_tracking_pool" : pool === "fof" ? "fof_mom_tracking" : isCustomPool ? "user_custom_pool" : "tracking_pool"
   const strategyL1Expr = pool === "all"
@@ -388,6 +740,34 @@ export async function GET(req: Request) {
             ELSE NULL
           END AS strategy_company
         ) tag_data
+      )`
+    : pool === "bfl_ops"
+    ? `WITH source AS (
+        SELECT DISTINCT ON (o.register_number)
+          o.register_number AS beian_hao,
+          COALESCE(o.fund_short_name, o.fund_name) AS product_name,
+          o.fund_name AS short_name,
+          NULL::text AS raw_strategy,
+          tag_data.strategy_company,
+          o.company_strategy_one,
+          o.company_strategy_two,
+          o.company_strategy_three,
+          o.platform_strategy_one,
+          o.platform_strategy_two,
+          o.platform_strategy_three
+        FROM type6_ops_team_full o
+        CROSS JOIN LATERAL (
+          SELECT CASE
+            WHEN jsonb_typeof(o.tag->'company') = 'array' THEN (
+              SELECT string_agg(BTRIM(tag_value), ',')
+              FROM jsonb_array_elements_text(o.tag->'company') AS tag_values(tag_value)
+              WHERE BTRIM(tag_value) <> ''
+            )
+            ELSE NULL
+          END AS strategy_company
+        ) tag_data
+        WHERE o.register_number IS NOT NULL
+        ORDER BY o.register_number, o.updated_at DESC NULLS LAST, o.id DESC
       )`
     : isExternalPool
     ? `WITH source AS (
@@ -502,78 +882,17 @@ export async function GET(req: Request) {
 
   const orderSql = `${orderCol} ${sortDir} NULLS LAST`
 
-  // Latest NAV (with group→regular fallback)
-  const latestNavJoin = `
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav_group
-      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) ng ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav_group
-      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) ng_name ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav_group
-      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) ng_short ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav_group_hy
-      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) nh ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav_group_hy
-      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) nh_name ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav_group_hy
-      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) nh_short ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav
-      WHERE beian_hao = i.beian_hao AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) nf ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav
-      WHERE product_name = i.product_name AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) nf_name ON true
-    LEFT JOIN LATERAL (
-      SELECT nav::numeric AS nav, price_date, price_change::numeric AS price_change
-      FROM private_fund_nav
-      WHERE i.short_name IS NOT NULL AND product_name = i.short_name AND price_date <= ${cutoffExpr}
-      ORDER BY price_date DESC LIMIT 1
-    ) nf_short ON true
-  `
-
-  const fallbackNavExpr = "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)"
-  const fallbackDateExpr = "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)"
-  const fallbackPctExpr = "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)"
+  const { latestNavJoin, fallbackNavExpr, fallbackDateExpr, fallbackPctExpr } = navConfig
   const emailNavJoins = buildEmailNavLatestJoins("i.beian_hao", "i.product_name", "i.short_name", cutoffExpr)
   const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
     buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
 
-  // Historical NAV at each window for period-return calculation
   const histJoins = [
-    navAtOffset("h1w",  7,   cutoffExpr),
-    navAtOffset("h1m",  30,  cutoffExpr),
-    navAtOffset("h3m",  90,  cutoffExpr),
-    navAtOffset("h6m",  180, cutoffExpr),
-    navAtOffset("h1y",  365, cutoffExpr),
+    navAtOffset("h1w",  7,   cutoffExpr, navConfig.navScalarExpr),
+    navAtOffset("h1m",  30,  cutoffExpr, navConfig.navScalarExpr),
+    navAtOffset("h3m",  90,  cutoffExpr, navConfig.navScalarExpr),
+    navAtOffset("h6m",  180, cutoffExpr, navConfig.navScalarExpr),
+    navAtOffset("h1y",  365, cutoffExpr, navConfig.navScalarExpr),
   ].join("\n")
 
   try {
@@ -631,7 +950,7 @@ export async function GET(req: Request) {
       ),
     ])
 
-    let data = await addOneYearRiskMetrics(rows)
+    let data = await addOneYearRiskMetrics(rows, pool)
 
     if (sortKey === "sharpe_1y" || sortKey === "calmar_1y") {
       const asc = sortDir === "ASC"

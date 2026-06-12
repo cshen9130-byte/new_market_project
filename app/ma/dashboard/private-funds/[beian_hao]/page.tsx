@@ -617,6 +617,7 @@ export default function PrivateFundDetailPage() {
 
   // ─── 编辑产品池 modal ──────────────────────────────────────────────────────
   const ALL_POOLS = [
+    { key: "bfl_ops",  label: "bfl 运维池" },
     { key: "bfl",      label: "bfl跟踪池" },
     { key: "tracking", label: "跟踪池" },
     { key: "selected", label: "精选池" },

@@ -61,6 +61,7 @@ const FUND_CATEGORY_TABS = [
 ] as const
 
 const TEAM_POOL_OPTIONS = [
+  { key: "bfl_ops", label: "bfl 运维池" },
   { key: "bfl", label: "bfl跟踪池" },
   { key: "tracking", label: "跟踪池" },
   { key: "selected", label: "精选池" },

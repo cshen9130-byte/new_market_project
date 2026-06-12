@@ -27,12 +27,15 @@ export async function GET(req: Request) {
   const navRows = await query<{ price_date: string; level: string }>(
     `WITH candidates AS (
        SELECT price_date::text AS price_date, COALESCE(cumulative_nav, nav)::text AS level, 0 AS pri
-       FROM private_fund_nav_group WHERE beian_hao = $1
+       FROM private_fund_nav_group_type6 WHERE beian_hao = $1
        UNION ALL
        SELECT price_date::text, COALESCE(cumulative_nav, nav)::text, 1
-       FROM private_fund_nav_group_hy WHERE beian_hao = $1
+       FROM private_fund_nav_group WHERE beian_hao = $1
        UNION ALL
        SELECT price_date::text, COALESCE(cumulative_nav, nav)::text, 2
+       FROM private_fund_nav_group_hy WHERE beian_hao = $1
+       UNION ALL
+       SELECT price_date::text, COALESCE(cumulative_nav, nav)::text, 3
        FROM private_fund_nav WHERE beian_hao = $1
      ),
      best AS (SELECT MIN(pri) AS pri FROM candidates),

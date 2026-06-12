@@ -32,6 +32,7 @@ interface PoolRow {
 }
 
 const POOL_LABELS: Record<string, string> = {
+  bfl_ops:  "bfl 运维池",
   bfl:      "bfl跟踪池",
   tracking: "跟踪池",
   selected: "精选池",
@@ -62,7 +63,8 @@ export async function GET(req: Request) {
 
     // Check standard pools
     const standardPools = [
-      { key: "bfl",     table: "private_fund_info_bfl",  col: "register_number" },
+      { key: "bfl_ops",  table: "type6_ops_team_full",    col: "register_number" },
+      { key: "bfl",     table: "private_fund_info_bfl",  col: "beian_hao" },
       { key: "tracking", table: "tracking_pool",         col: "register_number" },
       { key: "selected", table: "selected_pool",         col: "register_number" },
       { key: "core",     table: "core_pool",             col: "register_number" },

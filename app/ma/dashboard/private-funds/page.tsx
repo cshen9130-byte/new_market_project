@@ -104,6 +104,7 @@ const TRACK_STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多�
 const ORG_SIZE_OPTS = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20亿", "5-10亿", "0-5亿"]
 const DEFAULT_POOLS = [
   { key: "all", label: "全部" },
+  { key: "bfl_ops", label: "bfl 运维池" },
   { key: "bfl", label: "bfl跟踪池" },
   { key: "tracking", label: "跟踪池" },
   { key: "selected", label: "精选池" },
@@ -1558,11 +1559,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }, [showElementsDialog, elementsBeianHao])
 
   const isSupportedPool = pools.some((p) => p.key === activePool)
-  const sourcePool = isSupportedPool ? activePool : "bfl"
+  const sourcePool = activePool === "bfl_ops" || isSupportedPool ? activePool : "bfl"
   const isMineTab = !isOps && trackTab === "mine"
   const isMyPoolSupported = myActivePool === "mine_all" || myActivePool === "mine_default" || myActivePool.startsWith("mine_custom_")
   const listPool = isMineTab ? myActivePool : sourcePool
-  const listPoolSupported = isMineTab ? isMyPoolSupported : isSupportedPool
+  const listPoolSupported = isMineTab ? isMyPoolSupported : (activePool === "bfl_ops" || isSupportedPool)
 
   function currentUserId(): string {
     try {
@@ -1844,8 +1845,16 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       headers: isMineTab ? userFetchHeaders() : {},
     })
       .then((r) => r.json())
-      .then((d) => { setData(d.data ?? []); setTotal(d.total ?? 0) })
-      .catch(() => {})
+      .then((d) => {
+        if (d?.error) {
+          setData([])
+          setTotal(0)
+          return
+        }
+        setData(d.data ?? [])
+        setTotal(d.total ?? 0)
+      })
+      .catch(() => { setData([]); setTotal(0) })
       .finally(() => setLoading(false))
   }, [listPool, listPoolSupported, isMineTab, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
 

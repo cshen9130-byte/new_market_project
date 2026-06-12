@@ -206,54 +206,72 @@ export async function GET(
         price_change::text
      FROM (
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 0 AS pri
-       FROM private_fund_nav_group
+       FROM private_fund_nav_group_type6
        WHERE beian_hao = $1
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 1 AS pri
-       FROM private_fund_nav_group
+       FROM private_fund_nav_group_type6
        WHERE $2 <> '' AND product_name = $2
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 2 AS pri
-       FROM private_fund_nav_group
+       FROM private_fund_nav_group_type6
        WHERE $3 <> '' AND product_name = $3
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
-       FROM private_fund_nav_group_hy
+       FROM private_fund_nav_group
        WHERE beian_hao = $1
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri
-       FROM private_fund_nav_group_hy
+       FROM private_fund_nav_group
        WHERE $2 <> '' AND product_name = $2
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri
-       FROM private_fund_nav_group_hy
+       FROM private_fund_nav_group
        WHERE $3 <> '' AND product_name = $3
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 6 AS pri
-       FROM private_fund_nav
+       FROM private_fund_nav_group_hy
        WHERE beian_hao = $1
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 7 AS pri
-       FROM private_fund_nav
+       FROM private_fund_nav_group_hy
        WHERE $2 <> '' AND product_name = $2
 
        UNION ALL
 
        SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 8 AS pri
+       FROM private_fund_nav_group_hy
+       WHERE $3 <> '' AND product_name = $3
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 9 AS pri
+       FROM private_fund_nav
+       WHERE beian_hao = $1
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 10 AS pri
+       FROM private_fund_nav
+       WHERE $2 <> '' AND product_name = $2
+
+       UNION ALL
+
+       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 11 AS pri
        FROM private_fund_nav
        WHERE $3 <> '' AND product_name = $3
      ) nav_union
