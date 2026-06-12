@@ -1,14 +1,18 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import {
+  buildEmailNavLatestExprs,
+  buildEmailNavLatestJoins,
+} from "@/lib/server/email-nav-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 const ALLOWED_SORT: Record<string, string> = {
   product_name:         "i.product_name",
-  latest_nav:           "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
-  latest_nav_date:      "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
-  latest_price_change:  "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)::numeric",
+  latest_nav:           "COALESCE(en.nav, ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)::numeric",
+  latest_nav_date:      "COALESCE(en.nav_date, ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)",
+  latest_price_change:  "CASE WHEN en.nav IS NOT NULL AND en_prev.nav IS NOT NULL AND en_prev.nav <> 0 THEN (en.nav / en_prev.nav - 1) ELSE COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)::numeric END",
   ret_1w:               "ret_1w",
   ret_1m:               "ret_1m",
   ret_3m:               "ret_3m",
@@ -556,9 +560,12 @@ export async function GET(req: Request) {
     ) nf_short ON true
   `
 
-  const currentNavExpr = "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)"
-  const currentDateExpr = "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)"
-  const currentPctExpr = "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)"
+  const fallbackNavExpr = "COALESCE(ng.nav, ng_name.nav, ng_short.nav, nh.nav, nh_name.nav, nh_short.nav, nf.nav, nf_name.nav, nf_short.nav)"
+  const fallbackDateExpr = "COALESCE(ng.price_date, ng_name.price_date, ng_short.price_date, nh.price_date, nh_name.price_date, nh_short.price_date, nf.price_date, nf_name.price_date, nf_short.price_date)"
+  const fallbackPctExpr = "COALESCE(ng.price_change, ng_name.price_change, ng_short.price_change, nh.price_change, nh_name.price_change, nh_short.price_change, nf.price_change, nf_name.price_change, nf_short.price_change)"
+  const emailNavJoins = buildEmailNavLatestJoins("i.beian_hao", "i.product_name", "i.short_name", cutoffExpr)
+  const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
+    buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
 
   // Historical NAV at each window for period-return calculation
   const histJoins = [
@@ -609,6 +616,7 @@ export async function GET(req: Request) {
            NULL::text AS sharpe_1y,
            NULL::text AS calmar_1y
          FROM source i
+         ${emailNavJoins}
          ${latestNavJoin}
          ${histJoins}
          ${whereClause}

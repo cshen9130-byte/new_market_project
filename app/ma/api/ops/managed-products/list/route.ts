@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso } from "@/lib/db"
+import {
+  buildEmailNavLatestExprs,
+  buildEmailNavLatestJoins,
+} from "@/lib/server/email-nav-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -301,7 +305,12 @@ export async function GET(req: Request) {
       listParams.push(cutoffRaw)
       cutoffExpr = `$${listParams.length}::date`
     }
-    const currentNavExpr = "m.latest_unit_nav::numeric"
+    const fallbackNavExpr = "m.latest_unit_nav::numeric"
+    const fallbackDateExpr = "m.latest_nav_date"
+    const fallbackPctExpr = "m.latest_return_pct::numeric / 100"
+    const emailNavJoins = buildEmailNavLatestJoins(BEIAN_EXPR, PRODUCT_EXPR, SHORT_EXPR, cutoffExpr)
+    const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
+      buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
     const histJoins = [
       navAtOffset("h1w", 7, cutoffExpr),
       navAtOffset("h1m", 30, cutoffExpr),
@@ -336,9 +345,9 @@ export async function GET(req: Request) {
            m.product_name,
            COALESCE(b.short_name, o.fund_short_name, m.product_name) AS short_name,
            ${strategyExpr} AS strategy_l1,
-           m.latest_unit_nav::text AS latest_unit_nav,
-           m.latest_nav_date,
-           m.latest_return_pct::text AS latest_return_pct,
+           (${currentNavExpr})::text AS latest_unit_nav,
+           ${currentDateExpr} AS latest_nav_date,
+           (${currentPctExpr})::text AS latest_return_pct,
            m.custody_account_balance::text AS custody_account_balance,
            m.net_asset_value::text AS net_asset_value,
            CASE WHEN h1w.nav IS NOT NULL AND h1w.nav <> 0
@@ -352,6 +361,7 @@ export async function GET(req: Request) {
            CASE WHEN h1y.nav IS NOT NULL AND h1y.nav <> 0
              THEN ((${currentNavExpr}) / h1y.nav - 1)::text END AS ret_1y
          ${baseFrom}
+         ${emailNavJoins}
          ${histJoins}
          WHERE ${where}
        ) rows
@@ -368,7 +378,7 @@ export async function GET(req: Request) {
       strategy_l1: r.strategy_l1,
       latest_nav: r.latest_unit_nav,
       latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
-      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct) / 100) : null,
+      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
       custody_balance: r.custody_account_balance,
       net_asset_value: r.net_asset_value,
       valuation_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,

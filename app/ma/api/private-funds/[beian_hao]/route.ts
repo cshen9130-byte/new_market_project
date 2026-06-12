@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { loadEmailNavSeries, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
 
 export const dynamic = "force-dynamic"
 
@@ -245,7 +246,8 @@ export async function GET(
     [beian_hao, productName, shortName]
   )
 
-  const nav_series = navRows
+  const emailNavRows = await loadEmailNavSeries(beian_hao, productName, shortName || null)
+  const nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]
 

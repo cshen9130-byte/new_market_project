@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso } from "@/lib/db"
+import {
+  buildEmailNavLatestExprs,
+  buildEmailNavLatestJoins,
+} from "@/lib/server/email-nav-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -94,6 +98,17 @@ export async function GET(req: Request) {
     )
     const total = parseInt(countRows[0]?.n || "0", 10)
 
+    const beianExpr = "COALESCE(b.beian_hao, o.register_number)"
+    const productExpr = "f.product_name"
+    const shortExpr = "COALESCE(b.short_name, o.fund_short_name, f.product_name)"
+    const cutoffExpr = "CURRENT_DATE"
+    const fallbackNavExpr = "f.latest_unit_nav::numeric"
+    const fallbackDateExpr = "f.latest_nav_date"
+    const fallbackPctExpr = "f.latest_return_pct::numeric / 100"
+    const emailNavJoins = buildEmailNavLatestJoins(beianExpr, productExpr, shortExpr, cutoffExpr)
+    const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
+      buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
+
     const rows = await query<{
       id: string
       beian_hao: string | null
@@ -110,10 +125,11 @@ export async function GET(req: Request) {
          f.product_name,
          COALESCE(b.short_name, o.fund_short_name, f.product_name) AS short_name,
          ${strategyExpr} AS strategy_l1,
-         f.latest_unit_nav::text AS latest_unit_nav,
-         f.latest_nav_date,
-         f.latest_return_pct::text AS latest_return_pct
+         (${currentNavExpr})::text AS latest_unit_nav,
+         ${currentDateExpr} AS latest_nav_date,
+         (${currentPctExpr})::text AS latest_return_pct
        ${baseFrom}
+       ${emailNavJoins}
        WHERE ${where}
        ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC
        LIMIT $${pi} OFFSET $${pi + 1}`,
@@ -128,7 +144,7 @@ export async function GET(req: Request) {
       strategy_l1: r.strategy_l1,
       latest_nav: r.latest_unit_nav,
       latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
-      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct) / 100) : null,
+      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
       nav_estimated: r.latest_unit_nav != null,
       valuation_date: null,
     }))
