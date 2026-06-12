@@ -6,13 +6,19 @@
  *   3. body_table – date + decimal columns found in a table row
  */
 
+export type NavExtractSource =
+  | "subject"
+  | "body_table"
+  | "body_post_table"
+  | "attachment_nav_table"
+
 export type ExtractedNavData = {
   nav: number | null
   navDate: string | null       // ISO "YYYY-MM-DD"
   cumulativeNav: number | null
   productCode: string | null
   fundName: string | null
-  source: "subject" | "body_table" | "body_post_table"
+  source: NavExtractSource
 }
 
 // ── date normalisation ────────────────────────────────────────────────────────
@@ -39,15 +45,15 @@ function normaliseDate(raw: string): string | null {
 
 // ── helper extractors ─────────────────────────────────────────────────────────
 
-function extractProductCode(subject: string): string | null {
+export function extractProductCodeFromText(text: string): string | null {
   // Typical codes: SBPC20, SBTX45, SBPU97 – pattern: 2-6 uppercase letters + 2-6 digits
-  const m = subject.match(/\b([A-Z]{2,6}\d{2,6}[A-Z]?)\b/)
+  const m = text.match(/\b([A-Z]{2,6}\d{2,6}[A-Z]?)\b/)
   return m?.[1] ?? null
 }
 
-function extractFundName(subject: string): string | null {
+export function extractFundNameFromText(text: string): string | null {
   // Match a Chinese phrase ending with 基金, trying to avoid very short matches
-  const m = subject.match(
+  const m = text.match(
     /[\u4e00-\u9fff][\u4e00-\u9fff\w]{3,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)/,
   )
   return m?.[0]?.trim() ?? null
@@ -79,8 +85,8 @@ export function extractNavData(
   bodyText: string,
 ): ExtractedNavData | null {
   const shared = {
-    productCode: extractProductCode(subject),
-    fundName: extractFundName(subject),
+    productCode: extractProductCodeFromText(subject),
+    fundName: extractFundNameFromText(subject),
   }
 
   // ── 1. Subject: 单位净值：1.2269 ──────────────────────────────────────────

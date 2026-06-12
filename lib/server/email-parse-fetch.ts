@@ -14,6 +14,10 @@ import {
   type ParseStepStatus,
 } from "@/lib/server/email-parse-records"
 import { extractNavData } from "@/lib/server/email-nav-extract"
+import {
+  extractNavTableFromBuffer,
+  selectNavTableAttachments,
+} from "@/lib/server/email-nav-attachment"
 import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
 
 export type EmailParseFetchResult = {
@@ -170,6 +174,13 @@ type FetchMailboxResult = {
   navRecords: EmailNavInsert[]
 }
 
+async function downloadPart(client: ImapFlow, uid: string, part: string): Promise<Buffer> {
+  const dl = await client.download(uid, part)
+  const bufs: Buffer[] = []
+  for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
+  return Buffer.concat(bufs)
+}
+
 async function fetchMailbox(
   account: CrawlEmailAccount,
   since: Date,
@@ -239,16 +250,48 @@ async function fetchMailbox(
         parseEmailRecord(account, String(uid), subject, sentAt, senderEmail, bodyText, attachments),
       )
 
+      const emailMeta = {
+        crawlEmailAccount: account.account,
+        emailUid: String(uid),
+        sentAt: sentAt.toISOString(),
+        subject,
+        senderEmail,
+      }
+
+      const navDatesFromAttachments = new Set<string>()
+      for (const att of selectNavTableAttachments(subject, attachments)) {
+        try {
+          const buf = await downloadPart(client, String(uid), att.part)
+          const rows = extractNavTableFromBuffer(buf, att.filename, subject)
+          for (const row of rows) {
+            if (!row.navDate) continue
+            navDatesFromAttachments.add(row.navDate)
+            navRecords.push({
+              ...emailMeta,
+              ...row,
+              attachmentFilename: att.filename,
+            })
+          }
+        } catch (e) {
+          errors.push(
+            `${account.account} UID ${uid} attachment ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+          )
+        }
+      }
+
       const navData = extractNavData(subject, bodyText)
       if (navData) {
-        navRecords.push({
-          crawlEmailAccount: account.account,
-          emailUid: String(uid),
-          sentAt: sentAt.toISOString(),
-          subject,
-          senderEmail,
-          ...navData,
-        })
+        const skipTextNav =
+          navData.navDate != null
+            ? navDatesFromAttachments.has(navData.navDate)
+            : navDatesFromAttachments.size > 0
+        if (!skipTextNav) {
+          navRecords.push({
+            ...emailMeta,
+            ...navData,
+            attachmentFilename: "",
+          })
+        }
       }
     }
   } finally {

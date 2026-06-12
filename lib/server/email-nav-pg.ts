@@ -12,6 +12,7 @@ export type EmailNavInsert = ExtractedNavData & {
   sentAt: string | null
   subject: string
   senderEmail: string
+  attachmentFilename?: string
 }
 
 const CREATE_TABLE_SQL = `
@@ -28,8 +29,8 @@ const CREATE_TABLE_SQL = `
     product_code         TEXT,
     fund_name            TEXT,
     source               TEXT,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_email_nav_record UNIQUE (crawl_email_account, email_uid)
+    attachment_filename  TEXT        NOT NULL DEFAULT '',
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   CREATE INDEX IF NOT EXISTS idx_email_nav_records_nav_date
     ON ops_email_nav_records (nav_date DESC);
@@ -39,17 +40,37 @@ const CREATE_TABLE_SQL = `
     ON ops_email_nav_records (product_code);
 `
 
+const MIGRATE_TABLE_SQL = `
+  ALTER TABLE ops_email_nav_records
+    ADD COLUMN IF NOT EXISTS attachment_filename TEXT NOT NULL DEFAULT '';
+
+  ALTER TABLE ops_email_nav_records
+    DROP CONSTRAINT IF EXISTS uq_email_nav_record;
+
+  DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint WHERE conname = 'uq_email_nav_record_date'
+    ) THEN
+      ALTER TABLE ops_email_nav_records
+        ADD CONSTRAINT uq_email_nav_record_date
+        UNIQUE (crawl_email_account, email_uid, nav_date, attachment_filename);
+    END IF;
+  END $$;
+`
+
 let tableEnsured = false
 
 export async function ensureEmailNavTable(): Promise<void> {
   if (tableEnsured) return
   await query(CREATE_TABLE_SQL)
+  await query(MIGRATE_TABLE_SQL)
   tableEnsured = true
 }
 
 /**
  * Upsert a batch of extracted NAV records.
- * On conflict (same account + uid) the nav values are updated in place.
+ * Multiple rows per email are allowed (historical NAV from attachments).
  *
  * @returns Number of rows inserted or updated.
  */
@@ -62,13 +83,12 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
     await query(
       `INSERT INTO ops_email_nav_records
          (crawl_email_account, email_uid, sent_at, subject, sender_email,
-          nav_date, nav, cumulative_nav, product_code, fund_name, source)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       ON CONFLICT (crawl_email_account, email_uid) DO UPDATE SET
+          nav_date, nav, cumulative_nav, product_code, fund_name, source, attachment_filename)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (crawl_email_account, email_uid, nav_date, attachment_filename) DO UPDATE SET
          sent_at        = EXCLUDED.sent_at,
          subject        = EXCLUDED.subject,
          sender_email   = EXCLUDED.sender_email,
-         nav_date       = EXCLUDED.nav_date,
          nav            = EXCLUDED.nav,
          cumulative_nav = EXCLUDED.cumulative_nav,
          product_code   = EXCLUDED.product_code,
@@ -86,6 +106,7 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
         r.productCode,
         r.fundName,
         r.source,
+        r.attachmentFilename ?? "",
       ],
     )
     count++
