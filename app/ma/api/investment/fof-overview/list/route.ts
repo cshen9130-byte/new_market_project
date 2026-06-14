@@ -70,92 +70,6 @@ function navAtOffset(alias: string, days: number, cutoffExpr: string): string {
   ) ${alias} ON true`
 }
 
-interface NavSeriesPoint {
-  price_date: string
-  level: string | null
-}
-
-function std(values: number[]): number {
-  if (values.length <= 1) return NaN
-  const mean = values.reduce((sum, v) => sum + v, 0) / values.length
-  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / (values.length - 1)
-  return Math.sqrt(variance)
-}
-
-function median(values: number[]): number {
-  if (values.length === 0) return NaN
-  const arr = [...values].sort((a, b) => a - b)
-  const mid = Math.floor(arr.length / 2)
-  return arr.length % 2 === 0 ? (arr[mid - 1] + arr[mid]) / 2 : arr[mid]
-}
-
-function calcOneYearRatios(points: NavSeriesPoint[]) {
-  if (points.length < 3) return { sharpe_1y: null, calmar_1y: null }
-  const byDate = new Map<string, { ts: number; level: number }>()
-  for (const p of points) {
-    const ts = new Date(p.price_date).getTime()
-    const level = p.level ? parseFloat(p.level) : NaN
-    if (!Number.isFinite(ts) || !Number.isFinite(level) || level <= 0) continue
-    byDate.set(p.price_date, { ts, level })
-  }
-  const series = Array.from(byDate.values()).sort((a, b) => a.ts - b.ts)
-  if (series.length < 3) return { sharpe_1y: null, calmar_1y: null }
-  const first = series[0]
-  const last = series[series.length - 1]
-  const days = (last.ts - first.ts) / 86_400_000
-  if (!Number.isFinite(days) || days <= 0) return { sharpe_1y: null, calmar_1y: null }
-  const periodRet = last.level / first.level - 1
-  if (!Number.isFinite(periodRet) || periodRet <= -1) return { sharpe_1y: null, calmar_1y: null }
-  const annRet = Math.pow(1 + periodRet, 365 / days) - 1
-  const periodicRets: number[] = []
-  const gaps: number[] = []
-  for (let i = 1; i < series.length; i++) {
-    const prev = series[i - 1]
-    const curr = series[i]
-    if (prev.level > 0) periodicRets.push(curr.level / prev.level - 1)
-    const gap = (curr.ts - prev.ts) / 86_400_000
-    if (Number.isFinite(gap) && gap > 0) gaps.push(gap)
-  }
-  const medGap = median(gaps)
-  const periodsPerYear = !Number.isFinite(medGap) ? 52 : medGap <= 2 ? 252 : medGap <= 10 ? 52 : medGap <= 20 ? 26 : medGap <= 45 ? 12 : 4
-  const vol = periodicRets.length > 1 ? std(periodicRets) * Math.sqrt(periodsPerYear) : NaN
-  let peak = series[0].level
-  let maxDrawdown = 0
-  for (const p of series) {
-    if (p.level > peak) peak = p.level
-    const dd = peak > 0 ? (peak - p.level) / peak : 0
-    if (dd > maxDrawdown) maxDrawdown = dd
-  }
-  const sharpe = Number.isFinite(vol) && vol > 0 ? annRet / vol : NaN
-  const calmar = maxDrawdown > 0 ? annRet / maxDrawdown : NaN
-  return {
-    sharpe_1y: Number.isFinite(sharpe) ? sharpe.toFixed(2) : null,
-    calmar_1y: Number.isFinite(calmar) ? calmar.toFixed(2) : null,
-  }
-}
-
-async function loadOneYearSeries(beianHao: string, productName: string, shortName: string | null): Promise<NavSeriesPoint[]> {
-  return query<NavSeriesPoint>(
-    `WITH candidates AS (
-       SELECT 1 AS pri, price_date, COALESCE(cumulative_nav, nav)::numeric AS level
-       FROM private_fund_nav_group WHERE beian_hao = $1
-       UNION ALL SELECT 2, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav_group WHERE $2 <> '' AND product_name = $2
-       UNION ALL SELECT 3, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav_group WHERE $3 <> '' AND product_name = $3
-       UNION ALL SELECT 4, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav_group_hy WHERE beian_hao = $1
-       UNION ALL SELECT 5, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav_group_hy WHERE $2 <> '' AND product_name = $2
-       UNION ALL SELECT 6, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav_group_hy WHERE $3 <> '' AND product_name = $3
-       UNION ALL SELECT 7, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav WHERE beian_hao = $1
-       UNION ALL SELECT 8, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav WHERE $2 <> '' AND product_name = $2
-       UNION ALL SELECT 9, price_date, COALESCE(cumulative_nav, nav)::numeric FROM private_fund_nav WHERE $3 <> '' AND product_name = $3
-     ), best AS (SELECT MIN(pri) AS pri FROM candidates)
-     SELECT c.price_date::text AS price_date, c.level::text AS level
-     FROM candidates c JOIN best b ON c.pri = b.pri
-     WHERE c.price_date >= CURRENT_DATE - INTERVAL '370 days'
-     ORDER BY c.price_date ASC`,
-    [beianHao, productName ?? "", shortName ?? ""],
-  )
-}
-
 interface FofOverviewRow {
   id: string
   beian_hao: string | null
@@ -173,23 +87,6 @@ interface FofOverviewRow {
   ret_1y?: string | null
   sharpe_1y?: string | null
   calmar_1y?: string | null
-}
-
-async function addFofRiskMetrics(rows: FofOverviewRow[]): Promise<FofOverviewRow[]> {
-  if (rows.length === 0) return rows
-  const out: FofOverviewRow[] = []
-  for (let i = 0; i < rows.length; i += 8) {
-    const batch = rows.slice(i, i + 8)
-    const enriched = await Promise.all(
-      batch.map(async (row) => {
-        if (!row.beian_hao) return { ...row, sharpe_1y: null, calmar_1y: null }
-        const series = await loadOneYearSeries(row.beian_hao, row.product_name, row.short_name)
-        return { ...row, ...calcOneYearRatios(series) }
-      }),
-    )
-    out.push(...enriched)
-  }
-  return out
 }
 
 export async function GET(req: Request) {
@@ -287,6 +184,7 @@ export async function GET(req: Request) {
         ORDER BY updated_at DESC NULLS LAST, id DESC
         LIMIT 1
       ) o ON true
+      LEFT JOIN private_fund_info pinfo ON pinfo.beian_hao = ${BEIAN_EXPR}
     `
 
     const [countRows, totalMvRows] = await Promise.all([
@@ -330,6 +228,8 @@ export async function GET(req: Request) {
       ret_3m: string | null
       ret_6m: string | null
       ret_1y: string | null
+      sharpe_1y: string | null
+      calmar_1y: string | null
     }>(
       `SELECT * FROM (
          SELECT
@@ -352,7 +252,9 @@ export async function GET(req: Request) {
            CASE WHEN h6m.nav IS NOT NULL AND h6m.nav <> 0
              THEN ((${currentNavExpr}) / h6m.nav - 1)::text END AS ret_6m,
            CASE WHEN h1y.nav IS NOT NULL AND h1y.nav <> 0
-             THEN ((${currentNavExpr}) / h1y.nav - 1)::text END AS ret_1y
+             THEN ((${currentNavExpr}) / h1y.nav - 1)::text END AS ret_1y,
+           pinfo.sharpe_1y::text AS sharpe_1y,
+           pinfo.calmar_1y::text AS calmar_1y
          ${baseFrom}
          ${histJoins}
          WHERE ${where}
@@ -362,7 +264,7 @@ export async function GET(req: Request) {
       [...listParams, pageSize, offset],
     )
 
-    let data: FofOverviewRow[] = rows.map((r) => ({
+    const data: FofOverviewRow[] = rows.map((r) => ({
       id: r.id,
       beian_hao: r.beian_hao,
       product_name: r.product_name,
@@ -377,21 +279,9 @@ export async function GET(req: Request) {
       ret_3m: r.ret_3m,
       ret_6m: r.ret_6m,
       ret_1y: r.ret_1y,
+      sharpe_1y: r.sharpe_1y,
+      calmar_1y: r.calmar_1y,
     }))
-
-    data = await addFofRiskMetrics(data)
-
-    if (sortKey === "sharpe_1y" || sortKey === "calmar_1y") {
-      const asc = sortDir === "ASC"
-      data = [...data].sort((a, b) => {
-        const av = a[sortKey] != null ? parseFloat(a[sortKey] as string) : null
-        const bv = b[sortKey] != null ? parseFloat(b[sortKey] as string) : null
-        if (av == null && bv == null) return 0
-        if (av == null) return 1
-        if (bv == null) return -1
-        return asc ? av - bv : bv - av
-      })
-    }
 
     return NextResponse.json({
       data,
