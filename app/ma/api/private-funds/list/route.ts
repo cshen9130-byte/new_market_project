@@ -4,30 +4,6 @@ import { query } from "@/lib/db"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-// ---------------------------------------------------------------------------
-// Module-level latest-NAV cache (avoids scanning 3.7M rows on every request)
-// ---------------------------------------------------------------------------
-interface NavEntry { nav: string; price_date: string }
-const _navCache = new Map<string, { map: Map<string, NavEntry>; ts: number }>()
-const NAV_CACHE_TTL = 5 * 60 * 1000 // 5 min
-
-async function getLatestNavMap(cutoffDate: string | null): Promise<Map<string, NavEntry>> {
-  const key = cutoffDate ?? "__latest__"
-  const hit = _navCache.get(key)
-  if (hit && Date.now() - hit.ts < NAV_CACHE_TTL) return hit.map
-
-  const rows = await query<{ beian_hao: string; nav: string; price_date: string }>(
-    `SELECT DISTINCT ON (beian_hao)
-       beian_hao, nav::text AS nav, price_date::text AS price_date
-     FROM private_fund_nav
-     ${cutoffDate ? `WHERE price_date <= '${cutoffDate}'` : ""}
-     ORDER BY beian_hao, price_date DESC`
-  )
-  const map = new Map(rows.map((r) => [r.beian_hao, { nav: r.nav, price_date: r.price_date }]))
-  _navCache.set(key, { map, ts: Date.now() })
-  return map
-}
-
 const ALLOWED_SORT: Record<string, string> = {
   product_name: "i.product_name",
   latest_nav:   "fn.nav",
@@ -38,6 +14,40 @@ const ALLOWED_SORT: Record<string, string> = {
   ret_1y:       "i.ret_1y",
   sharpe_1y:    "i.sharpe_1y",
   calmar_1y:    "i.calmar_1y",
+}
+
+/** Prefer materialized NAV columns when cutoff is today or later (no NAV table scan). */
+function useStoredNav(cutoffDate: string | null): boolean {
+  if (!cutoffDate) return true
+  const today = new Date().toISOString().slice(0, 10)
+  return cutoffDate >= today
+}
+
+function buildNavParts(storedNav: boolean, cutoffParamIdx: number | null) {
+  if (storedNav) {
+    return {
+      select: `i.latest_nav::text AS latest_nav,
+               i.latest_nav_date::text AS latest_nav_date`,
+      join: "",
+      sortCol: "i.latest_nav",
+    }
+  }
+  const cutoffClause = cutoffParamIdx
+    ? `AND n.price_date <= $${cutoffParamIdx}`
+    : ""
+  return {
+    select: `fn.nav::text AS latest_nav,
+             fn.price_date::text AS latest_nav_date`,
+    join: `LEFT JOIN LATERAL (
+      SELECT n.nav, n.price_date
+      FROM private_fund_nav n
+      WHERE n.beian_hao = i.beian_hao
+        ${cutoffClause}
+      ORDER BY n.price_date DESC
+      LIMIT 1
+    ) fn ON true`,
+    sortCol: "fn.nav",
+  }
 }
 
 export async function GET(req: Request) {
@@ -51,7 +61,6 @@ export async function GET(req: Request) {
   const strategy  = searchParams.get("strategy") || ""
   const strategiesRaw = searchParams.get("strategies") || strategy
   const strategies = strategiesRaw ? strategiesRaw.split(",").map((s) => s.trim()).filter(Boolean) : []
-  // New: sf params — each is "l1name" or "l1name:l2a,l2b"
   const sfRaw = searchParams.getAll("sf")
   const sfFilters: { l1: string; l2s: string[] }[] = sfRaw.length > 0
     ? sfRaw.map((s) => {
@@ -70,7 +79,6 @@ export async function GET(req: Request) {
   const cutoffRaw  = (searchParams.get("cutoff") || "").trim()
   const cutoffDate = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw) ? cutoffRaw : null
 
-  // Map period → column
   const PERIOD_COL: Record<string, string> = {
     "本周": "i.ret_1w", "近一周": "i.ret_1w",
     "本月": "i.ret_1m", "近一月": "i.ret_1m",
@@ -80,34 +88,27 @@ export async function GET(req: Request) {
     "2018": "i.ret_1y", "2019": "i.ret_1y", "2020": "i.ret_1y",
     "2021": "i.ret_1y", "2022": "i.ret_1y", "2023": "i.ret_1y", "2024": "i.ret_1y",
   }
-  // Map metricTab → column (overrides period-based column for non-收益 metrics)
   const METRIC_COL: Record<string, string> = {
     "夏普比率": "i.sharpe_1y", "夏普比率排名": "i.sharpe_1y",
     "卡玛比率": "i.calmar_1y", "卡玛比率排名": "i.calmar_1y",
   }
   const metricCol = METRIC_COL[metricTab] ?? PERIOD_COL[period] ?? "i.ret_1w"
 
-  // Map range → [min, max] in DB units (stored as % e.g. 2.42 means 2.42%)
-  // Ranking ranges (前N%) require percentile calc — handled separately below
   const RANGE_BOUNDS: Record<string, [number | null, number | null]> = {
     "不限":     [null, null],
-    // 收益 / 年化收益
     "0%~5%":   [0, 5],
     "5%~10%":  [5, 10],
     "10%~20%": [10, 20],
     "20%~30%": [20, 30],
     ">30%":    [30, null],
-    // 年化波动率 / 最大回撤
     "10%~15%": [10, 15],
     "15%~20%": [15, 20],
     ">20%":    [20, null],
-    // 夏普比率 / 卡玛比率 (unitless)
     "0~1":     [0, 1],
     "1~2":     [1, 2],
     "2~3":     [2, 3],
     "3~5":     [3, 5],
     ">5":      [5, null],
-    // 排名 ranges — percentile rank: handled below
     "前5%":  [null, null],
     "前10%": [null, null],
     "前25%": [null, null],
@@ -116,15 +117,11 @@ export async function GET(req: Request) {
     "自定义": [null, null],
   }
   const [rangeMin, rangeMax] = RANGE_BOUNDS[range] ?? [null, null]
-  // Percentile rank filtering for "排名" metric + "前N%" range
   const rankPctMap: Record<string, number> = {
     "前5%": 0.05, "前10%": 0.10, "前25%": 0.25, "前50%": 0.50, "前75%": 0.75,
   }
   const rankPct = metricTab.includes("排名") ? (rankPctMap[range] ?? null) : null
-  const orderCol = ALLOWED_SORT[sortKey] ?? "i.product_name"
-  const orderSql = `${orderCol} ${sortDir} NULLS LAST`
 
-  // Build dynamic WHERE clause
   const filterParams: (string | number | string[])[] = []
   const where: string[] = []
   if (sfFilters.length > 0) {
@@ -159,24 +156,21 @@ export async function GET(req: Request) {
     if (sql) where.push(sql)
   }
   if (navDatePeriod && navDatePeriod !== "不限" && navDatePeriod !== "自定义") {
-    // Use a subquery against private_fund_nav (compatible with COUNT query that has no fn join)
-    const NAV_DATE_SQL: Record<string, string> = {
+    const NAV_DATE_SUBQUERY: Record<string, string> = {
       "1个月以内": `MAX(price_date) >= CURRENT_DATE - INTERVAL '1 month'`,
       "1-3个月":   `MAX(price_date) >= CURRENT_DATE - INTERVAL '3 months' AND MAX(price_date) < CURRENT_DATE - INTERVAL '1 month'`,
       "3-6个月":   `MAX(price_date) >= CURRENT_DATE - INTERVAL '6 months' AND MAX(price_date) < CURRENT_DATE - INTERVAL '3 months'`,
       "6个月以上": `MAX(price_date) < CURRENT_DATE - INTERVAL '6 months'`,
     }
-    const navSql = NAV_DATE_SQL[navDatePeriod]
-    if (navSql) {
+    const subSql = NAV_DATE_SUBQUERY[navDatePeriod]
+    if (subSql) {
       where.push(`i.beian_hao IN (
         SELECT beian_hao FROM private_fund_nav
-        GROUP BY beian_hao HAVING ${navSql}
+        GROUP BY beian_hao HAVING ${subSql}
       )`)
     }
   }
   if (navFrequency && navFrequency !== "不限") {
-    // Infer NAV frequency from average gap between consecutive price dates per fund
-    // 日频: avg gap < 3 days, 周频: 3–10 days, 月频: > 10 days
     const FREQ_HAVING: Record<string, string> = {
       "日频": "AVG(gap) < 3",
       "周频": "AVG(gap) >= 3 AND AVG(gap) < 10",
@@ -203,10 +197,8 @@ export async function GET(req: Request) {
     where.push(`${metricCol}::numeric < $${filterParams.length}`)
   }
   if (rankPct !== null) {
-    // Filter to top N% by PERCENT_RANK (ascending for metrics where lower = better)
     const isAscMetric = metricTab.startsWith("最大回撤") || metricTab.startsWith("年化波动率")
     const rankOrder = isAscMetric ? "ASC NULLS LAST" : "DESC NULLS LAST"
-    // metricCol has "i." prefix (e.g. "i.sharpe_1y") — strip it for the alias-free subquery
     const bareCol = metricCol.replace(/^i\./, "")
     filterParams.push(rankPct)
     where.push(`i.beian_hao IN (
@@ -216,12 +208,24 @@ export async function GET(req: Request) {
       ) _r WHERE _r.prank < $${filterParams.length}
     )`)
   }
-  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
-  const pLimit = filterParams.length + 1
-  const pOffset = filterParams.length + 2
 
-  try {
-    const [rows, countRow, navMap] = await Promise.all([
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
+
+  async function fetchList(storedNav: boolean) {
+    let cutoffParamIdx: number | null = null
+    const listParams = [...filterParams]
+    if (!storedNav && cutoffDate) {
+      listParams.push(cutoffDate)
+      cutoffParamIdx = listParams.length
+    }
+
+    const pLimit = listParams.length + 1
+    const pOffset = listParams.length + 2
+    const nav = buildNavParts(storedNav, cutoffParamIdx)
+    const orderCol = sortKey === "latest_nav" ? nav.sortCol : (ALLOWED_SORT[sortKey] ?? "i.product_name")
+    const orderSql = `${orderCol} ${sortDir} NULLS LAST`
+
+    const [rows, countRow] = await Promise.all([
       query<{
         beian_hao:      string
         product_name:   string
@@ -236,6 +240,8 @@ export async function GET(req: Request) {
         ret_1y:         string | null
         sharpe_1y:      string | null
         calmar_1y:      string | null
+        latest_nav:     string | null
+        latest_nav_date: string | null
       }>(
         `SELECT
            i.beian_hao,
@@ -250,38 +256,41 @@ export async function GET(req: Request) {
            i.ret_6m,
            i.ret_1y,
            i.sharpe_1y,
-           i.calmar_1y
+           i.calmar_1y,
+           ${nav.select}
          FROM private_fund_info i
+         ${nav.join}
          ${whereClause}
          ORDER BY ${orderSql}
          LIMIT $${pLimit} OFFSET $${pOffset}`,
-        [...filterParams, pageSize, offset]
+        [...listParams, pageSize, offset]
       ),
       query<{ total: string }>(
         `SELECT COUNT(*) AS total FROM private_fund_info i ${whereClause}`,
         filterParams
       ),
-      getLatestNavMap(cutoffDate),
     ])
 
-    // Merge cached NAV data into rows (zero extra DB query)
-    const data = rows.map((r) => {
-      const nav = navMap.get(r.beian_hao)
-      return {
-        ...r,
-        latest_nav:      nav?.nav      ?? null,
-        latest_nav_date: nav?.price_date ?? null,
-      }
-    })
-
-    const total = parseInt(countRow[0]?.total ?? "0")
-    return NextResponse.json({
+    return {
       page,
       pageSize,
-      total,
-      totalPages: Math.ceil(total / pageSize),
-      data,
-    })
+      total: parseInt(countRow[0]?.total ?? "0"),
+      totalPages: Math.ceil(parseInt(countRow[0]?.total ?? "0") / pageSize),
+      data: rows,
+    }
+  }
+
+  try {
+    const preferStored = useStoredNav(cutoffDate)
+    if (preferStored) {
+      try {
+        return NextResponse.json(await fetchList(true))
+      } catch (e: any) {
+        // Columns not migrated yet — fall back to per-row LATERAL lookup
+        if (!/latest_nav/i.test(String(e?.message ?? ""))) throw e
+      }
+    }
+    return NextResponse.json(await fetchList(false))
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
   }

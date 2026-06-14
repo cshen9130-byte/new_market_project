@@ -2324,7 +2324,7 @@ def step_private_fund_indicators(conn) -> int:
                     calmar_1y = round((ret_1y / 100.0) / max_dd, 4)
 
         results.append((ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
-                        sharpe_1y, calmar_1y, beian_hao))
+                        sharpe_1y, calmar_1y, latest_nav, ref_date, beian_hao))
 
     log.info("private_fund_indicators: updating %d rows in private_fund_info …", len(results))
 
@@ -2337,17 +2337,19 @@ def step_private_fund_indicators(conn) -> int:
                 cur,
                 """
                 UPDATE private_fund_info AS t SET
-                    ret_1w     = v.ret_1w::numeric,
-                    ret_1m     = v.ret_1m::numeric,
-                    ret_3m     = v.ret_3m::numeric,
-                    ret_6m     = v.ret_6m::numeric,
-                    ret_1y     = v.ret_1y::numeric,
-                    sharpe_1y  = v.sharpe_1y::numeric,
-                    calmar_1y  = v.calmar_1y::numeric,
-                    updated_at = NOW()
+                    ret_1w          = v.ret_1w::numeric,
+                    ret_1m          = v.ret_1m::numeric,
+                    ret_3m          = v.ret_3m::numeric,
+                    ret_6m          = v.ret_6m::numeric,
+                    ret_1y          = v.ret_1y::numeric,
+                    sharpe_1y       = v.sharpe_1y::numeric,
+                    calmar_1y       = v.calmar_1y::numeric,
+                    latest_nav      = v.latest_nav::numeric,
+                    latest_nav_date = v.latest_nav_date::date,
+                    updated_at      = NOW()
                 FROM (VALUES %s) AS v(
                     ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
-                    sharpe_1y, calmar_1y, beian_hao
+                    sharpe_1y, calmar_1y, latest_nav, latest_nav_date, beian_hao
                 )
                 WHERE t.beian_hao = v.beian_hao
                 """,

@@ -129,7 +129,7 @@ def _pct_return(latest: float, base: float | None) -> float | None:
 def compute_fund_metrics(
     gdf: "pd.DataFrame",
 ) -> tuple:
-    """Return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y)."""
+    """Return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y, latest_nav, latest_nav_date)."""
     gdf = gdf.sort_values("price_date")
 
     # Use the fund's own latest NAV date as reference so that
@@ -187,7 +187,7 @@ def compute_fund_metrics(
                 ann_ret   = ret_1y / 100.0
                 calmar_1y = round(ann_ret / max_dd, 4)
 
-    return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y)
+    return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y, latest_nav, ref_date)
 
 # ── main ETL function ─────────────────────────────────────────────────────────
 
@@ -232,14 +232,13 @@ def run(conn, *, dry_run: bool = False) -> int:
     results: list[tuple] = []
     for beian_hao, gdf in df.groupby("beian_hao", sort=False):
         metrics = compute_fund_metrics(gdf)
-        # tuple order: ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y, beian_hao
         results.append((*metrics, beian_hao))
 
     log.info("Metrics computed for %d funds.", len(results))
 
     if dry_run:
         log.info("[DRY-RUN] Skipping DB write.  Sample (first 5):")
-        cols = ("ret_1w", "ret_1m", "ret_3m", "ret_6m", "ret_1y", "sharpe_1y", "calmar_1y", "beian_hao")
+        cols = ("ret_1w", "ret_1m", "ret_3m", "ret_6m", "ret_1y", "sharpe_1y", "calmar_1y", "latest_nav", "latest_nav_date", "beian_hao")
         for row in results[:5]:
             log.info("  %s", dict(zip(cols, row)))
         return len(results)
@@ -253,17 +252,19 @@ def run(conn, *, dry_run: bool = False) -> int:
                 cur,
                 """
                 UPDATE private_fund_info AS t SET
-                    ret_1w     = v.ret_1w::numeric,
-                    ret_1m     = v.ret_1m::numeric,
-                    ret_3m     = v.ret_3m::numeric,
-                    ret_6m     = v.ret_6m::numeric,
-                    ret_1y     = v.ret_1y::numeric,
-                    sharpe_1y  = v.sharpe_1y::numeric,
-                    calmar_1y  = v.calmar_1y::numeric,
-                    updated_at = NOW()
+                    ret_1w          = v.ret_1w::numeric,
+                    ret_1m          = v.ret_1m::numeric,
+                    ret_3m          = v.ret_3m::numeric,
+                    ret_6m          = v.ret_6m::numeric,
+                    ret_1y          = v.ret_1y::numeric,
+                    sharpe_1y       = v.sharpe_1y::numeric,
+                    calmar_1y       = v.calmar_1y::numeric,
+                    latest_nav      = v.latest_nav::numeric,
+                    latest_nav_date = v.latest_nav_date::date,
+                    updated_at      = NOW()
                 FROM (VALUES %s) AS v(
                     ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
-                    sharpe_1y, calmar_1y, beian_hao
+                    sharpe_1y, calmar_1y, latest_nav, latest_nav_date, beian_hao
                 )
                 WHERE t.beian_hao = v.beian_hao
                 """,

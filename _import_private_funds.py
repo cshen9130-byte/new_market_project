@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS private_fund_info (
     ret_1y              NUMERIC(10,4),
     sharpe_1y           NUMERIC(10,4),
     calmar_1y           NUMERIC(10,4),
+    latest_nav          NUMERIC(16,6),
+    latest_nav_date     DATE,
     updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
 """
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS private_fund_nav (
 
 CREATE INDEX IF NOT EXISTS idx_pfn_beian  ON private_fund_nav (beian_hao);
 CREATE INDEX IF NOT EXISTS idx_pfn_date   ON private_fund_nav (price_date);
+CREATE INDEX IF NOT EXISTS idx_pfn_beian_date_desc ON private_fund_nav (beian_hao, price_date DESC);
 """
 
 # ── Main ─────────────────────────────────────────────────────────────────────
