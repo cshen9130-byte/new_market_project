@@ -91,12 +91,37 @@ export function extractFundNameFromText(text: string): string | null {
   return m ? normalizeFundDisplayName(m[0]) : null
 }
 
-function extractNavMetadata(subject: string, bodyText: string) {
+function shareClassFromProductCode(code: string | null): string {
+  const m = code?.match(/([ABC])$/)
+  return m ? `${m[1]}类` : ""
+}
+
+function ensureShareClass(
+  fundName: string | null,
+  productCode: string | null,
+  subject: string,
+): string | null {
+  if (!fundName) return null
+  if (/[ABC]类$/.test(fundName)) return fundName
+
+  const fromCode = shareClassFromProductCode(productCode)
+  if (fromCode) return `${fundName}${fromCode}`
+
+  const subjClass = subject.match(/私募证券投资基金([ABC])【/)
+  if (subjClass) return `${fundName}${subjClass[1]}类`
+
+  return fundName
+}
+
+export function extractNavMetadata(subject: string, bodyText: string) {
   const metaText = `${subject}\n${bodyText}`
-  return {
-    productCode: extractProductCodeFromText(metaText),
-    fundName: extractFundNameFromText(metaText),
-  }
+  const productCode = extractProductCodeFromText(metaText)
+  const fundName = ensureShareClass(
+    extractFundNameFromText(metaText),
+    productCode,
+    subject,
+  )
+  return { productCode, fundName }
 }
 
 // ── date candidates from subject ──────────────────────────────────────────────

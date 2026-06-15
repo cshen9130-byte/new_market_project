@@ -4,8 +4,7 @@
  */
 
 import {
-  extractFundNameFromText,
-  extractProductCodeFromText,
+  extractNavMetadata,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
@@ -50,9 +49,7 @@ export function extractNavTableFromBuffer(
 ): ExtractedNavData[] {
   try {
     const analysis = analyzeNavWorkbook(buffer, filename)
-    const metaText = `${subject}\n${filename}`
-    const productCode = extractProductCodeFromText(metaText)
-    const fundName = extractFundNameFromText(metaText)
+    const { productCode, fundName } = extractNavMetadata(subject, filename)
 
     return analysis.rows.map((row) => ({
       nav: row.unitNav,
