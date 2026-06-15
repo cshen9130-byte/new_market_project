@@ -107,7 +107,7 @@ function isFundRelated(subject: string, attachments: AttachmentInfo[]): boolean 
 
 function hasTableNav(body: string): boolean {
   const text = body.replace(/\s+/g, " ")
-  return /单位净值|基金份额净值|资产净值|虚拟净值/.test(text) && /\d+\.\d{3,8}/.test(text) && /<table|┌|│|净值日期/u.test(body)
+  return /单位净值|基金份额净值|资产净值|虚拟净值|虚拟单位净值/.test(text) && /\d+\.\d{2,8}/.test(text) && /<table|┌|│|净值日期/u.test(body)
 }
 
 function hasPostTableNav(body: string): boolean {
