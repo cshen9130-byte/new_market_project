@@ -48,6 +48,15 @@ function normaliseDate(raw: string): string | null {
 const FUND_NAME_RE =
   /[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
 
+/** Parse CODE_FUNDNAME_DATE from 【基金虚拟净值表现估算】 subjects. */
+function parseVirtualEstSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    new RegExp(`【基金虚拟净值表现估算】([A-Z0-9]+)_(${FUND_NAME_RE.source})_(\\d{4}-\\d{2}-\\d{2})`),
+  )
+  if (!m) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
 /** Parse CODE_FUNDNAME_DATE tail shared by Huatai 虚拟业绩报酬 subject variants. */
 function parseVirtualPerfSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
@@ -75,6 +84,9 @@ export function extractProductCodeFromText(text: string): string | null {
   const productRef = text.match(/请查阅产品\s*([A-Z0-9]+)\s*[（(]/)
   if (productRef) return productRef[1]
 
+  const virtualEstSubj = parseVirtualEstSubject(text)
+  if (virtualEstSubj) return virtualEstSubj.code
+
   const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)_/)
   if (virtualSubj) return virtualSubj[1]
 
@@ -92,6 +104,9 @@ export function extractProductCodeFromText(text: string): string | null {
 export function extractFundNameFromText(text: string): string | null {
   const labeled = text.match(/基金名称\s*[：:]\s*([^\n\r]+)/)
   if (labeled) return normalizeFundDisplayName(labeled[1])
+
+  const virtualEstSubj = parseVirtualEstSubject(text)
+  if (virtualEstSubj) return virtualEstSubj.fundName
 
   const virtualPerfTail = parseVirtualPerfSubject(text)
   if (virtualPerfTail) return virtualPerfTail.fundName
@@ -128,15 +143,20 @@ function ensureShareClass(
   subject: string,
 ): string | null {
   if (!fundName) return null
-  if (/[ABC]类$/.test(fundName)) return fundName
+  let name = normalizeFundDisplayName(fundName)
+  if (/[ABC]类$/.test(name)) return name
+
+  const fromEstSubj = parseVirtualEstSubject(subject)
+  if (fromEstSubj?.fundName && /[ABC]类$/.test(fromEstSubj.fundName)) return fromEstSubj.fundName
 
   const fromCode = shareClassFromProductCode(productCode)
-  if (fromCode) return `${fundName}${fromCode}`
+  if (fromCode) return `${name}${fromCode}`
 
   const subjClass = subject.match(/私募证券投资基金([ABC])【/)
-  if (subjClass) return `${fundName}${subjClass[1]}类`
+    ?? subject.match(/私募证券投资基金([ABC])类_/)
+  if (subjClass) return `${name}${subjClass[1]}类`
 
-  return fundName
+  return name
 }
 
 export function extractNavMetadata(subject: string, bodyText: string) {
