@@ -48,7 +48,52 @@ function normaliseDate(raw: string): string | null {
 const FUND_NAME_RE =
   /[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
 
-/** Parse CODE_FUNDNAME_DATE from 【基金虚拟净值表现估算】 subjects. */
+/** Parse CODE_FUNDNAME from 资产净值公告 subjects. */
+function parseAssetNavAnnouncementSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    /资产净值公告_([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
+  )
+  if (!m) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
+/** Prefer fund names from the subject line, ignoring investor names in 【】. */
+function extractFundNameFromSubject(subject: string): string | null {
+  for (const parser of [parseVirtualEstSubject, parseAssetNavAnnouncementSubject, parseVirtualPerfSubject]) {
+    const parsed = parser(subject)
+    if (parsed) return parsed.fundName
+  }
+
+  const bracketVirtualSubj = subject.match(
+    /【虚拟净值】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
+  )
+  if (bracketVirtualSubj) return normalizeFundDisplayName(bracketVirtualSubj[1])
+
+  const virtualSubj = subject.match(
+    /】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
+  )
+  if (virtualSubj) return normalizeFundDisplayName(virtualSubj[1])
+
+  const guotaiSubj = subject.match(/发送[：:](.+?)(?:【|$)/)
+  if (guotaiSubj && /私募证券|投资基金/.test(guotaiSubj[1])) {
+    return normalizeFundDisplayName(guotaiSubj[1])
+  }
+
+  const withoutInvestor = subject.replace(/【[^】]*】/g, " ")
+  const m = withoutInvestor.match(
+    /[\u4e00-\u9fff][\u4e00-\u9fff\d]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
+  )
+  return m ? normalizeFundDisplayName(m[0]) : null
+}
+
+function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
+  for (const parser of [parseVirtualEstSubject, parseAssetNavAnnouncementSubject, parseVirtualPerfSubject]) {
+    const parsed = parser(subject)
+    if (parsed) return parsed
+  }
+  return null
+}
+
 function parseVirtualEstSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
     new RegExp(`【基金虚拟净值表现估算】([A-Z0-9]+)_(${FUND_NAME_RE.source})_(\\d{4}-\\d{2}-\\d{2})`),
@@ -84,20 +129,22 @@ export function extractProductCodeFromText(text: string): string | null {
   const productRef = text.match(/请查阅产品\s*([A-Z0-9]+)\s*[（(]/)
   if (productRef) return productRef[1]
 
-  const virtualEstSubj = parseVirtualEstSubject(text)
-  if (virtualEstSubj) return virtualEstSubj.code
+  const firstLine = text.split("\n")[0] ?? text
+  const structured = resolveFromStructuredSubject(firstLine)
+  if (structured) return structured.code
+
+  const assetNavSubj = text.match(/资产净值公告_([A-Z0-9]+)_/i)
+  if (assetNavSubj) return assetNavSubj[1]
 
   const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)_/)
   if (virtualSubj) return virtualSubj[1]
 
-  const virtualPerfTail = parseVirtualPerfSubject(text)
-  if (virtualPerfTail) return virtualPerfTail.code
-
   const bracketVirtualSubj = text.match(/【虚拟净值】([A-Z0-9]+)_/)
   if (bracketVirtualSubj) return bracketVirtualSubj[1]
 
-  // Typical codes: SBPC20, ASX73A, BSJ74B, T07998 — at most 6 digits to skip fund accounts
-  const m = text.match(/(?:^|[^A-Z0-9_])([A-Z]{1,6}\d{2,6}[A-Z]?)(?![A-Z0-9])/)
+  // Typical codes: SBPC20, ASX73A, BSJ74B — allow underscore-delimited codes
+  const m = text.match(/(?:^|[^A-Z0-9])_?([A-Z]{1,6}\d{2,6}[A-Z]?)(?:_|[^A-Z0-9]|$)/)
+    ?? text.match(/(?:^|[^A-Z0-9])([A-Z]{1,6}\d{2,6}[A-Z]?)(?![A-Z0-9])/)
   return m?.[1] ?? null
 }
 
@@ -105,30 +152,11 @@ export function extractFundNameFromText(text: string): string | null {
   const labeled = text.match(/基金名称\s*[：:]\s*([^\n\r]+)/)
   if (labeled) return normalizeFundDisplayName(labeled[1])
 
-  const virtualEstSubj = parseVirtualEstSubject(text)
-  if (virtualEstSubj) return virtualEstSubj.fundName
+  const firstLine = text.split("\n")[0] ?? ""
+  const fromSubject = extractFundNameFromSubject(firstLine)
+  if (fromSubject) return fromSubject
 
-  const virtualPerfTail = parseVirtualPerfSubject(text)
-  if (virtualPerfTail) return virtualPerfTail.fundName
-
-  const bracketVirtualSubj = text.match(
-    /【虚拟净值】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
-  )
-  if (bracketVirtualSubj) return normalizeFundDisplayName(bracketVirtualSubj[1])
-
-  const virtualSubj = text.match(
-    /】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
-  )
-  if (virtualSubj) return normalizeFundDisplayName(virtualSubj[1])
-
-  const guotaiSubj = text.match(/发送[：:](.+?)(?:【|$)/)
-  if (guotaiSubj && /私募证券|投资基金/.test(guotaiSubj[1])) {
-    return normalizeFundDisplayName(guotaiSubj[1])
-  }
-
-  const m = text.match(
-    /[\u4e00-\u9fff][\u4e00-\u9fff\d]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
-  )
+  const m = text.match(FUND_NAME_RE)
   return m ? normalizeFundDisplayName(m[0]) : null
 }
 
@@ -149,6 +177,9 @@ function ensureShareClass(
   const fromEstSubj = parseVirtualEstSubject(subject)
   if (fromEstSubj?.fundName && /[ABC]类$/.test(fromEstSubj.fundName)) return fromEstSubj.fundName
 
+  const fromAssetSubj = parseAssetNavAnnouncementSubject(subject)
+  if (fromAssetSubj?.fundName && /[ABC]类$/.test(fromAssetSubj.fundName)) return fromAssetSubj.fundName
+
   const fromCode = shareClassFromProductCode(productCode)
   if (fromCode) return `${name}${fromCode}`
 
@@ -160,10 +191,17 @@ function ensureShareClass(
 }
 
 export function extractNavMetadata(subject: string, bodyText: string) {
+  const structured = resolveFromStructuredSubject(subject)
+  if (structured) {
+    return { productCode: structured.code, fundName: structured.fundName }
+  }
+
   const metaText = `${subject}\n${bodyText}`
-  const productCode = extractProductCodeFromText(metaText)
+  const productCode =
+    extractProductCodeFromText(subject) ??
+    extractProductCodeFromText(metaText)
   const fundName = ensureShareClass(
-    extractFundNameFromText(metaText),
+    extractFundNameFromSubject(subject) ?? extractFundNameFromText(metaText),
     productCode,
     subject,
   )
