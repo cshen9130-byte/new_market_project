@@ -45,6 +45,18 @@ function normaliseDate(raw: string): string | null {
 
 // ── helper extractors ─────────────────────────────────────────────────────────
 
+const FUND_NAME_RE =
+  /[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
+
+/** Parse CODE_FUNDNAME_DATE tail shared by Huatai 虚拟业绩报酬 subject variants. */
+function parseVirtualPerfSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    new RegExp(`([A-Z0-9]{4,8})_(${FUND_NAME_RE.source})_(\\d{4}-\\d{2}-\\d{2})`),
+  )
+  if (!m) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
 /** Short display name: 百奕小天鹅2号私募证券投资基金B → 百奕小天鹅2号B类 */
 export function normalizeFundDisplayName(raw: string): string {
   const s = raw.trim()
@@ -66,8 +78,8 @@ export function extractProductCodeFromText(text: string): string | null {
   const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)_/)
   if (virtualSubj) return virtualSubj[1]
 
-  const virtualPerfSubj = text.match(/虚拟业绩报酬_[^_]+_([A-Z0-9]+)_/)
-  if (virtualPerfSubj) return virtualPerfSubj[1]
+  const virtualPerfTail = parseVirtualPerfSubject(text)
+  if (virtualPerfTail) return virtualPerfTail.code
 
   const bracketVirtualSubj = text.match(/【虚拟净值】([A-Z0-9]+)_/)
   if (bracketVirtualSubj) return bracketVirtualSubj[1]
@@ -81,10 +93,8 @@ export function extractFundNameFromText(text: string): string | null {
   const labeled = text.match(/基金名称\s*[：:]\s*([^\n\r]+)/)
   if (labeled) return normalizeFundDisplayName(labeled[1])
 
-  const virtualPerfSubj = text.match(
-    /虚拟业绩报酬_[^_]+_[A-Z0-9]+_([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
-  )
-  if (virtualPerfSubj) return normalizeFundDisplayName(virtualPerfSubj[1])
+  const virtualPerfTail = parseVirtualPerfSubject(text)
+  if (virtualPerfTail) return virtualPerfTail.fundName
 
   const bracketVirtualSubj = text.match(
     /【虚拟净值】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
@@ -102,7 +112,7 @@ export function extractFundNameFromText(text: string): string | null {
   }
 
   const m = text.match(
-    /[\u4e00-\u9fff][\u4e00-\u9fff\d\w]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
+    /[\u4e00-\u9fff][\u4e00-\u9fff\d]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
   )
   return m ? normalizeFundDisplayName(m[0]) : null
 }
@@ -208,16 +218,17 @@ export function extractNavData(
   }
 
   // ── 2b. Body: Huatai 虚拟业绩报酬 table row (no colons) ───────────────────
-  // TA891A 瀛岳核心私募证券投资基金A类 20260326 S18852474004 荣熙共赢... 996412.91 2.0085 2.0085 2.0082
+  // TA891A 瀛岳核心...A类 20260326 S18852474004 荣熙共赢... 996412.91 2.0085 ...
+  // AVH67B 倍致灵泰...B类 20260529 S18852498101 上海荣熙... - 荣熙共赢... 2000000 0.9506 ...
   if (/虚拟业绩报酬/.test(subject) || /虚拟单位净值/.test(bodyText)) {
     const perfRowM = bodyText.match(
-      /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{8})\s+S[A-Z0-9]+\s+[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)?\s+[\d,.]+\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
+      /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{8})\s+S[A-Z0-9]+\s+(.+?)\s+([\d,]+(?:\.\d+)?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
     )
     if (perfRowM) {
       return {
-        nav:          parseFloat(perfRowM[4]),
+        nav:          parseFloat(perfRowM[6]),
         navDate:      normaliseDate(perfRowM[3]) ?? subjectDate(subject),
-        cumulativeNav: parseFloat(perfRowM[5]),
+        cumulativeNav: parseFloat(perfRowM[7]),
         productCode:  shared.productCode ?? perfRowM[1],
         fundName:       shared.fundName ?? normalizeFundDisplayName(perfRowM[2]),
         source: "body_table",
