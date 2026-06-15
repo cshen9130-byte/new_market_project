@@ -10838,20 +10838,20 @@ function OperationsFofUnderlyingView() {
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 960 }}>
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1100 }}>
           <thead className="sticky top-0 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               <th className={`${thBase} w-8 px-2`}>
                 <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
               </th>
-              <th className={`${thBase} w-10`}>序号</th>
-              <th className={`${thSort} min-w-[180px]`} onClick={() => handleSort("product_name")}>产品名称<FofSortIcon col="product_name" /></th>
+              <th className={`${thBase} w-10 text-center`}>序号</th>
+              <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<FofSortIcon col="product_name" /></th>
               <th className={`${thBase} min-w-[90px]`}>备案编码</th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>单位净值<FofSortIcon col="latest_nav" /></th>
               <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>净值日期<FofSortIcon col="latest_nav_date" /></th>
-              <th className={`${thSort} text-right min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<FofSortIcon col="latest_price_change" /></th>
+              <th className={`${thSort} min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<FofSortIcon col="latest_price_change" /></th>
               <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
-              <th className={`${thBase} text-center w-20`}>操作</th>
+              <th className={`${thBase} text-right pr-4 w-24`}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -10882,12 +10882,24 @@ function OperationsFofUnderlyingView() {
                   <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
                   <td className={cell}>
                     {row.beian_hao ? (
-                      <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
-                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[220px]" title={row.product_name}>
-                        {row.short_name || row.product_name}
+                      <a
+                        href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block max-w-[200px]"
+                        title={row.product_name}
+                      >
+                        <span className="font-medium text-blue-600 dark:text-blue-400 hover:underline truncate block leading-5">
+                          {row.short_name || row.product_name}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground tabular-nums leading-4 block truncate">
+                          {row.beian_hao}
+                        </span>
                       </a>
                     ) : (
-                      <span className="font-medium truncate block max-w-[220px]" title={row.product_name}>{row.short_name || row.product_name}</span>
+                      <span className="font-medium truncate block max-w-[200px] leading-5" title={row.product_name}>
+                        {row.short_name || row.product_name}
+                      </span>
                     )}
                     {row.strategy_l1 && (
                       <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-zinc-300/80 text-zinc-600 bg-zinc-50 dark:bg-zinc-800/50 dark:text-zinc-400">
@@ -10895,20 +10907,20 @@ function OperationsFofUnderlyingView() {
                       </span>
                     )}
                   </td>
-                  <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
-                  <td className={`${cell} tabular-nums`}>
+                  <td className={`${cell} tabular-nums text-muted-foreground whitespace-nowrap`}>{row.beian_hao ?? "—"}</td>
+                  <td className={`${cell} tabular-nums whitespace-nowrap`}>
                     <div className="flex items-center gap-1.5">
                       <span className="font-medium">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
                       {row.nav_estimated && row.latest_nav && (
-                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-amber-100 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800">预估</span>
+                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800 shrink-0">团队</span>
                       )}
                     </div>
                   </td>
-                  <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                  <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
-                  <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
-                  <td className={`${cell} text-center`}>
-                    <div className="flex items-center justify-center gap-1">
+                  <td className={`${cell} tabular-nums whitespace-nowrap`}>{row.latest_nav_date ?? "—"}</td>
+                  <td className={`${cell} tabular-nums whitespace-nowrap`}><TrackPctCell value={row.latest_price_change} /></td>
+                  <td className={`${cell} tabular-nums whitespace-nowrap text-muted-foreground`}>{row.valuation_date ?? "—"}</td>
+                  <td className={`${cell} text-right pr-4`}>
+                    <div className="flex items-center justify-end gap-4">
                       {row.beian_hao && (
                         <div
                           onMouseEnter={(e) => {
@@ -10952,14 +10964,22 @@ function OperationsFofUnderlyingView() {
         </table>
       </div>
 
-      {hoverChartRow && hoverChartPos && (
-        <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
-          style={{ left: hoverChartPos.x, top: hoverChartPos.y }}
-          onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
-          onMouseLeave={() => setHoverChartRow(null)}>
-          <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
-        </div>
-      )}
+      {hoverChartRow && hoverChartPos && (() => {
+        const popupW = 356
+        const popupH = 210
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
+        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
+        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
+        return (
+          <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
+            style={{ left, top }}
+            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+            onMouseLeave={() => setHoverChartRow(null)}>
+            <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
+          </div>
+        )
+      })()}
 
       <div className="flex items-center justify-between pt-3 flex-shrink-0">
         <span className="text-sm text-zinc-500">
@@ -11473,7 +11493,7 @@ function OperationsManagedProductsView() {
                   <td className={`${cell} text-right tabular-nums font-medium`}>{fmtMoney(row.net_asset_value)}</td>
                   <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
                   <td className={`${cell} text-center`}>
-                    <div className="flex items-center justify-center gap-1">
+                    <div className="flex items-center justify-center gap-4">
                       {row.beian_hao && (
                         <div
                           onMouseEnter={(e) => {
@@ -11518,14 +11538,22 @@ function OperationsManagedProductsView() {
         </table>
       </div>
 
-      {hoverChartRow && hoverChartPos && (
-        <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
-          style={{ left: hoverChartPos.x, top: hoverChartPos.y }}
-          onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
-          onMouseLeave={() => setHoverChartRow(null)}>
-          <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
-        </div>
-      )}
+      {hoverChartRow && hoverChartPos && (() => {
+        const popupW = 356
+        const popupH = 210
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
+        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
+        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
+        return (
+          <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
+            style={{ left, top }}
+            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+            onMouseLeave={() => setHoverChartRow(null)}>
+            <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
+          </div>
+        )
+      })()}
 
       <div className="flex items-center justify-between pt-3 flex-shrink-0">
         <span className="text-sm text-zinc-500">
@@ -12380,14 +12408,22 @@ function InvestmentManagedProductsView() {
         </table>
       </div>
 
-      {hoverChartRow && hoverChartPos && (
-        <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
-          style={{ left: hoverChartPos.x, top: hoverChartPos.y }}
-          onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
-          onMouseLeave={() => setHoverChartRow(null)}>
-          <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
-        </div>
-      )}
+      {hoverChartRow && hoverChartPos && (() => {
+        const popupW = 356
+        const popupH = 210
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
+        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
+        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
+        return (
+          <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
+            style={{ left, top }}
+            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+            onMouseLeave={() => setHoverChartRow(null)}>
+            <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
+          </div>
+        )
+      })()}
 
       <div className="flex items-center justify-between pt-3 flex-shrink-0">
         <span className="text-sm text-zinc-500">
@@ -14131,14 +14167,22 @@ function InvestmentFofOverviewView() {
       </div>
       )}
 
-      {viewTab === "summary" && hoverChartRow && hoverChartPos && (
-        <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
-          style={{ left: hoverChartPos.x, top: hoverChartPos.y }}
-          onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
-          onMouseLeave={() => setHoverChartRow(null)}>
-          <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
-        </div>
-      )}
+      {viewTab === "summary" && hoverChartRow && hoverChartPos && (() => {
+        const popupW = 356
+        const popupH = 210
+        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
+        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
+        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
+        return (
+          <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
+            style={{ left, top }}
+            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
+            onMouseLeave={() => setHoverChartRow(null)}>
+            <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
+          </div>
+        )
+      })()}
 
       <div className="flex items-center justify-between pt-3 flex-shrink-0">
         <span className="text-sm text-zinc-500">

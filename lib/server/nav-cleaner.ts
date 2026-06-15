@@ -47,8 +47,13 @@ const UNIT_NAV_HEADER_PATTERNS = [
 ]
 
 const CUMULATIVE_NAV_HEADER_PATTERNS = [
-  /累计净值|累积净值|复权净值|adjustednav|accumulatednav|accnav|totalnav|adjustednetvalue/i,
+  /累计单位净值|累计份额净值|累计净值|累积净值|复权净值|adjustednav|accumulatednav|accnav|totalnav|adjustednetvalue/i,
 ]
+
+/** Headers like 累计单位净值 also match /单位净值/ — exclude them from unit scoring. */
+function isCumulativeNavHeader(normalizedHeader: string): boolean {
+  return CUMULATIVE_NAV_HEADER_PATTERNS.some((pattern) => pattern.test(normalizedHeader))
+}
 
 function stringifyCell(value: unknown) {
   if (value == null) return ""
@@ -337,7 +342,10 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
       dateScore:
         matchHeaderScore(normalizedHeader, DATE_HEADER_PATTERNS) + (parseableDateCount / sampleCount) * 6,
       unitScore:
-        matchHeaderScore(normalizedHeader, UNIT_NAV_HEADER_PATTERNS) + (numericCount / sampleCount) * 3,
+        (isCumulativeNavHeader(normalizedHeader)
+          ? 0
+          : matchHeaderScore(normalizedHeader, UNIT_NAV_HEADER_PATTERNS)) +
+        (numericCount / sampleCount) * 3,
       cumulativeScore:
         matchHeaderScore(normalizedHeader, CUMULATIVE_NAV_HEADER_PATTERNS) + (numericCount / sampleCount) * 3,
       numericCount,
@@ -353,6 +361,7 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
 
   const unitCandidate = [...navCandidates]
     .filter((column) => column.index !== cumulativeIndex)
+    .filter((column) => !isCumulativeNavHeader(normalizeHeader(column.header)))
     .sort((left, right) => right.unitScore - left.unitScore)[0] ?? null
   let unitIndex = unitCandidate && unitCandidate.unitScore > 1 ? unitCandidate.index : null
 
