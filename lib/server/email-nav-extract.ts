@@ -140,11 +140,13 @@ export function extractNavData(
   }
 
   // ── 4. Body: 虚拟净值表现估算 table format ─────────────────────────────────
-  // Subject: 【基金虚拟净值表现估算】...
+  // Subject: 【基金虚拟净值表现估算】PRODUCT_NAVDATE_INVESTOR
   // Table columns: ...虚拟净值 | 实际净值 | 实际累计冲值
   // Data row:  ...YYYY-MM-DD TA计提 2,473,410.83 11,276.75 1.2235 1.2261 1.6463
   // Holdings/valuations have commas and only 2 decimal places so won't match
   // \d+\.\d{3,8}; the three matching values are the NAV columns.
+  // The subject date is authoritative (body table date can be off by one day on
+  // the first send of a new fund), so prefer subjectDate over the regex-matched date.
   if (/虚拟净值/.test(subject) || /虚拟净值\s+实际净值/.test(bodyText)) {
     const virtualNavM = bodyText.match(
       /(\d{4}-\d{2}-\d{2})[^\n]*?(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/,
@@ -152,7 +154,7 @@ export function extractNavData(
     if (virtualNavM) {
       return {
         nav:          parseFloat(virtualNavM[2]),
-        navDate:      virtualNavM[1],
+        navDate:      subjectDate(subject) ?? virtualNavM[1],
         cumulativeNav: parseFloat(virtualNavM[4]),
         ...shared,
         source: "body_table",
