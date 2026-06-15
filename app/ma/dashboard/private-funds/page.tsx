@@ -5997,6 +5997,7 @@ function OperationsParseLogsPanel() {
   const [loading, setLoading] = useState(false)
   const [fetching, setFetching] = useState(false)
   const [fetchMsg, setFetchMsg] = useState<string | null>(null)
+  const [fetchDays, setFetchDays] = useState(31)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [stats, setStats] = useState({ total: 0, success: 0, failure: 0, lastUpdatedAt: null as string | null })
@@ -6069,7 +6070,7 @@ function OperationsParseLogsPanel() {
       const res = await fetch("/ma/api/ops/email-parse-records/fetch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ days: 31 }),
+        body: JSON.stringify({ days: fetchDays }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? "抓取失败")
@@ -6290,6 +6291,22 @@ function OperationsParseLogsPanel() {
           >
             <Download className="h-3.5 w-3.5" /> 导出
           </button>
+          <div className="flex items-center gap-1">
+            <input
+              type="number"
+              min={1}
+              max={365}
+              value={fetchDays}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10)
+                if (Number.isFinite(v) && v > 0) setFetchDays(v)
+              }}
+              disabled={fetching}
+              className="w-16 px-2 py-1.5 border rounded text-sm text-center disabled:opacity-40"
+              title="扫描天数"
+            />
+            <span className="text-xs text-muted-foreground">天</span>
+          </div>
           <button
             type="button"
             onClick={() => void runFetch()}
