@@ -176,7 +176,7 @@ type FetchMailboxResult = {
 }
 
 async function downloadPart(client: ImapFlow, uid: string, part: string): Promise<Buffer> {
-  const dl = await client.download(uid, part)
+  const dl = await client.download(uid, part, { uid: true })
   const bufs: Buffer[] = []
   for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
   return Buffer.concat(bufs)
@@ -208,96 +208,112 @@ async function fetchMailbox(
   await client.connect()
   try {
     for (const folder of folders) {
-    await client.mailboxOpen(folder)
-    const uids = (await client.search({ since })) || []
+      await client.mailboxOpen(folder)
+      const uids = (await client.search({ since }, { uid: true })) || []
+      if (uids.length === 0) continue
 
-    for (const uid of uids) {
-      const envMsg = await client.fetchOne(String(uid), {
-        envelope: true,
-        bodyStructure: true,
-        internalDate: true,
-      })
-      const envelope = (envMsg as {
-        envelope?: { subject?: string; date?: Date; from?: { name?: string; address?: string }[] }
-      }).envelope
-      const subject = envelope?.subject ?? ""
-      const senderEmail = formatSenderEmail(envelope?.from)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const structure = (envMsg as any).bodyStructure
-      if (!structure) continue
+      // ── Step 1: batch-fetch envelopes + body structures for ALL matching UIDs ──
+      // A single IMAP FETCH command instead of N individual round-trips.
+      type Candidate = {
+        uid: number
+        subject: string
+        sentAt: Date
+        senderEmail: string
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        structure: any
+        attachments: AttachmentInfo[]
+        textParts: { part: string; mime: string }[]
+      }
+      const candidates: Candidate[] = []
 
-      const attachments = collectAttachments(structure)
-      if (!isFundRelated(subject, attachments)) continue
+      for await (const msg of client.fetch(
+        uids,
+        { uid: true, envelope: true, bodyStructure: true, internalDate: true },
+        { uid: true },
+      )) {
+        const envelope = (msg as {
+          envelope?: { subject?: string; date?: Date; from?: EnvelopeAddress[] }
+        }).envelope
+        const subject = envelope?.subject ?? ""
+        const senderEmail = formatSenderEmail(envelope?.from)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const structure = (msg as any).bodyStructure
+        if (!structure) continue
 
-      const textParts = collectTextParts(structure)
-      const chunks: string[] = [subject]
-      for (const { part, mime } of textParts) {
-        try {
-          const dl = await client.download(String(uid), part)
-          const bufs: Buffer[] = []
-          for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
-          const buf = Buffer.concat(bufs)
-          const text = buf.toString("utf-8")
-          chunks.push(mime.includes("text/html") ? stripHtml(text) : text)
-        } catch (e) {
-          errors.push(`${account.account} UID ${uid}: ${e instanceof Error ? e.message : String(e)}`)
+        const attachments = collectAttachments(structure)
+        if (!isFundRelated(subject, attachments)) continue
+
+        const textParts = collectTextParts(structure)
+        const sentAt = (msg as { internalDate?: Date }).internalDate ?? envelope?.date ?? new Date()
+        const uid = (msg as { uid?: number }).uid ?? 0
+
+        candidates.push({ uid, subject, sentAt, senderEmail, structure, attachments, textParts })
+      }
+
+      // ── Step 2: download body text only for fund-related emails ──
+      for (const { uid, subject, sentAt, senderEmail, attachments, textParts } of candidates) {
+        const chunks: string[] = [subject]
+        for (const { part, mime } of textParts) {
+          try {
+            const dl = await client.download(String(uid), part, { uid: true })
+            const bufs: Buffer[] = []
+            for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
+            const text = Buffer.concat(bufs).toString("utf-8")
+            chunks.push(mime.includes("text/html") ? stripHtml(text) : text)
+          } catch (e) {
+            errors.push(`${account.account} UID ${uid}: ${e instanceof Error ? e.message : String(e)}`)
+          }
         }
-      }
 
-      const sentAt =
-        (envMsg as { internalDate?: Date }).internalDate ??
-        envelope?.date ??
-        new Date()
+        const bodyText = chunks.join("\n")
+        parseRecords.push(
+          parseEmailRecord(account, String(uid), subject, sentAt, senderEmail, bodyText, attachments),
+        )
 
-      const bodyText = chunks.join("\n")
-      parseRecords.push(
-        parseEmailRecord(account, String(uid), subject, sentAt, senderEmail, bodyText, attachments),
-      )
+        const emailMeta = {
+          crawlEmailAccount: account.account,
+          emailUid: String(uid),
+          sentAt: sentAt.toISOString(),
+          subject,
+          senderEmail,
+        }
 
-      const emailMeta = {
-        crawlEmailAccount: account.account,
-        emailUid: String(uid),
-        sentAt: sentAt.toISOString(),
-        subject,
-        senderEmail,
-      }
+        const navDatesFromAttachments = new Set<string>()
+        for (const att of selectNavTableAttachments(subject, attachments)) {
+          try {
+            const buf = await downloadPart(client, String(uid), att.part)
+            const rows = extractNavTableFromBuffer(buf, att.filename, subject)
+            for (const row of rows) {
+              if (!row.navDate) continue
+              navDatesFromAttachments.add(row.navDate)
+              navRecords.push({
+                ...emailMeta,
+                ...row,
+                attachmentFilename: att.filename,
+              })
+            }
+          } catch (e) {
+            errors.push(
+              `${account.account} UID ${uid} attachment ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+            )
+          }
+        }
 
-      const navDatesFromAttachments = new Set<string>()
-      for (const att of selectNavTableAttachments(subject, attachments)) {
-        try {
-          const buf = await downloadPart(client, String(uid), att.part)
-          const rows = extractNavTableFromBuffer(buf, att.filename, subject)
-          for (const row of rows) {
-            if (!row.navDate) continue
-            navDatesFromAttachments.add(row.navDate)
+        const navData = extractNavData(subject, bodyText)
+        if (navData) {
+          const skipTextNav =
+            navData.navDate != null
+              ? navDatesFromAttachments.has(navData.navDate)
+              : navDatesFromAttachments.size > 0
+          if (!skipTextNav) {
             navRecords.push({
               ...emailMeta,
-              ...row,
-              attachmentFilename: att.filename,
+              ...navData,
+              attachmentFilename: "",
             })
           }
-        } catch (e) {
-          errors.push(
-            `${account.account} UID ${uid} attachment ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
-          )
         }
       }
-
-      const navData = extractNavData(subject, bodyText)
-      if (navData) {
-        const skipTextNav =
-          navData.navDate != null
-            ? navDatesFromAttachments.has(navData.navDate)
-            : navDatesFromAttachments.size > 0
-        if (!skipTextNav) {
-          navRecords.push({
-            ...emailMeta,
-            ...navData,
-            attachmentFilename: "",
-          })
-        }
-      }
-    }
     } // end for folder
   } finally {
     try {
