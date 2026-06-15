@@ -345,3 +345,51 @@ export function extractNavData(
 
   return null
 }
+
+/** Full fund-name segment in 资产净值公告 body tables (code name date unit cum). */
+const HISTORY_TABLE_ROW_RE =
+  /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{4}-\d{2}-\d{2})\s+(\d+\.\d+)\s+(\d+\.\d+)/g
+
+function hasNavHistoryTable(bodyText: string, subject: string): boolean {
+  return (
+    /产品代码\s+产品名称\s+净值日期/u.test(bodyText) ||
+    /资产净值公告/u.test(subject)
+  )
+}
+
+/**
+ * Extract all historical NAV rows from a multi-row body table (e.g. 资产净值公告).
+ * Only rows whose product code matches the subject metadata are returned.
+ */
+export function extractNavHistoryFromBody(
+  subject: string,
+  bodyText: string,
+): ExtractedNavData[] {
+  if (!hasNavHistoryTable(bodyText, subject)) return []
+
+  const shared = extractNavMetadata(subject, bodyText)
+  const expectedCode = shared.productCode?.toUpperCase()
+
+  const rows: ExtractedNavData[] = []
+  const seenDates = new Set<string>()
+
+  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_RE)) {
+    const code = m[1].toUpperCase()
+    if (expectedCode && code !== expectedCode) continue
+
+    const navDate = m[3]
+    if (seenDates.has(navDate)) continue
+    seenDates.add(navDate)
+
+    rows.push({
+      nav: parseFloat(m[4]),
+      navDate,
+      cumulativeNav: parseFloat(m[5]),
+      productCode: code,
+      fundName: shared.fundName ?? normalizeFundDisplayName(m[2]),
+      source: "body_table",
+    })
+  }
+
+  return rows
+}

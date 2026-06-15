@@ -11,8 +11,8 @@ import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
 
 export type NavTableAttachmentInfo = { filename: string; part: string }
 
-const NAV_TABLE_SUBJECT_RE = /净值表|每日净值表|虚拟计提净值表/u
-const NAV_TABLE_FILENAME_RE = /净值表|每日净值/u
+const NAV_TABLE_SUBJECT_RE = /净值表|每日净值表|虚拟计提净值表|资产净值公告/u
+const NAV_TABLE_FILENAME_RE = /净值表|每日净值|资产净值公告/u
 const EXCLUDE_ATTACHMENT_RE = /估值表|台账|份额明细|业绩报酬|虚拟净值表现/i
 
 export function isNavTableSubject(subject: string): boolean {

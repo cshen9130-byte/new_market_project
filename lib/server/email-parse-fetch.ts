@@ -14,7 +14,7 @@ import {
   type EmailParseRecord,
   type ParseStepStatus,
 } from "@/lib/server/email-parse-records"
-import { extractNavData } from "@/lib/server/email-nav-extract"
+import { extractNavData, extractNavHistoryFromBody } from "@/lib/server/email-nav-extract"
 import {
   extractNavTableFromBuffer,
   selectNavTableAttachments,
@@ -107,6 +107,7 @@ function isFundRelated(subject: string, attachments: AttachmentInfo[]): boolean 
 
 function hasTableNav(body: string): boolean {
   const text = body.replace(/\s+/g, " ")
+  if (/产品代码\s+产品名称\s+净值日期/u.test(body)) return /\d+\.\d{2,8}/.test(text)
   return /单位净值|基金份额净值|资产净值|虚拟净值|虚拟单位净值/.test(text) && /\d+\.\d{2,8}/.test(text) && /<table|┌|│|净值日期/u.test(body)
 }
 
@@ -299,18 +300,31 @@ async function fetchMailbox(
           }
         }
 
-        const navData = extractNavData(subject, bodyText)
-        if (navData) {
-          const skipTextNav =
-            navData.navDate != null
-              ? navDatesFromAttachments.has(navData.navDate)
-              : navDatesFromAttachments.size > 0
-          if (!skipTextNav) {
+        const navHistory = extractNavHistoryFromBody(subject, bodyText)
+        if (navHistory.length > 0) {
+          for (const row of navHistory) {
+            if (!row.navDate) continue
+            if (navDatesFromAttachments.has(row.navDate)) continue
             navRecords.push({
               ...emailMeta,
-              ...navData,
+              ...row,
               attachmentFilename: "",
             })
+          }
+        } else {
+          const navData = extractNavData(subject, bodyText)
+          if (navData) {
+            const skipTextNav =
+              navData.navDate != null
+                ? navDatesFromAttachments.has(navData.navDate)
+                : navDatesFromAttachments.size > 0
+            if (!skipTextNav) {
+              navRecords.push({
+                ...emailMeta,
+                ...navData,
+                attachmentFilename: "",
+              })
+            }
           }
         }
       }
