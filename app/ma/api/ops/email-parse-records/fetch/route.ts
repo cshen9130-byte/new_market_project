@@ -3,6 +3,7 @@ import { fetchEmailParseRecords } from "@/lib/server/email-parse-fetch"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+export const maxDuration = 300  // allow up to 5 minutes for large mailbox scans
 
 export async function POST(req: Request) {
   try {

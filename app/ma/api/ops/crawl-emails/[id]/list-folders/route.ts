@@ -4,6 +4,7 @@ import { getCrawlEmailById } from "@/lib/server/crawl-emails"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+export const maxDuration = 30
 
 export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
