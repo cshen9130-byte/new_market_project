@@ -16,7 +16,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const body = await req.json()
-    const { emailType, account, pass, imapHost, imapPort, remark } = body as Record<string, unknown>
+    const { emailType, account, pass, imapHost, imapPort, imapFolders, remark } = body as Record<string, unknown>
 
     if (!emailType || typeof emailType !== "string" || !emailType.trim()) {
       return NextResponse.json({ error: "请选择邮箱类型" }, { status: 400 })
@@ -37,6 +37,9 @@ export async function POST(req: Request) {
       pass,
       imapHost,
       imapPort: Number(imapPort || 993),
+      imapFolders: Array.isArray(imapFolders)
+        ? (imapFolders as unknown[]).map((f) => String(f).trim()).filter(Boolean)
+        : undefined,
       remark: typeof remark === "string" ? remark : "",
     })
 

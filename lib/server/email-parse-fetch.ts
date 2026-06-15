@@ -2,6 +2,7 @@ import { ImapFlow } from "imapflow"
 import {
   getCrawlEmailByAccount,
   getCrawlEmailById,
+  getImapFolders,
   listCrawlEmails,
   type CrawlEmailAccount,
 } from "@/lib/server/crawl-emails"
@@ -202,9 +203,12 @@ async function fetchMailbox(
   const parseRecords: Omit<EmailParseRecord, "id">[] = []
   const navRecords: EmailNavInsert[] = []
 
+  const folders = getImapFolders(account)
+
   await client.connect()
   try {
-    await client.mailboxOpen("INBOX")
+    for (const folder of folders) {
+    await client.mailboxOpen(folder)
     const uids = (await client.search({ since })) || []
 
     for (const uid of uids) {
@@ -294,6 +298,7 @@ async function fetchMailbox(
         }
       }
     }
+    } // end for folder
   } finally {
     try {
       await client.logout()

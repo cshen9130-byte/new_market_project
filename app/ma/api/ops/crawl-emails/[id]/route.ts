@@ -13,6 +13,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       if (key in body) patch[key] = body[key]
     }
     if ("imapPort" in body) patch.imapPort = Number(body.imapPort || 993)
+    if ("imapFolders" in body && Array.isArray(body.imapFolders)) {
+      patch.imapFolders = (body.imapFolders as unknown[])
+        .map((f) => String(f).trim())
+        .filter(Boolean)
+    }
 
     const row = await updateCrawlEmail(id, patch as Parameters<typeof updateCrawlEmail>[1])
     if (!row) return NextResponse.json({ error: "记录不存在" }, { status: 404 })

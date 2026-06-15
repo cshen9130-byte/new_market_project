@@ -20,6 +20,7 @@ export type CrawlEmailAccount = {
   pass: string
   imapHost: string
   imapPort: number
+  imapFolders: string[]   // IMAP folders to search; defaults to ["INBOX"]
   crawlStatus: "成功" | "失败" | "未测试"
   remark: string
   createdAt: string
@@ -30,12 +31,22 @@ export type CrawlEmailPublic = Omit<CrawlEmailAccount, "pass"> & {
   passMasked: string
 }
 
+/** Return the ordered list of IMAP folders to search for this account. */
+export function getImapFolders(account: CrawlEmailAccount): string[] {
+  return account.imapFolders?.length ? account.imapFolders : ["INBOX"]
+}
+
 const DATA_FILE = path.join(process.cwd(), "data", "ops_crawl_emails.json")
 
 function readAll(): CrawlEmailAccount[] {
   if (!fs.existsSync(DATA_FILE)) return []
   try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) as CrawlEmailAccount[]
+    const rows = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) as CrawlEmailAccount[]
+    // Backfill imapFolders for accounts created before this field was added
+    return rows.map((r) => ({
+      ...r,
+      imapFolders: Array.isArray(r.imapFolders) && r.imapFolders.length ? r.imapFolders : ["INBOX"],
+    }))
   } catch {
     return []
   }
@@ -221,6 +232,7 @@ export async function createCrawlEmail(input: {
   pass: string
   imapHost: string
   imapPort: number
+  imapFolders?: string[]
   remark?: string
 }): Promise<CrawlEmailPublic> {
   let crawlStatus: CrawlEmailAccount["crawlStatus"] = "未测试"
@@ -239,6 +251,7 @@ export async function createCrawlEmail(input: {
     pass: input.pass.trim(),
     imapHost: input.imapHost.trim(),
     imapPort: input.imapPort || 993,
+    imapFolders: input.imapFolders?.length ? input.imapFolders : ["INBOX"],
     crawlStatus,
     remark: (input.remark ?? "").trim(),
     createdAt: now,
@@ -259,6 +272,7 @@ export async function updateCrawlEmail(
     pass: string
     imapHost: string
     imapPort: number
+    imapFolders: string[]
     remark: string
   }>,
 ): Promise<CrawlEmailPublic | null> {
@@ -274,6 +288,9 @@ export async function updateCrawlEmail(
     ...("pass" in patch && patch.pass !== undefined && patch.pass.trim() ? { pass: patch.pass.trim() } : {}),
     ...("imapHost" in patch && patch.imapHost !== undefined ? { imapHost: patch.imapHost.trim() } : {}),
     ...("imapPort" in patch && patch.imapPort !== undefined ? { imapPort: patch.imapPort } : {}),
+    ...("imapFolders" in patch && Array.isArray(patch.imapFolders)
+      ? { imapFolders: patch.imapFolders.length ? patch.imapFolders : ["INBOX"] }
+      : {}),
     ...("remark" in patch && patch.remark !== undefined ? { remark: patch.remark.trim() } : {}),
     updatedAt: new Date().toISOString(),
   }

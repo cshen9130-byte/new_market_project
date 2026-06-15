@@ -5524,6 +5524,7 @@ type CrawlEmailRow = {
   passMasked: string
   imapHost: string
   imapPort: number
+  imapFolders: string[]
   crawlStatus: "成功" | "失败" | "未测试"
   remark: string
 }
@@ -6455,6 +6456,8 @@ function OperationsEmailSyncView() {
   const [checkedAgreement, setCheckedAgreement] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [listingFolders, setListingFolders] = useState(false)
+  const [availableFolders, setAvailableFolders] = useState<string[] | null>(null)
   const [importing, setImporting] = useState(false)
   const [importMsg, setImportMsg] = useState<string | null>(null)
   const [showImportModal, setShowImportModal] = useState(false)
@@ -6468,6 +6471,7 @@ function OperationsEmailSyncView() {
     pass: "",
     imapHost: "",
     imapPort: 993,
+    imapFolders: ["INBOX"],
     remark: "",
   })
 
@@ -6562,12 +6566,14 @@ function OperationsEmailSyncView() {
     setCheckedPop(false)
     setCheckedAgreement(false)
     setTestResult(null)
+    setAvailableFolders(null)
     setForm({
       emailType: "",
       account: "",
       pass: "",
       imapHost: "",
       imapPort: 993,
+      imapFolders: ["INBOX"],
       remark: "",
     })
     setShowModal(true)
@@ -6579,15 +6585,32 @@ function OperationsEmailSyncView() {
     setCheckedPop(true)
     setCheckedAgreement(true)
     setTestResult(null)
+    setAvailableFolders(null)
     setForm({
       emailType: row.emailType,
       account: row.account,
       pass: "",
       imapHost: row.imapHost,
       imapPort: row.imapPort,
+      imapFolders: row.imapFolders?.length ? row.imapFolders : ["INBOX"],
       remark: row.remark,
     })
     setShowModal(true)
+  }
+
+  async function listFolders() {
+    if (!editingId) return
+    setListingFolders(true)
+    setAvailableFolders(null)
+    try {
+      const res = await fetch(`/ma/api/ops/crawl-emails/${editingId}/list-folders`)
+      const data = await res.json()
+      setAvailableFolders(Array.isArray(data.folders) ? data.folders : [])
+    } catch {
+      setAvailableFolders([])
+    } finally {
+      setListingFolders(false)
+    }
   }
 
   const canSave =
@@ -6637,11 +6660,12 @@ function OperationsEmailSyncView() {
     setSaving(true)
     try {
       const { imapHost, imapPort } = resolveImapConfig()
-      const payload: Record<string, string | number> = {
+      const payload: Record<string, string | number | string[]> = {
         emailType: form.emailType,
         account: form.account,
         imapHost,
         imapPort,
+        imapFolders: form.imapFolders.length ? form.imapFolders : ["INBOX"],
         remark: form.remark,
       }
       if (form.pass.trim()) payload.pass = form.pass
@@ -6976,6 +7000,68 @@ function OperationsEmailSyncView() {
                   />
                 </div>
               )}
+              <div className="flex items-start gap-3">
+                <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-24 text-right pt-2">搜索文件夹：</label>
+                <div className="flex-1 space-y-1.5">
+                  {form.imapFolders.map((folder, idx) => (
+                    <div key={idx} className="flex items-center gap-1.5">
+                      <input
+                        className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background font-mono"
+                        value={folder}
+                        onChange={(e) => setForm((f) => {
+                          const next = [...f.imapFolders]
+                          next[idx] = e.target.value
+                          return { ...f, imapFolders: next }
+                        })}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({
+                          ...f,
+                          imapFolders: f.imapFolders.filter((_, i) => i !== idx).length ? f.imapFolders.filter((_, i) => i !== idx) : ["INBOX"],
+                        }))}
+                        className="text-zinc-400 hover:text-red-500 px-1 text-lg leading-none"
+                        title="删除"
+                      >×</button>
+                    </div>
+                  ))}
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setForm((f) => ({ ...f, imapFolders: [...f.imapFolders, ""] }))}
+                      className="text-xs text-blue-600 hover:underline"
+                    >＋ 添加文件夹</button>
+                    {editingId && (
+                      <button
+                        type="button"
+                        onClick={() => void listFolders()}
+                        disabled={listingFolders}
+                        className="text-xs text-blue-600 hover:underline disabled:opacity-40"
+                      >{listingFolders ? "获取中…" : "查看可用文件夹"}</button>
+                    )}
+                  </div>
+                  {availableFolders && (
+                    <div className="mt-1 p-2 border rounded bg-muted/40 text-xs font-mono max-h-32 overflow-y-auto space-y-0.5">
+                      {availableFolders.length === 0
+                        ? <span className="text-muted-foreground">（无可用文件夹）</span>
+                        : availableFolders.map((f) => (
+                          <div
+                            key={f}
+                            className="cursor-pointer hover:text-blue-600 truncate"
+                            title={`点击添加 ${f}`}
+                            onClick={() => {
+                              if (!form.imapFolders.includes(f)) {
+                                setForm((prev) => ({ ...prev, imapFolders: [...prev.imapFolders, f] }))
+                              }
+                            }}
+                          >{f}</div>
+                        ))
+                      }
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">默认仅搜索 INBOX。若邮件被自动归类到其他文件夹（如 163 的"系统邮件"），在此添加对应文件夹路径。</p>
+                </div>
+              </div>
               <div className="flex items-center gap-3">
                 <label className="text-sm text-zinc-700 dark:text-zinc-300 shrink-0 w-24 text-right">备注：</label>
                 <input
