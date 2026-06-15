@@ -45,18 +45,58 @@ function normaliseDate(raw: string): string | null {
 
 // ── helper extractors ─────────────────────────────────────────────────────────
 
+/** Short display name: 百奕小天鹅2号私募证券投资基金B → 百奕小天鹅2号B类 */
+export function normalizeFundDisplayName(raw: string): string {
+  const s = raw.trim()
+  const m = s.match(/^(.+?)(?:私募证券投资基金|私募基金|证券投资基金|投资基金)?([ABC]类|[ABC])?$/)
+  if (!m?.[1]) return s
+  const base = m[1].trim()
+  let shareClass = (m[2] ?? "").trim()
+  if (shareClass.length === 1 && /[ABC]/.test(shareClass)) shareClass += "类"
+  return `${base}${shareClass}`
+}
+
 export function extractProductCodeFromText(text: string): string | null {
-  // Typical codes: SBPC20, SBTX45, SBPU97 – pattern: 2-6 uppercase letters + 2-6 digits
-  const m = text.match(/\b([A-Z]{2,6}\d{2,6}[A-Z]?)\b/)
+  const labeled = text.match(/基金代码\s*[：:]\s*([A-Z0-9]+)/)
+  if (labeled) return labeled[1]
+
+  const productRef = text.match(/请查阅产品\s*([A-Z0-9]+)\s*[（(]/)
+  if (productRef) return productRef[1]
+
+  const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)_/)
+  if (virtualSubj) return virtualSubj[1]
+
+  // Typical codes: SBPC20, ASX73A, BSJ74B, T07998 — at most 6 digits to skip fund accounts
+  const m = text.match(/(?:^|[^A-Z0-9_])([A-Z]{1,6}\d{2,6}[A-Z]?)(?![A-Z0-9])/)
   return m?.[1] ?? null
 }
 
 export function extractFundNameFromText(text: string): string | null {
-  // Match a Chinese phrase ending with 基金, trying to avoid very short matches
-  const m = text.match(
-    /[\u4e00-\u9fff][\u4e00-\u9fff\w]{3,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)/,
+  const labeled = text.match(/基金名称\s*[：:]\s*([^\n\r]+)/)
+  if (labeled) return normalizeFundDisplayName(labeled[1])
+
+  const virtualSubj = text.match(
+    /】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
   )
-  return m?.[0]?.trim() ?? null
+  if (virtualSubj) return normalizeFundDisplayName(virtualSubj[1])
+
+  const guotaiSubj = text.match(/发送[：:](.+?)(?:【|$)/)
+  if (guotaiSubj && /私募证券|投资基金/.test(guotaiSubj[1])) {
+    return normalizeFundDisplayName(guotaiSubj[1])
+  }
+
+  const m = text.match(
+    /[\u4e00-\u9fff][\u4e00-\u9fff\d\w]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
+  )
+  return m ? normalizeFundDisplayName(m[0]) : null
+}
+
+function extractNavMetadata(subject: string, bodyText: string) {
+  const metaText = `${subject}\n${bodyText}`
+  return {
+    productCode: extractProductCodeFromText(metaText),
+    fundName: extractFundNameFromText(metaText),
+  }
 }
 
 // ── date candidates from subject ──────────────────────────────────────────────
@@ -84,10 +124,7 @@ export function extractNavData(
   subject: string,
   bodyText: string,
 ): ExtractedNavData | null {
-  const shared = {
-    productCode: extractProductCodeFromText(subject),
-    fundName: extractFundNameFromText(subject),
-  }
+  const shared = extractNavMetadata(subject, bodyText)
 
   // ── 1. Subject: 单位净值：1.2269 ──────────────────────────────────────────
   const subjNavM = subject.match(/单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
