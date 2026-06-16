@@ -90,12 +90,33 @@ export async function refreshManagedProductsEmailNavLatest(): Promise<number> {
   return parseInt(rows[0]?.n ?? "0", 10)
 }
 
-/** Refresh email NAV latest table and the full managed-products list cache. */
+/** Refresh list cache and sync ops_email_nav_fund_latest from cache (fast). */
 export async function refreshManagedProductsNavAndListCache(): Promise<{
   emailNavLatest: number
   listCache: number
 }> {
-  const emailNavLatest = await refreshManagedProductsEmailNavLatest()
   const listCache = await refreshManagedProductsListCache()
+
+  await ensureEmailNavFundLatestTable()
+  await query(`DELETE FROM ops_email_nav_fund_latest WHERE scope_type = 'managed_product'`)
+  const synced = await query<{ n: string }>(
+    `WITH inserted AS (
+       INSERT INTO ops_email_nav_fund_latest
+         (scope_type, scope_id, product_name, beian_hao, unit_nav, nav_date, return_pct, nav_source)
+       SELECT
+         'managed_product',
+         managed_product_id::text,
+         product_name,
+         beian_hao,
+         unit_nav,
+         nav_date,
+         return_pct,
+         'list_cache'
+       FROM ops_managed_products_list_cache
+       RETURNING 1
+     )
+     SELECT COUNT(*)::text AS n FROM inserted`,
+  )
+  const emailNavLatest = parseInt(synced[0]?.n ?? "0", 10)
   return { emailNavLatest, listCache }
 }
