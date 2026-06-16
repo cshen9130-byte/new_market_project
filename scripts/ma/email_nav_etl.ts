@@ -6,11 +6,13 @@
  *   npx tsx scripts/ma/email_nav_etl.ts --days=31
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only
  *
+ * Loads `.env.local` / `.env` from the project root automatically (same as nightly_etl.py).
  * Prints JSON to stdout for nightly_etl.py to consume.
  */
 
-import { fetchEmailParseRecords } from "@/lib/server/email-parse-fetch"
-import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
+import { loadProjectEnvFiles } from "@/lib/server/load-project-env"
+
+loadProjectEnvFiles()
 
 function parseDays(argv: string[]): number {
   const flag = argv.find((a) => a.startsWith("--days="))
@@ -28,6 +30,7 @@ async function main() {
 
   if (refreshOnly) {
     try {
+      const { refreshManagedProductsNavAndListCache } = await import("@/lib/server/email-nav-latest-pg")
       const { listCache } = await refreshManagedProductsNavAndListCache()
       console.log(JSON.stringify({ ok: true, skipped: false, refreshOnly: true, navLatestRefreshed: listCache, listCacheRefreshed: listCache }))
       process.exit(0)
@@ -41,6 +44,7 @@ async function main() {
   const days = parseDays(argv)
 
   try {
+    const { fetchEmailParseRecords } = await import("@/lib/server/email-parse-fetch")
     const result = await fetchEmailParseRecords({ days })
     console.log(
       JSON.stringify({

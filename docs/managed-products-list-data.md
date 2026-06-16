@@ -283,10 +283,17 @@ Edit `useManagedProductsListCache()` in `managed-products-list-cache-pg.ts`.
 ### Force refresh after deploy
 
 ```bash
+cd ~/new_market_project
 npx tsx scripts/ma/email_nav_etl.ts --refresh-only
 ```
 
-Or rely on first page load (auto-populates if cache empty).
+The script loads `.env.local` / `.env` from the project root automatically. If you still see a DB auth error, verify credentials first:
+
+```bash
+grep -E '^DATABASE_URL=|^DB_PASSWORD=' .env.local
+# or run with explicit env:
+set -a && source .env.local && set +a && npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+```
 
 ### Historical date picker (cutoff ≠ today)
 
