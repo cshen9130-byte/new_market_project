@@ -11,6 +11,7 @@ export type NavExtractSource =
   | "body_table"
   | "body_post_table"
   | "attachment_nav_table"
+  | "attachment_valuation_table"
 
 export type ExtractedNavData = {
   nav: number | null

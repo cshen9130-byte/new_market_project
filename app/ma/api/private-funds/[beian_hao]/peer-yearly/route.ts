@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 import {
   ANNUAL_METRIC_COLUMNS,
   computeFundNavMetrics,
@@ -214,7 +215,8 @@ export async function GET(
   req: Request,
   { params }: { params: Promise<{ beian_hao: string }> },
 ) {
-  const { beian_hao } = await params
+  const { beian_hao: rawId } = await params
+  const beian_hao = await resolveRouteFundId(rawId)
   if (!beian_hao) return NextResponse.json({ error: "Missing beian_hao" }, { status: 400 })
 
   const url = new URL(req.url)

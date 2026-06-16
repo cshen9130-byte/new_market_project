@@ -4,11 +4,13 @@
  * Usage:
  *   npx tsx scripts/ma/email_nav_etl.ts
  *   npx tsx scripts/ma/email_nav_etl.ts --days=31
+ *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only
  *
  * Prints JSON to stdout for nightly_etl.py to consume.
  */
 
 import { fetchEmailParseRecords } from "@/lib/server/email-parse-fetch"
+import { refreshManagedProductsEmailNavLatest } from "@/lib/server/email-nav-latest-pg"
 
 function parseDays(argv: string[]): number {
   const flag = argv.find((a) => a.startsWith("--days="))
@@ -21,7 +23,22 @@ function parseDays(argv: string[]): number {
 }
 
 async function main() {
-  const days = parseDays(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  const refreshOnly = argv.includes("--refresh-only")
+
+  if (refreshOnly) {
+    try {
+      const navLatestRefreshed = await refreshManagedProductsEmailNavLatest()
+      console.log(JSON.stringify({ ok: true, skipped: false, refreshOnly: true, navLatestRefreshed }))
+      process.exit(0)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      console.log(JSON.stringify({ ok: false, refreshOnly: true, error: message }))
+      process.exit(1)
+    }
+  }
+
+  const days = parseDays(argv)
 
   try {
     const result = await fetchEmailParseRecords({ days })

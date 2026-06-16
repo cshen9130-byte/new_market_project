@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { loadEmailNavSeries, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
+import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 
 export const dynamic = "force-dynamic"
 
@@ -8,7 +9,8 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ beian_hao: string }> }
 ) {
-  const { beian_hao } = await params
+  const { beian_hao: rawId } = await params
+  const beian_hao = await resolveRouteFundId(rawId)
 
   const infoRows = await query<{
     beian_hao:      string

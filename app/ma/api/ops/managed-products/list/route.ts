@@ -4,6 +4,7 @@ import {
   buildEmailNavLatestExprs,
   buildEmailNavLatestJoins,
 } from "@/lib/server/email-nav-query"
+import { ensureEmailNavFundLatestTable } from "@/lib/server/email-nav-latest-pg"
 import {
   buildManagedProductsFrom,
   FOF_UNDERLYING_BEIAN_EXPR,
@@ -198,9 +199,26 @@ export async function GET(req: Request) {
     const fallbackNavExpr = "m.latest_unit_nav::numeric"
     const fallbackDateExpr = "m.latest_nav_date"
     const fallbackPctExpr = "m.latest_return_pct::numeric / 100"
-    const emailNavJoins = buildEmailNavLatestJoins(BEIAN_EXPR, PRODUCT_EXPR, SHORT_EXPR, cutoffExpr)
-    const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
-      buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
+
+    const usePrecomputedEmailNav = !hasCutoff
+    if (usePrecomputedEmailNav) {
+      await ensureEmailNavFundLatestTable()
+    }
+    const emailNavJoins = usePrecomputedEmailNav
+      ? `LEFT JOIN ops_email_nav_fund_latest enl
+           ON enl.scope_type = 'managed_product' AND enl.scope_id = m.id::text`
+      : buildEmailNavLatestJoins(BEIAN_EXPR, PRODUCT_EXPR, SHORT_EXPR, cutoffExpr)
+
+    const currentNavExpr = usePrecomputedEmailNav
+      ? `COALESCE(enl.unit_nav, ${fallbackNavExpr})`
+      : buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr).navExpr
+    const currentDateExpr = usePrecomputedEmailNav
+      ? `COALESCE(enl.nav_date, ${fallbackDateExpr})`
+      : buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr).dateExpr
+    const currentPctExpr = usePrecomputedEmailNav
+      ? `COALESCE(enl.return_pct, ${fallbackPctExpr})`
+      : buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr).pctExpr
+
     const histJoins = [
       navAtOffset("h1w", 7, cutoffExpr),
       navAtOffset("h1m", 30, cutoffExpr),

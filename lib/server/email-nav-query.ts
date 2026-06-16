@@ -18,6 +18,24 @@ type EmailNavRawRow = {
   fund_name: string | null
   attachment_filename: string | null
   subject: string | null
+  source: string | null
+}
+
+function isValuationSource(source: string | null | undefined): boolean {
+  return (source ?? "").trim() === "attachment_valuation_table"
+}
+
+function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
+  const currentValuation = isValuationSource(current.source)
+  const candidateValuation = isValuationSource(candidate.source)
+  if (currentValuation !== candidateValuation) {
+    return candidateValuation ? current : candidate
+  }
+
+  const rowHasBeian = beian && `${candidate.attachment_filename ?? ""}${candidate.subject ?? ""}`.toUpperCase().includes(beian)
+  const prevHasBeian = beian && `${current.attachment_filename ?? ""}${current.subject ?? ""}`.toUpperCase().includes(beian)
+  if (rowHasBeian && !prevHasBeian) return candidate
+  return current
 }
 
 /** Collect every name variant we know for a fund (for email matching). */
@@ -139,10 +157,7 @@ function selectEmailSourceStream(
       byDate.set(row.nav_date, row)
       continue
     }
-    // Prefer row whose attachment/subject mentions the beian code.
-    const rowHasBeian = beian && `${row.attachment_filename ?? ""}${row.subject ?? ""}`.toUpperCase().includes(beian)
-    const prevHasBeian = beian && `${prev.attachment_filename ?? ""}${prev.subject ?? ""}`.toUpperCase().includes(beian)
-    if (rowHasBeian && !prevHasBeian) byDate.set(row.nav_date, row)
+    byDate.set(row.nav_date, preferEmailNavRow(prev, row, beian))
   }
 
   return Array.from(byDate.values()).sort((a, b) => a.nav_date.localeCompare(b.nav_date))
@@ -190,6 +205,9 @@ export function buildEmailNavMatchCondition(
   )`
 }
 
+/** Prefer 净值表 sources over 估值表 fallback rows. */
+export const EMAIL_NAV_SOURCE_PRIORITY = `CASE WHEN COALESCE(e.source, '') = 'attachment_valuation_table' THEN 1 ELSE 0 END`
+
 /** Latest email NAV on or before cutoff, plus the prior point for return pct. */
 export function buildEmailNavLatestJoins(
   beianHaoExpr: string,
@@ -215,6 +233,7 @@ export function buildEmailNavLatestJoins(
         AND e.nav_date <= ${cutoffExpr}
         AND e.nav IS NOT NULL
       ORDER BY
+        ${EMAIL_NAV_SOURCE_PRIORITY},
         CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
         CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
           AND (
@@ -236,6 +255,7 @@ export function buildEmailNavLatestJoins(
         AND e.nav_date < en.nav_date
         AND e.nav IS NOT NULL
       ORDER BY
+        ${EMAIL_NAV_SOURCE_PRIORITY},
         CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
         CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
           AND (
@@ -275,7 +295,7 @@ export async function loadEmailNavSeries(
 
   const rows = await query<EmailNavRawRow>(
     `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
-            e.fund_name, e.attachment_filename, e.subject
+            e.fund_name, e.attachment_filename, e.subject, e.source
      FROM ops_email_nav_records e
      WHERE e.nav_date IS NOT NULL
        AND e.nav IS NOT NULL

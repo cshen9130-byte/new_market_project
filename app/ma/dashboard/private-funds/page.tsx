@@ -10881,26 +10881,11 @@ function OperationsFofUnderlyingView() {
                   </td>
                   <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
                   <td className={cell}>
-                    {row.beian_hao ? (
-                      <a
-                        href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block max-w-[200px]"
-                        title={row.product_name}
-                      >
-                        <span className="font-medium text-blue-600 dark:text-blue-400 hover:underline truncate block leading-5">
-                          {row.short_name || row.product_name}
-                        </span>
-                        <span className="text-[10px] text-muted-foreground tabular-nums leading-4 block truncate">
-                          {row.beian_hao}
-                        </span>
-                      </a>
-                    ) : (
-                      <span className="font-medium truncate block max-w-[200px] leading-5" title={row.product_name}>
-                        {row.short_name || row.product_name}
-                      </span>
-                    )}
+                    <FundProductNameLink
+                      beian_hao={row.beian_hao}
+                      product_name={row.product_name}
+                      short_name={row.short_name}
+                    />
                     {row.strategy_l1 && (
                       <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-zinc-300/80 text-zinc-600 bg-zinc-50 dark:bg-zinc-800/50 dark:text-zinc-400">
                         {row.strategy_l1}
@@ -11139,28 +11124,24 @@ function FundProductNameLink({
   className?: string
 }) {
   const label = short_name || product_name
-  if (beian_hao) {
-    return (
-      <a
-        href={`/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={className ?? "block max-w-[200px]"}
-        title={product_name}
-      >
-        <span className="font-medium text-blue-600 dark:text-blue-400 hover:underline truncate block leading-5">
-          {label}
-        </span>
+  const href = `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao || product_name)}`
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={className ?? "block max-w-[200px]"}
+      title={product_name}
+    >
+      <span className="font-medium text-blue-600 dark:text-blue-400 hover:underline truncate block leading-5">
+        {label}
+      </span>
+      {beian_hao && (
         <span className="text-[10px] text-muted-foreground tabular-nums leading-4 block truncate">
           {beian_hao}
         </span>
-      </a>
-    )
-  }
-  return (
-    <span className={className ?? "font-medium truncate block max-w-[200px] leading-5"} title={product_name}>
-      {label}
-    </span>
+      )}
+    </a>
   )
 }
 

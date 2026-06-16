@@ -19,12 +19,18 @@ import {
   extractNavTableFromBuffer,
   selectNavTableAttachments,
 } from "@/lib/server/email-nav-attachment"
+import {
+  extractNavFromValuationBuffer,
+  selectValuationAttachments,
+} from "@/lib/server/email-valuation-attachment"
 import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
+import { refreshManagedProductsEmailNavLatest } from "@/lib/server/email-nav-latest-pg"
 
 export type EmailParseFetchResult = {
   emailsScanned: number
   recordsFound: number
   navSaved: number
+  navLatestRefreshed: number
   errors: string[]
 }
 
@@ -303,6 +309,26 @@ async function fetchMailbox(
           }
         }
 
+        if (navDatesFromAttachments.size === 0) {
+          for (const att of selectValuationAttachments(subject, attachments)) {
+            try {
+              const buf = await downloadPart(client, String(uid), att.part)
+              const row = extractNavFromValuationBuffer(buf, att.filename, subject)
+              if (!row?.navDate || row.nav == null) continue
+              navDatesFromAttachments.add(row.navDate)
+              navRecords.push({
+                ...emailMeta,
+                ...row,
+                attachmentFilename: att.filename,
+              })
+            } catch (e) {
+              errors.push(
+                `${account.account} UID ${uid} valuation ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            }
+          }
+        }
+
         const navHistory = extractNavHistoryFromBody(subject, bodyText)
         if (navHistory.length > 0) {
           for (const row of navHistory) {
@@ -396,10 +422,18 @@ export async function fetchEmailParseRecords(options?: {
     errors.push(`保存净值数据失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  let navLatestRefreshed = 0
+  try {
+    navLatestRefreshed = await refreshManagedProductsEmailNavLatest()
+  } catch (e) {
+    errors.push(`刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   return {
     emailsScanned,
     recordsFound: allParseRecords.length,
     navSaved,
+    navLatestRefreshed,
     errors,
   }
 }
