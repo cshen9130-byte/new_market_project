@@ -201,7 +201,7 @@ export function extractNavFromValuationBuffer(
     const headerScan = scanWorkbookNav(buffer)
     const analysis = parseValuationWorkbook(buffer, filename)
     const portfolioScan = scanPortfolioNav(analysis.portfolio_data)
-    const shared = extractNavMetadata(subject, filename)
+    const shared = extractNavMetadata(subject, "")
 
     const nav = headerScan.unit ?? portfolioScan.unit
     if (nav == null || !isPlausibleUnitNav(nav)) return null
@@ -213,12 +213,18 @@ export function extractNavFromValuationBuffer(
 
     if (!navDate) return null
 
+    const fundName =
+      shared.fundName ??
+      (analysis.summary.fund_name && analysis.summary.fund_name !== "未知基金"
+        ? analysis.summary.fund_name
+        : null)
+
     return {
       nav,
       navDate,
       cumulativeNav: headerScan.cum ?? portfolioScan.cum,
       productCode: shared.productCode,
-      fundName: shared.fundName ?? analysis.summary.fund_name,
+      fundName,
       source: "attachment_valuation_table",
     }
   } catch {

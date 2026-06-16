@@ -4,6 +4,7 @@
 
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
+import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 
 export type EmailNavPoint = {
   price_date: string
@@ -21,15 +22,19 @@ type EmailNavRawRow = {
   source: string | null
 }
 
-function isValuationSource(source: string | null | undefined): boolean {
-  return (source ?? "").trim() === "attachment_valuation_table"
+
+function sourceTier(source: string | null | undefined): number {
+  const s = (source ?? "").trim()
+  if (s === "attachment_nav_table") return 0
+  if (s === "attachment_valuation_table") return 1
+  return 2
 }
 
 function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
-  const currentValuation = isValuationSource(current.source)
-  const candidateValuation = isValuationSource(candidate.source)
-  if (currentValuation !== candidateValuation) {
-    return candidateValuation ? current : candidate
+  const currentTier = sourceTier(current.source)
+  const candidateTier = sourceTier(candidate.source)
+  if (currentTier !== candidateTier) {
+    return candidateTier < currentTier ? candidate : current
   }
 
   const rowHasBeian = beian && `${candidate.attachment_filename ?? ""}${candidate.subject ?? ""}`.toUpperCase().includes(beian)
@@ -188,25 +193,26 @@ export function buildEmailNavMatchCondition(
         OR COALESCE(${e}.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
         OR COALESCE(${e}.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
       ))
-      OR (BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${productNameExpr}))
-      OR (${shortNameExpr} IS NOT NULL AND BTRIM(${shortNameExpr}) <> '' AND BTRIM(COALESCE(${e}.fund_name, '')) <> '' AND BTRIM(${e}.fund_name) = BTRIM(${shortNameExpr}))
+      OR ${sqlFundNameMatch(`${e}.fund_name`, productNameExpr)}
+      OR (${shortNameExpr} IS NOT NULL AND BTRIM(${shortNameExpr}) <> '' AND ${sqlFundNameMatch(`${e}.fund_name`, shortNameExpr)})
       OR (
-        BTRIM(COALESCE(${e}.fund_name, '')) <> ''
-        AND BTRIM(${productNameExpr}) <> ''
-        AND BTRIM(${e}.fund_name) LIKE BTRIM(${productNameExpr}) || '%'
-      )
-      OR (
-        ${shortNameExpr} IS NOT NULL
-        AND BTRIM(${shortNameExpr}) <> ''
-        AND BTRIM(COALESCE(${e}.fund_name, '')) <> ''
-        AND BTRIM(${e}.fund_name) LIKE BTRIM(${shortNameExpr}) || '%'
+        BTRIM(COALESCE(${e}.product_code, '')) <> ''
+        AND (
+          COALESCE(${e}.subject, '') ILIKE '%' || BTRIM(${e}.product_code) || '%'
+          OR COALESCE(${e}.attachment_filename, '') ILIKE '%' || BTRIM(${e}.product_code) || '%'
+        )
+        AND ${sqlFundNameMatch(`${e}.subject`, productNameExpr)}
       )
     )
   )`
 }
 
-/** Prefer 净值表 sources over 估值表 fallback rows. */
-export const EMAIL_NAV_SOURCE_PRIORITY = `CASE WHEN COALESCE(e.source, '') = 'attachment_valuation_table' THEN 1 ELSE 0 END`
+/** Prefer 净值表 attachment, then 估值表 attachment, then body/subject fallbacks. */
+export const EMAIL_NAV_SOURCE_PRIORITY = `CASE COALESCE(e.source, '')
+  WHEN 'attachment_nav_table' THEN 0
+  WHEN 'attachment_valuation_table' THEN 1
+  ELSE 2
+END`
 
 /** Latest email NAV on or before cutoff, plus the prior point for return pct. */
 export function buildEmailNavLatestJoins(

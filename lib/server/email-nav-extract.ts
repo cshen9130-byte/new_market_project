@@ -46,8 +46,9 @@ function normaliseDate(raw: string): string | null {
 
 // ── helper extractors ─────────────────────────────────────────────────────────
 
+/** Allow ASCII letters in names (e.g. 衡颐承和FOF1号). */
 const FUND_NAME_RE =
-  /[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
+  /[\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
 
 /** CMS/招商证券 净值表 subject: 管理人旗下"产品名-CODE". */
 function parseCmsCustodyNavSubject(text: string): { code: string; fundName: string } | null {
@@ -136,12 +137,12 @@ function parseVirtualPerfSubject(text: string): { code: string; fundName: string
 /** Parse CODE_FUNDNAME_4级科目估值表_YYYYMMDD (Guotai Junan etc.). */
 function parseValuationTableSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
-    /^([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(?:\d级科目)?估值表_(20\d{6})/u,
+    /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(?:\d级科目)?估值表_(20\d{6})/u,
   )
   if (m) return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
 
   const tail = text.match(
-    /^([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})_估值表/u,
+    /^([A-Z0-9]+)_([\u4e00-\u9fffA-Za-z0-9]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})_估值表/u,
   )
   if (tail) return { code: tail[1], fundName: normalizeFundDisplayName(tail[2]) }
   return null
