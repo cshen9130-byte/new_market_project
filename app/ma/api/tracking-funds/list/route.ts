@@ -4,6 +4,10 @@ import {
   buildEmailNavLatestExprs,
   buildEmailNavLatestJoins,
 } from "@/lib/server/email-nav-query"
+import {
+  ensureTrackingFundsListCachePopulated,
+  useTrackingFundsListCache,
+} from "@/lib/server/tracking-funds-list-cache-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -295,6 +299,265 @@ function bflOpsNavPctExpr(): string {
   return "COALESCE(lbc.price_change, lbn.price_change, lbs.price_change)"
 }
 
+const CACHE_ALLOWED_SORT: Record<string, string> = {
+  product_name: "i.product_name",
+  latest_nav: "cache.unit_nav",
+  latest_nav_date: "cache.nav_date",
+  latest_price_change: "cache.return_pct",
+  ret_1w: "cache.ret_1w",
+  ret_1m: "cache.ret_1m",
+  ret_3m: "cache.ret_3m",
+  ret_6m: "cache.ret_6m",
+  ret_1y: "cache.ret_1y",
+  sharpe_1y: "cache.sharpe_1y",
+  calmar_1y: "cache.calmar_1y",
+}
+
+function cachedStrategyExprs(
+  pool: string,
+  strategySource: StrategySource,
+): { l1: string; l2: string; l3: string } {
+  const src = strategySource === "platform" ? "platform" : "company"
+  const json = "cache.raw_strategy_json"
+  if (pool === "bfl") {
+    return {
+      l1: `NULLIF(BTRIM(COALESCE((${json}->'${src}'->>'strategy_one'), '')), '')`,
+      l2: `NULLIF(BTRIM(COALESCE((${json}->'${src}'->>'strategy_two'), '')), '')`,
+      l3: `NULLIF(BTRIM(COALESCE((${json}->'${src}'->>'strategy_three'), '')), '')`,
+    }
+  }
+  if (pool === "all") {
+    return {
+      l1: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l1, (${json}->'${src}'->>'strategy_one'), '')), '')`,
+      l2: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l2, (${json}->'${src}'->>'strategy_two'), '')), '')`,
+      l3: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l3, (${json}->'${src}'->>'strategy_three'), '')), '')`,
+    }
+  }
+  return {
+    l1: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l1, '')), '')`,
+    l2: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l2, '')), '')`,
+    l3: `NULLIF(BTRIM(COALESCE(cache.${src}_strategy_l3, '')), '')`,
+  }
+}
+
+function buildCachedFromClause(
+  pool: string,
+  isCustomPool: boolean,
+  isMineAllPool: boolean,
+): string {
+  if (pool === "all") {
+    return `FROM (
+      SELECT DISTINCT ON (beian_hao) beian_hao, product_name
+      FROM (
+        SELECT beian_hao, product_name, 1 AS priority FROM private_fund_info_bfl WHERE beian_hao IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 2 FROM tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 3 FROM selected_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 4 FROM core_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 5 FROM hy_tracking_pool WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 6 FROM fof_mom_tracking WHERE register_number IS NOT NULL
+      ) f
+      ORDER BY beian_hao, priority ASC
+    ) i
+    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+  }
+  if (pool === "bfl_ops") {
+    return `FROM (
+      SELECT DISTINCT ON (register_number)
+        register_number AS beian_hao,
+        COALESCE(fund_short_name, fund_name) AS product_name
+      FROM type6_ops_team_full
+      WHERE register_number IS NOT NULL
+      ORDER BY register_number, updated_at DESC NULLS LAST, id DESC
+    ) i
+    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+  }
+  if (pool === "bfl") {
+    return `FROM private_fund_info_bfl i
+    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+  }
+  if (isCustomPool) {
+    const poolFilter = isMineAllPool
+      ? "AND (p.pool_key = 'mine_default' OR p.pool_key LIKE 'mine_custom_%')"
+      : "AND p.pool_key = $1"
+    return `FROM (
+      SELECT p.register_number AS beian_hao, p.product_name
+      FROM user_custom_pool p
+      WHERE p.register_number IS NOT NULL ${poolFilter}
+    ) i
+    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+  }
+  const sourceTable =
+    pool === "selected" ? "selected_pool"
+    : pool === "core" ? "core_pool"
+    : pool === "hy" ? "hy_tracking_pool"
+    : pool === "fof" ? "fof_mom_tracking"
+    : "tracking_pool"
+  return `FROM (
+    SELECT p.register_number AS beian_hao, p.product_name
+    FROM ${sourceTable} p
+    WHERE p.register_number IS NOT NULL
+  ) i
+  INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+}
+
+async function handleCachedTrackingList(opts: {
+  page: number
+  pageSize: number
+  offset: number
+  sortKey: string
+  sortDir: string
+  pool: string
+  requestedPool: string | null
+  isCustomPool: boolean
+  isMineAllPool: boolean
+  keyword: string
+  strategyL1: string
+  strategyL2: string
+  strategyL3: string
+  strategySource: StrategySource
+  orgSize: string
+  teamTagMode: string
+  teamTags: string[]
+  personalTagMode: string
+  personalTags: string[]
+  personalUserKey: string
+}): Promise<NextResponse> {
+  const {
+    page, pageSize, offset, sortKey, sortDir, pool, requestedPool,
+    isCustomPool, isMineAllPool, keyword, strategyL1, strategyL2, strategyL3,
+    strategySource, orgSize, teamTagMode, teamTags,
+    personalTagMode, personalTags, personalUserKey,
+  } = opts
+
+  await ensureTrackingFundsListCachePopulated()
+
+  const { l1: strategyL1Expr, l2: strategyL2Expr, l3: strategyL3Expr } =
+    cachedStrategyExprs(pool, strategySource)
+  const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
+
+  const filterParams: unknown[] =
+    isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
+  const where: string[] = []
+
+  if (strategyL1) {
+    filterParams.push(strategyL1)
+    where.push(`${strategyL1Expr} = $${filterParams.length}`)
+  }
+  if (strategyL2) {
+    filterParams.push(strategyL2)
+    where.push(`${strategyL2Expr} = $${filterParams.length}`)
+  }
+  if (strategyL3) {
+    filterParams.push(`%${strategyL3}%`)
+    where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
+  }
+  if (keyword) {
+    filterParams.push(`%${keyword}%`)
+    where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+  }
+  if (teamTags.length > 0) {
+    filterParams.push(teamTags)
+    if (teamTagMode === "or") {
+      where.push(
+        `EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = ANY($${filterParams.length}::text[]))`,
+      )
+    } else {
+      where.push(
+        `NOT EXISTS (SELECT 1 FROM unnest($${filterParams.length}::text[]) req(tag) WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = req.tag))`,
+      )
+    }
+  }
+  if (personalTags.length > 0 && personalUserKey) {
+    filterParams.push(personalUserKey)
+    const userKeyParam = filterParams.length
+    const clauses = personalTags.map((tag) => {
+      filterParams.push(tag)
+      return `EXISTS (
+        SELECT 1 FROM ops_personal_fund_tags pt
+        WHERE pt.beian_hao = i.beian_hao
+          AND pt.user_key = $${userKeyParam}
+          AND pt.tag_name = $${filterParams.length}
+      )`
+    })
+    where.push(personalTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+  }
+  const scaleValue = ORG_SIZE_SCALE[orgSize]
+  if (scaleValue) {
+    filterParams.push(scaleValue)
+    where.push(`EXISTS (
+      SELECT 1 FROM basicinfo_bfl_track b
+      WHERE b.scale = $${filterParams.length}
+        AND (b.record_key = i.beian_hao OR b.register_number = i.beian_hao)
+    )`)
+  }
+
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
+  const pLimit = filterParams.length + 1
+  const pOffset = filterParams.length + 2
+  const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.product_name"
+  const orderSql = `${orderCol} ${sortDir} NULLS LAST`
+  const baseFrom = buildCachedFromClause(pool, isCustomPool, isMineAllPool)
+
+  if (personalTags.length > 0) {
+    await query(`
+      CREATE TABLE IF NOT EXISTS ops_personal_fund_tags (
+        id         SERIAL PRIMARY KEY,
+        beian_hao  VARCHAR(64) NOT NULL,
+        tag_name   VARCHAR(255) NOT NULL,
+        user_key   VARCHAR(255) NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (beian_hao, tag_name, user_key)
+      )
+    `)
+  }
+
+  try {
+    const [rows, countRow] = await Promise.all([
+      query<TrackRow>(
+        `SELECT
+           i.beian_hao,
+           i.product_name,
+           cache.short_name,
+           ${strategyL1Expr} AS strategy_l1,
+           ${strategyL2Expr} AS strategy_l2,
+           NULL::text AS manager,
+           NULL::text AS inception_date,
+           cache.unit_nav::text AS latest_nav,
+           cache.nav_date::text AS latest_nav_date,
+           cache.return_pct::text AS latest_price_change,
+           cache.ret_1w::text,
+           cache.ret_1m::text,
+           cache.ret_3m::text,
+           cache.ret_6m::text,
+           cache.ret_1y::text,
+           cache.sharpe_1y::text,
+           cache.calmar_1y::text
+         ${baseFrom}
+         ${whereClause}
+         ORDER BY ${orderSql}
+         LIMIT $${pLimit} OFFSET $${pOffset}`,
+        [...filterParams, pageSize, offset],
+      ),
+      query<{ total: string }>(
+        `SELECT COUNT(*) AS total ${baseFrom} ${whereClause}`,
+        filterParams,
+      ),
+    ])
+
+    const total = parseInt(countRow[0]?.total ?? "0")
+    return NextResponse.json({
+      page,
+      pageSize,
+      total,
+      totalPages: Math.ceil(total / pageSize),
+      data: rows,
+    })
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e)
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}
+
 async function handleBflOpsList(opts: {
   page: number
   pageSize: number
@@ -439,7 +702,12 @@ export async function GET(req: Request) {
   if (requestedPool && !KNOWN_POOLS.has(requestedPool) && !isCustomPool) {
     return NextResponse.json({ page, pageSize: 50, total: 0, totalPages: 0, data: [] })
   }
-  const pool = requestedPool === "bfl_ops" || requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all" || isCustomPool ? requestedPool : "bfl"
+  const pool: string =
+    (requestedPool === "bfl_ops" || requestedPool === "tracking" || requestedPool === "selected"
+      || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof"
+      || requestedPool === "all" || isCustomPool) && requestedPool
+      ? requestedPool
+      : "bfl"
   const isExport = searchParams.get("export") === "1"
   const pageSize = isExport ? 100000 : 50
   const offset   = isExport ? 0 : (page - 1) * pageSize
@@ -459,6 +727,31 @@ export async function GET(req: Request) {
   const cutoffRaw = (searchParams.get("cutoff") || "").trim()
   const cutoffExpr = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw) ? `'${cutoffRaw}'::date` : "CURRENT_DATE"
   const strategyPrefix = strategySource === "platform" ? "platform" : "company"
+
+  if (useTrackingFundsListCache(cutoffRaw)) {
+    return handleCachedTrackingList({
+      page,
+      pageSize,
+      offset,
+      sortKey,
+      sortDir,
+      pool,
+      requestedPool,
+      isCustomPool,
+      isMineAllPool,
+      keyword,
+      strategyL1,
+      strategyL2,
+      strategyL3,
+      strategySource,
+      orgSize,
+      teamTagMode,
+      teamTags,
+      personalTagMode,
+      personalTags,
+      personalUserKey,
+    })
+  }
 
   if (pool === "bfl_ops") {
     return handleBflOpsList({

@@ -7,6 +7,7 @@
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --fof-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --managed-only
+ *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --tracking-only
  *
  * Loads `.env.local` / `.env` from the project root automatically (same as nightly_etl.py).
  * Prints JSON to stdout for nightly_etl.py to consume.
@@ -31,13 +32,16 @@ async function main() {
   const refreshOnly = argv.includes("--refresh-only")
   const fofOnly = argv.includes("--fof-only")
   const managedOnly = argv.includes("--managed-only")
-  const refreshManaged = !fofOnly
-  const refreshFof = !managedOnly
+  const trackingOnly = argv.includes("--tracking-only")
+  const refreshManaged = !fofOnly && !trackingOnly
+  const refreshFof = !managedOnly && !trackingOnly
+  const refreshTracking = !managedOnly && !fofOnly
 
   if (refreshOnly) {
     try {
       let listCache = 0
       let fofOverviewListCache = 0
+      let trackingFundsListCache = 0
 
       if (refreshManaged) {
         console.error("[email_nav_etl] refresh-only: rebuilding managed products list cache…")
@@ -53,12 +57,20 @@ async function main() {
         console.error(`[email_nav_etl] FOF overview cache done (${fofOverviewListCache} rows)`)
       }
 
+      if (refreshTracking) {
+        console.error("[email_nav_etl] refresh-only: rebuilding tracking funds list cache…")
+        const { refreshTrackingFundsListCache } = await import("@/lib/server/tracking-funds-list-cache-pg")
+        trackingFundsListCache = await refreshTrackingFundsListCache()
+        console.error(`[email_nav_etl] tracking funds cache done (${trackingFundsListCache} rows)`)
+      }
+
       console.log(JSON.stringify({
         ok: true,
         skipped: false,
         refreshOnly: true,
         listCacheRefreshed: listCache,
         fofOverviewListCacheRefreshed: fofOverviewListCache,
+        trackingFundsListCacheRefreshed: trackingFundsListCache,
       }))
       process.exit(0)
     } catch (e) {

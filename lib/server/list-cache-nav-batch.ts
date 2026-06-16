@@ -184,6 +184,73 @@ async function loadLegacyNavBatch(
   return { byBeian, byProduct }
 }
 
+async function loadType6NavBatch(
+  beians: string[],
+  names: string[],
+  sinceDate: string,
+): Promise<{ byBeian: Map<string, NavPoint[]>; byProduct: Map<string, NavPoint[]> }> {
+  const byBeian = new Map<string, NavPoint[]>()
+  const byProduct = new Map<string, NavPoint[]>()
+  if (beians.length === 0 && names.length === 0) return { byBeian, byProduct }
+
+  const rows = await query<LegacyRow>(
+    `SELECT beian_hao, product_name, price_date::text AS price_date, nav::text AS nav, 0 AS pri
+     FROM private_fund_nav_group_type6
+     WHERE price_date >= $3::date
+       AND nav IS NOT NULL AND nav > 0
+       AND (
+         (beian_hao IS NOT NULL AND NULLIF(BTRIM(beian_hao), '') = ANY($1::text[]))
+         OR product_name = ANY($2::text[])
+       )
+     ORDER BY price_date DESC`,
+    [beians, names, sinceDate],
+  )
+
+  const beianBest = new Map<string, Map<string, number>>()
+  const productBest = new Map<string, Map<string, number>>()
+
+  for (const row of rows) {
+    const nav = parseNav(row.nav)
+    if (nav == null) continue
+    const date = row.price_date.slice(0, 10)
+
+    const beian = (row.beian_hao ?? "").trim()
+    if (beian) {
+      let dates = beianBest.get(beian)
+      if (!dates) {
+        dates = new Map()
+        beianBest.set(beian, dates)
+      }
+      if (!dates.has(date)) dates.set(date, nav)
+    }
+
+    const product = (row.product_name ?? "").trim()
+    if (product) {
+      let dates = productBest.get(product)
+      if (!dates) {
+        dates = new Map()
+        productBest.set(product, dates)
+      }
+      if (!dates.has(date)) dates.set(date, nav)
+    }
+  }
+
+  for (const [beian, dates] of beianBest) {
+    byBeian.set(
+      beian,
+      [...dates.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([nav_date, nav]) => ({ nav_date, nav })),
+    )
+  }
+  for (const [product, dates] of productBest) {
+    byProduct.set(
+      product,
+      [...dates.entries()].sort(([a], [b]) => b.localeCompare(a)).map(([nav_date, nav]) => ({ nav_date, nav })),
+    )
+  }
+
+  return { byBeian, byProduct }
+}
+
 export function computeOneYearRiskMetrics(
   navDate: string | null,
   history: NavPoint[],
@@ -216,15 +283,21 @@ export function computeOneYearRiskMetrics(
 
 export class BatchNavResolver {
   private emailByBeian: Map<string, NavPoint[]>
+  private type6ByBeian: Map<string, NavPoint[]>
+  private type6ByProduct: Map<string, NavPoint[]>
   private legacyByBeian: Map<string, NavPoint[]>
   private legacyByProduct: Map<string, NavPoint[]>
 
   private constructor(
     emailByBeian: Map<string, NavPoint[]>,
+    type6ByBeian: Map<string, NavPoint[]>,
+    type6ByProduct: Map<string, NavPoint[]>,
     legacyByBeian: Map<string, NavPoint[]>,
     legacyByProduct: Map<string, NavPoint[]>,
   ) {
     this.emailByBeian = emailByBeian
+    this.type6ByBeian = type6ByBeian
+    this.type6ByProduct = type6ByProduct
     this.legacyByBeian = legacyByBeian
     this.legacyByProduct = legacyByProduct
   }
@@ -238,12 +311,19 @@ export class BatchNavResolver {
       ),
     ]
 
-    const [emailByBeian, legacy] = await Promise.all([
+    const [emailByBeian, type6, legacy] = await Promise.all([
       loadEmailNavBatch(beians, sinceDate),
+      loadType6NavBatch(beians, names, sinceDate),
       loadLegacyNavBatch(beians, names, sinceDate),
     ])
 
-    return new BatchNavResolver(emailByBeian, legacy.byBeian, legacy.byProduct)
+    return new BatchNavResolver(
+      emailByBeian,
+      type6.byBeian,
+      type6.byProduct,
+      legacy.byBeian,
+      legacy.byProduct,
+    )
   }
 
   resolveAt(
@@ -257,6 +337,12 @@ export class BatchNavResolver {
 
     const email = beian ? navAtOrBefore(this.emailByBeian.get(beian), beforeDate) : null
     if (email) return email
+
+    const type6 =
+      (beian ? navAtOrBefore(this.type6ByBeian.get(beian), beforeDate) : null) ??
+      navAtOrBefore(this.type6ByProduct.get(identity.product_name), beforeDate) ??
+      (short ? navAtOrBefore(this.type6ByProduct.get(short), beforeDate) : null)
+    if (type6) return type6
 
     const legacy =
       (beian ? navAtOrBefore(this.legacyByBeian.get(beian), beforeDate) : null) ??
@@ -309,6 +395,17 @@ export class BatchNavResolver {
     }
     if (short) {
       for (const p of this.legacyByProduct.get(short) ?? []) {
+        if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+      }
+    }
+    for (const p of this.type6ByBeian.get(beian) ?? []) {
+      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+    }
+    for (const p of this.type6ByProduct.get(identity.product_name) ?? []) {
+      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+    }
+    if (short) {
+      for (const p of this.type6ByProduct.get(short) ?? []) {
         if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
       }
     }

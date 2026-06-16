@@ -11,6 +11,7 @@ import {
 } from "@/lib/server/email-nav-query"
 import { refreshFofOverviewListCache } from "@/lib/server/fof-overview-list-cache-pg"
 import { refreshManagedProductsListCache } from "@/lib/server/managed-products-list-cache-pg"
+import { refreshTrackingFundsListCache } from "@/lib/server/tracking-funds-list-cache-pg"
 import {
   buildManagedProductsFrom,
   FOF_UNDERLYING_BEIAN_EXPR,
@@ -96,9 +97,13 @@ export async function refreshManagedProductsNavAndListCache(): Promise<{
   emailNavLatest: number
   listCache: number
   fofOverviewListCache: number
+  trackingFundsListCache: number
 }> {
-  const listCache = await refreshManagedProductsListCache()
-  const fofOverviewListCache = await refreshFofOverviewListCache()
+  const [listCache, fofOverviewListCache, trackingFundsListCache] = await Promise.all([
+    refreshManagedProductsListCache(),
+    refreshFofOverviewListCache(),
+    refreshTrackingFundsListCache(),
+  ])
 
   await ensureEmailNavFundLatestTable()
   await query(`DELETE FROM ops_email_nav_fund_latest WHERE scope_type = 'managed_product'`)
@@ -121,5 +126,5 @@ export async function refreshManagedProductsNavAndListCache(): Promise<{
      SELECT COUNT(*)::text AS n FROM inserted`,
   )
   const emailNavLatest = parseInt(synced[0]?.n ?? "0", 10)
-  return { emailNavLatest, listCache, fofOverviewListCache }
+  return { emailNavLatest, listCache, fofOverviewListCache, trackingFundsListCache }
 }
