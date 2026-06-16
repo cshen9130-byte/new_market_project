@@ -5,6 +5,8 @@
  *   npx tsx scripts/ma/email_nav_etl.ts
  *   npx tsx scripts/ma/email_nav_etl.ts --days=31
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+ *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --fof-only
+ *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --managed-only
  *
  * Loads `.env.local` / `.env` from the project root automatically (same as nightly_etl.py).
  * Prints JSON to stdout for nightly_etl.py to consume.
@@ -27,16 +29,30 @@ function parseDays(argv: string[]): number {
 async function main() {
   const argv = process.argv.slice(2)
   const refreshOnly = argv.includes("--refresh-only")
+  const fofOnly = argv.includes("--fof-only")
+  const managedOnly = argv.includes("--managed-only")
+  const refreshManaged = !fofOnly
+  const refreshFof = !managedOnly
 
   if (refreshOnly) {
     try {
-      console.error("[email_nav_etl] refresh-only: rebuilding list caches…")
-      const { refreshManagedProductsListCache } = await import("@/lib/server/managed-products-list-cache-pg")
-      const { refreshFofOverviewListCache } = await import("@/lib/server/fof-overview-list-cache-pg")
-      const [listCache, fofOverviewListCache] = await Promise.all([
-        refreshManagedProductsListCache(),
-        refreshFofOverviewListCache(),
-      ])
+      let listCache = 0
+      let fofOverviewListCache = 0
+
+      if (refreshManaged) {
+        console.error("[email_nav_etl] refresh-only: rebuilding managed products list cache…")
+        const { refreshManagedProductsListCache } = await import("@/lib/server/managed-products-list-cache-pg")
+        listCache = await refreshManagedProductsListCache()
+        console.error(`[email_nav_etl] managed products cache done (${listCache} rows)`)
+      }
+
+      if (refreshFof) {
+        console.error("[email_nav_etl] refresh-only: rebuilding FOF overview list cache…")
+        const { refreshFofOverviewListCache } = await import("@/lib/server/fof-overview-list-cache-pg")
+        fofOverviewListCache = await refreshFofOverviewListCache()
+        console.error(`[email_nav_etl] FOF overview cache done (${fofOverviewListCache} rows)`)
+      }
+
       console.log(JSON.stringify({
         ok: true,
         skipped: false,
@@ -47,6 +63,7 @@ async function main() {
       process.exit(0)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
+      console.error(`[email_nav_etl] refresh-only failed: ${message}`)
       console.log(JSON.stringify({ ok: false, refreshOnly: true, error: message }))
       process.exit(1)
     }

@@ -97,10 +97,8 @@ export async function refreshManagedProductsNavAndListCache(): Promise<{
   listCache: number
   fofOverviewListCache: number
 }> {
-  const [listCache, fofOverviewListCache] = await Promise.all([
-    refreshManagedProductsListCache(),
-    refreshFofOverviewListCache(),
-  ])
+  const listCache = await refreshManagedProductsListCache()
+  const fofOverviewListCache = await refreshFofOverviewListCache()
 
   await ensureEmailNavFundLatestTable()
   await query(`DELETE FROM ops_email_nav_fund_latest WHERE scope_type = 'managed_product'`)
