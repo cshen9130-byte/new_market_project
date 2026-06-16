@@ -41,12 +41,6 @@ const CREATE_TABLE_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_product
     ON ops_managed_products_list_cache (product_name);
-
-  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_company_strat
-    ON ops_managed_products_list_cache (company_strategy_l1);
-
-  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_platform_strat
-    ON ops_managed_products_list_cache (platform_strategy_l1);
 `
 
 /* Add new columns to existing tables created before this migration. */
