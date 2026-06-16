@@ -48,6 +48,15 @@ function normaliseDate(raw: string): string | null {
 const FUND_NAME_RE =
   /[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/
 
+/** CMS/招商证券 净值表 subject: 管理人旗下"产品名-CODE". */
+function parseCmsCustodyNavSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    /管理人旗下[""''\u201c\u201d]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)-([A-Z0-9]+)[""''\u201c\u201d]/u,
+  )
+  if (!m) return null
+  return { code: m[2], fundName: normalizeFundDisplayName(m[1]) }
+}
+
 /** Parse CODE_FUNDNAME from 资产净值公告 subjects. */
 function parseAssetNavAnnouncementSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
@@ -59,7 +68,12 @@ function parseAssetNavAnnouncementSubject(text: string): { code: string; fundNam
 
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
 function extractFundNameFromSubject(subject: string): string | null {
-  for (const parser of [parseVirtualEstSubject, parseAssetNavAnnouncementSubject, parseVirtualPerfSubject]) {
+  for (const parser of [
+    parseCmsCustodyNavSubject,
+    parseVirtualEstSubject,
+    parseAssetNavAnnouncementSubject,
+    parseVirtualPerfSubject,
+  ]) {
     const parsed = parser(subject)
     if (parsed) return parsed.fundName
   }
@@ -87,7 +101,12 @@ function extractFundNameFromSubject(subject: string): string | null {
 }
 
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
-  for (const parser of [parseVirtualEstSubject, parseAssetNavAnnouncementSubject, parseVirtualPerfSubject]) {
+  for (const parser of [
+    parseCmsCustodyNavSubject,
+    parseVirtualEstSubject,
+    parseAssetNavAnnouncementSubject,
+    parseVirtualPerfSubject,
+  ]) {
     const parsed = parser(subject)
     if (parsed) return parsed
   }
@@ -294,7 +313,23 @@ export function extractNavData(
     }
   }
 
-  // ── 3. Body: table row – date followed by a NAV decimal ───────────────────
+  // ── 3. Body: CMS/招商 净值表 table row ────────────────────────────────────
+  // 2026年06月08日 SBNX55 荣熙共赢私募证券投资基金 1.0065 1.0065
+  const cmsRowM = bodyText.match(
+    /(\d{4})年(\d{1,2})月(\d{1,2})日\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/u,
+  )
+  if (cmsRowM) {
+    return {
+      nav: parseFloat(cmsRowM[6]),
+      navDate: normaliseDate(`${cmsRowM[1]}-${cmsRowM[2]}-${cmsRowM[3]}`),
+      cumulativeNav: parseFloat(cmsRowM[7]),
+      productCode: shared.productCode ?? cmsRowM[4],
+      fundName: shared.fundName ?? normalizeFundDisplayName(cmsRowM[5]),
+      source: "body_table",
+    }
+  }
+
+  // ── 3b. Body: table row – date followed by a NAV decimal ─────────────────
   const tableRowM = bodyText.match(
     /(\d{4}-\d{2}-\d{2})\s+(\d+\.\d{3,8})(?:\s+(\d+\.\d{3,8}))?/,
   )

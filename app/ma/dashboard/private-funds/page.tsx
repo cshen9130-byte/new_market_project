@@ -11127,6 +11127,43 @@ function fmtMoney(v: string | null | undefined): string {
   return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+function FundProductNameLink({
+  beian_hao,
+  product_name,
+  short_name,
+  className,
+}: {
+  beian_hao: string | null
+  product_name: string
+  short_name?: string | null
+  className?: string
+}) {
+  const label = short_name || product_name
+  if (beian_hao) {
+    return (
+      <a
+        href={`/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={className ?? "block max-w-[200px]"}
+        title={product_name}
+      >
+        <span className="font-medium text-blue-600 dark:text-blue-400 hover:underline truncate block leading-5">
+          {label}
+        </span>
+        <span className="text-[10px] text-muted-foreground tabular-nums leading-4 block truncate">
+          {beian_hao}
+        </span>
+      </a>
+    )
+  }
+  return (
+    <span className={className ?? "font-medium truncate block max-w-[200px] leading-5"} title={product_name}>
+      {label}
+    </span>
+  )
+}
+
 function OperationsManagedProductsView() {
   const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
@@ -11464,14 +11501,11 @@ function OperationsManagedProductsView() {
                   </td>
                   <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
                   <td className={cell}>
-                    {row.beian_hao ? (
-                      <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
-                        className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[200px]" title={row.product_name}>
-                        {row.short_name || row.product_name}
-                      </a>
-                    ) : (
-                      <span className="font-medium truncate block max-w-[200px]" title={row.product_name}>{row.short_name || row.product_name}</span>
-                    )}
+                    <FundProductNameLink
+                      beian_hao={row.beian_hao}
+                      product_name={row.product_name}
+                      short_name={row.short_name}
+                    />
                     {row.strategy_l1 && (
                       <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-zinc-300/80 text-zinc-600 bg-zinc-50 dark:bg-zinc-800/50 dark:text-zinc-400">
                         {row.strategy_l1}
@@ -12300,14 +12334,12 @@ function InvestmentManagedProductsView() {
                       </td>
                       <td className={`${stickyCell} text-center tabular-nums text-muted-foreground sticky left-8 w-10 box-border`}>{(page - 1) * pageSize + i + 1}</td>
                       <td className={stickyLeftProduct}>
-                        {row.beian_hao ? (
-                          <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
-                            className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[220px] leading-5" title={row.product_name}>
-                            {row.short_name || row.product_name}
-                          </a>
-                        ) : (
-                          <span className="font-medium truncate block max-w-[220px] leading-5" title={row.product_name}>{row.short_name || row.product_name}</span>
-                        )}
+                        <FundProductNameLink
+                          beian_hao={row.beian_hao}
+                          product_name={row.product_name}
+                          short_name={row.short_name}
+                          className="block max-w-[220px]"
+                        />
                         {row.strategy_l1 && (
                           <div className="flex items-center gap-1 mt-0.5">
                             <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
@@ -12960,6 +12992,7 @@ interface FofDetailRow {
   seq_no: number | null
   fof_fund_name: string
   product_name: string
+  short_name: string | null
   beian_hao: string | null
   unit_nav: string | null
   nav_date: string | null
@@ -13931,14 +13964,11 @@ function InvestmentFofOverviewView() {
                         style={{ left: fofStickyLeftName, width: fofStickyNameW, minWidth: fofStickyNameW, maxWidth: fofStickyNameW }}
                         className={stickyLeftProduct}
                       >
-                        {row.beian_hao ? (
-                          <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
-                            className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate leading-5" title={row.product_name}>
-                            {row.short_name || row.product_name}
-                          </a>
-                        ) : (
-                          <span className="font-medium truncate block leading-5" title={row.product_name}>{row.short_name || row.product_name}</span>
-                        )}
+                        <FundProductNameLink
+                          beian_hao={row.beian_hao}
+                          product_name={row.product_name}
+                          short_name={row.short_name}
+                        />
                         {row.strategy_l1 && (
                           <div className="flex items-center gap-1 mt-0.5">
                             <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
@@ -14117,14 +14147,11 @@ function InvestmentFofOverviewView() {
                         <span className="font-medium text-blue-600 dark:text-blue-400 block truncate leading-5" title={row.fof_fund_name}>{row.fof_fund_name}</span>
                       </td>
                       <td style={{ left: fofDetailStickyLeftProduct, width: fofDetailStickyProductW, minWidth: fofDetailStickyProductW, maxWidth: fofDetailStickyProductW }} className={stickyLeftProduct}>
-                        {row.beian_hao ? (
-                          <a href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`} target="_blank" rel="noopener noreferrer"
-                            className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate leading-5" title={row.product_name}>
-                            {row.product_name}
-                          </a>
-                        ) : (
-                          <span className="font-medium text-blue-600 dark:text-blue-400 block truncate leading-5" title={row.product_name}>{row.product_name}</span>
-                        )}
+                        <FundProductNameLink
+                          beian_hao={row.beian_hao}
+                          product_name={row.product_name}
+                          short_name={row.short_name}
+                        />
                       </td>
                       <td className={`${scrollCell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
                       <td className={`${scrollCell} tabular-nums font-medium`}>{row.unit_nav ? parseFloat(row.unit_nav).toFixed(4) : "—"}</td>

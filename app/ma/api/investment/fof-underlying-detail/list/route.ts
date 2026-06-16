@@ -1,8 +1,21 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso } from "@/lib/db"
+import {
+  buildEmailNavLatestExprs,
+  buildEmailNavLatestJoins,
+} from "@/lib/server/email-nav-query"
+import {
+  buildFofUnderlyingBeianJoins,
+  FOF_UNDERLYING_BEIAN_EXPR,
+  fofUnderlyingShortExpr,
+} from "@/lib/server/fof-underlying-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+const PRODUCT_EXPR = "d.product_name"
+const BEIAN_EXPR = `COALESCE(NULLIF(BTRIM(d.beian_hao), ''), ${FOF_UNDERLYING_BEIAN_EXPR})`
+const SHORT_EXPR = fofUnderlyingShortExpr(PRODUCT_EXPR)
 
 const ALLOWED_SORT: Record<string, string> = {
   seq_no: "seq_no",
@@ -29,6 +42,7 @@ interface FofDetailRow {
   seq_no: number | null
   fof_fund_name: string
   product_name: string
+  short_name: string | null
   beian_hao: string | null
   unit_nav: string | null
   nav_date: string | null
@@ -70,43 +84,57 @@ export async function GET(req: Request) {
 
     if (keyword) {
       conditions.push(`(
-        fof_fund_name ILIKE $${pi}
-        OR product_name ILIKE $${pi}
-        OR COALESCE(beian_hao, '') ILIKE $${pi}
+        d.fof_fund_name ILIKE $${pi}
+        OR d.product_name ILIKE $${pi}
+        OR COALESCE(${BEIAN_EXPR}, '') ILIKE $${pi}
       )`)
       params.push(`%${keyword}%`)
       pi++
     }
 
     if (fofFundName) {
-      conditions.push(`fof_fund_name = $${pi}`)
+      conditions.push(`d.fof_fund_name = $${pi}`)
       params.push(fofFundName)
       pi++
     }
 
     if (/^\d{4}-\d{2}-\d{2}$/.test(valuationDate)) {
-      conditions.push(`nav_date = $${pi}::date`)
+      conditions.push(`d.nav_date = $${pi}::date`)
       params.push(valuationDate)
       pi++
     }
 
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""
 
+    const baseFrom = `
+      FROM fof_underlying_detail d
+      ${buildFofUnderlyingBeianJoins(PRODUCT_EXPR)}
+    `
+
     const [countRows, totalMvRows] = await Promise.all([
-      query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM fof_underlying_detail ${where}`, params),
+      query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} ${where}`, params),
       query<{ total_mv: string }>(
-        `SELECT COALESCE(SUM(market_value), 0)::text AS total_mv FROM fof_underlying_detail ${where}`,
+        `SELECT COALESCE(SUM(d.market_value), 0)::text AS total_mv ${baseFrom} ${where}`,
         params,
       ),
     ])
     const total = parseInt(countRows[0]?.n || "0", 10)
     const totalMarketValue = totalMvRows[0]?.total_mv ?? "0"
 
+    const cutoffExpr = "CURRENT_DATE"
+    const fallbackNavExpr = "d.unit_nav::numeric"
+    const fallbackDateExpr = "d.nav_date"
+    const fallbackPctExpr = "d.price_change::numeric / 100"
+    const emailNavJoins = buildEmailNavLatestJoins(BEIAN_EXPR, PRODUCT_EXPR, SHORT_EXPR, cutoffExpr)
+    const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
+      buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
+
     const rows = await query<{
       id: number
       seq_no: number | null
       fof_fund_name: string
       product_name: string
+      short_name: string | null
       beian_hao: string | null
       unit_nav: string | number | null
       nav_date: string | Date | null
@@ -123,27 +151,29 @@ export async function GET(req: Request) {
       calmar_1y: string | number | null
     }>(
       `SELECT
-         id,
-         seq_no,
-         fof_fund_name,
-         product_name,
-         beian_hao,
-         unit_nav,
-         nav_date,
-         price_change,
-         investment_shares,
-         market_value,
-         market_value_pct,
-         ret_1w,
-         ret_1m,
-         ret_3m,
-         ret_6m,
-         ret_1y,
-         sharpe_1y,
-         calmar_1y
-       FROM fof_underlying_detail
+         d.id,
+         d.seq_no,
+         d.fof_fund_name,
+         d.product_name,
+         ${SHORT_EXPR} AS short_name,
+         ${BEIAN_EXPR} AS beian_hao,
+         (${currentNavExpr})::text AS unit_nav,
+         ${currentDateExpr} AS nav_date,
+         (${currentPctExpr})::text AS price_change,
+         d.investment_shares,
+         d.market_value,
+         d.market_value_pct,
+         d.ret_1w,
+         d.ret_1m,
+         d.ret_3m,
+         d.ret_6m,
+         d.ret_1y,
+         d.sharpe_1y,
+         d.calmar_1y
+       ${baseFrom}
+       ${emailNavJoins}
        ${where}
-       ORDER BY ${sortCol} ${sortDir} NULLS LAST, seq_no ASC NULLS LAST, id ASC
+       ORDER BY ${sortCol} ${sortDir} NULLS LAST, d.seq_no ASC NULLS LAST, d.id ASC
        LIMIT $${pi} OFFSET $${pi + 1}`,
       [...params, pageSize, offset],
     )
@@ -153,10 +183,11 @@ export async function GET(req: Request) {
       seq_no: r.seq_no,
       fof_fund_name: r.fof_fund_name,
       product_name: r.product_name,
+      short_name: r.short_name,
       beian_hao: r.beian_hao,
       unit_nav: fmtNum(r.unit_nav),
       nav_date: r.nav_date ? fmtIso(r.nav_date) : null,
-      price_change: fmtNum(r.price_change),
+      price_change: r.price_change != null ? String(parseFloat(r.price_change)) : null,
       investment_shares: fmtNum(r.investment_shares),
       market_value: fmtNum(r.market_value),
       market_value_pct: fmtNum(r.market_value_pct),

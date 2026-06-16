@@ -1,5 +1,14 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso } from "@/lib/db"
+import {
+  buildEmailNavLatestExprs,
+  buildEmailNavLatestJoins,
+} from "@/lib/server/email-nav-query"
+import {
+  buildFofUnderlyingSummaryFrom,
+  FOF_UNDERLYING_BEIAN_EXPR,
+  fofUnderlyingShortExpr,
+} from "@/lib/server/fof-underlying-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -19,9 +28,9 @@ const ALLOWED_SORT: Record<string, string> = {
   calmar_1y: "calmar_1y",
 }
 
-const BEIAN_EXPR = "COALESCE(b.beian_hao, o.register_number)"
+const BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
 const PRODUCT_EXPR = "f.product_name"
-const SHORT_EXPR = "COALESCE(b.short_name, o.fund_short_name)"
+const SHORT_EXPR = fofUnderlyingShortExpr(PRODUCT_EXPR)
 
 function fofNavScalarExpr(days: number, cutoffExpr: string): string {
   return `COALESCE(
@@ -120,7 +129,7 @@ export async function GET(req: Request) {
     if (keyword) {
       conditions.push(`(
         f.product_name ILIKE $${pi}
-        OR COALESCE(b.beian_hao, o.register_number, '') ILIKE $${pi}
+        OR ${BEIAN_EXPR} ILIKE $${pi}
       )`)
       params.push(`%${keyword}%`)
       pi++
@@ -170,20 +179,7 @@ export async function GET(req: Request) {
     const where = conditions.join(" AND ")
 
     const baseFrom = `
-      FROM fof_underlying_summary f
-      LEFT JOIN LATERAL (
-        SELECT beian_hao, short_name, strategy_company
-        FROM private_fund_info_bfl
-        WHERE product_name = f.product_name OR short_name = f.product_name
-        LIMIT 1
-      ) b ON true
-      LEFT JOIN LATERAL (
-        SELECT register_number, fund_short_name, company_strategy_one, platform_strategy_one, tag
-        FROM type6_ops_team_full
-        WHERE fund_name = f.product_name OR fund_short_name = f.product_name
-        ORDER BY updated_at DESC NULLS LAST, id DESC
-        LIMIT 1
-      ) o ON true
+      ${buildFofUnderlyingSummaryFrom(PRODUCT_EXPR)}
       LEFT JOIN private_fund_info pinfo ON pinfo.beian_hao = ${BEIAN_EXPR}
     `
 
@@ -203,7 +199,12 @@ export async function GET(req: Request) {
       listParams.push(cutoffRaw)
       cutoffExpr = `$${listParams.length}::date`
     }
-    const currentNavExpr = "f.latest_unit_nav::numeric"
+    const fallbackNavExpr = "f.latest_unit_nav::numeric"
+    const fallbackDateExpr = "f.latest_nav_date"
+    const fallbackPctExpr = "f.latest_return_pct::numeric / 100"
+    const emailNavJoins = buildEmailNavLatestJoins(BEIAN_EXPR, PRODUCT_EXPR, SHORT_EXPR, cutoffExpr)
+    const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
+      buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
     const histJoins = [
       navAtOffset("h1w", 7, cutoffExpr),
       navAtOffset("h1m", 30, cutoffExpr),
@@ -237,11 +238,11 @@ export async function GET(req: Request) {
            f.sequence_no,
            ${BEIAN_EXPR} AS beian_hao,
            f.product_name,
-           COALESCE(b.short_name, o.fund_short_name, f.product_name) AS short_name,
+           ${SHORT_EXPR} AS short_name,
            ${strategyExpr} AS strategy_l1,
-           f.latest_unit_nav::text AS latest_unit_nav,
-           f.latest_nav_date,
-           f.latest_return_pct::text AS latest_return_pct,
+           (${currentNavExpr})::text AS latest_unit_nav,
+           ${currentDateExpr} AS latest_nav_date,
+           (${currentPctExpr})::text AS latest_return_pct,
            f.market_value::text AS market_value,
            CASE WHEN h1w.nav IS NOT NULL AND h1w.nav <> 0
              THEN ((${currentNavExpr}) / h1w.nav - 1)::text END AS ret_1w,
@@ -256,6 +257,7 @@ export async function GET(req: Request) {
            pinfo.sharpe_1y::text AS sharpe_1y,
            pinfo.calmar_1y::text AS calmar_1y
          ${baseFrom}
+         ${emailNavJoins}
          ${histJoins}
          WHERE ${where}
        ) rows
@@ -272,7 +274,7 @@ export async function GET(req: Request) {
       strategy_l1: r.strategy_l1,
       latest_nav: r.latest_unit_nav,
       latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
-      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct) / 100) : null,
+      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
       market_value: r.market_value,
       ret_1w: r.ret_1w,
       ret_1m: r.ret_1m,

@@ -4,6 +4,11 @@ import {
   buildEmailNavLatestExprs,
   buildEmailNavLatestJoins,
 } from "@/lib/server/email-nav-query"
+import {
+  buildManagedProductsFrom,
+  FOF_UNDERLYING_BEIAN_EXPR,
+  fofUnderlyingShortExpr,
+} from "@/lib/server/fof-underlying-query"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -24,9 +29,9 @@ const ALLOWED_SORT: Record<string, string> = {
   calmar_1y: "calmar_1y",
 }
 
-const BEIAN_EXPR = "COALESCE(b.beian_hao, o.register_number)"
+const BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
 const PRODUCT_EXPR = "m.product_name"
-const SHORT_EXPR = "COALESCE(b.short_name, o.fund_short_name)"
+const SHORT_EXPR = fofUnderlyingShortExpr(PRODUCT_EXPR)
 
 function managedNavScalarExpr(days: number, cutoffExpr: string): string {
   return `COALESCE(
@@ -126,7 +131,7 @@ export async function GET(req: Request) {
     if (keyword) {
       conditions.push(`(
         m.product_name ILIKE $${pi}
-        OR COALESCE(b.beian_hao, o.register_number, '') ILIKE $${pi}
+        OR ${BEIAN_EXPR} ILIKE $${pi}
       )`)
       params.push(`%${keyword}%`)
       pi++
@@ -170,20 +175,7 @@ export async function GET(req: Request) {
     const where = conditions.join(" AND ")
 
     const baseFrom = `
-      FROM managed_products m
-      LEFT JOIN LATERAL (
-        SELECT beian_hao, short_name, strategy_company
-        FROM private_fund_info_bfl
-        WHERE product_name = m.product_name OR short_name = m.product_name
-        LIMIT 1
-      ) b ON true
-      LEFT JOIN LATERAL (
-        SELECT register_number, fund_short_name, company_strategy_one, platform_strategy_one, tag
-        FROM type6_ops_team_full
-        WHERE fund_name = m.product_name OR fund_short_name = m.product_name
-        ORDER BY updated_at DESC NULLS LAST, id DESC
-        LIMIT 1
-      ) o ON true
+      ${buildManagedProductsFrom(PRODUCT_EXPR)}
       LEFT JOIN private_fund_info pinfo ON pinfo.beian_hao = ${BEIAN_EXPR}
     `
 
@@ -243,7 +235,7 @@ export async function GET(req: Request) {
            m.sequence_no,
            ${BEIAN_EXPR} AS beian_hao,
            m.product_name,
-           COALESCE(b.short_name, o.fund_short_name, m.product_name) AS short_name,
+           ${SHORT_EXPR} AS short_name,
            ${strategyExpr} AS strategy_l1,
            (${currentNavExpr})::text AS latest_unit_nav,
            ${currentDateExpr} AS latest_nav_date,
