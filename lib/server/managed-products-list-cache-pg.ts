@@ -50,18 +50,13 @@ const CREATE_TABLE_SQL = `
 `
 
 /* Add new columns to existing tables created before this migration. */
-const MIGRATE_SQL = `
-  ALTER TABLE ops_managed_products_list_cache
-    ADD COLUMN IF NOT EXISTS company_strategy_l1  TEXT,
-    ADD COLUMN IF NOT EXISTS platform_strategy_l1 TEXT,
-    ADD COLUMN IF NOT EXISTS team_tags             JSONB;
-
-  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_company_strat
-    ON ops_managed_products_list_cache (company_strategy_l1);
-
-  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_platform_strat
-    ON ops_managed_products_list_cache (platform_strategy_l1);
-`
+const MIGRATE_STMTS = [
+  `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS company_strategy_l1  TEXT`,
+  `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS platform_strategy_l1 TEXT`,
+  `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS team_tags             JSONB`,
+  `CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_company_strat  ON ops_managed_products_list_cache (company_strategy_l1)`,
+  `CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_platform_strat ON ops_managed_products_list_cache (platform_strategy_l1)`,
+]
 
 const RETURN_OFFSETS = [
   { key: "ret_1w" as const, days: 7 },
@@ -76,7 +71,9 @@ let tableEnsured = false
 export async function ensureManagedProductsListCacheTable(): Promise<void> {
   if (tableEnsured) return
   await query(CREATE_TABLE_SQL)
-  await query(MIGRATE_SQL)
+  for (const stmt of MIGRATE_STMTS) {
+    await query(stmt)
+  }
   tableEnsured = true
 }
 
