@@ -30,10 +30,20 @@ async function main() {
 
   if (refreshOnly) {
     try {
-      console.error("[email_nav_etl] refresh-only: rebuilding managed products list cache…")
+      console.error("[email_nav_etl] refresh-only: rebuilding list caches…")
       const { refreshManagedProductsListCache } = await import("@/lib/server/managed-products-list-cache-pg")
-      const listCache = await refreshManagedProductsListCache()
-      console.log(JSON.stringify({ ok: true, skipped: false, refreshOnly: true, listCacheRefreshed: listCache }))
+      const { refreshFofOverviewListCache } = await import("@/lib/server/fof-overview-list-cache-pg")
+      const [listCache, fofOverviewListCache] = await Promise.all([
+        refreshManagedProductsListCache(),
+        refreshFofOverviewListCache(),
+      ])
+      console.log(JSON.stringify({
+        ok: true,
+        skipped: false,
+        refreshOnly: true,
+        listCacheRefreshed: listCache,
+        fofOverviewListCacheRefreshed: fofOverviewListCache,
+      }))
       process.exit(0)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
