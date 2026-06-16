@@ -29,7 +29,6 @@ export function loadProjectEnvFiles(): void {
             process.env[key] = value
           }
         }
-      }
     }
     base = path.dirname(base)
   }
