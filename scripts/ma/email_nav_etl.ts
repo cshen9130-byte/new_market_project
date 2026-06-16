@@ -10,7 +10,7 @@
  */
 
 import { fetchEmailParseRecords } from "@/lib/server/email-parse-fetch"
-import { refreshManagedProductsEmailNavLatest } from "@/lib/server/email-nav-latest-pg"
+import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
 
 function parseDays(argv: string[]): number {
   const flag = argv.find((a) => a.startsWith("--days="))
@@ -28,8 +28,8 @@ async function main() {
 
   if (refreshOnly) {
     try {
-      const navLatestRefreshed = await refreshManagedProductsEmailNavLatest()
-      console.log(JSON.stringify({ ok: true, skipped: false, refreshOnly: true, navLatestRefreshed }))
+      const { listCache } = await refreshManagedProductsNavAndListCache()
+      console.log(JSON.stringify({ ok: true, skipped: false, refreshOnly: true, navLatestRefreshed: listCache, listCacheRefreshed: listCache }))
       process.exit(0)
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)

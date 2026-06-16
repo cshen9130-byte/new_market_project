@@ -24,7 +24,7 @@ import {
   selectValuationAttachments,
 } from "@/lib/server/email-valuation-attachment"
 import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
-import { refreshManagedProductsEmailNavLatest } from "@/lib/server/email-nav-latest-pg"
+import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
 
 export type EmailParseFetchResult = {
   emailsScanned: number
@@ -439,7 +439,8 @@ export async function fetchEmailParseRecords(options?: {
   let navLatestRefreshed = 0
   if (!options?.skipNavLatestRefresh) {
     try {
-      navLatestRefreshed = await refreshManagedProductsEmailNavLatest()
+      const { listCache } = await refreshManagedProductsNavAndListCache()
+      navLatestRefreshed = listCache
     } catch (e) {
       errors.push(`刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`)
     }

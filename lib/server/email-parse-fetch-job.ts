@@ -2,7 +2,7 @@ import {
   fetchEmailParseRecords,
   type EmailParseFetchResult,
 } from "@/lib/server/email-parse-fetch"
-import { refreshManagedProductsEmailNavLatest } from "@/lib/server/email-nav-latest-pg"
+import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
 
 export type EmailParseFetchJobStatus = {
   status: "queued" | "running" | "done" | "error"
@@ -55,9 +55,9 @@ export function startEmailParseFetchJob(options?: {
         skipNavLatestRefresh: true,
       })
 
-      job.message = "正在刷新在管产品净值…"
+      job.message = "正在刷新在管产品指标…"
       try {
-        await refreshManagedProductsEmailNavLatest()
+        await refreshManagedProductsNavAndListCache()
       } catch (e) {
         result.errors.push(
           `刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`,

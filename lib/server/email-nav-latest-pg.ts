@@ -9,6 +9,7 @@ import {
   buildEmailNavLatestExprs,
   buildEmailNavLatestJoins,
 } from "@/lib/server/email-nav-query"
+import { refreshManagedProductsListCache } from "@/lib/server/managed-products-list-cache-pg"
 import {
   buildManagedProductsFrom,
   FOF_UNDERLYING_BEIAN_EXPR,
@@ -87,4 +88,14 @@ export async function refreshManagedProductsEmailNavLatest(): Promise<number> {
   )
 
   return parseInt(rows[0]?.n ?? "0", 10)
+}
+
+/** Refresh email NAV latest table and the full managed-products list cache. */
+export async function refreshManagedProductsNavAndListCache(): Promise<{
+  emailNavLatest: number
+  listCache: number
+}> {
+  const emailNavLatest = await refreshManagedProductsEmailNavLatest()
+  const listCache = await refreshManagedProductsListCache()
+  return { emailNavLatest, listCache }
 }
