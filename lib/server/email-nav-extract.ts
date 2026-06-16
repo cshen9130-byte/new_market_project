@@ -74,6 +74,7 @@ function extractFundNameFromSubject(subject: string): string | null {
     parseVirtualEstSubject,
     parseAssetNavAnnouncementSubject,
     parseVirtualPerfSubject,
+    parseValuationTableSubject,
   ]) {
     const parsed = parser(subject)
     if (parsed) return parsed.fundName
@@ -107,6 +108,7 @@ function resolveFromStructuredSubject(subject: string): { code: string; fundName
     parseVirtualEstSubject,
     parseAssetNavAnnouncementSubject,
     parseVirtualPerfSubject,
+    parseValuationTableSubject,
   ]) {
     const parsed = parser(subject)
     if (parsed) return parsed
@@ -129,6 +131,20 @@ function parseVirtualPerfSubject(text: string): { code: string; fundName: string
   )
   if (!m) return null
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
+/** Parse CODE_FUNDNAME_4级科目估值表_YYYYMMDD (Guotai Junan etc.). */
+function parseValuationTableSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    /^([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(?:\d级科目)?估值表_(20\d{6})/u,
+  )
+  if (m) return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+
+  const tail = text.match(
+    /^([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(20\d{6})_估值表/u,
+  )
+  if (tail) return { code: tail[1], fundName: normalizeFundDisplayName(tail[2]) }
+  return null
 }
 
 /** Short display name: 百奕小天鹅2号私募证券投资基金B → 百奕小天鹅2号B类 */

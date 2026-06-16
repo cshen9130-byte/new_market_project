@@ -4,6 +4,15 @@ import {
   sqlFundNameMatchPriority,
 } from "@/lib/server/fund-name-match"
 import { query } from "@/lib/db"
+import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
+
+function decodeFundIdentifier(raw: string): string {
+  try {
+    return decodeURIComponent(raw).trim()
+  } catch {
+    return raw.trim()
+  }
+}
 
 /** Lateral joins resolving beian_hao / short_name from multiple sources. */
 export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
@@ -169,15 +178,207 @@ export async function resolveFundBeianHao(identifier: string): Promise<string | 
   )
   if (directRows[0]?.code) return directRows[0].code
 
-  const nameRows = await query<{ beian_hao: string | null }>(
-    `SELECT ${buildFundNameLookupSql("$1")} AS beian_hao`,
-    [id],
-  )
-  const resolved = nameRows[0]?.beian_hao?.trim()
-  return resolved || null
+  try {
+    const nameRows = await query<{ beian_hao: string | null }>(
+      `SELECT ${buildFundNameLookupSql("$1")} AS beian_hao`,
+      [id],
+    )
+    const resolved = nameRows[0]?.beian_hao?.trim()
+    if (resolved) return resolved
+  } catch {
+    // ops_email_nav_records or lookup tables may be unavailable
+  }
+
+  return null
 }
 
 export async function resolveRouteFundId(raw: string): Promise<string> {
-  const resolved = await resolveFundBeianHao(raw)
-  return resolved ?? raw.trim()
+  const id = decodeFundIdentifier(raw)
+  const resolved = await resolveFundBeianHao(id)
+  return resolved ?? id
+}
+
+export type FundInfoLookupRow = {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  strategy_l2: string | null
+  strategy_l3: string | null
+  manager: string
+  inception_date: string | null
+  benchmark: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
+}
+
+const EMPTY_FUND_METRICS = {
+  manager: "",
+  inception_date: null,
+  benchmark: null,
+  ret_1w: null,
+  ret_1m: null,
+  ret_3m: null,
+  ret_6m: null,
+  ret_1y: null,
+  sharpe_1y: null,
+  calmar_1y: null,
+} as const
+
+/** Resolve fund metadata by product name or email product code (e.g. SBPC69). */
+export async function lookupFundInfoFallback(identifier: string): Promise<FundInfoLookupRow | null> {
+  const id = decodeFundIdentifier(identifier)
+  if (!id) return null
+
+  try {
+    const managedRows = await query<{ product_name: string }>(
+      `SELECT m.product_name
+       FROM managed_products m
+       WHERE m.product_name <> '合计'
+         AND ${sqlFundNameMatch("m.product_name", "$1")}
+       LIMIT 1`,
+      [id],
+    )
+    if (managedRows[0]?.product_name) {
+      const productName = managedRows[0].product_name
+      let beian_hao = productName
+      try {
+        const beianRows = await query<{ beian_hao: string | null }>(
+          `SELECT ${buildFundNameLookupSql("$1")} AS beian_hao`,
+          [productName],
+        )
+        beian_hao = beianRows[0]?.beian_hao?.trim() || productName
+      } catch {
+        // keep product name as identifier
+      }
+
+      let strategy_l1: string | null = null
+      let strategy_l2: string | null = null
+      try {
+        const metaRows = await query<{ strategy_l1: string | null; strategy_l2: string | null }>(
+          `SELECT o.company_strategy_one AS strategy_l1, o.company_strategy_two AS strategy_l2
+           FROM type6_ops_team_full o
+           WHERE ${sqlFundNameMatch("o.fund_name", "$1")}
+              OR ${sqlFundNameMatch("o.fund_short_name", "$1")}
+           ORDER BY o.updated_at DESC NULLS LAST, o.id DESC
+           LIMIT 1`,
+          [productName],
+        )
+        strategy_l1 = metaRows[0]?.strategy_l1 ?? null
+        strategy_l2 = metaRows[0]?.strategy_l2 ?? null
+      } catch {
+        // optional metadata
+      }
+
+      return {
+        beian_hao,
+        product_name: productName,
+        short_name: productName,
+        strategy_l1,
+        strategy_l2,
+        strategy_l3: null,
+        ...EMPTY_FUND_METRICS,
+      }
+    }
+  } catch (e) {
+    console.error("[lookupFundInfoFallback] managed_products", e)
+  }
+
+  try {
+    const bflRows = await query<{
+      beian_hao: string
+      product_name: string
+      short_name: string | null
+      strategy_l1: string | null
+      strategy_l2: string | null
+      strategy_l3: string | null
+    }>(
+      `SELECT beian_hao, product_name, short_name,
+              strategy_one AS strategy_l1,
+              strategy_two AS strategy_l2,
+              strategy_three AS strategy_l3
+       FROM private_fund_info_bfl bfl
+       WHERE ${sqlFundNameMatch("bfl.product_name", "$1")}
+          OR ${sqlFundNameMatch("bfl.short_name", "$1")}
+       ORDER BY LEAST(
+         ${sqlFundNameMatchPriority("bfl.product_name", "$1")},
+         ${sqlFundNameMatchPriority("bfl.short_name", "$1")}
+       )
+       LIMIT 1`,
+      [id],
+    )
+    if (bflRows[0]) {
+      return { ...bflRows[0], ...EMPTY_FUND_METRICS }
+    }
+  } catch (e) {
+    console.error("[lookupFundInfoFallback] private_fund_info_bfl", e)
+  }
+
+  try {
+    const opsRows = await query<{
+      beian_hao: string
+      product_name: string
+      short_name: string | null
+      strategy_l1: string | null
+      strategy_l2: string | null
+      strategy_l3: string | null
+    }>(
+      `SELECT register_number AS beian_hao,
+              COALESCE(fund_short_name, fund_name) AS product_name,
+              fund_name AS short_name,
+              company_strategy_one AS strategy_l1,
+              company_strategy_two AS strategy_l2,
+              company_strategy_three AS strategy_l3
+       FROM type6_ops_team_full o
+       WHERE ${sqlFundNameMatch("o.fund_name", "$1")}
+          OR ${sqlFundNameMatch("o.fund_short_name", "$1")}
+       ORDER BY o.updated_at DESC NULLS LAST, o.id DESC
+       LIMIT 1`,
+      [id],
+    )
+    if (opsRows[0]) {
+      return { ...opsRows[0], ...EMPTY_FUND_METRICS }
+    }
+  } catch (e) {
+    console.error("[lookupFundInfoFallback] type6_ops_team_full", e)
+  }
+
+  try {
+    await ensureEmailNavTable()
+    const emailRows = await query<{
+      beian_hao: string
+      product_name: string
+    }>(
+      `SELECT
+         COALESCE(NULLIF(BTRIM(product_code), ''), NULLIF(BTRIM(fund_name), '')) AS beian_hao,
+         COALESCE(NULLIF(BTRIM(fund_name), ''), NULLIF(BTRIM(product_code), '')) AS product_name
+       FROM ops_email_nav_records
+       WHERE (
+         NULLIF(BTRIM(product_code), '') IS NOT NULL AND UPPER(BTRIM(product_code)) = UPPER(BTRIM($1))
+       ) OR ${sqlFundNameMatch("fund_name", "$1")}
+       ORDER BY nav_date DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [id],
+    )
+    if (emailRows[0]?.product_name) {
+      return {
+        beian_hao: emailRows[0].beian_hao || emailRows[0].product_name,
+        product_name: emailRows[0].product_name,
+        short_name: null,
+        strategy_l1: null,
+        strategy_l2: null,
+        strategy_l3: null,
+        ...EMPTY_FUND_METRICS,
+      }
+    }
+  } catch (e) {
+    console.error("[lookupFundInfoFallback] ops_email_nav_records", e)
+  }
+
+  return null
 }

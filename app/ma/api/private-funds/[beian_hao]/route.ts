@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { loadEmailNavSeries, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
-import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
+import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 
 export const dynamic = "force-dynamic"
 
@@ -9,8 +9,16 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ beian_hao: string }> }
 ) {
-  const { beian_hao: rawId } = await params
-  const beian_hao = await resolveRouteFundId(rawId)
+  try {
+    const { beian_hao: rawParam } = await params
+    const rawId = (() => {
+      try {
+        return decodeURIComponent(rawParam).trim()
+      } catch {
+        return rawParam.trim()
+      }
+    })()
+    const beian_hao = await resolveRouteFundId(rawId)
 
   const infoRows = await query<{
     beian_hao:      string
@@ -143,15 +151,20 @@ export async function GET(
         return undefined
       })()
 
-  const info = infoRows[0] ?? bflRows[0] ?? trackingRow
+  let info = infoRows[0] ?? bflRows[0] ?? trackingRow
+  if (!info) {
+    info = (await lookupFundInfoFallback(rawId)) ?? (rawId !== beian_hao ? await lookupFundInfoFallback(beian_hao) : null)
+  }
   if (!info) return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+
+  const routeBeianHao = info.beian_hao || beian_hao
 
   // Fetch strategy_l3 from various sources (column may not exist in all tables — use try-catch)
   let strategy_l3: string | null = (info as Record<string, unknown>).strategy_l3 as string | null ?? null
   if (!strategy_l3) {
     for (const [sql, params] of [
-      [`SELECT strategy_three::text AS l3 FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`, [beian_hao]],
-      [`SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`, [beian_hao]],
+      [`SELECT strategy_three::text AS l3 FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`, [routeBeianHao]],
+      [`SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`, [routeBeianHao]],
     ] as [string, string[]][]) {
       try {
         const rows = await query<{ l3: string | null }>(sql, params)
@@ -165,7 +178,7 @@ export async function GET(
 
   const bflNameRows = await query<{ product_name: string; short_name: string | null }>(
     `SELECT product_name, short_name FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
-    [beian_hao],
+    [routeBeianHao],
   ).catch(() => [] as { product_name: string; short_name: string | null }[])
 
   const emailNameAliases = [
@@ -187,101 +200,117 @@ export async function GET(
         OR ($3 <> '' AND (fund_name = $3 OR fund_short_name = $3))
      ORDER BY updated_at DESC NULLS LAST, id DESC
      LIMIT 1`,
-    [beian_hao, productName, shortName]
+    [routeBeianHao, productName, shortName]
   ).catch(() => [] as { scale: string | null; manager_names: string | null }[])
 
   const scale = bflTrackRows[0]?.scale ?? null
   const manager_names = bflTrackRows[0]?.manager_names ?? null
 
-  const navRows = await query<{
-    price_date:         string
-    nav:                string
-    cumulative_nav:     string
+  let navRows: {
+    price_date: string
+    nav: string
+    cumulative_nav: string
     cum_nav_withdrawal: string
-    price_change:       string
-  }>(
-    `SELECT DISTINCT ON (price_date)
-        price_date::text AS price_date,
-        nav::text,
-        cumulative_nav::text,
-        cum_nav_withdrawal::text,
-        price_change::text
-     FROM (
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 0 AS pri
-       FROM private_fund_nav_group_type6
-       WHERE beian_hao = $1
+    price_change: string
+  }[] = []
+  try {
+    navRows = await query<{
+      price_date:         string
+      nav:                string
+      cumulative_nav:     string
+      cum_nav_withdrawal: string
+      price_change:       string
+    }>(
+      `SELECT DISTINCT ON (price_date)
+          price_date::text AS price_date,
+          nav::text,
+          cumulative_nav::text,
+          cum_nav_withdrawal::text,
+          price_change::text
+       FROM (
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 0 AS pri
+         FROM private_fund_nav_group_type6
+         WHERE beian_hao = $1
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 1 AS pri
-       FROM private_fund_nav_group_type6
-       WHERE $2 <> '' AND product_name = $2
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 1 AS pri
+         FROM private_fund_nav_group_type6
+         WHERE $2 <> '' AND product_name = $2
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 2 AS pri
-       FROM private_fund_nav_group_type6
-       WHERE $3 <> '' AND product_name = $3
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 2 AS pri
+         FROM private_fund_nav_group_type6
+         WHERE $3 <> '' AND product_name = $3
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
-       FROM private_fund_nav_group
-       WHERE beian_hao = $1
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
+         FROM private_fund_nav_group
+         WHERE beian_hao = $1
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri
-       FROM private_fund_nav_group
-       WHERE $2 <> '' AND product_name = $2
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri
+         FROM private_fund_nav_group
+         WHERE $2 <> '' AND product_name = $2
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri
-       FROM private_fund_nav_group
-       WHERE $3 <> '' AND product_name = $3
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri
+         FROM private_fund_nav_group
+         WHERE $3 <> '' AND product_name = $3
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 6 AS pri
-       FROM private_fund_nav_group_hy
-       WHERE beian_hao = $1
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 6 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE beian_hao = $1
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 7 AS pri
-       FROM private_fund_nav_group_hy
-       WHERE $2 <> '' AND product_name = $2
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 7 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE $2 <> '' AND product_name = $2
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 8 AS pri
-       FROM private_fund_nav_group_hy
-       WHERE $3 <> '' AND product_name = $3
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 8 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE $3 <> '' AND product_name = $3
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 9 AS pri
-       FROM private_fund_nav
-       WHERE beian_hao = $1
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 9 AS pri
+         FROM private_fund_nav
+         WHERE beian_hao = $1
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 10 AS pri
-       FROM private_fund_nav
-       WHERE $2 <> '' AND product_name = $2
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 10 AS pri
+         FROM private_fund_nav
+         WHERE $2 <> '' AND product_name = $2
 
-       UNION ALL
+         UNION ALL
 
-       SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 11 AS pri
-       FROM private_fund_nav
-       WHERE $3 <> '' AND product_name = $3
-     ) nav_union
-     ORDER BY price_date ASC, pri ASC`,
-    [beian_hao, productName, shortName]
-  )
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 11 AS pri
+         FROM private_fund_nav
+         WHERE $3 <> '' AND product_name = $3
+       ) nav_union
+       ORDER BY price_date ASC, pri ASC`,
+      [routeBeianHao, productName, shortName],
+    )
+  } catch (err) {
+    console.error("[private-funds/detail] legacy nav query failed:", err)
+  }
 
-  const emailNavRows = await loadEmailNavSeries(beian_hao, productName, shortName || null, emailNameAliases)
+  let emailNavRows: Awaited<ReturnType<typeof loadEmailNavSeries>> = []
+  try {
+    emailNavRows = await loadEmailNavSeries(routeBeianHao, productName, shortName || null, emailNameAliases)
+  } catch (err) {
+    console.error("[private-funds/detail] email nav query failed:", err)
+  }
   const nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]
@@ -361,4 +390,9 @@ export async function GET(
       sharpe_since_inception,
     },
   })
+  } catch (err) {
+    console.error("[private-funds/detail]", err)
+    const message = err instanceof Error ? err.message : String(err)
+    return NextResponse.json({ error: "Failed to load fund detail", detail: message }, { status: 500 })
+  }
 }

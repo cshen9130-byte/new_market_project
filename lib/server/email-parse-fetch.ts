@@ -279,6 +279,7 @@ async function fetchMailbox(
         parseRecords.push(
           parseEmailRecord(account, String(uid), subject, sentAt, senderEmail, bodyText, attachments),
         )
+        const parseRecordIdx = parseRecords.length - 1
 
         const emailMeta = {
           crawlEmailAccount: account.account,
@@ -310,11 +311,19 @@ async function fetchMailbox(
         }
 
         if (navDatesFromAttachments.size === 0) {
-          for (const att of selectValuationAttachments(subject, attachments)) {
+          const valuationAttachments = selectValuationAttachments(subject, attachments)
+          let valuationNavSaved = false
+          for (const att of valuationAttachments) {
             try {
               const buf = await downloadPart(client, String(uid), att.part)
               const row = extractNavFromValuationBuffer(buf, att.filename, subject)
-              if (!row?.navDate || row.nav == null) continue
+              if (!row?.navDate || row.nav == null) {
+                errors.push(
+                  `${account.account} UID ${uid} valuation ${att.filename}: no unit NAV parsed`,
+                )
+                continue
+              }
+              valuationNavSaved = true
               navDatesFromAttachments.add(row.navDate)
               navRecords.push({
                 ...emailMeta,
@@ -326,6 +335,9 @@ async function fetchMailbox(
                 `${account.account} UID ${uid} valuation ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
               )
             }
+          }
+          if (valuationAttachments.length > 0 && parseRecordIdx >= 0) {
+            parseRecords[parseRecordIdx].valuationStatus = valuationNavSaved ? "成功" : "失败"
           }
         }
 

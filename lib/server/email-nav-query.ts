@@ -336,66 +336,114 @@ function hasDistinctCumulative(nav: number, cumulative: number | null): boolean 
   return Math.abs(cumulative - nav) / nav > 0.001
 }
 
+function parseOptionalNav(value: string | null | undefined): number | null {
+  if (value == null || value === "") return null
+  const n = parseFloat(value)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Unit NAV drop with cum still well above unit — likely ex-dividend, don't chain cum down. */
+function isLikelyDividendExDate(prevNav: number, nav: number, prevCum: number): boolean {
+  if (prevNav <= 0 || nav <= 0 || prevCum <= 0) return false
+  const unitDrop = (prevNav - nav) / prevNav
+  if (unitDrop < 0.015) return false
+  if (prevCum <= nav * 1.02) return false
+  const chainedCum = prevCum * (nav / prevNav)
+  return chainedCum < prevCum * 0.985
+}
+
+function chainCumulative(prevCum: number, prevNav: number, nav: number): number {
+  if (isLikelyDividendExDate(prevNav, nav, prevCum)) return prevCum
+  return prevCum * (nav / prevNav)
+}
+
+function fillEmptyCumulativeFields(row: LegacyNavRow, prev: LegacyNavRow | null): void {
+  const nav = parseOptionalNav(row.nav)
+  if (nav == null) return
+  const prevNav = prev ? parseOptionalNav(prev.nav) : null
+
+  if (!row.cumulative_nav?.trim()) {
+    const prevCum = prev ? parseOptionalNav(prev.cumulative_nav) : null
+    if (prevCum != null && prevNav != null && prevNav > 0) {
+      row.cumulative_nav = String(chainCumulative(prevCum, prevNav, nav))
+    } else {
+      row.cumulative_nav = row.nav
+    }
+  }
+
+  if (!row.cum_nav_withdrawal?.trim()) {
+    const prevWithdraw = prev ? parseOptionalNav(prev.cum_nav_withdrawal) : null
+    if (prevWithdraw != null && prevNav != null && prevNav > 0) {
+      row.cum_nav_withdrawal = String(chainCumulative(prevWithdraw, prevNav, nav))
+    } else {
+      row.cum_nav_withdrawal = row.cumulative_nav || row.nav
+    }
+  }
+}
+
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: EmailNavPoint[]): LegacyNavRow[] {
   if (emailRows.length === 0) return legacyRows
 
-  const emailByDate = new Map(emailRows.map((row) => [row.price_date, row]))
   const byDate = new Map<string, LegacyNavRow>()
   for (const row of legacyRows) {
-    byDate.set(row.price_date, row)
+    byDate.set(row.price_date, { ...row })
   }
 
   for (const row of emailRows) {
     const nav = row.nav ?? row.cumulative_nav
     if (!nav) continue
-    byDate.set(row.price_date, {
-      price_date: row.price_date,
-      nav,
-      cumulative_nav: "",
-      cum_nav_withdrawal: "",
-      price_change: "",
-    })
+    const unitNav = parseFloat(String(nav))
+    if (!Number.isFinite(unitNav)) continue
+
+    const emailCum = parseOptionalNav(row.cumulative_nav)
+    const hasEmailCum = hasDistinctCumulative(unitNav, emailCum)
+    const existing = byDate.get(row.price_date)
+
+    if (existing) {
+      const updated: LegacyNavRow = { ...existing, nav: String(unitNav) }
+      if (hasEmailCum && emailCum != null) {
+        // Email 净值表 often carries 累计净值; keep legacy 复权净值 when already present.
+        updated.cum_nav_withdrawal = String(emailCum)
+        const legacyAdj = parseOptionalNav(existing.cumulative_nav)
+        if (
+          legacyAdj == null
+          || !hasDistinctCumulative(parseOptionalNav(existing.nav) ?? unitNav, legacyAdj)
+        ) {
+          updated.cumulative_nav = String(emailCum)
+        }
+      }
+      byDate.set(row.price_date, updated)
+    } else {
+      byDate.set(row.price_date, {
+        price_date: row.price_date,
+        nav: String(unitNav),
+        cumulative_nav: hasEmailCum && emailCum != null ? String(emailCum) : "",
+        cum_nav_withdrawal: hasEmailCum && emailCum != null ? String(emailCum) : "",
+        price_change: "",
+      })
+    }
   }
 
   const merged = Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
-  let prevCum: number | null = null
-  let prevNav: number | null = null
-
-  for (let i = 0; i < merged.length; i++) {
-    const row = merged[i]
-    const nav = parseFloat(row.nav)
-    const emailRow = emailByDate.get(row.price_date)
-    const isEmailDate = Boolean(emailRow)
-
-    if (isEmailDate) {
-      const emailCum = emailRow?.cumulative_nav ? parseFloat(emailRow.cumulative_nav) : NaN
-      if (hasDistinctCumulative(nav, Number.isFinite(emailCum) ? emailCum : null)) {
-        row.cumulative_nav = String(emailCum)
-        row.cum_nav_withdrawal = String(emailCum)
-      } else if (prevCum !== null && prevNav !== null && prevNav > 0 && Number.isFinite(nav)) {
-        const chained = prevCum * (nav / prevNav)
-        row.cumulative_nav = String(chained)
-        row.cum_nav_withdrawal = String(chained)
-      } else {
-        row.cumulative_nav = row.nav
-        row.cum_nav_withdrawal = row.nav
-      }
-    } else if (!row.cumulative_nav) {
-      row.cumulative_nav = row.nav
-      row.cum_nav_withdrawal = row.nav
-    }
-
-    if (i > 0) {
-      const prev = parseFloat(merged[i - 1].nav)
-      if (Number.isFinite(prev) && prev > 0 && Number.isFinite(nav)) {
-        row.price_change = String(nav / prev - 1)
-      }
-    }
-
-    prevCum = parseFloat(row.cumulative_nav)
-    prevNav = parseFloat(row.nav)
+  let prev: LegacyNavRow | null = null
+  for (const row of merged) {
+    fillEmptyCumulativeFields(row, prev)
+    prev = row
   }
 
-  return merged
+  return recomputeNavPriceChanges(merged)
+}
+
+/** Recompute 涨跌幅 as percentage points from consecutive unit NAV (matches legacy DB + UI). */
+export function recomputeNavPriceChanges(rows: LegacyNavRow[]): LegacyNavRow[] {
+  if (rows.length === 0) return rows
+  const sorted = [...rows].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  return sorted.map((row, i) => {
+    if (i === 0) return { ...row, price_change: "" }
+    const prev = parseFloat(sorted[i - 1].nav)
+    const nav = parseFloat(row.nav)
+    if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(nav)) return row
+    return { ...row, price_change: String(((nav / prev - 1) * 100)) }
+  })
 }
