@@ -40,16 +40,18 @@ async function _GET() {
       prev.push({ date: row.date, pnl, cumPnl })
     }
 
-    // Count registered sub-accounts from advisor info (source of truth)
-    let subAccountCount: number | null = null
-    try {
-      const countRow = await query<{ cnt: string }>(`SELECT COUNT(*) AS cnt FROM mom_advisor_info`)
-      const rxCount = parseInt(countRow[0]?.cnt ?? "0", 10)
-      subAccountCount = rxCount
-    } catch {
-      // mom_advisor_info not available — fall back to accountData keys
-      subAccountCount = Object.keys(accountMap).length
-    }
+    // Count sub-accounts on the latest trading date from daily reports (operational source of truth)
+    const countRow = await query<{ cnt: string }>(
+      `SELECT COUNT(DISTINCT "账户") AS cnt
+       FROM mom_daily_reports
+       WHERE "交易日期" = (SELECT MAX("交易日期") FROM mom_daily_reports)
+         AND COALESCE(TRIM("账户"::text), '') <> ''
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOXIN%'
+         AND UPPER(TRIM("账户"::text)) NOT LIKE '%GUOSEN%'
+         AND TRIM("账户"::text) NOT LIKE '%国信%'
+         AND TRIM("账户"::text) <> '665300200077'`,
+    )
+    const subAccountCount = parseInt(countRow[0]?.cnt ?? String(Object.keys(accountMap).length), 10)
 
     return NextResponse.json({ ok: true, accountData: accountMap, subAccountCount })
   } catch (err) {
