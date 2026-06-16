@@ -384,6 +384,8 @@ async function fetchMailbox(
 export async function fetchEmailParseRecords(options?: {
   crawlEmailId?: string
   days?: number
+  /** Skip precomputed managed-product refresh (caller may run it in background). */
+  skipNavLatestRefresh?: boolean
 }): Promise<EmailParseFetchResult> {
   const errors: string[] = []
   const since = new Date()
@@ -435,10 +437,12 @@ export async function fetchEmailParseRecords(options?: {
   }
 
   let navLatestRefreshed = 0
-  try {
-    navLatestRefreshed = await refreshManagedProductsEmailNavLatest()
-  } catch (e) {
-    errors.push(`刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`)
+  if (!options?.skipNavLatestRefresh) {
+    try {
+      navLatestRefreshed = await refreshManagedProductsEmailNavLatest()
+    } catch (e) {
+      errors.push(`刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   return {

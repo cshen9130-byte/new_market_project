@@ -5938,6 +5938,23 @@ function OperationsTaAccountsPanel() {
   )
 }
 
+async function readJsonResponse(res: Response): Promise<{ data: Record<string, unknown>; raw: string }> {
+  const raw = await res.text()
+  try {
+    const data = JSON.parse(raw) as Record<string, unknown>
+    return { data, raw }
+  } catch {
+    const trimmed = raw.trimStart()
+    if (trimmed.startsWith("<")) {
+      if (res.status === 504 || /504|Gateway Time-out|gateway timeout/i.test(raw)) {
+        throw new Error("请求超时（网关 504）。邮件扫描耗时较长，请减少扫描天数后重试，或请管理员将 Nginx 超时延长至 15 分钟。")
+      }
+      throw new Error(`服务器返回了 HTML 错误页（HTTP ${res.status}），不是 JSON。请稍后重试或联系管理员查看服务日志。`)
+    }
+    throw new Error(raw.slice(0, 200) || "响应不是有效 JSON")
+  }
+}
+
 function formatParseDateInput(d: Date): string {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, "0")
@@ -6073,9 +6090,15 @@ function OperationsParseLogsPanel() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ days: fetchDays }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error ?? "抓取失败")
-      setFetchMsg(`扫描 ${data.emailsScanned ?? 0} 封基金相关邮件，解析记录 ${data.recordsFound ?? 0} 条`)
+      const { data } = await readJsonResponse(res)
+      if (!res.ok) throw new Error(String(data.error ?? "抓取失败"))
+      const errNote =
+        Array.isArray(data.errors) && data.errors.length > 0
+          ? `（部分步骤失败：${data.errors.slice(0, 2).join("；")}）`
+          : ""
+      setFetchMsg(
+        `扫描 ${data.emailsScanned ?? 0} 封基金相关邮件，解析记录 ${data.recordsFound ?? 0} 条，净值入库 ${data.navSaved ?? 0} 条${errNote}`,
+      )
       setPage(1)
       loadRows(1)
     } catch (e) {
