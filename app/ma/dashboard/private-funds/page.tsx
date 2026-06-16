@@ -6015,7 +6015,9 @@ function OperationsParseLogsPanel() {
   const [loading, setLoading] = useState(false)
   const [fetching, setFetching] = useState(false)
   const [fetchMsg, setFetchMsg] = useState<string | null>(null)
+  const [fetchMsgIsError, setFetchMsgIsError] = useState(false)
   const [fetchDays, setFetchDays] = useState(31)
+  const fetchPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [stats, setStats] = useState({ total: 0, success: 0, failure: 0, lastUpdatedAt: null as string | null })
@@ -6081,30 +6083,93 @@ function OperationsParseLogsPanel() {
       .finally(() => setLoading(false))
   }
 
+  function stopFetchPolling() {
+    if (fetchPollRef.current) {
+      clearInterval(fetchPollRef.current)
+      fetchPollRef.current = null
+    }
+  }
+
+  function formatFetchResult(data: {
+    emailsScanned?: number
+    recordsFound?: number
+    navSaved?: number
+    errors?: string[]
+  } | undefined): string {
+    if (!data) return "解析完成"
+    const errNote =
+      Array.isArray(data.errors) && data.errors.length > 0
+        ? `（部分步骤失败：${data.errors.slice(0, 2).join("；")}）`
+        : ""
+    return `扫描 ${data.emailsScanned ?? 0} 封基金相关邮件，解析记录 ${data.recordsFound ?? 0} 条，净值入库 ${data.navSaved ?? 0} 条${errNote}`
+  }
+
+  function startFetchPolling() {
+    stopFetchPolling()
+    setFetching(true)
+    fetchPollRef.current = setInterval(() => {
+      void (async () => {
+        try {
+          const res = await fetch("/ma/api/ops/email-parse-records/fetch-status")
+          const status = (await res.json()) as {
+            status?: string
+            message?: string
+            result?: { emailsScanned?: number; recordsFound?: number; navSaved?: number; errors?: string[] }
+          } | null
+          if (!status) {
+            stopFetchPolling()
+            setFetching(false)
+            return
+          }
+          if (status.status === "queued" || status.status === "running") {
+            setFetchMsg(status.message ?? "正在扫描并解析邮件…")
+            setFetchMsgIsError(false)
+            return
+          }
+          stopFetchPolling()
+          setFetching(false)
+          if (status.status === "done") {
+            setFetchMsg(formatFetchResult(status.result))
+            setFetchMsgIsError(false)
+            setPage(1)
+            loadRows(1)
+          } else {
+            setFetchMsg(status.message ?? "抓取失败")
+            setFetchMsgIsError(true)
+          }
+        } catch {
+          // network hiccup — keep polling
+        }
+      })()
+    }, 2000)
+  }
+
   async function runFetch() {
     setFetching(true)
     setFetchMsg(null)
+    setFetchMsgIsError(false)
     try {
       const res = await fetch("/ma/api/ops/email-parse-records/fetch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ days: fetchDays }),
       })
+      if (res.status === 202 || res.status === 409) {
+        setFetchMsg("正在扫描并解析邮件，请稍候…")
+        startFetchPolling()
+        return
+      }
       const { data } = await readJsonResponse(res)
       if (!res.ok) throw new Error(String(data.error ?? "抓取失败"))
-      const errNote =
-        Array.isArray(data.errors) && data.errors.length > 0
-          ? `（部分步骤失败：${data.errors.slice(0, 2).join("；")}）`
-          : ""
-      setFetchMsg(
-        `扫描 ${data.emailsScanned ?? 0} 封基金相关邮件，解析记录 ${data.recordsFound ?? 0} 条，净值入库 ${data.navSaved ?? 0} 条${errNote}`,
-      )
+      setFetchMsg(formatFetchResult(data as { emailsScanned?: number; recordsFound?: number; navSaved?: number; errors?: string[] }))
+      setFetchMsgIsError(false)
       setPage(1)
       loadRows(1)
     } catch (e) {
       setFetchMsg(e instanceof Error ? e.message : "抓取失败")
+      setFetchMsgIsError(true)
     } finally {
-      setFetching(false)
+      if (!fetchPollRef.current) setFetching(false)
     }
   }
 
@@ -6183,9 +6248,26 @@ function OperationsParseLogsPanel() {
   }
 
   useEffect(() => {
+    return () => stopFetchPolling()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
     if (!fetchedOnce.current) {
       fetchedOnce.current = true
       void (async () => {
+        try {
+          const statusRes = await fetch("/ma/api/ops/email-parse-records/fetch-status")
+          const jobStatus = (await statusRes.json()) as { status?: string; message?: string } | null
+          if (jobStatus && (jobStatus.status === "queued" || jobStatus.status === "running")) {
+            setFetchMsg(jobStatus.message ?? "正在扫描并解析邮件…")
+            startFetchPolling()
+            loadRows(1)
+            return
+          }
+        } catch {
+          // ignore
+        }
         const res = await fetch("/ma/api/ops/email-parse-records?page=1&pageSize=1")
         const data = await res.json()
         if ((data.total ?? 0) === 0) void runFetch()
@@ -6343,7 +6425,7 @@ function OperationsParseLogsPanel() {
       </div>
 
       {fetchMsg && (
-        <p className={`text-xs mb-3 shrink-0 ${fetchMsg.includes("失败") ? "text-amber-700 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+        <p className={`text-xs mb-3 shrink-0 ${fetchMsgIsError ? "text-amber-700 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"}`}>
           {fetchMsg}
         </p>
       )}

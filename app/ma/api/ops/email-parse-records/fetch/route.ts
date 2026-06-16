@@ -1,11 +1,11 @@
-import { after } from "next/server"
 import { NextResponse } from "next/server"
-import { fetchEmailParseRecords } from "@/lib/server/email-parse-fetch"
-import { refreshManagedProductsEmailNavLatest } from "@/lib/server/email-nav-latest-pg"
+import {
+  getEmailParseFetchJobStatus,
+  startEmailParseFetchJob,
+} from "@/lib/server/email-parse-fetch-job"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-export const maxDuration = 600
 
 export async function POST(req: Request) {
   try {
@@ -21,25 +21,25 @@ export async function POST(req: Request) {
         : typeof daysRaw === "string"
           ? parseInt(daysRaw, 10)
           : undefined
+    const normalizedDays =
+      Number.isFinite(days) && (days as number) > 0 ? (days as number) : undefined
 
-    const result = await fetchEmailParseRecords({
+    const started = startEmailParseFetchJob({
       crawlEmailId,
-      days: Number.isFinite(days) && (days as number) > 0 ? (days as number) : undefined,
-      skipNavLatestRefresh: true,
+      days: normalizedDays,
     })
 
-    after(async () => {
-      try {
-        await refreshManagedProductsEmailNavLatest()
-      } catch (e) {
-        console.error("[email-parse-records/fetch] background nav refresh failed:", e)
-      }
-    })
+    if (!started.ok) {
+      return NextResponse.json(
+        { error: "邮件扫描任务正在进行中，请稍候", status: getEmailParseFetchJobStatus() },
+        { status: 409 },
+      )
+    }
 
-    return NextResponse.json({
-      ...result,
-      navLatestRefreshQueued: true,
-    })
+    return NextResponse.json(
+      { started: true, status: "queued", days: normalizedDays },
+      { status: 202 },
+    )
   } catch (e) {
     const message = e instanceof Error ? e.message : "抓取失败"
     return NextResponse.json({ error: message }, { status: 500 })
