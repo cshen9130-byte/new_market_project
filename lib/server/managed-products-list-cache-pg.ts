@@ -15,22 +15,25 @@ import { managedShortExpr } from "@/lib/server/managed-products-nav-query"
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_managed_products_list_cache (
-    managed_product_id  BIGINT      PRIMARY KEY,
-    product_name        TEXT        NOT NULL,
-    beian_hao           TEXT,
-    short_name          TEXT,
-    unit_nav            NUMERIC(16,6),
-    nav_date            DATE,
-    return_pct          NUMERIC(16,8),
-    ret_1w              NUMERIC(16,8),
-    ret_1m              NUMERIC(16,8),
-    ret_3m              NUMERIC(16,8),
-    ret_6m              NUMERIC(16,8),
-    ret_1y              NUMERIC(16,8),
-    sharpe_1y           NUMERIC(16,6),
-    calmar_1y           NUMERIC(16,6),
-    as_of_date          DATE        NOT NULL,
-    refreshed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    managed_product_id    BIGINT      PRIMARY KEY,
+    product_name          TEXT        NOT NULL,
+    beian_hao             TEXT,
+    short_name            TEXT,
+    unit_nav              NUMERIC(16,6),
+    nav_date              DATE,
+    return_pct            NUMERIC(16,8),
+    ret_1w                NUMERIC(16,8),
+    ret_1m                NUMERIC(16,8),
+    ret_3m                NUMERIC(16,8),
+    ret_6m                NUMERIC(16,8),
+    ret_1y                NUMERIC(16,8),
+    sharpe_1y             NUMERIC(16,6),
+    calmar_1y             NUMERIC(16,6),
+    company_strategy_l1   TEXT,
+    platform_strategy_l1  TEXT,
+    team_tags             JSONB,
+    as_of_date            DATE        NOT NULL,
+    refreshed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
   CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_beian
@@ -38,6 +41,26 @@ const CREATE_TABLE_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_product
     ON ops_managed_products_list_cache (product_name);
+
+  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_company_strat
+    ON ops_managed_products_list_cache (company_strategy_l1);
+
+  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_platform_strat
+    ON ops_managed_products_list_cache (platform_strategy_l1);
+`
+
+/* Add new columns to existing tables created before this migration. */
+const MIGRATE_SQL = `
+  ALTER TABLE ops_managed_products_list_cache
+    ADD COLUMN IF NOT EXISTS company_strategy_l1  TEXT,
+    ADD COLUMN IF NOT EXISTS platform_strategy_l1 TEXT,
+    ADD COLUMN IF NOT EXISTS team_tags             JSONB;
+
+  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_company_strat
+    ON ops_managed_products_list_cache (company_strategy_l1);
+
+  CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_platform_strat
+    ON ops_managed_products_list_cache (platform_strategy_l1);
 `
 
 const RETURN_OFFSETS = [
@@ -53,6 +76,7 @@ let tableEnsured = false
 export async function ensureManagedProductsListCacheTable(): Promise<void> {
   if (tableEnsured) return
   await query(CREATE_TABLE_SQL)
+  await query(MIGRATE_SQL)
   tableEnsured = true
 }
 
@@ -270,6 +294,56 @@ function computeOneYearRiskMetrics(
   }
 }
 
+type OpsStrategyRow = {
+  register_number: string
+  company_strategy_l1: string | null
+  platform_strategy_l1: string | null
+  team_tags: unknown
+}
+
+async function loadOpsStrategyAndTags(
+  beianHaos: string[],
+): Promise<Map<string, OpsStrategyRow>> {
+  const codes = beianHaos.map((b) => b.trim()).filter(Boolean)
+  const out = new Map<string, OpsStrategyRow>()
+  if (codes.length === 0) return out
+
+  const rows = await query<OpsStrategyRow>(
+    `SELECT DISTINCT ON (register_number)
+       register_number,
+       NULLIF(BTRIM(company_strategy_one), '')  AS company_strategy_l1,
+       NULLIF(BTRIM(platform_strategy_one), '') AS platform_strategy_l1,
+       CASE WHEN jsonb_typeof(tag->'company') = 'array'
+            THEN tag->'company' ELSE '[]'::jsonb END AS team_tags
+     FROM type6_ops_team_full
+     WHERE register_number = ANY($1::text[])
+     ORDER BY register_number, updated_at DESC NULLS LAST, id DESC`,
+    [codes],
+  )
+  for (const r of rows) out.set(r.register_number, r)
+  return out
+}
+
+async function loadBflStrategies(
+  beianHaos: string[],
+): Promise<Map<string, string>> {
+  const codes = beianHaos.map((b) => b.trim()).filter(Boolean)
+  const out = new Map<string, string>()
+  if (codes.length === 0) return out
+
+  const rows = await query<{ beian_hao: string; strategy: string | null }>(
+    `SELECT beian_hao,
+       NULLIF(BTRIM(split_part(COALESCE(strategy_company, ''), ',', 1)), '') AS strategy
+     FROM private_fund_info_bfl
+     WHERE beian_hao = ANY($1::text[])`,
+    [codes],
+  )
+  for (const r of rows) {
+    if (r.strategy) out.set(r.beian_hao, r.strategy)
+  }
+  return out
+}
+
 async function loadPrivateFundRiskMetrics(
   beianHaos: string[],
 ): Promise<Map<string, { sharpe_1y: number | null; calmar_1y: number | null }>> {
@@ -315,9 +389,12 @@ export async function refreshManagedProductsListCache(): Promise<number> {
 
   logProgress(`found ${products.length} products`)
 
-  const riskFromInfo = await loadPrivateFundRiskMetrics(
-    products.map((p) => p.beian_hao).filter(Boolean) as string[],
-  )
+  const beianHaos = products.map((p) => p.beian_hao).filter(Boolean) as string[]
+  const [riskFromInfo, opsStrategyMap, bflStrategyMap] = await Promise.all([
+    loadPrivateFundRiskMetrics(beianHaos),
+    loadOpsStrategyAndTags(beianHaos),
+    loadBflStrategies(beianHaos),
+  ])
 
   await query(`DELETE FROM ops_managed_products_list_cache`)
   if (products.length === 0) return 0
@@ -400,8 +477,14 @@ export async function refreshManagedProductsListCache(): Promise<number> {
       calmar_1y = risk.calmar_1y
     }
 
+    const ops = beian ? opsStrategyMap.get(beian) : undefined
+    const bflStrategy = beian ? bflStrategyMap.get(beian) : undefined
+    const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
+    const platform_strategy_l1 = ops?.platform_strategy_l1 ?? bflStrategy ?? null
+    const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
+
     placeholders.push(
-      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}::date, NOW())`,
+      `($${pi}, $${pi+1}, $${pi+2}, $${pi+3}, $${pi+4}, $${pi+5}, $${pi+6}, $${pi+7}, $${pi+8}, $${pi+9}, $${pi+10}, $${pi+11}, $${pi+12}, $${pi+13}, $${pi+14}, $${pi+15}, $${pi+16}::jsonb, $${pi+17}::date, NOW())`,
     )
     values.push(
       row.managed_product_id,
@@ -418,9 +501,12 @@ export async function refreshManagedProductsListCache(): Promise<number> {
       returns.ret_1y,
       sharpe_1y,
       calmar_1y,
+      company_strategy_l1,
+      platform_strategy_l1,
+      team_tags,
       asOfDate,
     )
-    pi += 15
+    pi += 18
   }
 
   logProgress("writing cache table…")
@@ -429,7 +515,9 @@ export async function refreshManagedProductsListCache(): Promise<number> {
        managed_product_id, product_name, beian_hao, short_name,
        unit_nav, nav_date, return_pct,
        ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
-       sharpe_1y, calmar_1y, as_of_date, refreshed_at
+       sharpe_1y, calmar_1y,
+       company_strategy_l1, platform_strategy_l1, team_tags,
+       as_of_date, refreshed_at
      ) VALUES ${placeholders.join(", ")}`,
     values,
   )
