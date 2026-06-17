@@ -1579,6 +1579,56 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     return id ? { "x-market-user-id": id } : {}
   }
 
+  function persistPoolCreate(poolKey: string, label: string, scope: "team" | "mine") {
+    fetch("/ma/api/tracking-funds/pools", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+      body: JSON.stringify({ pool_key: poolKey, label, scope }),
+    }).catch(() => {})
+  }
+
+  function persistPoolRename(poolKey: string, label: string) {
+    fetch("/ma/api/tracking-funds/pools", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+      body: JSON.stringify({ pool_key: poolKey, label }),
+    }).catch(() => {})
+  }
+
+  function persistPoolDelete(poolKey: string) {
+    fetch(`/ma/api/tracking-funds/pools?pool_key=${encodeURIComponent(poolKey)}`, {
+      method: "DELETE",
+      headers: { ...userFetchHeaders() },
+    }).catch(() => {})
+  }
+
+  // Load persisted pool definitions so team pools created by any account are
+  // visible to everyone, and "mine" pools survive reloads for the same user.
+  useEffect(() => {
+    type ApiPool = { pool_key: string; label: string }
+    const mergePools = (
+      setter: typeof setPools,
+      incoming: ApiPool[],
+    ) => {
+      setter((prev) => {
+        const existing = new Set(prev.map((p) => p.key))
+        const extra = incoming
+          .filter((p) => p?.pool_key && !existing.has(p.pool_key))
+          .map((p) => ({ key: p.pool_key, label: p.label }))
+        return extra.length ? [...prev, ...extra] : prev
+      })
+    }
+    fetch("/ma/api/tracking-funds/pools?scope=team")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d?.data)) mergePools(setPools, d.data) })
+      .catch(() => {})
+    fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: { ...userFetchHeaders() } })
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d?.data)) mergePools(setMyPools, d.data) })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   function currentUserName(): string {
     try {
       const u = JSON.parse(localStorage.getItem("currentUser") || "null")
@@ -4466,12 +4516,18 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           onChange={(e) => setMineEditingPoolLabel(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" && mineEditingPoolLabel.trim()) {
-                              setMyPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: mineEditingPoolLabel.trim() } : x))
+                              const nextLabel = mineEditingPoolLabel.trim()
+                              setMyPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
+                              persistPoolRename(p.key, nextLabel)
                               setMineEditingPoolKey(null)
                             } else if (e.key === "Escape") setMineEditingPoolKey(null)
                           }}
                           onBlur={() => {
-                            if (mineEditingPoolLabel.trim()) setMyPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: mineEditingPoolLabel.trim() } : x))
+                            if (mineEditingPoolLabel.trim()) {
+                              const nextLabel = mineEditingPoolLabel.trim()
+                              setMyPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
+                              persistPoolRename(p.key, nextLabel)
+                            }
                             setMineEditingPoolKey(null)
                           }}
                           className="border rounded px-2 py-1 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring w-full"
@@ -4492,6 +4548,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           <button
                             onClick={() => {
                               setMyPools((prev) => prev.filter((x) => x.key !== p.key))
+                              persistPoolDelete(p.key)
                               if (myActivePool === p.key) setMyActivePool("mine_default")
                             }}
                             className="text-muted-foreground hover:text-red-500 transition-colors"
@@ -4529,7 +4586,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && mineNewPoolName.trim()) {
                     const key = `mine_custom_${Date.now()}`
-                    setMyPools((prev) => [...prev, { key, label: mineNewPoolName.trim() }])
+                    const label = mineNewPoolName.trim()
+                    setMyPools((prev) => [...prev, { key, label }])
+                    persistPoolCreate(key, label, "mine")
                     setMyActivePool(key)
                     setShowMineNewPoolDialog(false)
                   }
@@ -4550,7 +4609,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 onClick={() => {
                   if (!mineNewPoolName.trim()) return
                   const key = `mine_custom_${Date.now()}`
-                  setMyPools((prev) => [...prev, { key, label: mineNewPoolName.trim() }])
+                  const label = mineNewPoolName.trim()
+                  setMyPools((prev) => [...prev, { key, label }])
+                  persistPoolCreate(key, label, "mine")
                   setMyActivePool(key)
                   setShowMineNewPoolDialog(false)
                 }}
@@ -4581,7 +4642,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && newPoolName.trim()) {
                     const key = `custom_${Date.now()}`
-                    setPools((prev) => [...prev, { key, label: newPoolName.trim() }])
+                    const label = newPoolName.trim()
+                    setPools((prev) => [...prev, { key, label }])
+                    persistPoolCreate(key, label, "team")
                     setActivePool(key)
                     setPage(1)
                     setShowNewPoolDialog(false)
@@ -4603,7 +4666,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 onClick={() => {
                   if (!newPoolName.trim()) return
                   const key = `custom_${Date.now()}`
-                  setPools((prev) => [...prev, { key, label: newPoolName.trim() }])
+                  const label = newPoolName.trim()
+                  setPools((prev) => [...prev, { key, label }])
+                  persistPoolCreate(key, label, "team")
                   setActivePool(key)
                   setPage(1)
                   setShowNewPoolDialog(false)
@@ -4650,7 +4715,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                             onChange={(e) => setEditingPoolLabel(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === "Enter" && editingPoolLabel.trim()) {
-                                setPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: editingPoolLabel.trim() } : x))
+                                const nextLabel = editingPoolLabel.trim()
+                                setPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
+                                persistPoolRename(p.key, nextLabel)
                                 setEditingPoolKey(null)
                               } else if (e.key === "Escape") {
                                 setEditingPoolKey(null)
@@ -4658,7 +4725,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                             }}
                             onBlur={() => {
                               if (editingPoolLabel.trim()) {
-                                setPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: editingPoolLabel.trim() } : x))
+                                const nextLabel = editingPoolLabel.trim()
+                                setPools((prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
+                                persistPoolRename(p.key, nextLabel)
                               }
                               setEditingPoolKey(null)
                             }}
@@ -4682,6 +4751,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                             title="删除"
                             onClick={() => {
                               setPools((prev) => prev.filter((x) => x.key !== p.key))
+                              persistPoolDelete(p.key)
                               if (activePool === p.key) { setActivePool("bfl"); setPage(1) }
                             }}
                             className="text-muted-foreground hover:text-red-500 transition-colors"
@@ -9702,7 +9772,7 @@ function OpsProductRowMenu({
   footerItems?: OpsProductRowMenuItem[]
 }) {
   const [open, setOpen] = useState(false)
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null)
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null)
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => { setMounted(true) }, [])
@@ -9710,7 +9780,13 @@ function OpsProductRowMenu({
   function handleToggle(e: React.MouseEvent<HTMLButtonElement>) {
     if (open) { setOpen(false); setPos(null); return }
     const rect = e.currentTarget.getBoundingClientRect()
-    setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    const MENU_ESTIMATED_HEIGHT = 230
+    const spaceBelow = window.innerHeight - rect.bottom
+    if (spaceBelow < MENU_ESTIMATED_HEIGHT) {
+      setPos({ bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right })
+    } else {
+      setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    }
     setOpen(true)
   }
   function close() { setOpen(false); setPos(null) }
@@ -9751,7 +9827,7 @@ function OpsProductRowMenu({
           <div className="fixed inset-0 z-[100]" onClick={close} />
           <div
             className="fixed z-[101] bg-background border rounded-lg shadow-lg py-1 min-w-[148px]"
-            style={{ top: pos.top, right: pos.right }}
+            style={{ top: pos.top, bottom: pos.bottom, right: pos.right }}
             onClick={(e) => e.stopPropagation()}
           >
             <button
@@ -11286,6 +11362,13 @@ function OperationsManagedProductsView() {
   const [managedRemoveDialog, setManagedRemoveDialog] = useState<{ id: string; product_name: string } | null>(null)
   const [managedRemoveSaving, setManagedRemoveSaving] = useState(false)
   const [managedRemoveError, setManagedRemoveError] = useState<string | null>(null)
+  const [showManagedBatchAddDialog, setShowManagedBatchAddDialog] = useState(false)
+  const [managedBatchAddText, setManagedBatchAddText] = useState("")
+  const [managedBatchAddSearching, setManagedBatchAddSearching] = useState(false)
+  const [managedBatchAddResults, setManagedBatchAddResults] = useState<{ beian_hao: string; product_name: string; short_name: string | null; strategy_one: string | null }[]>([])
+  const [managedBatchAddChecked, setManagedBatchAddChecked] = useState<Set<string>>(new Set())
+  const [managedBatchAddSaving, setManagedBatchAddSaving] = useState(false)
+  const [managedBatchAddError, setManagedBatchAddError] = useState<string | null>(null)
   const addManagedFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [managedElementsDialog, setManagedElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [managedPermissionDialog, setManagedPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -11610,7 +11693,7 @@ function OperationsManagedProductsView() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowManagedAddMenu(false)}
+                  onClick={() => { setShowManagedAddMenu(false); setManagedBatchAddText(""); setManagedBatchAddResults([]); setManagedBatchAddChecked(new Set()); setManagedBatchAddError(null); setShowManagedBatchAddDialog(true) }}
                   className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
                 >
                   批量添加
@@ -12019,6 +12102,175 @@ function OperationsManagedProductsView() {
               >
                 {managedRemoveSaving ? "处理中…" : "确 定"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Managed products batch add dialog */}
+      {showManagedBatchAddDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowManagedBatchAddDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[780px] max-h-[90vh] flex flex-col p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5 shrink-0">
+              <span className="font-semibold text-base">添加在管产品</span>
+              <button onClick={() => setShowManagedBatchAddDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-lg leading-none">×</button>
+            </div>
+
+            <div className="mb-5 shrink-0">
+              <div className="flex items-center gap-1 mb-3">
+                <span className="w-2 h-2 rounded-full bg-red-500 inline-block" />
+                <span className="font-medium text-sm">添加基金</span>
+              </div>
+              <div className="flex gap-3" style={{ height: 220 }}>
+                <div className="flex flex-col flex-1">
+                  <div className="text-xs text-muted-foreground mb-1">剪贴板</div>
+                  <textarea
+                    className="flex-1 w-full border rounded p-2 text-sm bg-transparent resize-none outline-none placeholder:text-muted-foreground/40 focus:ring-1 focus:ring-ring"
+                    placeholder={"将基金名称/备案号/代码粘贴至此，内容要\n分行，如：\n     xxxxx1号\n     xxxxx2号\n     xxxxx3号"}
+                    value={managedBatchAddText}
+                    onChange={(e) => setManagedBatchAddText(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-center shrink-0">
+                  <button
+                    disabled={managedBatchAddSearching || !managedBatchAddText.trim()}
+                    onClick={async () => {
+                      const keywords = managedBatchAddText.split("\n").map((l) => l.trim()).filter(Boolean)
+                      if (keywords.length === 0) return
+                      setManagedBatchAddSearching(true)
+                      setManagedBatchAddResults([])
+                      setManagedBatchAddChecked(new Set())
+                      try {
+                        const res = await fetch("/ma/api/tracking-funds/batch-search", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ keywords }),
+                        })
+                        const json = await res.json()
+                        const found = json.results ?? []
+                        setManagedBatchAddResults(found)
+                        setManagedBatchAddChecked(new Set(found.map((r: { beian_hao: string }) => r.beian_hao)))
+                      } catch {
+                        // ignore
+                      } finally {
+                        setManagedBatchAddSearching(false)
+                      }
+                    }}
+                    className="bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded px-3 py-1.5 text-sm font-medium transition-colors whitespace-nowrap"
+                  >
+                    {managedBatchAddSearching
+                      ? <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round" /></svg>
+                      : "搜索 >"}
+                  </button>
+                </div>
+                <div className="flex flex-col flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs text-muted-foreground">搜索成功</span>
+                    {managedBatchAddResults.length > 0 && (
+                      <button
+                        onClick={() => { setManagedBatchAddResults([]); setManagedBatchAddChecked(new Set()) }}
+                        className="text-xs text-blue-500 hover:text-blue-600 transition-colors"
+                      >
+                        删除
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex-1 border rounded overflow-auto">
+                    {managedBatchAddResults.length === 0 ? (
+                      <div className="h-full flex flex-col items-center justify-center text-muted-foreground gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" className="opacity-30">
+                          <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="3" y1="9" x2="21" y2="9" /><line x1="9" y1="21" x2="9" y2="9" />
+                        </svg>
+                        <span className="text-xs">暂无数据</span>
+                      </div>
+                    ) : (
+                      <table className="w-full text-xs border-collapse">
+                        <thead className="sticky top-0 bg-muted/60">
+                          <tr>
+                            <th className="w-8 px-2 py-1.5 text-left">
+                              <input type="checkbox"
+                                className="rounded h-3 w-3"
+                                checked={managedBatchAddChecked.size === managedBatchAddResults.length}
+                                onChange={(e) => setManagedBatchAddChecked(e.target.checked ? new Set(managedBatchAddResults.map((r) => r.beian_hao)) : new Set())}
+                              />
+                            </th>
+                            <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">基金名称</th>
+                            <th className="px-2 py-1.5 text-left font-medium text-muted-foreground">备案号/代码</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {managedBatchAddResults.map((r) => (
+                            <tr key={r.beian_hao} className="border-t hover:bg-muted/30 transition-colors">
+                              <td className="px-2 py-1.5">
+                                <input type="checkbox"
+                                  className="rounded h-3 w-3"
+                                  checked={managedBatchAddChecked.has(r.beian_hao)}
+                                  onChange={(e) => {
+                                    const next = new Set(managedBatchAddChecked)
+                                    e.target.checked ? next.add(r.beian_hao) : next.delete(r.beian_hao)
+                                    setManagedBatchAddChecked(next)
+                                  }}
+                                />
+                              </td>
+                              <td className="px-2 py-1.5 max-w-[160px] truncate" title={r.product_name}>{r.product_name}</td>
+                              <td className="px-2 py-1.5 text-muted-foreground">{r.beian_hao}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 shrink-0 mt-auto">
+              {managedBatchAddError && (
+                <p className="text-xs text-red-500 text-right">{managedBatchAddError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  onClick={() => setShowManagedBatchAddDialog(false)}
+                  disabled={managedBatchAddSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  关 闭
+                </button>
+                <button
+                  disabled={managedBatchAddChecked.size === 0 || managedBatchAddSaving}
+                  onClick={async () => {
+                    const toAdd = managedBatchAddResults.filter((r) => managedBatchAddChecked.has(r.beian_hao))
+                    if (toAdd.length === 0) return
+                    setManagedBatchAddSaving(true)
+                    setManagedBatchAddError(null)
+                    try {
+                      const results = await Promise.all(
+                        toAdd.map((r) =>
+                          fetch("/ma/api/ops/managed-products/add", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ beian_hao: r.beian_hao, product_name: r.product_name }),
+                          }).then((res) => res.json())
+                        )
+                      )
+                      const failed = results.filter((r) => !r.ok && r.error !== "already_exists")
+                      if (failed.length > 0) {
+                        setManagedBatchAddError(`${failed.length} 个添加失败`)
+                      } else {
+                        setShowManagedBatchAddDialog(false)
+                        setManagedDataReloadKey((k) => k + 1)
+                      }
+                    } catch {
+                      setManagedBatchAddError("网络错误，请重试")
+                    } finally {
+                      setManagedBatchAddSaving(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm bg-red-500 hover:bg-red-600 text-white rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {managedBatchAddSaving ? "添加中…" : `确定${managedBatchAddChecked.size > 0 ? `（${managedBatchAddChecked.size}）` : ""}`}
+                </button>
+              </div>
             </div>
           </div>
         </div>
