@@ -2362,6 +2362,21 @@ def step_private_fund_indicators(conn) -> int:
     return updated
 
 
+def step_tracking_fund_metrics() -> int:
+    """Refresh precomputed tracking-fund list metrics (NAV + returns) for instant list loads."""
+    log.info("tracking_fund_metrics: refreshing cache …")
+    result = run_node_script("email_nav_etl.ts", extra_args=["--refresh-only"], timeout=1800)
+    if not result:
+        log.warning("tracking_fund_metrics: no result from email_nav_etl.ts")
+        return 0
+    if not result.get("ok"):
+        log.warning("tracking_fund_metrics: failed — %s", result.get("error", "unknown"))
+        return 0
+    refreshed = int(result.get("trackingFundsListCacheRefreshed") or 0)
+    log.info("tracking_fund_metrics: done — %d funds cached.", refreshed)
+    return refreshed
+
+
 def step_email_nav_parse(days: int | None = None) -> int:
     """Crawl fund emails, parse NAV attachments/body, upsert ops_email_nav_records."""
     lookback = days
@@ -2445,6 +2460,7 @@ ORDERED_STEPS = [
     "money_credit",                  # money+credit cycle calculation
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
+    "tracking_fund_metrics",         # precompute tracking-pool list NAV + returns cache
     "warm_mom_cache",                # warm MOM dashboard API caches
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
 ]
@@ -2558,6 +2574,7 @@ def main():
         "money_credit":                    lambda: step_money_credit(conn),
         "email_nav_parse":                 lambda: step_email_nav_parse(),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
+        "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),
     }
