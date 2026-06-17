@@ -12,6 +12,10 @@ import {
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
 import {
+  loadEmailUnderlyingMarketLookup,
+  resolveEmailUnderlyingMarket,
+} from "@/lib/server/email-valuation-cache-enrich"
+import {
   addDays,
   BatchNavResolver,
   chunkedInsert,
@@ -58,11 +62,23 @@ const CREATE_TABLE_SQL = `
     ON ops_fof_overview_list_cache (platform_strategy_l1);
 `
 
+const MIGRATE_STMTS = [
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS company_strategy_l1  TEXT`,
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS platform_strategy_l1 TEXT`,
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS team_tags             JSONB`,
+  `ALTER TABLE ops_fof_overview_list_cache ADD COLUMN IF NOT EXISTS market_value          NUMERIC(20,2)`,
+  `CREATE INDEX IF NOT EXISTS idx_fof_overview_list_cache_company_strat  ON ops_fof_overview_list_cache (company_strategy_l1)`,
+  `CREATE INDEX IF NOT EXISTS idx_fof_overview_list_cache_platform_strat ON ops_fof_overview_list_cache (platform_strategy_l1)`,
+]
+
 let tableEnsured = false
 
 export async function ensureFofOverviewListCacheTable(): Promise<void> {
   if (tableEnsured) return
   await query(CREATE_TABLE_SQL)
+  for (const stmt of MIGRATE_STMTS) {
+    await query(stmt)
+  }
   tableEnsured = true
 }
 
@@ -102,6 +118,8 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   )
 
   logProgress(`found ${products.length} products — preloading NAV history…`)
+
+  const emailUnderlyingMarket = await loadEmailUnderlyingMarketLookup()
 
   const identities = products.map((p) => ({
     beian_hao: p.beian_hao,
@@ -173,9 +191,10 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
     const platform_strategy_l1 = ops?.platform_strategy_l1 ?? bflStrategy ?? null
     const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
+    const emailMarket = resolveEmailUnderlyingMarket(row.product_name, row.beian_hao, emailUnderlyingMarket)
 
     placeholders.push(
-      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}::date, NOW())`,
+      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}, $${pi + 18}::date, NOW())`,
     )
     values.push(
       row.fof_underlying_id,
@@ -195,9 +214,10 @@ export async function refreshFofOverviewListCache(): Promise<number> {
       company_strategy_l1,
       platform_strategy_l1,
       team_tags,
+      emailMarket.market_value,
       asOfDate,
     )
-    pi += 18
+    pi += 19
   }
 
   logProgress("writing cache table…")
@@ -208,12 +228,13 @@ export async function refreshFofOverviewListCache(): Promise<number> {
        ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
        sharpe_1y, calmar_1y,
        company_strategy_l1, platform_strategy_l1, team_tags,
+       market_value,
        as_of_date, refreshed_at
      ) VALUES`,
     "",
     placeholders,
     values,
-    18,
+    19,
   )
 
   logProgress(`done — ${products.length} rows`)

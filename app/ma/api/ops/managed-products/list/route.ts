@@ -23,8 +23,8 @@ const ALLOWED_SORT: Record<string, string> = {
   latest_nav: "cache.unit_nav",
   latest_nav_date: "cache.nav_date",
   latest_price_change: "cache.return_pct",
-  custody_balance: "m.custody_account_balance",
-  net_asset_value: "m.net_asset_value",
+  custody_balance: "COALESCE(cache.custody_balance, m.custody_account_balance)",
+  net_asset_value: "COALESCE(cache.net_asset_value, m.net_asset_value)",
   ret_1w: "cache.ret_1w",
   ret_1m: "cache.ret_1m",
   ret_3m: "cache.ret_3m",
@@ -163,9 +163,9 @@ export async function GET(req: Request) {
       }
 
       if (runStatus === "running") {
-        conditions.push(`COALESCE(m.net_asset_value, 0) > 0`)
+        conditions.push(`COALESCE(cache.net_asset_value, m.net_asset_value, 0) > 0`)
       } else if (runStatus === "liquidated") {
-        conditions.push(`COALESCE(m.net_asset_value, 0) <= 0`)
+        conditions.push(`COALESCE(cache.net_asset_value, m.net_asset_value, 0) <= 0`)
       }
 
       if (teamTags.length > 0) {
@@ -190,7 +190,7 @@ export async function GET(req: Request) {
 
       const [countRow, navRow] = await Promise.all([
         query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
-        query<{ t: string }>(`SELECT COALESCE(SUM(m.net_asset_value), 0)::text AS t ${baseFrom} WHERE ${where}`, params),
+        query<{ t: string }>(`SELECT COALESCE(SUM(COALESCE(cache.net_asset_value, m.net_asset_value)), 0)::text AS t ${baseFrom} WHERE ${where}`, params),
       ])
       const total             = parseInt(countRow[0]?.n || "0", 10)
       const totalNetAssetValue = navRow[0]?.t ?? "0"
@@ -214,8 +214,8 @@ export async function GET(req: Request) {
            cache.unit_nav::text                 AS latest_unit_nav,
            cache.nav_date::text                 AS latest_nav_date,
            cache.return_pct::text               AS latest_return_pct,
-           m.custody_account_balance::text      AS custody_account_balance,
-           m.net_asset_value::text              AS net_asset_value,
+           COALESCE(cache.custody_balance, m.custody_account_balance)::text AS custody_account_balance,
+           COALESCE(cache.net_asset_value, m.net_asset_value)::text AS net_asset_value,
            cache.ret_1w::text,
            cache.ret_1m::text,
            cache.ret_3m::text,

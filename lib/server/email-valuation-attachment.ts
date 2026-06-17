@@ -1,6 +1,5 @@
 /**
- * Unit NAV extraction from 估值表 email attachments (.xls / .xlsx).
- * Used as fallback when the same email has no 净值表 NAV data.
+ * 估值表 extraction from email attachments (.xls / .xlsx) and inline HTML/text tables.
  */
 
 import * as XLSX from "xlsx"
@@ -8,9 +7,34 @@ import {
   extractNavMetadata,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
-import { parseValuationWorkbook, type ValuationRow } from "@/lib/server/valuation-analyzer"
+import {
+  parseValuationRows,
+  parseValuationWorkbook,
+  type ValuationAnalysis,
+  type ValuationRow,
+} from "@/lib/server/valuation-analyzer"
+import {
+  enrichValuationMetrics,
+  type FofUnderlyingMetric,
+} from "@/lib/server/email-valuation-metrics"
 
 export type ValuationAttachmentInfo = { filename: string; part: string }
+
+export type ExtractedValuationData = {
+  analysis: ValuationAnalysis
+  productCode: string | null
+  fundName: string | null
+  valuationDate: string
+  unitNav: number | null
+  cumulativeNav: number | null
+  custodyBalance: number | null
+  netAssetValue: number | null
+  totalAsset: number | null
+  totalLiability: number | null
+  underlyingHoldings: FofUnderlyingMetric[]
+  holdingsCount: number
+  source: "attachment_valuation_table" | "body_html_table"
+}
 
 const VALUATION_FILENAME_RE = /估值表|估值|专用表/i
 const EXCLUDE_VALUATION_RE = /净值表|台账|份额明细|业绩报酬|虚拟净值表现/i
@@ -169,6 +193,105 @@ function pickNavNumberFromRow(row: ValuationRow): number | null {
   return null
 }
 
+function countMeaningfulHoldings(rows: ValuationRow[]): number {
+  const detail = rows.filter((row) => row.include_in_detail)
+  if (detail.length > 0) return detail.length
+  return rows.filter((row) => {
+    const code = String(row.code ?? "")
+    const name = String(row.name ?? "")
+    return code && name && !/合计|小计|总计|单位净值|资产净值/.test(name)
+  }).length
+}
+
+function isSuccessfulValuation(analysis: ValuationAnalysis): boolean {
+  const holdingsCount = countMeaningfulHoldings(analysis.portfolio_data)
+  if (holdingsCount >= 3) return true
+  if (analysis.summary.nav > 0 || analysis.summary.total_asset > 0) return true
+  return holdingsCount > 0
+}
+
+function buildExtractedValuation(
+  analysis: ValuationAnalysis,
+  subject: string,
+  filename: string,
+  source: ExtractedValuationData["source"],
+): ExtractedValuationData | null {
+  if (!isSuccessfulValuation(analysis)) return null
+
+  const { summary: enriched, underlyingHoldings } = enrichValuationMetrics(analysis)
+  analysis = { ...analysis, summary: enriched }
+
+  const shared = extractNavMetadata(subject, "")
+  const portfolioScan = scanPortfolioNav(analysis.portfolio_data)
+
+  const valuationDate =
+    (enriched.valuation_date ? normaliseDate(enriched.valuation_date) : null) ??
+    subjectOrFilenameDate(subject, filename)
+
+  if (!valuationDate) return null
+
+  const unitNav =
+    (enriched.unit_nav > 0 ? enriched.unit_nav : null) ??
+    portfolioScan.unit ??
+    (enriched.nav > 0 && isPlausibleUnitNav(enriched.nav) ? enriched.nav : null)
+
+  const netAssetValue =
+    enriched.net_asset_value > 0
+      ? enriched.net_asset_value
+      : enriched.total_asset && enriched.total_liability
+        ? enriched.total_asset - enriched.total_liability
+        : null
+
+  const fundName =
+    shared.fundName ??
+    (enriched.fund_name && enriched.fund_name !== "未知基金" ? enriched.fund_name : null)
+
+  return {
+    analysis,
+    productCode: shared.productCode,
+    fundName,
+    valuationDate,
+    unitNav,
+    cumulativeNav: portfolioScan.cum,
+    custodyBalance: enriched.custody_balance > 0 ? enriched.custody_balance : null,
+    netAssetValue,
+    totalAsset: enriched.total_asset > 0 ? enriched.total_asset : null,
+    totalLiability: enriched.total_liability > 0 ? enriched.total_liability : null,
+    underlyingHoldings,
+    holdingsCount: countMeaningfulHoldings(analysis.portfolio_data),
+    source,
+  }
+}
+
+/** Parse plain-text / HTML-stripped table rows embedded in email body. */
+export function extractValuationFromEmailBody(
+  bodyText: string,
+  subject: string,
+): ExtractedValuationData | null {
+  if (!/估值表|估值/i.test(subject) && !/科目代码/.test(bodyText)) return null
+
+  const lines = bodyText.split(/\n+/).map((line) => line.trim()).filter(Boolean)
+  const headerIdx = lines.findIndex((line) =>
+    /科目代码/.test(line) && /科目名称|名称/.test(line),
+  )
+  if (headerIdx < 0) return null
+
+  const rows: unknown[][] = lines.slice(headerIdx).map((line) => {
+    if (line.includes("\t")) return line.split("\t").map((cell) => cell.trim())
+    if (/\s{2,}/.test(line)) return line.split(/\s{2,}/).map((cell) => cell.trim())
+    return line.split(/\s+/).map((cell) => cell.trim())
+  })
+
+  if (rows.length < 4) return null
+
+  try {
+    const analysis = parseValuationRows(rows, subject)
+    return buildExtractedValuation(analysis, subject, "", "body_html_table")
+  } catch {
+    return null
+  }
+}
+
 export function isValuationAttachmentFilename(filename: string): boolean {
   if (!/\.xlsx?$/i.test(filename)) return false
   if (EXCLUDE_VALUATION_RE.test(filename)) return false
@@ -191,13 +314,39 @@ export function selectValuationAttachments(
   return []
 }
 
-/** Parse unit NAV from a 估值表 workbook buffer. */
+/** Parse full 估值表 structure from a workbook buffer. */
+export function extractValuationFromBuffer(
+  buffer: Buffer,
+  filename: string,
+  subject: string,
+): ExtractedValuationData | null {
+  try {
+    const analysis = parseValuationWorkbook(buffer, filename)
+    return buildExtractedValuation(analysis, subject, filename, "attachment_valuation_table")
+  } catch {
+    return null
+  }
+}
+
+/** Parse unit NAV from a 估值表 workbook buffer (NAV fallback). */
 export function extractNavFromValuationBuffer(
   buffer: Buffer,
   filename: string,
   subject: string,
 ): ExtractedNavData | null {
   try {
+    const full = extractValuationFromBuffer(buffer, filename, subject)
+    if (full?.unitNav != null) {
+      return {
+        nav: full.unitNav,
+        navDate: full.valuationDate,
+        cumulativeNav: full.cumulativeNav,
+        productCode: full.productCode,
+        fundName: full.fundName,
+        source: "attachment_valuation_table",
+      }
+    }
+
     const headerScan = scanWorkbookNav(buffer)
     const analysis = parseValuationWorkbook(buffer, filename)
     const portfolioScan = scanPortfolioNav(analysis.portfolio_data)

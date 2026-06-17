@@ -12,6 +12,7 @@ import {
 import { refreshFofOverviewListCache } from "@/lib/server/fof-overview-list-cache-pg"
 import { refreshManagedProductsListCache } from "@/lib/server/managed-products-list-cache-pg"
 import { refreshTrackingFundsListCache } from "@/lib/server/tracking-funds-list-cache-pg"
+import { syncEmailValuationToProductTables } from "@/lib/server/email-valuation-sync-pg"
 import {
   buildManagedProductsFrom,
   FOF_UNDERLYING_BEIAN_EXPR,
@@ -98,7 +99,16 @@ export async function refreshManagedProductsNavAndListCache(): Promise<{
   listCache: number
   fofOverviewListCache: number
   trackingFundsListCache: number
+  managedProductsValuationSynced: number
+  fofUnderlyingMarketSynced: number
 }> {
+  let valuationSync = { managedProductsUpdated: 0, fofUnderlyingUpdated: 0 }
+  try {
+    valuationSync = await syncEmailValuationToProductTables()
+  } catch (err) {
+    console.warn("[email-nav-latest] syncEmailValuationToProductTables skipped:", err)
+  }
+
   const [listCache, fofOverviewListCache, trackingFundsListCache] = await Promise.all([
     refreshManagedProductsListCache(),
     refreshFofOverviewListCache(),
@@ -126,5 +136,12 @@ export async function refreshManagedProductsNavAndListCache(): Promise<{
      SELECT COUNT(*)::text AS n FROM inserted`,
   )
   const emailNavLatest = parseInt(synced[0]?.n ?? "0", 10)
-  return { emailNavLatest, listCache, fofOverviewListCache, trackingFundsListCache }
+  return {
+    emailNavLatest,
+    listCache,
+    fofOverviewListCache,
+    trackingFundsListCache,
+    managedProductsValuationSynced: valuationSync.managedProductsUpdated,
+    fofUnderlyingMarketSynced: valuationSync.fofUnderlyingUpdated,
+  }
 }

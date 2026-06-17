@@ -42,6 +42,40 @@ async function main() {
       let listCache = 0
       let fofOverviewListCache = 0
       let trackingFundsListCache = 0
+      let managedProductsValuationSynced = 0
+      let fofUnderlyingMarketSynced = 0
+
+      const { syncEmailValuationToProductTables } = await import(
+        "@/lib/server/email-valuation-sync-pg"
+      )
+      console.error("[email_nav_etl] refresh-only: backfilling valuation metrics from stored records…")
+      try {
+        const { backfillValuationMetricsFromRecords } = await import(
+          "@/lib/server/email-valuation-metrics-backfill"
+        )
+        const { refreshEmailValuationMetricsLatest } = await import(
+          "@/lib/server/email-valuation-metrics-pg"
+        )
+        const metricsBackfill = await backfillValuationMetricsFromRecords()
+        const metricsLatest = await refreshEmailValuationMetricsLatest()
+        console.error(
+          `[email_nav_etl] valuation metrics backfill done (records=${metricsBackfill.recordsUpdated}, latest=${metricsLatest.fundMetricsRefreshed})`,
+        )
+      } catch (err) {
+        console.warn("[email_nav_etl] valuation metrics backfill skipped:", err)
+      }
+
+      console.error("[email_nav_etl] refresh-only: syncing valuation metrics to product tables…")
+      try {
+        const sync = await syncEmailValuationToProductTables()
+        managedProductsValuationSynced = sync.managedProductsUpdated
+        fofUnderlyingMarketSynced = sync.fofUnderlyingUpdated
+        console.error(
+          `[email_nav_etl] valuation sync done (managed=${managedProductsValuationSynced}, fof=${fofUnderlyingMarketSynced})`,
+        )
+      } catch (err) {
+        console.warn("[email_nav_etl] valuation sync skipped (will enrich list caches instead):", err)
+      }
 
       if (refreshManaged) {
         console.error("[email_nav_etl] refresh-only: rebuilding managed products list cache…")
@@ -71,6 +105,8 @@ async function main() {
         listCacheRefreshed: listCache,
         fofOverviewListCacheRefreshed: fofOverviewListCache,
         trackingFundsListCacheRefreshed: trackingFundsListCache,
+        managedProductsValuationSynced,
+        fofUnderlyingMarketSynced,
       }))
       process.exit(0)
     } catch (e) {

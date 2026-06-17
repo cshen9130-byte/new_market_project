@@ -21,6 +21,10 @@ import {
   loadPrivateFundRiskMetrics,
 } from "@/lib/server/list-cache-nav-batch"
 import { managedShortExpr } from "@/lib/server/managed-products-nav-query"
+import {
+  loadEmailFundMetricsLookup,
+  resolveEmailFundMetrics,
+} from "@/lib/server/email-valuation-cache-enrich"
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_managed_products_list_cache (
@@ -56,6 +60,8 @@ const MIGRATE_STMTS = [
   `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS company_strategy_l1  TEXT`,
   `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS platform_strategy_l1 TEXT`,
   `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS team_tags             JSONB`,
+  `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS custody_balance      NUMERIC(20,2)`,
+  `ALTER TABLE ops_managed_products_list_cache ADD COLUMN IF NOT EXISTS net_asset_value      NUMERIC(20,2)`,
   `CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_company_strat  ON ops_managed_products_list_cache (company_strategy_l1)`,
   `CREATE INDEX IF NOT EXISTS idx_managed_products_list_cache_platform_strat ON ops_managed_products_list_cache (platform_strategy_l1)`,
 ]
@@ -107,6 +113,8 @@ export async function refreshManagedProductsListCache(): Promise<number> {
   )
 
   logProgress(`found ${products.length} products — preloading NAV history…`)
+
+  const emailFundMetrics = await loadEmailFundMetricsLookup()
 
   const identities = products.map((p) => ({
     beian_hao: p.beian_hao,
@@ -178,9 +186,10 @@ export async function refreshManagedProductsListCache(): Promise<number> {
     const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
     const platform_strategy_l1 = ops?.platform_strategy_l1 ?? bflStrategy ?? null
     const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
+    const emailMetrics = resolveEmailFundMetrics(row.product_name, row.beian_hao, emailFundMetrics)
 
     placeholders.push(
-      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}::date, NOW())`,
+      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}, $${pi + 18}, $${pi + 19}::date, NOW())`,
     )
     values.push(
       row.managed_product_id,
@@ -200,9 +209,11 @@ export async function refreshManagedProductsListCache(): Promise<number> {
       company_strategy_l1,
       platform_strategy_l1,
       team_tags,
+      emailMetrics.custody_balance,
+      emailMetrics.net_asset_value,
       asOfDate,
     )
-    pi += 18
+    pi += 20
   }
 
   logProgress("writing cache table…")
@@ -213,12 +224,13 @@ export async function refreshManagedProductsListCache(): Promise<number> {
        ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
        sharpe_1y, calmar_1y,
        company_strategy_l1, platform_strategy_l1, team_tags,
+       custody_balance, net_asset_value,
        as_of_date, refreshed_at
      ) VALUES`,
     "",
     placeholders,
     values,
-    18,
+    20,
   )
 
   logProgress(`done — ${products.length} rows`)

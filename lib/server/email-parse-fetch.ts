@@ -21,15 +21,28 @@ import {
 } from "@/lib/server/email-nav-attachment"
 import {
   extractNavFromValuationBuffer,
+  extractValuationFromBuffer,
+  extractValuationFromEmailBody,
   selectValuationAttachments,
 } from "@/lib/server/email-valuation-attachment"
 import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
+import {
+  upsertEmailValuationRecords,
+  type EmailValuationInsert,
+} from "@/lib/server/email-valuation-pg"
 import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
 
 export type EmailParseFetchResult = {
   emailsScanned: number
   recordsFound: number
   navSaved: number
+  valuationSaved: number
+  valuationHoldingsSaved: number
+  valuationLatestHoldingsRefreshed: number
+  valuationMetricsRefreshed: number
+  underlyingMarketRefreshed: number
+  managedProductsValuationSynced: number
+  fofUnderlyingMarketSynced: number
   navLatestRefreshed: number
   errors: string[]
 }
@@ -174,7 +187,7 @@ function parseEmailRecord(
     subject,
     tableNavStatus: statusFor(hasTableNav(body), navRelevant),
     postTableNavStatus: statusFor(hasPostTableNav(body), navRelevant),
-    valuationStatus: statusFor(valuationRelevant, valuationRelevant || navRelevant),
+    valuationStatus: valuationRelevant ? "失败" : "失败",
     ledgerStatus: statusFor(ledgerRelevant, ledgerRelevant),
     parsedAt: new Date().toISOString(),
   }
@@ -183,6 +196,7 @@ function parseEmailRecord(
 type FetchMailboxResult = {
   parseRecords: Omit<EmailParseRecord, "id">[]
   navRecords: EmailNavInsert[]
+  valuationRecords: EmailValuationInsert[]
 }
 
 async function downloadPart(client: ImapFlow, uid: string, part: string): Promise<Buffer> {
@@ -199,7 +213,7 @@ async function fetchMailbox(
 ): Promise<FetchMailboxResult> {
   if (!account.pass?.trim()) {
     errors.push(`${account.account}: 未配置授权码`)
-    return { parseRecords: [], navRecords: [] }
+    return { parseRecords: [], navRecords: [], valuationRecords: [] }
   }
 
   const client = new ImapFlow({
@@ -212,6 +226,7 @@ async function fetchMailbox(
 
   const parseRecords: Omit<EmailParseRecord, "id">[] = []
   const navRecords: EmailNavInsert[] = []
+  const valuationRecords: EmailValuationInsert[] = []
 
   const folders = getImapFolders(account)
 
@@ -310,35 +325,95 @@ async function fetchMailbox(
           }
         }
 
-        if (navDatesFromAttachments.size === 0) {
-          const valuationAttachments = selectValuationAttachments(subject, attachments)
-          let valuationNavSaved = false
-          for (const att of valuationAttachments) {
-            try {
-              const buf = await downloadPart(client, String(uid), att.part)
-              const row = extractNavFromValuationBuffer(buf, att.filename, subject)
-              if (!row?.navDate || row.nav == null) {
-                errors.push(
-                  `${account.account} UID ${uid} valuation ${att.filename}: no unit NAV parsed`,
-                )
-                continue
-              }
-              valuationNavSaved = true
-              navDatesFromAttachments.add(row.navDate)
-              navRecords.push({
+        const valuationAttachments = selectValuationAttachments(subject, attachments)
+        let valuationSavedForEmail = false
+        for (const att of valuationAttachments) {
+          try {
+            const buf = await downloadPart(client, String(uid), att.part)
+            const extracted = extractValuationFromBuffer(buf, att.filename, subject)
+            if (extracted) {
+              valuationSavedForEmail = true
+              valuationRecords.push({
                 ...emailMeta,
-                ...row,
                 attachmentFilename: att.filename,
+                productCode: extracted.productCode,
+                fundName: extracted.fundName,
+                valuationDate: extracted.valuationDate,
+                unitNav: extracted.unitNav,
+                cumulativeNav: extracted.cumulativeNav,
+                custodyBalance: extracted.custodyBalance,
+                netAssetValue: extracted.netAssetValue,
+                totalAsset: extracted.totalAsset,
+                totalLiability: extracted.totalLiability,
+                netAsset: extracted.netAssetValue,
+                underlyingHoldings: extracted.underlyingHoldings,
+                holdingsCount: extracted.holdingsCount,
+                source: extracted.source,
+                summary: extracted.analysis.summary,
+                holdings: extracted.analysis.portfolio_data,
               })
-            } catch (e) {
+            } else {
               errors.push(
-                `${account.account} UID ${uid} valuation ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+                `${account.account} UID ${uid} valuation ${att.filename}: no holdings parsed`,
               )
             }
+
+            if (navDatesFromAttachments.size === 0) {
+              const navRow =
+                extracted?.unitNav != null
+                  ? {
+                      nav: extracted.unitNav,
+                      navDate: extracted.valuationDate,
+                      cumulativeNav: extracted.cumulativeNav,
+                      productCode: extracted.productCode,
+                      fundName: extracted.fundName,
+                      source: "attachment_valuation_table" as const,
+                    }
+                  : extractNavFromValuationBuffer(buf, att.filename, subject)
+              if (navRow?.navDate && navRow.nav != null) {
+                navDatesFromAttachments.add(navRow.navDate)
+                navRecords.push({
+                  ...emailMeta,
+                  ...navRow,
+                  attachmentFilename: att.filename,
+                })
+              }
+            }
+          } catch (e) {
+            errors.push(
+              `${account.account} UID ${uid} valuation ${att.filename}: ${e instanceof Error ? e.message : String(e)}`,
+            )
           }
-          if (valuationAttachments.length > 0 && parseRecordIdx >= 0) {
-            parseRecords[parseRecordIdx].valuationStatus = valuationNavSaved ? "成功" : "失败"
+        }
+
+        if (!valuationSavedForEmail && hasValuation(subject, attachments)) {
+          const bodyExtracted = extractValuationFromEmailBody(bodyText, subject)
+          if (bodyExtracted) {
+            valuationSavedForEmail = true
+            valuationRecords.push({
+              ...emailMeta,
+              attachmentFilename: "",
+              productCode: bodyExtracted.productCode,
+              fundName: bodyExtracted.fundName,
+              valuationDate: bodyExtracted.valuationDate,
+              unitNav: bodyExtracted.unitNav,
+              cumulativeNav: bodyExtracted.cumulativeNav,
+              custodyBalance: bodyExtracted.custodyBalance,
+              netAssetValue: bodyExtracted.netAssetValue,
+              totalAsset: bodyExtracted.totalAsset,
+              totalLiability: bodyExtracted.totalLiability,
+              netAsset: bodyExtracted.netAssetValue,
+              underlyingHoldings: bodyExtracted.underlyingHoldings,
+              holdingsCount: bodyExtracted.holdingsCount,
+              source: bodyExtracted.source,
+              summary: bodyExtracted.analysis.summary,
+              holdings: bodyExtracted.analysis.portfolio_data,
+            })
           }
+        }
+
+        if (hasValuation(subject, attachments) && parseRecordIdx >= 0) {
+          parseRecords[parseRecordIdx].valuationStatus = valuationSavedForEmail ? "成功" : "失败"
         }
 
         const navHistory = extractNavHistoryFromBody(subject, bodyText)
@@ -378,7 +453,7 @@ async function fetchMailbox(
     }
   }
 
-  return { parseRecords, navRecords }
+  return { parseRecords, navRecords, valuationRecords }
 }
 
 export async function fetchEmailParseRecords(options?: {
@@ -413,14 +488,16 @@ export async function fetchEmailParseRecords(options?: {
 
   const allParseRecords: Omit<EmailParseRecord, "id">[] = []
   const allNavRecords: EmailNavInsert[] = []
+  const allValuationRecords: EmailValuationInsert[] = []
   let emailsScanned = 0
 
   for (const account of accounts) {
     try {
-      const { parseRecords, navRecords } = await fetchMailbox(account, since, errors)
+      const { parseRecords, navRecords, valuationRecords } = await fetchMailbox(account, since, errors)
       emailsScanned += parseRecords.length
       allParseRecords.push(...parseRecords)
       allNavRecords.push(...navRecords)
+      allValuationRecords.push(...valuationRecords)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       errors.push(`${account.account}: ${msg}`)
@@ -436,11 +513,49 @@ export async function fetchEmailParseRecords(options?: {
     errors.push(`保存净值数据失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  let valuationSaved = 0
+  let valuationHoldingsSaved = 0
+  let valuationLatestHoldingsRefreshed = 0
+  let valuationMetricsRefreshed = 0
+  let underlyingMarketRefreshed = 0
+  try {
+    const valuationResult = await upsertEmailValuationRecords(allValuationRecords)
+    valuationSaved = valuationResult.recordsSaved
+    valuationHoldingsSaved = valuationResult.holdingsSaved
+  } catch (e) {
+    errors.push(`保存估值表数据失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  try {
+    const { refreshFundLatestValuationHoldings } = await import(
+      "@/lib/server/email-valuation-holdings-pg"
+    )
+    valuationLatestHoldingsRefreshed = await refreshFundLatestValuationHoldings()
+  } catch (e) {
+    errors.push(`刷新最新估值持仓失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  try {
+    const { refreshEmailValuationMetricsLatest } = await import(
+      "@/lib/server/email-valuation-metrics-pg"
+    )
+    const metrics = await refreshEmailValuationMetricsLatest()
+    valuationMetricsRefreshed = metrics.fundMetricsRefreshed
+    underlyingMarketRefreshed = metrics.underlyingMarketRefreshed
+  } catch (e) {
+    errors.push(`刷新估值指标快照失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   let navLatestRefreshed = 0
+  let managedProductsValuationSynced = 0
+  let fofUnderlyingMarketSynced = 0
   if (!options?.skipNavLatestRefresh) {
     try {
-      const { listCache } = await refreshManagedProductsNavAndListCache()
+      const { listCache, managedProductsValuationSynced: mpSync, fofUnderlyingMarketSynced: fofSync } =
+        await refreshManagedProductsNavAndListCache()
       navLatestRefreshed = listCache
+      managedProductsValuationSynced = mpSync
+      fofUnderlyingMarketSynced = fofSync
     } catch (e) {
       errors.push(`刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`)
     }
@@ -450,6 +565,13 @@ export async function fetchEmailParseRecords(options?: {
     emailsScanned,
     recordsFound: allParseRecords.length,
     navSaved,
+    valuationSaved,
+    valuationHoldingsSaved,
+    valuationLatestHoldingsRefreshed,
+    valuationMetricsRefreshed,
+    underlyingMarketRefreshed,
+    managedProductsValuationSynced,
+    fofUnderlyingMarketSynced,
     navLatestRefreshed,
     errors,
   }

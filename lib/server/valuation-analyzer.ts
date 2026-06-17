@@ -42,7 +42,7 @@ interface ColumnMeta {
   role: HeaderRole
 }
 
-const CODE_PATTERN = /^(科目代码|代码|合约代码|证券代码|code)$/i
+const CODE_PATTERN = /^(科目代码|科目编号|代码|合约代码|证券代码|产品代码|code)$/i
 const NAME_PATTERN = /^(科目名称|名称|合约名称|证券名称|品种名称|name)$/i
 
 function cellToString(value: unknown): string {
@@ -89,6 +89,10 @@ function parseDateText(value: unknown): string {
   const date = new Date(text)
   if (!Number.isNaN(date.getTime())) return date.toISOString().split("T")[0]
   return ""
+}
+
+function isPlausibleUnitNavValue(value: number): boolean {
+  return value > 0.05 && value < 500
 }
 
 function findHeaderRow(rows: unknown[][]): number {
@@ -138,6 +142,11 @@ function roleFromHeader(base: string, sub: string, colIdx: number, duplicateOrdi
   if (/单位成本|开仓均价|持仓均价|unitcost|avgcost/i.test(joined)) return "unit_cost"
   if (/成本占/.test(joined)) return "cost_weight"
   if (/市值占/.test(joined)) return "market_weight"
+  // 招商证券等: combined headers like 市值-本币 / 成本-本币 (sometimes with digit-scale sub-row)
+  if (/^市值[-－]?本币$/i.test(baseNorm)) return "market_value"
+  if (/^成本[-－]?本币$/i.test(baseNorm)) return "cost"
+  if (/市值/.test(joined) && /本币/.test(joined) && !/占比|增值/.test(joined)) return "market_value"
+  if (/成本/.test(joined) && /本币/.test(joined) && !/占比|增值/.test(joined)) return "cost"
   if (/市价|行情|结算价|最新价|现价|price/i.test(baseNorm)) return "price"
   if (/估值增值|浮动盈亏|未实现盈亏|valuation|pnl/i.test(baseNorm)) return "unrealized_pnl"
   if (/停牌/.test(baseNorm)) return "suspension_info"
@@ -186,16 +195,101 @@ function buildColumnMeta(rows: unknown[][], headerRowIndex: number, headerRowCou
   return columns
 }
 
+/** Prefer 市值-本币 over the first generic 市值 column (招商等双行/三行表头). */
+function marketValueColumnIndex(columns: ColumnMeta[]): number {
+  const marketCols = columns.filter((col) => col.role === "market_value")
+  if (marketCols.length === 0) {
+    const labeled = columns.find(
+      (col) => /市值/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label),
+    )
+    return labeled?.index ?? -1
+  }
+  const local = marketCols.find((col) => /本币/.test(col.label))
+  if (local) return local.index
+  return marketCols[marketCols.length - 1].index
+}
+
+function costColumnIndex(columns: ColumnMeta[]): number {
+  const costCols = columns.filter((col) => col.role === "cost")
+  if (costCols.length === 0) {
+    const labeled = columns.find(
+      (col) => /成本/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label),
+    )
+    return labeled?.index ?? -1
+  }
+  const local = costCols.find((col) => /本币/.test(col.label))
+  if (local) return local.index
+  return costCols[costCols.length - 1].index
+}
+
+function rowLocalizedAmount(row: unknown[], columns: ColumnMeta[], kind: "market_value" | "cost"): number {
+  const idx = kind === "market_value" ? marketValueColumnIndex(columns) : costColumnIndex(columns)
+  if (idx >= 0) {
+    const v = parseNumber(row[idx])
+    if (v) return v
+  }
+  for (const col of columns) {
+    const isMarket = /市值/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label)
+    const isCost = /成本/.test(col.label) && /本币/.test(col.label) && !/占比|增值/.test(col.label)
+    if ((kind === "market_value" && isMarket) || (kind === "cost" && isCost)) {
+      const v = parseNumber(row[col.index])
+      if (v) return v
+    }
+  }
+  return 0
+}
+
+export function pickRowMarketValue(row: ValuationRow): number {
+  const direct = parseNumber(row.market_value ?? row.signed_market_value)
+  if (direct) return Math.abs(direct)
+  for (const [key, val] of Object.entries(row)) {
+    if (/市值/.test(key) && /本币/.test(key) && !/占比|增值/.test(key)) {
+      const n = parseNumber(val)
+      if (n) return Math.abs(n)
+    }
+  }
+  return 0
+}
+
+export function pickRowCost(row: ValuationRow): number {
+  const direct = parseNumber(row.cost ?? row.signed_cost)
+  if (direct) return Math.abs(direct)
+  for (const [key, val] of Object.entries(row)) {
+    if (/成本/.test(key) && /本币/.test(key) && !/占比|增值/.test(key)) {
+      const n = parseNumber(val)
+      if (n) return Math.abs(n)
+    }
+  }
+  return 0
+}
+
 function extractFundName(rows: unknown[][], headerRowIndex: number, filename: string): string {
-  for (let i = 0; i < Math.min(headerRowIndex, 8); i++) {
+  for (let i = 0; i < Math.min(headerRowIndex, 12); i++) {
     const joined = (rows[i] || []).map(cellToString).filter(Boolean).join(" ")
     const parts = joined.split(/___|__|_/).map((part) => part.trim()).filter(Boolean)
-    const fund = parts.find((part) => /基金/.test(part) && !/估值表|专用表|证券投资基金估值/.test(part))
+    const fund = parts.find((part) => /基金/.test(part) && !/估值表|专用表|证券投资基金估值|管理人|托管/.test(part))
     if (fund) return fund.replace(/专用表$/, "")
+
+    const quoted = joined.match(/[""''\u201c\u201d]([^""''\u201c\u201d]*基金[^""''\u201c\u201d]*)[""''\u201c\u201d]/)
+    if (quoted?.[1] && !/估值表|管理人/.test(quoted[1])) return quoted[1].trim()
+
+    const productLine = joined.match(/(?:产品名称|基金名称)\s*[：:]\s*([^\s|]+(?:基金[^\s|]*)?)/)
+    if (productLine?.[1]) return productLine[1].trim()
   }
 
-  const fileFund = filename.match(/(?:^|_)([^_]*基金[^_]*)_/)
-  return fileFund?.[1] || "未知基金"
+  const filePatterns = [
+    /【基金估值表】([A-Z0-9]+)_([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/u,
+    /([A-Z0-9]+)_([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_(?:资产)?估值表/u,
+    /([^_]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)每日(?:产品)?(?:三|四)?级估值表/u,
+    /(?:^|_)([^_]*基金[^_]*)_/u,
+  ]
+  for (const re of filePatterns) {
+    const m = filename.match(re)
+    if (m?.[2]) return m[2]
+    if (m?.[1] && /基金/.test(m[1])) return m[1]
+  }
+
+  return "未知基金"
 }
 
 function extractSummary(rows: unknown[][], headerRowIndex: number, columns: ColumnMeta[], filename: string): ValuationSummary {
@@ -220,20 +314,26 @@ function extractSummary(rows: unknown[][], headerRowIndex: number, columns: Colu
     const code = cellToString(row[columns.find((col) => col.role === "code")?.index ?? 0])
     const name = normalizeText(row[columns.find((col) => col.role === "name")?.index ?? 1])
     const label = name || normalizeText(code)
-    const cost = parseNumber(row[columns.find((col) => col.role === "cost")?.index ?? -1])
-    const marketValue = parseNumber(row[columns.find((col) => col.role === "market_value")?.index ?? -1])
+    const costCol = costColumnIndex(columns)
+    const marketCol = marketValueColumnIndex(columns)
+    const cost = costCol >= 0 ? parseNumber(row[costCol]) : rowLocalizedAmount(row, columns, "cost")
+    const marketValue = marketCol >= 0 ? parseNumber(row[marketCol]) : rowLocalizedAmount(row, columns, "market_value")
     const value = marketValue || cost
 
     if (!label) {
       continue
     }
 
-    if (/^(基金)?资产净值$/.test(label) || /^基金资产净值$/.test(label)) {
+    if (/^(基金)?资产净值$/.test(label) || /^资产净值$/.test(label)) {
       summary.nav = value || summary.nav
-    } else if (/^(资产类合计|资产合计|资产总值)$/.test(label)) {
+    } else if (/^(资产类合计|资产合计|资产总值|资产类总计)$/.test(label)) {
       summary.total_asset = value || summary.total_asset
-    } else if (/^(负债类合计|负债合计|负债总值)$/.test(label)) {
+    } else if (/^(负债类合计|负债合计|负债总值|负债类总计)$/.test(label)) {
       summary.total_liability = Math.abs(value) || summary.total_liability
+    } else if (/^单位净值$/.test(label) && isPlausibleUnitNavValue(value)) {
+      // unit NAV handled in enrichValuationMetrics; do not store as net asset
+    } else if (/^托管户余额$|^托管账户余额$|^托管户$/.test(label)) {
+      // custody handled in enrichValuationMetrics
     }
   }
 
@@ -324,9 +424,15 @@ function isOffsetOrSummaryRow(code: string, name: string): boolean {
   const normalizedName = normalizeText(name)
   const hasContractInName = /[A-Za-z]{1,4}\d{2,5}/.test(name)
 
-  if (!code || !name) return true
+  if (!name) return true
+  if (/^(基金)?资产净值$/.test(normalizedName) || /^净资产$/.test(normalizedName)) return false
+  if (/^(资产类合计|资产合计|资产总值|资产类总计)$/.test(normalizedName)) return false
+  if (/^(负债类合计|负债合计|负债总值|负债类总计)$/.test(normalizedName)) return false
+  if (!code) return true
   if (!/^\d/.test(compactCode)) return true
-  if (/合计|小计|总计|净值|单位净值|打印日期|声明/.test(normalizedName)) return true
+  if (/合计|小计|总计|打印日期|声明/.test(normalizedName)) return true
+  if (/单位净值/.test(normalizedName)) return true
+  if (/净值/.test(normalizedName)) return true
   if (/增长率|已实现收益|可分配利润|累计派现|现金类占净值比/.test(normalizedName)) return true
   if (/冲销|冲抵|估值增值|应计利息/.test(normalizedName)) return true
   if (compactCode.startsWith("3102") && /初始合约价值/.test(name) && !hasContractInName) return true
@@ -455,21 +561,7 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
   return result
 }
 
-export function parseValuationWorkbook(buffer: Buffer, filename: string): ValuationAnalysis {
-  const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true })
-  const sheetName =
-    workbook.SheetNames.find((name) => /估值|持仓|valuation|portfolio/i.test(name)) ??
-    workbook.SheetNames[0]
-
-  if (!sheetName) throw new Error("工作簿中没有可用的工作表。")
-
-  const sheet = workbook.Sheets[sheetName]
-  const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, {
-    header: 1,
-    defval: null,
-    raw: false,
-  })
-
+export function parseValuationRows(rows: unknown[][], filename: string): ValuationAnalysis {
   const headerRowIndex = findHeaderRow(rows)
   const headerRowCount = countHeaderRows(rows, headerRowIndex)
   const columns = buildColumnMeta(rows, headerRowIndex, headerRowCount)
@@ -477,4 +569,50 @@ export function parseValuationWorkbook(buffer: Buffer, filename: string): Valuat
   const portfolioData = rowsToObjects(rows, headerRowIndex, headerRowCount, columns)
 
   return { portfolio_data: portfolioData, summary }
+}
+
+function scoreValuationAnalysis(analysis: ValuationAnalysis): number {
+  const detailRows = analysis.portfolio_data.filter((row) => row.include_in_detail)
+  const holdingsScore = detailRows.length > 0 ? detailRows.length : analysis.portfolio_data.length
+  const summaryScore =
+    (analysis.summary.nav > 0 ? 10 : 0) +
+    (analysis.summary.total_asset > 0 ? 5 : 0)
+  return holdingsScore + summaryScore
+}
+
+export function parseValuationWorkbook(buffer: Buffer, filename: string): ValuationAnalysis {
+  const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true })
+  if (workbook.SheetNames.length === 0) throw new Error("工作簿中没有可用的工作表。")
+
+  const orderedSheets = [
+    ...workbook.SheetNames.filter((name) => /估值|持仓|valuation|portfolio/i.test(name)),
+    ...workbook.SheetNames.filter((name) => !/估值|持仓|valuation|portfolio/i.test(name)),
+  ]
+
+  let best: ValuationAnalysis | null = null
+  let bestScore = -1
+
+  for (const sheetName of orderedSheets) {
+    try {
+      const sheet = workbook.Sheets[sheetName]
+      const rows: unknown[][] = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        defval: null,
+        raw: false,
+      })
+      if (rows.length < 3) continue
+
+      const analysis = parseValuationRows(rows, filename)
+      const score = scoreValuationAnalysis(analysis)
+      if (score > bestScore) {
+        best = analysis
+        bestScore = score
+      }
+    } catch {
+      // try next sheet
+    }
+  }
+
+  if (!best) throw new Error("工作簿中没有可用的工作表。")
+  return best
 }
