@@ -163,9 +163,9 @@ export async function GET(req: Request) {
       }
 
       if (runStatus === "running") {
-        conditions.push(`COALESCE(cache.net_asset_value, m.net_asset_value, 0) > 0`)
+        conditions.push(`(COALESCE(cache.net_asset_value, m.net_asset_value) IS NULL OR COALESCE(cache.net_asset_value, m.net_asset_value) > 0)`)
       } else if (runStatus === "liquidated") {
-        conditions.push(`COALESCE(cache.net_asset_value, m.net_asset_value, 0) <= 0`)
+        conditions.push(`(COALESCE(cache.net_asset_value, m.net_asset_value) IS NOT NULL AND COALESCE(cache.net_asset_value, m.net_asset_value) <= 0)`)
       }
 
       if (teamTags.length > 0) {
@@ -263,9 +263,9 @@ export async function GET(req: Request) {
       pi++
     }
     if (runStatus === "running") {
-      conditions.push(`COALESCE(m.net_asset_value, 0) > 0`)
+      conditions.push(`(m.net_asset_value IS NULL OR m.net_asset_value > 0)`)
     } else if (runStatus === "liquidated") {
-      conditions.push(`COALESCE(m.net_asset_value, 0) <= 0`)
+      conditions.push(`(m.net_asset_value IS NOT NULL AND m.net_asset_value <= 0)`)
     }
     if (teamTags.length > 0) {
       if (teamTagMode === "or") {

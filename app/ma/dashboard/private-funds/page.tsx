@@ -11273,6 +11273,20 @@ function OperationsManagedProductsView() {
   const [showManagedFieldConfig, setShowManagedFieldConfig] = useState(false)
   const [managedFieldConfigSelected, setManagedFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
   const [showManagedAuditLog, setShowManagedAuditLog] = useState(false)
+  const [showManagedAddMenu, setShowManagedAddMenu] = useState(false)
+  const [showManagedSingleAddDialog, setShowManagedSingleAddDialog] = useState(false)
+  const [addManagedFundSearch, setAddManagedFundSearch] = useState("")
+  const [addManagedFundSelected, setAddManagedFundSelected] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [addManagedFundResults, setAddManagedFundResults] = useState<{ beian_hao: string; product_name: string; short_name: string | null; strategy_one: string | null }[]>([])
+  const [addManagedFundShowDropdown, setAddManagedFundShowDropdown] = useState(false)
+  const [addManagedFundLoading, setAddManagedFundLoading] = useState(false)
+  const [addManagedFundSaving, setAddManagedFundSaving] = useState(false)
+  const [addManagedFundError, setAddManagedFundError] = useState<string | null>(null)
+  const [managedDataReloadKey, setManagedDataReloadKey] = useState(0)
+  const [managedRemoveDialog, setManagedRemoveDialog] = useState<{ id: string; product_name: string } | null>(null)
+  const [managedRemoveSaving, setManagedRemoveSaving] = useState(false)
+  const [managedRemoveError, setManagedRemoveError] = useState<string | null>(null)
+  const addManagedFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [managedElementsDialog, setManagedElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [managedPermissionDialog, setManagedPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [managedNoteDialog, setManagedNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -11321,7 +11335,43 @@ function OperationsManagedProductsView() {
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, strategySource, strategyL1, teamTagMode, teamTags, runStatus, keyword, sortKey, sortDir])
+  }, [page, pageSize, strategySource, strategyL1, teamTagMode, teamTags, runStatus, keyword, sortKey, sortDir, managedDataReloadKey])
+
+  useEffect(() => {
+    if (!showManagedSingleAddDialog) return
+    if (!addManagedFundSearch.trim()) {
+      setAddManagedFundResults([])
+      setAddManagedFundShowDropdown(false)
+      return
+    }
+    if (addManagedFundSearchRef.current) clearTimeout(addManagedFundSearchRef.current)
+    addManagedFundSearchRef.current = setTimeout(async () => {
+      setAddManagedFundLoading(true)
+      try {
+        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(addManagedFundSearch.trim())}`)
+        const json = await res.json()
+        setAddManagedFundResults(Array.isArray(json) ? json : [])
+        setAddManagedFundShowDropdown(true)
+      } catch {
+        setAddManagedFundResults([])
+      } finally {
+        setAddManagedFundLoading(false)
+      }
+    }, 250)
+    return () => {
+      if (addManagedFundSearchRef.current) clearTimeout(addManagedFundSearchRef.current)
+    }
+  }, [addManagedFundSearch, showManagedSingleAddDialog])
+
+  function openManagedSingleAddDialog() {
+    setShowManagedAddMenu(false)
+    setAddManagedFundSearch("")
+    setAddManagedFundSelected(null)
+    setAddManagedFundResults([])
+    setAddManagedFundShowDropdown(false)
+    setAddManagedFundError(null)
+    setShowManagedSingleAddDialog(true)
+  }
 
   function toggleTeamTag(tag: string) {
     setTeamTags((prev) => prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag])
@@ -11537,9 +11587,38 @@ function OperationsManagedProductsView() {
           批量操作
           {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
         </button>
-        <button className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors">
-          添加产品
-        </button>
+        <div className="relative">
+          <button
+            onClick={() => setShowManagedAddMenu((v) => !v)}
+            className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors"
+          >
+            添加产品
+          </button>
+          {showManagedAddMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setShowManagedAddMenu(false)} />
+              <div
+                className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[100px]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  onClick={openManagedSingleAddDialog}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  单只添加
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowManagedAddMenu(false)}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  批量添加
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="overflow-auto rounded-lg border flex-1 min-h-0">
@@ -11648,7 +11727,15 @@ function OperationsManagedProductsView() {
                           icon: RefreshCw,
                           onClick: () => setManagedSyncNavDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
                         }]}
-                        footerItems={[{ label: "移出列表", icon: MinusCircle, destructive: true }]}
+                        footerItems={[{
+                          label: "移出列表",
+                          icon: MinusCircle,
+                          destructive: true,
+                          onClick: () => {
+                            setManagedRemoveError(null)
+                            setManagedRemoveDialog({ id: row.id, product_name: row.product_name })
+                          },
+                        }]}
                       />
                     </div>
                   </td>
@@ -11743,6 +11830,199 @@ function OperationsManagedProductsView() {
         product_name={managedScaleDialog?.product_name ?? ""}
         onClose={() => setManagedScaleDialog(null)}
       />
+
+      {showManagedSingleAddDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowManagedSingleAddDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">添加在管产品</span>
+              <button type="button" onClick={() => setShowManagedSingleAddDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5">
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[4.5rem] text-right pt-2"><span className="text-red-500 mr-0.5">*</span>选择基金：</span>
+                <div className="flex flex-1 flex-col gap-0 relative">
+                  {addManagedFundSelected ? (
+                    <div className="flex items-center justify-between border rounded px-3 h-9">
+                      <div className="flex flex-col leading-tight min-w-0">
+                        <span className="text-sm font-medium truncate">{addManagedFundSelected.product_name}</span>
+                        <span className="text-xs text-muted-foreground truncate">{addManagedFundSelected.beian_hao}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { setAddManagedFundSelected(null); setAddManagedFundSearch(""); setAddManagedFundShowDropdown(false) }}
+                        className="text-muted-foreground hover:text-foreground text-base leading-none ml-2 shrink-0"
+                      >×</button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center border rounded px-3 h-9 gap-2">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={addManagedFundSearch}
+                        onChange={(e) => { setAddManagedFundSearch(e.target.value); setAddManagedFundSelected(null) }}
+                        onFocus={() => { if (addManagedFundResults.length > 0) setAddManagedFundShowDropdown(true) }}
+                        placeholder="搜索并选择基金，支持基金名称/备案编号"
+                        className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/50"
+                      />
+                      {addManagedFundLoading
+                        ? <svg className="h-3.5 w-3.5 animate-spin text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round"/></svg>
+                        : <ChevronDown className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                      }
+                    </div>
+                  )}
+                  {addManagedFundShowDropdown && addManagedFundResults.length > 0 && !addManagedFundSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                      {addManagedFundResults.map((r) => (
+                        <button
+                          key={r.beian_hao}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setAddManagedFundSelected({ beian_hao: r.beian_hao, product_name: r.product_name })
+                            setAddManagedFundSearch("")
+                            setAddManagedFundShowDropdown(false)
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-muted transition-colors flex items-center justify-between gap-3"
+                        >
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm truncate">{r.product_name}</span>
+                            <span className="text-xs text-muted-foreground truncate">{r.beian_hao}{r.short_name ? ` · ${r.short_name}` : ""}</span>
+                          </div>
+                          {r.strategy_one && (
+                            <span className="text-xs text-zinc-400 shrink-0 border rounded px-1 py-0.5">{r.strategy_one}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {addManagedFundShowDropdown && addManagedFundResults.length === 0 && !addManagedFundLoading && addManagedFundSearch.trim() && !addManagedFundSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl px-4 py-3 text-sm text-muted-foreground">
+                      未找到匹配的基金
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 px-6 py-4 border-t flex-shrink-0">
+              {addManagedFundError && (
+                <p className="text-xs text-red-500 text-right">
+                  {addManagedFundError === "already_exists"
+                    ? "该基金已在在管产品列表中"
+                    : addManagedFundError === "permission_denied"
+                      ? "添加失败：数据库账号无写入权限，请联系管理员执行 scripts/db/008_grant_managed_products_write.sql"
+                      : `添加失败：${addManagedFundError}`}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowManagedSingleAddDialog(false)}
+                  disabled={addManagedFundSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  取 消
+                </button>
+                <button
+                  type="button"
+                  disabled={!addManagedFundSelected || addManagedFundSaving}
+                  onClick={async () => {
+                    if (!addManagedFundSelected) return
+                    setAddManagedFundSaving(true)
+                    setAddManagedFundError(null)
+                    try {
+                      const res = await fetch("/ma/api/ops/managed-products/add", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          beian_hao: addManagedFundSelected.beian_hao,
+                          product_name: addManagedFundSelected.product_name,
+                        }),
+                      })
+                      const json = await res.json()
+                      if (!res.ok) {
+                        setAddManagedFundError(json.error || "unknown")
+                        return
+                      }
+                      setShowManagedSingleAddDialog(false)
+                      setManagedDataReloadKey((k) => k + 1)
+                    } catch {
+                      setAddManagedFundError("network_error")
+                    } finally {
+                      setAddManagedFundSaving(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {addManagedFundSaving ? "保存中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {managedRemoveDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => !managedRemoveSaving && setManagedRemoveDialog(null)}>
+          <div className="bg-background rounded-lg shadow-xl w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 flex-shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div>
+                <p className="font-semibold text-sm mb-1">移出在管产品</p>
+                <p className="text-sm text-zinc-500">确定要将「{managedRemoveDialog.product_name}」从在管产品列表中移出吗？</p>
+              </div>
+            </div>
+            {managedRemoveError && (
+              <p className="text-xs text-red-500 mb-3 text-right">
+                {managedRemoveError === "permission_denied"
+                  ? "移出失败：数据库账号无写入权限"
+                  : managedRemoveError === "not_found"
+                    ? "该产品不存在或已被移出"
+                    : `移出失败：${managedRemoveError}`}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setManagedRemoveDialog(null)}
+                disabled={managedRemoveSaving}
+                className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                取 消
+              </button>
+              <button
+                type="button"
+                disabled={managedRemoveSaving}
+                onClick={async () => {
+                  setManagedRemoveSaving(true)
+                  setManagedRemoveError(null)
+                  try {
+                    const res = await fetch("/ma/api/ops/managed-products/remove", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ id: managedRemoveDialog.id }),
+                    })
+                    const json = await res.json()
+                    if (!res.ok) {
+                      setManagedRemoveError(json.error || "unknown")
+                      return
+                    }
+                    setManagedRemoveDialog(null)
+                    setManagedDataReloadKey((k) => k + 1)
+                  } catch {
+                    setManagedRemoveError("network_error")
+                  } finally {
+                    setManagedRemoveSaving(false)
+                  }
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {managedRemoveSaving ? "处理中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
