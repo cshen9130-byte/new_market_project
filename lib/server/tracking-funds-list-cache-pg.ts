@@ -234,7 +234,7 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
     const teamTags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
 
     placeholders.push(
-      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}, $${pi + 17}, $${pi + 18}, $${pi + 19}, $${pi + 20}::jsonb, $${pi + 21}::jsonb, $${pi + 22}::date, NOW())`,
+      `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}, $${pi + 17}, $${pi + 18}, $${pi + 19}::jsonb, $${pi + 20}::jsonb, $${pi + 21}::date, NOW())`,
     )
     values.push(
       row.beian_hao,
@@ -260,7 +260,7 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
       teamTags,
       asOfDate,
     )
-    pi += 23
+    pi += 22
   }
 
   logProgress("writing cache table…")
@@ -278,7 +278,7 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
     "",
     placeholders,
     values,
-    23,
+    22,
   )
 
   logProgress(`done — ${funds.length} rows`)
