@@ -10671,6 +10671,7 @@ function OperationsFofUnderlyingView() {
     if (sortKey) params.set("sort", sortKey)
     if (strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
     else if (strategyL1) params.set("strategy_l1", strategyL1)
+    if (fofFundSelected?.register_number) params.set("fof_register_number", fofFundSelected.register_number)
     fetch(`/ma/api/ops/fof-underlying/list?${params}`)
       .then((r) => r.json())
       .then((json) => {

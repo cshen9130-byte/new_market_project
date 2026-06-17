@@ -9,11 +9,22 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
+import {
+  ensureFofOverviewListCachePopulated,
+  useFofOverviewListCache,
+} from "@/lib/server/fof-overview-list-cache-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 const ALLOWED_SORT: Record<string, string> = {
+  product_name: "f.product_name",
+  latest_nav: "cache.unit_nav",
+  latest_nav_date: "cache.nav_date",
+  latest_price_change: "cache.return_pct",
+}
+
+const ALLOWED_SORT_SLOW: Record<string, string> = {
   product_name: "f.product_name",
   latest_nav: "f.latest_unit_nav",
   latest_nav_date: "f.latest_nav_date",
@@ -33,11 +44,34 @@ interface FofRow {
   valuation_date: string | null
 }
 
-function buildFofUnderlyingBaseFrom(productNameExpr: string): string {
-  return buildFofUnderlyingSummaryFrom(productNameExpr)
-}
-
 const BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
+const PRODUCT_EXPR = "f.product_name"
+const SHORT_EXPR = fofUnderlyingShortExpr(PRODUCT_EXPR)
+
+function mapRow(r: {
+  id: string
+  beian_hao: string | null
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  latest_unit_nav: string | null
+  latest_nav_date: string | Date | null
+  latest_return_pct: string | null
+}): FofRow {
+  const navDate = r.latest_nav_date ? fmtIso(r.latest_nav_date) : null
+  return {
+    id: r.id,
+    beian_hao: r.beian_hao,
+    product_name: r.product_name,
+    short_name: r.short_name,
+    strategy_l1: r.strategy_l1,
+    latest_nav: r.latest_unit_nav,
+    latest_nav_date: navDate,
+    latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
+    nav_estimated: r.latest_unit_nav != null,
+    valuation_date: navDate,
+  }
+}
 
 export async function GET(req: Request) {
   try {
@@ -49,13 +83,107 @@ export async function GET(req: Request) {
     const strategySource = searchParams.get("strategy_source") === "platform" ? "platform" : "company"
     const strategyL1 = (searchParams.get("strategy_l1") || "").trim()
     const holdingStatus = searchParams.get("holding_status") || "holding"
+    const fofRegister = (searchParams.get("fof_register_number") || "").trim()
     const sortParam = searchParams.get("sort") || ""
-    const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
-    const sortCol = sortKey === "sequence_no" ? "f.sequence_no" : ALLOWED_SORT[sortKey]
+    const cutoffRaw = (searchParams.get("cutoff") || "").trim()
+    const hasCutoff = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
+    const useCache = useFofOverviewListCache(cutoffRaw)
 
+    // ─── FAST PATH — precomputed nightly cache, instant page load ───────────
+    if (useCache) {
+      await ensureFofOverviewListCachePopulated()
+
+      const stratCol = strategySource === "platform"
+        ? "cache.platform_strategy_l1"
+        : "cache.company_strategy_l1"
+      const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
+      const sortCol = sortKey === "sequence_no" ? "f.sequence_no" : ALLOWED_SORT[sortKey]
+
+      const conditions: string[] = ["f.product_name <> '合计'"]
+      const params: unknown[] = []
+      let pi = 1
+
+      if (keyword) {
+        conditions.push(`(f.product_name ILIKE $${pi} OR cache.beian_hao ILIKE $${pi})`)
+        params.push(`%${keyword}%`)
+        pi++
+      }
+
+      if (strategyL1 === "__unconfigured__") {
+        conditions.push(`${stratCol} IS NULL`)
+      } else if (strategyL1) {
+        conditions.push(`${stratCol} = $${pi}`)
+        params.push(strategyL1)
+        pi++
+      }
+
+      if (holdingStatus === "holding") {
+        conditions.push(`COALESCE(f.market_value, 0) > 0`)
+      } else if (holdingStatus === "cleared") {
+        conditions.push(`COALESCE(f.market_value, 0) <= 0`)
+      }
+
+      if (fofRegister) {
+        conditions.push(`f.fof_fund_name = (SELECT product_name FROM fof_mom_tracking WHERE register_number = $${pi} LIMIT 1)`)
+        params.push(fofRegister)
+        pi++
+      }
+
+      const where = conditions.join(" AND ")
+      const baseFrom = `
+        FROM fof_underlying_summary f
+        INNER JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
+      `
+
+      const countRows = await query<{ n: string }>(
+        `SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`,
+        params,
+      )
+      const total = parseInt(countRows[0]?.n || "0", 10)
+
+      const rows = await query<{
+        id: string
+        beian_hao: string | null
+        product_name: string
+        short_name: string | null
+        strategy_l1: string | null
+        latest_unit_nav: string | null
+        latest_nav_date: string | null
+        latest_return_pct: string | null
+        sequence_no: number | null
+      }>(
+        `SELECT
+           f.id::text                           AS id,
+           f.sequence_no,
+           cache.beian_hao,
+           f.product_name,
+           cache.short_name,
+           ${stratCol}                          AS strategy_l1,
+           cache.unit_nav::text                 AS latest_unit_nav,
+           cache.nav_date::text                 AS latest_nav_date,
+           cache.return_pct::text               AS latest_return_pct
+         ${baseFrom}
+         WHERE ${where}
+         ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC
+         LIMIT $${pi} OFFSET $${pi + 1}`,
+        [...params, pageSize, offset],
+      )
+
+      return NextResponse.json({
+        data: rows.map(mapRow),
+        total,
+        page,
+        pageSize,
+        totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      })
+    }
+
+    // ─── SLOW PATH — historical cutoff, recompute on the fly ────────────────
     const strategyCol = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
+    const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "sequence_no"
+    const sortCol = sortKey === "sequence_no" ? "f.sequence_no" : ALLOWED_SORT_SLOW[sortKey]
 
     const conditions: string[] = ["f.product_name <> '合计'"]
     const params: unknown[] = []
@@ -84,8 +212,14 @@ export async function GET(req: Request) {
       conditions.push(`COALESCE(f.market_value, 0) <= 0`)
     }
 
+    if (fofRegister) {
+      conditions.push(`f.fof_fund_name = (SELECT product_name FROM fof_mom_tracking WHERE register_number = $${pi} LIMIT 1)`)
+      params.push(fofRegister)
+      pi++
+    }
+
     const where = conditions.join(" AND ")
-    const baseFrom = buildFofUnderlyingBaseFrom("f.product_name")
+    const baseFrom = buildFofUnderlyingSummaryFrom(PRODUCT_EXPR)
 
     const countRows = await query<{ n: string }>(
       `SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`,
@@ -93,13 +227,16 @@ export async function GET(req: Request) {
     )
     const total = parseInt(countRows[0]?.n || "0", 10)
 
-    const productExpr = "f.product_name"
-    const shortExpr = fofUnderlyingShortExpr(productExpr)
-    const cutoffExpr = "CURRENT_DATE"
+    const listParams = [...params]
+    let cutoffExpr = "CURRENT_DATE"
+    if (hasCutoff) {
+      listParams.push(cutoffRaw)
+      cutoffExpr = `$${listParams.length}::date`
+    }
     const fallbackNavExpr = "f.latest_unit_nav::numeric"
     const fallbackDateExpr = "f.latest_nav_date"
     const fallbackPctExpr = "f.latest_return_pct::numeric / 100"
-    const emailNavJoins = buildEmailNavLatestJoins(BEIAN_EXPR, productExpr, shortExpr, cutoffExpr)
+    const emailNavJoins = buildEmailNavLatestJoins(BEIAN_EXPR, PRODUCT_EXPR, SHORT_EXPR, cutoffExpr)
     const { navExpr: currentNavExpr, dateExpr: currentDateExpr, pctExpr: currentPctExpr } =
       buildEmailNavLatestExprs(fallbackNavExpr, fallbackDateExpr, fallbackPctExpr)
 
@@ -126,25 +263,12 @@ export async function GET(req: Request) {
        ${emailNavJoins}
        WHERE ${where}
        ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC
-       LIMIT $${pi} OFFSET $${pi + 1}`,
-      [...params, pageSize, offset],
+       LIMIT $${listParams.length + 1} OFFSET $${listParams.length + 2}`,
+      [...listParams, pageSize, offset],
     )
 
-    const data: FofRow[] = rows.map((r) => ({
-      id: r.id,
-      beian_hao: r.beian_hao,
-      product_name: r.product_name,
-      short_name: r.short_name,
-      strategy_l1: r.strategy_l1,
-      latest_nav: r.latest_unit_nav,
-      latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
-      latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
-      nav_estimated: r.latest_unit_nav != null,
-      valuation_date: null,
-    }))
-
     return NextResponse.json({
-      data,
+      data: rows.map(mapRow),
       total,
       page,
       pageSize,
