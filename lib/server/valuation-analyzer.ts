@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx"
+import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 
 export interface ValuationRow {
   code: string
@@ -519,15 +520,6 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
       continue
     }
 
-    const symbol = extractContractSymbol(obj.code, obj.name)
-    if (symbol) obj.symbol = symbol
-
-    if (normalizeSubjectCode(obj.code).startsWith("3102")) {
-      obj.direction = Number(obj.signed_market_value ?? obj.signed_cost ?? 0) < 0 ? "short" : "long"
-      obj.exchange = inferExchange(obj.original_code as string, symbol)
-      obj.asset_class = inferAssetClass(symbol, obj.name)
-    }
-
     obj.code = normalizeSubjectCode(obj.code)
 
     result.push(obj)
@@ -543,6 +535,17 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
 
     row.row_kind = rowKind
     row.is_leaf = isLeaf
+
+    if (rowKind === "derivative") {
+      const symbol = extractContractSymbol(code, row.name)
+      if (symbol) row.symbol = symbol
+      row.direction = Number(row.signed_market_value ?? row.signed_cost ?? 0) < 0 ? "short" : "long"
+      row.exchange = inferExchange(String(row.original_code ?? code), symbol)
+      row.asset_class = inferAssetClass(symbol, row.name)
+    } else if (["private_fund", "fund", "money_fund", "fund_or_stock"].includes(rowKind)) {
+      const fundCode = resolveFundHoldingCode(code, String(row.name ?? ""), null)
+      if (fundCode) row.symbol = fundCode
+    }
     if (!row.direction) {
       row.direction = Number(row.signed_market_value ?? row.signed_cost ?? 0) < 0 || rowKind === "payable" ? "short" : "long"
     }

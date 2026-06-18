@@ -11,6 +11,7 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
 } from "@/lib/server/fof-underlying-query"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import { backfillFundHoldingSymbols } from "@/lib/server/fund-holding-code"
 
 /** Managed products excluded from FOF underlying extraction (non-FOF). */
 export const MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN = "%恒盈2号%"
@@ -84,16 +85,14 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
        )`,
   )
 
+  await backfillFundHoldingSymbols()
+
   await query(`DELETE FROM ops_managed_fof_underlying`)
 
   const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
   const productExpr = "m.product_name"
   const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
-  const underlyingKey = `COALESCE(
-    NULLIF(BTRIM(h.symbol), ''),
-    NULLIF((regexp_match(h.subject_name, '([A-Z0-9]{4,8})'))[1], ''),
-    TRIM(h.subject_name)
-  )`
+  const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
 
   const rows = await query<{ n: string }>(
     `WITH managed_fof AS (
@@ -126,10 +125,7 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
          lv.fof_product_code,
          lv.valuation_date,
          lv.valuation_record_id,
-         COALESCE(
-           NULLIF(BTRIM(h.symbol), ''),
-           NULLIF((regexp_match(h.subject_name, '([A-Z0-9]{4,8})'))[1], '')
-         ) AS underlying_product_code,
+         NULLIF(BTRIM(UPPER(h.symbol)), '') AS underlying_product_code,
          h.subject_name AS underlying_name,
          h.subject_code,
          CASE
@@ -151,6 +147,8 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
            'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
            'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
          )
+         AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
+         AND BTRIM(h.symbol) ~ '^[A-Za-z0-9]+$'
          AND (
            h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
            OR h.subject_code LIKE '1109%'

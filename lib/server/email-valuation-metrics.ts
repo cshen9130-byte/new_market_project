@@ -5,6 +5,7 @@
 
 import type { ValuationAnalysis, ValuationRow, ValuationSummary } from "@/lib/server/valuation-analyzer"
 import { pickRowCost, pickRowMarketValue } from "@/lib/server/valuation-analyzer"
+import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 
 export type EnrichedValuationSummary = ValuationSummary & {
   unit_nav: number
@@ -239,22 +240,12 @@ function resolveNetAssetValue(summary: ValuationAnalysis["summary"], rows: Valua
   return 0
 }
 
-/** Extract product code like SBNX55 from underlying fund holding name/code. */
+/** Extract product code like TA891A (uppercase, with share class) from underlying fund holding. */
 export function extractUnderlyingProductCode(row: ValuationRow): string | null {
   const name = String(row.name ?? "")
   const code = String(row.original_code ?? row.code ?? "")
-
-  const patterns = [
-    /[-_—]([A-Z0-9]{4,8})(?:类|[ABC])?(?:私募|$)/u,
-    /[（(【\[]([A-Z0-9]{4,8})[）)】\]]/u,
-    /\b([A-Z]{1,2}[A-Z0-9]{3,6})\b/,
-    /([A-Z0-9]{4,8})_(?:\d级)?(?:资产)?估值表/u,
-  ]
-  for (const re of patterns) {
-    const m = name.match(re) ?? code.match(re)
-    if (m?.[1] && /^[A-Z0-9]{4,8}$/.test(m[1])) return m[1]
-  }
-  return null
+  const existing = row.symbol != null ? String(row.symbol) : null
+  return resolveFundHoldingCode(code, name, existing)
 }
 
 export function enrichValuationMetrics(analysis: ValuationAnalysis): {

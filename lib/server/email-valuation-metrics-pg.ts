@@ -6,6 +6,7 @@ import { query } from "@/lib/db"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
 import { ensureEmailValuationHoldingsTables } from "@/lib/server/email-valuation-holdings-pg"
 import type { FofUnderlyingMetric } from "@/lib/server/email-valuation-metrics"
+import { backfillFundHoldingSymbols } from "@/lib/server/fund-holding-code"
 
 const CREATE_FUND_METRICS_SQL = `
   CREATE TABLE IF NOT EXISTS ops_email_valuation_fund_metrics_latest (
@@ -169,6 +170,8 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
        )`,
   )
 
+  await backfillFundHoldingSymbols()
+
   await query(`DELETE FROM ops_email_valuation_fund_metrics_latest`)
 
   const fundRows = await query<{ n: string }>(
@@ -233,13 +236,7 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
          lf.fof_fund_name,
          lf.valuation_date,
          lf.valuation_record_id,
-         COALESCE(
-           NULLIF(TRIM(h.symbol), ''),
-           NULLIF(
-             (regexp_match(h.subject_name, '([A-Z0-9]{4,8})'))[1],
-             ''
-           )
-         ),
+         NULLIF(TRIM(UPPER(h.symbol)), ''),
          h.subject_name,
          h.subject_code,
          h.row_kind,
