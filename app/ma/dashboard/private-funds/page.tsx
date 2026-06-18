@@ -11369,6 +11369,10 @@ function OperationsManagedProductsView() {
   const [managedBatchAddChecked, setManagedBatchAddChecked] = useState<Set<string>>(new Set())
   const [managedBatchAddSaving, setManagedBatchAddSaving] = useState(false)
   const [managedBatchAddError, setManagedBatchAddError] = useState<string | null>(null)
+  const [showManagedCreateDialog, setShowManagedCreateDialog] = useState(false)
+  const [managedCreateName, setManagedCreateName] = useState("")
+  const [managedCreateSaving, setManagedCreateSaving] = useState(false)
+  const [managedCreateError, setManagedCreateError] = useState<string | null>(null)
   const addManagedFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [managedElementsDialog, setManagedElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [managedPermissionDialog, setManagedPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -11454,6 +11458,13 @@ function OperationsManagedProductsView() {
     setAddManagedFundShowDropdown(false)
     setAddManagedFundError(null)
     setShowManagedSingleAddDialog(true)
+  }
+
+  function openManagedCreateDialog() {
+    setShowManagedAddMenu(false)
+    setManagedCreateName("")
+    setManagedCreateError(null)
+    setShowManagedCreateDialog(true)
   }
 
   function toggleTeamTag(tag: string) {
@@ -11690,6 +11701,13 @@ function OperationsManagedProductsView() {
                   className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
                 >
                   单只添加
+                </button>
+                <button
+                  type="button"
+                  onClick={openManagedCreateDialog}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  新建产品
                 </button>
                 <button
                   type="button"
@@ -11981,7 +11999,7 @@ function OperationsManagedProductsView() {
                   )}
                   {addManagedFundShowDropdown && addManagedFundResults.length === 0 && !addManagedFundLoading && addManagedFundSearch.trim() && !addManagedFundSelected && (
                     <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl px-4 py-3 text-sm text-muted-foreground">
-                      未找到匹配的基金
+                      未找到匹配的基金，可尝试「新建产品」
                     </div>
                   )}
                 </div>
@@ -12038,6 +12056,81 @@ function OperationsManagedProductsView() {
                   className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {addManagedFundSaving ? "保存中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showManagedCreateDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowManagedCreateDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">新建产品</span>
+              <button type="button" onClick={() => setShowManagedCreateDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5">
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-20 text-right pt-2"><span className="text-red-500 mr-0.5">*</span>产品名称：</span>
+                <div className="flex-1">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={managedCreateName}
+                    onChange={(e) => setManagedCreateName(e.target.value)}
+                    placeholder="输入产品名称，后续可通过邮件提取补充数据"
+                    className="w-full h-9 border rounded px-3 text-sm bg-background outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/50"
+                  />
+                  <p className="text-xs text-muted-foreground mt-2 leading-relaxed">
+                    将创建一条空白在管产品记录，备案号、净值等字段可稍后通过邮件提取自动填充。
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 px-6 py-4 border-t flex-shrink-0">
+              {managedCreateError && (
+                <p className="text-xs text-red-500 text-right">
+                  {managedCreateError === "already_exists" ? "该产品名称已存在" : `创建失败：${managedCreateError}`}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowManagedCreateDialog(false)}
+                  disabled={managedCreateSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  取 消
+                </button>
+                <button
+                  type="button"
+                  disabled={!managedCreateName.trim() || managedCreateSaving}
+                  onClick={async () => {
+                    setManagedCreateSaving(true)
+                    setManagedCreateError(null)
+                    try {
+                      const res = await fetch("/ma/api/ops/managed-products/add", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ product_name: managedCreateName.trim() }),
+                      })
+                      const json = await res.json()
+                      if (!res.ok) {
+                        setManagedCreateError(json.error || "unknown")
+                        return
+                      }
+                      setShowManagedCreateDialog(false)
+                      setManagedDataReloadKey((k) => k + 1)
+                    } catch {
+                      setManagedCreateError("network_error")
+                    } finally {
+                      setManagedCreateSaving(false)
+                    }
+                  }}
+                  className="px-4 py-2 text-sm rounded bg-red-500 hover:bg-red-600 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {managedCreateSaving ? "创建中…" : "确 定"}
                 </button>
               </div>
             </div>

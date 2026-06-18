@@ -41,6 +41,7 @@ export type EmailParseFetchResult = {
   valuationLatestHoldingsRefreshed: number
   valuationMetricsRefreshed: number
   underlyingMarketRefreshed: number
+  managedFofUnderlyingRefreshed: number
   managedProductsValuationSynced: number
   fofUnderlyingMarketSynced: number
   navLatestRefreshed: number
@@ -518,6 +519,7 @@ export async function fetchEmailParseRecords(options?: {
   let valuationLatestHoldingsRefreshed = 0
   let valuationMetricsRefreshed = 0
   let underlyingMarketRefreshed = 0
+  let managedFofUnderlyingRefreshed = 0
   try {
     const valuationResult = await upsertEmailValuationRecords(allValuationRecords)
     valuationSaved = valuationResult.recordsSaved
@@ -546,6 +548,13 @@ export async function fetchEmailParseRecords(options?: {
     errors.push(`刷新估值指标快照失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  try {
+    const { refreshManagedFofUnderlying } = await import("@/lib/server/managed-fof-underlying-pg")
+    managedFofUnderlyingRefreshed = await refreshManagedFofUnderlying()
+  } catch (e) {
+    errors.push(`刷新在管产品FOF底层持仓失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   let navLatestRefreshed = 0
   let managedProductsValuationSynced = 0
   let fofUnderlyingMarketSynced = 0
@@ -570,6 +579,7 @@ export async function fetchEmailParseRecords(options?: {
     valuationLatestHoldingsRefreshed,
     valuationMetricsRefreshed,
     underlyingMarketRefreshed,
+    managedFofUnderlyingRefreshed,
     managedProductsValuationSynced,
     fofUnderlyingMarketSynced,
     navLatestRefreshed,

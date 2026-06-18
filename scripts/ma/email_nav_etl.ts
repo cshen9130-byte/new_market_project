@@ -44,6 +44,7 @@ async function main() {
       let trackingFundsListCache = 0
       let managedProductsValuationSynced = 0
       let fofUnderlyingMarketSynced = 0
+      let managedFofUnderlyingRefreshed = 0
 
       const { syncEmailValuationToProductTables } = await import(
         "@/lib/server/email-valuation-sync-pg"
@@ -63,6 +64,16 @@ async function main() {
         )
       } catch (err) {
         console.warn("[email_nav_etl] valuation metrics backfill skipped:", err)
+      }
+
+      try {
+        const { refreshManagedFofUnderlying } = await import("@/lib/server/managed-fof-underlying-pg")
+        managedFofUnderlyingRefreshed = await refreshManagedFofUnderlying()
+        console.error(
+          `[email_nav_etl] managed FOF underlying refreshed (${managedFofUnderlyingRefreshed} rows)`,
+        )
+      } catch (err) {
+        console.warn("[email_nav_etl] managed FOF underlying refresh skipped:", err)
       }
 
       console.error("[email_nav_etl] refresh-only: syncing valuation metrics to product tables…")
@@ -107,6 +118,7 @@ async function main() {
         trackingFundsListCacheRefreshed: trackingFundsListCache,
         managedProductsValuationSynced,
         fofUnderlyingMarketSynced,
+        managedFofUnderlyingRefreshed,
       }))
       process.exit(0)
     } catch (e) {

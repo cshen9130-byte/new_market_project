@@ -30,6 +30,38 @@ const UNDERLYING_ROW_KINDS = new Set([
   "money_fund",
 ])
 
+const NON_UNDERLYING_ROW_KINDS = new Set([
+  "bank_deposit",
+  "receivable",
+  "payable",
+  "settlement_reserve",
+  "margin_deposit",
+  "clearing",
+  "derivative",
+  "stock",
+  "bond",
+  "repo",
+])
+
+/** Whether a 估值表 row represents a FOF underlying fund holding. */
+export function isFofUnderlyingHolding(row: {
+  row_kind?: string | null
+  code?: string | null
+  name?: string | null
+  symbol?: string | null
+}): boolean {
+  const rowKind = String(row.row_kind ?? "")
+  if (NON_UNDERLYING_ROW_KINDS.has(rowKind)) return false
+  if (UNDERLYING_ROW_KINDS.has(rowKind)) return true
+
+  const code = String(row.code ?? "").replace(/\s+/g, "").replace(/\./g, "")
+  const name = String(row.name ?? "")
+  if (code.startsWith("1109") || code.startsWith("1108")) return true
+  if (/私募证券投资基金|私募基金/.test(name)) return true
+  if (rowKind === "other" && String(row.symbol ?? "").trim()) return true
+  return false
+}
+
 function normalizeText(value: unknown): string {
   return String(value ?? "").replace(/[\s\u3000:：]/g, "")
 }
@@ -256,7 +288,7 @@ export function enrichValuationMetrics(analysis: ValuationAnalysis): {
   }
 
   const underlyingHoldings: FofUnderlyingMetric[] = rows
-    .filter((row) => row.include_in_detail && UNDERLYING_ROW_KINDS.has(String(row.row_kind ?? "")))
+    .filter((row) => row.include_in_detail && isFofUnderlyingHolding(row))
     .map((row) => ({
       underlyingProductCode: extractUnderlyingProductCode(row),
       underlyingName: String(row.name ?? ""),

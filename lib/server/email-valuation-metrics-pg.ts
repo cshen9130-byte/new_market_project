@@ -157,6 +157,18 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
   await ensureEmailValuationMetricsTables()
   await ensureEmailValuationHoldingsTables()
 
+  await query(
+    `UPDATE ops_email_valuation_holdings
+     SET row_kind = 'private_fund'
+     WHERE row_kind = 'other'
+       AND (
+         subject_code LIKE '1109%'
+         OR subject_code LIKE '1108%'
+         OR subject_name ~ '私募证券投资基金'
+         OR subject_name ~ '私募基金'
+       )`,
+  )
+
   await query(`DELETE FROM ops_email_valuation_fund_metrics_latest`)
 
   const fundRows = await query<{ n: string }>(
@@ -238,8 +250,19 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
        FROM latest_fof lf
        INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = lf.valuation_record_id
        WHERE h.include_in_detail = TRUE
-         AND h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
          AND COALESCE(h.market_value, h.cost, 0) > 0
+         AND h.row_kind NOT IN (
+           'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
+           'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
+         )
+         AND (
+           h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
+           OR h.subject_code LIKE '1109%'
+           OR h.subject_code LIKE '1108%'
+           OR h.subject_name ~ '私募证券投资基金'
+           OR h.subject_name ~ '私募基金'
+           OR (h.row_kind = 'other' AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL)
+         )
        ON CONFLICT (fof_product_code, fof_fund_name, valuation_date, underlying_product_code, underlying_name, subject_code)
        DO UPDATE SET
          market_value  = EXCLUDED.market_value,
