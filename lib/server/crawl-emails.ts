@@ -38,24 +38,42 @@ export function getImapFolders(account: CrawlEmailAccount): string[] {
 
 const DATA_FILE = path.join(process.cwd(), "data", "ops_crawl_emails.json")
 
-function readAll(): CrawlEmailAccount[] {
-  if (!fs.existsSync(DATA_FILE)) return []
+const BACKUP_FILE = DATA_FILE + ".bak"
+
+function tryParseAccounts(raw: string): CrawlEmailAccount[] | null {
   try {
-    const rows = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) as CrawlEmailAccount[]
-    // Backfill imapFolders for accounts created before this field was added
+    const rows = JSON.parse(raw) as CrawlEmailAccount[]
+    if (!Array.isArray(rows)) return null
     return rows.map((r) => ({
       ...r,
       imapFolders: Array.isArray(r.imapFolders) && r.imapFolders.length ? r.imapFolders : ["INBOX"],
     }))
   } catch {
-    return []
+    return null
   }
+}
+
+function readAll(): CrawlEmailAccount[] {
+  // Try main file first, fall back to backup if main is corrupt/missing
+  for (const filePath of [DATA_FILE, BACKUP_FILE]) {
+    if (!fs.existsSync(filePath)) continue
+    const rows = tryParseAccounts(fs.readFileSync(filePath, "utf-8"))
+    if (rows !== null) return rows
+  }
+  return []
 }
 
 function writeAll(rows: CrawlEmailAccount[]): void {
   const dir = path.dirname(DATA_FILE)
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  fs.writeFileSync(DATA_FILE, JSON.stringify(rows, null, 2), "utf-8")
+  const json = JSON.stringify(rows, null, 2)
+  // Atomic write: write to temp file then rename, keep a backup of previous state
+  const tmpFile = DATA_FILE + ".tmp"
+  fs.writeFileSync(tmpFile, json, "utf-8")
+  if (fs.existsSync(DATA_FILE)) {
+    fs.copyFileSync(DATA_FILE, BACKUP_FILE)
+  }
+  fs.renameSync(tmpFile, DATA_FILE)
 }
 
 export function toPublic(row: CrawlEmailAccount): CrawlEmailPublic {
