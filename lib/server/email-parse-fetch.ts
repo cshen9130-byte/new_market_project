@@ -572,7 +572,14 @@ export async function fetchEmailParseRecords(options?: {
     opsFofUnderlyingAdded = autoAddResult.opsFofUnderlyingAdded
     detailFofUnderlyingAdded = autoAddResult.detailFofUnderlyingAdded
   } catch (e) {
-    errors.push(`自动补充FOF底层产品失败: ${e instanceof Error ? e.message : String(e)}`)
+    const msg = e instanceof Error ? e.message : String(e)
+    // Permission errors are expected until the DB grants are applied — don't surface
+    // this as a user-visible failure since all core parsing steps have already completed.
+    if (!msg.includes("permission denied")) {
+      errors.push(`自动补充FOF底层产品失败: ${msg}`)
+    } else {
+      console.warn("[autoAddFofUnderlying] skipped — missing INSERT grant on FOF tables:", msg)
+    }
   }
 
   let navLatestRefreshed = 0

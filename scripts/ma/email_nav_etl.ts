@@ -89,7 +89,12 @@ async function main() {
           `[email_nav_etl] FOF底层 auto-add done (summary=${opsFofUnderlyingAdded}, detail=${detailFofUnderlyingAdded})`,
         )
       } catch (err) {
-        console.warn("[email_nav_etl] FOF底层 auto-add skipped:", err)
+        const msg = err instanceof Error ? err.message : String(err)
+        if (!msg.includes("permission denied")) {
+          console.warn("[email_nav_etl] FOF底层 auto-add failed:", err)
+        } else {
+          console.warn("[email_nav_etl] FOF底层 auto-add skipped (no INSERT grant yet):", msg)
+        }
       }
 
       console.error("[email_nav_etl] refresh-only: syncing valuation metrics to product tables…")
