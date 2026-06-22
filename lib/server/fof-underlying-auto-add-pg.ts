@@ -20,8 +20,26 @@ export type FofUnderlyingAutoAddResult = {
 }
 
 /**
+ * Normalize a fund name for duplicate detection by stripping common legal suffixes
+ * (e.g. "私募证券投资基金", "私募股权投资基金") so that
+ * "天戈钻选CTA1号私募证券投资基金B类" and "天戈钻选CTA1号B类" match.
+ */
+const NORMALIZE_NAME_SQL = `
+  LOWER(TRIM(REGEXP_REPLACE(
+    $NAME$,
+    '(私募证券投资基金|私募股权投资基金|私募基金|证券投资基金)',
+    '',
+    'g'
+  )))
+`
+
+function normExpr(col: string): string {
+  return NORMALIZE_NAME_SQL.replace(/\$NAME\$/g, col)
+}
+
+/**
  * For every unique underlying fund in ops_managed_fof_underlying:
- *  1. Add to fof_underlying_summary if not already present (by product_name match).
+ *  1. Add to fof_underlying_summary if not already present (normalised name match).
  *  2. Add to fof_underlying_detail if the (fof_fund_name, product_name) pair is absent.
  *
  * Existing rows are never modified — this is an ADD-only operation.
@@ -29,15 +47,22 @@ export type FofUnderlyingAutoAddResult = {
 export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoAddResult> {
   await ensureManagedFofUnderlyingTable()
 
+  const normUnderlying = normExpr("underlying_name")
+  const normSummary    = normExpr("f.product_name")
+  const normFofEmail   = normExpr("fof_product_name")
+  const normDetailFof  = normExpr("d.fof_fund_name")
+  const normDetailProd = normExpr("d.product_name")
+  const normEmailProd  = normExpr("a.product_name")
+  const normEmailFof   = normExpr("a.fof_fund_name")
+
   // ── 1. fof_underlying_summary (运维 FOF底层 + 投资 FOF底层 overview) ──────────
-  // Match by exact name (case-insensitive, trimmed). Skip products already present.
   const summaryRows = await query<{ n: string }>(
     `WITH new_underlying AS (
-       SELECT DISTINCT ON (LOWER(TRIM(underlying_name)))
+       SELECT DISTINCT ON (${normUnderlying})
          underlying_name
        FROM ops_managed_fof_underlying
        WHERE NULLIF(TRIM(underlying_name), '') IS NOT NULL
-       ORDER BY LOWER(TRIM(underlying_name)), valuation_date DESC
+       ORDER BY ${normUnderlying}, valuation_date DESC
      ),
      max_seq AS (
        SELECT
@@ -52,7 +77,7 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        FROM new_underlying n
        WHERE NOT EXISTS (
          SELECT 1 FROM fof_underlying_summary f
-         WHERE LOWER(TRIM(f.product_name)) = LOWER(TRIM(n.underlying_name))
+         WHERE ${normSummary} = ${normUnderlying}
        )
      ),
      inserted AS (
@@ -70,18 +95,16 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
   )
 
   // ── 2. fof_underlying_detail (投资 FOF底层 明细 view) ─────────────────────────
-  // Unique key is (fof_fund_name, product_name). ON CONFLICT DO NOTHING is safe
-  // because the table has CONSTRAINT fof_underlying_detail_fof_product_uq UNIQUE
-  // (fof_fund_name, product_name).
   const detailRows = await query<{ n: string }>(
     `WITH to_add AS (
-       SELECT DISTINCT
+       SELECT DISTINCT ON (${normFofEmail}, ${normUnderlying})
          fof_product_name                             AS fof_fund_name,
          underlying_name                              AS product_name,
          NULLIF(TRIM(underlying_product_code), '')    AS beian_hao
        FROM ops_managed_fof_underlying
        WHERE NULLIF(TRIM(underlying_name), '') IS NOT NULL
          AND NULLIF(TRIM(fof_product_name), '') IS NOT NULL
+       ORDER BY ${normFofEmail}, ${normUnderlying}
      ),
      inserted AS (
        INSERT INTO fof_underlying_detail (fof_fund_name, product_name, beian_hao, source_file)
@@ -93,8 +116,8 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        FROM to_add a
        WHERE NOT EXISTS (
          SELECT 1 FROM fof_underlying_detail d
-         WHERE LOWER(TRIM(d.fof_fund_name)) = LOWER(TRIM(a.fof_fund_name))
-           AND LOWER(TRIM(d.product_name))  = LOWER(TRIM(a.product_name))
+         WHERE ${normDetailFof}  = ${normEmailFof}
+           AND ${normDetailProd} = ${normEmailProd}
        )
        ON CONFLICT (fof_fund_name, product_name) DO NOTHING
        RETURNING 1
