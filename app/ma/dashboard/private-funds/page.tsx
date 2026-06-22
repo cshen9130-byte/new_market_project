@@ -1604,28 +1604,75 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
   // Load persisted pool definitions so team pools created by any account are
   // visible to everyone, and "mine" pools survive reloads for the same user.
+  // Polls every 30 s and re-syncs on tab focus so changes made by other
+  // accounts appear without requiring a manual page refresh.
   useEffect(() => {
     type ApiPool = { pool_key: string; label: string }
-    const mergePools = (
-      setter: typeof setPools,
-      incoming: ApiPool[],
-    ) => {
-      setter((prev) => {
-        const existing = new Set(prev.map((p) => p.key))
-        const extra = incoming
-          .filter((p) => p?.pool_key && !existing.has(p.pool_key))
+
+    // Full sync: add new pools, rename changed ones, remove deleted custom pools.
+    function syncTeamPools(incoming: ApiPool[]) {
+      setPools((prev) => {
+        const defaultKeys = new Set(DEFAULT_POOLS.map((p) => p.key))
+        const incomingMap = new Map(incoming.map((p) => [p.pool_key, p.label]))
+        const kept = prev.filter((p) => defaultKeys.has(p.key) || incomingMap.has(p.key))
+        const updated = kept.map((p) =>
+          incomingMap.has(p.key) ? { ...p, label: incomingMap.get(p.key)! } : p,
+        )
+        const existingKeys = new Set(updated.map((p) => p.key))
+        const added = incoming
+          .filter((p) => p?.pool_key && !existingKeys.has(p.pool_key))
           .map((p) => ({ key: p.pool_key, label: p.label }))
-        return extra.length ? [...prev, ...extra] : prev
+        const next = [...updated, ...added]
+        const same =
+          next.length === prev.length &&
+          next.every((p, i) => prev[i]?.key === p.key && prev[i]?.label === p.label)
+        return same ? prev : next
       })
     }
-    fetch("/ma/api/tracking-funds/pools?scope=team")
-      .then((r) => r.json())
-      .then((d) => { if (Array.isArray(d?.data)) mergePools(setPools, d.data) })
-      .catch(() => {})
-    fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: { ...userFetchHeaders() } })
-      .then((r) => r.json())
-      .then((d) => { if (Array.isArray(d?.data)) mergePools(setMyPools, d.data) })
-      .catch(() => {})
+
+    function syncMinePools(incoming: ApiPool[]) {
+      setMyPools((prev) => {
+        const builtinKeys = new Set(["mine_all", "mine_default"])
+        const incomingMap = new Map(incoming.map((p) => [p.pool_key, p.label]))
+        const kept = prev.filter((p) => builtinKeys.has(p.key) || incomingMap.has(p.key))
+        const updated = kept.map((p) =>
+          incomingMap.has(p.key) ? { ...p, label: incomingMap.get(p.key)! } : p,
+        )
+        const existingKeys = new Set(updated.map((p) => p.key))
+        const added = incoming
+          .filter((p) => p?.pool_key && !existingKeys.has(p.pool_key))
+          .map((p) => ({ key: p.pool_key, label: p.label }))
+        const next = [...updated, ...added]
+        const same =
+          next.length === prev.length &&
+          next.every((p, i) => prev[i]?.key === p.key && prev[i]?.label === p.label)
+        return same ? prev : next
+      })
+    }
+
+    function loadPools() {
+      fetch("/ma/api/tracking-funds/pools?scope=team")
+        .then((r) => r.json())
+        .then((d) => { if (Array.isArray(d?.data)) syncTeamPools(d.data) })
+        .catch(() => {})
+      fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: { ...userFetchHeaders() } })
+        .then((r) => r.json())
+        .then((d) => { if (Array.isArray(d?.data)) syncMinePools(d.data) })
+        .catch(() => {})
+    }
+
+    loadPools()
+    const interval = setInterval(loadPools, 30_000)
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") loadPools()
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
