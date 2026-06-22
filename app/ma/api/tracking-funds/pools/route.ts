@@ -103,8 +103,9 @@ export async function POST(req: Request) {
     )
     return NextResponse.json({ ok: true })
   } catch (err) {
-    console.error("[tracking-funds/pools POST]", err)
-    return NextResponse.json({ error: "db_error" }, { status: 500 })
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error("[tracking-funds/pools POST]", msg)
+    return NextResponse.json({ error: "db_error", detail: msg }, { status: 500 })
   }
 }
 

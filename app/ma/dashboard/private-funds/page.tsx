@@ -1585,10 +1585,17 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       headers: { "Content-Type": "application/json", ...userFetchHeaders() },
       body: JSON.stringify({ pool_key: poolKey, label, scope }),
     })
-      .then((r) => { if (!r.ok) throw new Error("save_failed") })
-      .catch(() => {
+      .then(async (r) => {
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}))
+          throw new Error(`HTTP ${r.status}${body.detail ? ": " + body.detail : body.error ? ": " + body.error : ""}`)
+        }
+      })
+      .catch((err: unknown) => {
         rollback()
-        alert("保存产品池失败，请检查网络后重试")
+        const msg = err instanceof Error ? err.message : "网络错误"
+        console.error("[persistPoolCreate]", msg)
+        alert(`保存产品池失败: ${msg}`)
       })
   }
 
