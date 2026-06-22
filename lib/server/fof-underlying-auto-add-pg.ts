@@ -34,8 +34,7 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
   const summaryRows = await query<{ n: string }>(
     `WITH new_underlying AS (
        SELECT DISTINCT ON (LOWER(TRIM(underlying_name)))
-         underlying_name,
-         fof_product_name
+         underlying_name
        FROM ops_managed_fof_underlying
        WHERE NULLIF(TRIM(underlying_name), '') IS NOT NULL
        ORDER BY LOWER(TRIM(underlying_name)), valuation_date DESC
@@ -47,7 +46,6 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
      to_add AS (
        SELECT
          n.underlying_name,
-         n.fof_product_name,
          ROW_NUMBER() OVER (ORDER BY n.underlying_name) AS rn
        FROM new_underlying n
        WHERE NOT EXISTS (
@@ -56,10 +54,9 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        )
      ),
      inserted AS (
-       INSERT INTO fof_underlying_summary (product_name, fof_fund_name, sequence_no)
+       INSERT INTO fof_underlying_summary (product_name, sequence_no)
        SELECT
          a.underlying_name,
-         a.fof_product_name,
          (SELECT v FROM max_seq) + a.rn
        FROM to_add a
        RETURNING 1
