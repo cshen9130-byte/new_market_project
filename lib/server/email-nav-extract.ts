@@ -93,6 +93,11 @@ function extractFundNameFromSubject(subject: string): string | null {
 
   const guotaiSubj = subject.match(/发送[：:](.+?)(?:【|$)/)
   if (guotaiSubj && /私募证券|投资基金/.test(guotaiSubj[1])) {
+    // The capture may include a leading beian code and trailing date, e.g.
+    // "SAVW72_金舆基石一号私募证券投资基金20260617估值表" — apply FUND_NAME_RE
+    // to extract just the clean fund name.
+    const fundMatch = guotaiSubj[1].match(FUND_NAME_RE)
+    if (fundMatch) return normalizeFundDisplayName(fundMatch[0])
     return normalizeFundDisplayName(guotaiSubj[1])
   }
 
