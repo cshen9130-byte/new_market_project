@@ -45,6 +45,8 @@ async function main() {
       let managedProductsValuationSynced = 0
       let fofUnderlyingMarketSynced = 0
       let managedFofUnderlyingRefreshed = 0
+      let opsFofUnderlyingAdded = 0
+      let detailFofUnderlyingAdded = 0
 
       const { syncEmailValuationToProductTables } = await import(
         "@/lib/server/email-valuation-sync-pg"
@@ -74,6 +76,20 @@ async function main() {
         )
       } catch (err) {
         console.warn("[email_nav_etl] managed FOF underlying refresh skipped:", err)
+      }
+
+      try {
+        const { autoAddFofUnderlyingToTables } = await import(
+          "@/lib/server/fof-underlying-auto-add-pg"
+        )
+        const autoAdd = await autoAddFofUnderlyingToTables()
+        opsFofUnderlyingAdded = autoAdd.opsFofUnderlyingAdded
+        detailFofUnderlyingAdded = autoAdd.detailFofUnderlyingAdded
+        console.error(
+          `[email_nav_etl] FOF底层 auto-add done (summary=${opsFofUnderlyingAdded}, detail=${detailFofUnderlyingAdded})`,
+        )
+      } catch (err) {
+        console.warn("[email_nav_etl] FOF底层 auto-add skipped:", err)
       }
 
       console.error("[email_nav_etl] refresh-only: syncing valuation metrics to product tables…")
@@ -119,6 +135,8 @@ async function main() {
         managedProductsValuationSynced,
         fofUnderlyingMarketSynced,
         managedFofUnderlyingRefreshed,
+        opsFofUnderlyingAdded,
+        detailFofUnderlyingAdded,
       }))
       process.exit(0)
     } catch (e) {

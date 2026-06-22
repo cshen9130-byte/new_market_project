@@ -42,6 +42,10 @@ export type EmailParseFetchResult = {
   valuationMetricsRefreshed: number
   underlyingMarketRefreshed: number
   managedFofUnderlyingRefreshed: number
+  /** New rows auto-added to fof_underlying_summary (运维/投资 FOF底层汇总) */
+  opsFofUnderlyingAdded: number
+  /** New rows auto-added to fof_underlying_detail (投资 FOF底层明细) */
+  detailFofUnderlyingAdded: number
   managedProductsValuationSynced: number
   fofUnderlyingMarketSynced: number
   navLatestRefreshed: number
@@ -523,6 +527,8 @@ export async function fetchEmailParseRecords(options?: {
   let valuationMetricsRefreshed = 0
   let underlyingMarketRefreshed = 0
   let managedFofUnderlyingRefreshed = 0
+  let opsFofUnderlyingAdded = 0
+  let detailFofUnderlyingAdded = 0
   try {
     const valuationResult = await upsertEmailValuationRecords(allValuationRecords)
     valuationSaved = valuationResult.recordsSaved
@@ -558,6 +564,17 @@ export async function fetchEmailParseRecords(options?: {
     errors.push(`刷新在管产品FOF底层持仓失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  try {
+    const { autoAddFofUnderlyingToTables } = await import(
+      "@/lib/server/fof-underlying-auto-add-pg"
+    )
+    const autoAddResult = await autoAddFofUnderlyingToTables()
+    opsFofUnderlyingAdded = autoAddResult.opsFofUnderlyingAdded
+    detailFofUnderlyingAdded = autoAddResult.detailFofUnderlyingAdded
+  } catch (e) {
+    errors.push(`自动补充FOF底层产品失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
   let navLatestRefreshed = 0
   let managedProductsValuationSynced = 0
   let fofUnderlyingMarketSynced = 0
@@ -583,6 +600,8 @@ export async function fetchEmailParseRecords(options?: {
     valuationMetricsRefreshed,
     underlyingMarketRefreshed,
     managedFofUnderlyingRefreshed,
+    opsFofUnderlyingAdded,
+    detailFofUnderlyingAdded,
     managedProductsValuationSynced,
     fofUnderlyingMarketSynced,
     navLatestRefreshed,
