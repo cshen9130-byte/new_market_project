@@ -1579,12 +1579,17 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     return id ? { "x-market-user-id": id } : {}
   }
 
-  function persistPoolCreate(poolKey: string, label: string, scope: "team" | "mine") {
+  function persistPoolCreate(poolKey: string, label: string, scope: "team" | "mine", rollback: () => void) {
     fetch("/ma/api/tracking-funds/pools", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...userFetchHeaders() },
       body: JSON.stringify({ pool_key: poolKey, label, scope }),
-    }).catch(() => {})
+    })
+      .then((r) => { if (!r.ok) throw new Error("save_failed") })
+      .catch(() => {
+        rollback()
+        alert("保存产品池失败，请检查网络后重试")
+      })
   }
 
   function persistPoolRename(poolKey: string, label: string) {
@@ -1609,55 +1614,31 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   useEffect(() => {
     type ApiPool = { pool_key: string; label: string }
 
-    // Full sync: add new pools, rename changed ones, remove deleted custom pools.
-    function syncTeamPools(incoming: ApiPool[]) {
-      setPools((prev) => {
-        const defaultKeys = new Set(DEFAULT_POOLS.map((p) => p.key))
-        const incomingMap = new Map(incoming.map((p) => [p.pool_key, p.label]))
-        const kept = prev.filter((p) => defaultKeys.has(p.key) || incomingMap.has(p.key))
-        const updated = kept.map((p) =>
-          incomingMap.has(p.key) ? { ...p, label: incomingMap.get(p.key)! } : p,
-        )
-        const existingKeys = new Set(updated.map((p) => p.key))
-        const added = incoming
-          .filter((p) => p?.pool_key && !existingKeys.has(p.pool_key))
+    // Only ever ADD pools from the server into local state — never remove.
+    // Removal is handled explicitly by the delete action. This prevents
+    // optimistic local pools (not yet confirmed in DB) from disappearing
+    // when the next poll fires before the DB write completes.
+    function mergePools(
+      setter: typeof setPools,
+      incoming: ApiPool[],
+    ) {
+      setter((prev) => {
+        const existing = new Set(prev.map((p) => p.key))
+        const extra = incoming
+          .filter((p) => p?.pool_key && !existing.has(p.pool_key))
           .map((p) => ({ key: p.pool_key, label: p.label }))
-        const next = [...updated, ...added]
-        const same =
-          next.length === prev.length &&
-          next.every((p, i) => prev[i]?.key === p.key && prev[i]?.label === p.label)
-        return same ? prev : next
-      })
-    }
-
-    function syncMinePools(incoming: ApiPool[]) {
-      setMyPools((prev) => {
-        const builtinKeys = new Set(["mine_all", "mine_default"])
-        const incomingMap = new Map(incoming.map((p) => [p.pool_key, p.label]))
-        const kept = prev.filter((p) => builtinKeys.has(p.key) || incomingMap.has(p.key))
-        const updated = kept.map((p) =>
-          incomingMap.has(p.key) ? { ...p, label: incomingMap.get(p.key)! } : p,
-        )
-        const existingKeys = new Set(updated.map((p) => p.key))
-        const added = incoming
-          .filter((p) => p?.pool_key && !existingKeys.has(p.pool_key))
-          .map((p) => ({ key: p.pool_key, label: p.label }))
-        const next = [...updated, ...added]
-        const same =
-          next.length === prev.length &&
-          next.every((p, i) => prev[i]?.key === p.key && prev[i]?.label === p.label)
-        return same ? prev : next
+        return extra.length ? [...prev, ...extra] : prev
       })
     }
 
     function loadPools() {
       fetch("/ma/api/tracking-funds/pools?scope=team")
         .then((r) => r.json())
-        .then((d) => { if (Array.isArray(d?.data)) syncTeamPools(d.data) })
+        .then((d) => { if (Array.isArray(d?.data)) mergePools(setPools, d.data) })
         .catch(() => {})
       fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: { ...userFetchHeaders() } })
         .then((r) => r.json())
-        .then((d) => { if (Array.isArray(d?.data)) syncMinePools(d.data) })
+        .then((d) => { if (Array.isArray(d?.data)) mergePools(setMyPools, d.data) })
         .catch(() => {})
     }
 
@@ -4635,7 +4616,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     const key = `mine_custom_${Date.now()}`
                     const label = mineNewPoolName.trim()
                     setMyPools((prev) => [...prev, { key, label }])
-                    persistPoolCreate(key, label, "mine")
+                    persistPoolCreate(key, label, "mine", () => {
+                      setMyPools((prev) => prev.filter((p) => p.key !== key))
+                      setMyActivePool("mine_default")
+                    })
                     setMyActivePool(key)
                     setShowMineNewPoolDialog(false)
                   }
@@ -4658,7 +4642,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   const key = `mine_custom_${Date.now()}`
                   const label = mineNewPoolName.trim()
                   setMyPools((prev) => [...prev, { key, label }])
-                  persistPoolCreate(key, label, "mine")
+                  persistPoolCreate(key, label, "mine", () => {
+                    setMyPools((prev) => prev.filter((p) => p.key !== key))
+                    setMyActivePool("mine_default")
+                  })
                   setMyActivePool(key)
                   setShowMineNewPoolDialog(false)
                 }}
@@ -4691,7 +4678,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     const key = `custom_${Date.now()}`
                     const label = newPoolName.trim()
                     setPools((prev) => [...prev, { key, label }])
-                    persistPoolCreate(key, label, "team")
+                    persistPoolCreate(key, label, "team", () => {
+                      setPools((prev) => prev.filter((p) => p.key !== key))
+                      setActivePool("all")
+                    })
                     setActivePool(key)
                     setPage(1)
                     setShowNewPoolDialog(false)
@@ -4715,7 +4705,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   const key = `custom_${Date.now()}`
                   const label = newPoolName.trim()
                   setPools((prev) => [...prev, { key, label }])
-                  persistPoolCreate(key, label, "team")
+                  persistPoolCreate(key, label, "team", () => {
+                    setPools((prev) => prev.filter((p) => p.key !== key))
+                    setActivePool("all")
+                  })
                   setActivePool(key)
                   setPage(1)
                   setShowNewPoolDialog(false)
