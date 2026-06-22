@@ -110,10 +110,33 @@ function applyFilters(records: EmailParseRecord[], filters: EmailParseRecordFilt
   })
 }
 
-export function replaceEmailParseRecords(records: Omit<EmailParseRecord, "id">[]): EmailParseRecord[] {
+/**
+ * Replace parse records for the given accounts with the new scan results.
+ * Records belonging to accounts that were NOT in `scannedAccounts` are
+ * preserved unchanged — so a temporary IMAP failure for one account does
+ * not wipe out its previously-fetched records.
+ *
+ * @param records        Fresh records returned by the latest scan.
+ * @param scannedAccounts Normalised account names that were actually attempted
+ *                        in this scan run (regardless of success/failure per
+ *                        email).  Pass an empty array to do a full replace
+ *                        (legacy behaviour).
+ */
+export function replaceEmailParseRecords(
+  records: Omit<EmailParseRecord, "id">[],
+  scannedAccounts: string[] = [],
+): EmailParseRecord[] {
   const store = readStore()
+  const scanned = new Set(scannedAccounts.map((a) => a.trim().toLowerCase()))
+  const doPerAccount = scanned.size > 0
+
+  // Keep records from accounts that were NOT scanned this run.
+  const preserved = doPerAccount
+    ? store.records.filter((r) => !scanned.has(r.crawlEmailAccount.trim().toLowerCase()))
+    : []
+
   const existingByKey = new Map(store.records.map((r) => [recordKey(r.crawlEmailAccount, r.uid), r]))
-  const next: EmailParseRecord[] = []
+  const next: EmailParseRecord[] = [...preserved]
 
   for (const row of records) {
     const key = recordKey(row.crawlEmailAccount, row.uid)
@@ -123,7 +146,6 @@ export function replaceEmailParseRecords(records: Omit<EmailParseRecord, "id">[]
       senderEmail: row.senderEmail?.trim() || existing?.senderEmail?.trim() || "",
       id: existing?.id && existing.id.trim() ? existing.id : randomUUID(),
     })
-    existingByKey.delete(key)
   }
 
   store.records = next.sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())

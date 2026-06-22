@@ -491,6 +491,9 @@ export async function fetchEmailParseRecords(options?: {
   const allNavRecords: EmailNavInsert[] = []
   const allValuationRecords: EmailValuationInsert[] = []
   let emailsScanned = 0
+  // Track every account we attempted so records from un-attempted accounts
+  // are preserved even if this run errors out for a particular mailbox.
+  const scannedAccounts: string[] = accounts.map((a) => a.account)
 
   for (const account of accounts) {
     try {
@@ -505,7 +508,7 @@ export async function fetchEmailParseRecords(options?: {
     }
   }
 
-  replaceEmailParseRecords(allParseRecords)
+  replaceEmailParseRecords(allParseRecords, scannedAccounts)
 
   let navSaved = 0
   try {
