@@ -15,18 +15,25 @@ export const dynamic = "force-dynamic"
 let ensured = false
 async function ensureTable() {
   if (ensured) return
-  await query(`
-    CREATE TABLE IF NOT EXISTS tracking_custom_pools (
-      id         SERIAL PRIMARY KEY,
-      pool_key   VARCHAR(128) NOT NULL UNIQUE,
-      label      VARCHAR(255) NOT NULL,
-      scope      VARCHAR(16)  NOT NULL DEFAULT 'team',
-      user_key   VARCHAR(255) NOT NULL DEFAULT '',
-      sort_order INTEGER      NOT NULL DEFAULT 0,
-      created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
-    )
-  `)
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS tracking_custom_pools (
+        id         SERIAL PRIMARY KEY,
+        pool_key   VARCHAR(128) NOT NULL UNIQUE,
+        label      VARCHAR(255) NOT NULL,
+        scope      VARCHAR(16)  NOT NULL DEFAULT 'team',
+        user_key   VARCHAR(255) NOT NULL DEFAULT '',
+        sort_order INTEGER      NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+      )
+    `)
+  } catch {
+    // On PG 15+ the DB user may lack CREATE privilege on the public schema even
+    // when the table already exists (created via schema.sql by a superuser).
+    // Verify the table is reachable; if so, it's safe to proceed.
+    await query(`SELECT 1 FROM tracking_custom_pools LIMIT 0`)
+  }
   ensured = true
 }
 
@@ -65,8 +72,9 @@ export async function GET(req: Request) {
           )
     return NextResponse.json({ data: rows })
   } catch (err) {
-    console.error("[tracking-funds/pools GET]", err)
-    return NextResponse.json({ error: "db_error" }, { status: 500 })
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error("[tracking-funds/pools GET]", msg)
+    return NextResponse.json({ error: "db_error", detail: msg }, { status: 500 })
   }
 }
 

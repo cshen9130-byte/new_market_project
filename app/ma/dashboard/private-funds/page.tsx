@@ -1634,12 +1634,18 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     function loadPools() {
       fetch("/ma/api/tracking-funds/pools?scope=team")
         .then((r) => r.json())
-        .then((d) => { if (Array.isArray(d?.data)) mergePools(setPools, d.data) })
-        .catch(() => {})
+        .then((d) => {
+          if (Array.isArray(d?.data)) mergePools(setPools, d.data)
+          else if (d?.error) console.error("[loadPools team]", d.error, d.detail)
+        })
+        .catch((e) => console.error("[loadPools team fetch]", e))
       fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: { ...userFetchHeaders() } })
         .then((r) => r.json())
-        .then((d) => { if (Array.isArray(d?.data)) mergePools(setMyPools, d.data) })
-        .catch(() => {})
+        .then((d) => {
+          if (Array.isArray(d?.data)) mergePools(setMyPools, d.data)
+          else if (d?.error) console.error("[loadPools mine]", d.error, d.detail)
+        })
+        .catch((e) => console.error("[loadPools mine fetch]", e))
     }
 
     loadPools()
