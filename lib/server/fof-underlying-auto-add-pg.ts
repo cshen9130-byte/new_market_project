@@ -54,12 +54,13 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        )
      ),
      inserted AS (
-       INSERT INTO fof_underlying_summary (product_name, sequence_no, source_row_number, source_file)
+       INSERT INTO fof_underlying_summary (product_name, sequence_no, source_row_number, source_file, row_hash)
        SELECT
          a.underlying_name,
          (SELECT v FROM max_seq) + a.rn,
          (SELECT v FROM max_seq) + a.rn,
-         'email_valuation_auto'
+         'email_valuation_auto',
+         MD5(a.underlying_name || ':email_valuation_auto:' || ((SELECT v FROM max_seq) + a.rn)::text)
        FROM to_add a
        RETURNING 1
      )
