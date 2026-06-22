@@ -40,7 +40,9 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        ORDER BY LOWER(TRIM(underlying_name)), valuation_date DESC
      ),
      max_seq AS (
-       SELECT COALESCE(MAX(sequence_no), 0) AS v
+       SELECT
+         COALESCE(MAX(sequence_no), 0)       AS seq,
+         COALESCE(MAX(source_row_number), 0) AS src_row
        FROM fof_underlying_summary
      ),
      to_add AS (
@@ -57,10 +59,10 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        INSERT INTO fof_underlying_summary (product_name, sequence_no, source_row_number, source_file, row_hash)
        SELECT
          a.underlying_name,
-         (SELECT v FROM max_seq) + a.rn,
-         (SELECT v FROM max_seq) + a.rn,
+         (SELECT seq     FROM max_seq) + a.rn,
+         (SELECT src_row FROM max_seq) + a.rn,
          'email_valuation_auto',
-         MD5(a.underlying_name || ':email_valuation_auto:' || ((SELECT v FROM max_seq) + a.rn)::text)
+         MD5(a.underlying_name || ':email_valuation_auto:' || ((SELECT src_row FROM max_seq) + a.rn)::text)
        FROM to_add a
        RETURNING 1
      )
