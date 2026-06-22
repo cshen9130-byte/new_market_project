@@ -95,11 +95,11 @@ export async function POST(req: Request) {
     await query(
       `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
        SELECT $1, $2, $3, $4,
-              COALESCE((SELECT MAX(sort_order) FROM tracking_custom_pools WHERE scope = $3), 0) + 1,
+              COALESCE((SELECT MAX(sort_order) FROM tracking_custom_pools WHERE scope = $5), 0) + 1,
               NOW()
        ON CONFLICT (pool_key)
        DO UPDATE SET label = EXCLUDED.label, updated_at = NOW()`,
-      [pool_key, cleanLabel, scope, scope === "mine" ? userKey : ""],
+      [pool_key, cleanLabel, scope, scope === "mine" ? userKey : "", scope],
     )
     return NextResponse.json({ ok: true })
   } catch (err) {
