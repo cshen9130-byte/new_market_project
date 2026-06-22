@@ -384,7 +384,7 @@ function buildCachedFromClause(
       FROM user_custom_pool p
       WHERE p.register_number IS NOT NULL ${poolFilter}
     ) i
-    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   const sourceTable =
     pool === "selected" ? "selected_pool"

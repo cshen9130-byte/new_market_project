@@ -5,6 +5,10 @@ import { createPortal } from "react-dom"
 import { useSearchParams } from "next/navigation"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
+import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
+import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
+import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
+import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -936,6 +940,22 @@ function PrivateFundTable({
   const stickyRight = { ops: 0, trend: 68 }
 
   const [showTemplates, setShowTemplates] = useState(false)
+  const [trackingDialogFund, setTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [teamTrackingDialogFund, setTeamTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [trackedMine, setTrackedMine] = useState<Set<string>>(new Set())
+  const [trackedTeam, setTrackedTeam] = useState<Set<string>>(new Set())
+
+  function refreshTrackedIds() {
+    fetch("/ma/api/tracking-funds/tracked-ids")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d?.mine)) setTrackedMine(new Set(d.mine))
+        if (Array.isArray(d?.team)) setTrackedTeam(new Set(d.team))
+      })
+      .catch(() => {})
+  }
+
+  useEffect(() => { refreshTrackedIds() }, [])
 
   return (
     <div className="flex flex-col">
@@ -1157,12 +1177,14 @@ function PrivateFundTable({
                   <td style={{ right: stickyRight.ops, width: 68 }}
                     className={`${stickyCell} border-l text-center`}>
                     <div className="flex items-center justify-center gap-1">
-                      <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-rose-500 transition-colors">
-                        <Heart className="h-3.5 w-3.5" />
-                      </button>
-                      <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
-                        <Send className="h-3.5 w-3.5" />
-                      </button>
+                      <AddToTrackingButton
+                        isTracked={trackedMine.has(row.beian_hao)}
+                        onClick={() => setTrackingDialogFund({ beian_hao: row.beian_hao, product_name: row.product_name })}
+                      />
+                      <AddToTeamTrackingButton
+                        isTracked={trackedTeam.has(row.beian_hao)}
+                        onClick={() => setTeamTrackingDialogFund({ beian_hao: row.beian_hao, product_name: row.product_name })}
+                      />
                     </div>
                   </td>
                 </tr>
@@ -1231,6 +1253,24 @@ function PrivateFundTable({
           initial={addedCols}
           onConfirm={(cols) => { setAddedCols(cols); setShowAddMetric(false) }}
           onClose={() => setShowAddMetric(false)}
+        />
+      )}
+      {trackingDialogFund && (
+        <AddMyTrackingDialog
+          open
+          beian_hao={trackingDialogFund.beian_hao}
+          product_name={trackingDialogFund.product_name}
+          onClose={() => setTrackingDialogFund(null)}
+          onSaved={refreshTrackedIds}
+        />
+      )}
+      {teamTrackingDialogFund && (
+        <AddToTeamTrackingDialog
+          open
+          beian_hao={teamTrackingDialogFund.beian_hao}
+          product_name={teamTrackingDialogFund.product_name}
+          onClose={() => setTeamTrackingDialogFund(null)}
+          onSaved={refreshTrackedIds}
         />
       )}
     </div>
@@ -8014,8 +8054,8 @@ const DIRECT_FIELD_CONFIG_OPTIONS: Record<string, string[]> = {
 
 const OPS_AUDIT_LOG_TYPES = ["不限", "跟踪产品", "跟踪管理人", "要素", "在管产品", "团队数据"] as const
 
-function OpsAuditLogDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [logType, setLogType] = useState<string>("不限")
+function OpsAuditLogDialog({ open, onClose, initialType = "不限" }: { open: boolean; onClose: () => void; initialType?: string }) {
+  const [logType, setLogType] = useState<string>(initialType)
   const [page, setPage] = useState(1)
   const [logs, setLogs] = useState<{ operator: string; operated_at: string; action: string }[]>([])
   const [total, setTotal] = useState(0)
@@ -8045,9 +8085,9 @@ function OpsAuditLogDialog({ open, onClose }: { open: boolean; onClose: () => vo
   useEffect(() => {
     if (open) {
       setPage(1)
-      setLogType("不限")
+      setLogType(initialType)
     }
-  }, [open])
+  }, [open, initialType])
 
   if (!open) return null
 
@@ -11267,6 +11307,362 @@ function OperationsFofUnderlyingView() {
         beian_hao={fofScaleDialog?.beian_hao ?? null}
         product_name={fofScaleDialog?.product_name ?? ""}
         onClose={() => setFofScaleDialog(null)}
+      />
+    </div>
+  )
+}
+
+// ─── OperationsTeamDataView ──────────────────────────────────────────────────
+
+type TeamDataSortKey =
+  | "product_name" | "beian_hao"
+  | "platform_nav" | "platform_nav_date"
+  | "team_nav" | "team_nav_date" | "valuation_date"
+
+interface TeamDataRow {
+  id: string
+  beian_hao: string | null
+  product_name: string
+  platform_nav: string | null
+  platform_nav_date: string | null
+  team_nav: string | null
+  team_nav_date: string | null
+  valuation_date: string | null
+  product_source: string
+  strategy_l1: string | null
+}
+
+function OperationsTeamDataView() {
+  const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
+  const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
+  const [strategyL1, setStrategyL1] = useState("")
+  const [kwInput, setKwInput] = useState("")
+  const [keyword, setKeyword] = useState("")
+  const [sortKey, setSortKey] = useState<TeamDataSortKey | "">("")
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(50)
+  const [data, setData] = useState<TeamDataRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
+  const [showAuditLog, setShowAuditLog] = useState(false)
+  const [teamNoteDialog, setTeamNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+
+  useEffect(() => {
+    const params = new URLSearchParams({ strategy_source: strategySource, pool: "bfl_ops" })
+    fetch(`/ma/api/tracking-funds/strategies?${params}`)
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setStrategyHierarchy(d) : null)
+      .catch(() => {})
+  }, [strategySource])
+
+  useEffect(() => {
+    setPage(1)
+  }, [strategySource, strategyL1, keyword, pageSize])
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+      strategy_source: strategySource,
+      keyword,
+      dir: sortDir,
+    })
+    if (sortKey) params.set("sort", sortKey)
+    if (strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
+    else if (strategyL1) params.set("strategy_l1", strategyL1)
+    fetch(`/ma/api/ops/team-data/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        setData(Array.isArray(json.data) ? json.data : [])
+        setTotal(json.total ?? 0)
+        setSelected(new Set())
+      })
+      .catch(() => {
+        setData([])
+        setTotal(0)
+      })
+      .finally(() => setLoading(false))
+  }, [page, pageSize, strategySource, strategyL1, keyword, sortKey, sortDir])
+
+  function handleSort(col: TeamDataSortKey) {
+    if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+    else { setSortKey(col); setSortDir("asc") }
+  }
+
+  function TeamSortIcon({ col }: { col: TeamDataSortKey }) {
+    if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-30" />
+    return sortDir === "asc"
+      ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-red-500" />
+      : <ChevronDown className="inline h-3 w-3 ml-0.5 text-red-500" />
+  }
+
+  function toggleAll() {
+    if (selected.size === data.length && data.length > 0) setSelected(new Set())
+    else setSelected(new Set(data.map((r) => r.id)))
+  }
+
+  function fmtNav(v: string | null | undefined): string {
+    if (!v) return "—"
+    const n = parseFloat(v)
+    return Number.isFinite(n) ? n.toFixed(4) : "—"
+  }
+
+  function handleExport() {
+    const headers = ["产品名称", "备案号", "平台单位净值", "平台净值日期", "团队单位净值", "团队净值日期", "估值表日期", "产品来源"]
+    const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
+    const lines = [headers.join(",")]
+    for (const row of data) {
+      lines.push([
+        escape(row.product_name),
+        escape(row.beian_hao ?? ""),
+        escape(row.platform_nav ?? ""),
+        escape(row.platform_nav_date ?? ""),
+        escape(row.team_nav ?? ""),
+        escape(row.team_nav_date ?? ""),
+        escape(row.valuation_date ?? ""),
+        escape(row.product_source),
+      ].join(","))
+    }
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `团队数据_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function pageButtons(): (number | "…")[] {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1)
+    const pages: (number | "…")[] = [1]
+    if (page > 3) pages.push("…")
+    for (let p = Math.max(2, page - 1); p <= Math.min(totalPages - 1, page + 1); p++) pages.push(p)
+    if (page < totalPages - 2) pages.push("…")
+    pages.push(totalPages)
+    return pages
+  }
+
+  const thBase = "px-3 py-2.5 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+  const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  return (
+    <div className="flex flex-col h-full min-w-0">
+      <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
+        <div className="flex items-start px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">一级策略：</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <select
+                value={strategySource}
+                onChange={(e) => {
+                  const next = e.target.value as "company" | "platform"
+                  if (strategySource === next) return
+                  setStrategySource(next)
+                  setStrategyL1("")
+                  setPage(1)
+                }}
+                className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="company">团队策略</option>
+                <option value="platform">平台策略</option>
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+            </div>
+            <span
+              onClick={() => { setStrategyL1(""); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                !strategyL1
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                  : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+              ].join(" ")}
+            >
+              不限
+            </span>
+            {strategyHierarchy.map((node) => (
+              <span
+                key={node.l1}
+                onClick={() => { setStrategyL1(strategyL1 === node.l1 ? "" : node.l1); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                  strategyL1 === node.l1
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                    : "border-border text-zinc-500 hover:bg-muted/60",
+                ].join(" ")}
+              >
+                {node.l1}
+              </span>
+            ))}
+            <span
+              onClick={() => { setStrategyL1(strategyL1 === "__unconfigured__" ? "" : "__unconfigured__"); setPage(1) }}
+              className={[
+                "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                strategyL1 === "__unconfigured__"
+                  ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                  : "border-border text-zinc-500 hover:bg-muted/60",
+              ].join(" ")}
+            >
+              策略未配置
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center px-4 py-2">
+          <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
+          <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
+            <input
+              className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
+              placeholder="请输入产品/产品备案号，按回车搜索"
+              value={kwInput}
+              onChange={(e) => setKwInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && setKeyword(kwInput)}
+            />
+            <button onClick={() => setKeyword(kwInput)} className="text-muted-foreground hover:text-foreground transition-colors">
+              <Search className="h-3 w-3" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-3 mb-3 flex-shrink-0 text-xs text-zinc-600">
+        <button onClick={() => setShowAuditLog(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <ClipboardList className="h-3.5 w-3.5" /> 操作日志
+        </button>
+        <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+          <Download className="h-3.5 w-3.5" /> 导出
+        </button>
+      </div>
+
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-collapse w-full" style={{ minWidth: 1200 }}>
+          <thead className="sticky top-0 z-20">
+            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+              <th className={`${thBase} w-8 px-2`}>
+                <input type="checkbox" className="rounded h-3 w-3" checked={selected.size === data.length && data.length > 0} onChange={toggleAll} />
+              </th>
+              <th className={`${thBase} w-10`}>序号</th>
+              <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("product_name")}>产品名称<TeamSortIcon col="product_name" /></th>
+              <th className={`${thSort} min-w-[90px]`} onClick={() => handleSort("beian_hao")}>备案号<TeamSortIcon col="beian_hao" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav")}>平台单位净值<TeamSortIcon col="platform_nav" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("platform_nav_date")}>平台净值日期<TeamSortIcon col="platform_nav_date" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav")}>团队单位净值<TeamSortIcon col="team_nav" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("team_nav_date")}>团队净值日期<TeamSortIcon col="team_nav_date" /></th>
+              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("valuation_date")}>估值表日期<TeamSortIcon col="valuation_date" /></th>
+              <th className={`${thBase} min-w-[90px]`}>产品来源</th>
+              <th className={`${thBase} text-center w-20`}>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无邮箱同步产品</span>
+                  </div>
+                </td>
+              </tr>
+            ) : data.map((row, i) => {
+              const isSelected = selected.has(row.id)
+              const cell = `border-b px-3 py-2 ${isSelected ? "bg-blue-50 dark:bg-blue-950/40" : ""} group-hover:bg-muted transition-colors`
+              return (
+                <tr key={row.id} className="group">
+                  <td className={`${cell} px-2 text-center`}>
+                    <input type="checkbox" className="rounded h-3 w-3" checked={isSelected}
+                      onChange={() => {
+                        const s = new Set(selected)
+                        isSelected ? s.delete(row.id) : s.add(row.id)
+                        setSelected(s)
+                      }} />
+                  </td>
+                  <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
+                  <td className={cell}>
+                    <FundProductNameLink beian_hao={row.beian_hao} product_name={row.product_name} />
+                    {row.strategy_l1 && (
+                      <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-zinc-300/80 text-zinc-600 bg-zinc-50 dark:bg-zinc-800/50 dark:text-zinc-400">
+                        {row.strategy_l1}
+                      </span>
+                    )}
+                  </td>
+                  <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
+                  <td className={`${cell} tabular-nums`}>{fmtNav(row.platform_nav)}</td>
+                  <td className={`${cell} tabular-nums`}>{row.platform_nav_date ?? "—"}</td>
+                  <td className={`${cell} tabular-nums`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="font-medium">{fmtNav(row.team_nav)}</span>
+                      {row.team_nav && (
+                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800">团队</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className={`${cell} tabular-nums`}>{row.team_nav_date ?? "—"}</td>
+                  <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
+                  <td className={`${cell} text-zinc-600`}>{row.product_source}</td>
+                  <td className={`${cell} text-center`}>
+                    {row.beian_hao && (
+                      <OpsProductRowMenu
+                        rowKey={row.id}
+                        openRowMenu={openRowMenu}
+                        onOpenChange={setOpenRowMenu}
+                        beian_hao={row.beian_hao}
+                        onElementsManage={() => {}}
+                        onPermissionManage={() => {}}
+                        onNoteManage={() => setTeamNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                      />
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between pt-3 flex-shrink-0">
+        <span className="text-sm text-zinc-500">
+          共 <span className="font-semibold text-zinc-800 dark:text-zinc-200">{total.toLocaleString()}</span> 条
+        </span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">‹</button>
+          {pageButtons().map((btn, idx) =>
+            btn === "…" ? (
+              <span key={`td${idx}`} className="w-7 h-7 flex items-center justify-center text-xs text-muted-foreground">…</span>
+            ) : (
+              <button key={btn} onClick={() => setPage(btn as number)}
+                className={["w-7 h-7 flex items-center justify-center rounded border text-xs transition-colors",
+                  btn === page ? "bg-red-500 text-white border-red-500 font-medium" : "text-foreground hover:bg-muted border-border"].join(" ")}>
+                {btn}
+              </button>
+            )
+          )}
+          <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages || totalPages <= 1}
+            className="w-7 h-7 flex items-center justify-center rounded border text-sm hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors">›</button>
+          <div className="relative ml-3">
+            <select value={pageSize} onChange={(e) => setPageSize(parseInt(e.target.value, 10))}
+              className="h-7 appearance-none rounded border border-border bg-background pl-2 pr-7 text-xs text-zinc-600 focus:outline-none focus:ring-1 focus:ring-ring">
+              {[50, 100, 200].map((n) => <option key={n} value={n}>{n} 条/页</option>)}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
+          </div>
+        </div>
+      </div>
+
+      {showAuditLog && (
+        <OpsAuditLogDialog open={showAuditLog} onClose={() => setShowAuditLog(false)} initialType="团队数据" />
+      )}
+      <OpsTeamNoteDialog
+        open={!!teamNoteDialog}
+        beian_hao={teamNoteDialog?.beian_hao ?? null}
+        product_name={teamNoteDialog?.product_name ?? ""}
+        onClose={() => setTeamNoteDialog(null)}
       />
     </div>
   )
@@ -18622,7 +19018,8 @@ export default function PrivateFundsPage() {
           {activeTab === "operations" && activeSideItem === "ops-fof" && <OperationsFofUnderlyingView />}
           {activeTab === "operations" && activeSideItem === "ops-active-funds" && <OperationsManagedProductsView />}
           {activeTab === "operations" && activeSideItem === "ops-email-sync" && <OperationsEmailSyncView />}
-          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && (
+          {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView />}
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>
