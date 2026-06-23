@@ -7061,6 +7061,38 @@ function LiquiditySection() {
   )
 }
 
+const BRIEFING_CAPTURE_WIDTH = 794
+const BRIEFING_MAX_CANVAS_DIMENSION = 8192
+
+function measureBriefingCaptureHeight(root: HTMLElement): number {
+  const rootRect = root.getBoundingClientRect()
+  let maxBottom = root.scrollHeight
+  root.querySelectorAll<HTMLElement>("*").forEach((node) => {
+    const rect = node.getBoundingClientRect()
+    if (rect.height > 0) maxBottom = Math.max(maxBottom, rect.bottom - rootRect.top)
+  })
+  return Math.ceil(maxBottom + 8)
+}
+
+async function waitForBriefingLayoutStable(root: HTMLElement): Promise<number> {
+  window.dispatchEvent(new Event("resize"))
+  const canvases = root.querySelectorAll("canvas")
+  canvases[canvases.length - 1]?.scrollIntoView({ block: "end", inline: "nearest" })
+
+  let lastHeight = 0
+  for (let i = 0; i < 10; i++) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    if (i === 4) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 200))
+      window.dispatchEvent(new Event("resize"))
+    }
+    const height = measureBriefingCaptureHeight(root)
+    if (height === lastHeight && i >= 4) return height
+    lastHeight = height
+  }
+  return measureBriefingCaptureHeight(root)
+}
+
 export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
@@ -7151,22 +7183,25 @@ export default function RiskReportNewPage() {
     // overlapping text and charts. Temporarily render at full 794px for capture.
     const transformWrapper = el.parentElement
     const sizeWrapper = transformWrapper?.parentElement
-    const scrollEl = briefingScrollRef.current
     const savedPreview = {
       transform: transformWrapper?.style.transform ?? "",
       sizeWidth: sizeWrapper?.style.width ?? "",
       sizeHeight: sizeWrapper?.style.height ?? "",
-      scrollOverflow: scrollEl?.style.overflow ?? "",
     }
-    if (transformWrapper) transformWrapper.style.transform = "none"
-    if (sizeWrapper) {
-      sizeWrapper.style.width = "794px"
-      sizeWrapper.style.height = `${el.scrollHeight}px`
-    }
-    if (scrollEl) scrollEl.style.overflow = "hidden"
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+    const footer = el.querySelector<HTMLElement>(":scope > .absolute")
+    const savedFooterPosition = footer?.style.position ?? ""
 
     try {
+      if (transformWrapper) transformWrapper.style.transform = "none"
+      if (sizeWrapper) {
+        sizeWrapper.style.width = `${BRIEFING_CAPTURE_WIDTH}px`
+        sizeWrapper.style.height = "auto"
+      }
+      if (footer) footer.style.position = "static"
+
+      const captureHeight = await waitForBriefingLayoutStable(el)
+      if (sizeWrapper) sizeWrapper.style.height = `${captureHeight}px`
+
       const { default: html2canvas } = await import("html2canvas-pro")
 
       // Pre-snapshot every ECharts canvas from the live DOM *before* cloning.
@@ -7180,15 +7215,21 @@ export default function RiskReportNewPage() {
         h: c.offsetHeight,
       }))
 
-      const captureWidth = 794
-      const captureHeight = el.scrollHeight
+      const captureScale = Math.min(
+        2,
+        window.devicePixelRatio || 1,
+        BRIEFING_MAX_CANVAS_DIMENSION / BRIEFING_CAPTURE_WIDTH,
+        BRIEFING_MAX_CANVAS_DIMENSION / captureHeight,
+      )
 
       return await html2canvas(el, {
-      scale: Math.min(2, window.devicePixelRatio || 1),
+      scale: captureScale,
       useCORS: true,
       backgroundColor: "#ffffff",
-      windowWidth: captureWidth,
+      windowWidth: BRIEFING_CAPTURE_WIDTH,
       windowHeight: captureHeight,
+      height: captureHeight,
+      width: BRIEFING_CAPTURE_WIDTH,
       scrollX: 0,
       scrollY: 0,
       onclone: (clonedDoc) => {
@@ -7249,18 +7290,22 @@ export default function RiskReportNewPage() {
             text-shadow: none !important;
             box-shadow: none !important;
           }
+          /* Keep footer below the last chart instead of overlaying it */
+          #mom-briefing-printable > .absolute {
+            position: static !important;
+          }
           .no-print { display: none !important; }
         `
         clonedDoc.head.appendChild(style)
       },
     })
     } finally {
+      if (footer) footer.style.position = savedFooterPosition
       if (transformWrapper) transformWrapper.style.transform = savedPreview.transform
       if (sizeWrapper) {
         sizeWrapper.style.width = savedPreview.sizeWidth
         sizeWrapper.style.height = savedPreview.sizeHeight
       }
-      if (scrollEl) scrollEl.style.overflow = savedPreview.scrollOverflow
     }
   }, [])
 
