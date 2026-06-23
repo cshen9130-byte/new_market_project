@@ -289,6 +289,74 @@ export function buildEmailNavLatestExprs(fallbackNavExpr: string, fallbackDateEx
   }
 }
 
+export type EmailNavManageRow = {
+  id: string
+  nav_date: string
+  nav: string
+  cumulative_nav: string | null
+  source: string | null
+}
+
+function isVirtualNavRow(row: EmailNavRawRow): boolean {
+  const meta = `${row.subject ?? ""}${row.fund_name ?? ""}${row.attachment_filename ?? ""}`
+  return /虚拟/u.test(meta)
+}
+
+type EmailNavRawRowWithId = EmailNavRawRow & { id: string }
+
+export async function loadEmailNavManageRows(
+  beianHao: string,
+  productName: string,
+  shortName: string | null,
+  navType: "pre_fee" | "virtual",
+  extraNames: Array<string | null | undefined> = [],
+): Promise<EmailNavManageRow[]> {
+  await ensureEmailNavTable()
+  const aliases = collectFundNameAliases(productName, shortName, extraNames)
+  const beian = (beianHao ?? "").trim()
+
+  const rows = await query<EmailNavRawRowWithId>(
+    `SELECT e.id::text AS id, e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
+            e.fund_name, e.attachment_filename, e.subject, e.source
+     FROM ops_email_nav_records e
+     WHERE e.nav_date IS NOT NULL
+       AND e.nav IS NOT NULL
+       AND (
+         ($1 <> '' AND (
+           e.product_code = $1
+           OR COALESCE(e.attachment_filename, '') ILIKE '%' || $1 || '%'
+           OR COALESCE(e.subject, '') ILIKE '%' || $1 || '%'
+         ))
+         OR EXISTS (
+           SELECT 1 FROM unnest($2::text[]) AS alias(name)
+           WHERE name <> ''
+             AND (
+               BTRIM(e.fund_name) = alias.name
+               OR BTRIM(e.fund_name) LIKE alias.name || '%'
+             )
+         )
+       )
+     ORDER BY e.nav_date ASC, e.id ASC`,
+    [beian, aliases],
+  )
+
+  const typeFiltered = rows.filter((row) =>
+    navType === "virtual" ? isVirtualNavRow(row) : !isVirtualNavRow(row),
+  )
+  const stream = selectEmailSourceStream(typeFiltered, beian, aliases)
+  return stream.map((row) => {
+    const match = typeFiltered.find((r) => r.nav_date === row.nav_date && r.fund_name === row.fund_name)
+      ?? typeFiltered.find((r) => r.nav_date === row.nav_date)
+    return {
+      id: match?.id ?? row.nav_date,
+      nav_date: row.nav_date,
+      nav: row.nav,
+      cumulative_nav: row.cumulative_nav,
+      source: row.source,
+    }
+  })
+}
+
 export async function loadEmailNavSeries(
   beianHao: string,
   productName: string,

@@ -179,6 +179,30 @@ export async function addTeamDataProduct(params: {
   return { ok: true }
 }
 
+export async function removeTeamDataProduct(params: {
+  beian_hao: string
+}): Promise<{ ok: true } | { error: "missing_fields" | "not_found" | "not_removable" }> {
+  const beian_hao = params.beian_hao.trim()
+  if (!beian_hao) return { error: "missing_fields" }
+
+  await ensureTeamDataProductsTable()
+
+  const existing = await query<{ ok: number }>(
+    `SELECT 1 AS ok FROM ops_team_data_products WHERE beian_hao = $1 LIMIT 1`,
+    [beian_hao],
+  )
+  if (existing.length === 0) {
+    if (await teamDataProductInEmailNav(beian_hao)) {
+      return { error: "not_removable" }
+    }
+    return { error: "not_found" }
+  }
+
+  await query(`DELETE FROM ops_team_data_products WHERE beian_hao = $1`, [beian_hao])
+  invalidateTeamDataListCaches()
+  return { ok: true }
+}
+
 function resolveManualProduct(
   manual: ManualTeamDataProduct,
   indexes: IdentityIndexes,

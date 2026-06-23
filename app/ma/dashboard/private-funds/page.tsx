@@ -2,13 +2,14 @@
 
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react"
 import { createPortal } from "react-dom"
-import { useSearchParams } from "next/navigation"
+import { useSearchParams, useRouter } from "next/navigation"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -9844,6 +9845,23 @@ interface OpsProductRowMenuItem {
   destructive?: boolean
 }
 
+function OpsNavManageButton({ onClick }: { onClick?: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={onClick}
+          className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <LineChart className="h-3.5 w-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>净值管理</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function OpsProductRowMenu({
   beian_hao,
   onElementsManage,
@@ -9852,6 +9870,9 @@ function OpsProductRowMenu({
   onScaleManage,
   extraItems = [],
   footerItems = [],
+  trigger = "click",
+  showPermissionManage = true,
+  showLedgerManage = true,
 }: {
   rowKey?: string
   openRowMenu?: string | null
@@ -9863,29 +9884,54 @@ function OpsProductRowMenu({
   onScaleManage?: () => void
   extraItems?: OpsProductRowMenuItem[]
   footerItems?: OpsProductRowMenuItem[]
+  trigger?: "click" | "hover"
+  showPermissionManage?: boolean
+  showLedgerManage?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null)
   const [mounted, setMounted] = useState(false)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => { setMounted(true) }, [])
 
-  function handleToggle(e: React.MouseEvent<HTMLButtonElement>) {
-    if (open) { setOpen(false); setPos(null); return }
-    const rect = e.currentTarget.getBoundingClientRect()
+  function calcPos(rect: DOMRect) {
     const MENU_ESTIMATED_HEIGHT = 230
     const spaceBelow = window.innerHeight - rect.bottom
     if (spaceBelow < MENU_ESTIMATED_HEIGHT) {
-      setPos({ bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right })
-    } else {
-      setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+      return { bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right }
     }
+    return { top: rect.bottom + 4, right: window.innerWidth - rect.right }
+  }
+
+  function openAt(el: HTMLElement) {
+    setPos(calcPos(el.getBoundingClientRect()))
     setOpen(true)
   }
+
+  function handleToggle(e: React.MouseEvent<HTMLButtonElement>) {
+    if (open) { setOpen(false); setPos(null); return }
+    openAt(e.currentTarget)
+  }
+
+  function scheduleOpen(el: HTMLElement) {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+    hoverTimeout.current = setTimeout(() => openAt(el), 120)
+  }
+
+  function scheduleClose() {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+    hoverTimeout.current = setTimeout(() => close(), 150)
+  }
+
+  function cancelClose() {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+  }
+
   function close() { setOpen(false); setPos(null) }
 
   const standardStubs: OpsProductRowMenuItem[] = [
-    { label: "台账管理", icon: ClipboardList },
+    ...(showLedgerManage ? [{ label: "台账管理", icon: ClipboardList }] : []),
     { label: "估值表管理", icon: BarChart2 },
   ]
 
@@ -9908,20 +9954,28 @@ function OpsProductRowMenu({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={handleToggle}
-        className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest"
+      <div
+        className="relative inline-flex"
+        onMouseEnter={(e) => trigger === "hover" && scheduleOpen(e.currentTarget)}
+        onMouseLeave={() => trigger === "hover" && scheduleClose()}
       >
-        ···
-      </button>
+        <button
+          type="button"
+          onClick={trigger === "click" ? handleToggle : undefined}
+          className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest"
+        >
+          ···
+        </button>
+      </div>
       {mounted && open && pos && createPortal(
         <>
-          <div className="fixed inset-0 z-[100]" onClick={close} />
+          {trigger === "click" && <div className="fixed inset-0 z-[100]" onClick={close} />}
           <div
             className="fixed z-[101] bg-background border rounded-lg shadow-lg py-1 min-w-[148px]"
             style={{ top: pos.top, bottom: pos.bottom, right: pos.right }}
             onClick={(e) => e.stopPropagation()}
+            onMouseEnter={() => trigger === "hover" && cancelClose()}
+            onMouseLeave={() => trigger === "hover" && scheduleClose()}
           >
             <button
               onClick={() => { if (beian_hao) onElementsManage(); close() }}
@@ -9929,12 +9983,14 @@ function OpsProductRowMenu({
             >
               <FileSearch className="h-3.5 w-3.5 text-muted-foreground shrink-0" />要素管理
             </button>
-            <button
-              onClick={() => { if (beian_hao) onPermissionManage(); close() }}
-              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
-            >
-              <Key className="h-3.5 w-3.5 text-muted-foreground shrink-0" />权限管理
-            </button>
+            {showPermissionManage && (
+              <button
+                onClick={() => { if (beian_hao) onPermissionManage(); close() }}
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+              >
+                <Key className="h-3.5 w-3.5 text-muted-foreground shrink-0" />权限管理
+              </button>
+            )}
             <button
               onClick={() => { if (beian_hao) onNoteManage(); close() }}
               className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
@@ -11312,6 +11368,632 @@ function OperationsFofUnderlyingView() {
   )
 }
 
+// ─── OperationsTeamNavManageView ─────────────────────────────────────────────
+
+interface OpsTeamNavUploadPreviewRow {
+  seq: number
+  date: string
+  unit_nav: string
+  cumulative_nav: string
+}
+
+const TEAM_NAV_UPLOAD_MAX_BYTES = 3 * 1024 * 1024
+const TEAM_NAV_UPLOAD_ACCEPT = ".xlsx,.xls,.csv"
+
+function parseTeamNavCsvPreview(text: string): OpsTeamNavUploadPreviewRow[] {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean)
+  if (lines.length < 2) return []
+  const rows: OpsTeamNavUploadPreviewRow[] = []
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",").map((c) => c.trim().replace(/^"|"$/g, ""))
+    if (cols.length >= 2 && cols[0] && cols[1]) {
+      rows.push({
+        seq: rows.length + 1,
+        date: cols[0],
+        unit_nav: cols[1],
+        cumulative_nav: cols[2] ?? cols[1],
+      })
+    }
+  }
+  return rows
+}
+
+function parseTeamNavPastePreview(text: string): OpsTeamNavUploadPreviewRow[] {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean)
+  const rows: OpsTeamNavUploadPreviewRow[] = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    if (/净值日期|单位净值|累计净值/.test(trimmed) && !/\d{4}-\d{2}-\d{2}/.test(trimmed)) continue
+    const cols = trimmed.split(/[\s\t,，]+/).map((c) => c.trim()).filter(Boolean)
+    if (cols.length >= 2) {
+      rows.push({
+        seq: rows.length + 1,
+        date: cols[0],
+        unit_nav: cols[1],
+        cumulative_nav: cols[2] ?? cols[1],
+      })
+    }
+  }
+  return rows
+}
+
+function downloadTeamNavUploadTemplate() {
+  const csv = "\uFEFF日期,单位净值,累计净值\n2024-01-01,1.0000,1.0000\n"
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" })
+  const a = document.createElement("a")
+  a.href = URL.createObjectURL(blob)
+  a.download = "批量上传净值模板.csv"
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function OpsTeamNavUploadDialog({
+  open,
+  product_name,
+  onClose,
+  onUpload,
+}: {
+  open: boolean
+  product_name: string
+  onClose: () => void
+  onUpload: (rows: OpsTeamNavUploadPreviewRow[]) => void | Promise<void>
+}) {
+  const [tab, setTab] = useState<"single" | "batch" | "paste">("batch")
+  const [date, setDate] = useState("")
+  const [unitNav, setUnitNav] = useState("")
+  const [cumulativeNav, setCumulativeNav] = useState("")
+  const [pasteText, setPasteText] = useState("")
+  const [pasteResult, setPasteResult] = useState<OpsTeamNavUploadPreviewRow[]>([])
+  const [saving, setSaving] = useState(false)
+  const [batchFile, setBatchFile] = useState<File | null>(null)
+  const [batchPreview, setBatchPreview] = useState<OpsTeamNavUploadPreviewRow[]>([])
+  const [batchError, setBatchError] = useState("")
+  const [isDragOver, setIsDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const previewRows = batchPreview
+
+  useEffect(() => {
+    if (!open) return
+    setTab("batch")
+    setDate("")
+    setUnitNav("")
+    setCumulativeNav("")
+    setPasteText("")
+    setPasteResult([])
+    setSaving(false)
+    setBatchFile(null)
+    setBatchPreview([])
+    setBatchError("")
+    setIsDragOver(false)
+  }, [open])
+
+  function handlePasteIdentify() {
+    setBatchError("")
+    const rows = parseTeamNavPastePreview(pasteText)
+    if (rows.length === 0 && pasteText.trim()) {
+      setBatchError("未能识别有效数据，请检查格式")
+    }
+    setPasteResult(rows)
+  }
+
+  function handlePasteReset() {
+    setPasteText("")
+    setPasteResult([])
+    setBatchError("")
+  }
+
+  async function handleBatchFile(file: File) {
+    setBatchError("")
+    if (file.size > TEAM_NAV_UPLOAD_MAX_BYTES) {
+      setBatchFile(null)
+      setBatchPreview([])
+      setBatchError("文件大小不能超过3M")
+      return
+    }
+    const ext = file.name.split(".").pop()?.toLowerCase() ?? ""
+    if (!["xlsx", "xls", "csv"].includes(ext)) {
+      setBatchFile(null)
+      setBatchPreview([])
+      setBatchError("只能上传 Excel 文件或 CSV 文件")
+      return
+    }
+    setBatchFile(file)
+    if (ext === "csv") {
+      const text = await file.text()
+      setBatchPreview(parseTeamNavCsvPreview(text))
+    } else {
+      setBatchPreview([])
+    }
+  }
+
+  async function handleConfirm() {
+    if (saving) return
+    let rows: OpsTeamNavUploadPreviewRow[] = []
+    if (tab === "single") {
+      if (!date || !unitNav.trim()) return
+      rows = [{
+        seq: 1,
+        date,
+        unit_nav: unitNav.trim(),
+        cumulative_nav: cumulativeNav.trim() || unitNav.trim(),
+      }]
+    } else if (tab === "paste") {
+      if (pasteResult.length === 0) return
+      rows = pasteResult
+    } else {
+      if (!batchFile || batchPreview.length === 0) return
+      rows = batchPreview
+    }
+    setSaving(true)
+    setBatchError("")
+    try {
+      await onUpload(rows)
+      onClose()
+    } catch (err) {
+      setBatchError(err instanceof Error ? err.message : "上传失败，请稍后重试")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className={[
+          "bg-background rounded-lg shadow-xl w-full flex flex-col max-h-[90vh]",
+          tab === "paste" ? "max-w-[920px]" : "max-w-[560px]",
+        ].join(" ")}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">上传团队净值</span>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0">
+          <div className="flex items-center gap-2">
+            <span className="w-1 h-4 bg-red-500 rounded-full shrink-0" />
+            <span className="font-medium text-sm">{product_name}</span>
+          </div>
+
+          <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+            团队净值仅本团队可访问查看
+          </div>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            {([["single", "单条上传"], ["batch", "批量上传"], ["paste", "粘贴上传"]] as const).map(([key, label]) => (
+              <span
+                key={key}
+                onClick={() => setTab(key)}
+                className={[
+                  "inline-flex items-center px-3 py-1 rounded-full border text-sm cursor-pointer transition-colors",
+                  tab === key
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+
+          {tab === "single" ? (
+            <div className="space-y-4">
+              <div className="flex items-start gap-4">
+                <span className="text-sm shrink-0 w-20 text-right pt-2 text-zinc-600">日期：</span>
+                <div className="flex-1 relative">
+                  <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="date"
+                    value={date}
+                    onChange={(e) => setDate(e.target.value)}
+                    className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                </div>
+              </div>
+              <div className="flex items-start gap-4">
+                <span className="text-sm shrink-0 w-20 text-right pt-2 text-zinc-600">单位净值：</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={unitNav}
+                  onChange={(e) => setUnitNav(e.target.value)}
+                  className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+              <div className="flex items-start gap-4">
+                <span className="text-sm shrink-0 w-20 text-right pt-2 text-zinc-600">累计净值：</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={cumulativeNav}
+                  onChange={(e) => setCumulativeNav(e.target.value)}
+                  placeholder="默认同单位净值"
+                  className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                />
+              </div>
+            </div>
+          ) : tab === "paste" ? (
+            <div className="space-y-3">
+              <div className="flex gap-4 items-stretch min-h-[280px]">
+                <div className="flex-[1.1] flex flex-col min-w-0">
+                  <div className="text-sm font-medium mb-2">粘贴内容</div>
+                  <textarea
+                    value={pasteText}
+                    onChange={(e) => setPasteText(e.target.value)}
+                    placeholder={"请粘贴净值数据，每行三条（无需表头）\n列顺序：净值日期、单位净值、累计净值\n\n示例：\n2023-03-03 1.2222 1.3333\n2023-03-04 1.2345 1.3456"}
+                    className="flex-1 min-h-[260px] rounded border border-border bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring placeholder:text-muted-foreground/60 leading-relaxed"
+                  />
+                </div>
+                <div className="flex flex-col justify-center gap-3 shrink-0 px-1">
+                  <button
+                    type="button"
+                    onClick={handlePasteIdentify}
+                    className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors whitespace-nowrap"
+                  >
+                    识别
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePasteReset}
+                    className="px-5 py-1.5 rounded border text-sm hover:bg-muted transition-colors whitespace-nowrap"
+                  >
+                    重置
+                  </button>
+                </div>
+                <div className="flex-1 flex flex-col min-w-0">
+                  <div className="text-sm font-medium mb-2">识别结果</div>
+                  <div className="flex-1 rounded-lg border overflow-hidden min-h-[260px]">
+                    <table className="w-full text-sm border-collapse h-full">
+                      <thead>
+                        <tr className="bg-muted/40 border-b">
+                          <th className="px-3 py-2.5 text-left font-semibold text-zinc-500">净值日期</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-zinc-500">单位净值</th>
+                          <th className="px-3 py-2.5 text-left font-semibold text-zinc-500">累计净值</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pasteResult.length === 0 ? (
+                          <tr>
+                            <td colSpan={3} className="py-16 text-center text-muted-foreground">
+                              <div className="flex flex-col items-center gap-2">
+                                <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                                <span className="text-sm">暂无数据</span>
+                              </div>
+                            </td>
+                          </tr>
+                        ) : pasteResult.map((row) => (
+                          <tr key={`${row.seq}-${row.date}`} className="border-b last:border-b-0">
+                            <td className="px-3 py-2.5 tabular-nums">{row.date}</td>
+                            <td className="px-3 py-2.5 tabular-nums">{row.unit_nav}</td>
+                            <td className="px-3 py-2.5 tabular-nums">{row.cumulative_nav}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+              {batchError && <p className="text-xs text-red-500">{batchError}</p>}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div
+                className={[
+                  "relative flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-8 text-center transition-colors cursor-pointer",
+                  isDragOver ? "border-red-400 bg-red-50/50 dark:bg-red-950/20" : "border-border hover:border-red-300 hover:bg-muted/30",
+                ].join(" ")}
+                onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+                onDragEnter={(e) => { e.preventDefault(); setIsDragOver(true) }}
+                onDragLeave={() => setIsDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  setIsDragOver(false)
+                  const file = e.dataTransfer.files?.[0]
+                  if (file) void handleBatchFile(file)
+                }}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={TEAM_NAV_UPLOAD_ACCEPT}
+                  className="sr-only"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) void handleBatchFile(file)
+                    e.target.value = ""
+                  }}
+                />
+                <Inbox className="h-10 w-10 text-red-500" strokeWidth={1.25} />
+                <p className="text-sm">
+                  将文件拖到此处，或
+                  <span className="text-blue-600 dark:text-blue-400">点击上传</span>
+                </p>
+                {batchFile && <p className="text-xs text-muted-foreground">{batchFile.name}</p>}
+              </div>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                只能上传 Excel 文件或 CSV 文件，且大小不超过 3M。
+                <button type="button" onClick={downloadTeamNavUploadTemplate} className="text-blue-600 dark:text-blue-400 hover:underline ml-1">
+                  点击下载批量上传净值模板
+                </button>
+              </p>
+              {batchError && <p className="text-xs text-red-500">{batchError}</p>}
+            </div>
+          )}
+
+          {tab === "batch" && (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="bg-muted/40 border-b">
+                    <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">日期</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">单位净值</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">累计净值</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="py-12 text-center text-muted-foreground">
+                        <div className="flex flex-col items-center gap-2">
+                          <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                          <span className="text-sm">暂无数据</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : previewRows.map((row) => (
+                    <tr key={`${row.seq}-${row.date}`} className="border-b last:border-b-0">
+                      <td className="px-4 py-2.5 tabular-nums">{row.date}</td>
+                      <td className="px-4 py-2.5 tabular-nums">{row.unit_nav}</td>
+                      <td className="px-4 py-2.5 tabular-nums">{row.cumulative_nav}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {batchError && tab === "single" && <p className="text-xs text-red-500">{batchError}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0">
+          <button type="button" onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
+          <button
+            type="button"
+            disabled={
+              saving
+              || (tab === "single" ? !date || !unitNav.trim() : tab === "paste" ? pasteResult.length === 0 : !batchFile || batchPreview.length === 0)
+            }
+            onClick={() => void handleConfirm()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? "处理中…" : "上传"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type TeamNavManageRow = {
+  id: string
+  nav_date: string
+  unit_nav: string
+  cumulative_nav: string
+  adjusted_nav: string | null
+  price_change: string | null
+  nav_source: string
+  calculating: boolean
+}
+
+function OperationsTeamNavManageView({
+  beian_hao,
+  product_name,
+  onBack,
+}: {
+  beian_hao: string
+  product_name: string
+  onBack: () => void
+}) {
+  const [navType, setNavType] = useState<"pre_fee" | "virtual">("pre_fee")
+  const [rows, setRows] = useState<TeamNavManageRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [showUploadDialog, setShowUploadDialog] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({
+      beian_hao,
+      product_name,
+      nav_type: navType,
+    })
+    fetch(`/ma/api/ops/team-data/nav/list?${params}`)
+      .then((r) => r.json())
+      .then((json) => setRows(Array.isArray(json.data) ? json.data : []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false))
+  }, [beian_hao, product_name, navType, reloadKey])
+
+  function handleExport() {
+    const headers = ["净值日期", "单位净值", "累计净值", "复权净值", "涨跌幅", "净值来源"]
+    const escape = (v: string) => `"${v.replace(/"/g, '""')}"`
+    const lines = [headers.join(",")]
+    for (const row of rows) {
+      lines.push([
+        escape(row.nav_date),
+        escape(row.unit_nav),
+        escape(row.cumulative_nav),
+        escape(row.adjusted_nav ?? "计算中"),
+        escape(row.price_change ?? "计算中"),
+        escape(row.nav_source),
+      ].join(","))
+    }
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `${product_name}_净值_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 px-6 py-4">
+      <div className="flex items-center gap-2 mb-4 flex-shrink-0">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          ← 返回团队数据
+        </button>
+      </div>
+
+      <h1 className="text-xl font-semibold text-foreground mb-2 flex-shrink-0">{product_name}</h1>
+      <p className="text-xs text-muted-foreground mb-4 flex-shrink-0 leading-relaxed">
+        说明：团队净值仅本团队可访问查看，净值如更新，会重新计算复权净值，可5分钟后刷新查看。
+      </p>
+
+      <div className="flex items-center justify-between border-b mb-4 flex-shrink-0">
+        <div className="flex items-center gap-6">
+          <button
+            type="button"
+            onClick={() => setNavType("pre_fee")}
+            className={[
+              "pb-2 text-sm transition-colors border-b-2 -mb-px",
+              navType === "pre_fee"
+                ? "text-red-500 border-red-500 font-medium"
+                : "text-muted-foreground border-transparent hover:text-foreground",
+            ].join(" ")}
+          >
+            费前净值
+          </button>
+          <button
+            type="button"
+            onClick={() => setNavType("virtual")}
+            className={[
+              "pb-2 text-sm transition-colors border-b-2 -mb-px",
+              navType === "virtual"
+                ? "text-red-500 border-red-500 font-medium"
+                : "text-muted-foreground border-transparent hover:text-foreground",
+            ].join(" ")}
+          >
+            虚拟单位净值
+          </button>
+        </div>
+        <div className="flex items-center gap-3 pb-2 text-xs text-zinc-600">
+          <button type="button" className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
+            <Search className="h-3.5 w-3.5" /> 净值缺失设置
+          </button>
+          <button type="button" className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
+            <MinusCircle className="h-3.5 w-3.5" /> 清空净值
+          </button>
+          <button type="button" onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
+            <Download className="h-3.5 w-3.5" /> 导出
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowUploadDialog(true)}
+            className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors"
+          >
+            上传净值
+          </button>
+        </div>
+      </div>
+
+      <div className="overflow-auto rounded-lg border flex-1 min-h-0">
+        <table className="text-sm border-collapse w-full">
+          <thead className="sticky top-0 z-10">
+            <tr className="bg-muted/40 border-b">
+              <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-16">序号</th>
+              <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-32">净值日期</th>
+              <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">单位净值</th>
+              <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">累计净值</th>
+              <th className="px-4 py-2.5 text-left font-semibold text-zinc-500">复权净值</th>
+              <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-24">涨跌幅</th>
+              <th className="px-4 py-2.5 text-left font-semibold text-zinc-500 w-28">净值来源</th>
+              <th className="px-4 py-2.5 text-center font-semibold text-zinc-500 w-20">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={8} className="py-16 text-center text-muted-foreground">加载中…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr>
+                <td colSpan={8} className="py-16 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                    <span>暂无净值数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : rows.map((row, i) => (
+              <tr key={row.id} className="border-b hover:bg-muted/30 transition-colors">
+                <td className="px-4 py-2.5 tabular-nums text-muted-foreground">{i + 1}</td>
+                <td className="px-4 py-2.5 tabular-nums">{row.nav_date}</td>
+                <td className="px-4 py-2.5 tabular-nums font-medium">{row.unit_nav}</td>
+                <td className="px-4 py-2.5 tabular-nums">{row.cumulative_nav}</td>
+                <td className="px-4 py-2.5 tabular-nums">
+                  {row.calculating || !row.adjusted_nav
+                    ? <span className="text-muted-foreground">计算中</span>
+                    : row.adjusted_nav}
+                </td>
+                <td className="px-4 py-2.5 tabular-nums">
+                  {row.calculating || !row.price_change
+                    ? <span className="text-muted-foreground">计算中</span>
+                    : row.price_change}
+                </td>
+                <td className="px-4 py-2.5 text-zinc-600">{row.nav_source}</td>
+                <td className="px-4 py-2.5 text-center">
+                  <div className="flex items-center justify-center gap-3">
+                    <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled title="编辑">
+                      <Pencil className="h-3.5 w-3.5" />
+                    </button>
+                    <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-red-500 transition-colors opacity-50 cursor-not-allowed" disabled title="删除">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <OpsTeamNavUploadDialog
+        open={showUploadDialog}
+        product_name={product_name}
+        onClose={() => setShowUploadDialog(false)}
+        onUpload={async (uploadRows) => {
+          const res = await fetch("/ma/api/ops/team-data/nav/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              beian_hao,
+              product_name,
+              nav_type: navType,
+              rows: uploadRows.map((r) => ({
+                nav_date: r.date,
+                unit_nav: r.unit_nav,
+                cumulative_nav: r.cumulative_nav,
+              })),
+            }),
+          })
+          if (!res.ok) {
+            const json = await res.json().catch(() => ({}))
+            throw new Error(json.error || "upload_failed")
+          }
+          setReloadKey((k) => k + 1)
+        }}
+      />
+    </div>
+  )
+}
+
 // ─── OperationsTeamDataView ──────────────────────────────────────────────────
 
 type TeamDataSortKey =
@@ -11333,6 +12015,30 @@ interface TeamDataRow {
 }
 
 function OperationsTeamDataView() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const navManageBeian = searchParams.get("beian_hao")
+  const navManageProductName = searchParams.get("product_name") ?? ""
+  const navManageMode = searchParams.get("nav") === "manage" && !!navManageBeian
+
+  function openNavManage(beian_hao: string, product_name: string) {
+    const params = new URLSearchParams()
+    params.set("tab", "operations")
+    params.set("side", "ops-team-data")
+    params.set("nav", "manage")
+    params.set("beian_hao", beian_hao)
+    params.set("product_name", product_name)
+    window.open(`/ma/dashboard/private-funds?${params.toString()}`, "_blank")
+  }
+
+  function closeNavManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("nav")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
   const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
@@ -11348,9 +12054,14 @@ function OperationsTeamDataView() {
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
   const [showAuditLog, setShowAuditLog] = useState(false)
   const [teamNoteDialog, setTeamNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [teamElementsDialog, setTeamElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [teamSyncNavDialog, setTeamSyncNavDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [teamScaleDialog, setTeamScaleDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [teamRemoveDialog, setTeamRemoveDialog] = useState<{ beian_hao: string; product_name: string; product_source: string } | null>(null)
+  const [teamRemoveSaving, setTeamRemoveSaving] = useState(false)
+  const [teamRemoveError, setTeamRemoveError] = useState<string | null>(null)
   const [showTeamDataAddDialog, setShowTeamDataAddDialog] = useState(false)
   const [addTeamFundSearch, setAddTeamFundSearch] = useState("")
   const [addTeamFundSelected, setAddTeamFundSelected] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -11548,6 +12259,16 @@ function OperationsTeamDataView() {
 
   const thBase = "px-3 py-2.5 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
   const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  if (navManageMode && navManageBeian) {
+    return (
+      <OperationsTeamNavManageView
+        beian_hao={navManageBeian}
+        product_name={navManageProductName}
+        onBack={closeNavManage}
+      />
+    )
+  }
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -11812,17 +12533,43 @@ function OperationsTeamDataView() {
                   <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
                   <td className={`${cell} text-zinc-600`}>{row.product_source}</td>
                   <td className={`${cell} text-center`}>
-                    {row.beian_hao && (
-                      <OpsProductRowMenu
-                        rowKey={row.id}
-                        openRowMenu={openRowMenu}
-                        onOpenChange={setOpenRowMenu}
-                        beian_hao={row.beian_hao}
-                        onElementsManage={() => {}}
-                        onPermissionManage={() => {}}
-                        onNoteManage={() => setTeamNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
-                      />
-                    )}
+                    <div className="flex items-center justify-center gap-4">
+                      {row.beian_hao && (
+                        <OpsNavManageButton
+                          onClick={() => openNavManage(row.beian_hao!, row.product_name)}
+                        />
+                      )}
+                      {row.beian_hao && (
+                        <OpsProductRowMenu
+                          trigger="hover"
+                          showPermissionManage={false}
+                          showLedgerManage={false}
+                          beian_hao={row.beian_hao}
+                          onElementsManage={() => setTeamElementsDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                          onPermissionManage={() => {}}
+                          onNoteManage={() => setTeamNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                          onScaleManage={() => setTeamScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                          extraItems={[{
+                            label: "同步净值",
+                            icon: RefreshCw,
+                            onClick: () => setTeamSyncNavDialog({ beian_hao: row.beian_hao!, product_name: row.product_name }),
+                          }]}
+                          footerItems={[{
+                            label: "移出列表",
+                            icon: Trash2,
+                            destructive: true,
+                            onClick: () => {
+                              setTeamRemoveError(null)
+                              setTeamRemoveDialog({
+                                beian_hao: row.beian_hao!,
+                                product_name: row.product_name,
+                                product_source: row.product_source,
+                              })
+                            },
+                          }]}
+                        />
+                      )}
+                    </div>
                   </td>
                 </tr>
               )
@@ -11870,6 +12617,87 @@ function OperationsTeamDataView() {
         product_name={teamNoteDialog?.product_name ?? ""}
         onClose={() => setTeamNoteDialog(null)}
       />
+      <OpsEditElementsDialog
+        open={!!teamElementsDialog}
+        beian_hao={teamElementsDialog?.beian_hao ?? null}
+        product_name={teamElementsDialog?.product_name ?? ""}
+        onClose={() => setTeamElementsDialog(null)}
+      />
+      <OpsSyncNavDialog
+        open={!!teamSyncNavDialog}
+        beian_hao={teamSyncNavDialog?.beian_hao ?? null}
+        product_name={teamSyncNavDialog?.product_name ?? ""}
+        onClose={() => setTeamSyncNavDialog(null)}
+        onSynced={() => setTeamDataReloadKey((k) => k + 1)}
+      />
+      <OpsScaleManageDialog
+        open={!!teamScaleDialog}
+        beian_hao={teamScaleDialog?.beian_hao ?? null}
+        product_name={teamScaleDialog?.product_name ?? ""}
+        onClose={() => setTeamScaleDialog(null)}
+      />
+
+      {teamRemoveDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => !teamRemoveSaving && setTeamRemoveDialog(null)}>
+          <div className="bg-background rounded-lg shadow-xl w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 flex-shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div>
+                <p className="font-semibold text-sm mb-1">移出团队数据</p>
+                <p className="text-sm text-zinc-500">确定要将「{teamRemoveDialog.product_name}」从团队数据列表中移出吗？</p>
+              </div>
+            </div>
+            {teamRemoveError && (
+              <p className="text-xs text-red-500 mb-3 text-right">
+                {teamRemoveError === "not_removable"
+                  ? "邮箱同步产品无法移出，仅手动添加的产品可移出"
+                  : teamRemoveError === "not_found"
+                    ? "该产品不存在或已被移出"
+                    : `移出失败：${teamRemoveError}`}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTeamRemoveDialog(null)}
+                disabled={teamRemoveSaving}
+                className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                取 消
+              </button>
+              <button
+                type="button"
+                disabled={teamRemoveSaving}
+                onClick={async () => {
+                  setTeamRemoveSaving(true)
+                  setTeamRemoveError(null)
+                  try {
+                    const res = await fetch("/ma/api/ops/team-data/remove", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ beian_hao: teamRemoveDialog.beian_hao }),
+                    })
+                    const json = await res.json()
+                    if (!res.ok) {
+                      setTeamRemoveError(json.error || "unknown")
+                      return
+                    }
+                    setTeamRemoveDialog(null)
+                    setTeamDataReloadKey((k) => k + 1)
+                  } catch {
+                    setTeamRemoveError("network_error")
+                  } finally {
+                    setTeamRemoveSaving(false)
+                  }
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                {teamRemoveSaving ? "处理中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showTeamDataAddDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closeTeamDataAddDialog}>
