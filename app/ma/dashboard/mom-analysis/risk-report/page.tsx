@@ -7064,6 +7064,73 @@ function LiquiditySection() {
 const BRIEFING_CAPTURE_WIDTH = 794
 const BRIEFING_MAX_CANVAS_DIMENSION = 8192
 
+function isBriefingCanvasRendered(canvas: HTMLCanvasElement): boolean {
+  if (canvas.width < 2 || canvas.height < 2) return false
+  if (canvas.offsetWidth < 20 || canvas.offsetHeight < 20) return false
+  try {
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return false
+    const w = Math.min(24, canvas.width)
+    const h = Math.min(24, canvas.height)
+    const x = Math.max(0, Math.floor(canvas.width / 2) - Math.floor(w / 2))
+    const y = Math.max(0, Math.floor(canvas.height / 2) - Math.floor(h / 2))
+    const sample = ctx.getImageData(x, y, w, h)
+    for (let i = 3; i < sample.data.length; i += 4) {
+      if (sample.data[i] > 8) return true
+    }
+    return false
+  } catch {
+    return true
+  }
+}
+
+function briefingSourceStillLoading(source: HTMLElement): boolean {
+  return Array.from(source.querySelectorAll("p, div, span")).some((el) => {
+    const text = (el.textContent ?? "").trim()
+    if (text !== "加载中…" && text !== "加载中...") return false
+    return !el.querySelector("canvas")
+  })
+}
+
+async function waitForBriefingSourceReady(source: HTMLElement, timeoutMs = 45000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+  const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+
+  while (Date.now() < deadline) {
+    if (briefingSourceStillLoading(source)) {
+      await pause(150)
+      continue
+    }
+
+    const canvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
+    if (canvases.length === 0) {
+      window.dispatchEvent(new Event("resize"))
+      await nextFrame()
+      await pause(150)
+      continue
+    }
+
+    for (const canvas of canvases) {
+      canvas.scrollIntoView({ block: "center", inline: "nearest" })
+      await nextFrame()
+    }
+    window.dispatchEvent(new Event("resize"))
+    await nextFrame()
+    await nextFrame()
+    await pause(250)
+
+    const renderedCount = canvases.filter(isBriefingCanvasRendered).length
+    if (renderedCount === canvases.length) {
+      await pause(300)
+      const stableCanvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
+      if (stableCanvases.every(isBriefingCanvasRendered)) return
+    }
+
+    await pause(200)
+  }
+}
+
 function bakeBriefingComputedStyles(sourceRoot: HTMLElement, clonedRoot: HTMLElement) {
   const sourceElements = [sourceRoot, ...Array.from(sourceRoot.querySelectorAll("*"))]
   const clonedElements = [clonedRoot, ...Array.from(clonedRoot.querySelectorAll("*"))]
@@ -7128,14 +7195,16 @@ async function waitForBriefingCaptureImages(root: HTMLElement) {
 }
 
 async function prepareBriefingCaptureClone(source: HTMLElement) {
+  await waitForBriefingSourceReady(source)
+
   const canvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
   for (const canvas of canvases) {
-    if (canvas.offsetWidth > 0 && canvas.offsetHeight > 0) continue
     canvas.scrollIntoView({ block: "center", inline: "nearest" })
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
   }
   window.dispatchEvent(new Event("resize"))
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+  await new Promise<void>((resolve) => setTimeout(resolve, 200))
 
   const snapshots = canvases.map((canvas) => ({
     dataUrl: canvas.toDataURL("image/png"),
@@ -7203,6 +7272,13 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
     outline-color: transparent !important;
     text-shadow: none !important;
     box-shadow: none !important;
+  }
+  [data-briefing-capture-clone] .briefing-masthead-title {
+    display: flex !important;
+    align-items: baseline !important;
+    gap: 0.5rem !important;
+    white-space: nowrap !important;
+    flex-wrap: nowrap !important;
   }
   .no-print { display: none !important; }
 `
@@ -8931,9 +9007,10 @@ export default function RiskReportNewPage() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] tracking-[0.35em] text-[#5a6a7a] uppercase mb-1">MOM Portfolio Management</p>
-                    <h1 className="text-4xl font-black tracking-tight text-[#1a3a5c]"
+                    <h1 className="briefing-masthead-title text-4xl font-black tracking-tight text-[#1a3a5c] flex items-baseline gap-2 whitespace-nowrap"
                         style={{ fontFamily: "'Noto Serif SC','SimHei',serif", letterSpacing: "-0.01em" }}>
-                      MOM 风控简报
+                      <span>MOM</span>
+                      <span>风控简报</span>
                     </h1>
                     <p className="text-sm text-[#5a6a7a] mt-0.5 tracking-wide">
                       每日风险与业绩速览
