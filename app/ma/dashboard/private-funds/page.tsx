@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
@@ -11440,6 +11440,49 @@ function parseTeamNavCsvPreview(text: string): OpsTeamNavUploadPreviewRow[] {
   return rows
 }
 
+function formatTeamNavUploadDate(value: unknown): string {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10)
+  }
+  const text = String(value ?? "").trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10)
+  return text
+}
+
+function parseTeamNavSheetPreview(rows: unknown[][]): OpsTeamNavUploadPreviewRow[] {
+  if (rows.length < 2) return []
+  const header = rows[0].map((cell) => String(cell ?? "").trim())
+  const dateIdx = header.findIndex((h) => /日期|净值日期/.test(h))
+  const unitIdx = header.findIndex((h) => /单位净值/.test(h))
+  const cumIdx = header.findIndex((h) => /累计净值/.test(h))
+  const parsed: OpsTeamNavUploadPreviewRow[] = []
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i]
+    if (!Array.isArray(row)) continue
+    const date = formatTeamNavUploadDate(row[dateIdx >= 0 ? dateIdx : 0])
+    const unitNav = String(row[unitIdx >= 0 ? unitIdx : 1] ?? "").trim()
+    const cumulativeNav = String(row[cumIdx >= 0 ? cumIdx : 2] ?? unitNav).trim()
+    if (!date || !unitNav) continue
+    parsed.push({
+      seq: parsed.length + 1,
+      date,
+      unit_nav: unitNav,
+      cumulative_nav: cumulativeNav || unitNav,
+    })
+  }
+  return parsed
+}
+
+async function parseTeamNavXlsxPreview(file: File): Promise<OpsTeamNavUploadPreviewRow[]> {
+  const XLSX = await import("xlsx")
+  const buffer = await file.arrayBuffer()
+  const workbook = XLSX.read(buffer, { type: "array", cellDates: true })
+  const sheet = workbook.Sheets[workbook.SheetNames[0]]
+  if (!sheet) return []
+  const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "" })
+  return parseTeamNavSheetPreview(rows)
+}
+
 function parseTeamNavPastePreview(text: string): OpsTeamNavUploadPreviewRow[] {
   const lines = text.trim().split(/\r?\n/).filter(Boolean)
   const rows: OpsTeamNavUploadPreviewRow[] = []
@@ -11542,11 +11585,20 @@ function OpsTeamNavUploadDialog({
       return
     }
     setBatchFile(file)
-    if (ext === "csv") {
-      const text = await file.text()
-      setBatchPreview(parseTeamNavCsvPreview(text))
-    } else {
+    try {
+      if (ext === "csv") {
+        const text = await file.text()
+        setBatchPreview(parseTeamNavCsvPreview(text))
+      } else {
+        const rows = await parseTeamNavXlsxPreview(file)
+        setBatchPreview(rows)
+        if (rows.length === 0) {
+          setBatchError("未能识别有效数据，请检查文件格式（需包含日期、单位净值列）")
+        }
+      }
+    } catch {
       setBatchPreview([])
+      setBatchError("文件解析失败，请检查格式后重试")
     }
   }
 
@@ -12308,6 +12360,188 @@ function OpsTeamNavMissingSettingsDialog({
   )
 }
 
+function OpsTeamNavBatchMissingSettingsDialog({
+  open,
+  products,
+  onClose,
+  onSaved,
+}: {
+  open: boolean
+  products: { beian_hao: string; product_name: string }[]
+  onClose: () => void
+  onSaved?: () => void
+}) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const [monitorEnabled, setMonitorEnabled] = useState(true)
+  const [monitorFrequency, setMonitorFrequency] = useState<"" | TeamNavMonitorFrequency>("")
+  const [monitorStartDate, setMonitorStartDate] = useState("")
+
+  useEffect(() => {
+    if (!open) return
+    setSaving(false)
+    setError("")
+    setMonitorEnabled(true)
+    setMonitorFrequency("")
+    setMonitorStartDate("")
+  }, [open])
+
+  async function handleConfirm() {
+    if (saving) return
+    if (!monitorFrequency) {
+      setError("请选择监控频率")
+      return
+    }
+    if (monitorEnabled && !monitorStartDate.trim()) {
+      setError("请选择监控起点")
+      return
+    }
+    const targets = products.filter((p) => p.beian_hao)
+    if (targets.length === 0) {
+      setError("未选择有效产品")
+      return
+    }
+
+    setSaving(true)
+    setError("")
+    try {
+      for (const product of targets) {
+        const res = await fetch("/ma/api/ops/team-data/nav/missing-settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            beian_hao: product.beian_hao,
+            nav_type: "pre_fee",
+            monitor_frequency: monitorFrequency,
+            monitor_start_date: monitorStartDate,
+            monitor_enabled: monitorEnabled,
+          }),
+        })
+        if (!res.ok) {
+          const json = await res.json().catch(() => ({}))
+          const msg = json.error === "invalid_date"
+            ? "监控起点日期格式不正确"
+            : json.error === "missing_fields"
+              ? "请填写必填项"
+              : (json.error || "保存失败")
+          throw new Error(msg)
+        }
+      }
+      onSaved?.()
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败，请稍后重试")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[480px] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">净值缺失设置</span>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          <div className="flex items-center gap-4">
+            <span className="text-sm shrink-0 w-[5.5rem] text-right text-zinc-600 whitespace-nowrap">
+              <span className="text-red-500">*</span> 监控状态：
+            </span>
+            <div className="flex items-center gap-6 text-sm">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="batchMonitorEnabled"
+                  checked={monitorEnabled}
+                  onChange={() => setMonitorEnabled(true)}
+                  className="accent-red-500"
+                />
+                开启
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio"
+                  name="batchMonitorEnabled"
+                  checked={!monitorEnabled}
+                  onChange={() => setMonitorEnabled(false)}
+                  className="accent-red-500"
+                />
+                关闭
+              </label>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <span className="text-sm shrink-0 w-[5.5rem] text-right text-zinc-600 whitespace-nowrap">
+              <span className="text-red-500">*</span> 监控频率：
+            </span>
+            <div className="relative flex-1">
+              <select
+                value={monitorFrequency}
+                onChange={(e) => {
+                  setMonitorFrequency(e.target.value as TeamNavMonitorFrequency | "")
+                  setError("")
+                }}
+                className={[
+                  "w-full appearance-none h-9 rounded border bg-background pl-3 pr-8 text-sm focus:outline-none focus:ring-1 focus:ring-ring",
+                  monitorFrequency ? "text-zinc-700 dark:text-zinc-200 border-border" : "text-muted-foreground border-border",
+                ].join(" ")}
+              >
+                <option value="">请下拉选择频率</option>
+                {TEAM_NAV_MONITOR_FREQUENCY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <span className="text-sm shrink-0 w-[5.5rem] text-right text-zinc-600 whitespace-nowrap">
+              <span className="text-red-500">*</span> 监控起点：
+            </span>
+            <div className="flex-1 relative">
+              <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+              <input
+                type="date"
+                value={monitorStartDate}
+                onChange={(e) => {
+                  setMonitorStartDate(e.target.value)
+                  setError("")
+                }}
+                placeholder="请选择监控起点"
+                disabled={!monitorEnabled}
+                className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:bg-muted/40 disabled:text-muted-foreground disabled:cursor-not-allowed"
+              />
+            </div>
+          </div>
+
+          {error && <p className="text-xs text-red-500 pl-28">{error}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0">
+          <button type="button" onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void handleConfirm()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? "保存中…" : "确定"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function OperationsTeamNavManageView({
   beian_hao,
   product_name,
@@ -12686,6 +12920,48 @@ function OperationsTeamDataView() {
   const [addTeamFundError, setAddTeamFundError] = useState<string | null>(null)
   const [teamDataReloadKey, setTeamDataReloadKey] = useState(0)
   const addTeamFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [showShareClassDialog, setShowShareClassDialog] = useState(false)
+  const [shareClassMainSearch, setShareClassMainSearch] = useState("")
+  const [shareClassMainSelected, setShareClassMainSelected] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [shareClassMainResults, setShareClassMainResults] = useState<{ beian_hao: string; product_name: string; short_name: string | null; strategy_one: string | null }[]>([])
+  const [shareClassMainLoading, setShareClassMainLoading] = useState(false)
+  const [shareClassMainShowDropdown, setShareClassMainShowDropdown] = useState(false)
+  const [shareClassMainFieldError, setShareClassMainFieldError] = useState(false)
+  const [shareClassLetter, setShareClassLetter] = useState<"" | "A" | "B" | "C">("")
+  const [shareClassLetterError, setShareClassLetterError] = useState(false)
+  const [shareClassPreviewLoading, setShareClassPreviewLoading] = useState(false)
+  const [shareClassExisting, setShareClassExisting] = useState<{ beian_hao: string; product_name: string; share_class: "A" | "B" | "C" | null }[]>([])
+  const [shareClassPreview, setShareClassPreview] = useState<{ fund_full_name: string; fund_short_name: string; beian_code: string } | null>(null)
+  const [shareClassSaving, setShareClassSaving] = useState(false)
+  const [shareClassError, setShareClassError] = useState<string | null>(null)
+  const shareClassMainSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [showTeamDataBatchMenu, setShowTeamDataBatchMenu] = useState(false)
+  const [teamDataBatchSubmitting, setTeamDataBatchSubmitting] = useState(false)
+  const [showTeamDataBatchTagDialog, setShowTeamDataBatchTagDialog] = useState(false)
+  const [teamDataBatchTagSelected, setTeamDataBatchTagSelected] = useState<string[]>([])
+  const [teamDataBatchTagTeamTags, setTeamDataBatchTagTeamTags] = useState<string[]>([])
+  const [showTeamDataBatchStrategyDialog, setShowTeamDataBatchStrategyDialog] = useState(false)
+  const [teamDataBatchStrategyL1, setTeamDataBatchStrategyL1] = useState("")
+  const [teamDataBatchStrategyL2, setTeamDataBatchStrategyL2] = useState("")
+  const [teamDataBatchStrategyL3, setTeamDataBatchStrategyL3] = useState("")
+  const [showTeamDataBatchConfirmDialog, setShowTeamDataBatchConfirmDialog] = useState(false)
+  const [teamDataBatchConfirmTitle, setTeamDataBatchConfirmTitle] = useState("")
+  const [teamDataBatchConfirmMessage, setTeamDataBatchConfirmMessage] = useState("")
+  const [teamDataBatchConfirmAction, setTeamDataBatchConfirmAction] = useState<"" | "remove_tags" | "remove_strategy" | "remove_team_data">("")
+  const [showTeamDataBatchTrackingDialog, setShowTeamDataBatchTrackingDialog] = useState(false)
+  const [teamDataBatchTrackingPool, setTeamDataBatchTrackingPool] = useState("")
+  const [showTeamDataBatchMissingSettingsDialog, setShowTeamDataBatchMissingSettingsDialog] = useState(false)
+
+  const selectedRows = data.filter((r) => selected.has(r.id))
+  const selectedBeianHaos = selectedRows.map((r) => r.beian_hao).filter((bh): bh is string => !!bh)
+  const teamDataBatchTrackingPools = [
+    { key: "bfl", label: "bfl跟踪池" },
+    { key: "tracking", label: "跟踪池" },
+    { key: "selected", label: "精选池" },
+    { key: "core", label: "核心池" },
+    { key: "hy", label: "hy跟踪池" },
+    { key: "fof", label: "FOF&MOM跟踪" },
+  ]
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const l2Options = strategyL1 && strategyL1 !== "__unconfigured__"
@@ -12760,6 +13036,120 @@ function OperationsTeamDataView() {
       if (addTeamFundSearchRef.current) clearTimeout(addTeamFundSearchRef.current)
     }
   }, [addTeamFundSearch, showTeamDataAddDialog])
+
+  useEffect(() => {
+    if (!showShareClassDialog) return
+    if (!shareClassMainSearch.trim()) {
+      setShareClassMainResults([])
+      setShareClassMainShowDropdown(false)
+      return
+    }
+    if (shareClassMainSearchRef.current) clearTimeout(shareClassMainSearchRef.current)
+    shareClassMainSearchRef.current = setTimeout(async () => {
+      setShareClassMainLoading(true)
+      try {
+        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(shareClassMainSearch.trim())}`)
+        const json = await res.json()
+        setShareClassMainResults(Array.isArray(json) ? json : [])
+        setShareClassMainShowDropdown(true)
+      } catch {
+        setShareClassMainResults([])
+      } finally {
+        setShareClassMainLoading(false)
+      }
+    }, 250)
+    return () => {
+      if (shareClassMainSearchRef.current) clearTimeout(shareClassMainSearchRef.current)
+    }
+  }, [shareClassMainSearch, showShareClassDialog])
+
+  useEffect(() => {
+    if (!showShareClassDialog || !shareClassMainSelected) {
+      setShareClassExisting([])
+      setShareClassPreview(null)
+      return
+    }
+    let cancelled = false
+    setShareClassPreviewLoading(true)
+    const params = new URLSearchParams({ beian_hao: shareClassMainSelected.beian_hao })
+    if (shareClassLetter) params.set("share_class", shareClassLetter)
+    fetch(`/ma/api/ops/share-class/preview?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        if (cancelled) return
+        setShareClassExisting(Array.isArray(json.existing) ? json.existing : [])
+        setShareClassPreview(json.preview ?? null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setShareClassExisting([])
+        setShareClassPreview(null)
+      })
+      .finally(() => {
+        if (!cancelled) setShareClassPreviewLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [showShareClassDialog, shareClassMainSelected, shareClassLetter])
+
+  function openShareClassDialog() {
+    setShareClassMainSearch("")
+    setShareClassMainSelected(null)
+    setShareClassMainResults([])
+    setShareClassMainShowDropdown(false)
+    setShareClassMainFieldError(false)
+    setShareClassLetter("")
+    setShareClassLetterError(false)
+    setShareClassExisting([])
+    setShareClassPreview(null)
+    setShareClassError(null)
+    setShowShareClassDialog(true)
+  }
+
+  function closeShareClassDialog() {
+    setShowShareClassDialog(false)
+    setShareClassMainFieldError(false)
+    setShareClassLetterError(false)
+    setShareClassError(null)
+  }
+
+  async function handleShareClassConfirm() {
+    const missingMain = !shareClassMainSelected
+    const missingClass = !shareClassLetter
+    setShareClassMainFieldError(missingMain)
+    setShareClassLetterError(missingClass)
+    if (missingMain || missingClass) return
+
+    setShareClassSaving(true)
+    setShareClassError(null)
+    try {
+      const res = await fetch("/ma/api/ops/share-class/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          main_beian_hao: shareClassMainSelected.beian_hao,
+          share_class: shareClassLetter,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setShareClassError(
+          json.error === "share_class_exists"
+            ? "该平台分级产品已存在"
+            : json.error === "beian_exists"
+              ? "备案编码已存在"
+              : json.error === "main_not_found"
+                ? "主产品不存在"
+                : `创建失败：${json.error || "unknown"}`,
+        )
+        return
+      }
+      closeShareClassDialog()
+    } catch {
+      setShareClassError("创建失败，请稍后重试")
+    } finally {
+      setShareClassSaving(false)
+    }
+  }
 
   function openTeamDataAddDialog() {
     setAddTeamFundSearch("")
@@ -12868,6 +13258,56 @@ function OperationsTeamDataView() {
     if (page < totalPages - 2) pages.push("…")
     pages.push(totalPages)
     return pages
+  }
+
+  async function handleTeamDataBatchOp(
+    action: string,
+    extra: Record<string, unknown> = {},
+  ) {
+    if (selectedBeianHaos.length === 0) return
+    setTeamDataBatchSubmitting(true)
+    try {
+      if (action === "remove_team_data") {
+        for (const beian_hao of selectedBeianHaos) {
+          await fetch("/ma/api/ops/team-data/remove", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ beian_hao }),
+          })
+        }
+      } else {
+        const res = await fetch("/ma/api/tracking-funds/batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action,
+            beian_haos: selectedBeianHaos,
+            pool: "bfl_ops",
+            ...extra,
+          }),
+        })
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}))
+          console.error("[team-data batch op]", err)
+        }
+      }
+    } catch (err) {
+      console.error("[team-data batch op]", err)
+    } finally {
+      setTeamDataBatchSubmitting(false)
+      setSelected(new Set())
+      setTeamDataReloadKey((k) => k + 1)
+    }
+  }
+
+  function openTeamDataBatchTagDialog() {
+    setShowTeamDataBatchMenu(false)
+    setTeamDataBatchTagSelected([])
+    fetch("/ma/api/ops/team-tags?category=fund")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) ? setTeamDataBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : setTeamDataBatchTagTeamTags([]))
+      .catch(() => setTeamDataBatchTagTeamTags([]))
+    setShowTeamDataBatchTagDialog(true)
   }
 
   const thBase = "px-3 py-2.5 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
@@ -13055,7 +13495,7 @@ function OperationsTeamDataView() {
           批量上传要素
         </button>
         <button
-          onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=strategies", "_blank")}
+          onClick={openShareClassDialog}
           className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
         >
           <PlusCircle className="h-3.5 w-3.5" /> 新增分级
@@ -13063,13 +13503,98 @@ function OperationsTeamDataView() {
         <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
           <Download className="h-3.5 w-3.5" /> 导出
         </button>
-        <button
-          disabled={selected.size === 0}
-          className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground"
-        >
-          批量操作
-          {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
-        </button>
+        <div className="relative">
+          <button
+            disabled={selected.size === 0}
+            onClick={() => setShowTeamDataBatchMenu((v) => !v)}
+            className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground"
+          >
+            批量操作
+            {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
+          </button>
+          {showTeamDataBatchMenu && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setShowTeamDataBatchMenu(false)} />
+              <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[140px]" onClick={(e) => e.stopPropagation()}>
+                <button type="button" onClick={openTeamDataBatchTagDialog} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTeamDataBatchMenu(false)
+                    setTeamDataBatchStrategyL1("")
+                    setTeamDataBatchStrategyL2("")
+                    setTeamDataBatchStrategyL3("")
+                    setShowTeamDataBatchStrategyDialog(true)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  批量添加策略
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTeamDataBatchMenu(false)
+                    setTeamDataBatchTrackingPool("")
+                    setShowTeamDataBatchTrackingDialog(true)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  批量添加跟踪
+                </button>
+                <div className="border-t my-1" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTeamDataBatchMenu(false)
+                    setTeamDataBatchConfirmTitle("批量取消标签")
+                    setTeamDataBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`)
+                    setTeamDataBatchConfirmAction("remove_tags")
+                    setShowTeamDataBatchConfirmDialog(true)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500"
+                >
+                  批量取消标签
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTeamDataBatchMenu(false)
+                    setTeamDataBatchConfirmTitle("批量取消策略")
+                    setTeamDataBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`)
+                    setTeamDataBatchConfirmAction("remove_strategy")
+                    setShowTeamDataBatchConfirmDialog(true)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500"
+                >
+                  批量取消策略
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTeamDataBatchMenu(false)
+                    setTeamDataBatchConfirmTitle("批量移除")
+                    setTeamDataBatchConfirmMessage(`确定要将已选 ${selected.size} 只产品从团队数据列表中移出吗？`)
+                    setTeamDataBatchConfirmAction("remove_team_data")
+                    setShowTeamDataBatchConfirmDialog(true)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-red-500"
+                >
+                  批量移除
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowTeamDataBatchMenu(false)
+                    setShowTeamDataBatchMissingSettingsDialog(true)
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
+                >
+                  净值缺失设置
+                </button>
+              </div>
+            </>
+          )}
+        </div>
         <button
           onClick={openTeamDataAddDialog}
           className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors"
@@ -13250,6 +13775,258 @@ function OperationsTeamDataView() {
         onClose={() => setTeamScaleDialog(null)}
       />
 
+      {showTeamDataBatchTagDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowTeamDataBatchTagDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">批量添加标签</span>
+              <button type="button" onClick={() => setShowTeamDataBatchTagDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4">
+              <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                对已选产品批量添加标签，标签团队内部可见。团队标签的新增、编辑在【运维-数据维护-团队标签】中。
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[5.5rem] text-right pt-2 whitespace-nowrap">标签：</span>
+                <div className="flex-1">
+                  <div className="flex items-center border rounded px-3 py-1.5 gap-2 flex-wrap min-h-[36px] bg-background">
+                    {teamDataBatchTagSelected.map((t) => (
+                      <span key={t} className="inline-flex items-center gap-1 bg-red-50 border border-red-300 text-red-500 rounded px-2 py-0.5 text-xs">
+                        {t}
+                        <button type="button" onClick={() => setTeamDataBatchTagSelected((p) => p.filter((x) => x !== t))} className="leading-none hover:text-red-700">×</button>
+                      </span>
+                    ))}
+                    {teamDataBatchTagSelected.length === 0 && <span className="text-xs text-muted-foreground">请选择标签</span>}
+                  </div>
+                </div>
+                <button type="button" onClick={() => setTeamDataBatchTagSelected([])} className="text-sm text-blue-500 hover:text-blue-600 transition-colors shrink-0 pt-2">清空</button>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[5.5rem] text-right pt-1.5 whitespace-nowrap">团队标签：</span>
+                <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+                  {teamDataBatchTagTeamTags.length === 0 && (
+                    <span className="text-sm text-muted-foreground flex-shrink-0">暂无标签，可点击「设置」添加后刷新</span>
+                  )}
+                  {teamDataBatchTagTeamTags.map((tag) => (
+                    <button
+                      key={tag}
+                      type="button"
+                      onClick={() => setTeamDataBatchTagSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                      className={[
+                        "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                        teamDataBatchTagSelected.includes(tag)
+                          ? "bg-red-50 text-red-500 border-red-300"
+                          : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
+                      ].join(" ")}
+                    >{tag}</button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=tags", "_blank")}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors ml-1"
+                  >
+                    设置
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setTeamDataBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {})}
+                    className="inline-flex items-center gap-1 border border-red-400 text-red-500 rounded px-2 py-0.5 text-xs hover:bg-red-50 transition-colors"
+                  >
+                    刷新
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button type="button" onClick={() => setShowTeamDataBatchTagDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                type="button"
+                disabled={teamDataBatchTagSelected.length === 0 || teamDataBatchSubmitting}
+                onClick={async () => {
+                  await handleTeamDataBatchOp("add_tags", { tags: teamDataBatchTagSelected })
+                  setShowTeamDataBatchTagDialog(false)
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {teamDataBatchSubmitting ? "处理中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTeamDataBatchStrategyDialog && (() => {
+        const batchL2Opts = teamDataBatchStrategyL1 ? (strategyHierarchy.find((n) => n.l1 === teamDataBatchStrategyL1)?.l2s ?? []) : []
+        const batchL3Opts = teamDataBatchStrategyL2 ? (batchL2Opts.find((n) => n.l2 === teamDataBatchStrategyL2)?.l3s ?? []) : []
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowTeamDataBatchStrategyDialog(false)}>
+            <div className="bg-background rounded-lg shadow-xl w-[480px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+                <span className="font-semibold text-base">批量添加策略</span>
+                <button type="button" onClick={() => setShowTeamDataBatchStrategyDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+              </div>
+              <div className="px-6 py-5 flex flex-col gap-4">
+                <div className="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+                  对已选产品批量添加团队策略，策略团队内部可见。团队策略的新增、编辑在【运维-数据维护-团队策略】中。
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-[5.5rem] text-right whitespace-nowrap">
+                    <span className="text-red-500 mr-0.5">*</span>一级策略：
+                  </span>
+                  <div className="relative flex-1">
+                    <select
+                      value={teamDataBatchStrategyL1}
+                      onChange={(e) => { setTeamDataBatchStrategyL1(e.target.value); setTeamDataBatchStrategyL2(""); setTeamDataBatchStrategyL3("") }}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300"
+                    >
+                      <option value="">请选择一级策略</option>
+                      {strategyHierarchy.map((n) => <option key={n.l1} value={n.l1}>{n.l1}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-[5.5rem] text-right whitespace-nowrap">二级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={teamDataBatchStrategyL2}
+                      onChange={(e) => { setTeamDataBatchStrategyL2(e.target.value); setTeamDataBatchStrategyL3("") }}
+                      disabled={batchL2Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50"
+                    >
+                      <option value="">请选择二级策略</option>
+                      {batchL2Opts.map((n) => <option key={n.l2} value={n.l2}>{n.l2}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-sm shrink-0 w-[5.5rem] text-right whitespace-nowrap">三级策略：</span>
+                  <div className="relative flex-1">
+                    <select
+                      value={teamDataBatchStrategyL3}
+                      onChange={(e) => setTeamDataBatchStrategyL3(e.target.value)}
+                      disabled={batchL3Opts.length === 0}
+                      className="w-full appearance-none rounded border border-border bg-background pl-3 pr-8 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring text-zinc-600 dark:text-zinc-300 disabled:opacity-50"
+                    >
+                      <option value="">请选择三级策略</option>
+                      {batchL3Opts.map((v) => <option key={v} value={v}>{v}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+                <button type="button" onClick={() => setShowTeamDataBatchStrategyDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+                <button
+                  type="button"
+                  disabled={!teamDataBatchStrategyL1 || teamDataBatchSubmitting}
+                  onClick={async () => {
+                    await handleTeamDataBatchOp("set_strategy", {
+                      strategy_l1: teamDataBatchStrategyL1 || null,
+                      strategy_l2: teamDataBatchStrategyL2 || null,
+                      strategy_l3: teamDataBatchStrategyL3 || null,
+                    })
+                    setShowTeamDataBatchStrategyDialog(false)
+                  }}
+                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {teamDataBatchSubmitting ? "处理中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {showTeamDataBatchTrackingDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowTeamDataBatchTrackingDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[420px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">批量添加跟踪</span>
+              <button type="button" onClick={() => setShowTeamDataBatchTrackingDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5">
+              <div className="flex items-center gap-3">
+                <span className="text-sm shrink-0 w-[5.5rem] text-right whitespace-nowrap">
+                  <span className="text-red-500 mr-0.5">*</span>目标池：
+                </span>
+                <div className="relative flex-1">
+                  <select
+                    value={teamDataBatchTrackingPool}
+                    onChange={(e) => setTeamDataBatchTrackingPool(e.target.value)}
+                    className={[
+                      "w-full appearance-none rounded border pl-3 pr-8 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring",
+                      teamDataBatchTrackingPool ? "text-zinc-700 dark:text-zinc-200 border-border" : "text-muted-foreground border-red-300",
+                    ].join(" ")}
+                  >
+                    <option value="">请选择目标池</option>
+                    {teamDataBatchTrackingPools.map((p) => (
+                      <option key={p.key} value={p.key}>{p.label}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-zinc-400" />
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+              <button type="button" onClick={() => setShowTeamDataBatchTrackingDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button
+                type="button"
+                disabled={!teamDataBatchTrackingPool || teamDataBatchSubmitting}
+                onClick={async () => {
+                  await handleTeamDataBatchOp("copy", { target_pool: teamDataBatchTrackingPool })
+                  setShowTeamDataBatchTrackingDialog(false)
+                }}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {teamDataBatchSubmitting ? "处理中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTeamDataBatchConfirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowTeamDataBatchConfirmDialog(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-3 mb-5">
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 flex-shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <div>
+                <p className="font-semibold text-sm mb-1">{teamDataBatchConfirmTitle}</p>
+                <p className="text-sm text-zinc-500">{teamDataBatchConfirmMessage}</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setShowTeamDataBatchConfirmDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              {teamDataBatchConfirmAction && (
+                <button
+                  type="button"
+                  disabled={teamDataBatchSubmitting}
+                  onClick={async () => {
+                    await handleTeamDataBatchOp(teamDataBatchConfirmAction)
+                    setShowTeamDataBatchConfirmDialog(false)
+                  }}
+                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {teamDataBatchSubmitting ? "处理中…" : "确 定"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTeamDataBatchMissingSettingsDialog && (
+        <OpsTeamNavBatchMissingSettingsDialog
+          open={showTeamDataBatchMissingSettingsDialog}
+          products={selectedRows
+            .filter((r) => r.beian_hao)
+            .map((r) => ({ beian_hao: r.beian_hao!, product_name: r.product_name }))}
+          onClose={() => setShowTeamDataBatchMissingSettingsDialog(false)}
+        />
+      )}
+
       {teamRemoveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => !teamRemoveSaving && setTeamRemoveDialog(null)}>
           <div className="bg-background rounded-lg shadow-xl w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
@@ -13428,6 +14205,215 @@ function OperationsTeamDataView() {
                   className="px-4 py-2 text-sm bg-red-500 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50"
                 >
                   {addTeamFundSaving ? "添加中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showShareClassDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closeShareClassDialog}>
+          <div className="bg-background rounded-lg shadow-xl w-[620px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">新建分级产品</span>
+              <button type="button" onClick={closeShareClassDialog} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4 max-h-[70vh] overflow-y-auto">
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300 flex items-start gap-2">
+                <Info className="h-4 w-4 shrink-0 mt-0.5" />
+                <span>说明：因数据同步，添加成功后5分钟再刷新查看/搜索。</span>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[6.5rem] text-right whitespace-nowrap pt-2">
+                  <span className="text-red-500 mr-0.5">*</span>选择主产品：
+                </span>
+                <div className="flex flex-1 flex-col gap-1 relative">
+                  {shareClassMainSelected ? (
+                    <div className="flex items-center justify-between border rounded px-3 h-9">
+                      <div className="flex flex-col leading-tight min-w-0">
+                        <span className="text-sm font-medium truncate">{shareClassMainSelected.product_name}</span>
+                        <span className="text-xs text-muted-foreground truncate">{shareClassMainSelected.beian_hao}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShareClassMainSelected(null)
+                          setShareClassMainSearch("")
+                          setShareClassMainShowDropdown(false)
+                          setShareClassMainFieldError(false)
+                          setShareClassLetter("")
+                          setShareClassLetterError(false)
+                        }}
+                        className="text-muted-foreground hover:text-foreground text-base leading-none ml-2 shrink-0"
+                      >×</button>
+                    </div>
+                  ) : (
+                    <div className={[
+                      "flex items-center border rounded px-3 h-9 gap-2",
+                      shareClassMainFieldError ? "border-red-500" : "",
+                    ].join(" ")}>
+                      <input
+                        autoFocus
+                        type="text"
+                        value={shareClassMainSearch}
+                        onChange={(e) => {
+                          setShareClassMainSearch(e.target.value)
+                          setShareClassMainSelected(null)
+                          setShareClassMainFieldError(false)
+                        }}
+                        onFocus={() => { if (shareClassMainResults.length > 0) setShareClassMainShowDropdown(true) }}
+                        placeholder="请输入并选择主产品"
+                        className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/50"
+                      />
+                      {shareClassMainLoading
+                        ? <svg className="h-3.5 w-3.5 animate-spin text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round"/></svg>
+                        : <ChevronDown className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                      }
+                    </div>
+                  )}
+                  {shareClassMainFieldError && !shareClassMainSelected && (
+                    <p className="text-xs text-red-500">请输入并选择主产品</p>
+                  )}
+                  {shareClassMainShowDropdown && shareClassMainResults.length > 0 && !shareClassMainSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                      {shareClassMainResults.map((r) => (
+                        <button
+                          key={r.beian_hao}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setShareClassMainSelected({ beian_hao: r.beian_hao, product_name: r.product_name })
+                            setShareClassMainSearch("")
+                            setShareClassMainShowDropdown(false)
+                            setShareClassMainFieldError(false)
+                            setShareClassLetter("")
+                            setShareClassLetterError(false)
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-muted transition-colors flex items-center justify-between gap-3"
+                        >
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm truncate">{r.product_name}</span>
+                            <span className="text-xs text-muted-foreground truncate">
+                              {r.beian_hao}{r.short_name ? ` · ${r.short_name}` : ""}
+                            </span>
+                          </div>
+                          {r.strategy_one && (
+                            <span className="text-xs text-zinc-400 shrink-0 border rounded px-1 py-0.5">{r.strategy_one}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {shareClassMainShowDropdown && shareClassMainResults.length === 0 && !shareClassMainLoading && shareClassMainSearch.trim() && !shareClassMainSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl px-4 py-3 text-sm text-muted-foreground">
+                      未找到匹配的产品
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {shareClassMainSelected && (
+                <div className="flex items-start gap-3">
+                  <span className="text-sm shrink-0 w-[7.5rem] text-right pt-0.5 text-zinc-600 whitespace-nowrap">平台现有分级产品：</span>
+                  <div className="flex-1 text-sm text-zinc-600 min-h-[1.25rem]">
+                    {shareClassPreviewLoading ? (
+                      <span className="text-muted-foreground">加载中…</span>
+                    ) : shareClassExisting.length === 0 ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {shareClassExisting.map((row) => (
+                          <span key={row.beian_hao} className="inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs bg-muted/30">
+                            {row.share_class ? `${row.share_class}类` : row.product_name}
+                            <span className="text-muted-foreground">{row.beian_hao}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[6.5rem] text-right whitespace-nowrap pt-1.5">
+                  <span className="text-red-500 mr-0.5">*</span>新建分级产品：
+                </span>
+                <div className="flex flex-1 flex-col gap-1">
+                  <div className="flex items-center gap-5 pt-1">
+                    {(["A", "B", "C"] as const).map((letter) => {
+                      const taken = shareClassExisting.some((row) => row.share_class === letter)
+                      return (
+                        <label
+                          key={letter}
+                          className={[
+                            "inline-flex items-center gap-1.5 text-sm",
+                            taken ? "opacity-40 cursor-not-allowed" : "cursor-pointer",
+                          ].join(" ")}
+                        >
+                          <input
+                            type="radio"
+                            name="shareClassLetter"
+                            value={letter}
+                            checked={shareClassLetter === letter}
+                            disabled={taken || !shareClassMainSelected}
+                            onChange={() => {
+                              setShareClassLetter(letter)
+                              setShareClassLetterError(false)
+                            }}
+                            className="accent-red-500"
+                          />
+                          {letter}类
+                        </label>
+                      )
+                    })}
+                  </div>
+                  {shareClassLetterError && (
+                    <p className="text-xs text-red-500">请选择分级类型</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[6.5rem] text-right whitespace-nowrap pt-2 text-zinc-600">基金全称：</span>
+                <span className="flex-1 text-sm pt-2 min-h-[2rem]">
+                  {shareClassPreviewLoading ? "—" : shareClassPreview?.fund_full_name || "—"}
+                </span>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[6.5rem] text-right whitespace-nowrap pt-2 text-zinc-600">基金简称：</span>
+                <span className="flex-1 text-sm pt-2 min-h-[2rem]">
+                  {shareClassPreviewLoading ? "—" : shareClassPreview?.fund_short_name || "—"}
+                </span>
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[6.5rem] text-right whitespace-nowrap pt-2 text-zinc-600">备案编码：</span>
+                <span className="flex-1 text-sm pt-2 min-h-[2rem] font-mono">
+                  {shareClassPreviewLoading ? "—" : shareClassPreview?.beian_code || "—"}
+                </span>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 px-6 py-4 border-t flex-shrink-0">
+              {shareClassError && (
+                <p className="text-xs text-red-500 text-right">{shareClassError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeShareClassDialog}
+                  disabled={shareClassSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  取 消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleShareClassConfirm()}
+                  disabled={shareClassSaving}
+                  className="px-4 py-2 text-sm bg-red-500 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50"
+                >
+                  {shareClassSaving ? "提交中…" : "确 定"}
                 </button>
               </div>
             </div>
@@ -16001,7 +16987,7 @@ function InvestmentFofOverviewView() {
   const [fofDetailData, setFofDetailData] = useState<FofDetailRow[]>([])
   const [total, setTotal] = useState(0)
   const [totalMarketValue, setTotalMarketValue] = useState("0")
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
   const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
@@ -17160,7 +18146,7 @@ function InvestmentFofOverviewView() {
                           }} />
                       </td>
                       <td style={{ left: fofDetailStickyLeftSeq, width: fofDetailStickySeqW, minWidth: fofDetailStickySeqW, maxWidth: fofDetailStickySeqW }} className={stickyLeftSeq}>
-                        {row.seq_no ?? (page - 1) * pageSize + i + 1}
+                        {(page - 1) * pageSize + i + 1}
                       </td>
                       <td style={{ left: fofDetailStickyLeftFof, width: fofDetailStickyFofW, minWidth: fofDetailStickyFofW, maxWidth: fofDetailStickyFofW }} className={stickyLeftFof}>
                         <span className="font-medium text-blue-600 dark:text-blue-400 block truncate leading-5" title={row.fof_fund_name}>{row.fof_fund_name}</span>

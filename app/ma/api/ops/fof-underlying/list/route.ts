@@ -133,7 +133,7 @@ export async function GET(req: Request) {
       const where = conditions.join(" AND ")
       const baseFrom = `
         FROM fof_underlying_summary f
-        INNER JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
+        LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
       `
 
       const countRows = await query<{ n: string }>(
@@ -141,6 +141,16 @@ export async function GET(req: Request) {
         params,
       )
       const total = parseInt(countRows[0]?.n || "0", 10)
+
+      if (total === 0) {
+        return NextResponse.json({
+          data: [],
+          total: 0,
+          page,
+          pageSize,
+          totalPages: 1,
+        })
+      }
 
       const rows = await query<{
         id: string
@@ -158,11 +168,11 @@ export async function GET(req: Request) {
            f.sequence_no,
            cache.beian_hao,
            f.product_name,
-           cache.short_name,
+           COALESCE(cache.short_name, f.product_name) AS short_name,
            ${stratCol}                          AS strategy_l1,
-           cache.unit_nav::text                 AS latest_unit_nav,
-           cache.nav_date::text                 AS latest_nav_date,
-           cache.return_pct::text               AS latest_return_pct
+           COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
+           COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
+           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct
          ${baseFrom}
          WHERE ${where}
          ORDER BY ${sortCol} ${sortDir} NULLS LAST, f.sequence_no ASC

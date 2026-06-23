@@ -3,7 +3,11 @@
  * All managed products are treated as FOF except 荣熙恒盈2号.
  */
 
-import { query } from "@/lib/db"
+import { fmtIso, query } from "@/lib/db"
+import {
+  BatchNavResolver,
+  type ProductNavIdentity,
+} from "@/lib/server/list-cache-nav-batch"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { ensureEmailValuationHoldingsTables } from "@/lib/server/email-valuation-holdings-pg"
 import {
@@ -488,4 +492,332 @@ export async function listManagedFofUnderlying(options?: {
   )
 
   return { rows, total: parseInt(countRows[0]?.count ?? "0", 10) }
+}
+
+export type ManagedFofDetailListRow = {
+  id: string
+  seq_no: number | null
+  fof_fund_name: string
+  product_name: string
+  short_name: string | null
+  beian_hao: string | null
+  unit_nav: string | null
+  nav_date: string | null
+  price_change: string | null
+  investment_shares: string | null
+  market_value: string | null
+  market_value_pct: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
+}
+
+const DETAIL_SORT_COLS: Record<string, string> = {
+  seq_no: "m.id",
+  fof_fund_name: "m.fof_product_name",
+  product_name: "m.underlying_name",
+  beian_hao: "m.underlying_product_code",
+  unit_nav: "unit_nav",
+  nav_date: "nav_date",
+  price_change: "price_change",
+  investment_shares: "m.quantity",
+  market_value: "m.market_value",
+  market_value_pct: "m.market_weight",
+  ret_1w: "m.id",
+  ret_1m: "m.id",
+  ret_3m: "m.id",
+  ret_6m: "m.id",
+  ret_1y: "m.id",
+  sharpe_1y: "m.id",
+  calmar_1y: "m.id",
+}
+
+function fmtMarketValuePct(weight: unknown): string | null {
+  if (weight == null) return null
+  const n = parseFloat(String(weight))
+  if (isNaN(n)) return null
+  return String(Math.abs(n) <= 1 ? n * 100 : n)
+}
+
+/** Private-fund unit NAV should sit in a sane range; reject cost / cumulative NAV mismatches. */
+const MAX_PLAUSIBLE_UNIT_NAV = 50
+const MAX_DAILY_RETURN = 0.5
+
+function isPlausibleUnitNav(nav: number): boolean {
+  return Number.isFinite(nav) && nav >= 0.1 && nav <= MAX_PLAUSIBLE_UNIT_NAV
+}
+
+function deriveNavFromValuation(quantity: unknown, marketValue: unknown): number | null {
+  const qty = parseFloat(String(quantity ?? ""))
+  const mv = parseFloat(String(marketValue ?? ""))
+  if (!Number.isFinite(qty) || !Number.isFinite(mv) || qty <= 0 || mv <= 0) return null
+  const nav = mv / qty
+  return isPlausibleUnitNav(nav) ? nav : null
+}
+
+function fmtPriceChangePct(decimal: number | null): string | null {
+  if (decimal == null || !Number.isFinite(decimal)) return null
+  if (Math.abs(decimal) > MAX_DAILY_RETURN) return null
+  return String(decimal * 100)
+}
+
+type DetailRawRow = {
+  id: number
+  fof_fund_name: string
+  product_name: string
+  beian_hao: string | null
+  valuation_date: string | Date
+  investment_shares: string | number | null
+  market_value: string | number | null
+  market_weight: string | number | null
+}
+
+type DetailEnrichedRow = ManagedFofDetailListRow
+
+function enrichDetailRows(
+  rawRows: DetailRawRow[],
+  resolver: BatchNavResolver | null,
+): DetailEnrichedRow[] {
+  return rawRows.map((r) => {
+    const beian = r.beian_hao?.trim() || null
+    const valuationDate = fmtIso(r.valuation_date)
+    const identity: ProductNavIdentity = {
+      beian_hao: beian,
+      product_name: r.product_name,
+      short_name: null,
+    }
+
+    const derivedNav = deriveNavFromValuation(r.investment_shares, r.market_value)
+    let unitNav: number | null = derivedNav
+    let navDate: string | null = valuationDate
+
+    if (resolver) {
+      const resolved = resolver.resolveAt(identity, valuationDate, derivedNav, valuationDate)
+      if (resolved && isPlausibleUnitNav(resolved.nav)) {
+        // Prefer valuation-derived NAV when available (matches 估值表); else email/legacy NAV.
+        if (derivedNav == null) {
+          unitNav = resolved.nav
+          navDate = resolved.nav_date
+        }
+      } else if (derivedNav == null) {
+        unitNav = null
+      }
+    }
+
+    let priceChange: string | null = null
+    if (unitNav != null && navDate && resolver) {
+      const pct = resolver.calcDailyReturnPct(identity, unitNav, navDate, null)
+      priceChange = fmtPriceChangePct(pct)
+    }
+
+    return {
+      id: String(r.id),
+      seq_no: null,
+      fof_fund_name: r.fof_fund_name,
+      product_name: r.product_name,
+      short_name: r.product_name,
+      beian_hao: beian,
+      unit_nav: unitNav != null ? String(unitNav) : null,
+      nav_date: navDate,
+      price_change: priceChange,
+      investment_shares: r.investment_shares != null ? String(r.investment_shares) : null,
+      market_value: r.market_value != null ? String(r.market_value) : null,
+      market_value_pct: fmtMarketValuePct(r.market_weight),
+      ret_1w: null,
+      ret_1m: null,
+      ret_3m: null,
+      ret_6m: null,
+      ret_1y: null,
+      sharpe_1y: null,
+      calmar_1y: null,
+    }
+  })
+}
+
+function sortDetailRows(rows: DetailEnrichedRow[], sortKey: string, asc: boolean): void {
+  const dir = asc ? 1 : -1
+  const cmpNullable = (a: string | number | null, b: string | number | null, mult = 1): number => {
+    if (a == null && b == null) return 0
+    if (a == null) return 1
+    if (b == null) return -1
+    const d = mult * dir
+    if (typeof a === "number" && typeof b === "number") {
+      return a === b ? 0 : a < b ? -d : d
+    }
+    return String(a).localeCompare(String(b), "zh-CN") * d
+  }
+  const tieBreak = (a: DetailEnrichedRow, b: DetailEnrichedRow): number => {
+    let c = cmpNullable(a.fof_fund_name, b.fof_fund_name)
+    if (c !== 0) return c
+    c = cmpNullable(
+      a.market_value ? parseFloat(a.market_value) : null,
+      b.market_value ? parseFloat(b.market_value) : null,
+      -1,
+    )
+    if (c !== 0) return c
+    return cmpNullable(parseInt(a.id, 10), parseInt(b.id, 10))
+  }
+
+  rows.sort((a, b) => {
+    let c = 0
+    switch (sortKey) {
+      case "fof_fund_name": c = cmpNullable(a.fof_fund_name, b.fof_fund_name); break
+      case "product_name": c = cmpNullable(a.product_name, b.product_name); break
+      case "beian_hao": c = cmpNullable(a.beian_hao, b.beian_hao); break
+      case "unit_nav":
+        c = cmpNullable(a.unit_nav ? parseFloat(a.unit_nav) : null, b.unit_nav ? parseFloat(b.unit_nav) : null)
+        break
+      case "nav_date": c = cmpNullable(a.nav_date, b.nav_date); break
+      case "price_change":
+        c = cmpNullable(
+          a.price_change ? parseFloat(a.price_change) : null,
+          b.price_change ? parseFloat(b.price_change) : null,
+        )
+        break
+      case "investment_shares":
+        c = cmpNullable(
+          a.investment_shares ? parseFloat(a.investment_shares) : null,
+          b.investment_shares ? parseFloat(b.investment_shares) : null,
+        )
+        break
+      case "market_value":
+        c = cmpNullable(
+          a.market_value ? parseFloat(a.market_value) : null,
+          b.market_value ? parseFloat(b.market_value) : null,
+        )
+        break
+      case "market_value_pct":
+        c = cmpNullable(
+          a.market_value_pct ? parseFloat(a.market_value_pct) : null,
+          b.market_value_pct ? parseFloat(b.market_value_pct) : null,
+        )
+        break
+      default:
+        c = cmpNullable(a.fof_fund_name, b.fof_fund_name)
+        if (c === 0) {
+          c = cmpNullable(
+            a.market_value ? parseFloat(a.market_value) : null,
+            b.market_value ? parseFloat(b.market_value) : null,
+            -1,
+          )
+        }
+        if (c === 0) c = cmpNullable(parseInt(a.id, 10), parseInt(b.id, 10))
+        return c
+    }
+    if (c !== 0) return c
+    return tieBreak(a, b)
+  })
+}
+
+/** Paginated 投资 FOF底层明细 — sourced from ops_managed_fof_underlying (email 估值表). */
+export async function listManagedFofUnderlyingDetail(options: {
+  page: number
+  pageSize: number
+  keyword?: string
+  fofFundName?: string
+  valuationDate?: string
+  sortKey?: string
+  sortDir?: "asc" | "desc"
+}): Promise<{ rows: ManagedFofDetailListRow[]; total: number; totalMarketValue: string }> {
+  await ensureManagedFofUnderlyingTable()
+
+  const emptyTable = await query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM ops_managed_fof_underlying`,
+  )
+  if (parseInt(emptyTable[0]?.n ?? "0", 10) === 0) {
+    void refreshManagedFofUnderlying().catch((err) => {
+      console.error("[managed-fof-underlying] background refresh failed:", err)
+    })
+  }
+
+  const page = Math.max(1, options.page)
+  const pageSize = Math.min(200, Math.max(1, options.pageSize))
+  const offset = (page - 1) * pageSize
+  const keyword = (options.keyword ?? "").trim()
+  const fofFundName = (options.fofFundName ?? "").trim()
+  const valuationDate = (options.valuationDate ?? "").trim()
+  const sortParam = options.sortKey ?? ""
+  const sortKey = DETAIL_SORT_COLS[sortParam] ? sortParam : "seq_no"
+  const sortAsc = options.sortDir !== "desc"
+
+  const conditions: string[] = ["COALESCE(m.market_value, 0) > 0"]
+  const params: unknown[] = []
+  let pi = 1
+
+  if (keyword) {
+    conditions.push(`(
+      m.fof_product_name ILIKE $${pi}
+      OR m.underlying_name ILIKE $${pi}
+      OR COALESCE(NULLIF(BTRIM(m.underlying_product_code), ''), '') ILIKE $${pi}
+    )`)
+    params.push(`%${keyword}%`)
+    pi++
+  }
+
+  if (fofFundName) {
+    conditions.push(`m.fof_product_name = $${pi}`)
+    params.push(fofFundName)
+    pi++
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(valuationDate)) {
+    conditions.push(`m.valuation_date = $${pi}::date`)
+    params.push(valuationDate)
+    pi++
+  }
+
+  const where = `WHERE ${conditions.join(" AND ")}`
+
+  const rawRows = await query<DetailRawRow>(
+    `SELECT
+       m.id,
+       m.fof_product_name AS fof_fund_name,
+       m.underlying_name AS product_name,
+       NULLIF(BTRIM(m.underlying_product_code), '') AS beian_hao,
+       m.valuation_date,
+       m.quantity AS investment_shares,
+       m.market_value,
+       m.market_weight
+     FROM ops_managed_fof_underlying m
+     ${where}
+     ORDER BY m.fof_product_name ASC, m.market_value DESC NULLS LAST, m.id ASC`,
+    params,
+  )
+
+  const total = rawRows.length
+  if (total === 0) {
+    return { rows: [], total: 0, totalMarketValue: "0" }
+  }
+
+  const totalMarketValue = rawRows.reduce(
+    (sum, r) => sum + (parseFloat(String(r.market_value ?? "0")) || 0),
+    0,
+  ).toFixed(2)
+
+  const asOfDate = new Date().toISOString().slice(0, 10)
+  const identities: ProductNavIdentity[] = rawRows.map((r) => ({
+    beian_hao: r.beian_hao,
+    product_name: r.product_name,
+    short_name: null,
+  }))
+  const resolver = identities.length > 0
+    ? await BatchNavResolver.create(identities, asOfDate)
+    : null
+
+  const enriched = enrichDetailRows(rawRows, resolver)
+  sortDetailRows(enriched, sortKey, sortAsc)
+  const pageRows = enriched.slice(offset, offset + pageSize).map((row, i) => ({
+    ...row,
+    seq_no: offset + i + 1,
+  }))
+
+  return {
+    rows: pageRows,
+    total,
+    totalMarketValue,
+  }
 }

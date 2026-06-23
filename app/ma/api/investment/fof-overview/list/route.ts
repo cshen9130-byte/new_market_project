@@ -184,11 +184,9 @@ export async function GET(req: Request) {
     // ─── FAST PATH — plain 2-table join, no lateral NAV scans ───────────────
     if (useCache) {
       await ensureManagedFofUnderlyingTable()
-      try {
-        await autoAddFofUnderlyingToTables()
-      } catch (autoAddErr) {
+      void autoAddFofUnderlyingToTables().catch((autoAddErr) => {
         console.error("[investment/fof-overview/list] auto-add failed:", autoAddErr)
-      }
+      })
       await ensureFofOverviewListCachePopulated()
 
       const beianExpr = managedUnderlyingBeianExpr("cache.beian_hao", "f.product_name")
@@ -294,6 +292,17 @@ export async function GET(req: Request) {
       ])
       const total = parseInt(countRows[0]?.n || "0", 10)
       const totalMarketValue = totalMvRows[0]?.total_mv ?? "0"
+
+      if (total === 0) {
+        return NextResponse.json({
+          data: [],
+          total: 0,
+          page,
+          pageSize,
+          totalPages: 1,
+          totalMarketValue: "0",
+        })
+      }
 
       const rows = await query<{
         id: string
@@ -426,6 +435,17 @@ export async function GET(req: Request) {
     ])
     const total = parseInt(countRows[0]?.n || "0", 10)
     const totalMarketValue = totalMvRows[0]?.total_mv ?? "0"
+
+    if (total === 0) {
+      return NextResponse.json({
+        data: [],
+        total: 0,
+        page,
+        pageSize,
+        totalPages: 1,
+        totalMarketValue: "0",
+      })
+    }
 
     const listParams = [...params]
     let cutoffExpr = "CURRENT_DATE"

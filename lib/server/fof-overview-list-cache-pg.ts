@@ -247,13 +247,23 @@ export function useFofOverviewListCache(cutoffRaw: string): boolean {
   return cutoffRaw === new Date().toISOString().slice(0, 10)
 }
 
+let cacheRefreshInFlight: Promise<number> | null = null
+
 /** Populate cache when empty (e.g. first deploy before nightly ETL has run). */
 export async function ensureFofOverviewListCachePopulated(): Promise<void> {
   await ensureFofOverviewListCacheTable()
   const rows = await query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM ops_fof_overview_list_cache`,
   )
-  if (parseInt(rows[0]?.n ?? "0", 10) === 0) {
-    await refreshFofOverviewListCache()
+  if (parseInt(rows[0]?.n ?? "0", 10) === 0 && !cacheRefreshInFlight) {
+    // Do not block page loads on a multi-minute cache rebuild — refresh in background.
+    cacheRefreshInFlight = refreshFofOverviewListCache()
+      .catch((err) => {
+        console.error("[fof-overview-cache] background refresh failed:", err)
+        return 0
+      })
+      .finally(() => {
+        cacheRefreshInFlight = null
+      })
   }
 }

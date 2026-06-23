@@ -457,7 +457,7 @@ function fillEmptyCumulativeFields(row: LegacyNavRow, prev: LegacyNavRow | null)
 
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: EmailNavPoint[]): LegacyNavRow[] {
-  if (emailRows.length === 0) return legacyRows
+  if (emailRows.length === 0) return recomputeNavPriceChanges(legacyRows)
 
   const byDate = new Map<string, LegacyNavRow>()
   for (const row of legacyRows) {
