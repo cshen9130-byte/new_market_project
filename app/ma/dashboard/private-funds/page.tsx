@@ -9862,6 +9862,48 @@ function OpsNavManageButton({ onClick }: { onClick?: () => void }) {
   )
 }
 
+function OpsTeamNavEditButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onClick()
+          }}
+          className="relative z-10 p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+        >
+          <Pencil className="h-3.5 w-3.5 pointer-events-none" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>编辑</TooltipContent>
+    </Tooltip>
+  )
+}
+
+function OpsTeamNavDeleteButton({ onClick }: { onClick: () => void }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            onClick()
+          }}
+          className="relative z-10 p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-red-500 transition-colors cursor-pointer"
+        >
+          <Trash2 className="h-3.5 w-3.5 pointer-events-none" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>删除</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function OpsProductRowMenu({
   beian_hao,
   onElementsManage,
@@ -11790,6 +11832,482 @@ type TeamNavManageRow = {
   calculating: boolean
 }
 
+function OpsTeamNavEditDialog({
+  open,
+  product_name,
+  row,
+  onClose,
+  onSave,
+}: {
+  open: boolean
+  product_name: string
+  row: TeamNavManageRow | null
+  onClose: () => void
+  onSave: (values: { nav_date: string; unit_nav: string; cumulative_nav: string }) => void | Promise<void>
+}) {
+  const [unitNav, setUnitNav] = useState("")
+  const [cumulativeNav, setCumulativeNav] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    if (!open || !row) return
+    setUnitNav(row.unit_nav)
+    setCumulativeNav(row.cumulative_nav)
+    setSaving(false)
+    setError("")
+  }, [open, row])
+
+  async function handleConfirm() {
+    if (!row || saving) return
+    if (!unitNav.trim() || !cumulativeNav.trim()) return
+    setSaving(true)
+    setError("")
+    try {
+      await onSave({
+        nav_date: row.nav_date,
+        unit_nav: unitNav.trim(),
+        cumulative_nav: cumulativeNav.trim(),
+      })
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败，请稍后重试")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open || !row) return null
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[480px] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">编辑净值</span>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <div className="flex items-center gap-4">
+            <span className="text-sm shrink-0 w-24 text-right text-zinc-600">产品名称：</span>
+            <span className="text-sm">{product_name}</span>
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-sm shrink-0 w-24 text-right text-zinc-600">净值日期：</span>
+            <input
+              type="text"
+              value={row.nav_date}
+              disabled
+              className="flex-1 h-9 rounded border border-border bg-muted/50 px-3 text-sm text-muted-foreground cursor-not-allowed"
+            />
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-sm shrink-0 w-24 text-right text-zinc-600">
+              <span className="text-red-500">*</span> 单位净值：
+            </span>
+            <input
+              type="text"
+              value={unitNav}
+              onChange={(e) => setUnitNav(e.target.value)}
+              className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          <div className="flex items-center gap-4">
+            <span className="text-sm shrink-0 w-24 text-right text-zinc-600">
+              <span className="text-red-500">*</span> 累计净值：
+            </span>
+            <input
+              type="text"
+              value={cumulativeNav}
+              onChange={(e) => setCumulativeNav(e.target.value)}
+              className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          {error && <p className="text-xs text-red-500 pl-28">{error}</p>}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0">
+          <button type="button" onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
+          <button
+            type="button"
+            disabled={saving || !unitNav.trim() || !cumulativeNav.trim()}
+            onClick={() => void handleConfirm()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? "保存中…" : "确定"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OpsTeamNavDeleteDialog({
+  open,
+  row,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  row: TeamNavManageRow | null
+  onClose: () => void
+  onConfirm: () => void | Promise<void>
+}) {
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    if (!open) return
+    setDeleting(false)
+    setError("")
+  }, [open, row])
+
+  async function handleDelete() {
+    if (!row || deleting) return
+    setDeleting(true)
+    setError("")
+    try {
+      await onConfirm()
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除失败，请稍后重试")
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  if (!open || !row) return null
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={() => !deleting && onClose()}>
+      <div className="bg-background rounded-lg shadow-xl w-full max-w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-5">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 flex-shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <div>
+            <p className="font-semibold text-sm mb-1">删除净值</p>
+            <p className="text-sm text-zinc-500">确认要删除该净值吗？</p>
+          </div>
+        </div>
+        {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={deleting}
+            className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={deleting}
+            onClick={() => void handleDelete()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {deleting ? "删除中…" : "删除"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function OpsTeamNavClearDialog({
+  open,
+  onClose,
+  onConfirm,
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirm: () => void | Promise<void>
+}) {
+  const [clearing, setClearing] = useState(false)
+  const [error, setError] = useState("")
+
+  useEffect(() => {
+    if (!open) return
+    setClearing(false)
+    setError("")
+  }, [open])
+
+  async function handleClear() {
+    if (clearing) return
+    setClearing(true)
+    setError("")
+    try {
+      await onConfirm()
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "清空失败，请稍后重试")
+    } finally {
+      setClearing(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={() => !clearing && onClose()}>
+      <div className="bg-background rounded-lg shadow-xl w-full max-w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-5">
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-500 flex-shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <div>
+            <p className="font-semibold text-sm mb-1">清空净值</p>
+            <p className="text-sm text-zinc-500">确认要清空该产品所有净值吗？</p>
+          </div>
+        </div>
+        {error && <p className="text-xs text-red-500 mb-3">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={clearing}
+            className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-50"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={clearing}
+            onClick={() => void handleClear()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {clearing ? "清空中…" : "清空"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+type TeamNavMonitorFrequency = "daily" | "weekly" | "monthly"
+
+const TEAM_NAV_MONITOR_FREQUENCY_OPTIONS: { value: TeamNavMonitorFrequency; label: string }[] = [
+  { value: "daily", label: "日频" },
+  { value: "weekly", label: "周频" },
+  { value: "monthly", label: "月频" },
+]
+
+function teamNavMonitorFrequencyLabel(freq: TeamNavMonitorFrequency): string {
+  return TEAM_NAV_MONITOR_FREQUENCY_OPTIONS.find((o) => o.value === freq)?.label ?? "日频"
+}
+
+type TeamNavMissingSettingsData = {
+  inception_date: string | null
+  nav_start_date: string | null
+  latest_nav_date: string | null
+  monitor_frequency: TeamNavMonitorFrequency
+  monitor_start_date: string | null
+  monitor_enabled: boolean
+}
+
+function OpsTeamNavMissingSettingsDialog({
+  open,
+  beian_hao,
+  product_name,
+  nav_type,
+  onClose,
+  onSaved,
+}: {
+  open: boolean
+  beian_hao: string
+  product_name: string
+  nav_type: "pre_fee" | "virtual"
+  onClose: () => void
+  onSaved?: () => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState("")
+  const [meta, setMeta] = useState<TeamNavMissingSettingsData | null>(null)
+  const [monitorFrequency, setMonitorFrequency] = useState<TeamNavMonitorFrequency>("daily")
+  const [monitorStartDate, setMonitorStartDate] = useState("")
+  const [monitorEnabled, setMonitorEnabled] = useState(true)
+
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    setSaving(false)
+    setError("")
+    const params = new URLSearchParams({ beian_hao, product_name, nav_type })
+    fetch(`/ma/api/ops/team-data/nav/missing-settings?${params}`)
+      .then((r) => r.json())
+      .then((json) => {
+        const data = json.data as TeamNavMissingSettingsData | undefined
+        if (!data) return
+        setMeta(data)
+        setMonitorFrequency(data.monitor_frequency)
+        setMonitorStartDate(data.monitor_start_date ?? "")
+        setMonitorEnabled(data.monitor_enabled)
+      })
+      .catch(() => setError("加载设置失败，请稍后重试"))
+      .finally(() => setLoading(false))
+  }, [open, beian_hao, product_name, nav_type])
+
+  async function handleConfirm() {
+    if (saving) return
+    if (monitorEnabled && !monitorStartDate.trim()) {
+      setError("请选择监控起点")
+      return
+    }
+    setSaving(true)
+    setError("")
+    try {
+      const res = await fetch("/ma/api/ops/team-data/nav/missing-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beian_hao,
+          nav_type,
+          monitor_frequency: monitorFrequency,
+          monitor_start_date: monitorStartDate,
+          monitor_enabled: monitorEnabled,
+        }),
+      })
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}))
+        const msg = json.error === "invalid_date"
+          ? "监控起点日期格式不正确"
+          : json.error === "missing_fields"
+            ? "请填写必填项"
+            : (json.error || "保存失败")
+        throw new Error(msg)
+      }
+      onSaved?.()
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存失败，请稍后重试")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        className="bg-background rounded-lg shadow-xl w-full max-w-[560px] flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+          <span className="font-semibold text-base">净值缺失设置</span>
+          <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5 min-h-0">
+          <div className="flex items-center gap-2">
+            <span className="w-1 h-4 bg-red-500 rounded-full shrink-0" />
+            <span className="font-medium text-sm">{product_name}</span>
+          </div>
+
+          {loading ? (
+            <div className="py-10 text-center text-sm text-muted-foreground">加载中…</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-4 text-sm">
+                <div>
+                  <div className="text-zinc-500 mb-1">成立日期</div>
+                  <div className="font-medium">{meta?.inception_date ?? "—"}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500 mb-1">净值开始日期</div>
+                  <div className="font-medium">{meta?.nav_start_date ?? "—"}</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500 mb-1">最新净值日期</div>
+                  <div className="font-medium">{meta?.latest_nav_date ?? "—"}</div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <span className="text-sm shrink-0 w-24 text-right text-zinc-600">
+                  <span className="text-red-500">*</span> 监控频率：
+                </span>
+                <select
+                  value={monitorFrequency}
+                  onChange={(e) => setMonitorFrequency(e.target.value as TeamNavMonitorFrequency)}
+                  className="flex-1 h-9 rounded border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  {TEAM_NAV_MONITOR_FREQUENCY_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                监控区间内，如净值发生{teamNavMonitorFrequencyLabel(monitorFrequency)}缺失，则在运维和基金分析详情页予以提醒
+              </div>
+
+              <div className="flex items-center gap-4">
+                <span className="text-sm shrink-0 w-24 text-right text-zinc-600">
+                  <span className="text-red-500">*</span> 监控起点：
+                </span>
+                <div className="flex-1 relative">
+                  <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+                  <input
+                    type="date"
+                    value={monitorStartDate}
+                    onChange={(e) => setMonitorStartDate(e.target.value)}
+                    placeholder="请选择监控起点"
+                    disabled={!monitorEnabled}
+                    className="w-full h-9 rounded border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:bg-muted/40 disabled:text-muted-foreground disabled:cursor-not-allowed"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4">
+                <span className="text-sm shrink-0 w-24 text-right text-zinc-600">
+                  <span className="text-red-500">*</span> 监控状态：
+                </span>
+                <div className="flex items-center gap-6 text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="monitorEnabled"
+                      checked={monitorEnabled}
+                      onChange={() => setMonitorEnabled(true)}
+                      className="accent-red-500"
+                    />
+                    开启
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="monitorEnabled"
+                      checked={!monitorEnabled}
+                      onChange={() => setMonitorEnabled(false)}
+                      className="accent-red-500"
+                    />
+                    关闭
+                  </label>
+                </div>
+              </div>
+
+              {error && <p className="text-xs text-red-500 pl-28">{error}</p>}
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t flex-shrink-0">
+          <button type="button" onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
+          <button
+            type="button"
+            disabled={saving || loading || (monitorEnabled && !monitorStartDate.trim())}
+            onClick={() => void handleConfirm()}
+            className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {saving ? "保存中…" : "确定"}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function OperationsTeamNavManageView({
   beian_hao,
   product_name,
@@ -11803,6 +12321,10 @@ function OperationsTeamNavManageView({
   const [rows, setRows] = useState<TeamNavManageRow[]>([])
   const [loading, setLoading] = useState(false)
   const [showUploadDialog, setShowUploadDialog] = useState(false)
+  const [editRow, setEditRow] = useState<TeamNavManageRow | null>(null)
+  const [deleteRow, setDeleteRow] = useState<TeamNavManageRow | null>(null)
+  const [showMissingSettingsDialog, setShowMissingSettingsDialog] = useState(false)
+  const [showClearDialog, setShowClearDialog] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
@@ -11886,10 +12408,18 @@ function OperationsTeamNavManageView({
           </button>
         </div>
         <div className="flex items-center gap-3 pb-2 text-xs text-zinc-600">
-          <button type="button" className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
+          <button
+            type="button"
+            onClick={() => setShowMissingSettingsDialog(true)}
+            className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+          >
             <Search className="h-3.5 w-3.5" /> 净值缺失设置
           </button>
-          <button type="button" className="inline-flex items-center gap-1 hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled>
+          <button
+            type="button"
+            onClick={() => setShowClearDialog(true)}
+            className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+          >
             <MinusCircle className="h-3.5 w-3.5" /> 清空净值
           </button>
           <button type="button" onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
@@ -11948,14 +12478,10 @@ function OperationsTeamNavManageView({
                     : row.price_change}
                 </td>
                 <td className="px-4 py-2.5 text-zinc-600">{row.nav_source}</td>
-                <td className="px-4 py-2.5 text-center">
+                <td className="px-4 py-2.5 text-center relative z-10">
                   <div className="flex items-center justify-center gap-3">
-                    <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors opacity-50 cursor-not-allowed" disabled title="编辑">
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-red-500 transition-colors opacity-50 cursor-not-allowed" disabled title="删除">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <OpsTeamNavEditButton onClick={() => setEditRow(row)} />
+                    <OpsTeamNavDeleteButton onClick={() => setDeleteRow(row)} />
                   </div>
                 </td>
               </tr>
@@ -11986,6 +12512,93 @@ function OperationsTeamNavManageView({
           if (!res.ok) {
             const json = await res.json().catch(() => ({}))
             throw new Error(json.error || "upload_failed")
+          }
+          setReloadKey((k) => k + 1)
+        }}
+      />
+
+      <OpsTeamNavEditDialog
+        open={!!editRow}
+        product_name={product_name}
+        row={editRow}
+        onClose={() => setEditRow(null)}
+        onSave={async (values) => {
+          const res = await fetch("/ma/api/ops/team-data/nav/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              beian_hao,
+              product_name,
+              nav_type: navType,
+              rows: [values],
+            }),
+          })
+          if (!res.ok) {
+            const json = await res.json().catch(() => ({}))
+            const msg = json.error === "invalid_rows"
+              ? "净值格式不正确"
+              : json.error === "missing_fields"
+                ? "请填写必填项"
+                : (json.error || "保存失败")
+            throw new Error(msg)
+          }
+          setReloadKey((k) => k + 1)
+        }}
+      />
+
+      <OpsTeamNavDeleteDialog
+        open={!!deleteRow}
+        row={deleteRow}
+        onClose={() => setDeleteRow(null)}
+        onConfirm={async () => {
+          if (!deleteRow) return
+          const res = await fetch("/ma/api/ops/team-data/nav/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              beian_hao,
+              nav_type: navType,
+              nav_date: deleteRow.nav_date,
+              row_id: deleteRow.id,
+            }),
+          })
+          if (!res.ok) {
+            const json = await res.json().catch(() => ({}))
+            const msg = json.error === "not_found"
+              ? "该净值不存在或已被删除"
+              : json.error === "missing_fields"
+                ? "删除参数不完整"
+                : (json.error || "删除失败")
+            throw new Error(msg)
+          }
+          setReloadKey((k) => k + 1)
+        }}
+      />
+
+      <OpsTeamNavMissingSettingsDialog
+        open={showMissingSettingsDialog}
+        beian_hao={beian_hao}
+        product_name={product_name}
+        nav_type={navType}
+        onClose={() => setShowMissingSettingsDialog(false)}
+      />
+
+      <OpsTeamNavClearDialog
+        open={showClearDialog}
+        onClose={() => setShowClearDialog(false)}
+        onConfirm={async () => {
+          const res = await fetch("/ma/api/ops/team-data/nav/clear", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              beian_hao,
+              product_name,
+              nav_type: navType,
+            }),
+          })
+          if (!res.ok) {
+            const json = await res.json().catch(() => ({}))
+            throw new Error(json.error || "清空失败")
           }
           setReloadKey((k) => k + 1)
         }}

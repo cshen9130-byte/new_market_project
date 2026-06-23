@@ -122,6 +122,189 @@ export async function uploadTeamNavRows(params: {
   return { ok: true, count: cleaned.length }
 }
 
+export async function deleteTeamNavRow(params: {
+  beian_hao: string
+  nav_type: "pre_fee" | "virtual"
+  nav_date: string
+  row_id: string
+}): Promise<{ ok: true } | { error: "missing_fields" | "not_found" }> {
+  const beian_hao = params.beian_hao.trim()
+  const nav_date = params.nav_date.trim()
+  const row_id = params.row_id.trim()
+  if (!beian_hao || !nav_date || !row_id || !isValidNavDate(nav_date)) {
+    return { error: "missing_fields" }
+  }
+
+  if (row_id.startsWith("manual-")) {
+    const manualId = row_id.slice("manual-".length)
+    await ensureTeamNavManualTable()
+    const deleted = await query<{ id: string }>(
+      `DELETE FROM ops_team_nav_manual
+       WHERE id = $1::int AND beian_hao = $2 AND nav_date = $3::date AND nav_type = $4
+       RETURNING id::text AS id`,
+      [manualId, beian_hao, nav_date, params.nav_type],
+    )
+    if (deleted.length === 0) return { error: "not_found" }
+    return { ok: true }
+  }
+
+  const deleted = await query<{ id: string }>(
+    `DELETE FROM ops_email_nav_records
+     WHERE id = $1::int AND nav_date = $2::date
+     RETURNING id::text AS id`,
+    [row_id, nav_date],
+  )
+  if (deleted.length === 0) return { error: "not_found" }
+  return { ok: true }
+}
+
+export async function clearAllTeamNavRows(params: {
+  beian_hao: string
+  product_name: string
+  nav_type: "pre_fee" | "virtual"
+}): Promise<{ ok: true; count: number } | { error: "missing_fields" }> {
+  const beian_hao = params.beian_hao.trim()
+  if (!beian_hao) return { error: "missing_fields" }
+
+  const rows = await listTeamNavManageRows(params)
+
+  await ensureTeamNavManualTable()
+  await query(
+    `DELETE FROM ops_team_nav_manual WHERE beian_hao = $1 AND nav_type = $2`,
+    [beian_hao, params.nav_type],
+  )
+
+  let count = 0
+  for (const row of rows) {
+    if (row.id.startsWith("manual-")) {
+      count++
+      continue
+    }
+    const deleted = await query<{ id: string }>(
+      `DELETE FROM ops_email_nav_records
+       WHERE id = $1::int AND nav_date = $2::date
+       RETURNING id::text AS id`,
+      [row.id, row.nav_date],
+    )
+    if (deleted.length > 0) count++
+  }
+
+  return { ok: true, count }
+}
+
+export type TeamNavMonitorFrequency = "daily" | "weekly" | "monthly"
+
+export type TeamNavMissingSettings = {
+  inception_date: string | null
+  nav_start_date: string | null
+  latest_nav_date: string | null
+  monitor_frequency: TeamNavMonitorFrequency
+  monitor_start_date: string | null
+  monitor_enabled: boolean
+}
+
+function normalizeMonitorFrequency(value: string | null | undefined): TeamNavMonitorFrequency {
+  if (value === "weekly" || value === "monthly") return value
+  return "daily"
+}
+
+async function ensureTeamNavMissingSettingsTable(): Promise<void> {
+  await query(`
+    CREATE TABLE IF NOT EXISTS ops_team_nav_missing_settings (
+      id                  SERIAL PRIMARY KEY,
+      beian_hao           VARCHAR(64) NOT NULL,
+      nav_type            VARCHAR(16) NOT NULL DEFAULT 'pre_fee',
+      monitor_frequency   VARCHAR(16) NOT NULL DEFAULT 'daily',
+      monitor_start_date  DATE,
+      monitor_enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (beian_hao, nav_type)
+    )
+  `)
+}
+
+export async function getTeamNavMissingSettings(params: {
+  beian_hao: string
+  product_name: string
+  nav_type: "pre_fee" | "virtual"
+}): Promise<TeamNavMissingSettings> {
+  const beian_hao = params.beian_hao.trim()
+  const infoRows = await query<{ inception_date: string | null }>(
+    `SELECT inception_date::text AS inception_date
+     FROM private_fund_info
+     WHERE beian_hao = $1
+     LIMIT 1`,
+    [beian_hao],
+  )
+  const navRows = await listTeamNavManageRows(params)
+  const nav_start_date = navRows.length > 0 ? navRows[navRows.length - 1].nav_date : null
+  const latest_nav_date = navRows.length > 0 ? navRows[0].nav_date : null
+
+  await ensureTeamNavMissingSettingsTable()
+  const saved = await query<{
+    monitor_frequency: string
+    monitor_start_date: string | null
+    monitor_enabled: boolean
+  }>(
+    `SELECT monitor_frequency,
+            monitor_start_date::text AS monitor_start_date,
+            monitor_enabled
+     FROM ops_team_nav_missing_settings
+     WHERE beian_hao = $1 AND nav_type = $2
+     LIMIT 1`,
+    [beian_hao, params.nav_type],
+  )
+
+  return {
+    inception_date: infoRows[0]?.inception_date?.slice(0, 10) ?? null,
+    nav_start_date,
+    latest_nav_date,
+    monitor_frequency: normalizeMonitorFrequency(saved[0]?.monitor_frequency),
+    monitor_start_date: saved[0]?.monitor_start_date?.slice(0, 10) ?? null,
+    monitor_enabled: saved[0]?.monitor_enabled ?? true,
+  }
+}
+
+export async function saveTeamNavMissingSettings(params: {
+  beian_hao: string
+  nav_type: "pre_fee" | "virtual"
+  monitor_frequency: TeamNavMonitorFrequency
+  monitor_start_date: string
+  monitor_enabled: boolean
+}): Promise<{ ok: true } | { error: "missing_fields" | "invalid_date" | "invalid_frequency" }> {
+  const beian_hao = params.beian_hao.trim()
+  const monitor_start_date = params.monitor_start_date.trim()
+  if (!beian_hao) return { error: "missing_fields" }
+  if (!["daily", "weekly", "monthly"].includes(params.monitor_frequency)) {
+    return { error: "invalid_frequency" }
+  }
+  if (params.monitor_enabled && !isValidNavDate(monitor_start_date)) {
+    return { error: "invalid_date" }
+  }
+
+  await ensureTeamNavMissingSettingsTable()
+  await query(
+    `INSERT INTO ops_team_nav_missing_settings (
+       beian_hao, nav_type, monitor_frequency, monitor_start_date, monitor_enabled, updated_at
+     ) VALUES ($1, $2, $3, $4::date, $5, NOW())
+     ON CONFLICT (beian_hao, nav_type) DO UPDATE SET
+       monitor_frequency = EXCLUDED.monitor_frequency,
+       monitor_start_date = EXCLUDED.monitor_start_date,
+       monitor_enabled = EXCLUDED.monitor_enabled,
+       updated_at = NOW()`,
+    [
+      beian_hao,
+      params.nav_type,
+      params.monitor_frequency,
+      params.monitor_enabled ? monitor_start_date : null,
+      params.monitor_enabled,
+    ],
+  )
+
+  return { ok: true }
+}
+
 export async function listTeamNavManageRows(params: {
   beian_hao: string
   product_name: string
