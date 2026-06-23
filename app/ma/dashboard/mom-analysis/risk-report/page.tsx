@@ -7064,79 +7064,25 @@ function LiquiditySection() {
 const BRIEFING_CAPTURE_WIDTH = 794
 const BRIEFING_MAX_CANVAS_DIMENSION = 8192
 
-function isBriefingCanvasRendered(canvas: HTMLCanvasElement): boolean {
-  if (canvas.width < 2 || canvas.height < 2) return false
-  if (canvas.offsetWidth < 20 || canvas.offsetHeight < 20) return false
-  try {
-    const ctx = canvas.getContext("2d")
-    if (!ctx) return false
-    const w = Math.min(24, canvas.width)
-    const h = Math.min(24, canvas.height)
-    const x = Math.max(0, Math.floor(canvas.width / 2) - Math.floor(w / 2))
-    const y = Math.max(0, Math.floor(canvas.height / 2) - Math.floor(h / 2))
-    const sample = ctx.getImageData(x, y, w, h)
-    for (let i = 3; i < sample.data.length; i += 4) {
-      if (sample.data[i] > 8) return true
-    }
-    return false
-  } catch {
-    return true
-  }
-}
-
-function briefingSourceStillLoading(source: HTMLElement): boolean {
-  return Array.from(source.querySelectorAll("p, div, span")).some((el) => {
-    const text = (el.textContent ?? "").trim()
-    if (text !== "加载中…" && text !== "加载中...") return false
-    return !el.querySelector("canvas")
-  })
-}
-
 async function waitForBriefingSourceReady(
   source: HTMLElement,
   scrollContainer: HTMLElement | null,
-  timeoutMs = 30000,
 ): Promise<void> {
   const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-  const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 
-  // Scroll the briefing container (not individual elements) to the very bottom so
-  // off-screen lazy charts render, then return to top — no page jumping.
+  // Scroll to the bottom of the briefing container once so every lazy ECharts
+  // instance is visible and forced to render. Then wait a fixed amount of time
+  // (simple and reliable — no pixel-sampling that can hang on sparse charts).
   if (scrollContainer) {
     scrollContainer.scrollTop = scrollContainer.scrollHeight
-    await pause(400)
+    await pause(800)
     window.dispatchEvent(new Event("resize"))
-    await pause(200)
-  }
-
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (briefingSourceStillLoading(source)) {
-      await pause(200)
-      continue
-    }
-    const canvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
-    if (canvases.length === 0) {
-      window.dispatchEvent(new Event("resize"))
-      await pause(200)
-      continue
-    }
-    window.dispatchEvent(new Event("resize"))
-    await nextFrame()
-    await pause(150)
-    if (canvases.every(isBriefingCanvasRendered)) {
-      await pause(200)
-      if (Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas")).every(isBriefingCanvasRendered)) {
-        break
-      }
-    }
-    await pause(200)
-  }
-
-  // Scroll back to top so the user sees the page from the beginning.
-  if (scrollContainer) {
+    await pause(800)
     scrollContainer.scrollTop = 0
-    await nextFrame()
+    await pause(200)
+  } else {
+    window.dispatchEvent(new Event("resize"))
+    await pause(1200)
   }
 }
 
