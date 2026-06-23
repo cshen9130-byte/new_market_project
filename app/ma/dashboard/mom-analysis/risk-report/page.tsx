@@ -7092,42 +7092,51 @@ function briefingSourceStillLoading(source: HTMLElement): boolean {
   })
 }
 
-async function waitForBriefingSourceReady(source: HTMLElement, timeoutMs = 45000): Promise<void> {
-  const deadline = Date.now() + timeoutMs
+async function waitForBriefingSourceReady(
+  source: HTMLElement,
+  scrollContainer: HTMLElement | null,
+  timeoutMs = 30000,
+): Promise<void> {
   const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
   const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
 
+  // Scroll the briefing container (not individual elements) to the very bottom so
+  // off-screen lazy charts render, then return to top — no page jumping.
+  if (scrollContainer) {
+    scrollContainer.scrollTop = scrollContainer.scrollHeight
+    await pause(400)
+    window.dispatchEvent(new Event("resize"))
+    await pause(200)
+  }
+
+  const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (briefingSourceStillLoading(source)) {
-      await pause(150)
+      await pause(200)
       continue
     }
-
     const canvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
     if (canvases.length === 0) {
       window.dispatchEvent(new Event("resize"))
-      await nextFrame()
-      await pause(150)
+      await pause(200)
       continue
-    }
-
-    for (const canvas of canvases) {
-      canvas.scrollIntoView({ block: "center", inline: "nearest" })
-      await nextFrame()
     }
     window.dispatchEvent(new Event("resize"))
     await nextFrame()
-    await nextFrame()
-    await pause(250)
-
-    const renderedCount = canvases.filter(isBriefingCanvasRendered).length
-    if (renderedCount === canvases.length) {
-      await pause(300)
-      const stableCanvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
-      if (stableCanvases.every(isBriefingCanvasRendered)) return
+    await pause(150)
+    if (canvases.every(isBriefingCanvasRendered)) {
+      await pause(200)
+      if (Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas")).every(isBriefingCanvasRendered)) {
+        break
+      }
     }
-
     await pause(200)
+  }
+
+  // Scroll back to top so the user sees the page from the beginning.
+  if (scrollContainer) {
+    scrollContainer.scrollTop = 0
+    await nextFrame()
   }
 }
 
@@ -7194,14 +7203,9 @@ async function waitForBriefingCaptureImages(root: HTMLElement) {
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
 }
 
-async function prepareBriefingCaptureClone(source: HTMLElement) {
-  await waitForBriefingSourceReady(source)
+async function prepareBriefingCaptureClone(source: HTMLElement, scrollContainer: HTMLElement | null) {
+  await waitForBriefingSourceReady(source, scrollContainer)
 
-  const canvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
-  for (const canvas of canvases) {
-    canvas.scrollIntoView({ block: "center", inline: "nearest" })
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-  }
   window.dispatchEvent(new Event("resize"))
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
   await new Promise<void>((resolve) => setTimeout(resolve, 200))
@@ -7272,13 +7276,6 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
     outline-color: transparent !important;
     text-shadow: none !important;
     box-shadow: none !important;
-  }
-  [data-briefing-capture-clone] .briefing-masthead-title {
-    display: flex !important;
-    align-items: baseline !important;
-    gap: 0.5rem !important;
-    white-space: nowrap !important;
-    flex-wrap: nowrap !important;
   }
   .no-print { display: none !important; }
 `
@@ -7370,7 +7367,7 @@ export default function RiskReportNewPage() {
 
     // Clone off-screen with baked styles + chart PNGs so html2canvas never sees the
     // mobile preview scale wrapper (which breaks flex/grid positioning on phones).
-    const { clone, cleanup } = await prepareBriefingCaptureClone(source)
+    const { clone, cleanup } = await prepareBriefingCaptureClone(source, briefingScrollRef.current)
     clone.setAttribute("data-briefing-capture-clone", "")
 
     try {
@@ -9007,10 +9004,19 @@ export default function RiskReportNewPage() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-[10px] tracking-[0.35em] text-[#5a6a7a] uppercase mb-1">MOM Portfolio Management</p>
-                    <h1 className="briefing-masthead-title text-4xl font-black tracking-tight text-[#1a3a5c] flex items-baseline gap-2 whitespace-nowrap"
-                        style={{ fontFamily: "'Noto Serif SC','SimHei',serif", letterSpacing: "-0.01em" }}>
-                      <span>MOM</span>
-                      <span>风控简报</span>
+                    <h1 className="text-4xl font-black tracking-tight text-[#1a3a5c]"
+                        style={{
+                          fontFamily: "'Noto Serif SC','SimHei',serif",
+                          letterSpacing: "-0.01em",
+                          display: "flex",
+                          flexDirection: "row",
+                          alignItems: "baseline",
+                          gap: "0.4rem",
+                          whiteSpace: "nowrap",
+                          flexWrap: "nowrap",
+                        }}>
+                      <span style={{ whiteSpace: "nowrap" }}>MOM</span>
+                      <span style={{ whiteSpace: "nowrap" }}>风控简报</span>
                     </h1>
                     <p className="text-sm text-[#5a6a7a] mt-0.5 tracking-wide">
                       每日风险与业绩速览
