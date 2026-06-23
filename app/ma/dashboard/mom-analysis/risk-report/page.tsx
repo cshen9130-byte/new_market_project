@@ -7062,7 +7062,11 @@ function LiquiditySection() {
 }
 
 const BRIEFING_CAPTURE_WIDTH = 794
-const BRIEFING_MAX_CANVAS_DIMENSION = 8192
+// Mobile browsers (esp. iOS Safari) silently fail to render or export canvases
+// taller/wider than this. The briefing is very tall, so cap the longest side.
+const BRIEFING_MAX_CANVAS_DIMENSION = 4096
+// iOS Safari also enforces a max total canvas area (~16.7M px²). Stay under it.
+const BRIEFING_MAX_CANVAS_AREA = 16_000_000
 
 async function waitForBriefingSourceReady(
   source: HTMLElement,
@@ -7156,6 +7160,7 @@ async function prepareBriefingCaptureClone(source: HTMLElement, scrollContainer:
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
   await new Promise<void>((resolve) => setTimeout(resolve, 200))
 
+  const canvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
   const snapshots = canvases.map((canvas) => ({
     dataUrl: canvas.toDataURL("image/png"),
     w: canvas.offsetWidth,
@@ -7318,12 +7323,18 @@ export default function RiskReportNewPage() {
 
     try {
       const { default: html2canvas } = await import("html2canvas-pro")
-      const captureHeight = Math.max(clone.scrollHeight, clone.getBoundingClientRect().height)
+      const captureHeight = Math.max(clone.scrollHeight, clone.getBoundingClientRect().height, 1)
+      // Largest scale that keeps BOTH dimensions and the total area within
+      // mobile canvas limits. Falls back below 1 for extremely tall reports.
+      const areaScale = Math.sqrt(
+        BRIEFING_MAX_CANVAS_AREA / (BRIEFING_CAPTURE_WIDTH * captureHeight),
+      )
       const captureScale = Math.min(
         2,
         window.devicePixelRatio || 1,
         BRIEFING_MAX_CANVAS_DIMENSION / BRIEFING_CAPTURE_WIDTH,
-        BRIEFING_MAX_CANVAS_DIMENSION / Math.max(captureHeight, 1),
+        BRIEFING_MAX_CANVAS_DIMENSION / captureHeight,
+        areaScale,
       )
 
       return await html2canvas(clone, {
@@ -8688,14 +8699,55 @@ export default function RiskReportNewPage() {
     setBriefingImageDownloading(true)
     try {
       const canvas = await captureBriefingCanvas()
-      if (!canvas) return
+      if (!canvas) {
+        alert("生成图片失败：未找到简报内容")
+        return
+      }
+      if (canvas.width === 0 || canvas.height === 0) {
+        alert("生成图片失败：画布尺寸为 0，请稍后重试")
+        return
+      }
+
       const dateStr = briefingSummary?.date ?? new Date().toISOString().slice(0, 10)
+      const filename = `MOM风控简报-${dateStr}.png`
+
+      // toBlob is far more reliable than toDataURL for very tall canvases on
+      // mobile browsers (toDataURL can silently return an empty string on iOS).
+      const blob = await new Promise<Blob | null>((resolve) => {
+        if (canvas.toBlob) {
+          canvas.toBlob((b) => resolve(b), "image/png")
+        } else {
+          resolve(null)
+        }
+      })
+
+      if (blob) {
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement("a")
+        link.href = url
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        link.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 4000)
+        return
+      }
+
+      // Fallback: data URL (older browsers without toBlob).
+      const dataUrl = canvas.toDataURL("image/png")
+      if (!dataUrl || dataUrl === "data:," || dataUrl.length < 100) {
+        alert("生成图片失败：图片过大，浏览器无法导出。请改用「下载 PDF」或「下载 HTML」。")
+        return
+      }
       const link = document.createElement("a")
-      link.href = canvas.toDataURL("image/png")
-      link.download = `MOM风控简报-${dateStr}.png`
+      link.href = dataUrl
+      link.download = filename
+      document.body.appendChild(link)
       link.click()
+      link.remove()
     } catch (e) {
       console.error("[briefing-image-download]", e)
+      alert(`生成图片失败：${e instanceof Error ? e.message : String(e)}`)
     } finally {
       setBriefingImageDownloading(false)
     }
