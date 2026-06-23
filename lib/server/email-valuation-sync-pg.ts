@@ -9,9 +9,10 @@ import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-
 import {
   buildFofUnderlyingSummaryFrom,
   buildManagedProductsFrom,
-  FOF_UNDERLYING_BEIAN_EXPR,
+  fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
 
 export type EmailValuationSyncResult = {
   managedProductsUpdated: number
@@ -21,13 +22,14 @@ export type EmailValuationSyncResult = {
 /** Push latest email valuation metrics into managed_products + fof_underlying_summary. */
 export async function syncEmailValuationToProductTables(): Promise<EmailValuationSyncResult> {
   await ensureEmailValuationMetricsTables()
+  await ensureManagedFofUnderlyingTable()
 
   const managedRows = await query<{ n: string }>(
     `WITH mp AS (
        SELECT
          m.id,
          m.product_name,
-         ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao
+         ${fofUnderlyingBeianExpr("m.product_name")} AS beian_hao
        ${buildManagedProductsFrom("m.product_name")}
        WHERE m.product_name <> '合计'
      ),
@@ -62,22 +64,29 @@ export async function syncEmailValuationToProductTables(): Promise<EmailValuatio
        SELECT
          f.id,
          f.product_name,
-         ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao
+         ${fofUnderlyingBeianExpr("f.product_name")} AS beian_hao
        ${buildFofUnderlyingSummaryFrom("f.product_name")}
        WHERE f.product_name <> '合计'
+     ),
+     aggregated AS (
+       SELECT
+         COALESCE(NULLIF(TRIM(UPPER(m.underlying_product_code)), ''), TRIM(m.underlying_name)) AS underlying_key,
+         SUM(COALESCE(m.market_value, 0)) AS total_market_value
+       FROM ops_managed_fof_underlying m
+       WHERE COALESCE(m.market_value, 0) > 0
+       GROUP BY COALESCE(NULLIF(TRIM(UPPER(m.underlying_product_code)), ''), TRIM(m.underlying_name))
      ),
      best AS (
        SELECT DISTINCT ON (fof.id)
          fof.id,
-         v.market_value
+         a.total_market_value AS market_value
        FROM fof
-       INNER JOIN ops_email_valuation_underlying_market_latest v ON (
-         (NULLIF(TRIM(v.underlying_product_code), '') IS NOT NULL AND v.underlying_product_code = fof.beian_hao)
-         OR TRIM(v.underlying_name) = TRIM(fof.product_name)
-         OR ${sqlFundNameMatch("v.underlying_name", "fof.product_name")}
+       INNER JOIN aggregated a ON (
+         (NULLIF(TRIM(fof.beian_hao), '') IS NOT NULL AND a.underlying_key = TRIM(UPPER(fof.beian_hao)))
+         OR a.underlying_key = TRIM(fof.product_name)
        )
-       WHERE COALESCE(v.market_value, 0) > 0
-       ORDER BY fof.id, v.valuation_date DESC, v.market_value DESC NULLS LAST
+       WHERE COALESCE(a.total_market_value, 0) > 0
+       ORDER BY fof.id, a.total_market_value DESC NULLS LAST
      ),
      updated AS (
        UPDATE fof_underlying_summary f

@@ -8,9 +8,9 @@ import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-
 import { ensureEmailValuationHoldingsTables } from "@/lib/server/email-valuation-holdings-pg"
 import {
   buildManagedProductsFrom,
-  FOF_UNDERLYING_BEIAN_EXPR,
+  fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
-import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import { sqlFundNameMatch, sqlEmailNavShareClassGuard, sqlShareClassCodeGuard } from "@/lib/server/fund-name-match"
 import { backfillFundHoldingSymbols } from "@/lib/server/fund-holding-code"
 
 /** Managed products excluded from FOF underlying extraction (non-FOF). */
@@ -89,8 +89,8 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
 
   await query(`DELETE FROM ops_managed_fof_underlying`)
 
-  const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
   const productExpr = "m.product_name"
+  const beianExpr = fofUnderlyingBeianExpr(productExpr)
   const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
   const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
 
@@ -204,6 +204,244 @@ export type ManagedFofUnderlyingRow = {
   cost: string | null
   market_weight: string | null
   refreshed_at: string
+}
+
+function normalizeUnderlyingName(name: string): string {
+  return name
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .trim()
+}
+
+/** Match managed holding rows to a summary row; share class (A/B/C) must agree when present. */
+export function managedUnderlyingMatchSql(
+  beianExpr: string,
+  productNameExpr: string,
+  alias = "m",
+): string {
+  const beianMatch = `NULLIF(BTRIM(UPPER(${beianExpr})), '') IS NOT NULL AND TRIM(UPPER(${alias}.underlying_product_code)) = TRIM(UPPER(${beianExpr})) AND ${sqlShareClassCodeGuard(`${alias}.underlying_product_code`, productNameExpr)}`
+  const nameMatch = sqlFundNameMatch(`${alias}.underlying_name`, productNameExpr)
+  const shareGuard = sqlEmailNavShareClassGuard(
+    `${alias}.underlying_name`,
+    productNameExpr,
+    `${alias}.underlying_product_code`,
+  )
+  return `(${beianMatch} OR (${nameMatch} AND ${shareGuard}))`
+}
+
+/** Parameterized variant for prepared queries ($1 = beian, $2 = product name). */
+export function managedUnderlyingMatchParamsSql(
+  beianParam: string,
+  nameParam: string,
+  alias = "m",
+): string {
+  const beianMatch = `(${beianParam} <> '' AND NULLIF(BTRIM(UPPER(${alias}.underlying_product_code)), '') = TRIM(UPPER(${beianParam})))`
+  const nameMatch = sqlFundNameMatch(`${alias}.underlying_name`, nameParam)
+  const shareGuard = sqlEmailNavShareClassGuard(
+    `${alias}.underlying_name`,
+    nameParam,
+    `${alias}.underlying_product_code`,
+  )
+  return `(${beianMatch} OR (${nameMatch} AND ${shareGuard}))`
+}
+
+export type UnderlyingMarketAggregate = {
+  market_value: number | null
+}
+
+/** Sum of 在管产品 FOF holdings per underlying fund (by备案号 or name). */
+export async function loadManagedUnderlyingMarketLookup(): Promise<{
+  byProductCode: Map<string, UnderlyingMarketAggregate>
+  byName: Map<string, UnderlyingMarketAggregate>
+}> {
+  await ensureManagedFofUnderlyingTable()
+
+  const byCodeRows = await query<{
+    underlying_product_code: string
+    total_market_value: string
+  }>(
+    `SELECT
+       TRIM(UPPER(underlying_product_code)) AS underlying_product_code,
+       SUM(COALESCE(market_value, 0))::text AS total_market_value
+     FROM ops_managed_fof_underlying
+     WHERE COALESCE(market_value, 0) > 0
+       AND NULLIF(BTRIM(underlying_product_code), '') IS NOT NULL
+     GROUP BY TRIM(UPPER(underlying_product_code))`,
+  )
+
+  const byNameRows = await query<{
+    underlying_name: string
+    total_market_value: string
+  }>(
+    `SELECT
+       TRIM(underlying_name) AS underlying_name,
+       SUM(COALESCE(market_value, 0))::text AS total_market_value
+     FROM ops_managed_fof_underlying
+     WHERE COALESCE(market_value, 0) > 0
+     GROUP BY TRIM(underlying_name)`,
+  )
+
+  const byProductCode = new Map<string, UnderlyingMarketAggregate>()
+  const byName = new Map<string, UnderlyingMarketAggregate>()
+
+  for (const row of byCodeRows) {
+    const mv = parseFloat(row.total_market_value)
+    byProductCode.set(row.underlying_product_code, {
+      market_value: Number.isFinite(mv) ? mv : null,
+    })
+  }
+
+  for (const row of byNameRows) {
+    const mv = parseFloat(row.total_market_value)
+    const metrics: UnderlyingMarketAggregate = {
+      market_value: Number.isFinite(mv) ? mv : null,
+    }
+    byName.set(row.underlying_name, metrics)
+    byName.set(normalizeUnderlyingName(row.underlying_name), metrics)
+  }
+
+  return { byProductCode, byName }
+}
+
+export function resolveManagedUnderlyingMarket(
+  productName: string,
+  beianHao: string | null,
+  lookup: Awaited<ReturnType<typeof loadManagedUnderlyingMarketLookup>>,
+): UnderlyingMarketAggregate {
+  const beian = beianHao?.trim().toUpperCase()
+  if (beian && lookup.byProductCode.has(beian)) {
+    return lookup.byProductCode.get(beian)!
+  }
+  const exact = lookup.byName.get(productName.trim())
+  if (exact) return exact
+  const normalized = lookup.byName.get(normalizeUnderlyingName(productName))
+  if (normalized) return normalized
+  return { market_value: null }
+}
+
+/** Resolved 备案号: prefer cache when share-class suffix matches, else managed holdings. */
+export function managedUnderlyingBeianExpr(cacheBeianCol: string, productNameExpr: string): string {
+  const fallback = managedUnderlyingBeianFallbackExpr(productNameExpr)
+  return `COALESCE(
+    CASE
+      WHEN NULLIF(BTRIM(${cacheBeianCol}), '') IS NOT NULL
+        AND ${sqlShareClassCodeGuard(cacheBeianCol, productNameExpr)}
+      THEN BTRIM(${cacheBeianCol})
+    END,
+    ${fallback}
+  )`
+}
+
+/** Fallback 备案号 from managed holdings when cache has not been built yet. */
+export function managedUnderlyingBeianFallbackExpr(productNameExpr: string): string {
+  const nameMatch = sqlFundNameMatch("mf.underlying_name", productNameExpr)
+  const shareGuard = sqlEmailNavShareClassGuard(
+    "mf.underlying_name",
+    productNameExpr,
+    "mf.underlying_product_code",
+  )
+  const codeGuard = sqlShareClassCodeGuard("mf.underlying_product_code", productNameExpr)
+  return `(
+    SELECT NULLIF(TRIM(mf.underlying_product_code), '')
+    FROM ops_managed_fof_underlying mf
+    WHERE COALESCE(mf.market_value, 0) > 0
+      AND ${nameMatch}
+      AND ${shareGuard}
+      AND ${codeGuard}
+    ORDER BY mf.market_value DESC NULLS LAST
+    LIMIT 1
+  )`
+}
+
+export function managedUnderlyingMarketValueExpr(
+  beianExpr: string,
+  productNameExpr: string,
+): string {
+  const match = managedUnderlyingMatchSql(beianExpr, productNameExpr, "mv")
+  return `(
+    SELECT SUM(mv.market_value)
+    FROM ops_managed_fof_underlying mv
+    WHERE COALESCE(mv.market_value, 0) > 0
+      AND ${match}
+  )`
+}
+
+/** Prefer managed 市值 sum, then cached / summary values. */
+export function effectiveUnderlyingMarketValueExpr(
+  beianExpr: string,
+  productNameExpr: string,
+): string {
+  const managedMv = managedUnderlyingMarketValueExpr(beianExpr, productNameExpr)
+  return `COALESCE(NULLIF(${managedMv}, 0), cache.market_value, f.market_value)`
+}
+
+export type UnderlyingHoldingsRow = {
+  id: string
+  fof_product_name: string
+  valuation_date: string
+  quantity: string | null
+  market_value: string | null
+  market_weight: string | null
+}
+
+export async function listUnderlyingHoldings(options: {
+  beianHao?: string | null
+  productName: string
+}): Promise<{
+  rows: UnderlyingHoldingsRow[]
+  totalQuantity: string | null
+  totalMarketValue: string | null
+}> {
+  await ensureManagedFofUnderlyingTable()
+
+  const beian = options.beianHao?.trim() || ""
+  const productName = options.productName.trim()
+  const matchSql = managedUnderlyingMatchParamsSql("$1", "$2")
+
+  const rows = await query<{
+    id: string
+    fof_product_name: string
+    valuation_date: string | Date
+    quantity: string | null
+    market_value: string | null
+    market_weight: string | null
+  }>(
+    `SELECT
+       m.id::text,
+       m.fof_product_name,
+       m.valuation_date,
+       m.quantity::text,
+       m.market_value::text,
+       m.market_weight::text
+     FROM ops_managed_fof_underlying m
+     WHERE COALESCE(m.market_value, 0) > 0
+       AND ${matchSql}
+     ORDER BY m.market_value DESC NULLS LAST, m.fof_product_name ASC`,
+    [beian, productName],
+  )
+
+  let totalQty = 0
+  let totalMv = 0
+  for (const row of rows) {
+    const q = row.quantity != null ? parseFloat(row.quantity) : NaN
+    const mv = row.market_value != null ? parseFloat(row.market_value) : NaN
+    if (Number.isFinite(q)) totalQty += q
+    if (Number.isFinite(mv)) totalMv += mv
+  }
+
+  return {
+    rows: rows.map((r) => ({
+      id: r.id,
+      fof_product_name: r.fof_product_name,
+      valuation_date: typeof r.valuation_date === "string"
+        ? r.valuation_date.slice(0, 10)
+        : r.valuation_date.toISOString().slice(0, 10),
+      quantity: r.quantity,
+      market_value: r.market_value,
+      market_weight: r.market_weight,
+    })),
+    totalQuantity: rows.length > 0 ? String(totalQty) : null,
+    totalMarketValue: rows.length > 0 ? String(totalMv) : null,
+  }
 }
 
 export async function listManagedFofUnderlying(options?: {

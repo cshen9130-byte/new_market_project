@@ -2,6 +2,7 @@ import {
   sqlEmailNavShareClassGuard,
   sqlFundNameMatch,
   sqlFundNameMatchPriority,
+  sqlShareClassCodeGuard,
 } from "@/lib/server/fund-name-match"
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
@@ -88,17 +89,37 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
     `
 }
 
-export const FOF_UNDERLYING_BEIAN_EXPR = `COALESCE(
-  NULLIF(BTRIM(b.beian_hao), ''),
-  NULLIF(BTRIM(pi.beian_hao), ''),
-  NULLIF(BTRIM(o.register_number), ''),
-  NULLIF(BTRIM(fd.beian_hao), ''),
-  NULLIF(BTRIM(t.beian_hao), ''),
-  NULLIF(BTRIM(en_code.product_code), '')
-)`
+function guardedBeianCol(col: string, productNameExpr: string): string {
+  return `NULLIF(BTRIM(CASE WHEN ${sqlShareClassCodeGuard(col, productNameExpr)} THEN ${col} END), '')`
+}
+
+/** Resolve 备案号 preferring share-class-specific codes (e.g. VN917B over SVN917 for B类). */
+export function fofUnderlyingBeianExpr(productNameExpr: string): string {
+  return `COALESCE(
+    ${guardedBeianCol("fd.beian_hao", productNameExpr)},
+    ${guardedBeianCol("t.beian_hao", productNameExpr)},
+    ${guardedBeianCol("en_code.product_code", productNameExpr)},
+    ${guardedBeianCol("b.beian_hao", productNameExpr)},
+    ${guardedBeianCol("pi.beian_hao", productNameExpr)},
+    ${guardedBeianCol("o.register_number", productNameExpr)},
+    NULLIF(BTRIM(fd.beian_hao), ''),
+    NULLIF(BTRIM(t.beian_hao), ''),
+    NULLIF(BTRIM(en_code.product_code), ''),
+    NULLIF(BTRIM(b.beian_hao), ''),
+    NULLIF(BTRIM(pi.beian_hao), ''),
+    NULLIF(BTRIM(o.register_number), '')
+  )`
+}
+
+/** Default beian expr for fof_underlying_summary (alias f). */
+export const FOF_UNDERLYING_BEIAN_EXPR = fofUnderlyingBeianExpr("f.product_name")
 
 export function fofUnderlyingShortExpr(productNameExpr: string): string {
-  return `COALESCE(b.short_name, o.fund_short_name, ${productNameExpr})`
+  return `CASE
+    WHEN ${productNameExpr} ~ '[ABC]类'
+    THEN ${productNameExpr}
+    ELSE COALESCE(b.short_name, o.fund_short_name, ${productNameExpr})
+  END`
 }
 
 /** FROM clause for fof_underlying_summary with beian resolution joins. */
@@ -126,7 +147,66 @@ function buildFundNameLookupSql(nameParam: string): string {
   const emailMatch = sqlFundNameMatch("en_code.fund_name", nameParam)
   const emailShareClass = sqlEmailNavShareClassGuard("en_code.fund_name", nameParam, "en_code.product_code")
 
+  const fdLookup = `(SELECT fd.beian_hao FROM fof_underlying_detail fd
+     WHERE ${detailMatch} AND NULLIF(BTRIM(fd.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassCodeGuard("fd.beian_hao", nameParam)}
+     ORDER BY ${sqlFundNameMatchPriority("fd.product_name", nameParam)}
+     LIMIT 1)`
+  const tLookup = `(SELECT t.beian_hao FROM investment_tracking_fof_underlying t
+     WHERE ${trackMatch} AND NULLIF(BTRIM(t.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassCodeGuard("t.beian_hao", nameParam)}
+     ORDER BY ${sqlFundNameMatchPriority("t.product_name", nameParam)}
+     LIMIT 1)`
+  const emailLookup = `(SELECT en_code.product_code FROM ops_email_nav_records en_code
+     WHERE NULLIF(BTRIM(en_code.product_code), '') IS NOT NULL
+       AND ${emailMatch} AND ${emailShareClass}
+       AND ${sqlShareClassCodeGuard("en_code.product_code", nameParam)}
+     ORDER BY ${sqlFundNameMatchPriority("en_code.fund_name", nameParam)},
+       en_code.nav_date DESC NULLS LAST, en_code.id DESC
+     LIMIT 1)`
+  const bflLookup = `(SELECT bfl.beian_hao FROM private_fund_info_bfl bfl
+     WHERE ${bflMatch} AND NULLIF(BTRIM(bfl.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassCodeGuard("bfl.beian_hao", nameParam)}
+     ORDER BY LEAST(
+       ${sqlFundNameMatchPriority("bfl.product_name", nameParam)},
+       ${sqlFundNameMatchPriority("bfl.short_name", nameParam)}
+     ), length(bfl.product_name) ASC
+     LIMIT 1)`
+  const piLookup = `(SELECT pi.beian_hao FROM private_fund_info pi
+     WHERE ${pinfoMatch} AND NULLIF(BTRIM(pi.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassCodeGuard("pi.beian_hao", nameParam)}
+     ORDER BY ${sqlFundNameMatchPriority("pi.product_name", nameParam)}, length(pi.product_name) ASC
+     LIMIT 1)`
+  const opsLookup = `(SELECT o.register_number FROM type6_ops_team_full o
+     WHERE ${opsMatch} AND NULLIF(BTRIM(o.register_number), '') IS NOT NULL
+       AND ${sqlShareClassCodeGuard("o.register_number", nameParam)}
+     ORDER BY LEAST(
+       ${sqlFundNameMatchPriority("o.fund_name", nameParam)},
+       ${sqlFundNameMatchPriority("o.fund_short_name", nameParam)}
+     ), o.updated_at DESC NULLS LAST, o.id DESC
+     LIMIT 1)`
+
   return `COALESCE(
+    ${fdLookup},
+    ${tLookup},
+    ${emailLookup},
+    ${bflLookup},
+    ${piLookup},
+    ${opsLookup},
+    (SELECT fd.beian_hao FROM fof_underlying_detail fd
+     WHERE ${detailMatch} AND NULLIF(BTRIM(fd.beian_hao), '') IS NOT NULL
+     ORDER BY ${sqlFundNameMatchPriority("fd.product_name", nameParam)}
+     LIMIT 1),
+    (SELECT t.beian_hao FROM investment_tracking_fof_underlying t
+     WHERE ${trackMatch} AND NULLIF(BTRIM(t.beian_hao), '') IS NOT NULL
+     ORDER BY ${sqlFundNameMatchPriority("t.product_name", nameParam)}
+     LIMIT 1),
+    (SELECT en_code.product_code FROM ops_email_nav_records en_code
+     WHERE NULLIF(BTRIM(en_code.product_code), '') IS NOT NULL
+       AND ${emailMatch} AND ${emailShareClass}
+     ORDER BY ${sqlFundNameMatchPriority("en_code.fund_name", nameParam)},
+       en_code.nav_date DESC NULLS LAST, en_code.id DESC
+     LIMIT 1),
     (SELECT bfl.beian_hao FROM private_fund_info_bfl bfl
      WHERE ${bflMatch} AND NULLIF(BTRIM(bfl.beian_hao), '') IS NOT NULL
      ORDER BY LEAST(
@@ -144,20 +224,6 @@ function buildFundNameLookupSql(nameParam: string): string {
        ${sqlFundNameMatchPriority("o.fund_name", nameParam)},
        ${sqlFundNameMatchPriority("o.fund_short_name", nameParam)}
      ), o.updated_at DESC NULLS LAST, o.id DESC
-     LIMIT 1),
-    (SELECT fd.beian_hao FROM fof_underlying_detail fd
-     WHERE ${detailMatch} AND NULLIF(BTRIM(fd.beian_hao), '') IS NOT NULL
-     ORDER BY ${sqlFundNameMatchPriority("fd.product_name", nameParam)}
-     LIMIT 1),
-    (SELECT t.beian_hao FROM investment_tracking_fof_underlying t
-     WHERE ${trackMatch} AND NULLIF(BTRIM(t.beian_hao), '') IS NOT NULL
-     ORDER BY ${sqlFundNameMatchPriority("t.product_name", nameParam)}
-     LIMIT 1),
-    (SELECT en_code.product_code FROM ops_email_nav_records en_code
-     WHERE NULLIF(BTRIM(en_code.product_code), '') IS NOT NULL
-       AND ${emailMatch} AND ${emailShareClass}
-     ORDER BY ${sqlFundNameMatchPriority("en_code.fund_name", nameParam)},
-       en_code.nav_date DESC NULLS LAST, en_code.id DESC
      LIMIT 1)
   )`
 }

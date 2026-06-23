@@ -13,6 +13,13 @@ import {
   ensureFofOverviewListCachePopulated,
   useFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
+import { autoAddFofUnderlyingToTables } from "@/lib/server/fof-underlying-auto-add-pg"
+import {
+  ensureManagedFofUnderlyingTable,
+  effectiveUnderlyingMarketValueExpr,
+  managedUnderlyingBeianExpr,
+  managedUnderlyingMatchSql,
+} from "@/lib/server/managed-fof-underlying-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -22,7 +29,7 @@ const ALLOWED_SORT: Record<string, string> = {
   latest_nav: "cache.unit_nav",
   latest_nav_date: "cache.nav_date",
   latest_price_change: "cache.return_pct",
-  market_value: "COALESCE(cache.market_value, f.market_value)",
+  market_value: "managed_market_value",
   ret_1w: "cache.ret_1w",
   ret_1m: "cache.ret_1m",
   ret_3m: "cache.ret_3m",
@@ -176,21 +183,50 @@ export async function GET(req: Request) {
 
     // ─── FAST PATH — plain 2-table join, no lateral NAV scans ───────────────
     if (useCache) {
+      await ensureManagedFofUnderlyingTable()
+      try {
+        await autoAddFofUnderlyingToTables()
+      } catch (autoAddErr) {
+        console.error("[investment/fof-overview/list] auto-add failed:", autoAddErr)
+      }
       await ensureFofOverviewListCachePopulated()
+
+      const beianExpr = managedUnderlyingBeianExpr("cache.beian_hao", "f.product_name")
+      const effectiveMvExpr = effectiveUnderlyingMarketValueExpr(beianExpr, "f.product_name")
+      const displayNameExpr = `CASE
+        WHEN cache.short_name IS NOT NULL
+          AND f.product_name ~ '[ABC]类'
+          AND COALESCE(cache.short_name, '') !~ '[ABC]类'
+        THEN f.product_name
+        ELSE COALESCE(cache.short_name, f.product_name)
+      END`
 
       const stratCol = strategySource === "platform"
         ? "cache.platform_strategy_l1"
         : "cache.company_strategy_l1"
       const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
       const sortKey = ALLOWED_SORT[sortParam] ? sortParam : "sequence_no"
-      const sortCol = sortKey === "sequence_no" ? "f.sequence_no" : ALLOWED_SORT[sortKey]
+      const sortCol = sortKey === "sequence_no"
+        ? "f.sequence_no"
+        : sortKey === "market_value"
+          ? effectiveMvExpr
+          : ALLOWED_SORT[sortKey]
 
       const conditions: string[] = ["f.product_name <> '合计'"]
       const params: unknown[] = []
       let pi = 1
 
       if (keyword) {
-        conditions.push(`(f.product_name ILIKE $${pi} OR cache.beian_hao ILIKE $${pi})`)
+        conditions.push(`(
+          f.product_name ILIKE $${pi}
+          OR ${beianExpr} ILIKE $${pi}
+          OR EXISTS (
+            SELECT 1 FROM ops_managed_fof_underlying mk
+            WHERE COALESCE(mk.market_value, 0) > 0
+              AND mk.underlying_product_code ILIKE $${pi}
+              AND ${managedUnderlyingMatchSql(beianExpr, "f.product_name", "mk")}
+          )
+        )`)
         params.push(`%${keyword}%`)
         pi++
       }
@@ -204,9 +240,23 @@ export async function GET(req: Request) {
       }
 
       if (holdingStatus === "holding") {
-        conditions.push(`COALESCE(cache.market_value, f.market_value, 0) > 0`)
+        conditions.push(`(
+          COALESCE(${effectiveMvExpr}, 0) > 0
+          OR EXISTS (
+            SELECT 1 FROM ops_managed_fof_underlying m
+            WHERE COALESCE(m.market_value, 0) > 0
+              AND ${managedUnderlyingMatchSql(beianExpr, "f.product_name", "m")}
+          )
+        )`)
       } else if (holdingStatus === "cleared") {
-        conditions.push(`COALESCE(cache.market_value, f.market_value, 0) <= 0`)
+        conditions.push(`(
+          COALESCE(${effectiveMvExpr}, 0) <= 0
+          AND NOT EXISTS (
+            SELECT 1 FROM ops_managed_fof_underlying m
+            WHERE COALESCE(m.market_value, 0) > 0
+              AND ${managedUnderlyingMatchSql(beianExpr, "f.product_name", "m")}
+          )
+        )`)
       }
 
       if (teamTags.length > 0) {
@@ -232,13 +282,13 @@ export async function GET(req: Request) {
       const where = conditions.join(" AND ")
       const baseFrom = `
         FROM fof_underlying_summary f
-        INNER JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
+        LEFT JOIN ops_fof_overview_list_cache cache ON cache.fof_underlying_id = f.id
       `
 
       const [countRows, totalMvRows] = await Promise.all([
         query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
         query<{ total_mv: string }>(
-          `SELECT COALESCE(SUM(COALESCE(cache.market_value, f.market_value)), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
+          `SELECT COALESCE(SUM(${effectiveMvExpr}), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
           params,
         ),
       ])
@@ -267,14 +317,14 @@ export async function GET(req: Request) {
         `SELECT
            f.id::text                           AS id,
            f.sequence_no,
-           cache.beian_hao,
+           ${beianExpr}                           AS beian_hao,
            f.product_name,
-           cache.short_name,
+           ${displayNameExpr}                     AS short_name,
            ${stratCol}                          AS strategy_l1,
-           cache.unit_nav::text                 AS latest_unit_nav,
-           cache.nav_date::text                 AS latest_nav_date,
-           cache.return_pct::text               AS latest_return_pct,
-           COALESCE(cache.market_value, f.market_value)::text AS market_value,
+           COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
+           COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
+           COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct,
+           ${effectiveMvExpr}::text             AS market_value,
            cache.ret_1w::text,
            cache.ret_1m::text,
            cache.ret_3m::text,

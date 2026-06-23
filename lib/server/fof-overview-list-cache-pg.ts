@@ -12,9 +12,9 @@ import {
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
 import {
-  loadEmailUnderlyingMarketLookup,
-  resolveEmailUnderlyingMarket,
-} from "@/lib/server/email-valuation-cache-enrich"
+  loadManagedUnderlyingMarketLookup,
+  resolveManagedUnderlyingMarket,
+} from "@/lib/server/managed-fof-underlying-pg"
 import {
   addDays,
   BatchNavResolver,
@@ -119,7 +119,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
 
   logProgress(`found ${products.length} products — preloading NAV history…`)
 
-  const emailUnderlyingMarket = await loadEmailUnderlyingMarketLookup()
+  const managedUnderlyingMarket = await loadManagedUnderlyingMarketLookup()
 
   const identities = products.map((p) => ({
     beian_hao: p.beian_hao,
@@ -191,7 +191,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
     const platform_strategy_l1 = ops?.platform_strategy_l1 ?? bflStrategy ?? null
     const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
-    const emailMarket = resolveEmailUnderlyingMarket(row.product_name, row.beian_hao, emailUnderlyingMarket)
+    const managedMarket = resolveManagedUnderlyingMarket(row.product_name, row.beian_hao, managedUnderlyingMarket)
 
     placeholders.push(
       `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}, $${pi + 18}::date, NOW())`,
@@ -214,7 +214,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
       company_strategy_l1,
       platform_strategy_l1,
       team_tags,
-      emailMarket.market_value,
+      managedMarket.market_value,
       asOfDate,
     )
     pi += 19

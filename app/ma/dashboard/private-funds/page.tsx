@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
@@ -11336,6 +11336,8 @@ function OperationsTeamDataView() {
   const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
+  const [strategyL2, setStrategyL2] = useState("")
+  const [strategyL3, setStrategyL3] = useState("")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
   const [sortKey, setSortKey] = useState<TeamDataSortKey | "">("")
@@ -11349,8 +11351,25 @@ function OperationsTeamDataView() {
   const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
   const [showAuditLog, setShowAuditLog] = useState(false)
   const [teamNoteDialog, setTeamNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [showTeamDataAddDialog, setShowTeamDataAddDialog] = useState(false)
+  const [addTeamFundSearch, setAddTeamFundSearch] = useState("")
+  const [addTeamFundSelected, setAddTeamFundSelected] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [addTeamFundResults, setAddTeamFundResults] = useState<{ beian_hao: string; product_name: string; short_name: string | null; strategy_one: string | null }[]>([])
+  const [addTeamFundLoading, setAddTeamFundLoading] = useState(false)
+  const [addTeamFundShowDropdown, setAddTeamFundShowDropdown] = useState(false)
+  const [addTeamFundFieldError, setAddTeamFundFieldError] = useState(false)
+  const [addTeamFundSaving, setAddTeamFundSaving] = useState(false)
+  const [addTeamFundError, setAddTeamFundError] = useState<string | null>(null)
+  const [teamDataReloadKey, setTeamDataReloadKey] = useState(0)
+  const addTeamFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const l2Options = strategyL1 && strategyL1 !== "__unconfigured__"
+    ? (strategyHierarchy.find((n) => n.l1 === strategyL1)?.l2s ?? [])
+    : []
+  const l3Options = strategyL2
+    ? (l2Options.find((n) => n.l2 === strategyL2)?.l3s ?? [])
+    : []
 
   useEffect(() => {
     const params = new URLSearchParams({ strategy_source: strategySource, pool: "bfl_ops" })
@@ -11362,7 +11381,7 @@ function OperationsTeamDataView() {
 
   useEffect(() => {
     setPage(1)
-  }, [strategySource, strategyL1, keyword, pageSize])
+  }, [strategySource, strategyL1, strategyL2, strategyL3, keyword, pageSize])
 
   useEffect(() => {
     setLoading(true)
@@ -11376,6 +11395,8 @@ function OperationsTeamDataView() {
     if (sortKey) params.set("sort", sortKey)
     if (strategyL1 === "__unconfigured__") params.set("strategy_l1", "__unconfigured__")
     else if (strategyL1) params.set("strategy_l1", strategyL1)
+    if (strategyL2) params.set("strategy_l2", strategyL2)
+    if (strategyL3) params.set("strategy_l3", strategyL3)
     fetch(`/ma/api/ops/team-data/list?${params}`)
       .then((r) => r.json())
       .then((json) => {
@@ -11388,7 +11409,84 @@ function OperationsTeamDataView() {
         setTotal(0)
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, strategySource, strategyL1, keyword, sortKey, sortDir])
+  }, [page, pageSize, strategySource, strategyL1, strategyL2, strategyL3, keyword, sortKey, sortDir, teamDataReloadKey])
+
+  useEffect(() => {
+    if (!showTeamDataAddDialog) return
+    if (!addTeamFundSearch.trim()) {
+      setAddTeamFundResults([])
+      setAddTeamFundShowDropdown(false)
+      return
+    }
+    if (addTeamFundSearchRef.current) clearTimeout(addTeamFundSearchRef.current)
+    addTeamFundSearchRef.current = setTimeout(async () => {
+      setAddTeamFundLoading(true)
+      try {
+        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(addTeamFundSearch.trim())}`)
+        const json = await res.json()
+        setAddTeamFundResults(Array.isArray(json) ? json : [])
+        setAddTeamFundShowDropdown(true)
+      } catch {
+        setAddTeamFundResults([])
+      } finally {
+        setAddTeamFundLoading(false)
+      }
+    }, 250)
+    return () => {
+      if (addTeamFundSearchRef.current) clearTimeout(addTeamFundSearchRef.current)
+    }
+  }, [addTeamFundSearch, showTeamDataAddDialog])
+
+  function openTeamDataAddDialog() {
+    setAddTeamFundSearch("")
+    setAddTeamFundSelected(null)
+    setAddTeamFundResults([])
+    setAddTeamFundShowDropdown(false)
+    setAddTeamFundFieldError(false)
+    setAddTeamFundError(null)
+    setShowTeamDataAddDialog(true)
+  }
+
+  function closeTeamDataAddDialog() {
+    setShowTeamDataAddDialog(false)
+    setAddTeamFundFieldError(false)
+    setAddTeamFundError(null)
+  }
+
+  async function handleTeamDataAddConfirm() {
+    if (!addTeamFundSelected) {
+      setAddTeamFundFieldError(true)
+      return
+    }
+    setAddTeamFundSaving(true)
+    setAddTeamFundError(null)
+    try {
+      const res = await fetch("/ma/api/ops/team-data/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beian_hao: addTeamFundSelected.beian_hao,
+          product_name: addTeamFundSelected.product_name,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setAddTeamFundError(
+          json.error === "already_exists"
+            ? "该产品已在团队数据列表中"
+            : `添加失败：${json.error || "unknown"}`,
+        )
+        return
+      }
+      closeTeamDataAddDialog()
+      setPage(1)
+      setTeamDataReloadKey((k) => k + 1)
+    } catch {
+      setAddTeamFundError("添加失败，请稍后重试")
+    } finally {
+      setAddTeamFundSaving(false)
+    }
+  }
 
   function handleSort(col: TeamDataSortKey) {
     if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
@@ -11465,6 +11563,8 @@ function OperationsTeamDataView() {
                   if (strategySource === next) return
                   setStrategySource(next)
                   setStrategyL1("")
+                  setStrategyL2("")
+                  setStrategyL3("")
                   setPage(1)
                 }}
                 className="h-7 min-w-[6.25rem] appearance-none rounded border border-border bg-background pl-2 pr-6 text-xs text-zinc-600 dark:text-zinc-300 focus:outline-none focus:ring-1 focus:ring-ring"
@@ -11475,7 +11575,7 @@ function OperationsTeamDataView() {
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" />
             </div>
             <span
-              onClick={() => { setStrategyL1(""); setPage(1) }}
+              onClick={() => { setStrategyL1(""); setStrategyL2(""); setStrategyL3(""); setPage(1) }}
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
                 !strategyL1
@@ -11488,7 +11588,13 @@ function OperationsTeamDataView() {
             {strategyHierarchy.map((node) => (
               <span
                 key={node.l1}
-                onClick={() => { setStrategyL1(strategyL1 === node.l1 ? "" : node.l1); setPage(1) }}
+                onClick={() => {
+                  const next = strategyL1 === node.l1 ? "" : node.l1
+                  setStrategyL1(next)
+                  setStrategyL2("")
+                  setStrategyL3("")
+                  setPage(1)
+                }}
                 className={[
                   "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                   strategyL1 === node.l1
@@ -11500,7 +11606,13 @@ function OperationsTeamDataView() {
               </span>
             ))}
             <span
-              onClick={() => { setStrategyL1(strategyL1 === "__unconfigured__" ? "" : "__unconfigured__"); setPage(1) }}
+              onClick={() => {
+                const next = strategyL1 === "__unconfigured__" ? "" : "__unconfigured__"
+                setStrategyL1(next)
+                setStrategyL2("")
+                setStrategyL3("")
+                setPage(1)
+              }}
               className={[
                 "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
                 strategyL1 === "__unconfigured__"
@@ -11512,6 +11624,75 @@ function OperationsTeamDataView() {
             </span>
           </div>
         </div>
+        {strategyL1 && strategyL1 !== "__unconfigured__" && l2Options.length > 0 && (
+          <div className="flex items-start px-4 py-2 bg-muted/20">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">二级策略：</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                onClick={() => { setStrategyL2(""); setStrategyL3(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !strategyL2
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {l2Options.map((node) => (
+                <span
+                  key={node.l2}
+                  onClick={() => {
+                    const next = strategyL2 === node.l2 ? "" : node.l2
+                    setStrategyL2(next)
+                    setStrategyL3("")
+                    setPage(1)
+                  }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                    strategyL2 === node.l2
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {node.l2}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+        {strategyL2 && l3Options.length > 0 && (
+          <div className="flex items-start px-4 py-2 bg-muted/30">
+            <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3 pt-1">三级策略：</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span
+                onClick={() => { setStrategyL3(""); setPage(1) }}
+                className={[
+                  "inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium cursor-pointer transition-colors",
+                  !strategyL3
+                    ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20"
+                    : "border-border text-zinc-500 hover:border-red-300 hover:text-red-500",
+                ].join(" ")}
+              >
+                不限
+              </span>
+              {l3Options.map((v) => (
+                <span
+                  key={v}
+                  onClick={() => { setStrategyL3(strategyL3 === v ? "" : v); setPage(1) }}
+                  className={[
+                    "inline-flex items-center px-2.5 py-1 rounded border text-xs cursor-pointer transition-colors",
+                    strategyL3 === v
+                      ? "border-red-400 text-red-500 bg-red-50 dark:bg-red-950/20 font-medium"
+                      : "border-border text-zinc-500 hover:bg-muted/60",
+                  ].join(" ")}
+                >
+                  {v}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="flex items-center px-4 py-2">
           <span className="text-zinc-400 shrink-0 w-[4.5rem] text-right pr-3">关 键 字：</span>
           <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-80">
@@ -11533,8 +11714,33 @@ function OperationsTeamDataView() {
         <button onClick={() => setShowAuditLog(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
           <ClipboardList className="h-3.5 w-3.5" /> 操作日志
         </button>
+        <button
+          disabled={selected.size === 0}
+          className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground"
+        >
+          批量上传要素
+        </button>
+        <button
+          onClick={() => window.open("/ma/dashboard/private-funds?tab=operations&side=ops-strategy-tags&ops=strategies", "_blank")}
+          className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+        >
+          <PlusCircle className="h-3.5 w-3.5" /> 新增分级
+        </button>
         <button onClick={handleExport} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
           <Download className="h-3.5 w-3.5" /> 导出
+        </button>
+        <button
+          disabled={selected.size === 0}
+          className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground"
+        >
+          批量操作
+          {selected.size > 0 && <span className="text-red-500">({selected.size})</span>}
+        </button>
+        <button
+          onClick={openTeamDataAddDialog}
+          className="inline-flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white rounded px-3 py-1.5 font-medium transition-colors"
+        >
+          添加产品
         </button>
       </div>
 
@@ -11664,6 +11870,129 @@ function OperationsTeamDataView() {
         product_name={teamNoteDialog?.product_name ?? ""}
         onClose={() => setTeamNoteDialog(null)}
       />
+
+      {showTeamDataAddDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closeTeamDataAddDialog}>
+          <div className="bg-background rounded-lg shadow-xl w-[560px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">添加产品</span>
+              <button type="button" onClick={closeTeamDataAddDialog} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="px-6 py-5 flex flex-col gap-4">
+              <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                添加后可上传该产品净值数据，且净值仅内部可见
+              </div>
+              <div className="flex items-start gap-3">
+                <span className="text-sm shrink-0 w-[4.5rem] text-right pt-2">
+                  <span className="text-red-500 mr-0.5">*</span>选择基金：
+                </span>
+                <div className="flex flex-1 flex-col gap-1 relative">
+                  {addTeamFundSelected ? (
+                    <div className="flex items-center justify-between border rounded px-3 h-9">
+                      <div className="flex flex-col leading-tight min-w-0">
+                        <span className="text-sm font-medium truncate">{addTeamFundSelected.product_name}</span>
+                        <span className="text-xs text-muted-foreground truncate">{addTeamFundSelected.beian_hao}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddTeamFundSelected(null)
+                          setAddTeamFundSearch("")
+                          setAddTeamFundShowDropdown(false)
+                          setAddTeamFundFieldError(false)
+                        }}
+                        className="text-muted-foreground hover:text-foreground text-base leading-none ml-2 shrink-0"
+                      >×</button>
+                    </div>
+                  ) : (
+                    <div className={[
+                      "flex items-center border rounded px-3 h-9 gap-2",
+                      addTeamFundFieldError ? "border-red-500" : "",
+                    ].join(" ")}>
+                      <input
+                        autoFocus
+                        type="text"
+                        value={addTeamFundSearch}
+                        onChange={(e) => {
+                          setAddTeamFundSearch(e.target.value)
+                          setAddTeamFundSelected(null)
+                          setAddTeamFundFieldError(false)
+                        }}
+                        onFocus={() => { if (addTeamFundResults.length > 0) setAddTeamFundShowDropdown(true) }}
+                        placeholder="搜索并选择基金，支持基金名称/备案编号"
+                        className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/50"
+                      />
+                      {addTeamFundLoading
+                        ? <svg className="h-3.5 w-3.5 animate-spin text-zinc-400 shrink-0" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="32" strokeLinecap="round"/></svg>
+                        : <ChevronDown className="h-3.5 w-3.5 text-zinc-400 shrink-0" />
+                      }
+                    </div>
+                  )}
+                  {addTeamFundFieldError && !addTeamFundSelected && (
+                    <p className="text-xs text-red-500">请输入并选择基金名称</p>
+                  )}
+                  {addTeamFundShowDropdown && addTeamFundResults.length > 0 && !addTeamFundSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl max-h-56 overflow-y-auto">
+                      {addTeamFundResults.map((r) => (
+                        <button
+                          key={r.beian_hao}
+                          type="button"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setAddTeamFundSelected({ beian_hao: r.beian_hao, product_name: r.product_name })
+                            setAddTeamFundSearch("")
+                            setAddTeamFundShowDropdown(false)
+                            setAddTeamFundFieldError(false)
+                          }}
+                          className="w-full text-left px-3 py-2 hover:bg-muted transition-colors flex items-center justify-between gap-3"
+                        >
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-sm truncate">{r.product_name}</span>
+                            <span className="text-xs text-muted-foreground truncate">
+                              {r.beian_hao}{r.short_name ? ` · ${r.short_name}` : ""}
+                            </span>
+                          </div>
+                          {r.strategy_one && (
+                            <span className="text-xs text-zinc-400 shrink-0 border rounded px-1 py-0.5">{r.strategy_one}</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {addTeamFundShowDropdown && addTeamFundResults.length === 0 && !addTeamFundLoading && addTeamFundSearch.trim() && !addTeamFundSelected && (
+                    <div className="absolute left-0 right-0 top-full mt-1 z-50 bg-background border rounded-lg shadow-xl px-4 py-3 text-sm text-muted-foreground">
+                      未找到匹配的基金
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 px-6 py-4 border-t flex-shrink-0">
+              {addTeamFundError && (
+                <p className="text-xs text-red-500 text-right">{addTeamFundError}</p>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeTeamDataAddDialog}
+                  disabled={addTeamFundSaving}
+                  className="px-4 py-2 text-sm border rounded hover:bg-muted transition-colors disabled:opacity-50"
+                >
+                  取 消
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleTeamDataAddConfirm()}
+                  disabled={addTeamFundSaving}
+                  className="px-4 py-2 text-sm bg-red-500 hover:bg-red-600 text-white rounded transition-colors disabled:opacity-50"
+                >
+                  {addTeamFundSaving ? "添加中…" : "确 定"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -11741,6 +12070,14 @@ function fmtMoney(v: string | null | undefined): string {
   const n = parseFloat(v)
   if (isNaN(n)) return "—"
   return n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function fmtMarketWeight(v: string | null | undefined): string {
+  if (!v) return "—"
+  const n = parseFloat(v)
+  if (isNaN(n)) return "—"
+  const pct = Math.abs(n) <= 1 ? n * 100 : n
+  return pct.toFixed(2) + "%"
 }
 
 function FundProductNameLink({
@@ -14258,6 +14595,20 @@ function InvestmentFofOverviewView() {
       return raw ? new Set(JSON.parse(raw) as string[]) : new Set()
     } catch { return new Set() }
   })
+  const [showFofHoldingsDialog, setShowFofHoldingsDialog] = useState(false)
+  const [fofHoldingsName, setFofHoldingsName] = useState("")
+  const [fofHoldingsBeian, setFofHoldingsBeian] = useState<string | null>(null)
+  const [fofHoldingsRows, setFofHoldingsRows] = useState<{
+    id: string
+    fofProductName: string
+    valuationDate: string
+    quantity: string | null
+    marketValue: string | null
+    marketWeight: string | null
+  }[]>([])
+  const [fofHoldingsTotals, setFofHoldingsTotals] = useState<{ quantity: string | null; marketValue: string | null }>({ quantity: null, marketValue: null })
+  const [fofHoldingsLoading, setFofHoldingsLoading] = useState(false)
+  const [fofHoldingsSelected, setFofHoldingsSelected] = useState<Set<string>>(new Set())
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
   const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
@@ -14332,6 +14683,59 @@ function InvestmentFofOverviewView() {
       localStorage.setItem("fof_underlying_favorites", JSON.stringify([...next]))
       return next
     })
+  }
+
+  async function openFofHoldingsDialog(beian_hao: string | null, product_name: string) {
+    setFofHoldingsName(product_name)
+    setFofHoldingsBeian(beian_hao)
+    setFofHoldingsRows([])
+    setFofHoldingsTotals({ quantity: null, marketValue: null })
+    setFofHoldingsSelected(new Set())
+    setShowFofHoldingsDialog(true)
+    setFofHoldingsLoading(true)
+    try {
+      const params = new URLSearchParams({ product_name })
+      if (beian_hao) params.set("beian_hao", beian_hao)
+      const json = await fetch(`/ma/api/investment/fof-overview/holdings?${params}`).then((r) => r.json())
+      setFofHoldingsRows(json.data ?? [])
+      setFofHoldingsTotals({
+        quantity: json.totalQuantity ?? null,
+        marketValue: json.totalMarketValue ?? null,
+      })
+    } catch {
+      setFofHoldingsRows([])
+      setFofHoldingsTotals({ quantity: null, marketValue: null })
+    } finally {
+      setFofHoldingsLoading(false)
+    }
+  }
+
+  function exportFofHoldings() {
+    const escape = (v: string | null | undefined) => {
+      if (!v) return ""
+      const s = String(v)
+      return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+    }
+    const rows = fofHoldingsSelected.size > 0
+      ? fofHoldingsRows.filter((r) => fofHoldingsSelected.has(r.id))
+      : fofHoldingsRows
+    const headers = ["FOF产品名称", "估值表日期", "份额", "市值", "市值占比"]
+    const csvRows = [
+      headers.join(","),
+      ...rows.map((r) => [
+        escape(r.fofProductName),
+        escape(r.valuationDate),
+        escape(r.quantity),
+        escape(r.marketValue),
+        escape(r.marketWeight),
+      ].join(",")),
+    ]
+    const blob = new Blob(["\uFEFF" + csvRows.join("\n")], { type: "text/csv;charset=utf-8;" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `持仓_${fofHoldingsName}_${new Date().toISOString().slice(0, 10)}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
   }
 
   useEffect(() => {
@@ -15189,6 +15593,19 @@ function InvestmentFofOverviewView() {
                       <td style={fofStickyRightColStyle(fofStickyRight.docs)} className={stickyRightDocs}>—</td>
                       <td style={fofStickyRightColStyle(fofStickyRight.ops, fofStickyOpsColW)} className={stickyRightOps}>
                         <div className="flex items-center justify-center gap-0.5">
+                          <div className="relative group/holdings">
+                            <button
+                              type="button"
+                              onClick={() => openFofHoldingsDialog(row.beian_hao, row.product_name)}
+                              className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              <HandCoins className="h-3.5 w-3.5" />
+                            </button>
+                            <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2 py-0.5 rounded text-[10px] text-white bg-zinc-700 whitespace-nowrap opacity-0 group-hover/holdings:opacity-100 transition-opacity z-50">
+                              持仓
+                              <span className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-zinc-700" />
+                            </span>
+                          </div>
                           <button
                             type="button"
                             disabled={!row.beian_hao}
@@ -15401,6 +15818,100 @@ function InvestmentFofOverviewView() {
           </div>
         </div>
       </div>
+
+      {showFofHoldingsDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowFofHoldingsDialog(false)}>
+          <div className="bg-background rounded-lg shadow-2xl w-[860px] max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
+              <span className="font-semibold text-base">持仓</span>
+              <button onClick={() => setShowFofHoldingsDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
+            </div>
+            <div className="overflow-y-auto flex-1 px-6 py-5">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-bold pl-3 border-l-4 border-red-500">{fofHoldingsName}</h2>
+                <button
+                  type="button"
+                  onClick={exportFofHoldings}
+                  disabled={fofHoldingsRows.length === 0}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors disabled:opacity-40"
+                >
+                  <Download className="h-3.5 w-3.5" /> 导出
+                </button>
+              </div>
+              {fofHoldingsLoading ? (
+                <div className="flex items-center justify-center py-12 text-muted-foreground text-sm">加载中…</div>
+              ) : fofHoldingsRows.length === 0 ? (
+                <div className="text-sm text-muted-foreground py-8 text-center">暂无持仓数据</div>
+              ) : (
+                <div className="overflow-auto rounded-lg border">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b bg-muted/40">
+                        <th className="px-3 py-2.5 w-10 text-center">
+                          <input
+                            type="checkbox"
+                            className="rounded h-3 w-3"
+                            checked={fofHoldingsSelected.size === fofHoldingsRows.length && fofHoldingsRows.length > 0}
+                            onChange={() => {
+                              if (fofHoldingsSelected.size === fofHoldingsRows.length) setFofHoldingsSelected(new Set())
+                              else setFofHoldingsSelected(new Set(fofHoldingsRows.map((r) => r.id)))
+                            }}
+                          />
+                        </th>
+                        <th className="px-3 py-2.5 text-left text-xs font-semibold text-zinc-500">FOF产品名称/估值表日期</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-zinc-500">份额</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-zinc-500">市值</th>
+                        <th className="px-3 py-2.5 text-right text-xs font-semibold text-zinc-500">市值占比</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fofHoldingsRows.map((r) => {
+                        const isSelected = fofHoldingsSelected.has(r.id)
+                        return (
+                          <tr key={r.id} className={`border-b last:border-0 ${isSelected ? "bg-blue-50 dark:bg-blue-950/30" : ""}`}>
+                            <td className="px-3 py-2.5 text-center">
+                              <input
+                                type="checkbox"
+                                className="rounded h-3 w-3"
+                                checked={isSelected}
+                                onChange={() => {
+                                  const next = new Set(fofHoldingsSelected)
+                                  isSelected ? next.delete(r.id) : next.add(r.id)
+                                  setFofHoldingsSelected(next)
+                                }}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5">
+                              {r.fofProductName}
+                              <span className="text-muted-foreground"> ({r.valuationDate})</span>
+                            </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">
+                              {r.quantity ? parseFloat(r.quantity).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums font-medium">{fmtMoney(r.marketValue)}</td>
+                            <td className="px-3 py-2.5 text-right tabular-nums">{fmtMarketWeight(r.marketWeight)}</td>
+                          </tr>
+                        )
+                      })}
+                      <tr className="bg-muted/50 font-medium">
+                        <td className="px-3 py-2.5" />
+                        <td className="px-3 py-2.5 text-zinc-600">总计</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          {fofHoldingsTotals.quantity
+                            ? parseFloat(fofHoldingsTotals.quantity).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+                            : "—"}
+                        </td>
+                        <td className="px-3 py-2.5 text-right tabular-nums">{fmtMoney(fofHoldingsTotals.marketValue)}</td>
+                        <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">--</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {showFofElementsDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowFofElementsDialog(false)}>

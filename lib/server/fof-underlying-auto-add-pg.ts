@@ -47,7 +47,8 @@ function normExpr(col: string): string {
 export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoAddResult> {
   await ensureManagedFofUnderlyingTable()
 
-  const normUnderlying = normExpr("underlying_name")
+  const normUnderlyingCol = normExpr("underlying_name")
+  const normUnderlyingFromN = normExpr("n.underlying_name")
   const normSummary    = normExpr("f.product_name")
   const normFofEmail   = normExpr("fof_product_name")
   const normDetailFof  = normExpr("d.fof_fund_name")
@@ -58,11 +59,12 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
   // ── 1. fof_underlying_summary (运维 FOF底层 + 投资 FOF底层 overview) ──────────
   const summaryRows = await query<{ n: string }>(
     `WITH new_underlying AS (
-       SELECT DISTINCT ON (${normUnderlying})
-         underlying_name
+       SELECT DISTINCT ON (COALESCE(NULLIF(TRIM(UPPER(underlying_product_code)), ''), ${normUnderlyingCol}))
+         underlying_name,
+         NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code
        FROM ops_managed_fof_underlying
        WHERE NULLIF(TRIM(underlying_name), '') IS NOT NULL
-       ORDER BY ${normUnderlying}, valuation_date DESC
+       ORDER BY COALESCE(NULLIF(TRIM(UPPER(underlying_product_code)), ''), ${normUnderlyingCol}), valuation_date DESC
      ),
      max_seq AS (
        SELECT
@@ -73,11 +75,12 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
      to_add AS (
        SELECT
          n.underlying_name,
+         n.underlying_product_code,
          ROW_NUMBER() OVER (ORDER BY n.underlying_name) AS rn
        FROM new_underlying n
        WHERE NOT EXISTS (
          SELECT 1 FROM fof_underlying_summary f
-         WHERE ${normSummary} = ${normUnderlying}
+         WHERE ${normSummary} = ${normUnderlyingFromN}
        )
      ),
      inserted AS (
@@ -97,14 +100,14 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
   // ── 2. fof_underlying_detail (投资 FOF底层 明细 view) ─────────────────────────
   const detailRows = await query<{ n: string }>(
     `WITH to_add AS (
-       SELECT DISTINCT ON (${normFofEmail}, ${normUnderlying})
+       SELECT DISTINCT ON (${normFofEmail}, ${normUnderlyingCol})
          fof_product_name                             AS fof_fund_name,
          underlying_name                              AS product_name,
          NULLIF(TRIM(underlying_product_code), '')    AS beian_hao
        FROM ops_managed_fof_underlying
        WHERE NULLIF(TRIM(underlying_name), '') IS NOT NULL
          AND NULLIF(TRIM(fof_product_name), '') IS NOT NULL
-       ORDER BY ${normFofEmail}, ${normUnderlying}
+       ORDER BY ${normFofEmail}, ${normUnderlyingCol}
      ),
      inserted AS (
        INSERT INTO fof_underlying_detail (fof_fund_name, product_name, beian_hao, source_file)

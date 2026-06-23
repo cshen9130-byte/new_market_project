@@ -19,6 +19,8 @@ const FUND_NAME_CODE_OVERRIDES: Record<string, string> = {
   "金和和善对冲1号":                    "STA933",
   "宁苑沛华稳定增长一号":               "TG733C",
   "磐松红利指数增强1号":                "SAGF05",
+  "棕榈滩泰来":                         "AVF39",
+  "棕榈滩泰来三号":                     "BVC41",
 }
 
 function normalizeFundNameForLookup(name: string): string {
@@ -64,11 +66,13 @@ export function extractFundHoldingCode(subjectCode: string, subjectName: string)
   const name = String(subjectName ?? "").trim()
   const shareFromName = shareClassFromFundName(name)
 
-  // 1109 / 1108 private funds: 11090601TA891A, 11090601ALF51B
+  // 1109 / 1108 private funds: 11090601TA891A, 11080201BVC41AOTC, 11080201AVF39AOTC
   if (/^110[89]/.test(compact)) {
-    const embedded = compact.match(/110[89]\d+(?:01)?([A-Z]{2}[A-Z0-9]{3,5})([ABC])?$/i)
+    const embedded = compact.match(/110[89]\d+(?:01)?([A-Z]{2}[A-Z0-9]{3,5}[ABC]?)/i)
     if (embedded) {
-      return appendShareClass(embedded[1], embedded[2] || shareFromName)
+      const code = embedded[1].toUpperCase()
+      if (/[ABC]$/.test(code)) return formatFundHoldingCode(code)
+      return appendShareClass(code, shareFromName)
     }
   }
 
