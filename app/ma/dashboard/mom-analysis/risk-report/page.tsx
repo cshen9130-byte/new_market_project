@@ -7062,11 +7062,11 @@ function LiquiditySection() {
 }
 
 const BRIEFING_CAPTURE_WIDTH = 794
-// Mobile browsers (esp. iOS Safari) silently fail to render or export canvases
-// taller/wider than this. The briefing is very tall, so cap the longest side.
-const BRIEFING_MAX_CANVAS_DIMENSION = 4096
-// iOS Safari also enforces a max total canvas area (~16.7M px²). Stay under it.
-const BRIEFING_MAX_CANVAS_AREA = 16_000_000
+// Mobile browsers cap canvas dimensions; 8192 keeps high resolution (≈3MB PNG)
+// while staying within the longest-side limit on modern devices.
+const BRIEFING_MAX_CANVAS_DIMENSION = 8192
+// iOS Safari enforces a max total canvas area (~16.7M px²). Stay just under it.
+const BRIEFING_MAX_CANVAS_AREA = 16_500_000
 
 async function waitForBriefingSourceReady(
   source: HTMLElement,
