@@ -7145,25 +7145,52 @@ export default function RiskReportNewPage() {
   const captureBriefingCanvas = useCallback(async () => {
     const el = document.getElementById("mom-briefing-printable")
     if (!el) return null
-    const { default: html2canvas } = await import("html2canvas-pro")
 
-    // Pre-snapshot every ECharts canvas from the live DOM *before* cloning.
-    // html2canvas mis-scales canvases whose attribute size differs from CSS size
-    // (device-pixel-ratio issue), showing only half the chart. Replacing them
-    // with plain <img> elements at the correct CSS size fixes this.
-    const srcCanvases = Array.from(el.querySelectorAll<HTMLCanvasElement>("canvas"))
-    const canvasSnapshots = srcCanvases.map(c => ({
-      dataUrl: c.toDataURL("image/png"),
-      w: c.offsetWidth,
-      h: c.offsetHeight,
-    }))
+    // On mobile the A4 sheet is previewed inside `transform: scale(...)`. html2canvas
+    // miscalculates flex/grid positions when a scaled ancestor is present, causing
+    // overlapping text and charts. Temporarily render at full 794px for capture.
+    const transformWrapper = el.parentElement
+    const sizeWrapper = transformWrapper?.parentElement
+    const scrollEl = briefingScrollRef.current
+    const savedPreview = {
+      transform: transformWrapper?.style.transform ?? "",
+      sizeWidth: sizeWrapper?.style.width ?? "",
+      sizeHeight: sizeWrapper?.style.height ?? "",
+      scrollOverflow: scrollEl?.style.overflow ?? "",
+    }
+    if (transformWrapper) transformWrapper.style.transform = "none"
+    if (sizeWrapper) {
+      sizeWrapper.style.width = "794px"
+      sizeWrapper.style.height = `${el.scrollHeight}px`
+    }
+    if (scrollEl) scrollEl.style.overflow = "hidden"
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
 
-    return html2canvas(el, {
-      scale: 2,
+    try {
+      const { default: html2canvas } = await import("html2canvas-pro")
+
+      // Pre-snapshot every ECharts canvas from the live DOM *before* cloning.
+      // html2canvas mis-scales canvases whose attribute size differs from CSS size
+      // (device-pixel-ratio issue), showing only half the chart. Replacing them
+      // with plain <img> elements at the correct CSS size fixes this.
+      const srcCanvases = Array.from(el.querySelectorAll<HTMLCanvasElement>("canvas"))
+      const canvasSnapshots = srcCanvases.map(c => ({
+        dataUrl: c.toDataURL("image/png"),
+        w: c.offsetWidth,
+        h: c.offsetHeight,
+      }))
+
+      const captureWidth = 794
+      const captureHeight = el.scrollHeight
+
+      return await html2canvas(el, {
+      scale: Math.min(2, window.devicePixelRatio || 1),
       useCORS: true,
       backgroundColor: "#ffffff",
-      windowWidth: el.scrollWidth,
-      windowHeight: el.scrollHeight,
+      windowWidth: captureWidth,
+      windowHeight: captureHeight,
+      scrollX: 0,
+      scrollY: 0,
       onclone: (clonedDoc) => {
         // Replace canvas elements with pre-snapshotted imgs at CSS dimensions.
         Array.from(clonedDoc.querySelectorAll<HTMLCanvasElement>("#mom-briefing-printable canvas"))
@@ -7227,6 +7254,14 @@ export default function RiskReportNewPage() {
         clonedDoc.head.appendChild(style)
       },
     })
+    } finally {
+      if (transformWrapper) transformWrapper.style.transform = savedPreview.transform
+      if (sizeWrapper) {
+        sizeWrapper.style.width = savedPreview.sizeWidth
+        sizeWrapper.style.height = savedPreview.sizeHeight
+      }
+      if (scrollEl) scrollEl.style.overflow = savedPreview.scrollOverflow
+    }
   }, [])
 
   const buildStandaloneBriefingHtml = useCallback(async (dateStr: string) => {
