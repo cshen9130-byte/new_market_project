@@ -7064,34 +7064,148 @@ function LiquiditySection() {
 const BRIEFING_CAPTURE_WIDTH = 794
 const BRIEFING_MAX_CANVAS_DIMENSION = 8192
 
-function measureBriefingCaptureHeight(root: HTMLElement): number {
-  const rootRect = root.getBoundingClientRect()
-  let maxBottom = root.scrollHeight
-  root.querySelectorAll<HTMLElement>("*").forEach((node) => {
-    const rect = node.getBoundingClientRect()
-    if (rect.height > 0) maxBottom = Math.max(maxBottom, rect.bottom - rootRect.top)
-  })
-  return Math.ceil(maxBottom + 8)
-}
-
-async function waitForBriefingLayoutStable(root: HTMLElement): Promise<number> {
-  window.dispatchEvent(new Event("resize"))
-  const canvases = root.querySelectorAll("canvas")
-  canvases[canvases.length - 1]?.scrollIntoView({ block: "end", inline: "nearest" })
-
-  let lastHeight = 0
-  for (let i = 0; i < 10; i++) {
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-    if (i === 4) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 200))
-      window.dispatchEvent(new Event("resize"))
+function bakeBriefingComputedStyles(sourceRoot: HTMLElement, clonedRoot: HTMLElement) {
+  const sourceElements = [sourceRoot, ...Array.from(sourceRoot.querySelectorAll("*"))]
+  const clonedElements = [clonedRoot, ...Array.from(clonedRoot.querySelectorAll("*"))]
+  for (let i = 0; i < sourceElements.length; i += 1) {
+    const sourceEl = sourceElements[i]
+    const clonedEl = clonedElements[i]
+    if (!sourceEl || !clonedEl) continue
+    const computed = window.getComputedStyle(sourceEl)
+    let styleText = ""
+    for (let j = 0; j < computed.length; j += 1) {
+      const prop = computed.item(j)
+      styleText += `${prop}:${computed.getPropertyValue(prop)};`
     }
-    const height = measureBriefingCaptureHeight(root)
-    if (height === lastHeight && i >= 4) return height
-    lastHeight = height
+    clonedEl.setAttribute("style", styleText)
   }
-  return measureBriefingCaptureHeight(root)
 }
+
+function replaceBriefingCanvasesWithSnapshots(
+  root: HTMLElement,
+  snapshots: { dataUrl: string; w: number; h: number }[],
+) {
+  Array.from(root.querySelectorAll<HTMLCanvasElement>("canvas")).forEach((canvasEl, i) => {
+    const snap = snapshots[i]
+    if (!snap) return
+    const img = document.createElement("img")
+    img.src = snap.dataUrl
+    img.alt = "chart"
+    img.style.cssText = `width:${snap.w}px;height:${snap.h}px;display:block;`
+    canvasEl.replaceWith(img)
+  })
+}
+
+function replaceBriefingFormControlsWithText(root: HTMLElement) {
+  root.querySelectorAll<HTMLSelectElement>("select").forEach((sel) => {
+    const selectedText = sel.options[sel.selectedIndex]?.text ?? sel.value
+    const span = document.createElement("span")
+    span.textContent = selectedText
+    span.className = sel.className
+    span.setAttribute("style", sel.getAttribute("style") ?? "")
+    sel.replaceWith(span)
+  })
+  root.querySelectorAll<HTMLInputElement>("input").forEach((inp) => {
+    const span = document.createElement("span")
+    span.textContent = inp.value
+    span.className = inp.className
+    span.setAttribute("style", inp.getAttribute("style") ?? "")
+    inp.replaceWith(span)
+  })
+}
+
+async function waitForBriefingCaptureImages(root: HTMLElement) {
+  await Promise.all(
+    Array.from(root.querySelectorAll("img")).map((img) => {
+      if (img.complete) return Promise.resolve()
+      return new Promise<void>((resolve) => {
+        img.onload = () => resolve()
+        img.onerror = () => resolve()
+      })
+    }),
+  )
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+}
+
+async function prepareBriefingCaptureClone(source: HTMLElement) {
+  const canvases = Array.from(source.querySelectorAll<HTMLCanvasElement>("canvas"))
+  for (const canvas of canvases) {
+    if (canvas.offsetWidth > 0 && canvas.offsetHeight > 0) continue
+    canvas.scrollIntoView({ block: "center", inline: "nearest" })
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  }
+  window.dispatchEvent(new Event("resize"))
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+
+  const snapshots = canvases.map((canvas) => ({
+    dataUrl: canvas.toDataURL("image/png"),
+    w: canvas.offsetWidth,
+    h: canvas.offsetHeight,
+  }))
+
+  const clone = source.cloneNode(true) as HTMLElement
+  clone.removeAttribute("id")
+  bakeBriefingComputedStyles(source, clone)
+  clone.style.transform = "none"
+  clone.style.transformOrigin = "top left"
+  clone.style.width = `${BRIEFING_CAPTURE_WIDTH}px`
+  replaceBriefingCanvasesWithSnapshots(clone, snapshots)
+  replaceBriefingFormControlsWithText(clone)
+  clone.querySelectorAll(".no-print").forEach((el) => el.remove())
+  clone.querySelectorAll<HTMLElement>(":scope > .absolute").forEach((footer) => {
+    footer.style.position = "static"
+  })
+
+  const host = document.createElement("div")
+  host.style.cssText = [
+    "position:fixed",
+    "left:-10000px",
+    "top:0",
+    `width:${BRIEFING_CAPTURE_WIDTH}px`,
+    "overflow:visible",
+    "pointer-events:none",
+    "visibility:hidden",
+    "z-index:-1",
+  ].join(";")
+  host.appendChild(clone)
+  document.body.appendChild(host)
+  await waitForBriefingCaptureImages(clone)
+
+  return {
+    clone,
+    cleanup: () => host.remove(),
+  }
+}
+
+const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
+  [data-briefing-capture-clone] {
+    --background: oklch(1 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.205 0 0);
+    --primary-foreground: oklch(0.985 0 0);
+    --secondary: oklch(0.97 0 0);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.97 0 0);
+    --muted-foreground: oklch(0.556 0 0);
+    --accent: oklch(0.97 0 0);
+    --accent-foreground: oklch(0.205 0 0);
+    --border: oklch(0.922 0 0);
+    --input: oklch(0.922 0 0);
+    --ring: oklch(0.708 0 0);
+    background: linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%) !important;
+  }
+  [data-briefing-capture-clone] * {
+    outline: none !important;
+    outline-color: transparent !important;
+    text-shadow: none !important;
+    box-shadow: none !important;
+  }
+  .no-print { display: none !important; }
+`
 
 export default function RiskReportNewPage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
@@ -7175,137 +7289,36 @@ export default function RiskReportNewPage() {
   }
 
   const captureBriefingCanvas = useCallback(async () => {
-    const el = document.getElementById("mom-briefing-printable")
-    if (!el) return null
+    const source = document.getElementById("mom-briefing-printable")
+    if (!source) return null
 
-    // On mobile the A4 sheet is previewed inside `transform: scale(...)`. html2canvas
-    // miscalculates flex/grid positions when a scaled ancestor is present, causing
-    // overlapping text and charts. Temporarily render at full 794px for capture.
-    const transformWrapper = el.parentElement
-    const sizeWrapper = transformWrapper?.parentElement
-    const savedPreview = {
-      transform: transformWrapper?.style.transform ?? "",
-      sizeWidth: sizeWrapper?.style.width ?? "",
-      sizeHeight: sizeWrapper?.style.height ?? "",
-    }
-    const footer = el.querySelector<HTMLElement>(":scope > .absolute")
-    const savedFooterPosition = footer?.style.position ?? ""
+    // Clone off-screen with baked styles + chart PNGs so html2canvas never sees the
+    // mobile preview scale wrapper (which breaks flex/grid positioning on phones).
+    const { clone, cleanup } = await prepareBriefingCaptureClone(source)
+    clone.setAttribute("data-briefing-capture-clone", "")
 
     try {
-      if (transformWrapper) transformWrapper.style.transform = "none"
-      if (sizeWrapper) {
-        sizeWrapper.style.width = `${BRIEFING_CAPTURE_WIDTH}px`
-        sizeWrapper.style.height = "auto"
-      }
-      if (footer) footer.style.position = "static"
-
-      const captureHeight = await waitForBriefingLayoutStable(el)
-      if (sizeWrapper) sizeWrapper.style.height = `${captureHeight}px`
-
       const { default: html2canvas } = await import("html2canvas-pro")
-
-      // Pre-snapshot every ECharts canvas from the live DOM *before* cloning.
-      // html2canvas mis-scales canvases whose attribute size differs from CSS size
-      // (device-pixel-ratio issue), showing only half the chart. Replacing them
-      // with plain <img> elements at the correct CSS size fixes this.
-      const srcCanvases = Array.from(el.querySelectorAll<HTMLCanvasElement>("canvas"))
-      const canvasSnapshots = srcCanvases.map(c => ({
-        dataUrl: c.toDataURL("image/png"),
-        w: c.offsetWidth,
-        h: c.offsetHeight,
-      }))
-
+      const captureHeight = Math.max(clone.scrollHeight, clone.getBoundingClientRect().height)
       const captureScale = Math.min(
         2,
         window.devicePixelRatio || 1,
         BRIEFING_MAX_CANVAS_DIMENSION / BRIEFING_CAPTURE_WIDTH,
-        BRIEFING_MAX_CANVAS_DIMENSION / captureHeight,
+        BRIEFING_MAX_CANVAS_DIMENSION / Math.max(captureHeight, 1),
       )
 
-      return await html2canvas(el, {
-      scale: captureScale,
-      useCORS: true,
-      backgroundColor: "#ffffff",
-      windowWidth: BRIEFING_CAPTURE_WIDTH,
-      windowHeight: captureHeight,
-      height: captureHeight,
-      width: BRIEFING_CAPTURE_WIDTH,
-      scrollX: 0,
-      scrollY: 0,
-      onclone: (clonedDoc) => {
-        // Replace canvas elements with pre-snapshotted imgs at CSS dimensions.
-        Array.from(clonedDoc.querySelectorAll<HTMLCanvasElement>("#mom-briefing-printable canvas"))
-          .forEach((c, i) => {
-            const snap = canvasSnapshots[i]
-            if (!snap) return
-            const img = clonedDoc.createElement("img")
-            img.src = snap.dataUrl
-            img.style.cssText = `width:${snap.w}px;height:${snap.h}px;display:block;`
-            c.replaceWith(img)
-          })
-
-        // Replace <select> elements with <span> showing selected text — html2canvas
-        // cannot reliably render native select/input value painting.
-        clonedDoc.querySelectorAll<HTMLSelectElement>("#mom-briefing-printable select").forEach((sel) => {
-          const selectedText = sel.options[sel.selectedIndex]?.text ?? sel.value
-          const span = clonedDoc.createElement("span")
-          span.textContent = selectedText
-          span.setAttribute("style", sel.getAttribute("style") ?? "")
-          span.className = sel.className
-          sel.replaceWith(span)
-        })
-        clonedDoc.querySelectorAll<HTMLInputElement>("#mom-briefing-printable input").forEach((inp) => {
-          const span = clonedDoc.createElement("span")
-          span.textContent = inp.value
-          span.setAttribute("style", inp.getAttribute("style") ?? "")
-          span.className = inp.className
-          inp.replaceWith(span)
-        })
-        const style = clonedDoc.createElement("style")
-        style.textContent = `
-          /* Reset all dark-mode CSS variables to light values on the cloned root */
-          #mom-briefing-printable {
-            --background: oklch(1 0 0);
-            --foreground: oklch(0.145 0 0);
-            --card: oklch(1 0 0);
-            --card-foreground: oklch(0.145 0 0);
-            --popover: oklch(1 0 0);
-            --popover-foreground: oklch(0.145 0 0);
-            --primary: oklch(0.205 0 0);
-            --primary-foreground: oklch(0.985 0 0);
-            --secondary: oklch(0.97 0 0);
-            --secondary-foreground: oklch(0.205 0 0);
-            --muted: oklch(0.97 0 0);
-            --muted-foreground: oklch(0.556 0 0);
-            --accent: oklch(0.97 0 0);
-            --accent-foreground: oklch(0.205 0 0);
-            --border: oklch(0.922 0 0);
-            --input: oklch(0.922 0 0);
-            --ring: oklch(0.708 0 0);
-            background: linear-gradient(160deg,#fdfcf7 0%,#f8f5ec 50%,#f3efe3 100%) !important;
-          }
-          #mom-briefing-printable * {
-            outline: none !important;
-            outline-color: transparent !important;
-            text-shadow: none !important;
-            box-shadow: none !important;
-          }
-          /* Keep footer below the last chart instead of overlaying it */
-          #mom-briefing-printable > .absolute {
-            position: static !important;
-          }
-          .no-print { display: none !important; }
-        `
-        clonedDoc.head.appendChild(style)
-      },
-    })
+      return await html2canvas(clone, {
+        scale: captureScale,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        onclone: (clonedDoc) => {
+          const style = clonedDoc.createElement("style")
+          style.textContent = BRIEFING_CAPTURE_LIGHT_MODE_CSS
+          clonedDoc.head.appendChild(style)
+        },
+      })
     } finally {
-      if (footer) footer.style.position = savedFooterPosition
-      if (transformWrapper) transformWrapper.style.transform = savedPreview.transform
-      if (sizeWrapper) {
-        sizeWrapper.style.width = savedPreview.sizeWidth
-        sizeWrapper.style.height = savedPreview.sizeHeight
-      }
+      cleanup()
     }
   }, [])
 
