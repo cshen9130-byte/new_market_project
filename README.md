@@ -60,12 +60,17 @@ pnpm install --frozen-lockfile
 pnpm build
 ```
 
-2) Start the Next.js app (default on port 3000) with PM2:
+2) Start the Next.js app (default on port 3000) with PM2 and install a valid systemd unit:
 
 ```bash
 pm2 start ecosystem.config.js
-pm2 save
+sudo bash scripts/deploy/setup-pm2-startup.sh \
+  --run-user root \
+  --home-dir /root \
+  --project-root /root/new_market_project
 ```
+
+If the server previously had a broken `pm2---hp.service` (from running `pm2 startup` without `-u root`), the script above disables that unit, installs `pm2-root.service`, and caps restart attempts so a bad config cannot exhaust resources at boot.
 
 3) Install and enable the Nginx site (requires sudo):
 

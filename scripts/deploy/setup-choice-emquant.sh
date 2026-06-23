@@ -320,8 +320,19 @@ if [[ -z "${DATABASE_URL:-}" ]]; then
   echo "Pass --database-url <connection-string> to fix this."
 fi
 
-pm2 stop "$PM2_APP_NAME" || true
-pm2 start ecosystem.config.js --update-env
-pm2 save
+# 8) Ensure PM2 survives reboot with a valid systemd unit (fixes pm2---hp.service loop)
+if [[ "$(id -u)" -eq 0 ]]; then
+  bash "$PROJECT_ROOT/scripts/deploy/setup-pm2-startup.sh" \
+    --run-user root \
+    --home-dir /root \
+    --project-root "$PROJECT_ROOT" \
+    --pm2-app-name "$PM2_APP_NAME"
+else
+  pm2 stop "$PM2_APP_NAME" || true
+  pm2 start ecosystem.config.js --update-env
+  pm2 save
+  echo "WARNING: not running as root; skipped PM2 systemd startup fix."
+  echo "On the server run: sudo bash scripts/deploy/setup-pm2-startup.sh --project-root $PROJECT_ROOT"
+fi
 
 echo "Choice EmQuant setup complete. App restarted via PM2."
