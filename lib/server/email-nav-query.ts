@@ -415,6 +415,34 @@ function hasDistinctCumulative(nav: number, cumulative: number | null): boolean 
   return Math.abs(cumulative - nav) / nav > 0.001
 }
 
+/** Cumulative NAV materially above unit NAV — post-dividend structure (e.g. cum = unit + 0.21). */
+function hasDividendOffset(unit: number, cum: number): boolean {
+  return cum - unit > 0.05
+}
+
+function findFirstDividendRowIndex(rows: LegacyNavRow[]): number {
+  for (let i = 0; i < rows.length; i += 1) {
+    const unit = parseOptionalNav(rows[i].nav)
+    const cum = parseOptionalNav(rows[i].cum_nav_withdrawal) ?? parseOptionalNav(rows[i].cumulative_nav)
+    if (unit != null && cum != null && hasDividendOffset(unit, cum)) return i
+  }
+  return rows.length
+}
+
+/** Before the first dividend date, 单位/累计/复权 should all equal unit NAV. */
+function alignPreDividendNavRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
+  const firstDiv = findFirstDividendRowIndex(sorted)
+  for (let i = 0; i < firstDiv; i += 1) {
+    const unit = parseOptionalNav(sorted[i].nav)
+    if (unit == null || !isReasonableNav(unit)) continue
+    const v = String(+unit.toFixed(6))
+    sorted[i].cum_nav_withdrawal = v
+    sorted[i].cumulative_nav = v
+  }
+  return sorted
+}
+
 function parseOptionalNav(value: string | null | undefined): number | null {
   if (value == null || value === "") return null
   const n = parseFloat(value)
@@ -468,6 +496,13 @@ function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string
 
   const unitRatio = unit / prevUnit
   if (unitRatio <= 0.5 || unitRatio >= 1.5) return null
+
+  const prevCumW = parseOptionalNav(prev.cum_nav_withdrawal) ?? prevCum
+  const prevPostDiv = hasDividendOffset(prevUnit, prevCumW)
+  if (!prevPostDiv) {
+    const v = String(+unit.toFixed(6))
+    return { cum: v, adj: v }
+  }
 
   const adj = prevAdj * unitRatio
   const cumUnitGap = prevCum - prevUnit
@@ -658,7 +693,9 @@ export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavR
 
     const currVsPrev = currUnit / prevUnit
     const tracksPrevCum = prevCum != null && currUnit >= prevCum * 0.99 && currUnit <= prevCum * 1.05
+    // Only the ex-div row itself stores cum as unit (sharp jump to cum level), not the prior equal unit==cum day.
     if (!tracksPrevCum && (currVsPrev <= 0.995 || currVsPrev >= 1.05)) continue
+    if (tracksPrevCum && currVsPrev < 1.01) continue
 
     const fixedUnit = currCum / nextRatio
     if (!Number.isFinite(fixedUnit) || fixedUnit <= 0 || fixedUnit >= currCum) continue
@@ -715,6 +752,7 @@ function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string>
   out = refreshStaleDerivedFields(out)
   out = refreshDerivedForUnitOnlyEmailRows(out, unitOnlyEmailDates)
   out = clampSanityNavRows(out)
+  out = alignPreDividendNavRows(out)
   return recomputeNavPriceChanges(out)
 }
 
