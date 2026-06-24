@@ -34,6 +34,18 @@ export function addDays(isoDate: string, days: number): string {
   return dt.toISOString().slice(0, 10)
 }
 
+/** Fit a JS number into PostgreSQL NUMERIC(precision, scale); null if non-finite or out of range. */
+export function clampPgNumeric(
+  value: number | null | undefined,
+  precision: number,
+  scale: number,
+): number | null {
+  if (value == null || !Number.isFinite(value)) return null
+  const max = 10 ** (precision - scale) - 10 ** -scale
+  if (Math.abs(value) >= max) return null
+  return Math.round(value * 10 ** scale) / 10 ** scale
+}
+
 export function calcReturn(current: number, base: number | null | undefined): number | null {
   if (base == null || !Number.isFinite(base) || base === 0 || !Number.isFinite(current)) return null
   return current / base - 1

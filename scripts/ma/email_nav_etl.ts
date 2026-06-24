@@ -4,6 +4,7 @@
  * Usage:
  *   npx tsx scripts/ma/email_nav_etl.ts
  *   npx tsx scripts/ma/email_nav_etl.ts --days=31
+ *   npx tsx scripts/ma/email_nav_etl.ts --parse-only --days=31
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --fof-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --managed-only
@@ -30,6 +31,7 @@ function parseDays(argv: string[]): number {
 async function main() {
   const argv = process.argv.slice(2)
   const refreshOnly = argv.includes("--refresh-only")
+  const parseOnly = argv.includes("--parse-only")
   const fofOnly = argv.includes("--fof-only")
   const managedOnly = argv.includes("--managed-only")
   const trackingOnly = argv.includes("--tracking-only")
@@ -156,11 +158,15 @@ async function main() {
 
   try {
     const { fetchEmailParseRecords } = await import("@/lib/server/email-parse-fetch")
-    const result = await fetchEmailParseRecords({ days })
+    const result = await fetchEmailParseRecords({
+      days,
+      skipNavLatestRefresh: parseOnly,
+    })
     console.log(
       JSON.stringify({
         ok: true,
         skipped: false,
+        parseOnly,
         days,
         ...result,
       }),

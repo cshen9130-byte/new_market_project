@@ -200,7 +200,8 @@ COALESCE(b.beian_hao, pi.beian_hao, o.register_number, fd.beian_hao, t.beian_hao
 
 | Trigger | Function |
 |---------|----------|
-| Nightly ETL | `scripts/ma/nightly_etl.py` → `step_email_nav_parse()` → `scripts/ma/email_nav_etl.ts` |
+| Nightly ETL (parse) | `scripts/ma/nightly_etl.py` → `step_email_nav_parse()` → `email_nav_etl.ts --parse-only` |
+| Nightly ETL (cache) | `scripts/ma/nightly_etl.py` → `step_investment_pool_metrics()` → `email_nav_etl.ts --refresh-only` |
 | After manual email parse | `lib/server/email-parse-fetch.ts` |
 | Background email job | `lib/server/email-parse-fetch-job.ts` |
 | Manual refresh | `npx tsx scripts/ma/email_nav_etl.ts --refresh-only` |
@@ -250,7 +251,7 @@ Computed in TypeScript during refresh (`managed-products-list-cache-pg.ts`):
 | Sharpe/Calmar math | `lib/fund-nav-metrics.ts` |
 | Frontend table | `app/ma/dashboard/private-funds/page.tsx` |
 | Nightly email ETL script | `scripts/ma/email_nav_etl.ts` |
-| Nightly orchestrator | `scripts/ma/nightly_etl.py` (`step_email_nav_parse`) |
+| Nightly orchestrator | `scripts/ma/nightly_etl.py` (`step_email_nav_parse` + `step_investment_pool_metrics`) |
 
 ---
 
@@ -308,13 +309,21 @@ Uses **slow path** only. To support historical dates from cache, you would need 
 
 ```
                     ┌─────────────────────────────────────┐
-                    │  Nightly / manual email ETL         │
-                    │  email_nav_etl.ts                   │
+                    │  Nightly email parse                │
+                    │  email_nav_etl.ts --parse-only      │
+                    └─────────────────┬───────────────────┘
+                                      │
+                                      ▼
+                         ops_email_nav_records (+ 估值表 tables)
+                                      │
+                    ┌─────────────────┴───────────────────┐
+                    │  Nightly cache refresh              │
+                    │  email_nav_etl.ts --refresh-only    │
                     └─────────────────┬───────────────────┘
                                       │
           ┌───────────────────────────┼───────────────────────────┐
           ▼                           ▼                           ▼
- ops_email_nav_records      ops_email_nav_fund_latest    ops_managed_products_list_cache
+ ops_email_nav_fund_latest    ops_managed_products_list_cache   ops_fof_overview_list_cache
  (time series)              (latest NAV only)             (all list metrics)
           │                           │                           │
           └──────── NAV fallback ─────┴───────────────────────────┘

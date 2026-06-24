@@ -431,6 +431,71 @@ function chainCumulative(prevCum: number, prevNav: number, nav: number): number 
   return prevCum * (nav / prevNav)
 }
 
+/**
+ * Email parsers sometimes store 累计净值 in the unit NAV field (common on ex-dividend dates).
+ * Detect when email "unit" tracks cumulative continuation instead of unit NAV.
+ */
+function emailNavLooksLikeCumulativeNotUnit(
+  prev: LegacyNavRow | null,
+  emailNav: number,
+  emailCum: number | null,
+): boolean {
+  if (!prev) return false
+  if (emailCum != null && hasDistinctCumulative(emailNav, emailCum)) return false
+
+  const prevUnit = parseOptionalNav(prev.nav)
+  const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+  if (prevUnit == null || prevUnit <= 0 || prevCum == null || prevCum <= 0) return false
+
+  const navToPrevUnit = emailNav / prevUnit
+  const navToPrevCum = emailNav / prevCum
+
+  // Email value continued from cumulative level (+/- a few %) while unit NAV should have dropped.
+  return navToPrevCum > 0.99 && navToPrevCum < 1.05 && navToPrevUnit > 0.995
+}
+
+/**
+ * Fix rows where unit NAV was stored as cumulative NAV on an ex-dividend date
+ * (unit == cum on the row, but the next row already has unit < cum).
+ */
+export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  if (rows.length < 2) return rows
+
+  const sorted = rows.map((row) => ({ ...row }))
+  for (let i = 0; i < sorted.length; i += 1) {
+    const curr = sorted[i]
+    const currUnit = parseOptionalNav(curr.nav)
+    const currCum = parseOptionalNav(curr.cum_nav_withdrawal) ?? parseOptionalNav(curr.cumulative_nav)
+    if (currUnit == null || currCum == null || currCum <= 0) continue
+    if (Math.abs(currUnit - currCum) / currCum > 0.001) continue
+
+    const prev = i > 0 ? sorted[i - 1] : null
+    const next = i < sorted.length - 1 ? sorted[i + 1] : null
+    if (!prev || !next) continue
+
+    const prevUnit = parseOptionalNav(prev.nav)
+    const nextUnit = parseOptionalNav(next.nav)
+    const nextCum = parseOptionalNav(next.cum_nav_withdrawal) ?? parseOptionalNav(next.cumulative_nav)
+    const nextAdj = parseOptionalNav(next.cumulative_nav)
+    if (prevUnit == null || prevUnit <= 0 || nextUnit == null || nextUnit <= 0 || nextCum == null) continue
+
+    const nextRatio = nextAdj != null && nextAdj > nextUnit * 1.001
+      ? nextAdj / nextUnit
+      : nextCum / nextUnit
+    if (nextRatio < 1.02) continue
+    if (Math.abs(nextUnit - nextCum) / nextCum <= 0.001) continue
+
+    const currVsPrev = currUnit / prevUnit
+    if (currVsPrev <= 0.995 || currVsPrev >= 1.05) continue
+
+    const fixedUnit = currCum / nextRatio
+    if (!Number.isFinite(fixedUnit) || fixedUnit <= 0 || fixedUnit >= currCum) continue
+    curr.nav = String(+fixedUnit.toFixed(6))
+  }
+
+  return sorted
+}
+
 function fillEmptyCumulativeFields(row: LegacyNavRow, prev: LegacyNavRow | null): void {
   const nav = parseOptionalNav(row.nav)
   if (nav == null) return
@@ -455,14 +520,20 @@ function fillEmptyCumulativeFields(row: LegacyNavRow, prev: LegacyNavRow | null)
   }
 }
 
+function finalizeNavSeries(rows: LegacyNavRow[]): LegacyNavRow[] {
+  return recomputeNavPriceChanges(sanitizeMisassignedUnitNavRows(rows))
+}
+
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: EmailNavPoint[]): LegacyNavRow[] {
-  if (emailRows.length === 0) return recomputeNavPriceChanges(legacyRows)
+  if (emailRows.length === 0) return finalizeNavSeries(legacyRows)
 
   const byDate = new Map<string, LegacyNavRow>()
   for (const row of legacyRows) {
     byDate.set(row.price_date, { ...row })
   }
+
+  const sortedLegacyDates = legacyRows.map((row) => row.price_date).sort()
 
   for (const row of emailRows) {
     const nav = row.nav ?? row.cumulative_nav
@@ -473,27 +544,39 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
     const emailCum = parseOptionalNav(row.cumulative_nav)
     const hasEmailCum = hasDistinctCumulative(unitNav, emailCum)
     const existing = byDate.get(row.price_date)
+    const prevDate = sortedLegacyDates.filter((d) => d < row.price_date).at(-1)
+      ?? Array.from(byDate.keys()).filter((d) => d < row.price_date).sort().at(-1)
+    const prevRow = prevDate ? byDate.get(prevDate) ?? null : null
+    const cumOnlyEmail = emailNavLooksLikeCumulativeNotUnit(prevRow, unitNav, emailCum)
+    const resolvedUnitNav = cumOnlyEmail && existing ? parseOptionalNav(existing.nav) ?? unitNav : unitNav
+    const resolvedCum = hasEmailCum && emailCum != null
+      ? emailCum
+      : cumOnlyEmail
+        ? unitNav
+        : null
 
     if (existing) {
-      const updated: LegacyNavRow = { ...existing, nav: String(unitNav) }
-      if (hasEmailCum && emailCum != null) {
-        // Email 净值表 often carries 累计净值; keep legacy 复权净值 when already present.
-        updated.cum_nav_withdrawal = String(emailCum)
+      const updated: LegacyNavRow = {
+        ...existing,
+        nav: String(resolvedUnitNav),
+      }
+      if (resolvedCum != null) {
+        updated.cum_nav_withdrawal = String(resolvedCum)
         const legacyAdj = parseOptionalNav(existing.cumulative_nav)
         if (
           legacyAdj == null
-          || !hasDistinctCumulative(parseOptionalNav(existing.nav) ?? unitNav, legacyAdj)
+          || !hasDistinctCumulative(parseOptionalNav(existing.nav) ?? resolvedUnitNav, legacyAdj)
         ) {
-          updated.cumulative_nav = String(emailCum)
+          updated.cumulative_nav = String(resolvedCum)
         }
       }
       byDate.set(row.price_date, updated)
     } else {
       byDate.set(row.price_date, {
         price_date: row.price_date,
-        nav: String(unitNav),
-        cumulative_nav: hasEmailCum && emailCum != null ? String(emailCum) : "",
-        cum_nav_withdrawal: hasEmailCum && emailCum != null ? String(emailCum) : "",
+        nav: String(resolvedUnitNav),
+        cumulative_nav: resolvedCum != null ? String(resolvedCum) : "",
+        cum_nav_withdrawal: resolvedCum != null ? String(resolvedCum) : "",
         price_change: "",
       })
     }
@@ -506,7 +589,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
     prev = row
   }
 
-  return recomputeNavPriceChanges(merged)
+  return finalizeNavSeries(merged)
 }
 
 /** Recompute 涨跌幅 as percentage points from consecutive unit NAV (matches legacy DB + UI). */

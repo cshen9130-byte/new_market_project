@@ -114,6 +114,9 @@ export function fofUnderlyingBeianExpr(productNameExpr: string): string {
 /** Default beian expr for fof_underlying_summary (alias f). */
 export const FOF_UNDERLYING_BEIAN_EXPR = fofUnderlyingBeianExpr("f.product_name")
 
+/** Default beian expr for managed_products (alias m). */
+export const MANAGED_PRODUCTS_BEIAN_EXPR = fofUnderlyingBeianExpr("m.product_name")
+
 export function fofUnderlyingShortExpr(productNameExpr: string): string {
   return `CASE
     WHEN ${productNameExpr} ~ '[ABC]类'

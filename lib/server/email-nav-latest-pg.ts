@@ -15,7 +15,7 @@ import { refreshTrackingFundsListCache } from "@/lib/server/tracking-funds-list-
 import { syncEmailValuationToProductTables } from "@/lib/server/email-valuation-sync-pg"
 import {
   buildManagedProductsFrom,
-  FOF_UNDERLYING_BEIAN_EXPR,
+  MANAGED_PRODUCTS_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
 
@@ -53,7 +53,7 @@ export async function refreshManagedProductsEmailNavLatest(): Promise<number> {
   await ensureEmailNavTable()
   await ensureEmailNavFundLatestTable()
 
-  const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
+  const beianExpr = MANAGED_PRODUCTS_BEIAN_EXPR
   const productExpr = "m.product_name"
   const shortExpr = fofUnderlyingShortExpr(productExpr)
   const cutoffExpr = "CURRENT_DATE"

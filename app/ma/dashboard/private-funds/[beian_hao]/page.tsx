@@ -17,7 +17,7 @@ import {
 import { ArrowLeft, Database, Download, HelpCircle } from "lucide-react"
 import { useRouter } from "next/navigation"
 import { computeFundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
-import { RED, GREEN, getNavFieldValue, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
+import { RED, GREEN, getNavFieldValue, computeNavPctChange, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
 import { MonthlyReturnsCalendar } from "./components/MonthlyReturnsCalendar"
@@ -405,7 +405,7 @@ function StatCard({ label, value, sub }: { label: string; value: React.ReactNode
 
 // ─── NAV Table (scrollable, no pagination) ──────────────────────────────────
 
-function exportNavCsv(rows: NavRow[], filename: string) {
+function exportNavCsv(rows: NavRow[], navType: string, filename: string) {
   const escape = (v: string | null | undefined) => {
     if (v == null || v === "") return ""
     const s = String(v)
@@ -415,8 +415,8 @@ function exportNavCsv(rows: NavRow[], filename: string) {
   const csvRows = [
     headers.join(","),
     ...rows.map((r) => {
-      const chg = parseFloat(r.price_change)
-      const chgPct = isNaN(chg) ? "" : chg.toFixed(2) + "%"
+      const chg = computeNavPctChange(rows, navType, r.price_date)
+      const chgPct = chg === null ? "" : chg.toFixed(2) + "%"
       return [
         escape(r.price_date),
         escape(r.nav),
@@ -436,7 +436,7 @@ function exportNavCsv(rows: NavRow[], filename: string) {
   URL.revokeObjectURL(url)
 }
 
-function NavTable({ rows }: { rows: NavRow[] }) {
+function NavTable({ rows, navType }: { rows: NavRow[]; navType: string }) {
   // Show newest first
   const reversed = useMemo(() => [...rows].reverse(), [rows])
 
@@ -455,9 +455,9 @@ function NavTable({ rows }: { rows: NavRow[] }) {
           </thead>
           <tbody>
             {reversed.map((r) => {
-              const chg = parseFloat(r.price_change)
-              const chgPct = isNaN(chg) ? null : chg.toFixed(2)
-              const chgStyle = isNaN(chg) ? {} : chg > 0 ? { color: RED } : chg < 0 ? { color: GREEN } : {}
+              const chg = computeNavPctChange(rows, navType, r.price_date)
+              const chgPct = chg === null ? null : chg.toFixed(2)
+              const chgStyle = chg === null ? {} : chg > 0 ? { color: RED } : chg < 0 ? { color: GREEN } : {}
               return (
                 <tr key={r.price_date} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
                   <td className="px-3 py-2 text-zinc-700 text-xs">{r.price_date}</td>
@@ -1653,6 +1653,7 @@ export default function PrivateFundDetailPage() {
           <button
             onClick={() => exportNavCsv(
               filteredNavRows,
+              filterNavType,
               `${info.product_name}_净值_${new Date().toISOString().slice(0, 10)}.csv`
             )}
             disabled={filteredNavRows.length === 0}
@@ -1662,7 +1663,7 @@ export default function PrivateFundDetailPage() {
             导出
           </button>
         </div>
-        <NavTable rows={filteredNavRows} />
+        <NavTable rows={filteredNavRows} navType={filterNavType} />
       </div>
       </div>{/* end flex chart+table */}
 

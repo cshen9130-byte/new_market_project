@@ -4,11 +4,11 @@ import {
 } from "@/lib/server/email-nav-query"
 import {
   buildManagedProductsFrom,
-  FOF_UNDERLYING_BEIAN_EXPR,
+  fofUnderlyingBeianExpr,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
 
-export const MANAGED_BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
+export const MANAGED_BEIAN_EXPR = fofUnderlyingBeianExpr("m.product_name")
 
 export function managedShortExpr(productNameExpr: string): string {
   return fofUnderlyingShortExpr(productNameExpr)

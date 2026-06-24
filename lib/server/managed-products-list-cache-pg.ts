@@ -8,7 +8,7 @@ import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   buildManagedProductsFrom,
-  FOF_UNDERLYING_BEIAN_EXPR,
+  MANAGED_PRODUCTS_BEIAN_EXPR,
 } from "@/lib/server/fof-underlying-query"
 import {
   addDays,
@@ -103,7 +103,7 @@ export async function refreshManagedProductsListCache(): Promise<number> {
     `SELECT
        m.id::text AS managed_product_id,
        m.product_name,
-       ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao,
+       ${MANAGED_PRODUCTS_BEIAN_EXPR} AS beian_hao,
        ${managedShortExpr("m.product_name")} AS short_name,
        m.latest_unit_nav::text AS fallback_nav,
        m.latest_nav_date AS fallback_nav_date,

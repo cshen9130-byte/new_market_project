@@ -10,6 +10,7 @@ Usage
   python scripts/ma/nightly_etl.py               # normal nightly run
   python scripts/ma/nightly_etl.py --step nhci   # run single step only
   python scripts/ma/nightly_etl.py --step email_nav_parse
+  python scripts/ma/nightly_etl.py --step investment_pool_metrics
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
@@ -164,6 +165,8 @@ def run_node_script(
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=env,
             cwd=str(project_root),
@@ -2362,23 +2365,44 @@ def step_private_fund_indicators(conn) -> int:
     return updated
 
 
-def step_tracking_fund_metrics() -> int:
-    """Refresh precomputed tracking-fund list metrics (NAV + returns) for instant list loads."""
-    log.info("tracking_fund_metrics: refreshing cache …")
-    result = run_node_script("email_nav_etl.ts", extra_args=["--refresh-only"], timeout=1800)
+def step_investment_pool_metrics() -> int:
+    """Refresh 在管产品 + FOF底层 + 跟踪产品 list caches from stored email NAV / 估值表."""
+    log.info("investment_pool_metrics: rebuilding managed / FOF / tracking list caches …")
+    result = run_node_script("email_nav_etl.ts", extra_args=["--refresh-only"], timeout=3600)
     if not result:
-        log.warning("tracking_fund_metrics: no result from email_nav_etl.ts")
-        return 0
+        raise RuntimeError("investment_pool_metrics: no result from email_nav_etl.ts")
     if not result.get("ok"):
-        log.warning("tracking_fund_metrics: failed — %s", result.get("error", "unknown"))
-        return 0
-    refreshed = int(result.get("trackingFundsListCacheRefreshed") or 0)
-    log.info("tracking_fund_metrics: done — %d funds cached.", refreshed)
-    return refreshed
+        raise RuntimeError(
+            f"investment_pool_metrics: failed — {result.get('error', 'unknown')}"
+        )
+
+    managed = int(result.get("listCacheRefreshed") or 0)
+    fof = int(result.get("fofOverviewListCacheRefreshed") or 0)
+    tracking = int(result.get("trackingFundsListCacheRefreshed") or 0)
+    managed_valuation = int(result.get("managedProductsValuationSynced") or 0)
+    fof_market = int(result.get("fofUnderlyingMarketSynced") or 0)
+    fof_holdings = int(result.get("managedFofUnderlyingRefreshed") or 0)
+
+    log.info(
+        "investment_pool_metrics: managed=%d fof=%d tracking=%d "
+        "valuation_sync(managed=%d fof=%d) fof_holdings=%d",
+        managed,
+        fof,
+        tracking,
+        managed_valuation,
+        fof_market,
+        fof_holdings,
+    )
+    return managed + fof + tracking
+
+
+def step_tracking_fund_metrics() -> int:
+    """Backward-compatible alias for investment_pool_metrics."""
+    return step_investment_pool_metrics()
 
 
 def step_email_nav_parse(days: int | None = None) -> int:
-    """Crawl fund emails, parse NAV attachments/body, upsert ops_email_nav_records."""
+    """Crawl fund emails, parse NAV/估值表 attachments, upsert ops_email_nav_records."""
     lookback = days
     if lookback is None:
         try:
@@ -2387,30 +2411,35 @@ def step_email_nav_parse(days: int | None = None) -> int:
             lookback = 31
 
     log.info("email_nav_parse: fetching fund emails (last %d days) …", lookback)
-    result = run_node_script("email_nav_etl.ts", extra_args=[f"--days={lookback}"], timeout=900)
+    result = run_node_script(
+        "email_nav_etl.ts",
+        extra_args=["--parse-only", f"--days={lookback}"],
+        timeout=1800,
+    )
     if not result:
-        log.warning("email_nav_parse: no result from email_nav_etl.ts")
-        return 0
+        raise RuntimeError("email_nav_parse: no result from email_nav_etl.ts")
 
     if result.get("skipped"):
         log.warning("email_nav_parse: skipped — %s", result.get("error", "not configured"))
         return 0
 
     nav_saved = int(result.get("navSaved") or 0)
+    valuation_saved = int(result.get("valuationSaved") or 0)
     emails_scanned = int(result.get("emailsScanned") or 0)
     records_found = int(result.get("recordsFound") or 0)
     errors = result.get("errors") or []
 
     log.info(
-        "email_nav_parse: emails=%d records=%d nav_saved=%d errors=%d",
+        "email_nav_parse: emails=%d records=%d nav_saved=%d valuation_saved=%d errors=%d",
         emails_scanned,
         records_found,
         nav_saved,
+        valuation_saved,
         len(errors),
     )
     for err in errors[:8]:
         log.warning("  email_nav_parse: %s", err)
-    return nav_saved
+    return nav_saved + valuation_saved
 
 
 def step_warm_mom_cache() -> int:
@@ -2458,9 +2487,9 @@ ORDERED_STEPS = [
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
-    "email_nav_parse",               # crawl fund emails → ops_email_nav_records
+    "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
-    "tracking_fund_metrics",         # precompute tracking-pool list NAV + returns cache
+    "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "warm_mom_cache",                # warm MOM dashboard API caches
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
 ]
@@ -2574,6 +2603,7 @@ def main():
         "money_credit":                    lambda: step_money_credit(conn),
         "email_nav_parse":                 lambda: step_email_nav_parse(),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
+        "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),

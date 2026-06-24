@@ -6,10 +6,9 @@ import {
 } from "@/lib/server/email-nav-query"
 import {
   buildManagedProductsFrom,
-  FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
-import { managedNavAtOffsetJoin } from "@/lib/server/managed-products-nav-query"
+import { managedNavAtOffsetJoin, MANAGED_BEIAN_EXPR } from "@/lib/server/managed-products-nav-query"
 import {
   ensureManagedProductsListCachePopulated,
   useManagedProductsListCache,
@@ -50,7 +49,7 @@ const ALLOWED_SORT_SLOW: Record<string, string> = {
   calmar_1y: "calmar_1y",
 }
 
-const BEIAN_EXPR = FOF_UNDERLYING_BEIAN_EXPR
+const BEIAN_EXPR = MANAGED_BEIAN_EXPR
 const PRODUCT_EXPR = "m.product_name"
 const SHORT_EXPR = fofUnderlyingShortExpr(PRODUCT_EXPR)
 
