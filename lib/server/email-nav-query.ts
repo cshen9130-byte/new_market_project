@@ -521,11 +521,65 @@ function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
 }
 
 /** Guard against corrupt legacy values blowing up charts/metrics. */
-function clampSanityNavRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+function inferUnitNavFromTrustedFields(sorted: LegacyNavRow[], i: number): number | null {
+  const row = sorted[i]
+  const prev = i > 0 ? sorted[i - 1] : null
+  const cum = parseOptionalNav(row.cum_nav_withdrawal)
+  const adj = parseOptionalNav(row.cumulative_nav)
+
+  if (cum != null && isReasonableNav(cum) && adj != null && isReasonableNav(adj)) {
+    const gap = cum - adj
+    if (Math.abs(gap) < 0.005) return cum
+    if (gap > 0.005 && gap < 0.5) return cum - gap
+  }
+
+  const trusted = cum != null && isReasonableNav(cum)
+    ? cum
+    : adj != null && isReasonableNav(adj)
+      ? adj
+      : null
+  if (trusted == null) return null
+
+  if (prev) {
+    const prevUnit = parseOptionalNav(prev.nav)
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+    if (prevUnit != null && isReasonableNav(prevUnit) && prevCum != null && isReasonableNav(prevCum) && prevCum > 0) {
+      return prevUnit * (trusted / prevCum)
+    }
+  }
+
+  return trusted
+}
+
+/** Replace corrupt unit NAV (e.g. legacy DB spikes) when 累计/复权 on the row are sane. */
+function repairCorruptUnitNavRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = rows.map((row) => ({ ...row }))
 
   for (let i = 0; i < sorted.length; i += 1) {
     const unit = parseOptionalNav(sorted[i].nav)
+    if (unit == null || isReasonableNav(unit)) continue
+
+    const repaired = inferUnitNavFromTrustedFields(sorted, i)
+    if (repaired != null && isReasonableNav(repaired)) {
+      sorted[i].nav = String(+repaired.toFixed(6))
+    }
+  }
+
+  return sorted
+}
+
+function clampSanityNavRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    let unit = parseOptionalNav(sorted[i].nav)
+    if (unit != null && !isReasonableNav(unit)) {
+      const repaired = inferUnitNavFromTrustedFields(sorted, i)
+      if (repaired != null && isReasonableNav(repaired)) {
+        sorted[i].nav = String(+repaired.toFixed(6))
+        unit = repaired
+      }
+    }
     if (unit != null && !isReasonableNav(unit)) continue
 
     for (const field of ["cum_nav_withdrawal", "cumulative_nav"] as const) {
@@ -656,6 +710,7 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
 
 function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string> = new Set()): LegacyNavRow[] {
   let out = sanitizeMisassignedUnitNavRows(rows)
+  out = repairCorruptUnitNavRows(out)
   out = syncExDivAdjustedNav(out)
   out = refreshStaleDerivedFields(out)
   out = refreshDerivedForUnitOnlyEmailRows(out, unitOnlyEmailDates)

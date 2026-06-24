@@ -59,6 +59,22 @@ export function sqlFundNameMatchPriority(columnExpr: string, targetExpr: string)
   END`
 }
 
+/** When target has no share class, reject A/B/C share-class product names. */
+export function sqlShareClassProductNameGuard(columnExpr: string, targetExpr: string): string {
+  return `(
+    CASE
+      WHEN ${targetExpr} ILIKE '%A类%' THEN ${columnExpr} ILIKE '%A类%'
+      WHEN ${targetExpr} ILIKE '%B类%' THEN ${columnExpr} ILIKE '%B类%'
+      WHEN ${targetExpr} ILIKE '%C类%' THEN ${columnExpr} ILIKE '%C类%'
+      ELSE (
+        ${columnExpr} NOT ILIKE '%A类%'
+        AND ${columnExpr} NOT ILIKE '%B类%'
+        AND ${columnExpr} NOT ILIKE '%C类%'
+      )
+    END
+  )`
+}
+
 /** Require product code suffix to match share class in the target fund name (A/B/C). */
 export function sqlShareClassCodeGuard(codeCol: string, productNameExpr: string): string {
   return `(
@@ -66,7 +82,7 @@ export function sqlShareClassCodeGuard(codeCol: string, productNameExpr: string)
       WHEN ${productNameExpr} ILIKE '%A类%' THEN TRIM(UPPER(${codeCol})) ~ 'A$'
       WHEN ${productNameExpr} ILIKE '%B类%' THEN TRIM(UPPER(${codeCol})) ~ 'B$'
       WHEN ${productNameExpr} ILIKE '%C类%' THEN TRIM(UPPER(${codeCol})) ~ 'C$'
-      ELSE TRUE
+      ELSE NOT (TRIM(UPPER(${codeCol})) ~ '[ABC]$')
     END
   )`
 }
@@ -84,7 +100,12 @@ export function sqlEmailNavShareClassGuard(fundNameCol: string, productNameExpr:
       WHEN ${productNameExpr} ILIKE '%C类%'
         THEN COALESCE(${fundNameCol}, '') ILIKE '%C类%'
           OR COALESCE(${productCodeCol}, '') ~ 'C$'
-      ELSE true
+      ELSE (
+        COALESCE(${fundNameCol}, '') NOT ILIKE '%A类%'
+        AND COALESCE(${fundNameCol}, '') NOT ILIKE '%B类%'
+        AND COALESCE(${fundNameCol}, '') NOT ILIKE '%C类%'
+        AND NOT (COALESCE(${productCodeCol}, '') ~ '[ABC]$')
+      )
     END
   )`
 }

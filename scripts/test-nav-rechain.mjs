@@ -43,6 +43,23 @@ assert("ex-div unit ~1.3705", Math.abs(parseFloat(r430.nav) - 1.3705) < 0.001)
 assert("ex-div cum ~1.5805", Math.abs(parseFloat(r430.cum_nav_withdrawal) - 1.5805) < 0.001)
 assert("ex-div adj ~1.5805", Math.abs(parseFloat(r430.cumulative_nav) - 1.5805) < 0.001)
 
+// legacy unit NAV spikes (Jan 2026) while cum/adj are sane
+const janLegacy = [
+  { price_date: "2026-01-08", nav: "1.2220", cumulative_nav: "1.2220", cum_nav_withdrawal: "1.2220", price_change: "" },
+  { price_date: "2026-01-09", nav: "10040991.1000", cumulative_nav: "1.2393", cum_nav_withdrawal: "1.2393", price_change: "" },
+  { price_date: "2026-01-12", nav: "10468784.4700", cumulative_nav: "1.2921", cum_nav_withdrawal: "1.2921", price_change: "" },
+  { price_date: "2026-01-15", nav: "10616243.5500", cumulative_nav: "1.3103", cum_nav_withdrawal: "1.3103", price_change: "" },
+  { price_date: "2026-01-16", nav: "1.2851", cumulative_nav: "1.2851", cum_nav_withdrawal: "1.2851", price_change: "" },
+]
+const janOut = mergeNavSeriesWithEmail(janLegacy, [])
+for (const d of ["2026-01-09", "2026-01-12", "2026-01-15"]) {
+  const r = janOut.find((x) => x.price_date === d)
+  const u = parseFloat(r.nav)
+  assert(`jan unit sane ${d}`, u > 0.5 && u < 5)
+  assert(`jan unit matches cum ${d}`, Math.abs(u - parseFloat(r.cum_nav_withdrawal)) < 0.001)
+}
+assert("no million-scale unit left", janOut.every((r) => parseFloat(r.nav) < 100))
+
 // full excel key dates via attachment-shaped email rows
 const keyDates = ["2026-04-30", "2026-06-18", "2026-06-22", "2026-06-23"]
 for (const d of keyDates) {

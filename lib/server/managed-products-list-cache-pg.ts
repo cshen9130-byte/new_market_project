@@ -20,6 +20,7 @@ import {
   loadOpsStrategyAndTags,
   loadPrivateFundRiskMetrics,
 } from "@/lib/server/list-cache-nav-batch"
+import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { managedShortExpr } from "@/lib/server/managed-products-nav-query"
 import {
   loadEmailFundMetricsLookup,
@@ -117,7 +118,7 @@ export async function refreshManagedProductsListCache(): Promise<number> {
   const emailFundMetrics = await loadEmailFundMetricsLookup()
 
   const identities = products.map((p) => ({
-    beian_hao: p.beian_hao,
+    beian_hao: resolveManagedProductBeian(p.product_name, p.beian_hao),
     product_name: p.product_name,
     short_name: p.short_name,
   }))
@@ -167,7 +168,7 @@ export async function refreshManagedProductsListCache(): Promise<number> {
 
     let sharpe_1y: number | null = null
     let calmar_1y: number | null = null
-    const beian = (row.beian_hao ?? "").trim()
+    const beian = resolveManagedProductBeian(row.product_name, row.beian_hao) ?? ""
     const fromInfo = beian ? riskFromInfo.get(beian) : undefined
     if (fromInfo?.sharpe_1y != null || fromInfo?.calmar_1y != null) {
       sharpe_1y = fromInfo.sharpe_1y
@@ -194,7 +195,7 @@ export async function refreshManagedProductsListCache(): Promise<number> {
     values.push(
       row.managed_product_id,
       row.product_name,
-      row.beian_hao,
+      resolveManagedProductBeian(row.product_name, row.beian_hao),
       row.short_name,
       unitNav,
       navDate,

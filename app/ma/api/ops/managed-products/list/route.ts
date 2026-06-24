@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { query, fmtIso } from "@/lib/db"
 import {
   buildEmailNavLatestExprs,
@@ -95,7 +96,7 @@ function mapRow(r: {
 }): ManagedRow {
   return {
     id: r.id,
-    beian_hao: r.beian_hao,
+    beian_hao: resolveManagedProductBeian(r.product_name, r.beian_hao),
     product_name: r.product_name,
     short_name: r.short_name,
     strategy_l1: r.strategy_l1,

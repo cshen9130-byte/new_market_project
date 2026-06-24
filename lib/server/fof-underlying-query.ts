@@ -3,9 +3,11 @@ import {
   sqlFundNameMatch,
   sqlFundNameMatchPriority,
   sqlShareClassCodeGuard,
+  sqlShareClassProductNameGuard,
 } from "@/lib/server/fund-name-match"
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
+import { resolveManagedProductBeian, lookupManagedProductOverride, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 
 function decodeFundIdentifier(raw: string): string {
   try {
@@ -30,6 +32,9 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
         SELECT beian_hao, short_name, strategy_company
         FROM private_fund_info_bfl bfl
         WHERE ${bflMatch}
+          AND ${sqlShareClassProductNameGuard("bfl.product_name", productNameExpr)}
+          AND ${sqlShareClassProductNameGuard("COALESCE(bfl.short_name, bfl.product_name)", productNameExpr)}
+          AND ${sqlShareClassCodeGuard("bfl.beian_hao", productNameExpr)}
         ORDER BY
           LEAST(
             ${sqlFundNameMatchPriority("bfl.product_name", productNameExpr)},
@@ -42,6 +47,8 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
         SELECT beian_hao
         FROM private_fund_info pi
         WHERE ${pinfoMatch}
+          AND ${sqlShareClassProductNameGuard("pi.product_name", productNameExpr)}
+          AND ${sqlShareClassCodeGuard("pi.beian_hao", productNameExpr)}
         ORDER BY ${sqlFundNameMatchPriority("pi.product_name", productNameExpr)}, length(pi.product_name) ASC
         LIMIT 1
       ) pi ON true
@@ -49,6 +56,8 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
         SELECT register_number, fund_short_name, company_strategy_one, platform_strategy_one, tag
         FROM type6_ops_team_full o
         WHERE ${opsMatch}
+          AND ${sqlShareClassProductNameGuard("COALESCE(o.fund_short_name, o.fund_name)", productNameExpr)}
+          AND ${sqlShareClassCodeGuard("o.register_number", productNameExpr)}
         ORDER BY
           LEAST(
             ${sqlFundNameMatchPriority("o.fund_name", productNameExpr)},
@@ -63,6 +72,8 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
         FROM fof_underlying_detail fd
         WHERE ${detailMatch}
           AND NULLIF(BTRIM(fd.beian_hao), '') IS NOT NULL
+          AND ${sqlShareClassProductNameGuard("fd.product_name", productNameExpr)}
+          AND ${sqlShareClassCodeGuard("fd.beian_hao", productNameExpr)}
         ORDER BY ${sqlFundNameMatchPriority("fd.product_name", productNameExpr)}
         LIMIT 1
       ) fd ON true
@@ -71,6 +82,8 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
         FROM investment_tracking_fof_underlying t
         WHERE ${trackMatch}
           AND NULLIF(BTRIM(t.beian_hao), '') IS NOT NULL
+          AND ${sqlShareClassProductNameGuard("t.product_name", productNameExpr)}
+          AND ${sqlShareClassCodeGuard("t.beian_hao", productNameExpr)}
         ORDER BY ${sqlFundNameMatchPriority("t.product_name", productNameExpr)}
         LIMIT 1
       ) t ON true
@@ -101,13 +114,7 @@ export function fofUnderlyingBeianExpr(productNameExpr: string): string {
     ${guardedBeianCol("en_code.product_code", productNameExpr)},
     ${guardedBeianCol("b.beian_hao", productNameExpr)},
     ${guardedBeianCol("pi.beian_hao", productNameExpr)},
-    ${guardedBeianCol("o.register_number", productNameExpr)},
-    NULLIF(BTRIM(fd.beian_hao), ''),
-    NULLIF(BTRIM(t.beian_hao), ''),
-    NULLIF(BTRIM(en_code.product_code), ''),
-    NULLIF(BTRIM(b.beian_hao), ''),
-    NULLIF(BTRIM(pi.beian_hao), ''),
-    NULLIF(BTRIM(o.register_number), '')
+    ${guardedBeianCol("o.register_number", productNameExpr)}
   )`
 }
 
@@ -152,11 +159,13 @@ function buildFundNameLookupSql(nameParam: string): string {
 
   const fdLookup = `(SELECT fd.beian_hao FROM fof_underlying_detail fd
      WHERE ${detailMatch} AND NULLIF(BTRIM(fd.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassProductNameGuard("fd.product_name", nameParam)}
        AND ${sqlShareClassCodeGuard("fd.beian_hao", nameParam)}
      ORDER BY ${sqlFundNameMatchPriority("fd.product_name", nameParam)}
      LIMIT 1)`
   const tLookup = `(SELECT t.beian_hao FROM investment_tracking_fof_underlying t
      WHERE ${trackMatch} AND NULLIF(BTRIM(t.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassProductNameGuard("t.product_name", nameParam)}
        AND ${sqlShareClassCodeGuard("t.beian_hao", nameParam)}
      ORDER BY ${sqlFundNameMatchPriority("t.product_name", nameParam)}
      LIMIT 1)`
@@ -169,6 +178,8 @@ function buildFundNameLookupSql(nameParam: string): string {
      LIMIT 1)`
   const bflLookup = `(SELECT bfl.beian_hao FROM private_fund_info_bfl bfl
      WHERE ${bflMatch} AND NULLIF(BTRIM(bfl.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassProductNameGuard("bfl.product_name", nameParam)}
+       AND ${sqlShareClassProductNameGuard("COALESCE(bfl.short_name, bfl.product_name)", nameParam)}
        AND ${sqlShareClassCodeGuard("bfl.beian_hao", nameParam)}
      ORDER BY LEAST(
        ${sqlFundNameMatchPriority("bfl.product_name", nameParam)},
@@ -177,11 +188,13 @@ function buildFundNameLookupSql(nameParam: string): string {
      LIMIT 1)`
   const piLookup = `(SELECT pi.beian_hao FROM private_fund_info pi
      WHERE ${pinfoMatch} AND NULLIF(BTRIM(pi.beian_hao), '') IS NOT NULL
+       AND ${sqlShareClassProductNameGuard("pi.product_name", nameParam)}
        AND ${sqlShareClassCodeGuard("pi.beian_hao", nameParam)}
      ORDER BY ${sqlFundNameMatchPriority("pi.product_name", nameParam)}, length(pi.product_name) ASC
      LIMIT 1)`
   const opsLookup = `(SELECT o.register_number FROM type6_ops_team_full o
      WHERE ${opsMatch} AND NULLIF(BTRIM(o.register_number), '') IS NOT NULL
+       AND ${sqlShareClassProductNameGuard("COALESCE(o.fund_short_name, o.fund_name)", nameParam)}
        AND ${sqlShareClassCodeGuard("o.register_number", nameParam)}
      ORDER BY LEAST(
        ${sqlFundNameMatchPriority("o.fund_name", nameParam)},
@@ -195,46 +208,89 @@ function buildFundNameLookupSql(nameParam: string): string {
     ${emailLookup},
     ${bflLookup},
     ${piLookup},
-    ${opsLookup},
-    (SELECT fd.beian_hao FROM fof_underlying_detail fd
-     WHERE ${detailMatch} AND NULLIF(BTRIM(fd.beian_hao), '') IS NOT NULL
-     ORDER BY ${sqlFundNameMatchPriority("fd.product_name", nameParam)}
-     LIMIT 1),
-    (SELECT t.beian_hao FROM investment_tracking_fof_underlying t
-     WHERE ${trackMatch} AND NULLIF(BTRIM(t.beian_hao), '') IS NOT NULL
-     ORDER BY ${sqlFundNameMatchPriority("t.product_name", nameParam)}
-     LIMIT 1),
-    (SELECT en_code.product_code FROM ops_email_nav_records en_code
-     WHERE NULLIF(BTRIM(en_code.product_code), '') IS NOT NULL
-       AND ${emailMatch} AND ${emailShareClass}
-     ORDER BY ${sqlFundNameMatchPriority("en_code.fund_name", nameParam)},
-       en_code.nav_date DESC NULLS LAST, en_code.id DESC
-     LIMIT 1),
-    (SELECT bfl.beian_hao FROM private_fund_info_bfl bfl
-     WHERE ${bflMatch} AND NULLIF(BTRIM(bfl.beian_hao), '') IS NOT NULL
-     ORDER BY LEAST(
-       ${sqlFundNameMatchPriority("bfl.product_name", nameParam)},
-       ${sqlFundNameMatchPriority("bfl.short_name", nameParam)}
-     ), length(bfl.product_name) ASC
-     LIMIT 1),
-    (SELECT pi.beian_hao FROM private_fund_info pi
-     WHERE ${pinfoMatch} AND NULLIF(BTRIM(pi.beian_hao), '') IS NOT NULL
-     ORDER BY ${sqlFundNameMatchPriority("pi.product_name", nameParam)}, length(pi.product_name) ASC
-     LIMIT 1),
-    (SELECT o.register_number FROM type6_ops_team_full o
-     WHERE ${opsMatch} AND NULLIF(BTRIM(o.register_number), '') IS NOT NULL
-     ORDER BY LEAST(
-       ${sqlFundNameMatchPriority("o.fund_name", nameParam)},
-       ${sqlFundNameMatchPriority("o.fund_short_name", nameParam)}
-     ), o.updated_at DESC NULLS LAST, o.id DESC
-     LIMIT 1)
+    ${opsLookup}
   )`
+}
+
+/** Map A/B/C share-class codes to the main managed product beian when applicable. */
+async function resolveManagedProductMainBeian(shareClassCode: string): Promise<string | null> {
+  const code = shareClassCode.trim()
+  if (!code || !/[ABC]$/i.test(code)) return null
+
+  try {
+    const byResolvedBeian = await query<{ product_name: string }>(
+      `SELECT m.product_name
+       ${buildManagedProductsFrom("m.product_name")}
+       WHERE m.product_name <> '合计'
+         AND m.product_name NOT ILIKE '%A类%'
+         AND m.product_name NOT ILIKE '%B类%'
+         AND m.product_name NOT ILIKE '%C类%'
+         AND ${fofUnderlyingBeianExpr("m.product_name")} = $1
+       LIMIT 1`,
+      [code],
+    )
+    const managedName = byResolvedBeian[0]?.product_name?.trim()
+    if (managedName) {
+      const override = resolveManagedProductBeian(managedName)
+      if (override) return override
+      const beianRows = await query<{ beian_hao: string | null }>(
+        `SELECT ${buildFundNameLookupSql("$1")} AS beian_hao`,
+        [managedName],
+      )
+      const resolved = beianRows[0]?.beian_hao?.trim()
+      if (resolved && resolved !== code && !/[ABC]$/i.test(resolved)) return resolved
+    }
+
+    const bflRows = await query<{ product_name: string; short_name: string | null }>(
+      `SELECT product_name, short_name
+       FROM private_fund_info_bfl
+       WHERE beian_hao = $1
+       LIMIT 1`,
+      [code],
+    )
+    const className = (bflRows[0]?.short_name ?? bflRows[0]?.product_name ?? "").trim()
+    if (!className) return null
+
+    const managedRows = await query<{ product_name: string }>(
+      `SELECT m.product_name
+       FROM managed_products m
+       WHERE m.product_name <> '合计'
+         AND m.product_name NOT ILIKE '%A类%'
+         AND m.product_name NOT ILIKE '%B类%'
+         AND m.product_name NOT ILIKE '%C类%'
+         AND ${sqlFundNameMatch("m.product_name", "$1")}
+       LIMIT 1`,
+      [className],
+    )
+    const productName = managedRows[0]?.product_name?.trim()
+    if (!productName) return null
+
+    const override = resolveManagedProductBeian(productName)
+    if (override) return override
+
+    const beianRows = await query<{ beian_hao: string | null }>(
+      `SELECT ${buildFundNameLookupSql("$1")} AS beian_hao`,
+      [productName],
+    )
+    const resolved = beianRows[0]?.beian_hao?.trim()
+    if (resolved && resolved !== code && !/[ABC]$/i.test(resolved)) return resolved
+  } catch {
+    // managed_products / lookup tables may be unavailable
+  }
+
+  return null
 }
 
 /** Resolve a URL identifier to beian_hao (direct code lookup, then product name). */
 export async function resolveFundBeianHao(identifier: string): Promise<string | null> {
   const id = identifier.trim()
   if (!id) return null
+
+  const managedOverride = resolveManagedProductBeian(id)
+  if (managedOverride) return managedOverride
+
+  const remapped = remapManagedProductBeianCode(id)
+  if (remapped) return remapped
 
   const directRows = await query<{ code: string }>(
     `SELECT beian_hao AS code FROM private_fund_info WHERE beian_hao = $1
@@ -245,7 +301,13 @@ export async function resolveFundBeianHao(identifier: string): Promise<string | 
      LIMIT 1`,
     [id],
   )
-  if (directRows[0]?.code) return directRows[0].code
+  if (directRows[0]?.code) {
+    const code = directRows[0].code
+    const remappedCode = remapManagedProductBeianCode(code)
+    if (remappedCode) return remappedCode
+    const mainClass = await resolveManagedProductMainBeian(code)
+    return mainClass ?? code
+  }
 
   try {
     const nameRows = await query<{ beian_hao: string | null }>(
@@ -304,6 +366,36 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
   const id = decodeFundIdentifier(identifier)
   if (!id) return null
 
+  const managedOverride = lookupManagedProductOverride(id)
+  if (managedOverride) {
+    let strategy_l1: string | null = null
+    let strategy_l2: string | null = null
+    try {
+      const metaRows = await query<{ strategy_l1: string | null; strategy_l2: string | null }>(
+        `SELECT o.company_strategy_one AS strategy_l1, o.company_strategy_two AS strategy_l2
+         FROM type6_ops_team_full o
+         WHERE ${sqlFundNameMatch("o.fund_name", "$1")}
+            OR ${sqlFundNameMatch("o.fund_short_name", "$1")}
+         ORDER BY o.updated_at DESC NULLS LAST, o.id DESC
+         LIMIT 1`,
+        [managedOverride.product_name],
+      )
+      strategy_l1 = metaRows[0]?.strategy_l1 ?? null
+      strategy_l2 = metaRows[0]?.strategy_l2 ?? null
+    } catch {
+      // optional metadata
+    }
+    return {
+      beian_hao: managedOverride.beian_hao,
+      product_name: managedOverride.product_name,
+      short_name: managedOverride.product_name,
+      strategy_l1,
+      strategy_l2,
+      strategy_l3: null,
+      ...EMPTY_FUND_METRICS,
+    }
+  }
+
   try {
     const managedRows = await query<{ product_name: string }>(
       `SELECT m.product_name
@@ -315,15 +407,15 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
     )
     if (managedRows[0]?.product_name) {
       const productName = managedRows[0].product_name
-      let beian_hao = productName
+      let beian_hao = resolveManagedProductBeian(productName, productName) ?? productName
       try {
         const beianRows = await query<{ beian_hao: string | null }>(
           `SELECT ${buildFundNameLookupSql("$1")} AS beian_hao`,
           [productName],
         )
-        beian_hao = beianRows[0]?.beian_hao?.trim() || productName
+        beian_hao = resolveManagedProductBeian(productName, beianRows[0]?.beian_hao?.trim()) ?? productName
       } catch {
-        // keep product name as identifier
+        // keep override / product name as identifier
       }
 
       let strategy_l1: string | null = null
