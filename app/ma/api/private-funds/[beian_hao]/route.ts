@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { loadEmailNavSeries, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
+import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
+import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import { loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
 
 export const dynamic = "force-dynamic"
 
@@ -311,7 +314,49 @@ export async function GET(
   } catch (err) {
     console.error("[private-funds/detail] email nav query failed:", err)
   }
-  const nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
+
+  const managedOverride =
+    lookupManagedProductOverride(routeBeianHao)
+    ?? lookupManagedProductOverride(productName)
+    ?? lookupManagedProductOverride(rawId)
+
+  let nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
+  if (managedOverride) {
+    try {
+      const [teamSeries, seedRows] = await Promise.all([
+        loadManagedProductNavSeries({
+          beian_hao: managedOverride.beian_hao,
+          product_name: managedOverride.product_name,
+          short_name: shortName || null,
+          extraNames: emailNameAliases,
+        }),
+        Promise.resolve(loadManagedProductNavSeed(managedOverride.beian_hao)),
+      ])
+      if (seedRows.length > 0) {
+        // Excel reference carries 累计/复权; team DB only overrides unit NAV and rechains derived fields.
+        const teamUnitPoints = teamSeries.map((row) => ({
+          price_date: row.price_date,
+          nav: row.nav,
+          cumulative_nav: null,
+          adjusted_nav: null,
+        }))
+        nav_series = mergeNavSeriesWithEmail(seedRows, teamUnitPoints)
+      } else {
+        const legacyNoType6 = await loadPrivateFundLegacyNavRows(
+          routeBeianHao,
+          productName,
+          shortName,
+          { excludeType6: true },
+        )
+        const backfill = mergeNavSeriesWithEmail(legacyNoType6, emailNavRows)
+        nav_series = teamSeries.length > 0
+          ? mergeLegacyWithTeamNav(backfill, teamSeries)
+          : backfill
+      }
+    } catch (err) {
+      console.error("[private-funds/detail] managed product nav query failed:", err)
+    }
+  }
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]
 

@@ -10,6 +10,7 @@ import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -21943,9 +21944,10 @@ export default function PrivateFundsPage() {
           )}
           {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
           {activeTab === "investment" && activeSideItem === "inv-tracking-mgr" && <InvestmentTrackingManagersView />}
+          {activeTab === "investment" && activeSideItem === "inv-overview" && <InvestmentOverviewView />}
           {activeTab === "investment" && activeSideItem === "inv-active" && <InvestmentManagedProductsView />}
           {activeTab === "investment" && activeSideItem === "inv-fof" && <InvestmentFofOverviewView />}
-          {activeTab === "investment" && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && (
+          {activeTab === "investment" && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

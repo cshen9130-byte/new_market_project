@@ -20,7 +20,11 @@ import {
   loadOpsStrategyAndTags,
   loadPrivateFundRiskMetrics,
 } from "@/lib/server/list-cache-nav-batch"
-import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import { resolveManagedProductBeian, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import {
+  computeManagedProductOneYearRiskMetrics,
+  isPlausibleRiskRatio,
+} from "@/lib/server/managed-product-nav-seed"
 import { managedShortExpr } from "@/lib/server/managed-products-nav-query"
 import {
   loadEmailFundMetricsLookup,
@@ -170,22 +174,37 @@ export async function refreshManagedProductsListCache(): Promise<number> {
     let calmar_1y: number | null = null
     const beian = resolveManagedProductBeian(row.product_name, row.beian_hao) ?? ""
     const fromInfo = beian ? riskFromInfo.get(beian) : undefined
-    if (fromInfo?.sharpe_1y != null || fromInfo?.calmar_1y != null) {
-      sharpe_1y = fromInfo.sharpe_1y
-      calmar_1y = fromInfo.calmar_1y
+    const managedOverride =
+      lookupManagedProductOverride(row.product_name)
+      ?? (beian ? lookupManagedProductOverride(beian) : null)
+
+    if (managedOverride && navDate) {
+      const risk = computeManagedProductOneYearRiskMetrics(
+        managedOverride.beian_hao,
+        navDate,
+        navResolver.mergedHistory(identity, sinceRisk),
+      )
+      sharpe_1y = risk.sharpe_1y
+      calmar_1y = risk.calmar_1y
+    } else if (
+      isPlausibleRiskRatio(fromInfo?.sharpe_1y)
+      && isPlausibleRiskRatio(fromInfo?.calmar_1y)
+    ) {
+      sharpe_1y = fromInfo!.sharpe_1y
+      calmar_1y = fromInfo!.calmar_1y
     } else if (navDate) {
       const risk = computeOneYearRiskMetrics(
         navDate,
         navResolver.mergedHistory(identity, sinceRisk),
       )
       sharpe_1y = risk.sharpe_1y
-      calmar_1y = risk.calmar_1y
+      calmar_1y = isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null
     }
 
     const ops = beian ? opsStrategyMap.get(beian) : undefined
     const bflStrategy = beian ? bflStrategyMap.get(beian) : undefined
     const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
-    const platform_strategy_l1 = ops?.platform_strategy_l1 ?? bflStrategy ?? null
+    const platform_strategy_l1 = ops?.platform_strategy_l1 ?? null
     const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
     const emailMetrics = resolveEmailFundMetrics(row.product_name, row.beian_hao, emailFundMetrics)
 

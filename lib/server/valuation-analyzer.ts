@@ -46,9 +46,13 @@ interface ColumnMeta {
 const CODE_PATTERN = /^(科目代码|科目编号|代码|合约代码|证券代码|产品代码|code)$/i
 const NAME_PATTERN = /^(科目名称|名称|合约名称|证券名称|品种名称|name)$/i
 
+function formatLocalIsoDate(date: Date): string {
+  return `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, "0")}-${`${date.getDate()}`.padStart(2, "0")}`
+}
+
 function cellToString(value: unknown): string {
   if (value == null) return ""
-  if (value instanceof Date) return value.toISOString().split("T")[0]
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return formatLocalIsoDate(value)
   return String(value).trim()
 }
 
@@ -80,6 +84,10 @@ function parseNumber(value: unknown): number {
 }
 
 function parseDateText(value: unknown): string {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return formatLocalIsoDate(value)
+  }
+
   const text = cellToString(value)
   const compactMatch = text.match(/(\d{4})[-/.年]?(\d{1,2})[-/.月]?(\d{1,2})/)
   if (compactMatch) {
@@ -87,8 +95,35 @@ function parseDateText(value: unknown): string {
     return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`
   }
 
+  const compact8 = text.match(/^(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$/)
+  if (compact8) {
+    return `${compact8[1]}-${compact8[2]}-${compact8[3]}`
+  }
+
   const date = new Date(text)
-  if (!Number.isNaN(date.getTime())) return date.toISOString().split("T")[0]
+  if (!Number.isNaN(date.getTime())) return formatLocalIsoDate(date)
+  return ""
+}
+
+/** 估值表 header often puts 估值日期 and the date value in adjacent cells. */
+function extractValuationDateFromHeaderRow(row: unknown[]): string {
+  const cells = (row ?? []).map((cell) => cellToString(cell))
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i]
+    const inline = cell.match(/(?:估值日期|净值日期|日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
+    if (inline) {
+      const parsed = parseDateText(inline[1])
+      if (parsed) return parsed
+    }
+
+    const label = cell.replace(/[\s\u3000:：]/g, "")
+    if (/^(估值日期|净值日期|日期)$/.test(label)) {
+      for (let j = i + 1; j < Math.min(i + 4, (row ?? []).length); j += 1) {
+        const parsed = parseDateText((row ?? [])[j])
+        if (parsed) return parsed
+      }
+    }
+  }
   return ""
 }
 
@@ -296,7 +331,7 @@ function extractFundName(rows: unknown[][], headerRowIndex: number, filename: st
 function extractSummary(rows: unknown[][], headerRowIndex: number, columns: ColumnMeta[], filename: string): ValuationSummary {
   const summary: ValuationSummary = {
     fund_name: extractFundName(rows, headerRowIndex, filename),
-    valuation_date: new Date().toISOString().split("T")[0],
+    valuation_date: "",
     nav: 0,
     total_asset: 0,
     total_liability: 0,
@@ -304,11 +339,9 @@ function extractSummary(rows: unknown[][], headerRowIndex: number, columns: Colu
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i] || []
-    const joined = row.map(cellToString).join("|")
 
-    if (i < headerRowIndex) {
-      const dateMatch = joined.match(/(?:估值日期|日期)\s*[：:]?\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
-      const parsedDate = dateMatch ? parseDateText(dateMatch[1]) : ""
+    if (i < Math.min(rows.length, 25)) {
+      const parsedDate = extractValuationDateFromHeaderRow(row)
       if (parsedDate) summary.valuation_date = parsedDate
     }
 
@@ -340,7 +373,11 @@ function extractSummary(rows: unknown[][], headerRowIndex: number, columns: Colu
 
   if (!summary.valuation_date) {
     const fileDate = filename.match(/(20\d{2})[-_]?(\d{2})[-_]?(\d{2})/)
-    if (fileDate) summary.valuation_date = `${fileDate[1]}-${fileDate[2]}-${fileDate[3]}`
+    // Custody send-date in filename is not the NAV date (see email-valuation-attachment).
+    const sendDateInFilename = /估值表_(20\d{6})/u.test(filename) || /_20\d{6}_估值表/u.test(filename)
+    if (fileDate && !sendDateInFilename) {
+      summary.valuation_date = `${fileDate[1]}-${fileDate[2]}-${fileDate[3]}`
+    }
   }
 
   if (!summary.nav && summary.total_asset && summary.total_liability) {

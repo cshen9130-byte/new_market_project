@@ -47,12 +47,12 @@ export function getNavFieldValue(row: NavRow, navType: string): number {
   return parseFloat(row.cumulative_nav)
 }
 
-/** Daily 涨跌幅 (percentage points) for the selected NAV type vs the prior row. */
+/** Daily 涨跌幅 (percentage points) for the selected NAV type vs the prior row in the series. */
 export function computeNavPctChange(rows: NavRow[], navType: string, date: string): number | null {
   const idx = rows.findIndex((row) => row.price_date === date)
   if (idx <= 0) return null
-  const prev = getNavFieldValue(rows[idx - 1], navType)
+  const prevVal = getNavFieldValue(rows[idx - 1], navType)
   const curr = getNavFieldValue(rows[idx], navType)
-  if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(curr)) return null
-  return ((curr / prev - 1) * 100)
+  if (!Number.isFinite(prevVal) || prevVal <= 0 || !Number.isFinite(curr)) return null
+  return ((curr / prevVal - 1) * 100)
 }

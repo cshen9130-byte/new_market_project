@@ -1,8 +1,10 @@
 import { query } from "@/lib/db"
 import {
+  loadEmailNavManagePoints,
   loadEmailNavManageRows,
   mergeNavSeriesWithEmail,
   type EmailNavPoint,
+  type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
 
 export type TeamNavManageRow = {
@@ -305,6 +307,38 @@ export async function saveTeamNavMissingSettings(params: {
   return { ok: true }
 }
 
+/** Team / manual NAV stream for 在管产品 — avoids corrupt legacy type6 rows. */
+export async function loadManagedProductNavSeries(params: {
+  beian_hao: string
+  product_name: string
+  short_name?: string | null
+  nav_type?: "pre_fee" | "virtual"
+  extraNames?: Array<string | null | undefined>
+}): Promise<LegacyNavRow[]> {
+  const nav_type = params.nav_type ?? "pre_fee"
+  const extraNames = params.extraNames ?? []
+  const [emailPoints, manual] = await Promise.all([
+    loadEmailNavManagePoints(
+      params.beian_hao,
+      params.product_name,
+      params.short_name ?? null,
+      nav_type,
+      extraNames,
+    ),
+    loadManualTeamNavRows(params.beian_hao, nav_type),
+  ])
+
+  const manualDates = new Set(manual.map((row) => row.nav_date))
+  const filteredEmail = emailPoints.filter((row) => !manualDates.has(row.price_date))
+  const manualPoints: EmailNavPoint[] = manual.map((row) => ({
+    price_date: row.nav_date,
+    nav: row.unit_nav,
+    cumulative_nav: row.cumulative_nav ?? row.unit_nav,
+  }))
+
+  return mergeNavSeriesWithEmail([], [...filteredEmail, ...manualPoints])
+}
+
 export async function listTeamNavManageRows(params: {
   beian_hao: string
   product_name: string
@@ -315,21 +349,8 @@ export async function listTeamNavManageRows(params: {
     loadManualTeamNavRows(params.beian_hao, params.nav_type),
   ])
 
+  const merged = await loadManagedProductNavSeries(params)
   const manualDates = new Set(manual.map((row) => row.nav_date))
-  const emailPoints: EmailNavPoint[] = raw
-    .filter((row) => !manualDates.has(row.nav_date))
-    .map((row) => ({
-      price_date: row.nav_date,
-      nav: row.nav,
-      cumulative_nav: row.cumulative_nav,
-    }))
-  const manualPoints: EmailNavPoint[] = manual.map((row) => ({
-    price_date: row.nav_date,
-    nav: row.unit_nav,
-    cumulative_nav: row.cumulative_nav ?? row.unit_nav,
-  }))
-
-  const merged = mergeNavSeriesWithEmail([], [...emailPoints, ...manualPoints])
   const sourceByDate = new Map<string, string>()
   for (const row of raw) {
     if (!manualDates.has(row.nav_date)) sourceByDate.set(row.nav_date, "邮箱抓取")

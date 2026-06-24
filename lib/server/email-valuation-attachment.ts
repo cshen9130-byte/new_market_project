@@ -89,6 +89,23 @@ function subjectOrFilenameDate(subject: string, filename: string): string | null
   return null
 }
 
+/** Custody 估值表 emails embed a batch/send date in subject or filename (not always the NAV date). */
+export function isCustodySendDateValuationSubject(subject: string, filename: string): boolean {
+  const text = `${subject}\0${filename}`
+  if (/估值表_(20\d{6})/u.test(text)) return true
+  if (/_20\d{6}_估值表/u.test(text)) return true
+  return false
+}
+
+function valuationSubjectSendDate(subject: string, filename: string): string | null {
+  const text = `${subject}${filename}`
+  const afterTable = text.match(/估值表_(20\d{6})/u)
+  if (afterTable) return normaliseDate(afterTable[1])
+  const beforeTable = text.match(/_(20\d{6})_估值表/u)
+  if (beforeTable) return normaliseDate(beforeTable[1])
+  return subjectOrFilenameDate(subject, filename)
+}
+
 function firstPlausibleNavInCells(cells: string[], startIdx: number): number | null {
   for (let j = startIdx; j < cells.length; j++) {
     const inlineUnit = cells[j].match(/单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
@@ -102,6 +119,40 @@ function firstPlausibleNavInCells(cells: string[], startIdx: number): number | n
   return null
 }
 
+function formatLocalIsoDate(date: Date): string {
+  return `${date.getFullYear()}-${`${date.getMonth() + 1}`.padStart(2, "0")}-${`${date.getDate()}`.padStart(2, "0")}`
+}
+
+function parseHeaderDateValue(value: unknown): string | null {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return formatLocalIsoDate(value)
+  }
+  const text = String(value ?? "").trim()
+  if (!text) return null
+  return normaliseDate(text)
+}
+
+function extractValuationDateFromHeaderRow(row: unknown[]): string | null {
+  const cells = (row ?? []).map((cell) => String(cell ?? "").trim())
+  for (let i = 0; i < cells.length; i += 1) {
+    const cell = cells[i]
+    const inline = cell.match(/(?:估值日期|净值日期|日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
+    if (inline) {
+      const parsed = normaliseDate(inline[1])
+      if (parsed) return parsed
+    }
+
+    const label = cell.replace(/[\s\u3000:：]/g, "")
+    if (/^(估值日期|净值日期|日期)$/.test(label)) {
+      for (let j = i + 1; j < Math.min(i + 4, (row ?? []).length); j += 1) {
+        const parsed = parseHeaderDateValue((row ?? [])[j])
+        if (parsed) return parsed
+      }
+    }
+  }
+  return null
+}
+
 function scanRowsForNav(rows: unknown[][]): { unit: number | null; cum: number | null; date: string | null } {
   let unit: number | null = null
   let cum: number | null = null
@@ -110,6 +161,9 @@ function scanRowsForNav(rows: unknown[][]): { unit: number | null; cum: number |
   for (const row of rows.slice(0, 120)) {
     const cells = (row ?? []).map((cell) => String(cell ?? "").trim())
     const joined = cells.join(" ")
+
+    const headerDate = extractValuationDateFromHeaderRow(row ?? [])
+    if (headerDate) date = headerDate
 
     const dateMatch = joined.match(/(?:估值日期|净值日期|日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
     if (dateMatch) {
@@ -203,6 +257,35 @@ function countMeaningfulHoldings(rows: ValuationRow[]): number {
   }).length
 }
 
+function previousChinaTradingDay(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-").map(Number)
+  const cur = new Date(y, m - 1, d)
+  for (let i = 0; i < 10; i += 1) {
+    cur.setDate(cur.getDate() - 1)
+    const next = formatLocalIsoDate(cur)
+    const weekday = cur.getDay()
+    if (weekday !== 0 && weekday !== 6) return next
+  }
+  return formatLocalIsoDate(cur)
+}
+
+function resolveValuationTableNavDate(
+  subject: string,
+  filename: string,
+  headerDate: string | null,
+  summaryDate: string | null,
+): string | null {
+  const subjectDate = valuationSubjectSendDate(subject, filename)
+  const header = headerDate ? normaliseDate(headerDate) : null
+  const summary = summaryDate ? normaliseDate(summaryDate) : null
+  const custodySend = subjectDate != null && isCustodySendDateValuationSubject(subject, filename)
+
+  if (header && (!subjectDate || header !== subjectDate)) return header
+  if (summary && (!subjectDate || summary !== subjectDate)) return summary
+  if (custodySend && subjectDate) return previousChinaTradingDay(subjectDate)
+  return header ?? summary ?? subjectDate
+}
+
 function isSuccessfulValuation(analysis: ValuationAnalysis): boolean {
   const holdingsCount = countMeaningfulHoldings(analysis.portfolio_data)
   if (holdingsCount >= 3) return true
@@ -215,6 +298,7 @@ function buildExtractedValuation(
   subject: string,
   filename: string,
   source: ExtractedValuationData["source"],
+  headerScanDate: string | null = null,
 ): ExtractedValuationData | null {
   if (!isSuccessfulValuation(analysis)) return null
 
@@ -224,9 +308,12 @@ function buildExtractedValuation(
   const shared = extractNavMetadata(subject, "")
   const portfolioScan = scanPortfolioNav(analysis.portfolio_data)
 
-  const valuationDate =
-    (enriched.valuation_date ? normaliseDate(enriched.valuation_date) : null) ??
-    subjectOrFilenameDate(subject, filename)
+  const valuationDate = resolveValuationTableNavDate(
+    subject,
+    filename,
+    headerScanDate,
+    enriched.valuation_date || null,
+  )
 
   if (!valuationDate) return null
 
@@ -286,7 +373,7 @@ export function extractValuationFromEmailBody(
 
   try {
     const analysis = parseValuationRows(rows, subject)
-    return buildExtractedValuation(analysis, subject, "", "body_html_table")
+    return buildExtractedValuation(analysis, subject, "", "body_html_table", null)
   } catch {
     return null
   }
@@ -321,8 +408,15 @@ export function extractValuationFromBuffer(
   subject: string,
 ): ExtractedValuationData | null {
   try {
+    const headerScan = scanWorkbookNav(buffer)
     const analysis = parseValuationWorkbook(buffer, filename)
-    return buildExtractedValuation(analysis, subject, filename, "attachment_valuation_table")
+    return buildExtractedValuation(
+      analysis,
+      subject,
+      filename,
+      "attachment_valuation_table",
+      headerScan.date,
+    )
   } catch {
     return null
   }
@@ -355,10 +449,12 @@ export function extractNavFromValuationBuffer(
     const nav = headerScan.unit ?? portfolioScan.unit
     if (nav == null || !isPlausibleUnitNav(nav)) return null
 
-    const navDate =
-      headerScan.date ??
-      (analysis.summary.valuation_date ? normaliseDate(analysis.summary.valuation_date) : null) ??
-      subjectOrFilenameDate(subject, filename)
+    const navDate = resolveValuationTableNavDate(
+      subject,
+      filename,
+      headerScan.date,
+      analysis.summary.valuation_date || null,
+    )
 
     if (!navDate) return null
 

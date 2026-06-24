@@ -307,18 +307,17 @@ function isVirtualNavRow(row: EmailNavRawRow): boolean {
 
 type EmailNavRawRowWithId = EmailNavRawRow & { id: string }
 
-export async function loadEmailNavManageRows(
+async function queryEmailNavManageRawRows(
   beianHao: string,
   productName: string,
   shortName: string | null,
-  navType: "pre_fee" | "virtual",
   extraNames: Array<string | null | undefined> = [],
-): Promise<EmailNavManageRow[]> {
+): Promise<EmailNavRawRowWithId[]> {
   await ensureEmailNavTable()
   const aliases = collectFundNameAliases(productName, shortName, extraNames)
   const beian = (beianHao ?? "").trim()
 
-  const rows = await query<EmailNavRawRowWithId>(
+  return query<EmailNavRawRowWithId>(
     `SELECT e.id::text AS id, e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
             e.adjusted_nav::text,
             e.fund_name, e.attachment_filename, e.subject, e.source
@@ -343,22 +342,61 @@ export async function loadEmailNavManageRows(
      ORDER BY e.nav_date ASC, e.id ASC`,
     [beian, aliases],
   )
+}
 
+function filterEmailNavManageStream(
+  rows: EmailNavRawRowWithId[],
+  beianHao: string,
+  productName: string,
+  shortName: string | null,
+  navType: "pre_fee" | "virtual",
+  extraNames: Array<string | null | undefined> = [],
+): EmailNavRawRowWithId[] {
+  const aliases = collectFundNameAliases(productName, shortName, extraNames)
+  const beian = (beianHao ?? "").trim()
   const typeFiltered = rows.filter((row) =>
     navType === "virtual" ? isVirtualNavRow(row) : !isVirtualNavRow(row),
   )
-  const stream = selectEmailSourceStream(typeFiltered, beian, aliases)
-  return stream.map((row) => {
+  return selectEmailSourceStream(typeFiltered, beian, aliases).map((row) => {
     const match = typeFiltered.find((r) => r.nav_date === row.nav_date && r.fund_name === row.fund_name)
       ?? typeFiltered.find((r) => r.nav_date === row.nav_date)
-    return {
-      id: match?.id ?? row.nav_date,
-      nav_date: row.nav_date,
-      nav: row.nav,
-      cumulative_nav: row.cumulative_nav,
-      source: row.source,
-    }
+    return match ?? ({ ...row, id: row.nav_date } as EmailNavRawRowWithId)
   })
+}
+
+export async function loadEmailNavManagePoints(
+  beianHao: string,
+  productName: string,
+  shortName: string | null,
+  navType: "pre_fee" | "virtual",
+  extraNames: Array<string | null | undefined> = [],
+): Promise<EmailNavPoint[]> {
+  const rows = await queryEmailNavManageRawRows(beianHao, productName, shortName, extraNames)
+  const stream = filterEmailNavManageStream(rows, beianHao, productName, shortName, navType, extraNames)
+  return stream.map((row) => ({
+    price_date: row.nav_date,
+    nav: row.nav,
+    cumulative_nav: row.cumulative_nav,
+    adjusted_nav: row.adjusted_nav,
+  }))
+}
+
+export async function loadEmailNavManageRows(
+  beianHao: string,
+  productName: string,
+  shortName: string | null,
+  navType: "pre_fee" | "virtual",
+  extraNames: Array<string | null | undefined> = [],
+): Promise<EmailNavManageRow[]> {
+  const rows = await queryEmailNavManageRawRows(beianHao, productName, shortName, extraNames)
+  const stream = filterEmailNavManageStream(rows, beianHao, productName, shortName, navType, extraNames)
+  return stream.map((row) => ({
+    id: row.id ?? row.nav_date,
+    nav_date: row.nav_date,
+    nav: row.nav,
+    cumulative_nav: row.cumulative_nav,
+    source: row.source,
+  }))
 }
 
 export async function loadEmailNavSeries(
@@ -399,6 +437,106 @@ export async function loadEmailNavSeries(
 
   const stream = selectEmailSourceStream(rows, beian, aliases)
   return rowsToEmailPoints(stream)
+}
+
+const TYPE6_LEGACY_NAV_UNIONS = `
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 0 AS pri
+         FROM private_fund_nav_group_type6
+         WHERE beian_hao = $1
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 1 AS pri
+         FROM private_fund_nav_group_type6
+         WHERE $2 <> '' AND product_name = $2
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 2 AS pri
+         FROM private_fund_nav_group_type6
+         WHERE $3 <> '' AND product_name = $3
+
+         UNION ALL
+`
+
+/** Legacy NAV tables (group / hy / per-fund). Optionally skip type6 — sparse for some 在管产品. */
+export async function loadPrivateFundLegacyNavRows(
+  beianHao: string,
+  productName: string,
+  shortName: string,
+  options?: { excludeType6?: boolean },
+): Promise<LegacyNavRow[]> {
+  const excludeType6 = options?.excludeType6 ?? false
+  const type6Block = excludeType6 ? "" : TYPE6_LEGACY_NAV_UNIONS
+  try {
+    return await query<LegacyNavRow>(
+      `SELECT DISTINCT ON (price_date)
+          price_date::text AS price_date,
+          nav::text,
+          cumulative_nav::text,
+          cum_nav_withdrawal::text,
+          price_change::text
+       FROM (
+         ${type6Block}
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
+         FROM private_fund_nav_group
+         WHERE beian_hao = $1
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 4 AS pri
+         FROM private_fund_nav_group
+         WHERE $2 <> '' AND product_name = $2
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 5 AS pri
+         FROM private_fund_nav_group
+         WHERE $3 <> '' AND product_name = $3
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 6 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE beian_hao = $1
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 7 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE $2 <> '' AND product_name = $2
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 8 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE $3 <> '' AND product_name = $3
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 9 AS pri
+         FROM private_fund_nav
+         WHERE beian_hao = $1
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 10 AS pri
+         FROM private_fund_nav
+         WHERE $2 <> '' AND product_name = $2
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 11 AS pri
+         FROM private_fund_nav
+         WHERE $3 <> '' AND product_name = $3
+       ) nav_union
+       ORDER BY price_date ASC, pri ASC`,
+      [beianHao, productName, shortName],
+    )
+  } catch (err) {
+    console.error("[loadPrivateFundLegacyNavRows]", err)
+    return []
+  }
 }
 
 export type LegacyNavRow = {
@@ -488,7 +626,10 @@ function isReasonableNav(n: number): boolean {
 function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string; adj: string } | null {
   const prevUnit = parseOptionalNav(prev.nav)
   const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
-  const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+  let prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+  if (prevAdj != null && !isReasonableNav(prevAdj)) {
+    prevAdj = parseOptionalNav(prev.cum_nav_withdrawal) ?? prevCum
+  }
   if (prevUnit == null || prevUnit <= 0 || prevCum == null || prevAdj == null) return null
   if (!isReasonableNav(unit) || !isReasonableNav(prevUnit) || !isReasonableNav(prevCum) || !isReasonableNav(prevAdj)) {
     return null
@@ -498,6 +639,16 @@ function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string
   if (unitRatio <= 0.5 || unitRatio >= 1.5) return null
 
   const prevCumW = parseOptionalNav(prev.cum_nav_withdrawal) ?? prevCum
+
+  // Ex-dividend day: unit dropped while cumulative NAV stays near its prior level.
+  if (isLikelyDividendExDate(prevUnit, unit, prevCumW)) {
+    const cumUnitGap = prevCumW - prevUnit
+    const cum = cumUnitGap > 0.01 ? unit + cumUnitGap : prevCumW * unitRatio
+    const adj = prevAdj * unitRatio
+    if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null
+    return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
+  }
+
   const prevPostDiv = hasDividendOffset(prevUnit, prevCumW)
   if (!prevPostDiv) {
     const v = String(+unit.toFixed(6))
@@ -756,6 +907,43 @@ function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string>
   return recomputeNavPriceChanges(out)
 }
 
+function emailUnitOnlyNeedsRechain(
+  existing: LegacyNavRow,
+  resolvedUnitNav: number,
+  prevRow: LegacyNavRow | null,
+): boolean {
+  const existingUnit = parseOptionalNav(existing.nav)
+  const unitChanged =
+    existingUnit == null ||
+    Math.abs(existingUnit - resolvedUnitNav) / Math.max(existingUnit, resolvedUnitNav, 1) > 0.0001
+  if (unitChanged) return true
+  if (!prevRow) return false
+
+  const existingCum = parseOptionalNav(existing.cum_nav_withdrawal)
+  const existingAdj = parseOptionalNav(existing.cumulative_nav)
+  const expected = rechainDerivedFromPrev(prevRow, resolvedUnitNav)
+  if (!expected) return false
+
+  const expectedCum = parseFloat(expected.cum)
+  const expectedAdj = parseFloat(expected.adj)
+  const cumOk = existingCum != null && Math.abs(existingCum - expectedCum) < 0.001
+  const adjOk = existingAdj != null && Math.abs(existingAdj - expectedAdj) < 0.001
+  if (cumOk && adjOk) return false
+
+  const legacyPostDiv =
+    existingCum != null &&
+    isReasonableNav(existingCum) &&
+    hasDistinctCumulative(resolvedUnitNav, existingCum)
+
+  // Email reaffirmed unit NAV on a post-div legacy row — keep it unless derived fields drifted.
+  if (legacyPostDiv && hasDistinctCumulative(resolvedUnitNav, expectedCum)) {
+    return true
+  }
+  if (legacyPostDiv) return false
+
+  return !cumOk || !adjOk
+}
+
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
 export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: EmailNavPoint[]): LegacyNavRow[] {
   if (emailRows.length === 0) return finalizeNavSeries(legacyRows)
@@ -799,7 +987,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
       }
       if (emailAdj != null) {
         updated.cumulative_nav = String(emailAdj)
-      } else if (resolvedCum == null) {
+      } else if (resolvedCum == null && emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {
         unitOnlyEmailDates.add(row.price_date)
       }
       byDate.set(row.price_date, updated)
@@ -817,6 +1005,24 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
 
   const merged = Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
   return finalizeNavSeries(merged, unitOnlyEmailDates)
+}
+
+/**
+ * Team / managed NAV wins on every date it has; legacy only supplies dates absent from team.
+ * Use for 在管产品 so sparse type6 legacy cannot override the team email stream.
+ */
+export function mergeLegacyWithTeamNav(
+  legacyRows: LegacyNavRow[],
+  teamRows: LegacyNavRow[],
+): LegacyNavRow[] {
+  if (teamRows.length === 0) return finalizeNavSeries(legacyRows)
+  const teamDates = new Set(teamRows.map((row) => row.price_date))
+  const legacyFill = legacyRows.filter((row) => !teamDates.has(row.price_date))
+  const merged = [
+    ...legacyFill,
+    ...teamRows.map((row) => ({ ...row })),
+  ].sort((a, b) => a.price_date.localeCompare(b.price_date))
+  return finalizeNavSeries(merged)
 }
 
 /** Recompute 涨跌幅 as percentage points from consecutive unit NAV (matches legacy DB + UI). */

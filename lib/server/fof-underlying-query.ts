@@ -53,7 +53,10 @@ export function buildFofUnderlyingBeianJoins(productNameExpr: string): string {
         LIMIT 1
       ) pi ON true
       LEFT JOIN LATERAL (
-        SELECT register_number, fund_short_name, company_strategy_one, platform_strategy_one, tag
+        SELECT register_number, fund_short_name,
+               company_strategy_one, company_strategy_two, company_strategy_three,
+               platform_strategy_one, platform_strategy_two, platform_strategy_three,
+               tag
         FROM type6_ops_team_full o
         WHERE ${opsMatch}
           AND ${sqlShareClassProductNameGuard("COALESCE(o.fund_short_name, o.fund_name)", productNameExpr)}

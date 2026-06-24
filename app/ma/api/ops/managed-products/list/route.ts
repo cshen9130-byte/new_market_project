@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
-import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import { resolveManagedProductBeian, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { computeManagedProductOneYearRiskMetrics } from "@/lib/server/managed-product-nav-seed"
 import { query, fmtIso } from "@/lib/db"
 import {
   buildEmailNavLatestExprs,
@@ -113,6 +114,22 @@ function mapRow(r: {
     ret_1y: r.ret_1y,
     sharpe_1y: r.sharpe_1y,
     calmar_1y: r.calmar_1y,
+  }
+}
+
+function applyManagedRiskOverride(row: ManagedRow): ManagedRow {
+  const override =
+    lookupManagedProductOverride(row.product_name)
+    ?? (row.beian_hao ? lookupManagedProductOverride(row.beian_hao) : null)
+  if (!override || !row.latest_nav_date) return row
+  const risk = computeManagedProductOneYearRiskMetrics(
+    override.beian_hao,
+    row.latest_nav_date,
+  )
+  return {
+    ...row,
+    sharpe_1y: risk.sharpe_1y != null ? String(risk.sharpe_1y) : row.sharpe_1y ?? null,
+    calmar_1y: risk.calmar_1y != null ? String(risk.calmar_1y) : row.calmar_1y ?? null,
   }
 }
 
@@ -231,7 +248,7 @@ export async function GET(req: Request) {
       )
 
       return NextResponse.json({
-        data: rows.map(mapRow),
+        data: rows.map(mapRow).map(applyManagedRiskOverride),
         total,
         page,
         pageSize,
@@ -345,7 +362,7 @@ export async function GET(req: Request) {
     )
 
     return NextResponse.json({
-      data: rows.map(mapRow),
+      data: rows.map(mapRow).map(applyManagedRiskOverride),
       total,
       page,
       pageSize,
