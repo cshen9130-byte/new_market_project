@@ -10,12 +10,14 @@ export type EmailNavPoint = {
   price_date: string
   nav: string | null
   cumulative_nav: string | null
+  adjusted_nav?: string | null
 }
 
 type EmailNavRawRow = {
   nav_date: string
   nav: string
   cumulative_nav: string | null
+  adjusted_nav: string | null
   fund_name: string | null
   attachment_filename: string | null
   subject: string | null
@@ -173,6 +175,7 @@ function rowsToEmailPoints(rows: EmailNavRawRow[]): EmailNavPoint[] {
     price_date: row.nav_date,
     nav: row.nav,
     cumulative_nav: row.cumulative_nav,
+    adjusted_nav: row.adjusted_nav,
   }))
 }
 
@@ -317,6 +320,7 @@ export async function loadEmailNavManageRows(
 
   const rows = await query<EmailNavRawRowWithId>(
     `SELECT e.id::text AS id, e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
+            e.adjusted_nav::text,
             e.fund_name, e.attachment_filename, e.subject, e.source
      FROM ops_email_nav_records e
      WHERE e.nav_date IS NOT NULL
@@ -369,6 +373,7 @@ export async function loadEmailNavSeries(
 
   const rows = await query<EmailNavRawRow>(
     `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
+            e.adjusted_nav::text,
             e.fund_name, e.attachment_filename, e.subject, e.source
      FROM ops_email_nav_records e
      WHERE e.nav_date IS NOT NULL
@@ -416,19 +421,130 @@ function parseOptionalNav(value: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-/** Unit NAV drop with cum still well above unit — likely ex-dividend, don't chain cum down. */
-function isLikelyDividendExDate(prevNav: number, nav: number, prevCum: number): boolean {
-  if (prevNav <= 0 || nav <= 0 || prevCum <= 0) return false
-  const unitDrop = (prevNav - nav) / prevNav
+/** Unit NAV drop while cumulative NAV stays near/above its prior level — likely ex-dividend. */
+function isLikelyDividendExDate(
+  prevUnit: number,
+  unit: number,
+  prevCum: number,
+  currCum?: number | null,
+): boolean {
+  if (prevUnit <= 0 || unit <= 0 || prevCum <= 0) return false
+  const unitDrop = (prevUnit - unit) / prevUnit
   if (unitDrop < 0.015) return false
-  if (prevCum <= nav * 1.02) return false
-  const chainedCum = prevCum * (nav / prevNav)
-  return chainedCum < prevCum * 0.985
+  const cumRef = currCum ?? unit
+  // Ex-div: unit drops sharply while cumulative NAV stays near its prior level (not down with unit).
+  return (
+    unit < prevUnit * 0.985 &&
+    cumRef >= prevCum * 0.995 &&
+    cumRef <= prevCum * 1.05
+  )
 }
 
-function chainCumulative(prevCum: number, prevNav: number, nav: number): number {
-  if (isLikelyDividendExDate(prevNav, nav, prevCum)) return prevCum
-  return prevCum * (nav / prevNav)
+function chainCumulative(
+  prevCum: number,
+  prevUnit: number,
+  unit: number,
+  currCum?: number | null,
+): number {
+  if (isLikelyDividendExDate(prevUnit, unit, prevCum, currCum)) {
+    return currCum ?? prevCum
+  }
+  return prevCum * (unit / prevUnit)
+}
+
+function isReasonableNav(n: number): boolean {
+  return Number.isFinite(n) && n >= 0.1 && n <= 100
+}
+
+/** Rechain 累计 / 复权 from the prior row when email refreshed unit NAV only. */
+function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string; adj: string } | null {
+  const prevUnit = parseOptionalNav(prev.nav)
+  const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+  const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+  if (prevUnit == null || prevUnit <= 0 || prevCum == null || prevAdj == null) return null
+  if (!isReasonableNav(unit) || !isReasonableNav(prevUnit) || !isReasonableNav(prevCum) || !isReasonableNav(prevAdj)) {
+    return null
+  }
+
+  const unitRatio = unit / prevUnit
+  if (unitRatio <= 0.5 || unitRatio >= 1.5) return null
+
+  const adj = prevAdj * unitRatio
+  const cumUnitGap = prevCum - prevUnit
+  const cum = cumUnitGap > 0.01 ? unit + cumUnitGap : prevCum * unitRatio
+  if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null
+
+  return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
+}
+
+/** Refresh derived NAV only on dates where email supplied unit NAV without cumulative. */
+function refreshDerivedForUnitOnlyEmailRows(
+  rows: LegacyNavRow[],
+  unitOnlyEmailDates: Set<string>,
+): LegacyNavRow[] {
+  if (unitOnlyEmailDates.size === 0) return rows
+
+  const sorted = rows.map((row) => ({ ...row }))
+  for (let i = 0; i < sorted.length; i += 1) {
+    if (!unitOnlyEmailDates.has(sorted[i].price_date) || i === 0) continue
+    const unit = parseOptionalNav(sorted[i].nav)
+    if (unit == null) continue
+    const rechained = rechainDerivedFromPrev(sorted[i - 1], unit)
+    if (rechained) {
+      sorted[i].cum_nav_withdrawal = rechained.cum
+      sorted[i].cumulative_nav = rechained.adj
+    }
+  }
+  return sorted
+}
+
+/** After ex-div unit fix, align 复权 with cumulative return on that date. */
+function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
+  for (let i = 1; i < sorted.length; i += 1) {
+    const curr = sorted[i]
+    const prev = sorted[i - 1]
+    const unit = parseOptionalNav(curr.nav)
+    const cum = parseOptionalNav(curr.cum_nav_withdrawal) ?? parseOptionalNav(curr.cumulative_nav)
+    const prevUnit = parseOptionalNav(prev.nav)
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+    const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+    if (
+      unit == null || cum == null || prevUnit == null || prevCum == null || prevAdj == null
+      || !isLikelyDividendExDate(prevUnit, unit, prevCum, cum)
+    ) {
+      continue
+    }
+    curr.cumulative_nav = String(+(prevAdj * (cum / prevCum)).toFixed(6))
+  }
+  return sorted
+}
+
+/** Guard against corrupt legacy values blowing up charts/metrics. */
+function clampSanityNavRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const unit = parseOptionalNav(sorted[i].nav)
+    if (unit != null && !isReasonableNav(unit)) continue
+
+    for (const field of ["cum_nav_withdrawal", "cumulative_nav"] as const) {
+      const value = parseOptionalNav(sorted[i][field])
+      if (value != null && isReasonableNav(value)) continue
+      if (i === 0 || unit == null) {
+        sorted[i][field] = unit != null ? String(unit) : sorted[i][field]
+        continue
+      }
+      const rechained = rechainDerivedFromPrev(sorted[i - 1], unit)
+      if (rechained) {
+        sorted[i][field] = field === "cum_nav_withdrawal" ? rechained.cum : rechained.adj
+      } else if (unit != null) {
+        sorted[i][field] = String(unit)
+      }
+    }
+  }
+
+  return sorted
 }
 
 /**
@@ -474,6 +590,7 @@ export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavR
     if (!prev || !next) continue
 
     const prevUnit = parseOptionalNav(prev.nav)
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
     const nextUnit = parseOptionalNav(next.nav)
     const nextCum = parseOptionalNav(next.cum_nav_withdrawal) ?? parseOptionalNav(next.cumulative_nav)
     const nextAdj = parseOptionalNav(next.cumulative_nav)
@@ -486,7 +603,8 @@ export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavR
     if (Math.abs(nextUnit - nextCum) / nextCum <= 0.001) continue
 
     const currVsPrev = currUnit / prevUnit
-    if (currVsPrev <= 0.995 || currVsPrev >= 1.05) continue
+    const tracksPrevCum = prevCum != null && currUnit >= prevCum * 0.99 && currUnit <= prevCum * 1.05
+    if (!tracksPrevCum && (currVsPrev <= 0.995 || currVsPrev >= 1.05)) continue
 
     const fixedUnit = currCum / nextRatio
     if (!Number.isFinite(fixedUnit) || fixedUnit <= 0 || fixedUnit >= currCum) continue
@@ -496,32 +614,53 @@ export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavR
   return sorted
 }
 
-function fillEmptyCumulativeFields(row: LegacyNavRow, prev: LegacyNavRow | null): void {
-  const nav = parseOptionalNav(row.nav)
-  if (nav == null) return
-  const prevNav = prev ? parseOptionalNav(prev.nav) : null
+/** Fix stale/spike 累计/复权 when unit moved but derived fields did not. */
+function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
 
-  if (!row.cumulative_nav?.trim()) {
-    const prevCum = prev ? parseOptionalNav(prev.cumulative_nav) : null
-    if (prevCum != null && prevNav != null && prevNav > 0) {
-      row.cumulative_nav = String(chainCumulative(prevCum, prevNav, nav))
-    } else {
-      row.cumulative_nav = row.nav
+  for (let i = 1; i < sorted.length; i += 1) {
+    const prev = sorted[i - 1]
+    const curr = sorted[i]
+    const unit = parseOptionalNav(curr.nav)
+    const prevUnit = parseOptionalNav(prev.nav)
+    const adj = parseOptionalNav(curr.cumulative_nav)
+    const prevAdj = parseOptionalNav(prev.cumulative_nav)
+    const cum = parseOptionalNav(curr.cum_nav_withdrawal)
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal)
+    if (unit == null || prevUnit == null || prevUnit <= 0) continue
+
+    const unitRet = Math.abs(unit / prevUnit - 1)
+    const adjRet = adj != null && prevAdj != null ? Math.abs(adj / prevAdj - 1) : 0
+    const cumRet = cum != null && prevCum != null ? Math.abs(cum / prevCum - 1) : 0
+
+    const staleAdj = adj != null && prevAdj != null && unitRet > 0.001 && adjRet < 0.0001
+    const staleCum = cum != null && prevCum != null && unitRet > 0.001 && cumRet < 0.0001
+    const spikeAdj = adj != null && prevAdj != null && (adj / prevAdj > 1.3 || adj / prevAdj < 0.7)
+    const spikeCum = cum != null && prevCum != null && (cum / prevCum > 1.3 || cum / prevCum < 0.7)
+    const unreasonableAdj = adj != null && !isReasonableNav(adj)
+    const unreasonableCum = cum != null && !isReasonableNav(cum)
+
+    if (!staleAdj && !staleCum && !spikeAdj && !spikeCum && !unreasonableAdj && !unreasonableCum) {
+      continue
+    }
+
+    const rechained = rechainDerivedFromPrev(prev, unit)
+    if (rechained) {
+      curr.cum_nav_withdrawal = rechained.cum
+      curr.cumulative_nav = rechained.adj
     }
   }
 
-  if (!row.cum_nav_withdrawal?.trim()) {
-    const prevWithdraw = prev ? parseOptionalNav(prev.cum_nav_withdrawal) : null
-    if (prevWithdraw != null && prevNav != null && prevNav > 0) {
-      row.cum_nav_withdrawal = String(chainCumulative(prevWithdraw, prevNav, nav))
-    } else {
-      row.cum_nav_withdrawal = row.cumulative_nav || row.nav
-    }
-  }
+  return sorted
 }
 
-function finalizeNavSeries(rows: LegacyNavRow[]): LegacyNavRow[] {
-  return recomputeNavPriceChanges(sanitizeMisassignedUnitNavRows(rows))
+function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string> = new Set()): LegacyNavRow[] {
+  let out = sanitizeMisassignedUnitNavRows(rows)
+  out = syncExDivAdjustedNav(out)
+  out = refreshStaleDerivedFields(out)
+  out = refreshDerivedForUnitOnlyEmailRows(out, unitOnlyEmailDates)
+  out = clampSanityNavRows(out)
+  return recomputeNavPriceChanges(out)
 }
 
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
@@ -534,6 +673,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
   }
 
   const sortedLegacyDates = legacyRows.map((row) => row.price_date).sort()
+  const unitOnlyEmailDates = new Set<string>()
 
   for (const row of emailRows) {
     const nav = row.nav ?? row.cumulative_nav
@@ -542,6 +682,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
     if (!Number.isFinite(unitNav)) continue
 
     const emailCum = parseOptionalNav(row.cumulative_nav)
+    const emailAdj = parseOptionalNav(row.adjusted_nav)
     const hasEmailCum = hasDistinctCumulative(unitNav, emailCum)
     const existing = byDate.get(row.price_date)
     const prevDate = sortedLegacyDates.filter((d) => d < row.price_date).at(-1)
@@ -562,20 +703,19 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
       }
       if (resolvedCum != null) {
         updated.cum_nav_withdrawal = String(resolvedCum)
-        const legacyAdj = parseOptionalNav(existing.cumulative_nav)
-        if (
-          legacyAdj == null
-          || !hasDistinctCumulative(parseOptionalNav(existing.nav) ?? resolvedUnitNav, legacyAdj)
-        ) {
-          updated.cumulative_nav = String(resolvedCum)
-        }
+      }
+      if (emailAdj != null) {
+        updated.cumulative_nav = String(emailAdj)
+      } else if (resolvedCum == null) {
+        unitOnlyEmailDates.add(row.price_date)
       }
       byDate.set(row.price_date, updated)
     } else {
+      if (resolvedCum == null && emailAdj == null) unitOnlyEmailDates.add(row.price_date)
       byDate.set(row.price_date, {
         price_date: row.price_date,
         nav: String(resolvedUnitNav),
-        cumulative_nav: resolvedCum != null ? String(resolvedCum) : "",
+        cumulative_nav: emailAdj != null ? String(emailAdj) : "",
         cum_nav_withdrawal: resolvedCum != null ? String(resolvedCum) : "",
         price_change: "",
       })
@@ -583,13 +723,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
   }
 
   const merged = Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
-  let prev: LegacyNavRow | null = null
-  for (const row of merged) {
-    fillEmptyCumulativeFields(row, prev)
-    prev = row
-  }
-
-  return finalizeNavSeries(merged)
+  return finalizeNavSeries(merged, unitOnlyEmailDates)
 }
 
 /** Recompute 涨跌幅 as percentage points from consecutive unit NAV (matches legacy DB + UI). */

@@ -8,9 +8,11 @@ export type NavCleanerRow = {
   date: string
   unitNav: number
   cumulativeNav: number
+  adjustedNav: number | null
   sourceDate: string
   sourceUnitNav: string
   sourceCumulativeNav: string
+  sourceAdjustedNav: string
   isChinaTradingDay: boolean
 }
 
@@ -23,6 +25,7 @@ export type NavCleanerAnalysis = {
     date: string | null
     unitNav: string | null
     cumulativeNav: string | null
+    adjustedNav: string | null
   }
   inferredDateFormat: string
   totalSourceRows: number
@@ -46,13 +49,30 @@ const UNIT_NAV_HEADER_PATTERNS = [
   /单位净值|基金净值|netassetvalue|unitnav|navperunit|navunit|netvalue|净值|^nav$/i,
 ]
 
+const WITHDRAWAL_NAV_HEADER_PATTERNS = [
+  /累计单位净值|累计份额净值|累计净值|累积净值|accumulatednav|accnav|totalnav/i,
+]
+
+const ADJUSTED_NAV_HEADER_PATTERNS = [
+  /复权净值|adjustednav|adjustednetvalue/i,
+]
+
 const CUMULATIVE_NAV_HEADER_PATTERNS = [
-  /累计单位净值|累计份额净值|累计净值|累积净值|复权净值|adjustednav|accumulatednav|accnav|totalnav|adjustednetvalue/i,
+  ...WITHDRAWAL_NAV_HEADER_PATTERNS,
+  ...ADJUSTED_NAV_HEADER_PATTERNS,
 ]
 
 /** Headers like 累计单位净值 also match /单位净值/ — exclude them from unit scoring. */
+function isAdjustedNavHeader(normalizedHeader: string): boolean {
+  return ADJUSTED_NAV_HEADER_PATTERNS.some((pattern) => pattern.test(normalizedHeader))
+}
+
+function isWithdrawalNavHeader(normalizedHeader: string): boolean {
+  return WITHDRAWAL_NAV_HEADER_PATTERNS.some((pattern) => pattern.test(normalizedHeader))
+}
+
 function isCumulativeNavHeader(normalizedHeader: string): boolean {
-  return CUMULATIVE_NAV_HEADER_PATTERNS.some((pattern) => pattern.test(normalizedHeader))
+  return isWithdrawalNavHeader(normalizedHeader) || isAdjustedNavHeader(normalizedHeader)
 }
 
 function stringifyCell(value: unknown) {
@@ -346,6 +366,10 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
           ? 0
           : matchHeaderScore(normalizedHeader, UNIT_NAV_HEADER_PATTERNS)) +
         (numericCount / sampleCount) * 3,
+      withdrawalScore:
+        matchHeaderScore(normalizedHeader, WITHDRAWAL_NAV_HEADER_PATTERNS) + (numericCount / sampleCount) * 3,
+      adjustedScore:
+        matchHeaderScore(normalizedHeader, ADJUSTED_NAV_HEADER_PATTERNS) + (numericCount / sampleCount) * 3,
       cumulativeScore:
         matchHeaderScore(normalizedHeader, CUMULATIVE_NAV_HEADER_PATTERNS) + (numericCount / sampleCount) * 3,
       numericCount,
@@ -356,11 +380,17 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
   const dateIndex = bestDateColumn && bestDateColumn.dateScore > 1 ? bestDateColumn.index : null
 
   const navCandidates = scoredColumns.filter((column) => column.index !== dateIndex)
-  const cumulativeCandidate = [...navCandidates].sort((left, right) => right.cumulativeScore - left.cumulativeScore)[0] ?? null
-  let cumulativeIndex = cumulativeCandidate && cumulativeCandidate.cumulativeScore > 1 ? cumulativeCandidate.index : null
+
+  const adjustedCandidate = [...navCandidates].sort((left, right) => right.adjustedScore - left.adjustedScore)[0] ?? null
+  let adjustedIndex = adjustedCandidate && adjustedCandidate.adjustedScore > 1 ? adjustedCandidate.index : null
+
+  const withdrawalCandidate = [...navCandidates]
+    .filter((column) => column.index !== adjustedIndex)
+    .sort((left, right) => right.withdrawalScore - left.withdrawalScore)[0] ?? null
+  let cumulativeIndex = withdrawalCandidate && withdrawalCandidate.withdrawalScore > 1 ? withdrawalCandidate.index : null
 
   const unitCandidate = [...navCandidates]
-    .filter((column) => column.index !== cumulativeIndex)
+    .filter((column) => column.index !== cumulativeIndex && column.index !== adjustedIndex)
     .filter((column) => !isCumulativeNavHeader(normalizeHeader(column.header)))
     .sort((left, right) => right.unitScore - left.unitScore)[0] ?? null
   let unitIndex = unitCandidate && unitCandidate.unitScore > 1 ? unitCandidate.index : null
@@ -368,9 +398,21 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
   if (unitIndex == null && cumulativeIndex != null) {
     unitIndex = cumulativeIndex
   }
+  if (unitIndex == null && adjustedIndex != null) {
+    unitIndex = adjustedIndex
+  }
 
+  if (cumulativeIndex == null && adjustedIndex != null && adjustedIndex !== unitIndex) {
+    cumulativeIndex = adjustedIndex
+  }
   if (cumulativeIndex == null && unitIndex != null) {
     cumulativeIndex = unitIndex
+  }
+  if (adjustedIndex == null && cumulativeIndex != null && cumulativeIndex !== unitIndex) {
+    adjustedIndex = cumulativeIndex
+  }
+  if (adjustedIndex == null && unitIndex != null) {
+    adjustedIndex = unitIndex
   }
 
   if (unitIndex == null && cumulativeIndex == null) {
@@ -390,6 +432,7 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
     dateIndex,
     unitIndex,
     cumulativeIndex,
+    adjustedIndex,
     inferredDateFormat,
   }
 }
@@ -430,7 +473,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
   }
 
   const headerRowIndex = detectHeaderRow(rawRows)
-  const { headers, dateIndex, unitIndex, cumulativeIndex, inferredDateFormat } = detectColumns(rawRows, headerRowIndex)
+  const { headers, dateIndex, unitIndex, cumulativeIndex, adjustedIndex, inferredDateFormat } = detectColumns(rawRows, headerRowIndex)
   const warnings: string[] = []
 
   if (dateIndex == null) {
@@ -451,17 +494,19 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
     const parsedDate = parseDateValue(row[dateIndex], inferredDateFormat.order)
     const unitNav = unitIndex != null ? parseNumberValue(row[unitIndex]) : null
     const cumulativeNav = cumulativeIndex != null ? parseNumberValue(row[cumulativeIndex]) : null
+    const adjustedNav = adjustedIndex != null ? parseNumberValue(row[adjustedIndex]) : null
 
     if (!parsedDate) {
-      if (stringifyCell(row[dateIndex]) || unitNav != null || cumulativeNav != null) {
+      if (stringifyCell(row[dateIndex]) || unitNav != null || cumulativeNav != null || adjustedNav != null) {
         skippedRows += 1
       }
       continue
     }
 
-    const resolvedUnitNav = unitNav ?? cumulativeNav
-    const resolvedCumulativeNav = cumulativeNav ?? unitNav
-    if (resolvedUnitNav == null || resolvedCumulativeNav == null) {
+    const resolvedUnitNav = unitNav ?? cumulativeNav ?? adjustedNav
+    const resolvedCumulativeNav = cumulativeNav ?? adjustedNav ?? unitNav
+    const resolvedAdjustedNav = adjustedNav ?? cumulativeNav ?? unitNav
+    if (resolvedUnitNav == null || resolvedCumulativeNav == null || resolvedAdjustedNav == null) {
       skippedRows += 1
       continue
     }
@@ -470,9 +515,11 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
       date: parsedDate.iso,
       unitNav: Number(resolvedUnitNav.toFixed(8)),
       cumulativeNav: Number(resolvedCumulativeNav.toFixed(8)),
+      adjustedNav: Number(resolvedAdjustedNav.toFixed(8)),
       sourceDate: stringifyCell(row[dateIndex]),
       sourceUnitNav: unitIndex != null ? stringifyCell(row[unitIndex]) : "",
       sourceCumulativeNav: cumulativeIndex != null ? stringifyCell(row[cumulativeIndex]) : "",
+      sourceAdjustedNav: adjustedIndex != null ? stringifyCell(row[adjustedIndex]) : "",
       isChinaTradingDay: isChinaTradingDay(parsedDate.iso),
     })
   }
@@ -506,6 +553,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
       date: headers[dateIndex] || null,
       unitNav: unitIndex != null ? headers[unitIndex] || null : null,
       cumulativeNav: cumulativeIndex != null ? headers[cumulativeIndex] || null : null,
+      adjustedNav: adjustedIndex != null ? headers[adjustedIndex] || null : null,
     },
     inferredDateFormat: inferredDateFormat.label,
     totalSourceRows: Math.max(rawRows.length - (headerRowIndex + 1), 0),

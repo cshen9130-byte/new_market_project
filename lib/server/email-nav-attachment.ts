@@ -55,6 +55,7 @@ export function extractNavTableFromBuffer(
       nav: row.unitNav,
       navDate: row.date,
       cumulativeNav: row.cumulativeNav,
+      adjustedNav: row.adjustedNav,
       productCode,
       fundName,
       source: "attachment_nav_table" as const,

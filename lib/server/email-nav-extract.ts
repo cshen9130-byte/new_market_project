@@ -16,7 +16,8 @@ export type NavExtractSource =
 export type ExtractedNavData = {
   nav: number | null
   navDate: string | null       // ISO "YYYY-MM-DD"
-  cumulativeNav: number | null
+  cumulativeNav: number | null // 累计净值
+  adjustedNav: number | null     // 复权净值
   productCode: string | null
   fundName: string | null
   source: NavExtractSource
@@ -284,6 +285,7 @@ export function extractNavData(
       nav: parseFloat(subjNavM[1]),
       navDate: subjectDate(subject),
       cumulativeNav: null,
+      adjustedNav: null,
       ...shared,
       source: "subject",
     }
@@ -312,6 +314,7 @@ export function extractNavData(
       nav:          unitNavM ? parseFloat(unitNavM[1]) : null,
       navDate,
       cumulativeNav: cumNavM ? parseFloat(cumNavM[1]) : null,
+      adjustedNav: null,
       ...shared,
       source: isTable ? "body_table" : "body_post_table",
     }
@@ -329,6 +332,7 @@ export function extractNavData(
         nav:          parseFloat(perfRowM[6]),
         navDate:      normaliseDate(perfRowM[3]) ?? subjectDate(subject),
         cumulativeNav: parseFloat(perfRowM[7]),
+        adjustedNav: null,
         productCode:  shared.productCode ?? perfRowM[1],
         fundName:       shared.fundName ?? normalizeFundDisplayName(perfRowM[2]),
         source: "body_table",
@@ -346,6 +350,7 @@ export function extractNavData(
       nav: parseFloat(cmsRowM[6]),
       navDate: normaliseDate(`${cmsRowM[1]}-${cmsRowM[2]}-${cmsRowM[3]}`),
       cumulativeNav: parseFloat(cmsRowM[7]),
+      adjustedNav: null,
       productCode: shared.productCode ?? cmsRowM[4],
       fundName: shared.fundName ?? normalizeFundDisplayName(cmsRowM[5]),
       source: "body_table",
@@ -361,6 +366,7 @@ export function extractNavData(
       nav:          parseFloat(tableRowM[2]),
       navDate:      tableRowM[1],
       cumulativeNav: tableRowM[3] ? parseFloat(tableRowM[3]) : null,
+      adjustedNav: null,
       ...shared,
       source: "body_table",
     }
@@ -382,6 +388,7 @@ export function extractNavData(
         nav:          parseFloat(taRowM[2]),
         navDate:      subjectDate(subject) ?? taRowM[1],
         cumulativeNav: parseFloat(taRowM[4]),
+        adjustedNav: null,
         ...shared,
         source: "body_table",
       }
@@ -395,6 +402,7 @@ export function extractNavData(
         nav:          parseFloat(virtualNavM[2]),
         navDate:      subjectDate(subject) ?? virtualNavM[1],
         cumulativeNav: parseFloat(virtualNavM[4]),
+        adjustedNav: null,
         ...shared,
         source: "body_table",
       }
@@ -443,6 +451,7 @@ export function extractNavHistoryFromBody(
       nav: parseFloat(m[4]),
       navDate,
       cumulativeNav: parseFloat(m[5]),
+      adjustedNav: null,
       productCode: code,
       fundName: shared.fundName ?? normalizeFundDisplayName(m[2]),
       source: "body_table",

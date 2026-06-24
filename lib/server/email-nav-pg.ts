@@ -45,6 +45,9 @@ const MIGRATE_TABLE_SQL = `
     ADD COLUMN IF NOT EXISTS attachment_filename TEXT NOT NULL DEFAULT '';
 
   ALTER TABLE ops_email_nav_records
+    ADD COLUMN IF NOT EXISTS adjusted_nav NUMERIC(16,6);
+
+  ALTER TABLE ops_email_nav_records
     DROP CONSTRAINT IF EXISTS uq_email_nav_record;
 
   DO $$
@@ -83,14 +86,15 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
     await query(
       `INSERT INTO ops_email_nav_records
          (crawl_email_account, email_uid, sent_at, subject, sender_email,
-          nav_date, nav, cumulative_nav, product_code, fund_name, source, attachment_filename)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          nav_date, nav, cumulative_nav, adjusted_nav, product_code, fund_name, source, attachment_filename)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
        ON CONFLICT (crawl_email_account, email_uid, nav_date, attachment_filename) DO UPDATE SET
          sent_at        = EXCLUDED.sent_at,
          subject        = EXCLUDED.subject,
          sender_email   = EXCLUDED.sender_email,
          nav            = EXCLUDED.nav,
          cumulative_nav = EXCLUDED.cumulative_nav,
+         adjusted_nav   = EXCLUDED.adjusted_nav,
          product_code   = EXCLUDED.product_code,
          fund_name      = EXCLUDED.fund_name,
          source         = EXCLUDED.source`,
@@ -103,6 +107,7 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
         r.navDate,
         r.nav,
         r.cumulativeNav,
+        r.adjustedNav,
         r.productCode,
         r.fundName,
         r.source,
