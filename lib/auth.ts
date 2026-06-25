@@ -6,8 +6,10 @@ export type PagePermissions = {
   mom?: boolean
   aiKnowledge?: boolean
   pfOperations?: boolean
-  /** 勾选后：可进投资页，但隐藏投资池（仅跟踪池/直投池） */
+  /** 跟踪池 / 直投池，不含投资池 */
   pfInvestmentAlt?: boolean
+  /** 投资池：投资概览、在管产品、FOF底层、资料列表 */
+  pfInvestmentPool?: boolean
 }
 
 export interface User {
