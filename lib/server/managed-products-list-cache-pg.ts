@@ -24,6 +24,7 @@ import { resolveManagedProductBeian, lookupManagedProductOverride } from "@/lib/
 import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
+  resolveManagedProductSeedNavAt,
 } from "@/lib/server/managed-product-nav-seed"
 import { managedShortExpr } from "@/lib/server/managed-products-nav-query"
 import {
@@ -157,13 +158,32 @@ export async function refreshManagedProductsListCache(): Promise<number> {
       row.fallback_return_pct != null ? parseFloat(row.fallback_return_pct) / 100 : null
 
     const latest = navResolver.resolveAt(identity, asOfDate, fallbackNav, fallbackDate)
-    const unitNav = latest?.nav ?? fallbackNav
-    const navDate = latest?.nav_date ?? fallbackDate
+    let unitNav = latest?.nav ?? fallbackNav
+    let navDate = latest?.nav_date ?? fallbackDate
 
-    const returnPct =
+    let returnPct =
       unitNav != null && navDate
         ? navResolver.calcDailyReturnPct(identity, unitNav, navDate, fallbackReturnPct)
         : null
+
+    const beian = resolveManagedProductBeian(row.product_name, row.beian_hao) ?? ""
+    const managedOverride =
+      lookupManagedProductOverride(row.product_name)
+      ?? (beian ? lookupManagedProductOverride(beian) : null)
+
+    if (managedOverride) {
+      const seedPoint = resolveManagedProductSeedNavAt(managedOverride.beian_hao, asOfDate)
+      if (seedPoint) {
+        unitNav = parseFloat(seedPoint.nav)
+        navDate = seedPoint.nav_date
+        if (seedPoint.prev_nav != null) {
+          const prev = parseFloat(seedPoint.prev_nav)
+          if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
+            returnPct = unitNav / prev - 1
+          }
+        }
+      }
+    }
 
     const returns =
       unitNav != null && navDate
@@ -172,11 +192,7 @@ export async function refreshManagedProductsListCache(): Promise<number> {
 
     let sharpe_1y: number | null = null
     let calmar_1y: number | null = null
-    const beian = resolveManagedProductBeian(row.product_name, row.beian_hao) ?? ""
     const fromInfo = beian ? riskFromInfo.get(beian) : undefined
-    const managedOverride =
-      lookupManagedProductOverride(row.product_name)
-      ?? (beian ? lookupManagedProductOverride(beian) : null)
 
     if (managedOverride && navDate) {
       const risk = computeManagedProductOneYearRiskMetrics(

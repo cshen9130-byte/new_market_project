@@ -8,7 +8,6 @@ import { query, fmtIso } from "@/lib/db"
 import {
   buildManagedProductsFrom,
   fofUnderlyingShortExpr,
-  buildFofUnderlyingBeianJoins,
 } from "@/lib/server/fof-underlying-query"
 import {
   buildManagedProductsMetricSelectSql,
@@ -115,7 +114,11 @@ function mapRow(r: {
     latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
     custody_balance: r.custody_account_balance,
     net_asset_value: r.net_asset_value,
-    valuation_date: r.valuation_date ? fmtIso(r.valuation_date) : null,
+    valuation_date: r.valuation_date
+      ? fmtIso(r.valuation_date)
+      : r.latest_nav_date
+        ? fmtIso(r.latest_nav_date)
+        : null,
     nav_is_team: Boolean(r.nav_is_team),
     ret_1w: r.ret_1w,
     ret_1m: r.ret_1m,
@@ -238,34 +241,16 @@ export async function GET(req: Request) {
         pi++
       }
 
-      const listParams = [...params]
-      let cutoffExpr = "CURRENT_DATE"
-      if (hasCutoff) {
-        listParams.push(cutoffRaw)
-        cutoffExpr = `$${listParams.length}::date`
-      }
-      const metricSql = buildManagedProductsMetricSelectSql(cutoffExpr)
-      const fastSort: Record<string, string> = {
-        ...ALLOWED_SORT,
-        latest_nav: `(${metricSql.currentNavExpr})`,
-        latest_nav_date: metricSql.currentDateExpr,
-        latest_price_change: `(${metricSql.currentPctExpr})`,
-      }
-      const sortCol  = fastSort[sortParam] ?? "m.sequence_no"
-
+      const sortCol = ALLOWED_SORT[sortParam] ?? "m.sequence_no"
       const where = conditions.join(" AND ")
-      const vmBeianExpr = `COALESCE(NULLIF(BTRIM(cache.beian_hao), ''), ${MANAGED_BEIAN_EXPR})`
       const baseFrom = `
         FROM managed_products m
         INNER JOIN ops_managed_products_list_cache cache ON cache.managed_product_id = m.id
-        ${buildFofUnderlyingBeianJoins("m.product_name")}
-        ${metricSql.emailNavJoins}
-        ${managedValuationMetricsJoin(vmBeianExpr, "m.product_name")}
       `
 
       const [countRow, navRow] = await Promise.all([
-        query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, listParams),
-        query<{ t: string }>(`SELECT COALESCE(SUM(COALESCE(cache.net_asset_value, m.net_asset_value)), 0)::text AS t ${baseFrom} WHERE ${where}`, listParams),
+        query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
+        query<{ t: string }>(`SELECT COALESCE(SUM(COALESCE(cache.net_asset_value, m.net_asset_value)), 0)::text AS t ${baseFrom} WHERE ${where}`, params),
       ])
       const total             = parseInt(countRow[0]?.n || "0", 10)
       const totalNetAssetValue = navRow[0]?.t ?? "0"
@@ -274,8 +259,7 @@ export async function GET(req: Request) {
         id: string; beian_hao: string | null; product_name: string; short_name: string | null
         strategy_l1: string | null; latest_unit_nav: string | null; latest_nav_date: string | null
         latest_return_pct: string | null; custody_account_balance: string | null
-        net_asset_value: string | null; valuation_date: string | null
-        nav_is_team: boolean; sequence_no: number | null
+        net_asset_value: string | null; sequence_no: number | null
         ret_1w: string | null; ret_1m: string | null; ret_3m: string | null
         ret_6m: string | null; ret_1y: string | null
         sharpe_1y: string | null; calmar_1y: string | null
@@ -287,13 +271,11 @@ export async function GET(req: Request) {
            m.product_name,
            cache.short_name,
            ${stratCol}                          AS strategy_l1,
-           (${metricSql.currentNavExpr})::text  AS latest_unit_nav,
-           ${metricSql.currentDateExpr}         AS latest_nav_date,
-           (${metricSql.currentPctExpr})::text  AS latest_return_pct,
+           cache.unit_nav::text                 AS latest_unit_nav,
+           cache.nav_date::text                 AS latest_nav_date,
+           cache.return_pct::text               AS latest_return_pct,
            COALESCE(cache.custody_balance, m.custody_account_balance)::text AS custody_account_balance,
            COALESCE(cache.net_asset_value, m.net_asset_value)::text AS net_asset_value,
-           vm.valuation_date,
-           ${MANAGED_NAV_IS_TEAM_EXPR}          AS nav_is_team,
            cache.ret_1w::text,
            cache.ret_1m::text,
            cache.ret_3m::text,
@@ -304,8 +286,8 @@ export async function GET(req: Request) {
          ${baseFrom}
          WHERE ${where}
          ORDER BY ${sortCol} ${sortDir} NULLS LAST, m.sequence_no ASC
-         LIMIT $${listParams.length + 1} OFFSET $${listParams.length + 2}`,
-        [...listParams, pageSize, offset],
+         LIMIT $${pi} OFFSET $${pi + 1}`,
+        [...params, pageSize, offset],
       )
 
       return NextResponse.json({
