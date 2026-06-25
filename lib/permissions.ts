@@ -4,26 +4,19 @@ export function isAdmin(user: User | null | undefined): boolean {
   return user?.role === "admin"
 }
 
-/** 未显式设为 false 时，拥有 ma 权限的用户可访问（向后兼容） */
 export function hasMaScopedPermission(
   user: User | null | undefined,
   key: keyof PagePermissions,
 ): boolean {
   if (!user) return false
   if (isAdmin(user)) return true
-  const val = user.permissions?.[key]
-  if (val === true) return true
-  if (val === false) return false
-  return !!user.permissions?.ma
+  return user.permissions?.[key] === true
 }
 
 export function canAccessAiKnowledge(user: User | null | undefined): boolean {
   if (!user) return false
   if (isAdmin(user)) return true
-  const val = user.permissions?.aiKnowledge
-  if (val === true) return true
-  if (val === false) return false
-  return !!(user.permissions?.ma || user.permissions?.classic)
+  return user.permissions?.aiKnowledge === true
 }
 
 export function canAccessPfOperations(user: User | null | undefined): boolean {

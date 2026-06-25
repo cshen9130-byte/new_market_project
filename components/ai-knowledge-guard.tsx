@@ -15,13 +15,21 @@ export function AIKnowledgeGuard({
   const router = useRouter()
 
   useEffect(() => {
-    const user = authService.getCurrentUser()
-    if (!user) {
-      router.replace("/login")
-      return
+    let cancelled = false
+    async function check() {
+      const user = await authService.refreshCurrentUser()
+      if (cancelled) return
+      if (!user) {
+        router.replace("/login")
+        return
+      }
+      if (!canAccessAiKnowledge(user)) {
+        router.replace(redirectTo)
+      }
     }
-    if (!canAccessAiKnowledge(user)) {
-      router.replace(redirectTo)
+    check()
+    return () => {
+      cancelled = true
     }
   }, [router, redirectTo])
 

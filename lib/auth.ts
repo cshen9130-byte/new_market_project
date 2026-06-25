@@ -149,4 +149,18 @@ export const authService = {
     const user = localStorage.getItem("currentUser")
     return user ? JSON.parse(user) : null
   },
+
+  refreshCurrentUser: async (): Promise<User | null> => {
+    const uid = currentUserId()
+    if (!uid) return null
+    try {
+      const data = await jsonFetch<{ ok: true; user: User }>("/api/auth/me", {
+        headers: { "x-market-user-id": uid },
+      })
+      localStorage.setItem("currentUser", JSON.stringify(data.user))
+      return data.user
+    } catch {
+      return authService.getCurrentUser()
+    }
+  },
 }

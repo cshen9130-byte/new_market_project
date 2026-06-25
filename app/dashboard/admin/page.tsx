@@ -10,19 +10,7 @@ import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
-
-const PERM_COLUMNS: { key: keyof PagePermissions; label: string; hint?: string }[] = [
-  { key: "ma", label: "MA 市场监控" },
-  { key: "classic", label: "分析看板（传统风格）" },
-  { key: "mom", label: "MOM 分析" },
-  { key: "aiKnowledge", label: "AI 知识库" },
-  { key: "pfOperations", label: "私募基金-运维" },
-  {
-    key: "pfInvestmentAlt",
-    label: "私募基金-投资（跟踪池/直投池）",
-    hint: "不含投资池",
-  },
-]
+import { PERM_COLUMNS, buildPermissionsSnapshot } from "@/lib/page-permissions"
 
 type UserTokenStats = {
   userId: string
@@ -180,12 +168,10 @@ export default function AdminAccountsPage() {
 
   // Initialize permMap when users are loaded
   function syncPermMap(list: User[]) {
-    setPermMap((prev) => {
-      const next = { ...prev }
+    setPermMap(() => {
+      const next: Record<string, PagePermissions> = {}
       for (const u of list) {
-        if (!(u.id in next)) {
-          next[u.id] = u.permissions ?? {}
-        }
+        next[u.id] = buildPermissionsSnapshot(u.permissions)
       }
       return next
     })
@@ -201,8 +187,12 @@ export default function AdminAccountsPage() {
   async function savePerms(userId: string) {
     setPermSaving((s) => ({ ...s, [userId]: true }))
     setPermMsg((m) => ({ ...m, [userId]: "" }))
-    const res = await authService.updatePermissions(userId, permMap[userId] ?? {})
+    const permissions = buildPermissionsSnapshot(permMap[userId])
+    const res = await authService.updatePermissions(userId, permissions)
     setPermSaving((s) => ({ ...s, [userId]: false }))
+    if (res.success) {
+      setPermMap((prev) => ({ ...prev, [userId]: permissions }))
+    }
     setPermMsg((m) => ({ ...m, [userId]: res.success ? "已保存" : res.error || "保存失败" }))
   }
 

@@ -19,18 +19,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
 
   useEffect(() => {
-    const current = authService.getCurrentUser()
-    if (!current) {
-      router.replace("/login")
-    } else if (current.role !== "admin" && !current.permissions?.ma) {
-      router.replace("/dashboard")
-    } else if (
-      pathname.startsWith("/ma/dashboard/ai-knowledge") &&
-      !canAccessAiKnowledge(current)
-    ) {
-      router.replace("/ma/dashboard")
-    } else {
+    let cancelled = false
+    async function loadUser() {
+      const current = await authService.refreshCurrentUser()
+      if (cancelled) return
+      if (!current) {
+        router.replace("/login")
+        return
+      }
+      if (current.role !== "admin" && !current.permissions?.ma) {
+        router.replace("/dashboard")
+        return
+      }
+      if (
+        pathname.startsWith("/ma/dashboard/ai-knowledge") &&
+        !canAccessAiKnowledge(current)
+      ) {
+        router.replace("/ma/dashboard")
+        return
+      }
       setUser(current)
+    }
+    loadUser()
+    return () => {
+      cancelled = true
     }
   }, [router, pathname])
 
