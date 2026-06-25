@@ -332,15 +332,23 @@ export async function GET(
         }),
         Promise.resolve(loadManagedProductNavSeed(managedOverride.beian_hao)),
       ])
-      if (seedRows.length > 0) {
-        // Excel reference carries 累计/复权; team DB only overrides unit NAV and rechains derived fields.
-        const teamUnitPoints = teamSeries.map((row) => ({
-          price_date: row.price_date,
-          nav: row.nav,
-          cumulative_nav: null,
-          adjusted_nav: null,
-        }))
-        nav_series = mergeNavSeriesWithEmail(seedRows, teamUnitPoints)
+      if (teamSeries.length > 0) {
+        // Email 估值表 stream wins; seed/legacy only backfill dates before the email series starts.
+        const legacyNoType6 = await loadPrivateFundLegacyNavRows(
+          routeBeianHao,
+          productName,
+          shortName,
+          { excludeType6: true },
+        )
+        const firstTeamDate = teamSeries[0]?.price_date ?? ""
+        const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
+        let base = mergeNavSeriesWithEmail(legacyNoType6, [])
+        if (seedBackfill.length > 0) {
+          base = mergeLegacyWithTeamNav(base, seedBackfill)
+        }
+        nav_series = mergeLegacyWithTeamNav(base, teamSeries)
+      } else if (seedRows.length > 0) {
+        nav_series = mergeNavSeriesWithEmail(seedRows, emailNavRows)
       } else {
         const legacyNoType6 = await loadPrivateFundLegacyNavRows(
           routeBeianHao,
@@ -348,13 +356,17 @@ export async function GET(
           shortName,
           { excludeType6: true },
         )
-        const backfill = mergeNavSeriesWithEmail(legacyNoType6, emailNavRows)
-        nav_series = teamSeries.length > 0
-          ? mergeLegacyWithTeamNav(backfill, teamSeries)
-          : backfill
+        nav_series = mergeNavSeriesWithEmail(legacyNoType6, emailNavRows)
       }
     } catch (err) {
       console.error("[private-funds/detail] managed product nav query failed:", err)
+    }
+  } else if (emailNavRows.length > 0) {
+    nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
+  } else {
+    const seedRows = loadManagedProductNavSeed(routeBeianHao)
+    if (seedRows.length > 0) {
+      nav_series = mergeNavSeriesWithEmail(seedRows, [])
     }
   }
   const first = nav_series[0]

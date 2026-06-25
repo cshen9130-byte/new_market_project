@@ -78,11 +78,11 @@ async function main() {
     if (!price_date || price_date > throughDate) continue
     const nav = parseFloat(String(line[unitIdx >= 0 ? unitIdx : 1] ?? ""))
     if (!Number.isFinite(nav) || nav <= 0) continue
-    const cumulative_nav = parseFloat(String(line[cumIdx >= 0 ? cumIdx : 2] ?? nav)) || nav
-    const cum_nav_withdrawal =
+    const cum_nav_withdrawal = parseFloat(String(line[cumIdx >= 0 ? cumIdx : 2] ?? nav)) || nav
+    const cumulative_nav =
       adjIdx >= 0
-        ? parseFloat(String(line[adjIdx] ?? cumulative_nav)) || cumulative_nav
-        : cumulative_nav
+        ? parseFloat(String(line[adjIdx] ?? cum_nav_withdrawal)) || cum_nav_withdrawal
+        : cum_nav_withdrawal
     const price_change = chgIdx >= 0 ? parsePct(line[chgIdx]) : null
     rows.push({ price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change })
   }

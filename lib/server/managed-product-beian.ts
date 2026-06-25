@@ -4,6 +4,12 @@
  */
 export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   荣熙恒盈2号: "SBAH99",
+  抱朴聚融祥和一号: "SSG947",
+}
+
+/** Alternate 备案号 stored in legacy tables — map to canonical override code. */
+const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
+  S52247: "SSG947",
 }
 
 export function resolveManagedProductBeian(
@@ -11,10 +17,43 @@ export function resolveManagedProductBeian(
   autoResolved?: string | null,
 ): string | null {
   const name = (productName ?? "").trim()
-  if (!name) return autoResolved?.trim() || null
-  const override = MANAGED_PRODUCT_BEIAN_OVERRIDES[name]
-  if (override) return override
-  return autoResolved?.trim() || null
+  const auto = autoResolved?.trim() || null
+  if (!name) {
+    if (!auto) return null
+    return MANAGED_PRODUCT_BEIAN_ALIASES[auto.toUpperCase()] ?? auto
+  }
+  const exact = MANAGED_PRODUCT_BEIAN_OVERRIDES[name]
+  if (exact) return exact
+  for (const [product_name, beian_hao] of Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)) {
+    if (product_name.length >= 4 && name.includes(product_name)) return beian_hao
+  }
+  if (!auto) return null
+  return MANAGED_PRODUCT_BEIAN_ALIASES[auto.toUpperCase()] ?? auto
+}
+
+/** SQL expression applying {@link MANAGED_PRODUCT_BEIAN_OVERRIDES} on top of auto-resolved beian. */
+export function managedProductsResolvedBeianSqlExpr(
+  productNameExpr: string,
+  autoBeianExpr: string,
+): string {
+  const escape = (s: string) => s.replace(/'/g, "''")
+  const cases = Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)
+    .map(
+      ([name, code]) =>
+        `WHEN TRIM(${productNameExpr}) = '${escape(name)}' THEN '${escape(code)}'`,
+    )
+    .join("\n      ")
+  const aliasCases = Object.entries(MANAGED_PRODUCT_BEIAN_ALIASES)
+    .map(
+      ([alias, code]) =>
+        `WHEN UPPER(BTRIM(${autoBeianExpr})) = '${escape(alias)}' THEN '${escape(code)}'`,
+    )
+    .join("\n      ")
+  return `CASE
+      ${cases}
+      ${aliasCases}
+      ELSE NULLIF(BTRIM(${autoBeianExpr}), '')
+    END`
 }
 
 /** Map known wrong share-class codes back to the canonical 在管产品 beian. */
@@ -27,6 +66,8 @@ export function remapManagedProductBeianCode(code: string): string | null {
   if (normalized === "SBAH99A" || normalized === "BAH99A") {
     return MANAGED_PRODUCT_BEIAN_OVERRIDES["荣熙恒盈2号"] ?? null
   }
+  const aliased = MANAGED_PRODUCT_BEIAN_ALIASES[normalized]
+  if (aliased) return aliased
   return null
 }
 
@@ -37,7 +78,11 @@ export function lookupManagedProductOverride(
   if (!id) return null
   const upper = id.toUpperCase()
   for (const [product_name, beian_hao] of Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)) {
-    if (id === product_name || upper === beian_hao.toUpperCase()) {
+    if (
+      id === product_name
+      || upper === beian_hao.toUpperCase()
+      || (product_name.length >= 4 && id.includes(product_name))
+    ) {
       return { product_name, beian_hao }
     }
   }

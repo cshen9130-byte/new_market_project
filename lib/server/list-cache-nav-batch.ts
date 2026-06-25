@@ -5,8 +5,40 @@
 
 import { query } from "@/lib/db"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
+import {
+  collectFundNameAliases,
+  emailNavSourceTier,
+  emailRowMatchesFund,
+} from "@/lib/server/email-nav-query"
+import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import {
+  sqlEmailNavShareClassGuard,
+  sqlFundNameMatch,
+} from "@/lib/server/fund-name-match"
 
-export type NavPoint = { nav: number; nav_date: string }
+export type NavPoint = {
+  nav: number
+  nav_date: string
+  source?: string | null
+  subject?: string | null
+}
+
+function isPrimaryEmailNavPoint(p: NavPoint): boolean {
+  if (p.source === "attachment_valuation_table") return false
+  const meta = `${p.subject ?? ""}`
+  if (/估值表/u.test(meta)) return false
+  if (/虚拟/u.test(meta)) return false
+  return true
+}
+
+function resolveEmailNavAt(points: NavPoint[] | undefined, beforeDate: string): NavPoint | null {
+  if (!points?.length) return null
+  const primary = points.filter(isPrimaryEmailNavPoint)
+  const fromPrimary = navAtOrBefore(primary, beforeDate)
+  if (fromPrimary) return fromPrimary
+  return navAtOrBefore(points, beforeDate)
+}
 
 export type ProductNavIdentity = {
   beian_hao: string | null
@@ -59,9 +91,6 @@ function navAtOrBefore(points: NavPoint[] | undefined, beforeDate: string): NavP
   return null
 }
 
-function dayBefore(isoDate: string): string {
-  return addDays(isoDate, 1)
-}
 
 function parseNav(v: string): number | null {
   const nav = parseFloat(v)
@@ -84,12 +113,63 @@ function sortNavMapsDesc(maps: Map<string, NavPoint[]>[]): void {
   }
 }
 
+async function loadEmailProductCodesForNames(names: string[]): Promise<string[]> {
+  const validNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
+  if (validNames.length === 0) return []
+
+  const rows = await query<{ code: string }>(
+    `SELECT DISTINCT BTRIM(e.product_code) AS code
+     FROM unnest($1::text[]) AS n(name)
+     JOIN ops_email_nav_records e ON (
+       NULLIF(BTRIM(e.product_code), '') IS NOT NULL
+       AND ${sqlFundNameMatch("e.fund_name", "n.name")}
+       AND ${sqlEmailNavShareClassGuard("e.fund_name", "n.name", "e.product_code")}
+     )`,
+    [validNames],
+  )
+  return rows.map((r) => r.code.trim()).filter(Boolean)
+}
+
+type EmailNavBatchRow = {
+  code: string
+  nav_date: string
+  nav: string
+  source: string | null
+  subject: string | null
+  product_code: string | null
+  fund_name: string | null
+  attachment_filename: string | null
+}
+
+function filterEmailBatchRow(
+  row: EmailNavBatchRow,
+  beian: string,
+  aliases: string[],
+): boolean {
+  return emailRowMatchesFund(
+    {
+      nav_date: row.nav_date,
+      nav: row.nav,
+      cumulative_nav: null,
+      adjusted_nav: null,
+      product_code: row.product_code,
+      fund_name: row.fund_name,
+      attachment_filename: row.attachment_filename,
+      subject: row.subject,
+      source: row.source,
+    },
+    beian,
+    aliases,
+  )
+}
+
 async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<Map<string, NavPoint[]>> {
   const out = new Map<string, NavPoint[]>()
   if (beians.length === 0) return out
 
-  const rows = await query<{ code: string; nav_date: string; nav: string }>(
-    `SELECT BTRIM(product_code) AS code, nav_date::text AS nav_date, nav::text AS nav
+  const rows = await query<EmailNavBatchRow>(
+    `SELECT BTRIM(product_code) AS code, nav_date::text AS nav_date, nav::text AS nav, source,
+            COALESCE(subject, '') AS subject, product_code, fund_name, attachment_filename
      FROM ops_email_nav_records
      WHERE BTRIM(product_code) = ANY($1::text[])
        AND nav IS NOT NULL
@@ -98,14 +178,26 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
     [beians, sinceDate],
   )
 
-  const seen = new Set<string>()
+  const bestByCodeDate = new Map<string, EmailNavBatchRow>()
   for (const row of rows) {
     const dedupe = `${row.code}\0${row.nav_date.slice(0, 10)}`
-    if (seen.has(dedupe)) continue
-    seen.add(dedupe)
+    const prev = bestByCodeDate.get(dedupe)
+    if (!prev || emailNavSourceTier(row.source) < emailNavSourceTier(prev.source)) {
+      bestByCodeDate.set(dedupe, row)
+    }
+  }
+
+  for (const row of bestByCodeDate.values()) {
     const nav = parseNav(row.nav)
     if (nav == null) continue
-    pushNavPoint(out, row.code, { nav, nav_date: row.nav_date.slice(0, 10) })
+    const aliases = collectFundNameAliases(row.fund_name ?? "", null)
+    if (!filterEmailBatchRow(row, row.code, aliases)) continue
+    pushNavPoint(out, row.code, {
+      nav,
+      nav_date: row.nav_date.slice(0, 10),
+      source: row.source,
+      subject: row.subject,
+    })
   }
   sortNavMapsDesc([out])
   return out
@@ -124,42 +216,54 @@ async function loadEmailNavByNameBatch(
   const validNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
   if (validNames.length === 0) return out
 
-  const rows = await query<{ matched_name: string; nav_date: string; nav: string }>(
-    `SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav
+  const rows = await query<EmailNavBatchRow & { matched_name: string }>(
+    `SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav, e.source,
+            COALESCE(e.subject, '') AS subject, e.product_code, e.fund_name, e.attachment_filename,
+            COALESCE(BTRIM(e.product_code), '') AS code
      FROM unnest($1::text[]) AS n(name)
      JOIN ops_email_nav_records e ON (
        e.nav IS NOT NULL
        AND e.nav_date >= $2::date
-       AND NULLIF(BTRIM(e.product_code), '') IS NULL
-       AND BTRIM(e.fund_name) <> ''
        AND (
-         BTRIM(e.fund_name) = BTRIM(n.name)
-         OR BTRIM(e.fund_name) ILIKE BTRIM(n.name) || '%'
-         OR BTRIM(n.name) ILIKE BTRIM(e.fund_name) || '%'
+         ${sqlFundNameMatch("e.fund_name", "n.name")}
          OR (
-           NULLIF(regexp_replace(regexp_replace(BTRIM(e.fund_name),
-             '(私募证券投资基金|私募基金|证券投资基金|投资基金)$', ''), '[ABC]类$', ''), '') IS NOT NULL
-           AND NULLIF(regexp_replace(regexp_replace(BTRIM(n.name),
-             '(私募证券投资基金|私募基金|证券投资基金|投资基金)$', ''), '[ABC]类$', ''), '') IS NOT NULL
-           AND regexp_replace(regexp_replace(BTRIM(e.fund_name),
-                 '(私募证券投资基金|私募基金|证券投资基金|投资基金)$', ''), '[ABC]类$', '')
-               = regexp_replace(regexp_replace(BTRIM(n.name),
-                   '(私募证券投资基金|私募基金|证券投资基金|投资基金)$', ''), '[ABC]类$', '')
+           BTRIM(COALESCE(e.product_code, '')) <> ''
+           AND (
+             COALESCE(e.subject, '') ILIKE '%' || BTRIM(e.product_code) || '%'
+             OR COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(e.product_code) || '%'
+           )
+           AND ${sqlFundNameMatch("e.subject", "n.name")}
          )
        )
+       AND ${sqlEmailNavShareClassGuard("e.fund_name", "n.name", "e.product_code")}
      )
      ORDER BY e.nav_date DESC, e.id DESC`,
     [validNames, sinceDate],
   )
 
-  const seen = new Set<string>()
+  const bestByNameDate = new Map<string, EmailNavBatchRow & { matched_name: string }>()
   for (const row of rows) {
     const dedupe = `${row.matched_name}\0${row.nav_date.slice(0, 10)}`
-    if (seen.has(dedupe)) continue
-    seen.add(dedupe)
+    const prev = bestByNameDate.get(dedupe)
+    if (!prev || emailNavSourceTier(row.source) < emailNavSourceTier(prev.source)) {
+      bestByNameDate.set(dedupe, row)
+    }
+  }
+
+  for (const row of bestByNameDate.values()) {
     const nav = parseNav(row.nav)
     if (nav == null) continue
-    pushNavPoint(out, row.matched_name, { nav, nav_date: row.nav_date.slice(0, 10) })
+    const override = lookupManagedProductOverride(row.matched_name)
+    const matchBeian = (row.code ?? "").trim() || override?.beian_hao || ""
+    const aliases = collectFundNameAliases(row.matched_name, row.fund_name)
+    if (matchBeian && !filterEmailBatchRow(row, matchBeian, aliases)) continue
+    if (!matchBeian && /虚拟/u.test(`${row.subject ?? ""}${row.fund_name ?? ""}`)) continue
+    pushNavPoint(out, row.matched_name, {
+      nav,
+      nav_date: row.nav_date.slice(0, 10),
+      source: row.source,
+      subject: row.subject,
+    })
   }
   sortNavMapsDesc([out])
   return out
@@ -354,6 +458,8 @@ export class BatchNavResolver {
   private type6ByProduct: Map<string, NavPoint[]>
   private legacyByBeian: Map<string, NavPoint[]>
   private legacyByProduct: Map<string, NavPoint[]>
+  private seedByBeian: Map<string, NavPoint[]>
+  private seedLatestByBeian: Map<string, string>
 
   private constructor(
     emailByBeian: Map<string, NavPoint[]>,
@@ -362,6 +468,8 @@ export class BatchNavResolver {
     type6ByProduct: Map<string, NavPoint[]>,
     legacyByBeian: Map<string, NavPoint[]>,
     legacyByProduct: Map<string, NavPoint[]>,
+    seedByBeian: Map<string, NavPoint[]>,
+    seedLatestByBeian: Map<string, string>,
   ) {
     this.emailByBeian = emailByBeian
     this.emailByName = emailByName
@@ -369,16 +477,47 @@ export class BatchNavResolver {
     this.type6ByProduct = type6ByProduct
     this.legacyByBeian = legacyByBeian
     this.legacyByProduct = legacyByProduct
+    this.seedByBeian = seedByBeian
+    this.seedLatestByBeian = seedLatestByBeian
   }
 
   static async create(products: ProductNavIdentity[], asOfDate: string): Promise<BatchNavResolver> {
     const sinceDate = addDays(asOfDate, 400)
-    const beians = [...new Set(products.map((p) => (p.beian_hao ?? "").trim()).filter(Boolean))]
     const names = [
       ...new Set(
         products.flatMap((p) => [p.product_name, (p.short_name ?? "").trim()].filter(Boolean)),
       ),
     ]
+    const emailCodes = await loadEmailProductCodesForNames(names)
+    const beians = [
+      ...new Set(
+        [
+          ...products.map((p) => (p.beian_hao ?? "").trim()).filter(Boolean),
+          ...emailCodes,
+        ],
+      ),
+    ]
+
+    const seedByBeian = new Map<string, NavPoint[]>()
+    const seedLatestByBeian = new Map<string, string>()
+    for (const product of products) {
+      const override = lookupManagedProductOverride(product.product_name)
+        ?? (product.beian_hao ? lookupManagedProductOverride(product.beian_hao) : null)
+      if (!override) continue
+      if (seedByBeian.has(override.beian_hao)) continue
+      const seedRows = loadManagedProductNavSeed(override.beian_hao)
+      if (seedRows.length === 0) continue
+      const points = seedRows
+        .map((row) => {
+          const nav = parseNav(row.nav)
+          if (nav == null) return null
+          return { nav, nav_date: row.price_date.slice(0, 10) }
+        })
+        .filter((p): p is NavPoint => p != null)
+        .sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+      seedByBeian.set(override.beian_hao, points)
+      seedLatestByBeian.set(override.beian_hao, seedRows[seedRows.length - 1].price_date.slice(0, 10))
+    }
 
     const [emailByBeian, emailByName, type6, legacy] = await Promise.all([
       loadEmailNavBatch(beians, sinceDate),
@@ -394,7 +533,21 @@ export class BatchNavResolver {
       type6.byProduct,
       legacy.byBeian,
       legacy.byProduct,
+      seedByBeian,
+      seedLatestByBeian,
     )
+  }
+
+  private seedPointFor(identity: ProductNavIdentity, beforeDate: string): NavPoint | null {
+    const beian = (identity.beian_hao ?? "").trim()
+    const override =
+      lookupManagedProductOverride(identity.product_name)
+      ?? (beian ? lookupManagedProductOverride(beian) : null)
+    if (!override) return null
+    const seedLatest = this.seedLatestByBeian.get(override.beian_hao)
+    const seedPoint = navAtOrBefore(this.seedByBeian.get(override.beian_hao), beforeDate)
+    if (!seedPoint || !seedLatest || seedPoint.nav_date > seedLatest) return null
+    return seedPoint
   }
 
   resolveAt(
@@ -406,14 +559,24 @@ export class BatchNavResolver {
     const beian = (identity.beian_hao ?? "").trim()
     const short = (identity.short_name ?? "").trim()
 
-    const emailBeian = beian ? navAtOrBefore(this.emailByBeian.get(beian), beforeDate) : null
-    if (emailBeian) return emailBeian
+    const seedPoint = this.seedPointFor(identity, beforeDate)
+    const seedLatest = (() => {
+      const override =
+        lookupManagedProductOverride(identity.product_name)
+        ?? (beian ? lookupManagedProductOverride(beian) : null)
+      return override ? this.seedLatestByBeian.get(override.beian_hao) : undefined
+    })()
 
-    // Fallback: email records with no product_code, matched by fund name
     const emailName =
-      navAtOrBefore(this.emailByName.get(identity.product_name), beforeDate) ??
-      (short ? navAtOrBefore(this.emailByName.get(short), beforeDate) : null)
-    if (emailName) return emailName
+      resolveEmailNavAt(this.emailByName.get(identity.product_name), beforeDate) ??
+      (short ? resolveEmailNavAt(this.emailByName.get(short), beforeDate) : null)
+    const emailBeian = beian ? resolveEmailNavAt(this.emailByBeian.get(beian), beforeDate) : null
+    const emailPoint = emailName ?? emailBeian
+
+    if (seedPoint && seedLatest && beforeDate <= seedLatest) {
+      return seedPoint
+    }
+    if (emailPoint) return emailPoint
 
     const type6 =
       (beian ? navAtOrBefore(this.type6ByBeian.get(beian), beforeDate) : null) ??
@@ -433,21 +596,23 @@ export class BatchNavResolver {
     return null
   }
 
+  /** Return vs the immediately previous NAV point (same semantics as email-nav en_prev). */
+  resolvePreviousNav(identity: ProductNavIdentity, navDate: string): NavPoint | null {
+    const history = this.mergedHistory(identity, addDays(navDate, 400))
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].nav_date < navDate) return history[i]
+    }
+    return null
+  }
+
   calcDailyReturnPct(
     identity: ProductNavIdentity,
     unitNav: number,
     navDate: string,
-    fallbackReturnPct: number | null,
+    _fallbackReturnPct: number | null,
   ): number | null {
-    const beian = (identity.beian_hao ?? "").trim()
-    const short = (identity.short_name ?? "").trim()
-    const prev =
-      (beian ? navAtOrBefore(this.emailByBeian.get(beian), dayBefore(navDate)) : null) ??
-      navAtOrBefore(this.emailByName.get(identity.product_name), dayBefore(navDate)) ??
-      (short ? navAtOrBefore(this.emailByName.get(short), dayBefore(navDate)) : null)
-    const fromPrev = prev ? calcReturn(unitNav, prev.nav) : null
-    if (fromPrev != null) return fromPrev
-    return fallbackReturnPct
+    const prev = this.resolvePreviousNav(identity, navDate)
+    return prev ? calcReturn(unitNav, prev.nav) : null
   }
 
   calcPeriodReturns(
@@ -467,6 +632,11 @@ export class BatchNavResolver {
     const beian = (identity.beian_hao ?? "").trim()
     const short = (identity.short_name ?? "").trim()
     const byDate = new Map<string, NavPoint>()
+
+    const override =
+      lookupManagedProductOverride(identity.product_name)
+      ?? (beian ? lookupManagedProductOverride(beian) : null)
+    const seedLatest = override ? this.seedLatestByBeian.get(override.beian_hao) : undefined
 
     for (const p of this.legacyByBeian.get(beian) ?? []) {
       if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
@@ -491,14 +661,24 @@ export class BatchNavResolver {
       }
     }
     for (const p of this.emailByBeian.get(beian) ?? []) {
-      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+      if (p.nav_date >= sinceDate) {
+        if (!seedLatest || p.nav_date > seedLatest) byDate.set(p.nav_date, p)
+      }
     }
-    // Email records matched by fund name (no product_code) override last
     for (const p of this.emailByName.get(identity.product_name) ?? []) {
-      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+      if (p.nav_date >= sinceDate) {
+        if (!seedLatest || p.nav_date > seedLatest) byDate.set(p.nav_date, p)
+      }
     }
     if (short) {
       for (const p of this.emailByName.get(short) ?? []) {
+        if (p.nav_date >= sinceDate) {
+          if (!seedLatest || p.nav_date > seedLatest) byDate.set(p.nav_date, p)
+        }
+      }
+    }
+    if (override) {
+      for (const p of this.seedByBeian.get(override.beian_hao) ?? []) {
         if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
       }
     }

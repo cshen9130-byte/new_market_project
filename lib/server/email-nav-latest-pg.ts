@@ -5,10 +5,6 @@
 
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
-import {
-  buildEmailNavLatestExprs,
-  buildEmailNavLatestJoins,
-} from "@/lib/server/email-nav-query"
 import { refreshFofOverviewListCache } from "@/lib/server/fof-overview-list-cache-pg"
 import { refreshManagedProductsListCache } from "@/lib/server/managed-products-list-cache-pg"
 import { refreshTrackingFundsListCache } from "@/lib/server/tracking-funds-list-cache-pg"
@@ -16,8 +12,8 @@ import { syncEmailValuationToProductTables } from "@/lib/server/email-valuation-
 import {
   buildManagedProductsFrom,
   MANAGED_PRODUCTS_BEIAN_EXPR,
-  fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
+import { buildManagedProductsMetricSelectSql } from "@/lib/server/managed-products-nav-query"
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_email_nav_fund_latest (
@@ -55,17 +51,14 @@ export async function refreshManagedProductsEmailNavLatest(): Promise<number> {
 
   const beianExpr = MANAGED_PRODUCTS_BEIAN_EXPR
   const productExpr = "m.product_name"
-  const shortExpr = fofUnderlyingShortExpr(productExpr)
   const cutoffExpr = "CURRENT_DATE"
-  const fallbackNavExpr = "m.latest_unit_nav::numeric"
-  const fallbackDateExpr = "m.latest_nav_date"
-  const fallbackPctExpr = "m.latest_return_pct::numeric / 100"
-  const emailNavJoins = buildEmailNavLatestJoins(beianExpr, productExpr, shortExpr, cutoffExpr)
-  const { navExpr, dateExpr, pctExpr } = buildEmailNavLatestExprs(
-    fallbackNavExpr,
-    fallbackDateExpr,
-    fallbackPctExpr,
-  )
+  const metricSql = buildManagedProductsMetricSelectSql(cutoffExpr)
+  const { navExpr, dateExpr, pctExpr } = {
+    navExpr: metricSql.currentNavExpr,
+    dateExpr: metricSql.currentDateExpr,
+    pctExpr: metricSql.currentPctExpr,
+  }
+  const emailNavJoins = metricSql.emailNavJoins
 
   await query(`DELETE FROM ops_email_nav_fund_latest WHERE scope_type = 'managed_product'`)
 

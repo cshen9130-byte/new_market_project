@@ -11,6 +11,7 @@ import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-di
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
+import { InvestmentFundCompareView } from "./components/InvestmentFundCompareView"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -14443,6 +14444,7 @@ interface ManagedProductRow {
   custody_balance: string | null
   net_asset_value: string | null
   valuation_date: string | null
+  nav_is_team?: boolean
   ret_1w?: string | null
   ret_1m?: string | null
   ret_3m?: string | null
@@ -15830,7 +15832,7 @@ function InvestmentManagedProductsView() {
       return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
     }
     const rows = selected.size > 0 ? data.filter((r) => selected.has(r.id)) : data
-    const headers = ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "最新周涨幅", "托管账户余额", "资产净值", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
+    const headers = ["产品名称", "备案编码", "最新净值日期", "最新单位净值", "最新涨跌幅", "托管账户余额", "资产净值", "近一周收益", "近一月收益", "近三月收益", "近六月收益", "近一年收益", "近一年夏普比率", "近一年卡玛比率"]
     const csvRows = [
       headers.join(","),
       ...rows.map((r) => [
@@ -16191,7 +16193,7 @@ function InvestmentManagedProductsView() {
               <th className={`${thSort} min-w-[200px] max-w-[200px] sticky top-0 left-[72px] ${invStickyHeadZ} ${invStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${invStickyLeftShadow}`} onClick={() => handleSort("product_name")}>产品名称<InvSortIcon col="product_name" /></th>
               <th className={`${thSort} min-w-[100px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<InvSortIcon col="latest_nav_date" /></th>
               <th className={`${thSort} min-w-[100px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("latest_nav")}>最新单位净值<InvSortIcon col="latest_nav" /></th>
-              <th className={`${thSort} text-right min-w-[88px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("latest_price_change")}>最新周涨幅<InvSortIcon col="latest_price_change" /></th>
+              <th className={`${thSort} text-right min-w-[88px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("latest_price_change")}>最新涨跌幅<InvSortIcon col="latest_price_change" /></th>
               <th className={`${thSort} text-right min-w-[110px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("custody_balance")}>托管账户余额<InvSortIcon col="custody_balance" /></th>
               <th className={`${thSort} text-right min-w-[120px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("net_asset_value")}>资产净值<InvSortIcon col="net_asset_value" /></th>
               <th className={`${thSort} text-right min-w-[88px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("ret_1w")}>
@@ -16274,9 +16276,21 @@ function InvestmentManagedProductsView() {
                         )}
                       </td>
                       <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                      <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
+                      <td className={`${cell} tabular-nums font-medium`}>
+                        <div className="flex items-center gap-1.5">
+                          <span>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
+                          {row.latest_nav && (
+                            <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800 shrink-0">团队</span>
+                          )}
+                        </div>
+                      </td>
                       <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
-                      <td className={`${cell} text-right tabular-nums`}>{fmtMoney(row.custody_balance)}</td>
+                      <td className={`${cell} text-right tabular-nums`}>
+                        <div>{fmtMoney(row.custody_balance)}</div>
+                        {row.valuation_date && row.custody_balance && (
+                          <div className="text-[10px] text-zinc-400 mt-0.5">{row.valuation_date}</div>
+                        )}
+                      </td>
                       <td className={`${cell} text-right tabular-nums font-medium`}>{fmtMoney(row.net_asset_value)}</td>
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w ?? null} />
@@ -21947,7 +21961,8 @@ export default function PrivateFundsPage() {
           {activeTab === "investment" && activeSideItem === "inv-overview" && <InvestmentOverviewView />}
           {activeTab === "investment" && activeSideItem === "inv-active" && <InvestmentManagedProductsView />}
           {activeTab === "investment" && activeSideItem === "inv-fof" && <InvestmentFofOverviewView />}
-          {activeTab === "investment" && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && (
+          {activeTab === "investment" && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
+          {activeTab === "investment" && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

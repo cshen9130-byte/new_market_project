@@ -1,5 +1,5 @@
-import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail } from "../lib/server/email-nav-query.ts"
-import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio } from "../lib/server/managed-product-nav-seed.ts"
+import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow } from "../lib/server/email-nav-query.ts"
+import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio, loadManagedProductNavSeed } from "../lib/server/managed-product-nav-seed.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
 import fs from "fs"
 
@@ -102,7 +102,46 @@ const withSeed = mergeLegacyWithTeamNav(
 assert("seed+team first date 2025-12-25", withSeed[0]?.price_date === "2025-12-25")
 assert("seed+team 1226 pct ~2.59%", Math.abs(parseFloat(withSeed.find((r) => r.price_date === "2025-12-26").price_change) - 2.59) < 0.01)
 
-// attachment column detection from user excel
+// SSG947: verified xlsx seed — virtual NAV emails must not override reference series
+const ssgSeed = loadManagedProductNavSeed("SSG947")
+assert("SSG947 seed loaded", ssgSeed.length > 0)
+const ssgMerged = mergeNavSeriesWithEmail(ssgSeed, [])
+const ssg622 = ssgMerged.find((r) => r.price_date === "2026-06-22")
+assert("SSG947 0622 unit ~1.9983", Math.abs(parseFloat(ssg622.nav) - 1.9983) < 0.001)
+assert("SSG947 0622 cum ~2.5632", Math.abs(parseFloat(ssg622.cum_nav_withdrawal) - 2.5632) < 0.001)
+assert("SSG947 0622 adj ~2.5893", Math.abs(parseFloat(ssg622.cumulative_nav) - 2.5893) < 0.001)
+assert("SSG947 no chart spike", ssgMerged.every((r) => parseFloat(r.cumulative_nav) < 5))
+
+const fofRow = {
+  nav_date: "2026-05-29",
+  nav: "1.99",
+  cumulative_nav: "2.56",
+  adjusted_nav: null,
+  product_code: "SBHK26",
+  fund_name: "抱朴聚融祥和一号私募证券投资基金",
+  attachment_filename: "SBHK26_六妙星豪鑫6号私募证券投资基金_资产估值表_20260529_4级_抱朴聚融祥和一号私募证券投资基金.xls",
+  subject: "【基金估值表】SBHK26_六妙星豪鑫6号私募证券投资基金_资产估值表_20260529_4级_抱朴聚融祥和一号私募证券投资基金",
+  source: "attachment_valuation_table",
+}
+assert("FOF 4级 valuation rejected for SSG947", isFofUnderlyingValuationEmailRow(fofRow, "SSG947"))
+
+const custodyEmail = [{
+  price_date: "2026-06-22",
+  nav: "1.9983",
+  cumulative_nav: "2.5632",
+  adjusted_nav: null,
+}]
+const custodyMerged = mergeNavSeriesWithEmail([], custodyEmail)
+const custody622 = custodyMerged.find((r) => r.price_date === "2026-06-22")
+assert("custody email unit ~1.9983", Math.abs(parseFloat(custody622.nav) - 1.9983) < 0.001)
+assert("custody email cum ~2.5632", Math.abs(parseFloat(custody622.cum_nav_withdrawal) - 2.5632) < 0.001)
+
+const seedBackfill = ssgSeed.filter((r) => r.price_date < "2024-11-19")
+const emailTeam = custodyMerged
+const combined = mergeLegacyWithTeamNav(seedBackfill, emailTeam)
+const combined622 = combined.find((r) => r.price_date === "2026-06-22")
+assert("email team wins over seed on 0622", Math.abs(parseFloat(combined622.nav) - 1.9983) < 0.001)
+
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"
 if (fs.existsSync(excelPath)) {
   const buf = fs.readFileSync(excelPath)

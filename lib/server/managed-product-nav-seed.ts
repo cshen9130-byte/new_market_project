@@ -23,6 +23,45 @@ export function isPlausibleRiskRatio(
   return value != null && Number.isFinite(value) && Math.abs(value) <= maxAbs
 }
 
+/** Team/email unit NAV may only override seed on dates after the verified reference ends. */
+export function buildTeamUnitOverlayAfterSeed(
+  seedRows: LegacyNavRow[],
+  teamSeries: LegacyNavRow[],
+): Array<{ price_date: string; nav: string; cumulative_nav: null; adjusted_nav: null }> {
+  const seedLatest = seedRows.length > 0 ? seedRows[seedRows.length - 1].price_date : ""
+  return teamSeries
+    .filter((row) => !seedLatest || row.price_date > seedLatest)
+    .map((row) => ({
+      price_date: row.price_date,
+      nav: row.nav,
+      cumulative_nav: null,
+      adjusted_nav: null,
+    }))
+}
+
+/** Latest verified seed point on or before asOfDate (only within seed file coverage). */
+export function resolveManagedProductSeedNavAt(
+  beianHao: string,
+  asOfDate: string,
+): { nav: string; nav_date: string; prev_nav: string | null } | null {
+  const seed = loadManagedProductNavSeed(beianHao)
+  if (seed.length === 0) return null
+
+  const seedLatest = seed[seed.length - 1].price_date
+  let bestIdx = -1
+  for (let i = 0; i < seed.length; i++) {
+    if (seed[i].price_date <= asOfDate) bestIdx = i
+    else break
+  }
+  if (bestIdx < 0) return null
+
+  const best = seed[bestIdx]
+  if (best.price_date > seedLatest) return null
+
+  const prev = bestIdx > 0 ? seed[bestIdx - 1].nav : null
+  return { nav: best.nav, nav_date: best.price_date, prev_nav: prev }
+}
+
 /** Reference NAV rows from verified xlsx. */
 export function loadManagedProductNavSeed(beianHao: string): LegacyNavRow[] {
   const key = (beianHao ?? "").trim().toUpperCase()

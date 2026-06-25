@@ -18,6 +18,7 @@ type EmailNavRawRow = {
   nav: string
   cumulative_nav: string | null
   adjusted_nav: string | null
+  product_code: string | null
   fund_name: string | null
   attachment_filename: string | null
   subject: string | null
@@ -25,11 +26,35 @@ type EmailNavRawRow = {
 }
 
 
-function sourceTier(source: string | null | undefined): number {
+export function emailNavSourceTier(source: string | null | undefined): number {
   const s = (source ?? "").trim()
   if (s === "attachment_nav_table") return 0
   if (s === "attachment_valuation_table") return 1
   return 2
+}
+
+/** Prefer dedicated NAV streams; exclude 估值表 and 虚拟净值 for primary selection. */
+export const EMAIL_NAV_PRIMARY_SOURCE_FILTER = `(
+  COALESCE(e.source, '') <> 'attachment_valuation_table'
+  AND COALESCE(e.subject, '') NOT ILIKE '%估值表%'
+  AND COALESCE(e.attachment_filename, '') NOT ILIKE '%估值表%'
+  AND COALESCE(e.subject, '') NOT ILIKE '%虚拟%'
+  AND COALESCE(e.fund_name, '') NOT ILIKE '%虚拟%'
+  AND COALESCE(e.attachment_filename, '') NOT ILIKE '%虚拟%'
+)`
+
+/** 估值表 fallback — used only when no primary NAV exists on or before cutoff. */
+export const EMAIL_NAV_VALUATION_SOURCE_FILTER = `(
+  COALESCE(e.source, '') = 'attachment_valuation_table'
+  OR COALESCE(e.subject, '') ILIKE '%估值表%'
+  OR COALESCE(e.attachment_filename, '') ILIKE '%估值表%'
+)`
+
+/** @deprecated use EMAIL_NAV_PRIMARY_SOURCE_FILTER */
+export const EMAIL_NAV_UNIT_NAV_SOURCE_FILTER = EMAIL_NAV_PRIMARY_SOURCE_FILTER
+
+function sourceTier(source: string | null | undefined): number {
+  return emailNavSourceTier(source)
 }
 
 function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
@@ -86,9 +111,61 @@ function nameMatchesAlias(fundName: string | null, aliases: string[]): boolean {
   return aliases.some((alias) => name === alias || name.startsWith(alias))
 }
 
+/** FOF multi-level 估值表 names the queried fund as an underlying holding, not the portfolio. */
+export function isFofUnderlyingValuationEmailRow(row: EmailNavRawRow, beianHao: string): boolean {
+  const beian = (beianHao ?? "").trim().toUpperCase()
+  if (!beian) return false
+  const meta = `${row.subject ?? ""}\0${row.attachment_filename ?? ""}`
+  if (!/[_\s][1-9]级/u.test(meta)) return false
+  const primary =
+    meta.match(/【基金估值表】([A-Z0-9]+)_/u)?.[1]?.toUpperCase()
+    ?? meta.match(/(?:^|[^A-Z0-9])([A-Z0-9]{4,8})_/u)?.[1]?.toUpperCase()
+  return !!primary && primary !== beian
+}
+
+function isCustodyValuationEmailRow(row: EmailNavRawRow, beian: string): boolean {
+  if (!beian) return false
+  const meta = `${row.subject ?? ""} ${row.attachment_filename ?? ""}`.toUpperCase()
+  return (
+    row.source === "attachment_valuation_table"
+    && meta.includes(beian)
+    && /估值表/u.test(meta)
+  )
+}
+
+/** Reject FOF multi-level 估值表 rows that name the queried fund as an underlying holding. */
+export function buildEmailNavFofUnderlyingRejectFilter(
+  recordAlias: string,
+  beianHaoExpr: string,
+): string {
+  const e = recordAlias
+  const meta = `COALESCE(${e}.subject, '') || E'\\n' || COALESCE(${e}.attachment_filename, '')`
+  return `NOT (
+    ${meta} ~ '[_[:space:]][1-9]级'
+    AND ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
+    AND COALESCE(
+      (SELECT UPPER(m[1]) FROM regexp_matches(${meta}, '【基金估值表】([A-Z0-9]+)_', 'g') AS m LIMIT 1),
+      (SELECT UPPER(m[1]) FROM regexp_matches(${meta}, '(?:^|[^A-Z0-9])([A-Z0-9]{4,8})_', 'g') AS m LIMIT 1)
+    ) IS NOT NULL
+    AND COALESCE(
+      (SELECT UPPER(m[1]) FROM regexp_matches(${meta}, '【基金估值表】([A-Z0-9]+)_', 'g') AS m LIMIT 1),
+      (SELECT UPPER(m[1]) FROM regexp_matches(${meta}, '(?:^|[^A-Z0-9])([A-Z0-9]{4,8})_', 'g') AS m LIMIT 1)
+    ) <> UPPER(BTRIM(${beianHaoExpr}))
+  )`
+}
+
 /** Reject email rows that belong to a different share class / product code. */
-function emailRowMatchesFund(row: EmailNavRawRow, beianHao: string, aliases: string[]): boolean {
+export function emailRowMatchesFund(
+  row: EmailNavRawRow,
+  beianHao: string,
+  aliases: string[],
+): boolean {
   const beian = beianHao.trim().toUpperCase()
+  if (isFofUnderlyingValuationEmailRow(row, beianHao)) return false
+
+  const productCode = (row.product_code ?? "").trim().toUpperCase()
+  if (beian && productCode && productCode !== beian) return false
+
   const embedded = extractEmbeddedProductCodes(row.fund_name, row.attachment_filename, row.subject)
   const meta = `${row.attachment_filename ?? ""} ${row.subject ?? ""} ${row.fund_name ?? ""}`
 
@@ -146,6 +223,13 @@ function selectEmailSourceStream(
 
   for (const [fundName, group] of byFundName) {
     let score = group.length
+    const custodyValuation = beian
+      ? group.filter((row) => isCustodyValuationEmailRow(row, beian)).length
+      : 0
+    if (custodyValuation > 0) score += 500 + custodyValuation * 2
+    if (beian && group.some((row) => (row.product_code ?? "").trim().toUpperCase() === beian)) {
+      score += 300
+    }
     if (!fundName.startsWith("资产净值公告_")) score += 100
     if (beian && fundName.toUpperCase().includes(beian)) score += 50
     if (aliases.some((alias) => fundName === alias)) score += 40
@@ -225,6 +309,7 @@ export function buildEmailNavLatestJoins(
   cutoffExpr: string,
 ): string {
   const match = buildEmailNavMatchCondition("e", beianHaoExpr, productNameExpr, shortNameExpr)
+  const fofReject = buildEmailNavFofUnderlyingRejectFilter("e", beianHaoExpr)
   const aClassGuard = `(
     CASE
       WHEN ${shortNameExpr} IS NOT NULL AND (${shortNameExpr} ILIKE '%A类%' OR ${productNameExpr} ILIKE '%A类%')
@@ -233,60 +318,89 @@ export function buildEmailNavLatestJoins(
       ELSE COALESCE(e.fund_name, '') NOT ILIKE '%A类%' AND COALESCE(e.attachment_filename, '') NOT ILIKE '%A类%'
     END
   )`
+  const emailNavOrder = `
+        e.nav_date DESC,
+        ${EMAIL_NAV_SOURCE_PRIORITY},
+        CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
+        CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
+          AND (
+            COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+            OR COALESCE(e.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+            OR COALESCE(e.fund_name, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
+          )
+          THEN 0 ELSE 1 END,
+        e.id DESC`
+
   return `
     LEFT JOIN LATERAL (
       SELECT e.nav::numeric AS nav, e.nav_date
       FROM ops_email_nav_records e
       WHERE ${match}
+        AND ${fofReject}
         AND ${aClassGuard}
+        AND ${EMAIL_NAV_PRIMARY_SOURCE_FILTER}
+        AND e.nav_date <= ${cutoffExpr}
+        AND e.nav IS NOT NULL
+      ORDER BY ${emailNavOrder}
+      LIMIT 1
+    ) en ON true
+    LEFT JOIN LATERAL (
+      SELECT e.nav::numeric AS nav, e.nav_date
+      FROM ops_email_nav_records e
+      WHERE ${match}
+        AND ${fofReject}
+        AND ${aClassGuard}
+        AND en.nav IS NULL
+        AND ${EMAIL_NAV_VALUATION_SOURCE_FILTER}
         AND e.nav_date <= ${cutoffExpr}
         AND e.nav IS NOT NULL
       ORDER BY
-        ${EMAIL_NAV_SOURCE_PRIORITY},
-        CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
+        e.nav_date DESC,
         CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
           AND (
             COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
             OR COALESCE(e.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
-            OR COALESCE(e.fund_name, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
           )
           THEN 0 ELSE 1 END,
-        e.nav_date DESC,
         e.id DESC
       LIMIT 1
-    ) en ON true
+    ) en_val ON true
     LEFT JOIN LATERAL (
       SELECT e.nav::numeric AS nav
       FROM ops_email_nav_records e
       WHERE ${match}
+        AND ${fofReject}
         AND ${aClassGuard}
-        AND en.nav_date IS NOT NULL
-        AND e.nav_date < en.nav_date
+        AND COALESCE(en.nav_date, en_val.nav_date) IS NOT NULL
+        AND e.nav_date < COALESCE(en.nav_date, en_val.nav_date)
         AND e.nav IS NOT NULL
-      ORDER BY
-        ${EMAIL_NAV_SOURCE_PRIORITY},
-        CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
-        CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
-          AND (
-            COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
-            OR COALESCE(e.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
-            OR COALESCE(e.fund_name, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
-          )
-          THEN 0 ELSE 1 END,
-        e.nav_date DESC,
-        e.id DESC
+        AND (
+          (${EMAIL_NAV_PRIMARY_SOURCE_FILTER})
+          OR (en.nav IS NULL AND ${EMAIL_NAV_VALUATION_SOURCE_FILTER})
+        )
+      ORDER BY ${emailNavOrder}
       LIMIT 1
     ) en_prev ON true
   `
 }
 
-export function buildEmailNavLatestExprs(fallbackNavExpr: string, fallbackDateExpr: string, fallbackPctExpr: string) {
+export function buildEmailNavLatestExprs(
+  fallbackNavExpr: string,
+  fallbackDateExpr: string,
+  fallbackPctExpr: string,
+  legacyNavExpr?: string,
+  legacyDateExpr?: string,
+) {
+  const legacyNav = legacyNavExpr ?? "NULL::numeric"
+  const legacyDate = legacyDateExpr ?? "NULL::date"
+  const currentNav = "COALESCE(en.nav, en_val.nav)"
+  const currentDate = "COALESCE(en.nav_date, en_val.nav_date)"
   return {
-    navExpr: `COALESCE(en.nav, ${fallbackNavExpr})`,
-    dateExpr: `COALESCE(en.nav_date, ${fallbackDateExpr})`,
+    navExpr: `COALESCE(${currentNav}, ${legacyNav}, ${fallbackNavExpr})`,
+    dateExpr: `COALESCE(${currentDate}, ${legacyDate}, CASE WHEN (${fallbackNavExpr}) IS NOT NULL THEN ${fallbackDateExpr} END)`,
     pctExpr: `CASE
-      WHEN en.nav IS NOT NULL AND en_prev.nav IS NOT NULL AND en_prev.nav <> 0
-        THEN (en.nav / en_prev.nav - 1)
+      WHEN ${currentNav} IS NOT NULL AND en_prev.nav IS NOT NULL AND en_prev.nav <> 0
+        THEN (${currentNav} / en_prev.nav - 1)
       ELSE ${fallbackPctExpr}
     END`,
   }
@@ -319,7 +433,7 @@ async function queryEmailNavManageRawRows(
 
   return query<EmailNavRawRowWithId>(
     `SELECT e.id::text AS id, e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
-            e.adjusted_nav::text,
+            e.adjusted_nav::text, e.product_code,
             e.fund_name, e.attachment_filename, e.subject, e.source
      FROM ops_email_nav_records e
      WHERE e.nav_date IS NOT NULL
@@ -411,7 +525,7 @@ export async function loadEmailNavSeries(
 
   const rows = await query<EmailNavRawRow>(
     `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
-            e.adjusted_nav::text,
+            e.adjusted_nav::text, e.product_code,
             e.fund_name, e.attachment_filename, e.subject, e.source
      FROM ops_email_nav_records e
      WHERE e.nav_date IS NOT NULL
@@ -435,7 +549,8 @@ export async function loadEmailNavSeries(
     [beian, aliases],
   )
 
-  const stream = selectEmailSourceStream(rows, beian, aliases)
+  const primaryRows = rows.filter((row) => !isVirtualNavRow(row) && !isFofUnderlyingValuationEmailRow(row, beianHao))
+  const stream = selectEmailSourceStream(primaryRows.length > 0 ? primaryRows : rows, beian, aliases)
   return rowsToEmailPoints(stream)
 }
 
