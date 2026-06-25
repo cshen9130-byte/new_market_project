@@ -14,12 +14,6 @@ import {
   useFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { autoAddFofUnderlyingToTables } from "@/lib/server/fof-underlying-auto-add-pg"
-import {
-  ensureManagedFofUnderlyingTable,
-  effectiveUnderlyingMarketValueExpr,
-  managedUnderlyingBeianExpr,
-  managedUnderlyingMatchSql,
-} from "@/lib/server/managed-fof-underlying-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -183,14 +177,12 @@ export async function GET(req: Request) {
 
     // ─── FAST PATH — plain 2-table join, no lateral NAV scans ───────────────
     if (useCache) {
-      await ensureManagedFofUnderlyingTable()
       void autoAddFofUnderlyingToTables().catch((autoAddErr) => {
         console.error("[investment/fof-overview/list] auto-add failed:", autoAddErr)
       })
       await ensureFofOverviewListCachePopulated()
 
-      const beianExpr = managedUnderlyingBeianExpr("cache.beian_hao", "f.product_name")
-      const effectiveMvExpr = effectiveUnderlyingMarketValueExpr(beianExpr, "f.product_name")
+      const marketValueExpr = "COALESCE(cache.market_value, f.market_value, 0)"
       const displayNameExpr = `CASE
         WHEN cache.short_name IS NOT NULL
           AND f.product_name ~ '[ABC]类'
@@ -207,7 +199,7 @@ export async function GET(req: Request) {
       const sortCol = sortKey === "sequence_no"
         ? "f.sequence_no"
         : sortKey === "market_value"
-          ? effectiveMvExpr
+          ? marketValueExpr
           : ALLOWED_SORT[sortKey]
 
       const conditions: string[] = ["f.product_name <> '合计'"]
@@ -217,13 +209,7 @@ export async function GET(req: Request) {
       if (keyword) {
         conditions.push(`(
           f.product_name ILIKE $${pi}
-          OR ${beianExpr} ILIKE $${pi}
-          OR EXISTS (
-            SELECT 1 FROM ops_managed_fof_underlying mk
-            WHERE COALESCE(mk.market_value, 0) > 0
-              AND mk.underlying_product_code ILIKE $${pi}
-              AND ${managedUnderlyingMatchSql(beianExpr, "f.product_name", "mk")}
-          )
+          OR cache.beian_hao ILIKE $${pi}
         )`)
         params.push(`%${keyword}%`)
         pi++
@@ -238,23 +224,9 @@ export async function GET(req: Request) {
       }
 
       if (holdingStatus === "holding") {
-        conditions.push(`(
-          COALESCE(${effectiveMvExpr}, 0) > 0
-          OR EXISTS (
-            SELECT 1 FROM ops_managed_fof_underlying m
-            WHERE COALESCE(m.market_value, 0) > 0
-              AND ${managedUnderlyingMatchSql(beianExpr, "f.product_name", "m")}
-          )
-        )`)
+        conditions.push(`${marketValueExpr} > 0`)
       } else if (holdingStatus === "cleared") {
-        conditions.push(`(
-          COALESCE(${effectiveMvExpr}, 0) <= 0
-          AND NOT EXISTS (
-            SELECT 1 FROM ops_managed_fof_underlying m
-            WHERE COALESCE(m.market_value, 0) > 0
-              AND ${managedUnderlyingMatchSql(beianExpr, "f.product_name", "m")}
-          )
-        )`)
+        conditions.push(`${marketValueExpr} <= 0`)
       }
 
       if (teamTags.length > 0) {
@@ -286,7 +258,7 @@ export async function GET(req: Request) {
       const [countRows, totalMvRows] = await Promise.all([
         query<{ n: string }>(`SELECT COUNT(*)::text AS n ${baseFrom} WHERE ${where}`, params),
         query<{ total_mv: string }>(
-          `SELECT COALESCE(SUM(${effectiveMvExpr}), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
+          `SELECT COALESCE(SUM(${marketValueExpr}), 0)::text AS total_mv ${baseFrom} WHERE ${where}`,
           params,
         ),
       ])
@@ -326,14 +298,14 @@ export async function GET(req: Request) {
         `SELECT
            f.id::text                           AS id,
            f.sequence_no,
-           ${beianExpr}                           AS beian_hao,
+           cache.beian_hao,
            f.product_name,
            ${displayNameExpr}                     AS short_name,
            ${stratCol}                          AS strategy_l1,
            COALESCE(cache.unit_nav, f.latest_unit_nav)::text AS latest_unit_nav,
            COALESCE(cache.nav_date, f.latest_nav_date)::text AS latest_nav_date,
            COALESCE(cache.return_pct, f.latest_return_pct)::text AS latest_return_pct,
-           ${effectiveMvExpr}::text             AS market_value,
+           ${marketValueExpr}::text             AS market_value,
            cache.ret_1w::text,
            cache.ret_1m::text,
            cache.ret_3m::text,

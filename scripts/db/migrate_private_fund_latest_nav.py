@@ -71,6 +71,20 @@ def main() -> None:
           ON private_fund_nav (beian_hao, price_date DESC)
     """)
 
+    print("Creating list indexes on private_fund_info …")
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pfi_product_name
+          ON private_fund_info (product_name)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pfi_strategy_l1
+          ON private_fund_info (strategy_l1)
+    """)
+    cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_pfi_latest_nav_date
+          ON private_fund_info (latest_nav_date DESC NULLS LAST)
+    """)
+
     print("Backfilling latest_nav / latest_nav_date (one-time DISTINCT ON scan) …")
     cur.execute("""
         UPDATE private_fund_info AS i SET

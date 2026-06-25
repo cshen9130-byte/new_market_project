@@ -280,12 +280,21 @@ export function useManagedProductsListCache(cutoffRaw: string): boolean {
 }
 
 /** Populate cache when empty (e.g. first deploy before nightly ETL has run). */
+let managedCacheRefreshInFlight: Promise<number> | null = null
+
 export async function ensureManagedProductsListCachePopulated(): Promise<void> {
   await ensureManagedProductsListCacheTable()
   const rows = await query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM ops_managed_products_list_cache`,
   )
-  if (parseInt(rows[0]?.n ?? "0", 10) === 0) {
-    await refreshManagedProductsListCache()
+  if (parseInt(rows[0]?.n ?? "0", 10) === 0 && !managedCacheRefreshInFlight) {
+    managedCacheRefreshInFlight = refreshManagedProductsListCache()
+      .catch((err) => {
+        console.error("[managed-products-cache] background refresh failed:", err)
+        return 0
+      })
+      .finally(() => {
+        managedCacheRefreshInFlight = null
+      })
   }
 }

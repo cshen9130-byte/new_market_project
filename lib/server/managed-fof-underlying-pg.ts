@@ -536,6 +536,18 @@ const DETAIL_SORT_COLS: Record<string, string> = {
   calmar_1y: "m.id",
 }
 
+/** Sort keys that can paginate in SQL without loading the full holdings table. */
+const DETAIL_SQL_SORT: Record<string, string> = {
+  fof_fund_name: "m.fof_product_name",
+  product_name: "m.underlying_name",
+  beian_hao: "m.underlying_product_code",
+  investment_shares: "m.quantity",
+  market_value: "m.market_value",
+  market_value_pct: "m.market_weight",
+}
+
+const DETAIL_DEFAULT_ORDER = "m.fof_product_name ASC, m.market_value DESC NULLS LAST, m.id ASC"
+
 function fmtMarketValuePct(weight: unknown): string | null {
   if (weight == null) return null
   const n = parseFloat(String(weight))
@@ -772,8 +784,21 @@ export async function listManagedFofUnderlyingDetail(options: {
 
   const where = `WHERE ${conditions.join(" AND ")}`
 
-  const rawRows = await query<DetailRawRow>(
-    `SELECT
+  const [countRow, sumRow] = await Promise.all([
+    query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ops_managed_fof_underlying m ${where}`, params),
+    query<{ total_mv: string }>(
+      `SELECT COALESCE(SUM(COALESCE(m.market_value, 0)), 0)::text AS total_mv FROM ops_managed_fof_underlying m ${where}`,
+      params,
+    ),
+  ])
+  const total = parseInt(countRow[0]?.n ?? "0", 10)
+  const totalMarketValue = sumRow[0]?.total_mv ?? "0"
+
+  if (total === 0) {
+    return { rows: [], total: 0, totalMarketValue: "0" }
+  }
+
+  const selectSql = `SELECT
        m.id,
        m.fof_product_name AS fof_fund_name,
        m.underlying_name AS product_name,
@@ -782,21 +807,50 @@ export async function listManagedFofUnderlyingDetail(options: {
        m.quantity AS investment_shares,
        m.market_value,
        m.market_weight
-     FROM ops_managed_fof_underlying m
-     ${where}
-     ORDER BY m.fof_product_name ASC, m.market_value DESC NULLS LAST, m.id ASC`,
-    params,
-  )
+     FROM ops_managed_fof_underlying m`
 
-  const total = rawRows.length
-  if (total === 0) {
-    return { rows: [], total: 0, totalMarketValue: "0" }
+  const useSqlPagination = sortKey === "seq_no" || DETAIL_SQL_SORT[sortKey] != null
+  if (useSqlPagination) {
+    const orderSql = sortKey === "seq_no"
+      ? DETAIL_DEFAULT_ORDER
+      : `${DETAIL_SQL_SORT[sortKey]} ${sortAsc ? "ASC" : "DESC"} NULLS LAST, m.id ASC`
+
+    const rawRows = await query<DetailRawRow>(
+      `${selectSql}
+       ${where}
+       ORDER BY ${orderSql}
+       LIMIT $${pi} OFFSET $${pi + 1}`,
+      [...params, pageSize, offset],
+    )
+
+    const asOfDate = new Date().toISOString().slice(0, 10)
+    const identities: ProductNavIdentity[] = rawRows.map((r) => ({
+      beian_hao: r.beian_hao,
+      product_name: r.product_name,
+      short_name: null,
+    }))
+    const resolver = identities.length > 0
+      ? await BatchNavResolver.create(identities, asOfDate)
+      : null
+
+    const pageRows = enrichDetailRows(rawRows, resolver).map((row, i) => ({
+      ...row,
+      seq_no: offset + i + 1,
+    }))
+
+    return {
+      rows: pageRows,
+      total,
+      totalMarketValue,
+    }
   }
 
-  const totalMarketValue = rawRows.reduce(
-    (sum, r) => sum + (parseFloat(String(r.market_value ?? "0")) || 0),
-    0,
-  ).toFixed(2)
+  const rawRows = await query<DetailRawRow>(
+    `${selectSql}
+     ${where}
+     ORDER BY ${DETAIL_DEFAULT_ORDER}`,
+    params,
+  )
 
   const asOfDate = new Date().toISOString().slice(0, 10)
   const identities: ProductNavIdentity[] = rawRows.map((r) => ({
