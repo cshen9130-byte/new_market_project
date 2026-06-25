@@ -22024,13 +22024,18 @@ export default function PrivateFundsPage() {
           {activeTab === "portfolio" && (activeSideItem === "port-simulated" || activeSideItem === "port-live") && (
             <PortfolioView sideItem={activeSideItem} />
           )}
-          {activeTab === "investment" && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
-          {activeTab === "investment" && activeSideItem === "inv-tracking-mgr" && <InvestmentTrackingManagersView />}
-          {activeTab === "investment" && activeSideItem === "inv-overview" && <InvestmentOverviewView />}
-          {activeTab === "investment" && activeSideItem === "inv-active" && <InvestmentManagedProductsView />}
-          {activeTab === "investment" && activeSideItem === "inv-fof" && <InvestmentFofOverviewView />}
-          {activeTab === "investment" && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
-          {activeTab === "investment" && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && (
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-tracking") && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-tracking-mgr") && activeSideItem === "inv-tracking-mgr" && <InvestmentTrackingManagersView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-overview") && activeSideItem === "inv-overview" && <InvestmentOverviewView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-active") && activeSideItem === "inv-active" && <InvestmentManagedProductsView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-fof") && activeSideItem === "inv-fof" && <InvestmentFofOverviewView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-compare") && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
+          {activeTab === "investment" && !isAllowedInvestmentSideItem(currentUser, activeSideItem) && (
+            <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+              无权限访问该页面
+            </div>
+          )}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>
