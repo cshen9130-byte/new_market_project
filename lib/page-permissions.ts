@@ -8,10 +8,9 @@ export const PERM_COLUMNS: { key: keyof PagePermissions; label: string; hint?: s
   { key: "pfOperations", label: "私募基金-运维" },
   {
     key: "pfInvestmentAlt",
-    label: "私募基金-投资（跟踪池/直投池）",
-    hint: "不含投资池",
+    label: "私募基金-投资（不含投资池）",
+    hint: "仍可进投资页，仅隐藏投资池",
   },
-  { key: "pfInvestmentPool", label: "私募基金-投资（投资池）" },
 ]
 
 export function buildPermissionsSnapshot(source: PagePermissions | undefined): PagePermissions {

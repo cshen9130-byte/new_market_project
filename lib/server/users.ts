@@ -8,7 +8,6 @@ export type PagePermissions = {
   aiKnowledge?: boolean
   pfOperations?: boolean
   pfInvestmentAlt?: boolean
-  pfInvestmentPool?: boolean
 }
 
 export type StoredUser = {
