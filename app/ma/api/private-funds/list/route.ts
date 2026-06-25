@@ -52,7 +52,7 @@ async function fetchHistoricalNavMap(
        nav::text AS nav,
        price_date::text AS price_date
      FROM private_fund_nav
-     WHERE beian_hao = ANY($1::text[])
+     WHERE beian_hao = ANY($1)
        AND price_date <= $2::date
        AND nav IS NOT NULL AND nav > 0
      ORDER BY beian_hao, price_date DESC`,
