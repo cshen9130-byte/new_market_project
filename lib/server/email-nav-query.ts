@@ -799,7 +799,13 @@ function refreshDerivedForUnitOnlyEmailRows(
   return sorted
 }
 
-/** After ex-div unit fix, align 复权 with cumulative return on that date. */
+/** After ex-div unit fix, align 复权 with the reinvestment factor on that date.
+ *
+ * Uses prevUnit/unit (pre-ex-div price / post-ex-div price) rather than cum/prevCum so
+ * that adj stays above cum even when unit nav later falls below the ex-div-day level.
+ * When the ex-div row already has an adj value (e.g. from a seed file), all subsequent
+ * rows with existing adj are rebased by the same multiplier to keep the chain consistent.
+ */
 function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = rows.map((row) => ({ ...row }))
   for (let i = 1; i < sorted.length; i += 1) {
@@ -816,7 +822,39 @@ function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
     ) {
       continue
     }
-    curr.cumulative_nav = String(+(prevAdj * (cum / prevCum)).toFixed(6))
+    const oldAdj = parseOptionalNav(curr.cumulative_nav)
+    const newAdj = +(prevAdj * (prevUnit / unit)).toFixed(6)
+    curr.cumulative_nav = String(newAdj)
+    // Rebase all subsequent existing adj values by the same factor so the chain stays consistent.
+    if (oldAdj != null && oldAdj > 0 && Math.abs(newAdj / oldAdj - 1) > 0.001) {
+      const factor = newAdj / oldAdj
+      for (let j = i + 1; j < sorted.length; j += 1) {
+        const existing = parseOptionalNav(sorted[j].cumulative_nav)
+        if (existing != null && isReasonableNav(existing)) {
+          sorted[j].cumulative_nav = String(+(existing * factor).toFixed(6))
+        }
+      }
+    }
+  }
+  return sorted
+}
+
+/** Forward-chain 复权净值 from the previous row for dates where it is missing (null/empty).
+ *
+ * This fills in the adj series for managed-product rows that come from ops_team_nav_manual
+ * (which stores unit + cumulative only), after syncExDivAdjustedNav has anchored the ex-div
+ * date's adj value.
+ */
+function propagateMissingAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (parseOptionalNav(sorted[i].cumulative_nav) != null) continue
+    const unit = parseOptionalNav(sorted[i].nav)
+    if (unit == null) continue
+    const rechained = rechainDerivedFromPrev(sorted[i - 1], unit)
+    if (rechained) {
+      sorted[i].cumulative_nav = rechained.adj
+    }
   }
   return sorted
 }
@@ -1015,6 +1053,7 @@ function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string>
   let out = sanitizeMisassignedUnitNavRows(rows)
   out = repairCorruptUnitNavRows(out)
   out = syncExDivAdjustedNav(out)
+  out = propagateMissingAdjRows(out)
   out = refreshStaleDerivedFields(out)
   out = refreshDerivedForUnitOnlyEmailRows(out, unitOnlyEmailDates)
   out = clampSanityNavRows(out)
