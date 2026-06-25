@@ -71,6 +71,7 @@ next-env.d.ts
 # Server-generated data / logs (live on server, not for VCS)
 build-debug.log
 data/users.json
+data/ops_email_parse_records.json
 data/futures_cache.json
 data/basis_cache.json
 data/basis_cont_diff_timeseries_cache.json
