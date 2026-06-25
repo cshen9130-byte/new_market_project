@@ -13,6 +13,7 @@ import { canAccessAiKnowledge } from "@/lib/permissions"
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
+  const isSettingsPage = pathname.startsWith("/ma/dashboard/settings")
   const isPrivateFundsSection = pathname.startsWith("/ma/dashboard/private-funds")
   const [user, setUser] = useState<User | null>(null)
   const [chatVisible, setChatVisible] = useState(false)
@@ -47,6 +48,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, [router, pathname])
 
   if (!user) return null
+
+  if (isSettingsPage) {
+    return <>{children}</>
+  }
 
   const headerUser = { email: user.email, full_name: user.name }
 

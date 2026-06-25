@@ -41,6 +41,13 @@ const fundsSidebarGroups = [
       { key: "fund-managers", label: "基金经理" },
     ],
   },
+  {
+    label: "自建数据库",
+    items: [
+      { key: "custom-funds", label: "自建基金" },
+      { key: "custom-index", label: "自建指数" },
+    ],
+  },
 ]
 
 const TAB_DEFAULT_SIDE: Record<string, string> = {

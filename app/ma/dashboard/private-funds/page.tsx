@@ -12,6 +12,10 @@ import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-bu
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
 import { InvestmentFundCompareView } from "./components/InvestmentFundCompareView"
+import { InvestmentDirectProductsView } from "./components/InvestmentDirectProductsView"
+import { InvestmentDirectPortfoliosView } from "./components/InvestmentDirectPortfoliosView"
+import { CustomFundsView } from "./components/CustomFundsView"
+import { CustomIndicesView } from "./components/CustomIndicesView"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -39,6 +43,13 @@ const fundsSidebarGroups: SidebarGroup[] = [
       { key: "private-funds", label: "私募基金" },
       { key: "fund-managers-org", label: "私募管理人" },
       { key: "fund-managers", label: "基金经理" },
+    ],
+  },
+  {
+    label: "自建数据库",
+    items: [
+      { key: "custom-funds", label: "自建基金" },
+      { key: "custom-index", label: "自建指数" },
     ],
   },
 ]
@@ -22015,7 +22026,9 @@ export default function PrivateFundsPage() {
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "funds" && activeSideItem === "fund-managers-org" && <PrivateFundManagersView />}
           {activeTab === "funds" && activeSideItem === "fund-managers" && <PrivateFundManagersPersonalView />}
-          {activeTab === "funds" && activeSideItem !== "private-funds" && activeSideItem !== "fund-managers-org" && activeSideItem !== "fund-managers" && (
+          {activeTab === "funds" && activeSideItem === "custom-funds" && <CustomFundsView />}
+          {activeTab === "funds" && activeSideItem === "custom-index" && <CustomIndicesView />}
+          {activeTab === "funds" && activeSideItem !== "private-funds" && activeSideItem !== "fund-managers-org" && activeSideItem !== "fund-managers" && activeSideItem !== "custom-funds" && activeSideItem !== "custom-index" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>
@@ -22030,12 +22043,14 @@ export default function PrivateFundsPage() {
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-active") && activeSideItem === "inv-active" && <InvestmentManagedProductsView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-fof") && activeSideItem === "inv-fof" && <InvestmentFofOverviewView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-compare") && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct") && activeSideItem === "inv-direct" && <InvestmentDirectProductsView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct-portfolio") && activeSideItem === "inv-direct-portfolio" && <InvestmentDirectPortfoliosView />}
           {activeTab === "investment" && !isAllowedInvestmentSideItem(currentUser, activeSideItem) && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               无权限访问该页面
             </div>
           )}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && (
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

@@ -3,19 +3,14 @@ import { NextResponse } from "next/server"
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-/** Direct investment products list — returns empty data until storage is wired up. */
+/** Self-built index list — returns empty data until storage is wired up. */
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10))
   const pageSize = Math.min(200, Math.max(1, parseInt(searchParams.get("pageSize") || "50", 10)))
 
-  void searchParams.get("fund_class")
-  void searchParams.get("strategy_source")
-  void searchParams.get("strategy_l1")
-  void searchParams.get("strategy_l2")
-  void searchParams.get("strategy_l3")
-  void searchParams.get("team_tags")
-  void searchParams.get("holding_status")
+  void searchParams.get("scope")
+  void searchParams.get("build_type")
   void searchParams.get("keyword")
   void searchParams.get("cutoff")
   void searchParams.get("sort")
@@ -27,5 +22,6 @@ export async function GET(req: Request) {
     page,
     pageSize,
     totalPages: 1,
+    index_data_date: null,
   })
 }

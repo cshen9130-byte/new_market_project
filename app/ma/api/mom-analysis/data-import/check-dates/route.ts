@@ -25,6 +25,8 @@ const MARKET_HOLIDAYS = new Set([
   "20260406",
   // 劳动节 2026 (May 1 Fri + May 4–5 Mon–Tue)
   "20260501", "20260504", "20260505",
+  // 端午节 2026 (Jun 19 Fri — Jun 20–21 are weekend)
+  "20260619",
 ])
 
 // 补班 trading days (currently none in the scan range)

@@ -23,25 +23,27 @@ const ADD_METRIC_GROUPS = [
 ]
 
 interface CalcSettings {
-  navType:     string
+  navType:      string
   riskFreeRate: string
-  excessCalc:  string
-  annualCalc:  string
-  weeklyNav:   string
-  watermark:   boolean
+  periodCalc:   string
+  excessCalc:   string
+  annualCalc:   string
+  weeklyNav:    string
+  watermark:    boolean
 }
 
 const DEFAULT_CALC: CalcSettings = {
-  navType:     "复权净值",
+  navType:      "复权净值",
   riskFreeRate: "2.00",
-  excessCalc:  "除法",
-  annualCalc:  "复利",
-  weeklyNav:   "周频时展示月末最后交易日净值",
-  watermark:   true,
+  periodCalc:   "连乘",
+  excessCalc:   "除法",
+  annualCalc:   "复利",
+  weeklyNav:    "周频时展示月末最后交易日净值",
+  watermark:    true,
 }
 
 const LEFT_NAV = [
-  { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "邀请注册", "登录设置"] },
+  { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "常用注册", "登录设置"] },
   { group: "团队管理", items: ["评分设置", "指令设置", "报告设置"] },
 ]
 
@@ -305,9 +307,15 @@ function readLS<T>(key: string, fallback: T): T {
   try { return JSON.parse(localStorage.getItem(key) ?? "null") ?? fallback } catch { return fallback }
 }
 
+function normalizeCalcSettings(raw: Partial<CalcSettings> | null | undefined): CalcSettings {
+  return { ...DEFAULT_CALC, ...(raw ?? {}) }
+}
+
 // ─── CalcSettingsPanel ───────────────────────────────────────────────────────
 function CalcSettingsPanel() {
-  const [settings, setSettings] = useState<CalcSettings>(() => readLS(CALC_SETTINGS_KEY, DEFAULT_CALC))
+  const [settings, setSettings] = useState<CalcSettings>(() =>
+    normalizeCalcSettings(readLS<Partial<CalcSettings> | null>(CALC_SETTINGS_KEY, null))
+  )
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<CalcSettings>(settings)
 
@@ -342,11 +350,12 @@ function CalcSettingsPanel() {
         <div className="space-y-0.5 pl-1">
           {row("默认净值类型", settings.navType)}
           {row("无风险利率", settings.riskFreeRate + "%")}
+          {row("期间计算", settings.periodCalc ?? "连乘")}
           {row("超额计算", settings.excessCalc)}
           {row("年化计算", settings.annualCalc)}
           {row("周频净值", settings.weeklyNav)}
           <div className="flex items-center gap-1 text-sm text-zinc-700 dark:text-zinc-300 py-1.5">
-            <span className="text-zinc-500 dark:text-zinc-400 w-28 shrink-0">图表水印：</span>
+            <span className="text-zinc-500 dark:text-zinc-400 w-28 shrink-0">报表水印：</span>
             <button
               onClick={() => {
                 const next = { ...settings, watermark: !settings.watermark }
@@ -373,6 +382,10 @@ function CalcSettingsPanel() {
               onChange={(e) => setDraft({ ...draft, riskFreeRate: e.target.value })}
               className="w-32 rounded border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring" />
           </Field>
+          <Field label="期间计算">
+            <RadioGroup value={draft.periodCalc ?? "连乘"} onChange={(v) => setDraft({ ...draft, periodCalc: v })}
+              options={["连乘", "累加"]} />
+          </Field>
           <Field label="超额计算">
             <RadioGroup value={draft.excessCalc} onChange={(v) => setDraft({ ...draft, excessCalc: v })}
               options={["除法", "减法"]} />
@@ -385,7 +398,7 @@ function CalcSettingsPanel() {
             <RadioGroup value={draft.weeklyNav} onChange={(v) => setDraft({ ...draft, weeklyNav: v })}
               options={["周频时展示月末最后交易日净值", "展示最新净值"]} />
           </Field>
-          <Field label="图表水印">
+          <Field label="报表水印">
             <button
               onClick={() => setDraft({ ...draft, watermark: !draft.watermark })}
               className={["relative inline-flex h-5 w-9 items-center rounded-full transition-colors", draft.watermark ? "bg-red-400" : "bg-zinc-300"].join(" ")}
@@ -792,7 +805,7 @@ export default function SettingsPage() {
   }, [searchParams])
 
   return (
-    <div className="flex h-full min-h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       {/* Left sidebar */}
       <aside className="w-44 flex-shrink-0 border-r border-border pt-6 pb-4 flex flex-col gap-0 bg-background">
         <div className="px-5 pb-4 flex flex-col items-center gap-2">
