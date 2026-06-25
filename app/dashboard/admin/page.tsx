@@ -11,6 +11,19 @@ import { cn } from "@/lib/utils"
 import { Label } from "@/components/ui/label"
 import { Checkbox } from "@/components/ui/checkbox"
 
+const PERM_COLUMNS: { key: keyof PagePermissions; label: string; hint?: string }[] = [
+  { key: "ma", label: "MA 市场监控" },
+  { key: "classic", label: "分析看板（传统风格）" },
+  { key: "mom", label: "MOM 分析" },
+  { key: "aiKnowledge", label: "AI 知识库" },
+  { key: "pfOperations", label: "私募基金-运维" },
+  {
+    key: "pfInvestmentAlt",
+    label: "私募基金-投资（跟踪池/直投池）",
+    hint: "不含投资池",
+  },
+]
+
 type UserTokenStats = {
   userId: string
   userName: string
@@ -398,9 +411,12 @@ export default function AdminAccountsPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="text-cyan-400">用户</TableHead>
-                    <TableHead className="text-cyan-400 text-center">MA 市场监控</TableHead>
-                    <TableHead className="text-cyan-400 text-center">分析看板（传统风格）</TableHead>
-                    <TableHead className="text-cyan-400 text-center">MOM 分析</TableHead>
+                    {PERM_COLUMNS.map((col) => (
+                      <TableHead key={col.key} className="text-cyan-400 text-center min-w-[7rem]">
+                        <div>{col.label}</div>
+                        {col.hint && <div className="text-[10px] font-normal text-cyan-500/60 mt-0.5">{col.hint}</div>}
+                      </TableHead>
+                    ))}
                     <TableHead className="text-cyan-400">操作</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -414,30 +430,16 @@ export default function AdminAccountsPage() {
                           {u.name}
                           {isAdmin && <span className="ml-2 text-xs text-cyan-500">（管理员）</span>}
                         </TableCell>
-                        <TableCell className="text-center">
-                          <Checkbox
-                            disabled={isAdmin}
-                            checked={isAdmin || !!perms.ma}
-                            onCheckedChange={() => togglePerm(u.id, "ma")}
-                            className="border-cyan-500/50 data-[state=checked]:bg-cyan-600"
-                          />
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <Checkbox
-                            disabled={isAdmin}
-                            checked={isAdmin || !!perms.classic}
-                            onCheckedChange={() => togglePerm(u.id, "classic")}
-                            className="border-cyan-500/50 data-[state=checked]:bg-cyan-600"
-                          />
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <Checkbox
-                            disabled={isAdmin}
-                            checked={isAdmin || !!perms.mom}
-                            onCheckedChange={() => togglePerm(u.id, "mom")}
-                            className="border-cyan-500/50 data-[state=checked]:bg-cyan-600"
-                          />
-                        </TableCell>
+                        {PERM_COLUMNS.map((col) => (
+                          <TableCell key={col.key} className="text-center">
+                            <Checkbox
+                              disabled={isAdmin}
+                              checked={isAdmin || !!perms[col.key]}
+                              onCheckedChange={() => togglePerm(u.id, col.key)}
+                              className="border-cyan-500/50 data-[state=checked]:bg-cyan-600"
+                            />
+                          </TableCell>
+                        ))}
                         <TableCell>
                           {!isAdmin && (
                             <div className="flex items-center gap-2">

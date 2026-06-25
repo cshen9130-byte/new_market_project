@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 import { DashboardHeader } from "@/components/dashboard-header"
 import { ChatBotWidget } from "@/components/chat-bot-widget"
 import { authService, type User } from "@/lib/auth"
+import { canAccessAiKnowledge } from "@/lib/permissions"
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
@@ -23,10 +24,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       router.replace("/login")
     } else if (current.role !== "admin" && !current.permissions?.ma) {
       router.replace("/dashboard")
+    } else if (
+      pathname.startsWith("/ma/dashboard/ai-knowledge") &&
+      !canAccessAiKnowledge(current)
+    ) {
+      router.replace("/ma/dashboard")
     } else {
       setUser(current)
     }
-  }, [router])
+  }, [router, pathname])
 
   if (!user) return null
 

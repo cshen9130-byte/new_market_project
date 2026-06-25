@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils"
 import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X } from "lucide-react"
 import type React from "react"
 import { authService } from "@/lib/auth"
+import { canAccessAiKnowledge } from "@/lib/permissions"
 
 const baseNavigation = [
   { name: "总览", href: "/ma/dashboard", icon: LayoutDashboard },
@@ -18,7 +19,7 @@ const baseNavigation = [
   { name: "MOM分析", href: "/ma/dashboard/mom-analysis", icon: BarChart2, permKey: "mom" as const },
   { name: "小工具", href: "/ma/dashboard/tools", icon: Wrench },
   { name: "__home__", href: "/ma/dashboard", icon: Home },
-  { name: "AI知识库", href: "/ma/dashboard/ai-knowledge", icon: BrainCircuit },
+  { name: "AI知识库", href: "/ma/dashboard/ai-knowledge", icon: BrainCircuit, permKey: "aiKnowledge" as const },
 ]
 
 interface DashboardSidebarProps {
@@ -30,6 +31,9 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
   const pathname = usePathname()
   const currentUser = authService.getCurrentUser()
   const navigation = baseNavigation.filter((item) => {
+    if (item.permKey === "aiKnowledge") {
+      return canAccessAiKnowledge(currentUser)
+    }
     if (!item.permKey) return true
     if (currentUser?.role === "admin") return true
     return !!currentUser?.permissions?.[item.permKey]

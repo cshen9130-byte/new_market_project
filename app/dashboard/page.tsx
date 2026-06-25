@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { authService } from "@/lib/auth"
+import { canAccessAiKnowledge } from "@/lib/permissions"
 import { NeuralNetwork3D } from "@/components/neural-network-3d"
 import { Button } from "@/components/ui/button"
 import { BrainCircuit, LogOut } from "lucide-react"
@@ -46,11 +47,14 @@ export default function DashboardPage() {
     )
   }
 
+  const showAiKnowledge = canAccessAiKnowledge(authService.getCurrentUser())
+
   return (
     <div className="relative min-h-screen bg-black">
       <div className="absolute top-4 left-4 z-10 text-cyan-400 text-lg font-mono">欢迎，{user.name}</div>
 
       <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
+        {showAiKnowledge && (
         <Button
           onClick={() => router.push("/dashboard/ai-knowledge")}
           variant="outline"
@@ -59,6 +63,7 @@ export default function DashboardPage() {
           <BrainCircuit className="w-4 h-4 sm:mr-2" />
           <span className="hidden sm:inline">AI知识库</span>
         </Button>
+        )}
 
         <Button
           onClick={handleLogout}

@@ -4,6 +4,10 @@ export type PagePermissions = {
   ma?: boolean
   classic?: boolean
   mom?: boolean
+  aiKnowledge?: boolean
+  pfOperations?: boolean
+  /** 仅跟踪池/直投池，不含投资池 */
+  pfInvestmentAlt?: boolean
 }
 
 export interface User {

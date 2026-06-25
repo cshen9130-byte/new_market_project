@@ -12,6 +12,13 @@ import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-bu
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
 import { InvestmentFundCompareView } from "./components/InvestmentFundCompareView"
+import { authService } from "@/lib/auth"
+import {
+  canAccessInvestmentTab,
+  canAccessPfOperations,
+  filterInvestmentSidebarGroups,
+  isAllowedInvestmentSideItem,
+} from "@/lib/permissions"
 
 const menuItems = [
   { key: "funds", label: "基金" },
@@ -21750,16 +21757,65 @@ function PrivateFundManagersPersonalView() {
 
 export default function PrivateFundsPage() {
   const searchParams = useSearchParams()
-  const [activeTab, setActiveTab] = useState(() => searchParams.get("tab") || "funds")
+  const currentUser = authService.getCurrentUser()
+  const visibleInvestmentGroups = filterInvestmentSidebarGroups(currentUser, investmentSidebarGroups)
+  const showOperationsTab = canAccessPfOperations(currentUser)
+  const showInvestmentTab = canAccessInvestmentTab(currentUser)
+  const visibleMenuItems = menuItems.filter((item) => {
+    if (item.key === "operations") return showOperationsTab
+    if (item.key === "investment") return showInvestmentTab
+    return true
+  })
+  const [activeTab, setActiveTab] = useState(() => {
+    const tab = searchParams.get("tab") || "funds"
+    if (tab === "operations" && !showOperationsTab) return "funds"
+    if (tab === "investment" && !showInvestmentTab) return "funds"
+    return tab
+  })
   const [activeSideItem, setActiveSideItem] = useState(() => {
     const side = searchParams.get("side")
-    if (side) return side
     const tab = searchParams.get("tab") || "funds"
+    if (side) {
+      if (tab === "operations" && !showOperationsTab) return TAB_DEFAULT_SIDE.funds
+      if (tab === "investment" && !isAllowedInvestmentSideItem(currentUser, side)) {
+        const fallback = visibleInvestmentGroups[0]?.items[0]?.key
+        return fallback ?? TAB_DEFAULT_SIDE.funds
+      }
+      return side
+    }
+    if (tab === "operations" && !showOperationsTab) return TAB_DEFAULT_SIDE.funds
+    if (tab === "investment" && !showInvestmentTab) return TAB_DEFAULT_SIDE.funds
     return TAB_DEFAULT_SIDE[tab] ?? "private-funds"
   })
 
+  useEffect(() => {
+    if (activeTab === "operations" && !showOperationsTab) {
+      setActiveTab("funds")
+      setActiveSideItem(TAB_DEFAULT_SIDE.funds)
+      return
+    }
+    if (activeTab === "investment") {
+      if (!showInvestmentTab) {
+        setActiveTab("funds")
+        setActiveSideItem(TAB_DEFAULT_SIDE.funds)
+        return
+      }
+      if (!isAllowedInvestmentSideItem(currentUser, activeSideItem)) {
+        const fallback = visibleInvestmentGroups[0]?.items[0]?.key
+        if (fallback) setActiveSideItem(fallback)
+      }
+    }
+  }, [activeTab, activeSideItem, showOperationsTab, showInvestmentTab, currentUser, visibleInvestmentGroups])
+
   function handleTabChange(tab: string) {
+    if (tab === "operations" && !showOperationsTab) return
+    if (tab === "investment" && !showInvestmentTab) return
     setActiveTab(tab)
+    if (tab === "investment") {
+      const fallback = visibleInvestmentGroups[0]?.items[0]?.key
+      setActiveSideItem(fallback ?? TAB_DEFAULT_SIDE[tab] ?? "private-funds")
+      return
+    }
     if (TAB_DEFAULT_SIDE[tab]) setActiveSideItem(TAB_DEFAULT_SIDE[tab])
   }
 
@@ -21768,7 +21824,7 @@ export default function PrivateFundsPage() {
       {/* Top menu bar */}
       <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
         <nav className="flex items-center gap-1 px-6 h-12">
-          {menuItems.map((item) => (
+          {visibleMenuItems.map((item) => (
             <button
               key={item.key}
               onClick={() => handleTabChange(item.key)}
@@ -21824,7 +21880,7 @@ export default function PrivateFundsPage() {
             </nav>
           </aside>
         )}
-        {activeTab === "investment" && (
+        {activeTab === "investment" && showInvestmentTab && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <div className="flex items-center gap-2 px-4 py-4 border-b">
               <div className="h-7 w-7 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
@@ -21833,7 +21889,7 @@ export default function PrivateFundsPage() {
               <span className="text-sm font-semibold text-foreground">投资分析</span>
             </div>
             <nav className="flex flex-col pt-2 pb-4">
-              {investmentSidebarGroups.map((group) => {
+              {visibleInvestmentGroups.map((group) => {
                 const hasActive = group.items.some((i) => i.key === activeSideItem)
                 return (
                   <div key={group.label}>
@@ -21862,7 +21918,7 @@ export default function PrivateFundsPage() {
           </aside>
         )}
 
-        {activeTab === "operations" && (
+        {activeTab === "operations" && showOperationsTab && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <div className="flex items-center gap-2 px-4 py-4 border-b">
               <div className="h-7 w-7 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">

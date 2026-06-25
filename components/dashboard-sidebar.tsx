@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Database } from "lucide-react"
 import { authService } from "@/lib/auth"
+import { canAccessAiKnowledge } from "@/lib/permissions"
 
 const navigation = [
   { name: "总览", href: "/dashboard", icon: LayoutDashboard },
@@ -13,7 +14,7 @@ const navigation = [
   { name: "期货市场", href: "/dashboard/futures-market", icon: Rocket },
   { name: "期权市场", href: "/analysis/options", icon: Target },
   { name: "私募基金", href: "/analysis/fund", icon: Briefcase },
-  { name: "AI知识库", href: "/dashboard/ai-knowledge", icon: BrainCircuit },
+  { name: "AI知识库", href: "/dashboard/ai-knowledge", icon: BrainCircuit, requiresAiKnowledge: true as const },
 ]
 
 export function DashboardSidebar() {
@@ -28,7 +29,7 @@ export function DashboardSidebar() {
         <p className="text-sm text-muted-foreground">分析看板</p>
       </div>
       <nav className="flex-1 p-4 space-y-1">
-        {navigation.map((item) => {
+        {navigation.filter((item) => !item.requiresAiKnowledge || canAccessAiKnowledge(currentUser)).map((item) => {
           const isActive = pathname === item.href
           return (
             <Link

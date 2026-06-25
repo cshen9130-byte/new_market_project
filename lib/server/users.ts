@@ -5,6 +5,9 @@ export type PagePermissions = {
   ma?: boolean
   classic?: boolean
   mom?: boolean
+  aiKnowledge?: boolean
+  pfOperations?: boolean
+  pfInvestmentAlt?: boolean
 }
 
 export type StoredUser = {
