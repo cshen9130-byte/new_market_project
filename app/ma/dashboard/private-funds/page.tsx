@@ -12,7 +12,7 @@ import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-bu
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
 import { InvestmentFundCompareView } from "./components/InvestmentFundCompareView"
-import { authService } from "@/lib/auth"
+import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
   canAccessPfOperations,
@@ -21757,7 +21757,18 @@ function PrivateFundManagersPersonalView() {
 
 export default function PrivateFundsPage() {
   const searchParams = useSearchParams()
-  const currentUser = authService.getCurrentUser()
+  const [currentUser, setCurrentUser] = useState<User | null>(() => authService.getCurrentUser())
+
+  useEffect(() => {
+    let cancelled = false
+    authService.refreshCurrentUser().then((user) => {
+      if (!cancelled && user) setCurrentUser(user)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   const visibleInvestmentGroups = filterInvestmentSidebarGroups(currentUser, investmentSidebarGroups)
   const showOperationsTab = canAccessPfOperations(currentUser)
   const showInvestmentTab = canAccessInvestmentTab(currentUser)
@@ -21789,6 +21800,7 @@ export default function PrivateFundsPage() {
   })
 
   useEffect(() => {
+    if (!currentUser) return
     if (activeTab === "operations" && !showOperationsTab) {
       setActiveTab("funds")
       setActiveSideItem(TAB_DEFAULT_SIDE.funds)

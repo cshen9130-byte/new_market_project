@@ -23,21 +23,14 @@ export function canAccessPfOperations(user: User | null | undefined): boolean {
   return hasMaScopedPermission(user, "pfOperations")
 }
 
-/** 私募基金-投资：跟踪池 / 直投池等（不含投资池） */
+/** 私募基金-投资：跟踪池 / 直投池 */
 export function canAccessPfInvestmentTracking(user: User | null | undefined): boolean {
-  if (!user) return false
-  if (isAdmin(user)) return true
-  if (user.permissions?.pfInvestmentAlt === true) return true
-  if (user.permissions?.ma && user.permissions?.pfInvestmentAlt !== true) return true
-  return false
+  return hasMaScopedPermission(user, "pfInvestmentAlt")
 }
 
-/** 私募基金-投资：投资池（投资概览、在管产品、FOF底层、资料列表） */
+/** 私募基金-投资：投资池 */
 export function canAccessPfInvestmentPool(user: User | null | undefined): boolean {
-  if (!user) return false
-  if (isAdmin(user)) return true
-  if (user.permissions?.pfInvestmentAlt === true) return false
-  return !!user.permissions?.ma
+  return hasMaScopedPermission(user, "pfInvestmentPool")
 }
 
 export function canAccessInvestmentTab(user: User | null | undefined): boolean {
