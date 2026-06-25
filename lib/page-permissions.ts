@@ -6,12 +6,7 @@ export const PERM_COLUMNS: { key: keyof PagePermissions; label: string; hint?: s
   { key: "mom", label: "MOM 分析" },
   { key: "aiKnowledge", label: "AI 知识库" },
   { key: "pfOperations", label: "私募基金-运维" },
-  {
-    key: "pfInvestmentAlt",
-    label: "私募基金-投资（跟踪池/直投池）",
-    hint: "不含投资池",
-  },
-  { key: "pfInvestmentPool", label: "私募基金-投资（投资池）" },
+  { key: "pfInvestmentPool", label: "私募基金-投资（投资池）", hint: "勾选后可访问投资概览、在管产品、FOF底层、资料列表" },
 ]
 
 export function buildPermissionsSnapshot(source: PagePermissions | undefined): PagePermissions {
