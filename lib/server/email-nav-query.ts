@@ -824,6 +824,9 @@ function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
     ) {
       continue
     }
+    // Skip if adj is already valid (correctly above cum) — trust seed/email values.
+    const existingAdj = parseOptionalNav(curr.cumulative_nav)
+    if (existingAdj != null && existingAdj >= cum) continue
     // D_new = newly distributed dividend per unit = increase in (cum - unit) gap
     const D_new = (cum - unit) - (prevCum - prevUnit)
     const newAdj = +(prevAdj * (unit + D_new) / prevUnit).toFixed(6)
@@ -839,6 +842,10 @@ function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
  * This fills in the adj series for managed-product rows that come from ops_team_nav_manual
  * (which stores unit + cumulative only), after syncExDivAdjustedNav has anchored the ex-div
  * date's adj value.
+ *
+ * Also fills in cum_nav_withdrawal when absent, so that subsequent rechaining steps can
+ * correctly distinguish cum from adj and preserve the adj/cum ratio (> 1) across chains
+ * of unit-only email rows.
  */
 function propagateMissingAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = rows.map((row) => ({ ...row }))
@@ -849,6 +856,11 @@ function propagateMissingAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
     const rechained = rechainDerivedFromPrev(sorted[i - 1], unit)
     if (rechained) {
       sorted[i].cumulative_nav = rechained.adj
+      // If cum_nav_withdrawal is absent, set it from the rechained value so the next
+      // iteration can use it as prevCum (not prevAdj as fallback), preserving adj > cum.
+      if (!parseOptionalNav(sorted[i].cum_nav_withdrawal)) {
+        sorted[i].cum_nav_withdrawal = rechained.cum
+      }
     }
   }
   return sorted
