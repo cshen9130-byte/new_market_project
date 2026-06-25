@@ -759,7 +759,8 @@ function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string
   if (isLikelyDividendExDate(prevUnit, unit, prevCumW)) {
     const cumUnitGap = prevCumW - prevUnit
     const cum = cumUnitGap > 0.01 ? unit + cumUnitGap : prevCumW * unitRatio
-    const adj = prevAdj * unitRatio
+    // Grow adj at the cumulative rate so the adj/cum ratio is preserved (≥ 1).
+    const adj = prevCumW > 0 ? prevAdj * cum / prevCumW : prevAdj * unitRatio
     if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null
     return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
   }
@@ -770,9 +771,10 @@ function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string
     return { cum: v, adj: v }
   }
 
-  const adj = prevAdj * unitRatio
   const cumUnitGap = prevCum - prevUnit
   const cum = cumUnitGap > 0.01 ? unit + cumUnitGap : prevCum * unitRatio
+  // Grow adj at the cumulative rate to maintain adj/cum ratio constant (≥ 1 after ex-div).
+  const adj = prevCum > 0 ? prevAdj * cum / prevCum : prevAdj * unitRatio
   if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null
 
   return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
@@ -801,10 +803,10 @@ function refreshDerivedForUnitOnlyEmailRows(
 
 /** After ex-div unit fix, align 复权 with the reinvestment factor on that date.
  *
- * Uses prevUnit/unit (pre-ex-div price / post-ex-div price) rather than cum/prevCum so
- * that adj stays above cum even when unit nav later falls below the ex-div-day level.
- * When the ex-div row already has an adj value (e.g. from a seed file), all subsequent
- * rows with existing adj are rebased by the same multiplier to keep the chain consistent.
+ * Uses the dividend-reinvestment formula: prevAdj × (unit + D_new) / prevUnit,
+ * where D_new = new dividend paid = (cum - unit) - (prevCum - prevUnit).
+ * This ensures adj > cum on the ex-div date so that subsequent rechaining
+ * (which maintains the adj/cum ratio) always keeps adj ≥ cum.
  */
 function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = rows.map((row) => ({ ...row }))
@@ -822,18 +824,11 @@ function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
     ) {
       continue
     }
-    const oldAdj = parseOptionalNav(curr.cumulative_nav)
-    const newAdj = +(prevAdj * (prevUnit / unit)).toFixed(6)
-    curr.cumulative_nav = String(newAdj)
-    // Rebase all subsequent existing adj values by the same factor so the chain stays consistent.
-    if (oldAdj != null && oldAdj > 0 && Math.abs(newAdj / oldAdj - 1) > 0.001) {
-      const factor = newAdj / oldAdj
-      for (let j = i + 1; j < sorted.length; j += 1) {
-        const existing = parseOptionalNav(sorted[j].cumulative_nav)
-        if (existing != null && isReasonableNav(existing)) {
-          sorted[j].cumulative_nav = String(+(existing * factor).toFixed(6))
-        }
-      }
+    // D_new = newly distributed dividend per unit = increase in (cum - unit) gap
+    const D_new = (cum - unit) - (prevCum - prevUnit)
+    const newAdj = +(prevAdj * (unit + D_new) / prevUnit).toFixed(6)
+    if (isReasonableNav(newAdj) && newAdj >= cum) {
+      curr.cumulative_nav = String(newAdj)
     }
   }
   return sorted
