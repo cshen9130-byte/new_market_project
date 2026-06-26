@@ -23,6 +23,7 @@ export interface PortfolioFundPickerItem {
   ret_ytd: string | null
   ret_ann_since_inception: string | null
   inception_date: string | null
+  nav_start_date?: string | null
   show_team_nav_tag?: boolean
   unit_nav?: string | null
   item_type?: "fund" | "portfolio" | "index" | "style"

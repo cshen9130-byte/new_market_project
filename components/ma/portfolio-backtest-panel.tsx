@@ -9,6 +9,8 @@ interface FundInput {
   product_name: string
   initial_subscribe_date: string
   initial_amount: string
+  nav_start_date?: string
+  latest_nav_date?: string | null
 }
 
 interface CurvePoint {
@@ -55,51 +57,56 @@ const BENCHMARK_OPTIONS = [
   { key: "none", label: "无基准" },
 ] as const
 
+function isoTodayLocal() {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
 function minDate(dates: string[]) {
-  return dates.filter(Boolean).sort()[0] ?? new Date().toISOString().slice(0, 10)
+  return dates.filter(Boolean).sort()[0] ?? isoTodayLocal()
 }
 
 function maxDate(dates: string[]) {
-  return dates.filter(Boolean).sort().at(-1) ?? new Date().toISOString().slice(0, 10)
+  return dates.filter(Boolean).sort().at(-1) ?? isoTodayLocal()
 }
 
-function daysBetween(from: string, to: string) {
-  const a = new Date(from).getTime()
-  const b = new Date(to).getTime()
-  if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return 365
-  return Math.max(30, Math.min(2000, Math.ceil((b - a) / 86_400_000)))
+function effectiveFundStart(f: FundInput): string {
+  const nav = (f.nav_start_date || "").slice(0, 10)
+  const sub = (f.initial_subscribe_date || "").slice(0, 10)
+  if (nav && sub) return nav > sub ? nav : sub
+  return nav || sub
 }
 
-async function fetchPreview(beian_hao: string, days: number) {
-  const res = await fetch(`/ma/api/tracking-funds/chart-preview?beian_hao=${encodeURIComponent(beian_hao)}&days=${days}`)
-  if (!res.ok) return { fund: [] as CurvePoint[], bench: [] as CurvePoint[] }
-  return res.json() as Promise<{ fund: CurvePoint[]; bench: CurvePoint[] }>
-}
-
-function mergePortfolioSeries(
-  seriesList: { weight: number; points: CurvePoint[] }[],
-): CurvePoint[] {
-  if (seriesList.length === 0) return []
-  const dateSet = new Set<string>()
-  seriesList.forEach((s) => s.points.forEach((p) => dateSet.add(p.d)))
-  const dates = Array.from(dateSet).sort()
-  const maps = seriesList.map((s) => ({
-    weight: s.weight,
-    map: new Map(s.points.map((p) => [p.d, p.v])),
-  }))
-
-  return dates.map((d) => {
-    let weighted = 0
-    let totalWeight = 0
-    maps.forEach(({ weight, map }) => {
-      const v = map.get(d)
-      if (v != null) {
-        weighted += v * weight
-        totalWeight += weight
-      }
-    })
-    return { d, v: totalWeight > 0 ? weighted / totalWeight : 0 }
+async function fetchPortfolioBacktest(
+  funds: FundInput[],
+  from: string,
+  to: string,
+  benchmark: string,
+) {
+  const res = await fetch("/ma/api/portfolio/backtest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ funds, from, to, benchmark }),
   })
+  if (!res.ok) {
+    return {
+      portfolio: [] as CurvePoint[],
+      bench: [] as CurvePoint[],
+      skipped: [] as string[],
+      error: "回测请求失败",
+    }
+  }
+  return res.json() as Promise<{
+    portfolio: CurvePoint[]
+    bench: CurvePoint[]
+    skipped?: string[]
+    suggestedFrom?: string
+    suggestedTo?: string
+    error?: string
+  }>
 }
 
 function mean(values: number[]) {
@@ -393,19 +400,21 @@ function MetricsTable({ rows }: { rows: MetricRowDef[] }) {
 
 export function PortfolioBacktestPanel({ funds }: { funds: FundInput[] }) {
   const defaultFrom = useMemo(
-    () => minDate(funds.map((f) => f.initial_subscribe_date)),
+    () => maxDate(funds.map(effectiveFundStart).filter(Boolean) as string[]),
     [funds],
   )
-  const defaultTo = useMemo(() => new Date().toISOString().slice(0, 10), [])
+  const defaultTo = useMemo(() => isoTodayLocal(), [funds])
+  const resolvedDefaultTo = defaultFrom > defaultTo ? defaultFrom : defaultTo
 
   const [statPeriod, setStatPeriod] = useState<(typeof STAT_PERIODS)[number]["key"]>("inception")
   const [fromDate, setFromDate] = useState(defaultFrom)
-  const [toDate, setToDate] = useState(defaultTo)
+  const [toDate, setToDate] = useState(resolvedDefaultTo)
   const [benchmark, setBenchmark] = useState<(typeof BENCHMARK_OPTIONS)[number]["key"]>("hs300")
   const [loading, setLoading] = useState(false)
   const [portfolioSeries, setPortfolioSeries] = useState<CurvePoint[]>([])
   const [benchSeries, setBenchSeries] = useState<CurvePoint[]>([])
   const [analyzed, setAnalyzed] = useState(false)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [showInterval, setShowInterval] = useState(true)
   const [showExcess, setShowExcess] = useState(false)
   const [showDrawdownExcess, setShowDrawdownExcess] = useState(false)
@@ -413,7 +422,8 @@ export function PortfolioBacktestPanel({ funds }: { funds: FundInput[] }) {
 
   useEffect(() => {
     setFromDate(defaultFrom)
-  }, [defaultFrom])
+    setToDate(resolvedDefaultTo)
+  }, [defaultFrom, resolvedDefaultTo])
 
   const portfolioReturn = portfolioSeries.at(-1)?.v ?? 0
   const benchReturn = benchSeries.at(-1)?.v ?? 0
@@ -433,22 +443,33 @@ export function PortfolioBacktestPanel({ funds }: { funds: FundInput[] }) {
     return buildMetricRows({ portfolio: computeMetrics(portfolioSeries), benchmark: emptyBench })
   }, [analyzed, portfolioSeries, benchSeries, benchmark])
 
-  async function runAnalysis() {
+  async function runAnalysis(range?: { from: string; to: string }) {
     if (funds.length === 0) return
+    let from = (range?.from || fromDate).slice(0, 10)
+    let to = (range?.to || toDate).slice(0, 10)
+    if (!from || !to) return
+    if (from > to) to = from
     setLoading(true)
+    setAnalysisError(null)
     try {
-      const days = daysBetween(fromDate, toDate)
-      const totalAmount = funds.reduce((sum, f) => sum + (parseFloat(f.initial_amount) || 0), 0) || 1
-      const previews = await Promise.all(
-        funds.map(async (fund) => {
-          const json = await fetchPreview(fund.beian_hao, days)
-          const weight = (parseFloat(fund.initial_amount) || 0) / totalAmount
-          const filtered = json.fund.filter((p) => p.d >= fromDate && p.d <= toDate)
-          return { weight, points: filtered, bench: json.bench.filter((p) => p.d >= fromDate && p.d <= toDate) }
-        }),
-      )
-      setPortfolioSeries(mergePortfolioSeries(previews.map((p) => ({ weight: p.weight, points: p.points }))))
-      setBenchSeries(benchmark === "hs300" ? (previews[0]?.bench ?? []) : [])
+      const json = await fetchPortfolioBacktest(funds, from, to, benchmark)
+      setPortfolioSeries(json.portfolio ?? [])
+      setBenchSeries(json.bench ?? [])
+      if ((json.portfolio ?? []).length === 0 && json.suggestedFrom && json.suggestedTo) {
+        const nextFrom = json.suggestedFrom
+        const nextTo = json.suggestedTo >= json.suggestedFrom ? json.suggestedTo : json.suggestedFrom
+        setFromDate(nextFrom)
+        setToDate(nextTo)
+      }
+      if ((json.portfolio ?? []).length === 0) {
+        if (json.skipped?.length) {
+          setAnalysisError(`以下基金在所选区间内无净值数据：${json.skipped.join("、")}`)
+        } else if (json.error) {
+          setAnalysisError(json.error)
+        } else {
+          setAnalysisError("暂无足够净值数据生成收益曲线")
+        }
+      }
       setAnalyzed(true)
     } finally {
       setLoading(false)
@@ -456,20 +477,32 @@ export function PortfolioBacktestPanel({ funds }: { funds: FundInput[] }) {
   }
 
   useEffect(() => {
+    autoRanRef.current = false
+    setAnalyzed(false)
+    setPortfolioSeries([])
+    setBenchSeries([])
+    setAnalysisError(null)
+  }, [funds])
+
+  useEffect(() => {
     if (autoRanRef.current || funds.length === 0) return
+    if (!defaultFrom || !resolvedDefaultTo) return
     autoRanRef.current = true
-    void runAnalysis()
+    setFromDate(defaultFrom)
+    setToDate(resolvedDefaultTo)
+    void runAnalysis({ from: defaultFrom, to: resolvedDefaultTo })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [funds.length])
+  }, [funds, defaultFrom, resolvedDefaultTo])
 
   function handleReset() {
     setStatPeriod("inception")
     setFromDate(defaultFrom)
-    setToDate(defaultTo)
+    setToDate(resolvedDefaultTo)
     setBenchmark("hs300")
     setPortfolioSeries([])
     setBenchSeries([])
     setAnalyzed(false)
+    setAnalysisError(null)
   }
 
   const chartOption = useMemo(() => {
@@ -736,7 +769,7 @@ export function PortfolioBacktestPanel({ funds }: { funds: FundInput[] }) {
           </button>
           <button
             type="button"
-            onClick={runAnalysis}
+            onClick={() => void runAnalysis()}
             disabled={loading || funds.length === 0}
             className="px-4 py-2 rounded bg-red-600 text-white text-sm font-medium hover:bg-red-700 disabled:opacity-40 transition-colors"
           >
@@ -753,8 +786,8 @@ export function PortfolioBacktestPanel({ funds }: { funds: FundInput[] }) {
               点击「开始分析」查看组合回测结果
             </div>
           ) : portfolioSeries.length === 0 ? (
-            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">
-              暂无足够净值数据生成收益曲线
+            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground px-6 text-center">
+              {analysisError ?? "暂无足够净值数据生成收益曲线"}
             </div>
           ) : (
             <ReactECharts option={chartOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />

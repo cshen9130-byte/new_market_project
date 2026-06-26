@@ -75,6 +75,59 @@ const FUND_TABLE_COLUMNS_REBALANCE = [
   "操作",
 ] as const
 
+const FUND_TABLE_COLUMNS_EQUAL = [
+  "序号",
+  "产品名称",
+  "产品编号",
+  "管理人",
+  "最新净值",
+  "净值日期",
+  "权重",
+  "净值来源",
+  "操作",
+] as const
+
+const FUND_TABLE_COLUMNS_MEAN_VARIANCE = [
+  "序号",
+  "基金名称",
+  "产品编号",
+  "管理人",
+  "最新累积净值",
+  "净值开始日期",
+  "净值来源",
+  "操作",
+] as const
+
+const FUND_TABLE_COLUMNS_BLACK_LITTERMAN = [
+  "序号",
+  "基金名称",
+  "产品编号",
+  "管理人",
+  "最新复权净值",
+  "净值开始日期",
+  "净值来源",
+  "操作",
+] as const
+
+const OPTIMIZATION_GOAL_OPTIONS = [
+  { key: "max-return", label: "收益最大化" },
+  { key: "min-risk", label: "风险最小化" },
+  { key: "max-sharpe", label: "夏普比率最大化" },
+  { key: "max-utility", label: "效用最大化" },
+] as const
+
+const RISK_CALC_PERIOD_OPTIONS = [
+  { key: "6m", label: "近半年" },
+  { key: "1y", label: "近一年" },
+  { key: "2y", label: "近两年" },
+  { key: "3y", label: "近三年" },
+  { key: "5y", label: "近五年" },
+  { key: "since-inception", label: "成立以来" },
+] as const
+
+type OptimizationGoal = (typeof OPTIMIZATION_GOAL_OPTIONS)[number]["key"]
+type RiskCalcPeriod = (typeof RISK_CALC_PERIOD_OPTIONS)[number]["key"]
+
 interface PortfolioFundRow extends PortfolioFundPickerItem {
   fund_type: "私募" | "公募"
   nav_start_date: string
@@ -84,59 +137,162 @@ interface PortfolioFundRow extends PortfolioFundPickerItem {
   rebalance_weight: string
 }
 
-function formatAmountChinese(amount: string): string {
+function formatAmountHint(amount: string): string {
   const n = Math.round(parseFloat(amount) * 100) / 100
   if (!Number.isFinite(n) || n <= 0) return ""
-  const digits = ["零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"]
-  const units = ["", "拾", "佰", "仟"]
-  const bigUnits = ["", "万", "亿"]
-
-  function sectionToChinese(section: number): string {
-    if (section === 0) return ""
-    let out = ""
-    let zero = false
-    for (let i = 0; i < 4; i++) {
-      const d = Math.floor(section / 10 ** (3 - i)) % 10
-      if (d === 0) {
-        zero = out.length > 0
-      } else {
-        if (zero) out += "零"
-        out += digits[d] + units[3 - i]
-        zero = false
-      }
-    }
-    return out
+  if (n >= 10000) {
+    const wan = n / 10000
+    const wanText = Number.isInteger(wan) ? String(wan) : wan.toFixed(2).replace(/\.?0+$/, "")
+    return `金额${wanText}万元整`
   }
+  if (Number.isInteger(n)) return `金额${n}元整`
+  return `金额${n.toFixed(2)}元整`
+}
 
-  const intPart = Math.floor(n)
-  if (intPart === 0) return ""
-
-  let result = ""
-  let remaining = intPart
-  let unitIdx = 0
-  while (remaining > 0) {
-    const section = remaining % 10000
-    const sectionText = sectionToChinese(section)
-    if (sectionText) result = sectionText + bigUnits[unitIdx] + result
-    else if (result) result = "零" + result
-    remaining = Math.floor(remaining / 10000)
-    unitIdx++
+function getEqualWeightPercent(fundCount: number, index: number): string {
+  if (fundCount <= 0) return "0"
+  const base = Math.floor(10000 / fundCount) / 100
+  if (index === fundCount - 1) {
+    const used = base * (fundCount - 1)
+    return (Math.round((100 - used) * 100) / 100).toFixed(2)
   }
+  return base.toFixed(2)
+}
 
-  result = result.replace(/零+/g, "零").replace(/零$/g, "")
-  return `${result}元整`
+function formatNavValue(value: string | null | undefined): string {
+  if (!value) return "—"
+  const n = parseFloat(value)
+  if (!Number.isFinite(n)) return value
+  return n.toFixed(4)
+}
+
+function applyEqualWeightToFunds(
+  rows: PortfolioFundRow[],
+  portfolioInitialScale: string,
+  buyDate: string,
+): PortfolioFundRow[] {
+  const scale = parseFloat(portfolioInitialScale) || 0
+  const n = rows.length
+  if (n === 0) return rows
+  const perFund = Math.round((scale / n) * 100) / 100
+  const lastAmount = Math.round((scale - perFund * (n - 1)) * 100) / 100
+  return rows.map((row, index) => ({
+    ...row,
+    initial_amount: String(index === n - 1 ? lastAmount : perFund),
+    initial_subscribe_date: buyDate || row.initial_subscribe_date,
+    rebalance_weight: getEqualWeightPercent(n, index),
+  }))
+}
+
+function applyScaleToFunds(
+  rows: PortfolioFundRow[],
+  portfolioInitialScale: string,
+  buyDate: string,
+): PortfolioFundRow[] {
+  const scale = parseFloat(portfolioInitialScale) || 0
+  const n = rows.length
+  if (n === 0) return rows
+  const perFund = Math.round((scale / n) * 100) / 100
+  const lastAmount = Math.round((scale - perFund * (n - 1)) * 100) / 100
+  return rows.map((row, index) => ({
+    ...row,
+    initial_amount: String(index === n - 1 ? lastAmount : perFund),
+    initial_subscribe_date: buyDate || row.initial_subscribe_date,
+  }))
+}
+
+function optimizationGoalLabel(goal: OptimizationGoal) {
+  return OPTIMIZATION_GOAL_OPTIONS.find((o) => o.key === goal)?.label ?? goal
+}
+
+function riskCalcPeriodLabel(period: RiskCalcPeriod) {
+  return RISK_CALC_PERIOD_OPTIONS.find((o) => o.key === period)?.label ?? period
+}
+
+function ModelPercentField({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <label className="text-sm text-zinc-600 dark:text-zinc-400 shrink-0 w-32">{label}</label>
+      <div className="relative flex-1 max-w-[200px]">
+        <input
+          type="number"
+          step="0.01"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="h-9 w-full pl-3 pr-8 border rounded-lg text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+        />
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">%</span>
+      </div>
+    </div>
+  )
 }
 
 function createFundRow(item: PortfolioFundPickerItem): PortfolioFundRow {
   return {
     ...item,
     fund_type: "私募",
-    nav_start_date: item.inception_date ?? item.latest_nav_date ?? "",
+    nav_start_date: item.nav_start_date ?? "",
     initial_subscribe_date: new Date().toISOString().slice(0, 10),
     initial_amount: "1000000",
     nav_source: "平台净值",
     rebalance_weight: "",
   }
+}
+
+async function fetchNavRange(beian_hao: string, product_name: string) {
+  const params = new URLSearchParams({ beian_hao, product_name })
+  const res = await fetch(`/ma/api/tracking-funds/nav-range?${params.toString()}`)
+  if (!res.ok) return null
+  return res.json() as Promise<{ nav_start_date: string | null; latest_nav_date: string | null }>
+}
+
+function fundRowKey(row: { beian_hao: string; product_name: string }) {
+  return `${row.beian_hao}::${row.product_name}`
+}
+
+async function enrichFundsNavDates(rows: PortfolioFundRow[]): Promise<PortfolioFundRow[]> {
+  if (rows.length === 0) return rows
+
+  const ranges = await Promise.all(
+    rows.map(async (row) => {
+      const range = await fetchNavRange(row.beian_hao, row.product_name)
+      return { key: fundRowKey(row), range }
+    }),
+  )
+  const rangeMap = new Map(
+    ranges.filter((r) => r.range?.nav_start_date).map((r) => [r.key, r.range!]),
+  )
+
+  return rows.map((row) => {
+    const range = rangeMap.get(fundRowKey(row))
+    if (!range?.nav_start_date) return row
+    const navStart = range.nav_start_date.slice(0, 10)
+    const latestNav = (range.latest_nav_date ?? row.latest_nav_date ?? "").slice(0, 10)
+    let subscribe = row.initial_subscribe_date.slice(0, 10)
+    if (subscribe && latestNav && subscribe > latestNav) {
+      subscribe = navStart
+    }
+    if (subscribe && navStart && subscribe < navStart) {
+      subscribe = navStart
+    }
+    return {
+      ...row,
+      nav_start_date: navStart,
+      latest_nav_date: latestNav || row.latest_nav_date,
+      initial_subscribe_date: subscribe || row.initial_subscribe_date,
+    }
+  })
 }
 
 function rebalanceMethodLabel(method: RebalanceMethod) {
@@ -209,12 +365,34 @@ export function PortfolioFreeCreateWizard() {
   const [showFundPicker, setShowFundPicker] = useState(false)
   const [showSaveDialog, setShowSaveDialog] = useState(false)
   const [funds, setFunds] = useState<PortfolioFundRow[]>([])
+  const [portfolioInitialScale, setPortfolioInitialScale] = useState("1000000")
+  const [buyDate, setBuyDate] = useState("")
+  const [optimizationGoal, setOptimizationGoal] = useState<OptimizationGoal>("max-return")
+  const [riskCalcPeriod, setRiskCalcPeriod] = useState<RiskCalcPeriod>("6m")
+  const [riskFreeRate, setRiskFreeRate] = useState("0")
+  const [minWeight, setMinWeight] = useState("")
+  const [minAnnualReturn, setMinAnnualReturn] = useState("")
+  const [maxAnnualRisk, setMaxAnnualRisk] = useState("")
+  const [maxDrawdown, setMaxDrawdown] = useState("")
   const addDateInputRef = useRef<HTMLInputElement>(null)
 
-  const fundTableColumns =
-    rebalanceMethod === "periodic" || rebalanceMethod === "specified-date"
-      ? FUND_TABLE_COLUMNS_REBALANCE
-      : FUND_TABLE_COLUMNS_BUY_HOLD
+  const isEqualWeightModel = model === "equal"
+  const isMeanVarianceModel = model === "mean-variance"
+  const isRiskParityModel = model === "risk-parity"
+  const isBlackLittermanModel = model === "black-litterman"
+  const usesOptimizationSettings = isMeanVarianceModel || isBlackLittermanModel
+  const usesScaleModelTable = usesOptimizationSettings || isRiskParityModel
+  const usesPortfolioScale = isEqualWeightModel || usesScaleModelTable
+  const usesBuyDatePicker = usesPortfolioScale
+  const fundTableColumns = isEqualWeightModel
+    ? FUND_TABLE_COLUMNS_EQUAL
+    : isBlackLittermanModel
+      ? FUND_TABLE_COLUMNS_BLACK_LITTERMAN
+      : usesScaleModelTable
+        ? FUND_TABLE_COLUMNS_MEAN_VARIANCE
+        : rebalanceMethod === "periodic" || rebalanceMethod === "specified-date"
+          ? FUND_TABLE_COLUMNS_REBALANCE
+          : FUND_TABLE_COLUMNS_BUY_HOLD
 
   function handleSavePortfolio() {
     setShowSaveDialog(true)
@@ -259,15 +437,39 @@ export function PortfolioFreeCreateWizard() {
 
   function handleNext() {
     if (step === 1) {
-      if (funds.length === 0) {
-        window.alert("请先添加基金")
-        return
-      }
-      const invalid = funds.some((f) => !f.initial_subscribe_date || !f.initial_amount)
-      if (invalid) {
-        window.alert("请完善每只基金的初始申购日期和初始申购金额")
-        return
-      }
+      void (async () => {
+        if (funds.length === 0) {
+          window.alert("请先添加基金")
+          return
+        }
+        let nextFunds = await enrichFundsNavDates(funds)
+        if (usesPortfolioScale) {
+          const scale = parseFloat(portfolioInitialScale)
+          if (!Number.isFinite(scale) || scale <= 0) {
+            window.alert("请输入有效的组合初始规模")
+            return
+          }
+          nextFunds = isEqualWeightModel
+            ? applyEqualWeightToFunds(nextFunds, portfolioInitialScale, buyDate)
+            : applyScaleToFunds(nextFunds, portfolioInitialScale, buyDate)
+        } else {
+          const invalid = nextFunds.some((f) => !f.initial_subscribe_date || !f.initial_amount)
+          if (invalid) {
+            window.alert("请完善每只基金的初始申购日期和初始申购金额")
+            return
+          }
+        }
+        setFunds(nextFunds)
+        setStep(2)
+      })()
+      return
+    }
+    if (step === 2) {
+      void enrichFundsNavDates(funds).then((nextFunds) => {
+        setFunds(nextFunds)
+        setStep(3)
+      })
+      return
     }
     if (step < WIZARD_STEPS.length) setStep((s) => s + 1)
   }
@@ -282,10 +484,24 @@ export function PortfolioFreeCreateWizard() {
   }
 
   function handleConfirmFunds(items: PortfolioFundPickerItem[]) {
-    setFunds((prev) => {
-      const existing = new Set(prev.map((f) => f.beian_hao))
-      const added = items.filter((item) => !existing.has(item.beian_hao)).map(createFundRow)
-      return [...prev, ...added]
+    const existing = new Set(funds.map((f) => f.beian_hao))
+    const added = items.filter((item) => !existing.has(item.beian_hao)).map(createFundRow)
+    if (added.length === 0) return
+
+    setFunds((prev) => [...prev, ...added])
+
+    void enrichFundsNavDates(added).then((enriched) => {
+      setFunds((prev) =>
+        prev.map((row) => {
+          const patch = enriched.find((e) => fundRowKey(e) === fundRowKey(row))
+          if (!patch) return row
+          return {
+            ...row,
+            nav_start_date: patch.nav_start_date || row.nav_start_date,
+            latest_nav_date: patch.latest_nav_date ?? row.latest_nav_date,
+          }
+        }),
+      )
     })
   }
 
@@ -307,10 +523,46 @@ export function PortfolioFreeCreateWizard() {
               <div><span className="text-muted-foreground">构建模型：</span>{modelLabel(model)}</div>
               <div><span className="text-muted-foreground">再平衡方式：</span>{rebalanceMethodLabel(rebalanceMethod)}</div>
               <div><span className="text-muted-foreground">基金数量：</span>{funds.length} 只</div>
-              <div>
-                <span className="text-muted-foreground">初始投资总额：</span>
-                {funds.reduce((sum, f) => sum + (parseFloat(f.initial_amount) || 0), 0).toLocaleString("zh-CN")} 元
-              </div>
+              {usesPortfolioScale ? (
+                <>
+                  <div>
+                    <span className="text-muted-foreground">组合初始规模：</span>
+                    {parseFloat(portfolioInitialScale || "0").toLocaleString("zh-CN")} 元
+                  </div>
+                  {usesOptimizationSettings && (
+                    <>
+                      <div>
+                        <span className="text-muted-foreground">优化目标：</span>
+                        {optimizationGoalLabel(optimizationGoal)}
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">计算区间：</span>
+                        {riskCalcPeriodLabel(riskCalcPeriod)}
+                      </div>
+                    </>
+                  )}
+                  {isRiskParityModel && (
+                    <>
+                      <div>
+                        <span className="text-muted-foreground">优化目标：</span>
+                        风险贡献相等
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">计算区间：</span>
+                        {riskCalcPeriodLabel(riskCalcPeriod)}
+                      </div>
+                    </>
+                  )}
+                  {buyDate && (
+                    <div><span className="text-muted-foreground">买入日期：</span>{buyDate}</div>
+                  )}
+                </>
+              ) : (
+                <div>
+                  <span className="text-muted-foreground">初始投资总额：</span>
+                  {funds.reduce((sum, f) => sum + (parseFloat(f.initial_amount) || 0), 0).toLocaleString("zh-CN")} 元
+                </div>
+              )}
             </div>
           </section>
 
@@ -322,7 +574,7 @@ export function PortfolioFreeCreateWizard() {
               <table className="w-full text-sm border-collapse min-w-[880px]">
                 <thead>
                   <tr className="bg-muted/40 border-b">
-                    {["序号", "产品名称", "产品编号", "初始申购日期", "初始申购金额(元)", "净值来源"].map((col) => (
+                    {["序号", "产品名称", "产品编号", ...(isEqualWeightModel ? ["权重", "初始申购金额(元)"] : usesScaleModelTable ? ["初始申购金额(元)"] : ["初始申购日期", "初始申购金额(元)"]), "净值来源"].map((col) => (
                       <th key={col} className="px-3 py-2.5 text-left font-semibold text-zinc-500 whitespace-nowrap">{col}</th>
                     ))}
                   </tr>
@@ -338,10 +590,17 @@ export function PortfolioFreeCreateWizard() {
                         </div>
                       </td>
                       <td className="px-3 py-2.5 tabular-nums text-muted-foreground">{fund.beian_hao}</td>
-                      <td className="px-3 py-2.5 tabular-nums">{fund.initial_subscribe_date}</td>
+                      {isEqualWeightModel && (
+                        <td className="px-3 py-2.5 tabular-nums">{getEqualWeightPercent(funds.length, index)}%</td>
+                      )}
+                      {!isEqualWeightModel && !usesScaleModelTable && (
+                        <td className="px-3 py-2.5 tabular-nums">{fund.initial_subscribe_date}</td>
+                      )}
                       <td className="px-3 py-2.5">
                         <div>{parseFloat(fund.initial_amount || "0").toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                        <div className="text-xs text-amber-600 mt-0.5">{formatAmountChinese(fund.initial_amount)}</div>
+                        {formatAmountHint(fund.initial_amount) && (
+                          <div className="text-xs text-muted-foreground mt-0.5">{formatAmountHint(fund.initial_amount)}</div>
+                        )}
                       </td>
                       <td className="px-3 py-2.5">{fund.nav_source}</td>
                     </tr>
@@ -368,11 +627,14 @@ export function PortfolioFreeCreateWizard() {
       <div className="flex flex-col h-full min-h-0">
         <WizardSteps currentStep={3} />
         <PortfolioBacktestPanel
+          key={funds.map((f) => fundRowKey(f)).join("|")}
           funds={funds.map((f) => ({
             beian_hao: f.beian_hao,
             product_name: f.product_name,
             initial_subscribe_date: f.initial_subscribe_date,
             initial_amount: f.initial_amount,
+            nav_start_date: f.nav_start_date,
+            latest_nav_date: f.latest_nav_date,
           }))}
         />
         <div className="flex items-center justify-center gap-3 py-5 border-t bg-background flex-shrink-0">
@@ -439,6 +701,26 @@ export function PortfolioFreeCreateWizard() {
             </button>
           </div>
 
+          {usesPortfolioScale && (
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <label className="text-sm text-zinc-600 dark:text-zinc-400 shrink-0">
+                {isBlackLittermanModel && <span className="text-red-500 mr-0.5">*</span>}
+                组合初始规模 (元)
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={portfolioInitialScale}
+                onChange={(e) => setPortfolioInitialScale(e.target.value)}
+                className="h-9 w-48 px-3 border rounded-lg text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+              />
+              {formatAmountHint(portfolioInitialScale) && (
+                <span className="text-xs text-muted-foreground">{formatAmountHint(portfolioInitialScale)}</span>
+              )}
+            </div>
+          )}
+
           <div className="border rounded-lg overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-sm border-collapse min-w-[960px]">
@@ -483,91 +765,146 @@ export function PortfolioFreeCreateWizard() {
                             </button>
                           ) : "—"}
                         </td>
-                        <td className="px-3 py-3 tabular-nums">{fund.nav_start_date || "—"}</td>
-                        <td className="px-3 py-3">
-                          <div className="relative inline-block">
-                            <input
-                              type="date"
-                              value={fund.initial_subscribe_date}
-                              onChange={(e) => {
-                                const value = e.target.value
-                                setFunds((prev) =>
-                                  prev.map((row) =>
-                                    row.beian_hao === fund.beian_hao
-                                      ? { ...row, initial_subscribe_date: value }
-                                      : row,
-                                  ),
-                                )
-                              }}
-                              className="h-8 w-36 pl-2 pr-8 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
-                            />
-                            <CalendarDays className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                          </div>
-                        </td>
-                        <td className="px-3 py-3">
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={fund.initial_amount}
-                            onChange={(e) => {
-                              const value = e.target.value
-                              setFunds((prev) =>
-                                prev.map((row) =>
-                                  row.beian_hao === fund.beian_hao
-                                    ? { ...row, initial_amount: value }
-                                    : row,
-                                ),
-                              )
-                            }}
-                            placeholder="请输入"
-                            className="h-8 w-32 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
-                          />
-                          {formatAmountChinese(fund.initial_amount) && (
-                            <div className="text-xs text-amber-600 mt-1">{formatAmountChinese(fund.initial_amount)}</div>
-                          )}
-                        </td>
-                        <td className="px-3 py-3">
-                          {usesRebalanceWeight ? (
-                            <input
-                              type="number"
-                              min="0"
-                              max="100"
-                              step="0.01"
-                              value={fund.rebalance_weight}
-                              onChange={(e) => {
-                                const value = e.target.value
-                                setFunds((prev) =>
-                                  prev.map((row) =>
-                                    row.beian_hao === fund.beian_hao
-                                      ? { ...row, rebalance_weight: value }
-                                      : row,
-                                  ),
-                                )
-                              }}
-                              placeholder="权重%"
-                              className="h-8 w-24 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
-                            />
-                          ) : (
-                            <select
-                              value={fund.nav_source}
-                              onChange={(e) => {
-                                const value = e.target.value
-                                setFunds((prev) =>
-                                  prev.map((row) =>
-                                    row.beian_hao === fund.beian_hao
-                                      ? { ...row, nav_source: value }
-                                      : row,
-                                  ),
-                                )
-                              }}
-                              className="h-8 w-28 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
-                            >
-                              <option value="平台净值">平台净值</option>
-                              <option value="团队净值">团队净值</option>
-                            </select>
-                          )}
-                        </td>
+                        {isEqualWeightModel ? (
+                          <>
+                            <td className="px-3 py-3 tabular-nums">{formatNavValue(fund.unit_nav)}</td>
+                            <td className="px-3 py-3 tabular-nums">{fund.latest_nav_date || "—"}</td>
+                            <td className="px-3 py-3 tabular-nums font-medium">
+                              {getEqualWeightPercent(funds.length, index)}%
+                            </td>
+                            <td className="px-3 py-3">
+                              <select
+                                value={fund.nav_source}
+                                onChange={(e) => {
+                                  const value = e.target.value
+                                  setFunds((prev) =>
+                                    prev.map((row) =>
+                                      row.beian_hao === fund.beian_hao
+                                        ? { ...row, nav_source: value }
+                                        : row,
+                                    ),
+                                  )
+                                }}
+                                className="h-8 w-28 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+                              >
+                                <option value="平台净值">平台净值</option>
+                                <option value="团队净值">团队净值</option>
+                              </select>
+                            </td>
+                          </>
+                        ) : usesScaleModelTable ? (
+                          <>
+                            <td className="px-3 py-3 tabular-nums">{formatNavValue(fund.unit_nav)}</td>
+                            <td className="px-3 py-3 tabular-nums">{fund.nav_start_date || "—"}</td>
+                            <td className="px-3 py-3">
+                              <select
+                                value={fund.nav_source}
+                                onChange={(e) => {
+                                  const value = e.target.value
+                                  setFunds((prev) =>
+                                    prev.map((row) =>
+                                      row.beian_hao === fund.beian_hao
+                                        ? { ...row, nav_source: value }
+                                        : row,
+                                    ),
+                                  )
+                                }}
+                                className="h-8 w-28 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+                              >
+                                <option value="平台净值">平台净值</option>
+                                <option value="团队净值">团队净值</option>
+                              </select>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td className="px-3 py-3 tabular-nums">{fund.nav_start_date || "—"}</td>
+                            <td className="px-3 py-3">
+                              <div className="relative inline-block">
+                                <input
+                                  type="date"
+                                  value={fund.initial_subscribe_date}
+                                  onChange={(e) => {
+                                    const value = e.target.value
+                                    setFunds((prev) =>
+                                      prev.map((row) =>
+                                        row.beian_hao === fund.beian_hao
+                                          ? { ...row, initial_subscribe_date: value }
+                                          : row,
+                                      ),
+                                    )
+                                  }}
+                                  className="h-8 w-36 pl-2 pr-8 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+                                />
+                                <CalendarDays className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                              </div>
+                            </td>
+                            <td className="px-3 py-3">
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={fund.initial_amount}
+                                onChange={(e) => {
+                                  const value = e.target.value
+                                  setFunds((prev) =>
+                                    prev.map((row) =>
+                                      row.beian_hao === fund.beian_hao
+                                        ? { ...row, initial_amount: value }
+                                        : row,
+                                    ),
+                                  )
+                                }}
+                                placeholder="请输入"
+                                className="h-8 w-32 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+                              />
+                              {formatAmountHint(fund.initial_amount) && (
+                                <div className="text-xs text-muted-foreground mt-1">{formatAmountHint(fund.initial_amount)}</div>
+                              )}
+                            </td>
+                            <td className="px-3 py-3">
+                              {usesRebalanceWeight ? (
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  step="0.01"
+                                  value={fund.rebalance_weight}
+                                  onChange={(e) => {
+                                    const value = e.target.value
+                                    setFunds((prev) =>
+                                      prev.map((row) =>
+                                        row.beian_hao === fund.beian_hao
+                                          ? { ...row, rebalance_weight: value }
+                                          : row,
+                                      ),
+                                    )
+                                  }}
+                                  placeholder="权重%"
+                                  className="h-8 w-24 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+                                />
+                              ) : (
+                                <select
+                                  value={fund.nav_source}
+                                  onChange={(e) => {
+                                    const value = e.target.value
+                                    setFunds((prev) =>
+                                      prev.map((row) =>
+                                        row.beian_hao === fund.beian_hao
+                                          ? { ...row, nav_source: value }
+                                          : row,
+                                      ),
+                                    )
+                                  }}
+                                  className="h-8 w-28 px-2 border rounded text-sm bg-background outline-none focus:ring-1 focus:ring-ring"
+                                >
+                                  <option value="平台净值">平台净值</option>
+                                  <option value="团队净值">团队净值</option>
+                                </select>
+                              )}
+                            </td>
+                          </>
+                        )}
                         <td className="px-3 py-3">
                           <div className="flex items-center gap-2 text-muted-foreground">
                             <button type="button" className="hover:text-foreground" title="编辑">
@@ -594,6 +931,99 @@ export function PortfolioFreeCreateWizard() {
             </div>
           </div>
         </section>
+
+        {usesOptimizationSettings && (
+          <section>
+            <SectionTitle>模型设置</SectionTitle>
+            <div className="space-y-6">
+              <div>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-3">选择优化目标</p>
+                <div className="flex flex-wrap items-center gap-6">
+                  {OPTIMIZATION_GOAL_OPTIONS.map((option) => (
+                    <label key={option.key} className="inline-flex items-center gap-2 cursor-pointer text-sm">
+                      <input
+                        type="radio"
+                        name="optimization-goal"
+                        checked={optimizationGoal === option.key}
+                        onChange={() => setOptimizationGoal(option.key)}
+                        className="h-4 w-4 accent-red-600"
+                      />
+                      <span className={optimizationGoal === option.key ? "text-foreground" : "text-muted-foreground"}>
+                        {option.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-3">
+                  {isBlackLittermanModel ? "预测收益与风险计算区间" : "预期收益与风险计算区间"}
+                </p>
+                <div className="flex flex-wrap items-center gap-6">
+                  {RISK_CALC_PERIOD_OPTIONS.map((option) => (
+                    <label key={option.key} className="inline-flex items-center gap-2 cursor-pointer text-sm">
+                      <input
+                        type="radio"
+                        name="risk-calc-period"
+                        checked={riskCalcPeriod === option.key}
+                        onChange={() => setRiskCalcPeriod(option.key)}
+                        className="h-4 w-4 accent-red-600"
+                      />
+                      <span className={riskCalcPeriod === option.key ? "text-foreground" : "text-muted-foreground"}>
+                        {option.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 max-w-3xl">
+                <ModelPercentField label="无风险利率" value={riskFreeRate} onChange={setRiskFreeRate} placeholder="0" />
+                <ModelPercentField label="最小权重" value={minWeight} onChange={setMinWeight} />
+                <ModelPercentField label="年化收益率下限" value={minAnnualReturn} onChange={setMinAnnualReturn} />
+                <ModelPercentField label="年化风险上限" value={maxAnnualRisk} onChange={setMaxAnnualRisk} />
+                <ModelPercentField label="最大回撤率上限" value={maxDrawdown} onChange={setMaxDrawdown} />
+              </div>
+            </div>
+          </section>
+        )}
+
+        {isRiskParityModel && (
+          <section>
+            <SectionTitle>模型设置</SectionTitle>
+            <div className="space-y-6">
+              <div>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-2">优化目标</p>
+                <p className="text-sm text-foreground">风险贡献相等</p>
+              </div>
+
+              <div>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400 mb-3">预测风险计算区间</p>
+                <div className="flex flex-wrap items-center gap-6">
+                  {RISK_CALC_PERIOD_OPTIONS.map((option) => (
+                    <label key={option.key} className="inline-flex items-center gap-2 cursor-pointer text-sm">
+                      <input
+                        type="radio"
+                        name="risk-parity-calc-period"
+                        checked={riskCalcPeriod === option.key}
+                        onChange={() => setRiskCalcPeriod(option.key)}
+                        className="h-4 w-4 accent-red-600"
+                      />
+                      <span className={riskCalcPeriod === option.key ? "text-foreground" : "text-muted-foreground"}>
+                        {option.label}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="max-w-md">
+                <ModelPercentField label="无风险利率" value={riskFreeRate} onChange={setRiskFreeRate} placeholder="0" />
+              </div>
+            </div>
+          </section>
+        )}
 
         <section>
           <SectionTitle>再平衡设置</SectionTitle>
@@ -627,9 +1057,35 @@ export function PortfolioFreeCreateWizard() {
             </div>
 
             {rebalanceMethod === "buy-hold" && (
-              <p className="text-sm text-muted-foreground">
-                买入日期：以基金列表中初始申购日期为准
-              </p>
+              usesBuyDatePicker ? (
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="text-sm text-zinc-600 dark:text-zinc-400 shrink-0">
+                    {isBlackLittermanModel && <span className="text-red-500 mr-0.5">*</span>}
+                    买入日期
+                  </span>
+                  <div className="relative">
+                    {!buyDate && (
+                      <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground z-10">
+                        请选择日期
+                      </span>
+                    )}
+                    <input
+                      type="date"
+                      value={buyDate}
+                      onChange={(e) => setBuyDate(e.target.value)}
+                      className={[
+                        "h-9 w-44 pl-3 pr-9 border rounded-lg text-sm bg-background outline-none focus:ring-1 focus:ring-ring",
+                        !buyDate ? "text-transparent" : "",
+                      ].join(" ")}
+                    />
+                    <CalendarDays className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  买入日期：以基金列表中初始申购日期为准
+                </p>
+              )
             )}
 
             {rebalanceMethod === "periodic" && (
