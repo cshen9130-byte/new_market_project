@@ -5,11 +5,13 @@
 export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   荣熙恒盈2号: "SBAH99",
   抱朴聚融祥和一号: "SSG947",
+  衡颐海泰1号: "SBPU97",
 }
 
 /** Alternate 备案号 stored in legacy tables — map to canonical override code. */
 const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   S52247: "SSG947",
+  SBP097: "SBPU97",
 }
 
 export function resolveManagedProductBeian(

@@ -9,6 +9,8 @@ import {
   collectFundNameAliases,
   emailNavSourceTier,
   emailRowMatchesFund,
+  inferEmailUnitNav,
+  isPostInvestmentVirtualNavEmail,
 } from "@/lib/server/email-nav-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
@@ -28,8 +30,28 @@ function isPrimaryEmailNavPoint(p: NavPoint): boolean {
   if (p.source === "attachment_valuation_table") return false
   const meta = `${p.subject ?? ""}`
   if (/估值表/u.test(meta)) return false
-  if (/虚拟/u.test(meta)) return false
   return true
+}
+
+function latestVirtualUnitRatioByCode(
+  rows: Array<{ code: string; nav_date: string; nav: string; cumulative_nav: string | null; subject: string | null }>,
+): Map<string, number> {
+  const bestDate = new Map<string, string>()
+  const out = new Map<string, number>()
+  for (const row of rows) {
+    if (!isPostInvestmentVirtualNavEmail(row.subject)) continue
+    const code = (row.code ?? "").trim()
+    if (!code) continue
+    const unit = parseNav(row.nav)
+    const cum = parseNav(row.cumulative_nav ?? "")
+    if (unit == null || cum == null || cum - unit <= 0.05) continue
+    const date = row.nav_date.slice(0, 10)
+    const prevDate = bestDate.get(code)
+    if (prevDate != null && prevDate > date) continue
+    bestDate.set(code, date)
+    out.set(code, unit / cum)
+  }
+  return out
 }
 
 function resolveEmailNavAt(points: NavPoint[] | undefined, beforeDate: string): NavPoint | null {
@@ -134,6 +156,7 @@ type EmailNavBatchRow = {
   code: string
   nav_date: string
   nav: string
+  cumulative_nav: string | null
   source: string | null
   subject: string | null
   product_code: string | null
@@ -168,7 +191,8 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
   if (beians.length === 0) return out
 
   const rows = await query<EmailNavBatchRow>(
-    `SELECT BTRIM(product_code) AS code, nav_date::text AS nav_date, nav::text AS nav, source,
+    `SELECT BTRIM(product_code) AS code, nav_date::text AS nav_date, nav::text AS nav,
+            cumulative_nav::text, source,
             COALESCE(subject, '') AS subject, product_code, fund_name, attachment_filename
      FROM ops_email_nav_records
      WHERE BTRIM(product_code) = ANY($1::text[])
@@ -178,18 +202,23 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
     [beians, sinceDate],
   )
 
+  const virtualRatioByCode = latestVirtualUnitRatioByCode(rows)
+
   const bestByCodeDate = new Map<string, EmailNavBatchRow>()
   for (const row of rows) {
     const dedupe = `${row.code}\0${row.nav_date.slice(0, 10)}`
     const prev = bestByCodeDate.get(dedupe)
-    if (!prev || emailNavSourceTier(row.source) < emailNavSourceTier(prev.source)) {
+    if (!prev || emailNavSourceTier(row.source, row.subject) < emailNavSourceTier(prev.source, prev.subject)) {
       bestByCodeDate.set(dedupe, row)
     }
   }
 
   for (const row of bestByCodeDate.values()) {
-    const nav = parseNav(row.nav)
-    if (nav == null) continue
+    const rawNav = parseNav(row.nav)
+    if (rawNav == null) continue
+    const ratio = virtualRatioByCode.get(row.code) ?? null
+    const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
+    const nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
     const aliases = collectFundNameAliases(row.fund_name ?? "", null)
     if (!filterEmailBatchRow(row, row.code, aliases)) continue
     pushNavPoint(out, row.code, {
@@ -217,7 +246,8 @@ async function loadEmailNavByNameBatch(
   if (validNames.length === 0) return out
 
   const rows = await query<EmailNavBatchRow & { matched_name: string }>(
-    `SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav, e.source,
+    `SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav,
+            e.cumulative_nav::text, e.source,
             COALESCE(e.subject, '') AS subject, e.product_code, e.fund_name, e.attachment_filename,
             COALESCE(BTRIM(e.product_code), '') AS code
      FROM unnest($1::text[]) AS n(name)
@@ -241,23 +271,30 @@ async function loadEmailNavByNameBatch(
     [validNames, sinceDate],
   )
 
+  const virtualRatioByName = latestVirtualUnitRatioByCode(
+    rows.map((row) => ({ ...row, code: row.matched_name })),
+  )
+
   const bestByNameDate = new Map<string, EmailNavBatchRow & { matched_name: string }>()
   for (const row of rows) {
     const dedupe = `${row.matched_name}\0${row.nav_date.slice(0, 10)}`
     const prev = bestByNameDate.get(dedupe)
-    if (!prev || emailNavSourceTier(row.source) < emailNavSourceTier(prev.source)) {
+    if (!prev || emailNavSourceTier(row.source, row.subject) < emailNavSourceTier(prev.source, prev.subject)) {
       bestByNameDate.set(dedupe, row)
     }
   }
 
   for (const row of bestByNameDate.values()) {
-    const nav = parseNav(row.nav)
-    if (nav == null) continue
+    const rawNav = parseNav(row.nav)
+    if (rawNav == null) continue
     const override = lookupManagedProductOverride(row.matched_name)
     const matchBeian = (row.code ?? "").trim() || override?.beian_hao || ""
     const aliases = collectFundNameAliases(row.matched_name, row.fund_name)
     if (matchBeian && !filterEmailBatchRow(row, matchBeian, aliases)) continue
-    if (!matchBeian && /虚拟/u.test(`${row.subject ?? ""}${row.fund_name ?? ""}`)) continue
+    if (!matchBeian && !isPostInvestmentVirtualNavEmail(row.subject) && /虚拟/u.test(`${row.subject ?? ""}${row.fund_name ?? ""}`)) continue
+    const ratio = virtualRatioByName.get(row.matched_name) ?? null
+    const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
+    const nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
     pushNavPoint(out, row.matched_name, {
       nav,
       nav_date: row.nav_date.slice(0, 10),

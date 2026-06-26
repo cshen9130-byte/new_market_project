@@ -11,14 +11,13 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
-import {
-  loadManagedUnderlyingMarketLookup,
-  resolveManagedUnderlyingMarket,
-} from "@/lib/server/managed-fof-underlying-pg"
+import { loadManagedUnderlyingMarketValueMap } from "@/lib/server/managed-fof-underlying-pg"
+import { isPlausibleRiskRatio } from "@/lib/server/managed-product-nav-seed"
 import {
   addDays,
   BatchNavResolver,
   chunkedInsert,
+  clampPgNumeric,
   computeOneYearRiskMetrics,
   fmtDate,
   loadBflStrategies,
@@ -119,7 +118,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
 
   logProgress(`found ${products.length} products — preloading NAV history…`)
 
-  const managedUnderlyingMarket = await loadManagedUnderlyingMarketLookup()
+  const managedMarketById = await loadManagedUnderlyingMarketValueMap()
 
   const identities = products.map((p) => ({
     beian_hao: p.beian_hao,
@@ -174,16 +173,19 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     let calmar_1y: number | null = null
     const beian = (row.beian_hao ?? "").trim()
     const fromInfo = beian ? riskFromInfo.get(beian) : undefined
-    if (fromInfo?.sharpe_1y != null || fromInfo?.calmar_1y != null) {
-      sharpe_1y = fromInfo.sharpe_1y
-      calmar_1y = fromInfo.calmar_1y
+    if (
+      isPlausibleRiskRatio(fromInfo?.sharpe_1y)
+      && isPlausibleRiskRatio(fromInfo?.calmar_1y)
+    ) {
+      sharpe_1y = fromInfo!.sharpe_1y
+      calmar_1y = fromInfo!.calmar_1y
     } else if (navDate) {
       const risk = computeOneYearRiskMetrics(
         navDate,
         navResolver.mergedHistory(identity, sinceRisk),
       )
-      sharpe_1y = risk.sharpe_1y
-      calmar_1y = risk.calmar_1y
+      sharpe_1y = isPlausibleRiskRatio(risk.sharpe_1y) ? risk.sharpe_1y : null
+      calmar_1y = isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null
     }
 
     const ops = beian ? opsStrategyMap.get(beian) : undefined
@@ -191,7 +193,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
     const platform_strategy_l1 = ops?.platform_strategy_l1 ?? bflStrategy ?? null
     const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
-    const managedMarket = resolveManagedUnderlyingMarket(row.product_name, row.beian_hao, managedUnderlyingMarket)
+    const managedMarketValue = managedMarketById.get(row.fof_underlying_id) ?? null
 
     placeholders.push(
       `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}, $${pi + 18}::date, NOW())`,
@@ -201,20 +203,20 @@ export async function refreshFofOverviewListCache(): Promise<number> {
       row.product_name,
       row.beian_hao,
       row.short_name,
-      unitNav,
+      clampPgNumeric(unitNav, 16, 6),
       navDate,
-      returnPct,
-      returns.ret_1w,
-      returns.ret_1m,
-      returns.ret_3m,
-      returns.ret_6m,
-      returns.ret_1y,
-      sharpe_1y,
-      calmar_1y,
+      clampPgNumeric(returnPct, 16, 8),
+      clampPgNumeric(returns.ret_1w, 16, 8),
+      clampPgNumeric(returns.ret_1m, 16, 8),
+      clampPgNumeric(returns.ret_3m, 16, 8),
+      clampPgNumeric(returns.ret_6m, 16, 8),
+      clampPgNumeric(returns.ret_1y, 16, 8),
+      clampPgNumeric(sharpe_1y, 16, 6),
+      clampPgNumeric(calmar_1y, 16, 6),
       company_strategy_l1,
       platform_strategy_l1,
       team_tags,
-      managedMarket.market_value,
+      clampPgNumeric(managedMarketValue, 20, 2),
       asOfDate,
     )
     pi += 19
@@ -244,7 +246,10 @@ export async function refreshFofOverviewListCache(): Promise<number> {
 /** True when the API can serve from the nightly precomputed cache. */
 export function useFofOverviewListCache(cutoffRaw: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
-  return cutoffRaw === new Date().toISOString().slice(0, 10)
+  const today = new Date().toISOString().slice(0, 10)
+  // Historical cutoffs recompute on the fly; today/future dates use the nightly cache.
+  // Using >= avoids slow-path fallback when the UI date is ahead of UTC server date.
+  return cutoffRaw >= today
 }
 
 let cacheRefreshInFlight: Promise<number> | null = null

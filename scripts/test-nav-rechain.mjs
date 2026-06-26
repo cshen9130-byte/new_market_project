@@ -136,6 +136,21 @@ const custody622 = custodyMerged.find((r) => r.price_date === "2026-06-22")
 assert("custody email unit ~1.9983", Math.abs(parseFloat(custody622.nav) - 1.9983) < 0.001)
 assert("custody email cum ~2.5632", Math.abs(parseFloat(custody622.cum_nav_withdrawal) - 2.5632) < 0.001)
 
+// SNF018: email series should carry distinct unit/cum (attachment-only days corrected before merge)
+const snfEmail = [
+  { price_date: "2026-06-23", nav: "1.3358", cumulative_nav: "1.7462", adjusted_nav: null },
+  { price_date: "2026-06-25", nav: "1.3475", cumulative_nav: "1.7600", adjusted_nav: null },
+]
+const snfMerged = mergeNavSeriesWithEmail([], snfEmail)
+const snf623 = snfMerged.find((r) => r.price_date === "2026-06-23")
+const snf625 = snfMerged.find((r) => r.price_date === "2026-06-25")
+assert("SNF018 0623 unit ~1.3358", Math.abs(parseFloat(snf623.nav) - 1.3358) < 0.001)
+assert("SNF018 0623 cum ~1.7462", Math.abs(parseFloat(snf623.cum_nav_withdrawal) - 1.7462) < 0.001)
+assert("SNF018 0623 adj >= cum", parseFloat(snf623.cumulative_nav) >= parseFloat(snf623.cum_nav_withdrawal) - 0.001)
+assert("SNF018 0625 unit < 1.5", parseFloat(snf625.nav) < 1.5)
+assert("SNF018 0625 adj >= cum >= unit", parseFloat(snf625.cumulative_nav) >= parseFloat(snf625.cum_nav_withdrawal) - 0.001
+  && parseFloat(snf625.cum_nav_withdrawal) >= parseFloat(snf625.nav) - 0.001)
+
 const seedBackfill = ssgSeed.filter((r) => r.price_date < "2024-11-19")
 const emailTeam = custodyMerged
 const combined = mergeLegacyWithTeamNav(seedBackfill, emailTeam)

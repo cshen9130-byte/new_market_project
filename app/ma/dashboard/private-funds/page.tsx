@@ -16,6 +16,7 @@ import { InvestmentDirectProductsView } from "./components/InvestmentDirectProdu
 import { InvestmentDirectPortfoliosView } from "./components/InvestmentDirectPortfoliosView"
 import { CustomFundsView } from "./components/CustomFundsView"
 import { CustomIndicesView } from "./components/CustomIndicesView"
+import { OperationsLedgerView } from "./components/OperationsLedgerView"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -22062,7 +22063,8 @@ export default function PrivateFundsPage() {
           {activeTab === "operations" && activeSideItem === "ops-active-funds" && <OperationsManagedProductsView />}
           {activeTab === "operations" && activeSideItem === "ops-email-sync" && <OperationsEmailSyncView />}
           {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView />}
-          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && (
+          {activeTab === "operations" && activeSideItem === "ops-ledger" && <OperationsLedgerView />}
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-ledger" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

@@ -175,14 +175,14 @@ export async function GET(req: Request) {
     const hasCutoff = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
     const useCache = useFofOverviewListCache(cutoffRaw)
 
-    // ─── FAST PATH — plain 2-table join, no lateral NAV scans ───────────────
+    // ─── FAST PATH — 2-table join on precomputed cache only (no lateral NAV / 市值 scans) ──
     if (useCache) {
       void autoAddFofUnderlyingToTables().catch((autoAddErr) => {
         console.error("[investment/fof-overview/list] auto-add failed:", autoAddErr)
       })
       await ensureFofOverviewListCachePopulated()
 
-      const marketValueExpr = "COALESCE(cache.market_value, f.market_value, 0)"
+      const marketValueExpr = `COALESCE(cache.market_value, f.market_value, 0)`
       const displayNameExpr = `CASE
         WHEN cache.short_name IS NOT NULL
           AND f.product_name ~ '[ABC]类'

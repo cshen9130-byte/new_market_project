@@ -1,6 +1,6 @@
 ﻿"use client"
 
-import { useEffect, useState, useMemo, memo, Fragment } from "react"
+import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
 import type React from "react"
 import { useParams } from "next/navigation"
 import {
@@ -14,12 +14,19 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from "recharts"
-import { ArrowLeft, Database, Download, HelpCircle } from "lucide-react"
+import { ArrowLeft, Database, Download, HelpCircle, Menu, X } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
 import { computeFundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
 import { RED, GREEN, getNavFieldValue, computeNavPctChange, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
+import { WinRateAnalysisPanel } from "./components/WinRateAnalysisPanel"
 import { MonthlyReturnsCalendar } from "./components/MonthlyReturnsCalendar"
 import { RankPercentileTrendChart } from "./components/RankPercentileTrendChart"
 import { AnnualMetricsTable } from "./components/AnnualMetricsTable"
@@ -57,7 +64,91 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   operations: "ops-strategy-tags",
 }
 
+const FUND_DETAIL_TABS = [
+  { key: "performance", label: "业绩指标" },
+  { key: "product", label: "产品表现" },
+  { key: "rating", label: "基金评分" },
+  { key: "scenario", label: "情景分析" },
+  { key: "attribution", label: "净值归因" },
+  { key: "company", label: "基金公司" },
+  { key: "profile", label: "基金档案" },
+  { key: "materials", label: "相关资料" },
+] as const
+
+type FundDetailTab = (typeof FUND_DETAIL_TABS)[number]["key"]
+
 const ACTIVE_SIDE_ITEM = "private-funds"
+
+function FundDetailPageShell({
+  children,
+  onNavigateFunds,
+}: {
+  children: React.ReactNode
+  onNavigateFunds: (tab: string, side?: string) => void
+}) {
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
+        <nav className="flex items-center gap-1 px-6 h-12">
+          {menuItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              onClick={() => item.key !== "funds" && onNavigateFunds(item.key)}
+              className={[
+                "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
+                item.key === "funds"
+                  ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
+                  : "text-muted-foreground hover:text-foreground",
+              ].join(" ")}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+      </div>
+      <div className="flex flex-1 min-h-0">
+        <aside className="w-44 border-r bg-background flex-shrink-0">
+          <div className="flex items-center gap-2 px-4 py-4 border-b">
+            <div className="h-7 w-7 rounded-md bg-red-500 flex items-center justify-center flex-shrink-0">
+              <Database className="h-3.5 w-3.5 text-white" />
+            </div>
+            <span className="text-sm font-semibold text-foreground">基金数据库</span>
+          </div>
+          <nav className="flex flex-col pt-2 pb-4 overflow-y-auto">
+            {fundsSidebarGroups.map((group) => {
+              const hasActive = group.items.some((i) => i.key === ACTIVE_SIDE_ITEM)
+              return (
+                <div key={group.label}>
+                  <div className={[
+                    "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                    hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                  ].join(" ")}>{group.label}</div>
+                  {group.items.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => onNavigateFunds("funds", item.key)}
+                      className={[
+                        "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                        item.key === ACTIVE_SIDE_ITEM
+                          ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
+                          : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                      ].join(" ")}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              )
+            })}
+          </nav>
+        </aside>
+        <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5 [overflow-anchor:none]">{children}</div>
+      </div>
+    </div>
+  )
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -97,6 +188,7 @@ interface DetailData {
   info:       FundInfo
   nav_series: NavRow[]
   metrics:    Metrics
+  nav_data_source?: "team" | "platform"
 }
 
 const BENCHMARK_OPTIONS = [
@@ -195,6 +287,17 @@ function PctSpan({ value, large = false }: { value: string | null; large?: boole
 }
 
 // Downsample chart data: keep at most ~500 points for perf
+function getDefaultFilterRange(data: DetailData, todayStr: string): { from: string; to: string } {
+  const to = data.nav_series.length
+    ? data.nav_series[data.nav_series.length - 1].price_date
+    : todayStr
+  const from =
+    data.info.inception_date?.slice(0, 10) ??
+    data.nav_series[0]?.price_date ??
+    to
+  return { from, to }
+}
+
 function downsample(rows: NavRow[], maxPoints = 500): NavRow[] {
   if (rows.length <= maxPoints) return rows
   const step = Math.ceil(rows.length / maxPoints)
@@ -212,12 +315,149 @@ function computeDrawdownSeries(values: number[]): number[] {
   })
 }
 
-function drawdownXTick(val: string): string {
-  const month = parseInt(val.slice(5, 7), 10)
-  const year = val.slice(0, 4)
+function chartDateSpanDays(dates: string[]): number {
+  if (dates.length < 2) return 1
+  const start = new Date(dates[0]).getTime()
+  const end = new Date(dates[dates.length - 1]).getTime()
+  return Math.max(1, Math.round((end - start) / 86400000))
+}
+
+function pickMonthStep(spanDays: number): number {
+  if (spanDays <= 45) return 1
+  if (spanDays <= 150) return 1
+  if (spanDays <= 450) return 2
+  if (spanDays <= 900) return 3
+  if (spanDays <= 1800) return 6
+  return 12
+}
+
+function formatChartAxisDateLabel(dateStr: string, spanDays: number): string {
+  const year = dateStr.slice(0, 4)
+  const month = parseInt(dateStr.slice(5, 7), 10)
+  const day = parseInt(dateStr.slice(8, 10), 10)
+  if (!year || isNaN(month)) return dateStr.slice(0, 10)
+
+  if (spanDays <= 45 && !isNaN(day)) {
+    return `${month}/${day}`
+  }
   if (month === 1) return year
-  if (isNaN(month)) return val.slice(0, 7)
   return `${month}月`
+}
+
+function nearestDateInSeries(target: Date, dates: string[]): string {
+  const targetTs = target.getTime()
+  let best = dates[0]
+  let bestDiff = Math.abs(new Date(best).getTime() - targetTs)
+  for (let i = 1; i < dates.length; i++) {
+    const diff = Math.abs(new Date(dates[i]).getTime() - targetTs)
+    if (diff < bestDiff) {
+      bestDiff = diff
+      best = dates[i]
+    }
+  }
+  return best
+}
+
+function formatMonthTargetLabel(year: number, month: number, spanDays: number): string {
+  if (spanDays <= 45) return `${month}/${year}`
+  if (month === 1) return String(year)
+  return `${month}月`
+}
+
+function dateForMonthTarget(year: number, month: number, dates: string[]): string {
+  const mm = String(month).padStart(2, "0")
+  const inMonth = dates.filter((d) => d.startsWith(`${year}-${mm}`))
+  if (inMonth.length) return inMonth[Math.floor(inMonth.length / 2)]
+
+  if (month === 1) {
+    const inYear = dates.filter((d) => d.startsWith(String(year)))
+    if (inYear.length) return inYear[0]
+  }
+
+  return nearestDateInSeries(new Date(year, month - 1, 15), dates)
+}
+
+function buildChartDateAxisConfig(dates: string[]) {
+  if (!dates.length) {
+    return {
+      ticks: [] as string[],
+      tickFormatter: (val: string) => val,
+    }
+  }
+  if (dates.length === 1) {
+    const spanDays = 1
+    return {
+      ticks: dates,
+      tickFormatter: (val: string) => formatChartAxisDateLabel(val, spanDays),
+    }
+  }
+
+  const spanDays = chartDateSpanDays(dates)
+  const monthStep = pickMonthStep(spanDays)
+  const start = new Date(dates[0])
+  const end = new Date(dates[dates.length - 1])
+
+  let curYear = start.getFullYear()
+  let curMonth = start.getMonth() + 1 + (start.getDate() > 15 ? 1 : 0)
+  while (curMonth > 12) {
+    curMonth -= 12
+    curYear += 1
+  }
+
+  const endYear = end.getFullYear()
+  const endMonth = end.getMonth() + 1
+  const targets: Array<{ year: number; month: number }> = []
+  const seenTargets = new Set<string>()
+
+  function addTarget(year: number, month: number) {
+    const key = `${year}-${month}`
+    if (seenTargets.has(key)) return
+    seenTargets.add(key)
+    targets.push({ year, month })
+  }
+
+  while (curYear < endYear || (curYear === endYear && curMonth <= endMonth)) {
+    addTarget(curYear, curMonth)
+    curMonth += monthStep
+    while (curMonth > 12) {
+      curMonth -= 12
+      curYear += 1
+    }
+  }
+
+  for (let y = start.getFullYear(); y <= end.getFullYear(); y++) {
+    const janStart = new Date(y, 0, 1)
+    const janEnd = new Date(y, 0, 31)
+    if (janEnd >= start && janStart <= end) addTarget(y, 1)
+  }
+
+  targets.sort((a, b) => (a.year !== b.year ? a.year - b.year : a.month - b.month))
+
+  const tickLabels = new Map<string, string>()
+  const ticks: string[] = []
+
+  for (const target of targets) {
+    const date = dateForMonthTarget(target.year, target.month, dates)
+    const label = formatMonthTargetLabel(target.year, target.month, spanDays)
+    if (tickLabels.has(date)) {
+      if (target.month === 1) tickLabels.set(date, label)
+      continue
+    }
+    ticks.push(date)
+    tickLabels.set(date, label)
+  }
+
+  ticks.sort((a, b) => a.localeCompare(b))
+  if (!ticks.length) ticks.push(dates[0])
+
+  return {
+    ticks,
+    tickFormatter: (val: string) => tickLabels.get(val) ?? formatChartAxisDateLabel(val, spanDays),
+  }
+}
+
+function formatDateRange(startTs: number, endTs: number): string {
+  return `${new Date(startTs).toISOString().slice(0, 10)} ~ ${new Date(endTs).toISOString().slice(0, 10)}`
 }
 
 interface DrawdownEpisode {
@@ -412,6 +652,52 @@ function StatCard({ label, value, sub }: { label: string; value: React.ReactNode
 
 // ─── NAV Table (scrollable, no pagination) ──────────────────────────────────
 
+type NavChartPoint = { date: string; value: number; benchmarkValue: number | null }
+
+function exportNavChartCsv(
+  data: NavChartPoint[],
+  chartMode: "nav" | "return",
+  fundLabel: string,
+  benchmarkLabel: string,
+  hasBench: boolean,
+  filename: string,
+) {
+  const escape = (v: string | null | undefined) => {
+    if (v == null || v === "") return ""
+    const s = String(v)
+    return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
+  }
+  const valueHeader = chartMode === "return" ? "基金收益率(%)" : fundLabel
+  const headers = ["日期", valueHeader]
+  if (hasBench) headers.push(chartMode === "return" ? `${benchmarkLabel}(%)` : benchmarkLabel)
+  const fmtVal = (v: number) => (chartMode === "return" ? v.toFixed(2) : v.toFixed(4))
+  const lines = [
+    headers.join(","),
+    ...data.map((row) => {
+      const cols = [escape(row.date), fmtVal(row.value)]
+      if (hasBench) cols.push(row.benchmarkValue === null ? "" : fmtVal(row.benchmarkValue))
+      return cols.join(",")
+    }),
+  ]
+  const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8;" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function downloadNavChartImage(el: HTMLElement, filename: string) {
+  const { default: html2canvas } = await import("html2canvas-pro")
+  const canvas = await html2canvas(el, { backgroundColor: "#ffffff", scale: 2, useCORS: true })
+  const url = canvas.toDataURL("image/png")
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.click()
+}
+
 function exportNavCsv(rows: NavRow[], navType: string, filename: string) {
   const escape = (v: string | null | undefined) => {
     if (v == null || v === "") return ""
@@ -545,6 +831,97 @@ function DrawdownTooltip({
         ))}
       </div>
     </div>
+  )
+}
+
+function NavPerformanceChart({
+  data,
+  chartMode,
+  navTypeLabel,
+  yDomain,
+  xAxis,
+  showDots,
+  showBench,
+  benchmarkLabel,
+  height = "100%",
+  gradientId = "navGrad",
+}: {
+  data: NavChartPoint[]
+  chartMode: "nav" | "return"
+  navTypeLabel: string
+  yDomain: [number, number] | [string, string]
+  xAxis: ReturnType<typeof buildChartDateAxisConfig>
+  showDots: boolean
+  showBench: boolean
+  benchmarkLabel: string
+  height?: number | string
+  gradientId?: string
+}) {
+  return (
+    <ResponsiveContainer width="100%" height={height} debounce={1}>
+      <ComposedChart data={data} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+        <defs>
+          <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ef4444" stopOpacity={0.12} />
+            <stop offset="100%" stopColor="#ef4444" stopOpacity={0.01} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f2" vertical={false} />
+        <XAxis
+          dataKey="date"
+          ticks={xAxis.ticks}
+          tick={{ fontSize: 11, fill: "#71717a" }}
+          tickFormatter={xAxis.tickFormatter}
+          interval={0}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          domain={yDomain}
+          tick={{ fontSize: 11, fill: "#71717a" }}
+          width={chartMode === "return" ? 52 : 60}
+          tickFormatter={(v: number) =>
+            chartMode === "return"
+              ? (v > 0 ? "+" : "") + v.toFixed(0) + "%"
+              : v.toFixed(2)
+          }
+          axisLine={false}
+          tickLine={false}
+        />
+        <Tooltip content={(props) => (
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          <ChartTooltip {...(props as any)} mode={chartMode} />
+        )} />
+        {chartMode === "return" && (
+          <ReferenceLine y={0} stroke="#d4d4d8" strokeWidth={1} />
+        )}
+        {showBench && (
+          <Line
+            type="linear"
+            dataKey="benchmarkValue"
+            name={benchmarkLabel}
+            stroke="#2563eb"
+            strokeWidth={1.75}
+            strokeDasharray="6 3"
+            dot={showDots ? { r: 2, fill: "#2563eb", strokeWidth: 0 } : false}
+            connectNulls={false}
+            activeDot={{ r: 3.5, fill: "#2563eb", stroke: "#fff", strokeWidth: 1.5 }}
+            isAnimationActive={false}
+          />
+        )}
+        <Area
+          type="linear"
+          dataKey="value"
+          name={chartMode === "return" ? "基金收益率" : navTypeLabel}
+          stroke={RED}
+          strokeWidth={2}
+          fill={`url(#${gradientId})`}
+          dot={showDots ? { r: 2.5, fill: RED, strokeWidth: 0 } : false}
+          activeDot={{ r: 4.5, fill: RED, stroke: "#fff", strokeWidth: 1.5 }}
+          isAnimationActive={false}
+        />
+      </ComposedChart>
+    </ResponsiveContainer>
   )
 }
 
@@ -743,10 +1120,14 @@ export default function PrivateFundDetailPage() {
       .catch(() => {})
   }, [beian_hao, data?.info.strategy_l1, data?.info.strategy_l2])
 
-  const [chartMode, setChartMode] = useState<"nav" | "return">("nav")
+  const [chartMode, setChartMode] = useState<"nav" | "return">("return")
+  const [detailTab, setDetailTab] = useState<FundDetailTab>("performance")
+  const navChartCaptureRef = useRef<HTMLDivElement>(null)
+  const navChartLightboxRef = useRef<HTMLDivElement>(null)
+  const [navChartLightboxOpen, setNavChartLightboxOpen] = useState(false)
+  const [lightboxChartHeight, setLightboxChartHeight] = useState(0)
 
   // ─── Filter state ────────────────────────────────────────────────────────
-  const inceptionDate = data?.info.inception_date?.slice(0, 10) ?? ""
   const todayStr = new Date().toISOString().slice(0, 10)
 
   const [filterPeriod,   setFilterPeriod]   = useState<string>("成立以来")
@@ -760,17 +1141,16 @@ export default function PrivateFundDetailPage() {
   const [appliedTo,      setAppliedTo]      = useState<string>("")
   const [appliedBench,   setAppliedBench]   = useState<string>("")
   const [benchmarkData,  setBenchmarkData]  = useState<BenchmarkPoint[]>([])
-  const [showDateRange,    setShowDateRange]    = useState(true)
+  const [showDateRange,    setShowDateRange]    = useState(false)
   const [excessByDivision, setExcessByDivision] = useState(false)
 
   // When data loads, seed benchmark and dates
   useEffect(() => {
     if (!data) return
-    const inc = data.info.inception_date?.slice(0, 10) ?? ""
-    const last = data.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
+    const { from, to } = getDefaultFilterRange(data, todayStr)
     const benchmarkKey = normalizeBenchmarkKey(data.info.benchmark)
-    setFilterFrom(inc)
-    setFilterTo(last)
+    setFilterFrom(from)
+    setFilterTo(to)
     setFilterBench(benchmarkKey)
     setAppliedBench(benchmarkKey)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -810,9 +1190,8 @@ export default function PrivateFundDetailPage() {
   function applyPeriod(p: string) {
     setFilterPeriod(p)
     if (!data) return
-    const last = data.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
-    const inc  = data.info.inception_date?.slice(0, 10) ?? last
-    let from = inc
+    const { from: defaultFrom, to: last } = getDefaultFilterRange(data, todayStr)
+    let from = defaultFrom
     if (p === "近1年")  from = sub(last, 1, "year")
     else if (p === "近3年")  from = sub(last, 3, "year")
     else if (p === "近5年")  from = sub(last, 5, "year")
@@ -831,12 +1210,12 @@ export default function PrivateFundDetailPage() {
     setAppliedBench(filterBench)
   }
   function handleReset() {
-    const inc  = inceptionDate
-    const last = data?.nav_series.length ? data.nav_series[data.nav_series.length - 1].price_date : todayStr
-    const benchmarkKey = normalizeBenchmarkKey(data?.info.benchmark)
+    if (!data) return
+    const { from, to } = getDefaultFilterRange(data, todayStr)
+    const benchmarkKey = normalizeBenchmarkKey(data.info.benchmark)
     setFilterPeriod("成立以来")
-    setFilterFrom(inc)
-    setFilterTo(last)
+    setFilterFrom(from)
+    setFilterTo(to)
     setFilterNavType("复权净值")
     setFilterFreq("全部")
     setFilterBench(benchmarkKey)
@@ -846,8 +1225,11 @@ export default function PrivateFundDetailPage() {
   }
 
   // Active date range for chart/table
-  const activeFrom = appliedFrom || filterFrom
-  const activeTo   = appliedTo   || filterTo
+  const defaultFilterRange = data ? getDefaultFilterRange(data, todayStr) : null
+  const displayFrom = filterFrom || defaultFilterRange?.from || ""
+  const displayTo = filterTo || defaultFilterRange?.to || ""
+  const activeFrom = appliedFrom || displayFrom
+  const activeTo   = appliedTo   || displayTo
 
   const filteredNavRows = useMemo(() => {
     if (!data) return []
@@ -1048,18 +1430,29 @@ export default function PrivateFundDetailPage() {
 
     // Drawdown + recovery + no-new-high streak
     let peak = navVals[0], peakTs = dateTsArr[0]
-    let maxDD = 0, troughTs = dateTsArr[0], maxDDPeakVal = navVals[0]
+    let maxDD = 0, troughTs = dateTsArr[0], maxDDPeakVal = navVals[0], maxDDPeakTs = dateTsArr[0]
     let longestNoNewHigh = 0, curHighTs = dateTsArr[0]
+    let longestNoNewHighStartTs = dateTsArr[0], longestNoNewHighEndTs = dateTsArr[0]
     for (let i = 0; i < navVals.length; i++) {
       if (navVals[i] > peak) { peak = navVals[i]; peakTs = dateTsArr[i]; curHighTs = dateTsArr[i] }
-      else { const d = (dateTsArr[i] - curHighTs) / 86400000; if (d > longestNoNewHigh) longestNoNewHigh = d }
+      else {
+        const d = (dateTsArr[i] - curHighTs) / 86400000
+        if (d > longestNoNewHigh) {
+          longestNoNewHigh = d
+          longestNoNewHighStartTs = curHighTs
+          longestNoNewHighEndTs = dateTsArr[i]
+        }
+      }
       const dd = (peak - navVals[i]) / peak
-      if (dd > maxDD) { maxDD = dd; troughTs = dateTsArr[i]; maxDDPeakVal = peak }
+      if (dd > maxDD) { maxDD = dd; troughTs = dateTsArr[i]; maxDDPeakVal = peak; maxDDPeakTs = peakTs }
     }
     let ddRecoveryDays: number | null = null
+    let ddRecoveryEndTs: number | null = null
     for (let i = 0; i < navVals.length; i++) {
       if (dateTsArr[i] > troughTs && navVals[i] >= maxDDPeakVal) {
-        ddRecoveryDays = Math.round((dateTsArr[i] - troughTs) / 86400000); break
+        ddRecoveryDays = Math.round((dateTsArr[i] - troughTs) / 86400000)
+        ddRecoveryEndTs = dateTsArr[i]
+        break
       }
     }
 
@@ -1072,6 +1465,9 @@ export default function PrivateFundDetailPage() {
       periodRet: fundPeriodRet, annRet: fundAnnRet, annVol: fundAnnVol,
       sharpe: fundSharpe, calmar: fundCalmar, downsideRisk: fundDsr,
       maxDD, ddRecoveryDays, longestNoNewHighDays: Math.round(longestNoNewHigh),
+      maxDDInterval: formatDateRange(maxDDPeakTs, troughTs),
+      ddRecoveryInterval: ddRecoveryEndTs !== null ? formatDateRange(troughTs, ddRecoveryEndTs) : null,
+      longestNoNewHighInterval: formatDateRange(longestNoNewHighStartTs, longestNoNewHighEndTs),
       sortino: fundSortino,
       correlation: NaN, infoRatio: NaN, trackingError: NaN, alpha: NaN, beta: NaN,
       skewness: _skew(fundRets), kurtosis: _kurt(fundRets), var95: _var95(fundRets),
@@ -1079,7 +1475,9 @@ export default function PrivateFundDetailPage() {
 
     // ── Benchmark ──────────────────────────────────────────────────────────
     type BenchStats = typeof fund & { ddRecoveryDays: number | null }
+    type PeriodStatBlock = typeof fund
     let bench: BenchStats | null = null
+    let excess: PeriodStatBlock | null = null
 
     if (appliedBench && benchmarkData.length) {
       const benchAligned = buildAlignedBenchmarkValues(filteredNavRows, benchmarkData, "nav", filterNavType)
@@ -1106,17 +1504,31 @@ export default function PrivateFundDetailPage() {
           const bAnnVol    = _std(bRetsAl) * Math.sqrt(ppy)
           const bSharpe    = isFinite(bAnnVol) && bAnnVol > 0 ? (bAnnRet - RF) / bAnnVol : NaN
 
-          let bPeak = bLevels[0].v, bMaxDD = 0, bTroughTs = bLevels[0].ts
-          let bMaxDDPeakVal = bLevels[0].v, bLongestNoNewHigh = 0, bCurHighTs = bLevels[0].ts
+          let bPeak = bLevels[0].v, bPeakTs = bLevels[0].ts, bMaxDD = 0, bTroughTs = bLevels[0].ts
+          let bMaxDDPeakVal = bLevels[0].v, bMaxDDPeakTs = bLevels[0].ts
+          let bLongestNoNewHigh = 0, bCurHighTs = bLevels[0].ts
+          let bLongestNoNewHighStartTs = bLevels[0].ts, bLongestNoNewHighEndTs = bLevels[0].ts
           for (const { v, ts } of bLevels) {
-            if (v > bPeak) { bPeak = v; bCurHighTs = ts }
-            else { const d = (ts - bCurHighTs) / 86400000; if (d > bLongestNoNewHigh) bLongestNoNewHigh = d }
+            if (v > bPeak) { bPeak = v; bPeakTs = ts; bCurHighTs = ts }
+            else {
+              const d = (ts - bCurHighTs) / 86400000
+              if (d > bLongestNoNewHigh) {
+                bLongestNoNewHigh = d
+                bLongestNoNewHighStartTs = bCurHighTs
+                bLongestNoNewHighEndTs = ts
+              }
+            }
             const dd = (bPeak - v) / bPeak
-            if (dd > bMaxDD) { bMaxDD = dd; bTroughTs = ts; bMaxDDPeakVal = bPeak }
+            if (dd > bMaxDD) { bMaxDD = dd; bTroughTs = ts; bMaxDDPeakVal = bPeak; bMaxDDPeakTs = bPeakTs }
           }
           let bDDRecoveryDays: number | null = null
+          let bDDRecoveryEndTs: number | null = null
           for (const { v, ts } of bLevels) {
-            if (ts > bTroughTs && v >= bMaxDDPeakVal) { bDDRecoveryDays = Math.round((ts - bTroughTs) / 86400000); break }
+            if (ts > bTroughTs && v >= bMaxDDPeakVal) {
+              bDDRecoveryDays = Math.round((ts - bTroughTs) / 86400000)
+              bDDRecoveryEndTs = ts
+              break
+            }
           }
 
           const bCalmar      = bMaxDD > 0 ? bAnnRet / bMaxDD : NaN
@@ -1141,10 +1553,80 @@ export default function PrivateFundDetailPage() {
             : fundAnnRet - bAnnRet
           const infoRatio = isFinite(trackingError) && trackingError > 0 ? excessAnnRet / trackingError : NaN
 
+          if (excessByDivision && excessRets.length >= 2) {
+            const exPeriodRet = (1 + fundPeriodRet) / (1 + bPeriodRet) - 1
+            const exAnnRet = Math.pow(1 + exPeriodRet, 1 / years) - 1
+            const exAnnVol = _std(excessRets) * Math.sqrt(ppy)
+            const exSharpe = isFinite(exAnnVol) && exAnnVol > 0 ? (exAnnRet - RF) / exAnnVol : NaN
+
+            const exLevels: Array<{ v: number; ts: number }> = []
+            let exNav = 1
+            let retIdx = 0
+            for (let i = Math.max(1, baseIdx); i < benchAligned.length; i++) {
+              const bp = benchAligned[i - 1], bc = benchAligned[i]
+              if (bp !== null && bc !== null && bp > 0 && navVals[i - 1] > 0) {
+                if (exLevels.length === 0) exLevels.push({ v: 1, ts: dateTsArr[i - 1] })
+                exNav *= (1 + excessRets[retIdx])
+                exLevels.push({ v: exNav, ts: dateTsArr[i] })
+                retIdx++
+              }
+            }
+
+            let exPeak = exLevels[0]?.v ?? 1, exPeakTs = exLevels[0]?.ts ?? dateTsArr[0]
+            let exMaxDD = 0, exTroughTs = exPeakTs, exMaxDDPeakVal = exPeak, exMaxDDPeakTs = exPeakTs
+            let exLongestNoNewHigh = 0, exCurHighTs = exPeakTs
+            let exLongestNoNewHighStartTs = exPeakTs, exLongestNoNewHighEndTs = exPeakTs
+            for (const { v, ts } of exLevels) {
+              if (v > exPeak) { exPeak = v; exPeakTs = ts; exCurHighTs = ts }
+              else {
+                const d = (ts - exCurHighTs) / 86400000
+                if (d > exLongestNoNewHigh) {
+                  exLongestNoNewHigh = d
+                  exLongestNoNewHighStartTs = exCurHighTs
+                  exLongestNoNewHighEndTs = ts
+                }
+              }
+              const dd = (exPeak - v) / exPeak
+              if (dd > exMaxDD) { exMaxDD = dd; exTroughTs = ts; exMaxDDPeakVal = exPeak; exMaxDDPeakTs = exPeakTs }
+            }
+            let exDDRecoveryDays: number | null = null
+            let exDDRecoveryEndTs: number | null = null
+            for (const { v, ts } of exLevels) {
+              if (ts > exTroughTs && v >= exMaxDDPeakVal) {
+                exDDRecoveryDays = Math.round((ts - exTroughTs) / 86400000)
+                exDDRecoveryEndTs = ts
+                break
+              }
+            }
+
+            const exCalmar = exMaxDD > 0 ? exAnnRet / exMaxDD : NaN
+            const exDownRets = excessRets.filter(r => r < 0)
+            const exDsr = exDownRets.length > 0
+              ? Math.sqrt(exDownRets.reduce((s, r) => s + r * r, 0) / exDownRets.length) * Math.sqrt(ppy)
+              : 0
+            const exSortino = exDsr > 0 ? (exAnnRet - RF) / exDsr : NaN
+
+            excess = {
+              periodRet: exPeriodRet, annRet: exAnnRet, annVol: exAnnVol,
+              sharpe: exSharpe, calmar: exCalmar, downsideRisk: exDsr,
+              maxDD: exMaxDD, ddRecoveryDays: exDDRecoveryDays,
+              longestNoNewHighDays: Math.round(exLongestNoNewHigh),
+              maxDDInterval: formatDateRange(exMaxDDPeakTs, exTroughTs),
+              ddRecoveryInterval: exDDRecoveryEndTs !== null ? formatDateRange(exTroughTs, exDDRecoveryEndTs) : null,
+              longestNoNewHighInterval: formatDateRange(exLongestNoNewHighStartTs, exLongestNoNewHighEndTs),
+              sortino: exSortino,
+              correlation: NaN, infoRatio: NaN, trackingError: NaN, alpha: NaN, beta: NaN,
+              skewness: _skew(excessRets), kurtosis: _kurt(excessRets), var95: _var95(excessRets),
+            }
+          }
+
           bench = {
             periodRet: bPeriodRet, annRet: bAnnRet, annVol: bAnnVol,
             sharpe: bSharpe, calmar: bCalmar, downsideRisk: bDsr,
             maxDD: bMaxDD, ddRecoveryDays: bDDRecoveryDays, longestNoNewHighDays: Math.round(bLongestNoNewHigh),
+            maxDDInterval: formatDateRange(bMaxDDPeakTs, bTroughTs),
+            ddRecoveryInterval: bDDRecoveryEndTs !== null ? formatDateRange(bTroughTs, bDDRecoveryEndTs) : null,
+            longestNoNewHighInterval: formatDateRange(bLongestNoNewHighStartTs, bLongestNoNewHighEndTs),
             sortino: bSortino,
             correlation: 1, infoRatio: NaN, trackingError: 0, alpha: 0, beta: 1,
             skewness: _skew(bRetsAl), kurtosis: _kurt(bRetsAl), var95: _var95(bRetsAl),
@@ -1160,116 +1642,108 @@ export default function PrivateFundDetailPage() {
     }
 
     return {
-      dateRange: `${filteredNavRows[0].price_date} ～ ${filteredNavRows[filteredNavRows.length - 1].price_date}`,
+      dateRange: `${filteredNavRows[0].price_date} ~ ${filteredNavRows[filteredNavRows.length - 1].price_date}`,
       fund,
       bench,
+      excess,
     }
   }, [filteredNavRows, benchmarkData, filterNavType, appliedBench, excessByDivision])
 
   const yDomain = useMemo(() => {
     if (!activeChartData.length) return ["auto", "auto"] as [string, string]
-    const vals = activeChartData.map((d) => d.value)
-    const min = Math.min(...vals)
-    const max = Math.max(...vals)
-    const pad = (max - min) * 0.05
+    const vals = activeChartData.flatMap((d) => {
+      const out = [d.value]
+      if (typeof d.benchmarkValue === "number") out.push(d.benchmarkValue)
+      return out
+    })
+    let min = Math.min(...vals)
+    let max = Math.max(...vals)
+    if (chartMode === "return") {
+      min = Math.min(min, 0)
+      max = Math.max(max, 0)
+    }
+    const span = max - min
+    const pad = span > 0 ? span * 0.08 : Math.max(Math.abs(max), 1) * 0.08
     return [+(min - pad).toFixed(4), +(max + pad).toFixed(4)] as [number, number]
-  }, [activeChartData])
+  }, [activeChartData, chartMode])
 
-  function navigateToFundsPage(tab: string, side?: string) {
+  const navChartPointCount = activeChartData.length
+  const navChartShowDots = navChartPointCount <= 40
+  const navChartXAxis = useMemo(
+    () => buildChartDateAxisConfig(activeChartData.map((d) => d.date)),
+    [activeChartData],
+  )
+  const drawdownChartXAxis = useMemo(
+    () => buildChartDateAxisConfig(drawdownChartData.map((d) => d.date)),
+    [drawdownChartData],
+  )
+
+  const navChartExportName = useMemo(() => {
+    const product = data?.info.product_name ?? "chart"
+    const modeLabel = chartMode === "return" ? "收益曲线" : "净值曲线"
+    return `${product}_${modeLabel}_${new Date().toISOString().slice(0, 10)}`
+  }, [data?.info.product_name, chartMode])
+
+  const handleDownloadNavChartImage = useCallback(async () => {
+    const el = navChartCaptureRef.current
+    if (!el) return
+    await downloadNavChartImage(el, `${navChartExportName}.png`)
+  }, [navChartExportName])
+
+  const handleDownloadNavChartData = useCallback(() => {
+    exportNavChartCsv(
+      activeChartData,
+      chartMode,
+      chartMode === "return" ? "基金收益率" : filterNavType,
+      benchmarkLabel,
+      !!appliedBench,
+      `${navChartExportName}.csv`,
+    )
+  }, [activeChartData, chartMode, filterNavType, benchmarkLabel, appliedBench, navChartExportName])
+
+  useEffect(() => {
+    if (!navChartLightboxOpen) {
+      setLightboxChartHeight(0)
+      return
+    }
+    const el = navChartLightboxRef.current
+    if (!el) return
+    const measure = () => {
+      const h = el.clientHeight
+      setLightboxChartHeight(h > 0 ? h : Math.max(420, Math.round(window.innerHeight * 0.7)))
+    }
+    measure()
+    requestAnimationFrame(measure)
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [navChartLightboxOpen, chartMode, activeChartData.length])
+
+  const navigateToFundsPage = useCallback((tab: string, side?: string) => {
     const sideItem = side ?? TAB_DEFAULT_SIDE[tab] ?? "private-funds"
     router.push(`/ma/dashboard/private-funds?tab=${tab}&side=${sideItem}`)
-  }
-
-  function PageShell({ children }: { children: React.ReactNode }) {
-    return (
-      <div className="flex flex-col h-full overflow-hidden">
-        {/* Top menu bar */}
-        <div className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 flex-shrink-0">
-          <nav className="flex items-center gap-1 px-6 h-12">
-            {menuItems.map((item) => (
-              <button
-                key={item.key}
-                onClick={() => item.key !== "funds" && navigateToFundsPage(item.key)}
-                className={[
-                  "relative px-4 h-full text-sm font-medium transition-colors focus:outline-none",
-                  item.key === "funds"
-                    ? "text-red-600 dark:text-red-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-[2px] after:bg-red-500 after:rounded-full"
-                    : "text-muted-foreground hover:text-foreground",
-                ].join(" ")}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-        </div>
-        {/* Body: sidebar + content */}
-        <div className="flex flex-1 min-h-0">
-          <aside className="w-44 border-r bg-background flex-shrink-0">
-            <div className="flex items-center gap-2 px-4 py-4 border-b">
-              <div className="h-7 w-7 rounded-md bg-red-500 flex items-center justify-center flex-shrink-0">
-                <Database className="h-3.5 w-3.5 text-white" />
-              </div>
-              <span className="text-sm font-semibold text-foreground">基金数据库</span>
-            </div>
-            <nav className="flex flex-col pt-2 pb-4 overflow-y-auto">
-              {fundsSidebarGroups.map((group) => {
-                const hasActive = group.items.some((i) => i.key === ACTIVE_SIDE_ITEM)
-                return (
-                  <div key={group.label}>
-                    <div className={[
-                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
-                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
-                    ].join(" ")}>{group.label}</div>
-                    {group.items.map((item) => (
-                      <button
-                        key={item.key}
-                        onClick={() => {
-                          if (item.key === "private-funds") {
-                            router.push("/ma/dashboard/private-funds?tab=funds&side=private-funds")
-                          } else {
-                            navigateToFundsPage("funds", item.key)
-                          }
-                        }}
-                        className={[
-                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
-                          item.key === ACTIVE_SIDE_ITEM
-                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
-                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
-                        ].join(" ")}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                )
-              })}
-            </nav>
-          </aside>
-          <div className="flex-1 min-w-0 min-h-0 overflow-x-hidden overflow-y-auto p-5 [overflow-anchor:none]">{children}</div>
-        </div>
-      </div>
-    )
-  }
+  }, [router])
 
   if (loading) {
     return (
-      <PageShell>
+      <FundDetailPageShell onNavigateFunds={navigateToFundsPage}>
         <div className="flex items-center justify-center h-40 text-zinc-400 text-sm">加载中…</div>
-      </PageShell>
+      </FundDetailPageShell>
     )
   }
 
   if (error || !data) {
     return (
-      <PageShell>
+      <FundDetailPageShell onNavigateFunds={navigateToFundsPage}>
         <div className="flex items-center justify-center h-40 text-red-500 text-sm">
           加载失败：{error ?? "未知错误"}
         </div>
-      </PageShell>
+      </FundDetailPageShell>
     )
   }
 
-  const { info, metrics, nav_series } = data
+  const { info, metrics, nav_series, nav_data_source } = data
+  const navTableTitle = nav_data_source === "team" ? "团队净值" : "平台数据"
   const pct1w = fmtPct(info.ret_1w)
   const pct1m = fmtPct(info.ret_1m)
   const pct3m = fmtPct(info.ret_3m)
@@ -1286,17 +1760,9 @@ export default function PrivateFundDetailPage() {
     )
   }
 
-  // X-axis tick formatter: only show year changes
-  let lastYear = ""
-  function xTick(val: string): string {
-    const yr = val.slice(0, 4)
-    if (yr !== lastYear) { lastYear = yr; return yr }
-    return ""
-  }
-
   return (
     <>
-    <PageShell>
+    <FundDetailPageShell onNavigateFunds={navigateToFundsPage}>
     <div>
       {/* Back link */}
       <a
@@ -1501,7 +1967,7 @@ export default function PrivateFundDetailPage() {
         {/* Date from */}
         <input
           type="date"
-          value={filterFrom}
+          value={displayFrom}
           onChange={e => { setFilterFrom(e.target.value); setFilterPeriod("自定义") }}
           className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
         />
@@ -1509,7 +1975,7 @@ export default function PrivateFundDetailPage() {
         {/* Date to */}
         <input
           type="date"
-          value={filterTo}
+          value={displayTo}
           onChange={e => { setFilterTo(e.target.value); setFilterPeriod("自定义") }}
           className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
         />
@@ -1567,88 +2033,112 @@ export default function PrivateFundDetailPage() {
         </div>
       </div>
 
+      <div className="flex items-center gap-6 border-b border-zinc-100 mb-4 overflow-x-auto">
+        {FUND_DETAIL_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setDetailTab(tab.key)}
+            className={[
+              "pb-2.5 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px shrink-0",
+              detailTab === tab.key
+                ? "text-red-500 border-red-500 font-medium"
+                : "text-zinc-500 border-transparent hover:text-zinc-700",
+            ].join(" ")}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {detailTab === "performance" && (
+      <>
       {/* ── Chart + Table side by side ─────────────────── */}
       <div className="flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
       {activeChartData.length > 1 && (
         <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
-          <div className="flex items-center justify-between mb-3 flex-shrink-0">
-            <div className="text-sm font-semibold text-zinc-700">
-              {chartMode === "nav" ? `净值走势（${filterNavType}）` : `收益曲线（${filterNavType}）`}
+          <div ref={navChartCaptureRef} className="flex flex-col flex-1 min-h-0">
+          <div className="flex items-start justify-between mb-2 flex-shrink-0 gap-3">
+            <div>
+              <div className="text-sm font-semibold text-zinc-800">
+                {chartMode === "nav" ? `净值走势（${filterNavType}）` : `收益曲线（${filterNavType}）`}
+              </div>
+              {activeFrom && activeTo && (
+                <div className="text-[11px] text-zinc-400 mt-1 tabular-nums">
+                  {activeFrom} ~ {activeTo}
+                </div>
+              )}
+              <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
+                <span className="inline-flex items-center gap-1.5">
+                  <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
+                  {chartMode === "return" ? "基金收益率" : filterNavType}
+                </span>
+                {appliedBench && (
+                  <span className="inline-flex items-center gap-1.5">
+                    <svg width="20" height="4" aria-hidden="true" className="inline-block">
+                      <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
+                    </svg>
+                    {benchmarkLabel}
+                  </span>
+                )}
+              </div>
             </div>
-            <div className="flex rounded-lg border border-zinc-200 overflow-hidden text-xs">
-              <button
-                onClick={() => setChartMode("return")}
-                className={`px-3 py-1.5 transition-colors ${
-                  chartMode === "return"
-                    ? "bg-zinc-900 text-white font-semibold"
-                    : "bg-white text-zinc-500 hover:bg-zinc-50"
-                }`}
-              >
-                收益曲线
-              </button>
-              <button
-                onClick={() => setChartMode("nav")}
-                className={`px-3 py-1.5 transition-colors border-l border-zinc-200 ${
-                  chartMode === "nav"
-                    ? "bg-zinc-900 text-white font-semibold"
-                    : "bg-white text-zinc-500 hover:bg-zinc-50"
-                }`}
-              >
-                净值曲线
-              </button>
+            <div className="flex flex-col items-end gap-1 flex-shrink-0">
+              <div className="inline-flex text-xs">
+                <button
+                  type="button"
+                  onClick={() => setChartMode("return")}
+                  className={`px-3 py-1 transition-colors border rounded-l ${
+                    chartMode === "return"
+                      ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                      : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                  }`}
+                >
+                  收益曲线
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChartMode("nav")}
+                  className={`px-3 py-1 transition-colors border rounded-r -ml-px ${
+                    chartMode === "nav"
+                      ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                      : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                  }`}
+                >
+                  净值曲线
+                </button>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors"
+                    aria-label="图表菜单"
+                  >
+                    <Menu className="h-4 w-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[7.5rem] text-xs">
+                  <DropdownMenuItem onClick={handleDownloadNavChartImage}>下载图片</DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleDownloadNavChartData}>下载数据</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setNavChartLightboxOpen(true)}>查看大图</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
           <div className="flex-1 min-h-0">
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart data={activeChartData} margin={{ top: 4, right: 8, left: 0, bottom: 4 }}>
-              <defs>
-                <linearGradient id="navGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%"  stopColor="#ef4444" stopOpacity={0.18} />
-                  <stop offset="95%" stopColor="#ef4444" stopOpacity={0.01} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
-              <XAxis
-                dataKey="date"
-                tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                tickFormatter={xTick}
-                interval="preserveStartEnd"
-                minTickGap={40}
-              />
-              <YAxis
-                domain={yDomain}
-                tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                width={60}
-                tickFormatter={(v: number) => chartMode === "return" ? v.toFixed(0) + "%" : v.toFixed(2)}
-              />
-              <Tooltip content={(props) => (
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                <ChartTooltip {...(props as any)} mode={chartMode} />
-              )} />
-              {appliedBench && (
-                <Line
-                  type="monotone"
-                  dataKey="benchmarkValue"
-                  name={benchmarkLabel}
-                  stroke="#2563eb"
-                  strokeWidth={1.5}
-                  dot={false}
-                  connectNulls={false}
-                  activeDot={{ r: 3, fill: "#2563eb" }}
-                />
-              )}
-              <Area
-                type="monotone"
-                dataKey="value"
-                name={chartMode === "return" ? "基金收益率" : filterNavType}
-                stroke="#ef4444"
-                strokeWidth={1.5}
-                fill="url(#navGrad)"
-                dot={false}
-                activeDot={{ r: 4, fill: "#ef4444" }}
-              />
-            </ComposedChart>
-          </ResponsiveContainer>
+            <NavPerformanceChart
+              data={activeChartData}
+              chartMode={chartMode}
+              navTypeLabel={filterNavType}
+              yDomain={yDomain}
+              xAxis={navChartXAxis}
+              showDots={navChartShowDots}
+              showBench={!!appliedBench}
+              benchmarkLabel={benchmarkLabel}
+              gradientId="navGradMain"
+            />
+          </div>
           </div>
         </div>
       )}
@@ -1656,12 +2146,23 @@ export default function PrivateFundDetailPage() {
       {/* ── NAV Table ─────────────────────────────────────── */}
       <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
         <div className="flex items-center justify-between mb-3 flex-shrink-0">
-          <div className="text-sm font-semibold text-zinc-700">净值数据</div>
+          <div className="flex items-center gap-1.5">
+            <div className="text-sm font-semibold text-zinc-700">{navTableTitle}</div>
+            {nav_data_source === "team" && (
+              <span className="relative group/help inline-flex">
+                <HelpCircle className="h-3.5 w-3.5 text-zinc-400 cursor-help" aria-label="团队净值说明" />
+                <span className="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 rounded text-xs leading-snug text-white bg-zinc-700 whitespace-nowrap opacity-0 group-hover/help:opacity-100 transition-opacity z-50 shadow-md">
+                  团队净值仅团队内部可见，可在运维进行净值管理。
+                  <span className="absolute top-full left-1/2 -translate-x-1/2 -mt-px border-[5px] border-transparent border-t-zinc-700" />
+                </span>
+              </span>
+            )}
+          </div>
           <button
             onClick={() => exportNavCsv(
               filteredNavRows,
               filterNavType,
-              `${info.product_name}_净值_${new Date().toISOString().slice(0, 10)}.csv`
+              `${info.product_name}_${navTableTitle}_${new Date().toISOString().slice(0, 10)}.csv`
             )}
             disabled={filteredNavRows.length === 0}
             className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1679,7 +2180,7 @@ export default function PrivateFundDetailPage() {
         <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">
           {/* Header row */}
           <div className="flex items-center justify-between mb-3">
-            <div className="text-xs text-zinc-500">
+            <div className="text-xs text-zinc-500 min-h-[1rem]">
               {showDateRange && <span>统计区间：{periodStats.dateRange}</span>}
             </div>
             <div className="flex items-center gap-5 text-xs text-zinc-600">
@@ -1696,8 +2197,10 @@ export default function PrivateFundDetailPage() {
 
           {/* Two-panel table */}
           {(() => {
-            const { fund, bench } = periodStats
+            const { fund, bench, excess } = periodStats
             const hasBench = appliedBench && bench !== null
+            const showExcessMetrics = excessByDivision && hasBench && excess !== null
+            const dash = <span className="text-zinc-300">—</span>
 
             // Formatters
             const pct = (v: number | undefined) =>
@@ -1707,6 +2210,11 @@ export default function PrivateFundDetailPage() {
             const colorPct = (v: number | undefined) => {
               if (v === undefined || !isFinite(v)) return <span className="text-zinc-400 tabular-nums">—</span>
               const s = (v >= 0 ? "+" : "") + (v * 100).toFixed(2) + "%"
+              return <span className="tabular-nums font-semibold" style={{ color: v > 0 ? RED : v < 0 ? GREEN : undefined }}>{s}</span>
+            }
+            const highlightPct = (v: number | undefined) => {
+              if (v === undefined || !isFinite(v)) return <span className="text-zinc-400 tabular-nums">—</span>
+              const s = (v * 100).toFixed(2) + "%"
               return <span className="tabular-nums font-semibold" style={{ color: v > 0 ? RED : v < 0 ? GREEN : undefined }}>{s}</span>
             }
 
@@ -1719,28 +2227,76 @@ export default function PrivateFundDetailPage() {
             const TD = ({ children, right }: { children: React.ReactNode; right?: boolean }) => (
               <td className={`py-1.5 text-xs text-zinc-700 tabular-nums${right ? " text-right" : ""}`}>{children}</td>
             )
+            const StatCell = ({ value, interval }: { value: React.ReactNode; interval?: string | null }) => (
+              <div>
+                <div>{value}</div>
+                <div className={`text-[10px] font-normal text-zinc-400 mt-0.5 min-h-[0.875rem] ${showDateRange && interval ? "" : "invisible"}`}>
+                  {interval ?? "\u00a0"}
+                </div>
+              </div>
+            )
 
             const leftRows: Array<{
               label: string
               fNode: React.ReactNode
               bNode: React.ReactNode
-            }> = [
+              fInterval?: string | null
+              bInterval?: string | null
+            }> = showExcessMetrics ? [
+              { label: "超额区间收益", fNode: highlightPct(excess!.periodRet), bNode: dash },
+              { label: "超额年化收益", fNode: highlightPct(excess!.annRet), bNode: dash },
+              { label: "超额年化波动率", fNode: pct(excess!.annVol), bNode: dash },
+              { label: "超额夏普比率", fNode: num(excess!.sharpe), bNode: dash },
+              { label: "超额卡玛比率", fNode: num(excess!.calmar), bNode: dash },
+              { label: "超额下行风险", fNode: pct(excess!.downsideRisk), bNode: dash },
+              {
+                label: "超额最大回撤",
+                fNode: pct(excess!.maxDD),
+                bNode: dash,
+                fInterval: excess!.maxDDInterval,
+                bInterval: null,
+              },
+              {
+                label: "超额最大回撤回补期（天）",
+                fNode: excess!.ddRecoveryDays === null ? "未回补" : excess!.ddRecoveryDays,
+                bNode: dash,
+                fInterval: excess!.ddRecoveryInterval,
+                bInterval: null,
+              },
+              {
+                label: "超额最长连续不创新高天数（天）",
+                fNode: excess!.longestNoNewHighDays,
+                bNode: dash,
+                fInterval: excess!.longestNoNewHighInterval,
+                bInterval: null,
+              },
+            ] : [
               { label: "区间收益",                 fNode: colorPct(fund.periodRet),     bNode: hasBench ? colorPct(bench!.periodRet)     : <span className="text-zinc-300">—</span> },
               { label: "年化收益",                 fNode: colorPct(fund.annRet),        bNode: hasBench ? colorPct(bench!.annRet)        : <span className="text-zinc-300">—</span> },
               { label: "年化波动率",               fNode: pct(fund.annVol),             bNode: hasBench ? pct(bench!.annVol)             : "—" },
               { label: "夏普比率（Rf=2.00%）",     fNode: num(fund.sharpe),             bNode: hasBench ? num(bench!.sharpe)             : "—" },
               { label: "卡马比率",                 fNode: num(fund.calmar),             bNode: hasBench ? num(bench!.calmar)             : "—" },
               { label: "下行风险",                 fNode: pct(fund.downsideRisk),       bNode: hasBench ? pct(bench!.downsideRisk)       : "—" },
-              { label: "最大回撤",                 fNode: pct(fund.maxDD),              bNode: hasBench ? pct(bench!.maxDD)              : "—" },
               {
-                label: "最大回撤补期（天）",
+                label: "最大回撤",
+                fNode: pct(fund.maxDD),
+                bNode: hasBench ? pct(bench!.maxDD) : "—",
+                fInterval: fund.maxDDInterval,
+                bInterval: hasBench ? bench!.maxDDInterval : null,
+              },
+              {
+                label: "最大回撤回补期（天）",
                 fNode: fund.ddRecoveryDays === null ? "未回补" : fund.ddRecoveryDays,
                 bNode: !hasBench ? "—" : bench!.ddRecoveryDays === null ? "未回补" : bench!.ddRecoveryDays,
+                fInterval: fund.ddRecoveryInterval,
+                bInterval: hasBench ? bench!.ddRecoveryInterval : null,
               },
               {
                 label: "最长连续不创新高天数（天）",
                 fNode: fund.longestNoNewHighDays,
                 bNode: hasBench ? bench!.longestNoNewHighDays : "—",
+                fInterval: fund.longestNoNewHighInterval,
+                bInterval: hasBench ? bench!.longestNoNewHighInterval : null,
               },
             ]
 
@@ -1748,7 +2304,17 @@ export default function PrivateFundDetailPage() {
               label: string
               fNode: React.ReactNode
               bNode: React.ReactNode
-            }> = [
+            }> = showExcessMetrics ? [
+              { label: "超额索提诺比率", fNode: num(excess!.sortino), bNode: dash },
+              { label: "相关系数",       fNode: num(fund.correlation), bNode: num(1) },
+              { label: "信息比率",       fNode: num(fund.infoRatio),   bNode: dash },
+              { label: "跟踪误差",       fNode: pct(fund.trackingError), bNode: "0.00%" },
+              { label: "Alpha",          fNode: colorPct(fund.alpha !== undefined && isFinite(fund.alpha) ? fund.alpha : NaN), bNode: "0.00%" },
+              { label: "Beta",           fNode: num(fund.beta),        bNode: "1.0000" },
+              { label: "偏度",           fNode: num(fund.skewness),    bNode: num(bench!.skewness) },
+              { label: "峰度",           fNode: num(fund.kurtosis),    bNode: num(bench!.kurtosis) },
+              { label: "VaR（95%置信）", fNode: num(fund.var95),       bNode: num(bench!.var95) },
+            ] : [
               { label: "索提诺比率",   fNode: num(fund.sortino),      bNode: hasBench ? num(bench!.sortino)    : "—" },
               { label: "相关系数",     fNode: num(fund.correlation),  bNode: hasBench ? num(1)                 : "—" },
               { label: "信息比率",     fNode: num(fund.infoRatio),    bNode: hasBench ? "—"                   : "—" },
@@ -1773,8 +2339,18 @@ export default function PrivateFundDetailPage() {
                   {rows.map((row, i) => (
                     <tr key={row.label} className={i % 2 === 1 ? "bg-zinc-50/60" : ""}>
                       <TD>{row.label}</TD>
-                      <TD right>{row.fNode}</TD>
-                      {hasBench && <TD right>{row.bNode}</TD>}
+                      <TD right>
+                        {"fInterval" in row && row.fInterval !== undefined
+                          ? <StatCell value={row.fNode} interval={row.fInterval} />
+                          : row.fNode}
+                      </TD>
+                      {hasBench && (
+                        <TD right>
+                          {"bInterval" in row && row.bInterval !== undefined
+                            ? <StatCell value={row.bNode} interval={row.bInterval} />
+                            : row.bNode}
+                        </TD>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -1835,10 +2411,10 @@ export default function PrivateFundDetailPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" />
                 <XAxis
                   dataKey="date"
+                  ticks={drawdownChartXAxis.ticks}
                   tick={{ fontSize: 11, fill: "#a1a1aa" }}
-                  tickFormatter={drawdownXTick}
-                  interval="preserveStartEnd"
-                  minTickGap={36}
+                  tickFormatter={drawdownChartXAxis.tickFormatter}
+                  interval={0}
                 />
                 <YAxis
                   domain={drawdownYDomain}
@@ -1954,8 +2530,77 @@ export default function PrivateFundDetailPage() {
       )}
 
       <AnnualRankRadarPanel peerByYear={peerByYear} />
+      </>
+      )}
+
+      {detailTab === "product" && (
+        <WinRateAnalysisPanel
+          beian_hao={beian_hao}
+          productName={info.product_name}
+          dateRangeLabel={`${activeFrom} ~ ${activeTo}`}
+          rows={filteredNavRows}
+          navType={filterNavType}
+          benchmarkSeries={benchmarkData}
+          benchmarkLabel={benchmarkLabel}
+          hasBenchmark={!!appliedBench}
+          sampleGroup={info.strategy_l1 ?? info.strategy_l2}
+          companyStrategy={info.strategy_l1 ?? info.strategy_l2}
+        />
+      )}
+
+      {detailTab !== "performance" && detailTab !== "product" && (
+        <div className="min-h-[320px]" />
+      )}
     </div>
-    </PageShell>
+    </FundDetailPageShell>
+
+    {navChartLightboxOpen && activeChartData.length > 1 && (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-8"
+        style={{ backgroundColor: "rgba(0,0,0,0.45)" }}
+        onClick={() => setNavChartLightboxOpen(false)}
+      >
+        <div
+          className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[92vh] flex flex-col p-5"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-start justify-between mb-3 flex-shrink-0">
+            <div>
+              <div className="text-base font-semibold text-zinc-800">
+                {chartMode === "nav" ? `净值走势（${filterNavType}）` : `收益曲线（${filterNavType}）`}
+              </div>
+              {activeFrom && activeTo && (
+                <div className="text-xs text-zinc-400 mt-1 tabular-nums">{activeFrom} ~ {activeTo}</div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setNavChartLightboxOpen(false)}
+              className="p-1.5 text-zinc-400 hover:text-zinc-700 rounded transition-colors"
+              aria-label="关闭"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <div ref={navChartLightboxRef} className="w-full h-[70vh] min-h-[420px]">
+            {lightboxChartHeight > 0 && (
+              <NavPerformanceChart
+                data={activeChartData}
+                chartMode={chartMode}
+                navTypeLabel={filterNavType}
+                yDomain={yDomain}
+                xAxis={navChartXAxis}
+                showDots={navChartShowDots}
+                showBench={!!appliedBench}
+                benchmarkLabel={benchmarkLabel}
+                height={lightboxChartHeight}
+                gradientId="navGradLightbox"
+              />
+            )}
+          </div>
+        </div>
+      </div>
+    )}
 
     {/* ── 编辑产品池 modal ────────────────────────────────────────────────── */}
     {showPoolModal && (

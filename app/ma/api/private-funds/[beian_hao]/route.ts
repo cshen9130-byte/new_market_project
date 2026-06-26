@@ -3,10 +3,24 @@ import { query } from "@/lib/db"
 import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
-import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import { loadManagedProductNavSeed, mergeManagedProductDetailNav } from "@/lib/server/managed-product-nav-seed"
 import { loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
 
 export const dynamic = "force-dynamic"
+
+function collectPriceDates(rows: Array<{ price_date: string }>, into: Set<string>) {
+  for (const row of rows) into.add(row.price_date)
+}
+
+function resolveNavDataSource(
+  latestDate: string | undefined,
+  teamNavDates: Set<string>,
+  usesManagedTeamSeries: boolean,
+): "team" | "platform" {
+  if (usesManagedTeamSeries) return "team"
+  if (latestDate && teamNavDates.has(latestDate)) return "team"
+  return "platform"
+}
 
 export async function GET(
   _req: Request,
@@ -315,6 +329,10 @@ export async function GET(
     console.error("[private-funds/detail] email nav query failed:", err)
   }
 
+  const teamNavDates = new Set<string>()
+  collectPriceDates(emailNavRows, teamNavDates)
+  let usesManagedTeamSeries = false
+
   const managedOverride =
     lookupManagedProductOverride(routeBeianHao)
     ?? lookupManagedProductOverride(productName)
@@ -332,23 +350,31 @@ export async function GET(
         }),
         Promise.resolve(loadManagedProductNavSeed(managedOverride.beian_hao)),
       ])
+      collectPriceDates(seedRows, teamNavDates)
       if (teamSeries.length > 0) {
-        // Email 估值表 stream wins; seed/legacy only backfill dates before the email series starts.
+        usesManagedTeamSeries = true
+        collectPriceDates(teamSeries, teamNavDates)
         const legacyNoType6 = await loadPrivateFundLegacyNavRows(
           routeBeianHao,
           productName,
           shortName,
           { excludeType6: true },
         )
-        const firstTeamDate = teamSeries[0]?.price_date ?? ""
-        const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
-        let base = mergeNavSeriesWithEmail(legacyNoType6, [])
-        if (seedBackfill.length > 0) {
-          base = mergeLegacyWithTeamNav(base, seedBackfill)
+        if (seedRows.length > 0) {
+          nav_series = mergeManagedProductDetailNav(seedRows, teamSeries, legacyNoType6)
+        } else {
+          const firstTeamDate = teamSeries[0]?.price_date ?? ""
+          const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
+          let base = mergeNavSeriesWithEmail(legacyNoType6, [])
+          if (seedBackfill.length > 0) {
+            base = mergeLegacyWithTeamNav(base, seedBackfill)
+          }
+          nav_series = mergeLegacyWithTeamNav(base, teamSeries)
         }
-        nav_series = mergeLegacyWithTeamNav(base, teamSeries)
       } else if (seedRows.length > 0) {
-        nav_series = mergeNavSeriesWithEmail(seedRows, emailNavRows)
+        const seedLatest = seedRows[seedRows.length - 1].price_date
+        const emailAfterSeed = emailNavRows.filter((row) => row.price_date > seedLatest)
+        nav_series = mergeNavSeriesWithEmail(seedRows, emailAfterSeed)
       } else {
         const legacyNoType6 = await loadPrivateFundLegacyNavRows(
           routeBeianHao,
@@ -366,11 +392,13 @@ export async function GET(
   } else {
     const seedRows = loadManagedProductNavSeed(routeBeianHao)
     if (seedRows.length > 0) {
+      collectPriceDates(seedRows, teamNavDates)
       nav_series = mergeNavSeriesWithEmail(seedRows, [])
     }
   }
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]
+  const nav_data_source = resolveNavDataSource(latest?.price_date, teamNavDates, usesManagedTeamSeries)
 
   // Headline returns should follow the reinvested series, which matches the source system.
   const latestReinvestedNav = latest ? parseFloat(latest.cumulative_nav) : null
@@ -435,6 +463,7 @@ export async function GET(
   return NextResponse.json({
     info: { ...info, strategy_l3, scale, manager_names },
     nav_series,
+    nav_data_source,
     metrics: {
       latest_nav:                latest?.nav              ?? null,
       latest_nav_date:           latest?.price_date       ?? null,

@@ -11,7 +11,9 @@ import {
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { ensureEmailValuationHoldingsTables } from "@/lib/server/email-valuation-holdings-pg"
 import {
+  buildFofUnderlyingSummaryFrom,
   buildManagedProductsFrom,
+  FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
 import { sqlFundNameMatch, sqlEmailNavShareClassGuard, sqlShareClassCodeGuard } from "@/lib/server/fund-name-match"
@@ -36,6 +38,9 @@ const CREATE_TABLE_SQL = `
     quantity                 NUMERIC(20,4),
     cost                     NUMERIC(20,2),
     market_weight            NUMERIC(12,6),
+    unit_nav                 NUMERIC(16,6),
+    nav_date                 DATE,
+    price_change             NUMERIC(10,4),
     refreshed_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   CREATE INDEX IF NOT EXISTS idx_managed_fof_underlying_product
@@ -61,12 +66,23 @@ const MIGRATE_UNIQUE_SQL = `
   END $$;
 `
 
+const MIGRATE_NAV_COLUMNS = [
+  `ALTER TABLE ops_managed_fof_underlying ADD COLUMN IF NOT EXISTS unit_nav NUMERIC(16,6)`,
+  `ALTER TABLE ops_managed_fof_underlying ADD COLUMN IF NOT EXISTS nav_date DATE`,
+  `ALTER TABLE ops_managed_fof_underlying ADD COLUMN IF NOT EXISTS price_change NUMERIC(10,4)`,
+  `CREATE INDEX IF NOT EXISTS idx_managed_fof_underlying_fof_name
+     ON ops_managed_fof_underlying (fof_product_name)`,
+]
+
 let tableEnsured = false
 
 export async function ensureManagedFofUnderlyingTable(): Promise<void> {
   if (tableEnsured) return
   await query(CREATE_TABLE_SQL)
   await query(MIGRATE_UNIQUE_SQL)
+  for (const stmt of MIGRATE_NAV_COLUMNS) {
+    await query(stmt)
+  }
   tableEnsured = true
 }
 
@@ -189,7 +205,91 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
     [MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
   )
 
-  return parseInt(rows[0]?.n ?? "0", 10)
+  const inserted = parseInt(rows[0]?.n ?? "0", 10)
+  if (inserted > 0) {
+    await backfillManagedFofUnderlyingNavFields()
+  }
+  return inserted
+}
+
+let navBackfillInFlight: Promise<number> | null = null
+
+/** Populate precomputed NAV columns so list API avoids per-request BatchNavResolver. */
+export async function backfillManagedFofUnderlyingNavFields(): Promise<number> {
+  await ensureManagedFofUnderlyingTable()
+
+  const rawRows = await query<DetailRawRow>(
+    `SELECT
+       m.id,
+       m.fof_product_name AS fof_fund_name,
+       m.underlying_name AS product_name,
+       NULLIF(BTRIM(m.underlying_product_code), '') AS beian_hao,
+       m.valuation_date,
+       m.quantity AS investment_shares,
+       m.market_value,
+       m.market_weight
+     FROM ops_managed_fof_underlying m
+     WHERE COALESCE(m.market_value, 0) > 0`,
+  )
+  if (rawRows.length === 0) return 0
+
+  const asOfDate = new Date().toISOString().slice(0, 10)
+  const identities: ProductNavIdentity[] = rawRows.map((r) => ({
+    beian_hao: r.beian_hao,
+    product_name: r.product_name,
+    short_name: null,
+  }))
+  const resolver = await BatchNavResolver.create(identities, asOfDate)
+  const enriched = enrichDetailRows(rawRows, resolver)
+
+  const CHUNK = 100
+  for (let i = 0; i < enriched.length; i += CHUNK) {
+    const chunk = enriched.slice(i, i + CHUNK)
+    const values: unknown[] = []
+    const placeholders: string[] = []
+    let pi = 1
+    for (const row of chunk) {
+      placeholders.push(
+        `($${pi}::bigint, $${pi + 1}::numeric, $${pi + 2}::date, $${pi + 3}::numeric)`,
+      )
+      values.push(
+        parseInt(row.id, 10),
+        row.unit_nav != null ? parseFloat(row.unit_nav) : null,
+        row.nav_date,
+        row.price_change != null ? parseFloat(row.price_change) : null,
+      )
+      pi += 4
+    }
+    await query(
+      `UPDATE ops_managed_fof_underlying AS m SET
+         unit_nav = v.unit_nav,
+         nav_date = v.nav_date,
+         price_change = v.price_change
+       FROM (VALUES ${placeholders.join(", ")}) AS v(id, unit_nav, nav_date, price_change)
+       WHERE m.id = v.id`,
+      values,
+    )
+  }
+
+  return enriched.length
+}
+
+/** Backfill NAV columns in background when missing (e.g. after schema migration). */
+async function ensureManagedFofUnderlyingNavPopulated(): Promise<void> {
+  await ensureManagedFofUnderlyingTable()
+  const rows = await query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM ops_managed_fof_underlying
+     WHERE COALESCE(market_value, 0) > 0 AND unit_nav IS NULL`,
+  )
+  if (parseInt(rows[0]?.n ?? "0", 10) === 0 || navBackfillInFlight) return
+  navBackfillInFlight = backfillManagedFofUnderlyingNavFields()
+    .catch((err) => {
+      console.error("[managed-fof-underlying] NAV backfill failed:", err)
+      return 0
+    })
+    .finally(() => {
+      navBackfillInFlight = null
+    })
 }
 
 export type ManagedFofUnderlyingRow = {
@@ -238,7 +338,7 @@ export function managedUnderlyingMatchParamsSql(
   nameParam: string,
   alias = "m",
 ): string {
-  const beianMatch = `(${beianParam} <> '' AND NULLIF(BTRIM(UPPER(${alias}.underlying_product_code)), '') = TRIM(UPPER(${beianParam})))`
+  const beianMatch = `(${beianParam} <> '' AND NULLIF(BTRIM(UPPER(${alias}.underlying_product_code)), '') = TRIM(UPPER(${beianParam})) AND ${sqlShareClassCodeGuard(`${alias}.underlying_product_code`, nameParam)})`
   const nameMatch = sqlFundNameMatch(`${alias}.underlying_name`, nameParam)
   const shareGuard = sqlEmailNavShareClassGuard(
     `${alias}.underlying_name`,
@@ -246,6 +346,25 @@ export function managedUnderlyingMatchParamsSql(
     `${alias}.underlying_product_code`,
   )
   return `(${beianMatch} OR (${nameMatch} AND ${shareGuard}))`
+}
+
+/** Per-summary-row managed 市值 from email 估值表 holdings (same match as 持仓 modal). */
+export async function loadManagedUnderlyingMarketValueMap(): Promise<Map<string, number>> {
+  await ensureManagedFofUnderlyingTable()
+
+  const managedMv = managedUnderlyingMarketValueExpr(FOF_UNDERLYING_BEIAN_EXPR, "f.product_name")
+  const rows = await query<{ id: string; market_value: string | null }>(
+    `SELECT f.id::text AS id, (${managedMv})::text AS market_value
+     ${buildFofUnderlyingSummaryFrom("f.product_name")}
+     WHERE f.product_name <> '合计'`,
+  )
+
+  const map = new Map<string, number>()
+  for (const row of rows) {
+    const mv = row.market_value != null ? parseFloat(row.market_value) : NaN
+    if (Number.isFinite(mv) && mv > 0) map.set(row.id, mv)
+  }
+  return map
 }
 
 export type UnderlyingMarketAggregate = {
@@ -410,16 +529,17 @@ export async function listUnderlyingHoldings(options: {
     market_weight: string | null
   }>(
     `SELECT
-       m.id::text,
+       MIN(m.id)::text AS id,
        m.fof_product_name,
        m.valuation_date,
-       m.quantity::text,
-       m.market_value::text,
-       m.market_weight::text
+       SUM(m.quantity)::text AS quantity,
+       SUM(m.market_value)::text AS market_value,
+       SUM(m.market_weight)::text AS market_weight
      FROM ops_managed_fof_underlying m
      WHERE COALESCE(m.market_value, 0) > 0
        AND ${matchSql}
-     ORDER BY m.market_value DESC NULLS LAST, m.fof_product_name ASC`,
+     GROUP BY m.managed_product_id, m.fof_product_name, m.valuation_date
+     ORDER BY SUM(m.market_value) DESC NULLS LAST, m.fof_product_name ASC`,
     [beian, productName],
   )
 
@@ -541,9 +661,19 @@ const DETAIL_SQL_SORT: Record<string, string> = {
   fof_fund_name: "m.fof_product_name",
   product_name: "m.underlying_name",
   beian_hao: "m.underlying_product_code",
+  unit_nav: "m.unit_nav",
+  nav_date: "m.nav_date",
+  price_change: "m.price_change",
   investment_shares: "m.quantity",
   market_value: "m.market_value",
   market_value_pct: "m.market_weight",
+  ret_1w: "m.id",
+  ret_1m: "m.id",
+  ret_3m: "m.id",
+  ret_6m: "m.id",
+  ret_1y: "m.id",
+  sharpe_1y: "m.id",
+  calmar_1y: "m.id",
 }
 
 const DETAIL_DEFAULT_ORDER = "m.fof_product_name ASC, m.market_value DESC NULLS LAST, m.id ASC"
@@ -586,9 +716,51 @@ type DetailRawRow = {
   investment_shares: string | number | null
   market_value: string | number | null
   market_weight: string | number | null
+  unit_nav?: string | number | null
+  nav_date?: string | Date | null
+  price_change?: string | number | null
 }
 
 type DetailEnrichedRow = ManagedFofDetailListRow
+
+function mapDetailRowFromDb(r: DetailRawRow, seqNo: number | null): DetailEnrichedRow {
+  const beian = r.beian_hao?.trim() || null
+  const valuationDate = fmtIso(r.valuation_date)
+
+  let unitNav: number | null = null
+  if (r.unit_nav != null) {
+    const stored = parseFloat(String(r.unit_nav))
+    if (isPlausibleUnitNav(stored)) unitNav = stored
+  }
+  if (unitNav == null) {
+    unitNav = deriveNavFromValuation(r.investment_shares, r.market_value)
+  }
+
+  const navDate = r.nav_date ? fmtIso(r.nav_date) : valuationDate
+  const priceChange = r.price_change != null ? String(r.price_change) : null
+
+  return {
+    id: String(r.id),
+    seq_no: seqNo,
+    fof_fund_name: r.fof_fund_name,
+    product_name: r.product_name,
+    short_name: r.product_name,
+    beian_hao: beian,
+    unit_nav: unitNav != null ? String(unitNav) : null,
+    nav_date: navDate,
+    price_change: priceChange,
+    investment_shares: r.investment_shares != null ? String(r.investment_shares) : null,
+    market_value: r.market_value != null ? String(r.market_value) : null,
+    market_value_pct: fmtMarketValuePct(r.market_weight),
+    ret_1w: null,
+    ret_1m: null,
+    ret_3m: null,
+    ret_6m: null,
+    ret_1y: null,
+    sharpe_1y: null,
+    calmar_1y: null,
+  }
+}
 
 function enrichDetailRows(
   rawRows: DetailRawRow[],
@@ -650,81 +822,6 @@ function enrichDetailRows(
   })
 }
 
-function sortDetailRows(rows: DetailEnrichedRow[], sortKey: string, asc: boolean): void {
-  const dir = asc ? 1 : -1
-  const cmpNullable = (a: string | number | null, b: string | number | null, mult = 1): number => {
-    if (a == null && b == null) return 0
-    if (a == null) return 1
-    if (b == null) return -1
-    const d = mult * dir
-    if (typeof a === "number" && typeof b === "number") {
-      return a === b ? 0 : a < b ? -d : d
-    }
-    return String(a).localeCompare(String(b), "zh-CN") * d
-  }
-  const tieBreak = (a: DetailEnrichedRow, b: DetailEnrichedRow): number => {
-    let c = cmpNullable(a.fof_fund_name, b.fof_fund_name)
-    if (c !== 0) return c
-    c = cmpNullable(
-      a.market_value ? parseFloat(a.market_value) : null,
-      b.market_value ? parseFloat(b.market_value) : null,
-      -1,
-    )
-    if (c !== 0) return c
-    return cmpNullable(parseInt(a.id, 10), parseInt(b.id, 10))
-  }
-
-  rows.sort((a, b) => {
-    let c = 0
-    switch (sortKey) {
-      case "fof_fund_name": c = cmpNullable(a.fof_fund_name, b.fof_fund_name); break
-      case "product_name": c = cmpNullable(a.product_name, b.product_name); break
-      case "beian_hao": c = cmpNullable(a.beian_hao, b.beian_hao); break
-      case "unit_nav":
-        c = cmpNullable(a.unit_nav ? parseFloat(a.unit_nav) : null, b.unit_nav ? parseFloat(b.unit_nav) : null)
-        break
-      case "nav_date": c = cmpNullable(a.nav_date, b.nav_date); break
-      case "price_change":
-        c = cmpNullable(
-          a.price_change ? parseFloat(a.price_change) : null,
-          b.price_change ? parseFloat(b.price_change) : null,
-        )
-        break
-      case "investment_shares":
-        c = cmpNullable(
-          a.investment_shares ? parseFloat(a.investment_shares) : null,
-          b.investment_shares ? parseFloat(b.investment_shares) : null,
-        )
-        break
-      case "market_value":
-        c = cmpNullable(
-          a.market_value ? parseFloat(a.market_value) : null,
-          b.market_value ? parseFloat(b.market_value) : null,
-        )
-        break
-      case "market_value_pct":
-        c = cmpNullable(
-          a.market_value_pct ? parseFloat(a.market_value_pct) : null,
-          b.market_value_pct ? parseFloat(b.market_value_pct) : null,
-        )
-        break
-      default:
-        c = cmpNullable(a.fof_fund_name, b.fof_fund_name)
-        if (c === 0) {
-          c = cmpNullable(
-            a.market_value ? parseFloat(a.market_value) : null,
-            b.market_value ? parseFloat(b.market_value) : null,
-            -1,
-          )
-        }
-        if (c === 0) c = cmpNullable(parseInt(a.id, 10), parseInt(b.id, 10))
-        return c
-    }
-    if (c !== 0) return c
-    return tieBreak(a, b)
-  })
-}
-
 /** Paginated 投资 FOF底层明细 — sourced from ops_managed_fof_underlying (email 估值表). */
 export async function listManagedFofUnderlyingDetail(options: {
   page: number
@@ -736,6 +833,7 @@ export async function listManagedFofUnderlyingDetail(options: {
   sortDir?: "asc" | "desc"
 }): Promise<{ rows: ManagedFofDetailListRow[]; total: number; totalMarketValue: string }> {
   await ensureManagedFofUnderlyingTable()
+  void ensureManagedFofUnderlyingNavPopulated()
 
   const emptyTable = await query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM ops_managed_fof_underlying`,
@@ -806,68 +904,25 @@ export async function listManagedFofUnderlyingDetail(options: {
        m.valuation_date,
        m.quantity AS investment_shares,
        m.market_value,
-       m.market_weight
+       m.market_weight,
+       m.unit_nav,
+       m.nav_date,
+       m.price_change
      FROM ops_managed_fof_underlying m`
 
-  const useSqlPagination = sortKey === "seq_no" || DETAIL_SQL_SORT[sortKey] != null
-  if (useSqlPagination) {
-    const orderSql = sortKey === "seq_no"
-      ? DETAIL_DEFAULT_ORDER
-      : `${DETAIL_SQL_SORT[sortKey]} ${sortAsc ? "ASC" : "DESC"} NULLS LAST, m.id ASC`
-
-    const rawRows = await query<DetailRawRow>(
-      `${selectSql}
-       ${where}
-       ORDER BY ${orderSql}
-       LIMIT $${pi} OFFSET $${pi + 1}`,
-      [...params, pageSize, offset],
-    )
-
-    const asOfDate = new Date().toISOString().slice(0, 10)
-    const identities: ProductNavIdentity[] = rawRows.map((r) => ({
-      beian_hao: r.beian_hao,
-      product_name: r.product_name,
-      short_name: null,
-    }))
-    const resolver = identities.length > 0
-      ? await BatchNavResolver.create(identities, asOfDate)
-      : null
-
-    const pageRows = enrichDetailRows(rawRows, resolver).map((row, i) => ({
-      ...row,
-      seq_no: offset + i + 1,
-    }))
-
-    return {
-      rows: pageRows,
-      total,
-      totalMarketValue,
-    }
-  }
+  const orderSql = sortKey === "seq_no"
+    ? DETAIL_DEFAULT_ORDER
+    : `${DETAIL_SQL_SORT[sortKey]} ${sortAsc ? "ASC" : "DESC"} NULLS LAST, m.id ASC`
 
   const rawRows = await query<DetailRawRow>(
     `${selectSql}
      ${where}
-     ORDER BY ${DETAIL_DEFAULT_ORDER}`,
-    params,
+     ORDER BY ${orderSql}
+     LIMIT $${pi} OFFSET $${pi + 1}`,
+    [...params, pageSize, offset],
   )
 
-  const asOfDate = new Date().toISOString().slice(0, 10)
-  const identities: ProductNavIdentity[] = rawRows.map((r) => ({
-    beian_hao: r.beian_hao,
-    product_name: r.product_name,
-    short_name: null,
-  }))
-  const resolver = identities.length > 0
-    ? await BatchNavResolver.create(identities, asOfDate)
-    : null
-
-  const enriched = enrichDetailRows(rawRows, resolver)
-  sortDetailRows(enriched, sortKey, sortAsc)
-  const pageRows = enriched.slice(offset, offset + pageSize).map((row, i) => ({
-    ...row,
-    seq_no: offset + i + 1,
-  }))
+  const pageRows = rawRows.map((row, i) => mapDetailRowFromDb(row, offset + i + 1))
 
   return {
     rows: pageRows,

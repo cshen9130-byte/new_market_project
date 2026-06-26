@@ -39,9 +39,10 @@ export const AnnualRankRadarPanel = memo(function AnnualRankRadarPanel({
     [peerByYear],
   )
 
-  if (!rankedYears.length) return null
-
-  const visibleYears = expanded ? rankedYears : rankedYears.slice(0, INITIAL_YEARS)
+  const visibleYears = useMemo(
+    () => (expanded ? rankedYears : rankedYears.slice(0, INITIAL_YEARS)),
+    [rankedYears, expanded],
+  )
   const hasMore = rankedYears.length > INITIAL_YEARS
 
   const radarData = useMemo(() => {
@@ -54,6 +55,8 @@ export const AnnualRankRadarPanel = memo(function AnnualRankRadarPanel({
       return row
     })
   }, [visibleYears])
+
+  if (!rankedYears.length) return null
 
   return (
     <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">

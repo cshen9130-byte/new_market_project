@@ -3,6 +3,11 @@
 import { memo, useState, useMemo, Fragment } from "react"
 import type React from "react"
 import { RED, GREEN, getNavFieldValue, type NavRow, type PeerMonthlyRow } from "./shared"
+import {
+  SampleIndicatorPicker,
+  defaultSampleIndicatorVisibility,
+  type SampleIndicatorKey,
+} from "./SampleIndicatorPicker"
 
 interface MonthlyReturn {
   year: number
@@ -46,6 +51,11 @@ export const MonthlyReturnsCalendar = memo(function MonthlyReturnsCalendar({
 }) {
   const INITIAL_YEARS = 2
   const [expanded, setExpanded] = useState(false)
+  const [visibleSampleRows, setVisibleSampleRows] = useState(defaultSampleIndicatorVisibility)
+
+  function toggleSampleRow(key: SampleIndicatorKey) {
+    setVisibleSampleRows((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
 
   const monthly = useMemo(() => computeMonthlyReturns(rows, navType), [rows, navType])
 
@@ -103,6 +113,20 @@ export const MonthlyReturnsCalendar = memo(function MonthlyReturnsCalendar({
   const hasMore = yearGroups.length > INITIAL_YEARS
   const hasPeer = peerMonthly.length > 0
 
+  type SampleRowDef = { label: SampleIndicatorKey; render: (ym: string) => React.ReactNode }
+
+  const sampleRowTemplates: SampleRowDef[] = hasPeer ? [
+    { label: "样本平均值", render: (ym) => { const p = peerByYm.get(ym); if (!p) return <span className="text-zinc-300">—</span>; const { text, style } = fmtPctCell(p.mean_ret); return <span className="text-zinc-500 tabular-nums" style={style}>{text}</span> } },
+    { label: "样本中位数", render: (ym) => { const p = peerByYm.get(ym); if (!p) return <span className="text-zinc-300">—</span>; const { text, style } = fmtPctCell(p.median_ret); return <span className="text-zinc-500 tabular-nums" style={style}>{text}</span> } },
+    { label: "样本排名", render: (ym) => { const p = peerByYm.get(ym); if (!p || p.rank_num === null) return <span className="text-zinc-300">—</span>; return <span className="text-zinc-500 tabular-nums">{p.rank_num}/{p.sample_n}</span> } },
+    { label: "四分位", render: (ym) => quartileBar(ym) },
+  ] : [
+    { label: "样本平均值", render: () => <span className="text-zinc-300">—</span> },
+    { label: "样本中位数", render: () => <span className="text-zinc-300">—</span> },
+    { label: "样本排名", render: () => <span className="text-zinc-300">—</span> },
+    { label: "四分位", render: () => <div className="h-1.5 w-full rounded-full bg-zinc-100 mx-auto max-w-[40px]" /> },
+  ]
+
   return (
     <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
@@ -111,13 +135,19 @@ export const MonthlyReturnsCalendar = memo(function MonthlyReturnsCalendar({
           月度收益
         </div>
         {sampleGroup && (
-          <div className="inline-flex items-center gap-1.5 text-xs text-zinc-600">
-            <span className="text-zinc-500">样本组：</span>
-            <select defaultValue={sampleGroup} className="text-xs border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 max-w-[120px]">
-              <option value={sampleGroup}>{sampleGroup}</option>
-            </select>
-            <span className="px-1 py-0.5 text-[10px] rounded bg-red-50 text-red-500 border border-red-200 leading-none">平台</span>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-zinc-600">
+            <div className="inline-flex items-center gap-1.5">
+              <span className="text-zinc-500">样本组：</span>
+              <select defaultValue={sampleGroup} className="text-xs border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 max-w-[120px]">
+                <option value={sampleGroup}>{sampleGroup}</option>
+              </select>
+              <span className="px-1 py-0.5 text-[10px] rounded bg-red-50 text-red-500 border border-red-200 leading-none">平台</span>
+            </div>
+            <SampleIndicatorPicker visible={visibleSampleRows} onToggle={toggleSampleRow} />
           </div>
+        )}
+        {!sampleGroup && (
+          <SampleIndicatorPicker visible={visibleSampleRows} onToggle={toggleSampleRow} />
         )}
       </div>
 
@@ -141,19 +171,7 @@ export const MonthlyReturnsCalendar = memo(function MonthlyReturnsCalendar({
               const yrFmt = fmtPctCell(yr)
               const wrText = wr !== null ? wr.toFixed(2) + "%" : "—"
               const isLastGroup = yi === visibleYears.length - 1
-
-              type SampleRowDef = { label: string; render: (ym: string) => React.ReactNode }
-              const sampleRows: SampleRowDef[] = hasPeer ? [
-                { label: "样本平均值", render: (ym) => { const p = peerByYm.get(ym); if (!p) return <span className="text-zinc-300">—</span>; const { text, style } = fmtPctCell(p.mean_ret); return <span className="text-zinc-500 tabular-nums" style={style}>{text}</span> } },
-                { label: "样本中位数", render: (ym) => { const p = peerByYm.get(ym); if (!p) return <span className="text-zinc-300">—</span>; const { text, style } = fmtPctCell(p.median_ret); return <span className="text-zinc-500 tabular-nums" style={style}>{text}</span> } },
-                { label: "样本排名",   render: (ym) => { const p = peerByYm.get(ym); if (!p || p.rank_num === null) return <span className="text-zinc-300">—</span>; return <span className="text-zinc-500 tabular-nums">{p.rank_num}/{p.sample_n}</span> } },
-                { label: "四分位",     render: (ym) => quartileBar(ym) },
-              ] : [
-                { label: "样本平均值", render: () => <span className="text-zinc-300">—</span> },
-                { label: "样本中位数", render: () => <span className="text-zinc-300">—</span> },
-                { label: "样本排名",   render: () => <span className="text-zinc-300">—</span> },
-                { label: "四分位",     render: () => <div className="h-1.5 w-full rounded-full bg-zinc-100 mx-auto max-w-[40px]" /> },
-              ]
+              const sampleRows = sampleRowTemplates.filter((row) => visibleSampleRows[row.label])
 
               return (
                 <Fragment key={year}>

@@ -2,7 +2,7 @@ import fs from "fs"
 import path from "path"
 
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
-import { mergeNavSeriesWithEmail, type LegacyNavRow } from "@/lib/server/email-nav-query"
+import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, type LegacyNavRow } from "@/lib/server/email-nav-query"
 
 type ManagedNavSeedFile = {
   beian_hao: string
@@ -37,6 +37,32 @@ export function buildTeamUnitOverlayAfterSeed(
       cumulative_nav: null,
       adjusted_nav: null,
     }))
+}
+
+/**
+ * Detail-page NAV for 在管产品 with a verified xlsx seed.
+ * Seed is authoritative through its last date; team/email may only extend after that.
+ * Legacy rows within or after the seed window are dropped so corrupt DB points cannot leak in.
+ */
+export function mergeManagedProductDetailNav(
+  seedRows: LegacyNavRow[],
+  teamRows: LegacyNavRow[],
+  legacyRows: LegacyNavRow[],
+): LegacyNavRow[] {
+  if (seedRows.length === 0) {
+    return mergeLegacyWithTeamNav(legacyRows, teamRows)
+  }
+
+  const seedStart = seedRows[0].price_date
+  const seedLatest = seedRows[seedRows.length - 1].price_date
+  const teamAfterSeed = teamRows.filter((row) => row.price_date > seedLatest)
+  const legacyBeforeSeed = legacyRows.filter((row) => row.price_date < seedStart)
+  const seedBase = mergeNavSeriesWithEmail(seedRows, [])
+
+  return mergeLegacyWithTeamNav(
+    mergeLegacyWithTeamNav(legacyBeforeSeed, seedBase),
+    teamAfterSeed,
+  )
 }
 
 /** Latest verified seed point on or before asOfDate (only within seed file coverage). */

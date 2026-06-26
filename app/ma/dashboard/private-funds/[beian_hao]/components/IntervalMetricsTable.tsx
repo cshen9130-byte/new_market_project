@@ -1,8 +1,18 @@
 "use client"
 
-import { memo, useState } from "react"
+import { memo, useMemo, useState } from "react"
 import { Download, HelpCircle } from "lucide-react"
 import { RED, GREEN, type BenchmarkPoint } from "./shared"
+import {
+  SAMPLE_INDICATOR_OPTIONS,
+  SampleIndicatorPicker,
+  defaultSampleIndicatorVisibility,
+  type SampleIndicatorKey,
+} from "./SampleIndicatorPicker"
+import { MetricTemplatePicker, loadMetricTemplates, type MetricTemplate } from "./MetricTemplatePicker"
+import { AddMetricModal, type AddedMetricCol } from "./AddMetricModal"
+
+export { SAMPLE_INDICATOR_OPTIONS, type SampleIndicatorKey } from "./SampleIndicatorPicker"
 
 export const INTERVAL_METRIC_COLUMNS = [
   { key: "ret_1w",     period: "近一周", metric: "收益",    days: 7,   type: "pct"   as const },
@@ -15,6 +25,35 @@ export const INTERVAL_METRIC_COLUMNS = [
 ]
 
 export type IntervalMetricValues = Record<(typeof INTERVAL_METRIC_COLUMNS)[number]["key"], string | number | null>
+
+type IntervalColDef = (typeof INTERVAL_METRIC_COLUMNS)[number] | {
+  key: string
+  period: string
+  metric: string
+  days?: number
+  type: "pct" | "ratio"
+}
+
+const RATIO_METRICS = new Set([
+  "夏普比率", "超额夏普比率", "卡玛比率", "超额卡玛比率", "索提诺比率",
+  "Alpha", "Beta", "信息比率", "偏度", "峰度", "VaR（95%置信）",
+])
+
+function addedColToDef(col: AddedMetricCol): IntervalColDef {
+  const known = INTERVAL_METRIC_COLUMNS.find((c) => c.period === col.period && c.metric === col.metric)
+  if (known) return known
+  return {
+    key: col.id,
+    period: col.period,
+    metric: col.metric,
+    type: RATIO_METRICS.has(col.metric) ? "ratio" : "pct",
+  }
+}
+
+function getColMetricValue(metrics: IntervalMetricValues, col: IntervalColDef): string | number | null {
+  if (col.key in metrics) return metrics[col.key as keyof IntervalMetricValues]
+  return null
+}
 
 export function calcMetricInterval(cutoff: string, days: number): string {
   const end = new Date(cutoff)
@@ -109,21 +148,58 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
 }) {
   const [showBenchmark, setShowBenchmark] = useState(hasBenchmark)
   const [showInterval, setShowInterval] = useState(false)
+  const [visibleSampleRows, setVisibleSampleRows] = useState(defaultSampleIndicatorVisibility)
+  const [activeTemplate, setActiveTemplate] = useState<string | null>(null)
+  const [metricTemplates, setMetricTemplates] = useState<MetricTemplate[]>([])
+  const [showAddMetric, setShowAddMetric] = useState(false)
+  const [addedCols, setAddedCols] = useState<AddedMetricCol[]>([])
+
+  function toggleSampleRow(key: SampleIndicatorKey) {
+    setVisibleSampleRows((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const activeSampleRows = SAMPLE_INDICATOR_OPTIONS.filter((label) => visibleSampleRows[label])
+
+  const visibleColumns = useMemo((): IntervalColDef[] => {
+    let base: IntervalColDef[]
+    if (activeTemplate) {
+      const template = metricTemplates.find((t) => t.name === activeTemplate)
+      if (template) {
+        base = template.items
+          .map((item) => INTERVAL_METRIC_COLUMNS.find((c) => c.period === item.period && c.metric === item.metric))
+          .filter((c): c is (typeof INTERVAL_METRIC_COLUMNS)[number] => c !== undefined)
+      } else {
+        base = [...INTERVAL_METRIC_COLUMNS]
+      }
+    } else {
+      base = [...INTERVAL_METRIC_COLUMNS]
+    }
+    if (base.length === 0) base = [...INTERVAL_METRIC_COLUMNS]
+
+    const baseIds = new Set(base.map((c) => `${c.period}__${c.metric}`))
+    const extras = addedCols
+      .filter((c) => !baseIds.has(`${c.period}__${c.metric}`))
+      .map(addedColToDef)
+    return [...base, ...extras]
+  }, [activeTemplate, metricTemplates, addedCols])
 
   function exportCsv() {
-    const headers = ["产品名称", ...INTERVAL_METRIC_COLUMNS.map((c) => `${c.period}${c.metric}`)]
+    const headers = ["产品名称", ...visibleColumns.map((c) => `${c.period}${c.metric}`)]
     const rows: string[][] = [
       headers,
       [
         productName,
-        ...INTERVAL_METRIC_COLUMNS.map((c) => formatIntervalMetricExport(fundMetrics[c.key], c.type, c.type === "pct" ? "percent" : "ratio")),
+        ...visibleColumns.map((c) => formatIntervalMetricExport(getColMetricValue(fundMetrics, c), c.type, c.type === "pct" ? "percent" : "ratio")),
       ],
     ]
     if (showBenchmark && benchmarkMetrics) {
       rows.push([
         `${benchmarkLabel}（基准）`,
-        ...INTERVAL_METRIC_COLUMNS.map((c) => formatIntervalMetricExport(benchmarkMetrics[c.key], c.type, "ratio")),
+        ...visibleColumns.map((c) => formatIntervalMetricExport(getColMetricValue(benchmarkMetrics, c), c.type, "ratio")),
       ])
+    }
+    for (const label of activeSampleRows) {
+      rows.push([label, ...visibleColumns.map(() => "")])
     }
     const escape = (v: string) => v.includes(",") || v.includes("\"") ? `"${v.replace(/"/g, "\"\"")}"` : v
     const bom = "\uFEFF"
@@ -136,9 +212,10 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
     URL.revokeObjectURL(url)
   }
 
-  const sampleRows = ["样本平均值", "样本中位数", "样本排名", "四分位"]
+  const sampleRows = activeSampleRows
 
   return (
+    <>
     <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
         <div>
@@ -175,9 +252,22 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
               <span className="px-1 py-0.5 text-[10px] rounded bg-red-50 text-red-500 border border-red-200 leading-none">平台</span>
             </div>
           )}
-          <select disabled className="text-xs border border-zinc-200 rounded px-2 py-1 bg-zinc-50 text-zinc-400"><option>指标选择</option></select>
-          <select disabled className="text-xs border border-zinc-200 rounded px-2 py-1 bg-zinc-50 text-zinc-400"><option>默认模板</option></select>
-          <button type="button" disabled className="text-blue-500 hover:text-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">添加指标</button>
+          <SampleIndicatorPicker visible={visibleSampleRows} onToggle={toggleSampleRow} />
+          <span className="text-zinc-300">|</span>
+          <MetricTemplatePicker
+            activeTemplate={activeTemplate}
+            templates={metricTemplates}
+            onOpen={() => setMetricTemplates(loadMetricTemplates())}
+            onSelectDefault={() => setActiveTemplate(null)}
+            onSelectTemplate={(template) => setActiveTemplate(template.name)}
+          />
+          <button
+            type="button"
+            onClick={() => setShowAddMetric(true)}
+            className="text-blue-500 hover:text-blue-600 transition-colors"
+          >
+            {addedCols.length > 0 ? `添加指标(${addedCols.length})` : "添加指标"}
+          </button>
           <button type="button" onClick={exportCsv} className="inline-flex items-center gap-1 text-zinc-500 hover:text-zinc-800 transition-colors">
             <Download className="h-3.5 w-3.5" />导出
           </button>
@@ -189,8 +279,8 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
           <thead>
             <tr className="bg-zinc-50 border-b border-zinc-100">
               <th className="px-4 py-2.5 text-left text-xs font-medium text-zinc-500 min-w-[140px]">产品名称</th>
-              {INTERVAL_METRIC_COLUMNS.map((col) => (
-                <th key={col.key} className="px-3 py-2.5 text-center text-xs font-medium text-zinc-500 whitespace-nowrap">
+              {visibleColumns.map((col) => (
+                <th key={`${col.period}__${col.metric}`} className="px-3 py-2.5 text-center text-xs font-medium text-zinc-500 whitespace-nowrap">
                   <div>{col.period}</div>
                   <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{col.metric}</div>
                   {col.days && (
@@ -205,22 +295,22 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
           <tbody>
             <tr className="border-b border-zinc-50">
               <td className="px-4 py-2.5 text-xs text-zinc-800 font-medium">{productName}</td>
-              {INTERVAL_METRIC_COLUMNS.map((col) => (
-                <td key={col.key} className="px-3 py-2.5 text-center text-xs">
+              {visibleColumns.map((col) => (
+                <td key={`${col.period}__${col.metric}`} className="px-3 py-2.5 text-center text-xs">
                   {col.type === "pct"
-                    ? <IntervalPctCell value={fundMetrics[col.key]} unit="percent" />
-                    : <IntervalRatioCell value={fundMetrics[col.key]} />}
+                    ? <IntervalPctCell value={getColMetricValue(fundMetrics, col)} unit="percent" />
+                    : <IntervalRatioCell value={getColMetricValue(fundMetrics, col)} />}
                 </td>
               ))}
             </tr>
             {showBenchmark && benchmarkMetrics && (
               <tr className="border-b border-zinc-50 bg-zinc-50/40">
                 <td className="px-4 py-2.5 text-xs text-zinc-600">{benchmarkLabel}（基准）</td>
-                {INTERVAL_METRIC_COLUMNS.map((col) => (
-                  <td key={col.key} className="px-3 py-2.5 text-center text-xs">
+                {visibleColumns.map((col) => (
+                  <td key={`${col.period}__${col.metric}`} className="px-3 py-2.5 text-center text-xs">
                     {col.type === "pct"
-                      ? <IntervalPctCell value={benchmarkMetrics[col.key]} />
-                      : <IntervalRatioCell value={benchmarkMetrics[col.key]} />}
+                      ? <IntervalPctCell value={getColMetricValue(benchmarkMetrics, col)} />
+                      : <IntervalRatioCell value={getColMetricValue(benchmarkMetrics, col)} />}
                   </td>
                 ))}
               </tr>
@@ -228,8 +318,8 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
             {sampleRows.map((label) => (
               <tr key={label} className="border-b border-zinc-50 last:border-0">
                 <td className="px-4 py-2.5 text-xs text-zinc-500">{label}</td>
-                {INTERVAL_METRIC_COLUMNS.map((col) => (
-                  <td key={col.key} className="px-3 py-2.5 text-center text-xs text-zinc-400">—</td>
+                {visibleColumns.map((col) => (
+                  <td key={`${col.period}__${col.metric}`} className="px-3 py-2.5 text-center text-xs text-zinc-400">—</td>
                 ))}
               </tr>
             ))}
@@ -237,10 +327,26 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
         </table>
       </div>
 
-      <div className="mt-3 text-[11px] text-zinc-400">
-        说明：<span className="text-blue-500 cursor-default">指标排名及分位计算说明</span>
+      <div className="mt-3 space-y-1 text-[11px]">
+        <div className="text-red-500">指标排名截止日期需要是每周最后交易日。</div>
+        <div className="text-zinc-400">
+          说明：<span className="text-blue-500 cursor-default">指标排名及分位计算逻辑</span>
+        </div>
       </div>
     </div>
+
+      {showAddMetric && (
+        <AddMetricModal
+          initial={addedCols}
+          onClose={() => setShowAddMetric(false)}
+          onConfirm={(cols) => {
+            setAddedCols(cols)
+            setActiveTemplate(null)
+            setShowAddMetric(false)
+          }}
+        />
+      )}
+    </>
   )
 })
 IntervalMetricsTable.displayName = "IntervalMetricsTable"

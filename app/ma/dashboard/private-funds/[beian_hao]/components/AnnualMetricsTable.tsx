@@ -4,6 +4,12 @@ import { memo, useState, Fragment } from "react"
 import { Download, ChevronDown } from "lucide-react"
 import { ANNUAL_METRIC_COLUMNS, type MetricKey } from "@/lib/fund-nav-metrics"
 import { RED, GREEN, type AnnualFundRow, type PeerYearlyRow } from "./shared"
+import {
+  SAMPLE_INDICATOR_OPTIONS,
+  SampleIndicatorPicker,
+  defaultSampleIndicatorVisibility,
+  type SampleIndicatorKey,
+} from "./SampleIndicatorPicker"
 
 function AnnualMetricFundCell({ value, type }: { value: number | null; type: "pct" | "ratio" | "days" }) {
   if (value === null || !isFinite(value)) return <span className="text-zinc-400">—</span>
@@ -38,7 +44,7 @@ function AnnualQuartileCell({ percentile }: { percentile: number | null }) {
   )
 }
 
-const SAMPLE_LABELS = ["样本平均值", "样本中位数", "样本排名", "四分位"] as const
+const SAMPLE_LABELS = SAMPLE_INDICATOR_OPTIONS
 
 export const AnnualMetricsTable = memo(function AnnualMetricsTable({
   productName, sampleGroup, dateRangeLabel, fundRows, peerByYear, hasBenchmark,
@@ -54,6 +60,13 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
   const [expanded, setExpanded] = useState(false)
   const [showInterval, setShowInterval] = useState(true)
   const [showBenchmark, setShowBenchmark] = useState(hasBenchmark)
+  const [visibleSampleRows, setVisibleSampleRows] = useState(defaultSampleIndicatorVisibility)
+
+  function toggleSampleRow(key: SampleIndicatorKey) {
+    setVisibleSampleRows((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const activeSampleLabels = SAMPLE_LABELS.filter((label) => visibleSampleRows[label])
 
   if (!fundRows.length) return null
 
@@ -118,7 +131,7 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
               <span className="px-1 py-0.5 text-[10px] rounded bg-red-50 text-red-500 border border-red-200 leading-none">平台</span>
             </div>
           )}
-          <select disabled className="text-xs border border-zinc-200 rounded px-2 py-1 bg-zinc-50 text-zinc-400"><option>指标选择</option></select>
+          <SampleIndicatorPicker visible={visibleSampleRows} onToggle={toggleSampleRow} />
           <button type="button" onClick={exportCsv} className="inline-flex items-center gap-1 text-zinc-500 hover:text-zinc-800 transition-colors">
             <Download className="h-3.5 w-3.5" />导出
           </button>
@@ -143,7 +156,7 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
             {visibleRows.map((fundRow, yi) => {
               const peer = peerByYear.get(fundRow.year)
               const isLastGroup = yi === visibleRows.length - 1
-              const rowSpan = SAMPLE_LABELS.length + 1
+              const rowSpan = activeSampleLabels.length + 1
 
               return (
                 <Fragment key={fundRow.year}>
@@ -161,8 +174,8 @@ export const AnnualMetricsTable = memo(function AnnualMetricsTable({
                       </td>
                     ))}
                   </tr>
-                  {SAMPLE_LABELS.map((label, ri) => {
-                    const isLast = ri === SAMPLE_LABELS.length - 1
+                  {activeSampleLabels.map((label, ri) => {
+                    const isLast = ri === activeSampleLabels.length - 1
                     const rowCls = ["border-b", isLast && !isLastGroup ? "border-b-zinc-200" : "border-b-zinc-50"].join(" ")
                     return (
                       <tr key={label} className={rowCls}>

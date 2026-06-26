@@ -26,21 +26,71 @@ type EmailNavRawRow = {
 }
 
 
-export function emailNavSourceTier(source: string | null | undefined): number {
+/** Post-investment TA / custody virtual NAV — highest-quality unit + cumulative after we hold the fund. */
+export function isPostInvestmentVirtualNavEmail(
+  subject: string | null | undefined,
+): boolean {
+  const subj = (subject ?? "").trim()
+  if (!subj) return false
+  if (/TA虚拟净值/u.test(subj)) return true
+  if (/【基金虚拟净值表现估算】/u.test(subj)) return true
+  if (/^虚拟业绩报酬_/u.test(subj)) return true
+  if (/虚拟净值/u.test(subj) && !/虚拟净值表现/u.test(subj)) return true
+  return false
+}
+
+/** SQL guard matching {@link isPostInvestmentVirtualNavEmail}. */
+export function sqlPostInvestmentVirtualNavFilter(recordAlias: string): string {
+  const e = recordAlias
+  return `(
+    COALESCE(${e}.subject, '') ILIKE '%TA虚拟净值%'
+    OR COALESCE(${e}.subject, '') ILIKE '%【基金虚拟净值表现估算】%'
+    OR COALESCE(${e}.subject, '') ILIKE '虚拟业绩报酬\_%'
+    OR (
+      COALESCE(${e}.subject, '') ILIKE '%虚拟净值%'
+      AND COALESCE(${e}.subject, '') NOT ILIKE '%虚拟净值表现%'
+    )
+  )`
+}
+
+/**
+ * When a fund has post-investment virtual NAV history, 资产净值公告 attachments often store
+ * 累计净值 in the unit NAV column (nav == cumulative_nav). Infer unit from the virtual ratio.
+ */
+export function inferEmailUnitNav(
+  nav: number,
+  cumulativeNav: number | null | undefined,
+  subject: string | null | undefined,
+  virtualUnitRatio: number | null | undefined,
+): number {
+  if (!Number.isFinite(nav) || nav <= 0) return nav
+  if (isPostInvestmentVirtualNavEmail(subject)) return nav
+  if (virtualUnitRatio == null || !Number.isFinite(virtualUnitRatio) || virtualUnitRatio <= 0 || virtualUnitRatio >= 1) {
+    return nav
+  }
+  const cum = cumulativeNav ?? nav
+  if (Math.abs(nav - cum) >= 0.001) return nav
+  const inferred = +(nav * virtualUnitRatio).toFixed(6)
+  if (inferred >= 0.1 && inferred < nav) return inferred
+  return nav
+}
+
+export function emailNavSourceTier(
+  source: string | null | undefined,
+  subject?: string | null,
+): number {
+  if (isPostInvestmentVirtualNavEmail(subject)) return -1
   const s = (source ?? "").trim()
   if (s === "attachment_nav_table") return 0
   if (s === "attachment_valuation_table") return 1
   return 2
 }
 
-/** Prefer dedicated NAV streams; exclude 估值表 and 虚拟净值 for primary selection. */
+/** Prefer dedicated NAV streams; exclude 估值表 only (post-investment virtual NAV is allowed). */
 export const EMAIL_NAV_PRIMARY_SOURCE_FILTER = `(
   COALESCE(e.source, '') <> 'attachment_valuation_table'
   AND COALESCE(e.subject, '') NOT ILIKE '%估值表%'
   AND COALESCE(e.attachment_filename, '') NOT ILIKE '%估值表%'
-  AND COALESCE(e.subject, '') NOT ILIKE '%虚拟%'
-  AND COALESCE(e.fund_name, '') NOT ILIKE '%虚拟%'
-  AND COALESCE(e.attachment_filename, '') NOT ILIKE '%虚拟%'
 )`
 
 /** 估值表 fallback — used only when no primary NAV exists on or before cutoff. */
@@ -53,13 +103,13 @@ export const EMAIL_NAV_VALUATION_SOURCE_FILTER = `(
 /** @deprecated use EMAIL_NAV_PRIMARY_SOURCE_FILTER */
 export const EMAIL_NAV_UNIT_NAV_SOURCE_FILTER = EMAIL_NAV_PRIMARY_SOURCE_FILTER
 
-function sourceTier(source: string | null | undefined): number {
-  return emailNavSourceTier(source)
+function sourceTier(source: string | null | undefined, subject?: string | null): number {
+  return emailNavSourceTier(source, subject)
 }
 
 function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
-  const currentTier = sourceTier(current.source)
-  const candidateTier = sourceTier(candidate.source)
+  const currentTier = sourceTier(current.source, current.subject)
+  const candidateTier = sourceTier(candidate.source, candidate.subject)
   if (currentTier !== candidateTier) {
     return candidateTier < currentTier ? candidate : current
   }
@@ -223,6 +273,8 @@ function selectEmailSourceStream(
 
   for (const [fundName, group] of byFundName) {
     let score = group.length
+    const virtualCount = group.filter((row) => isPostInvestmentVirtualNavEmail(row.subject)).length
+    if (virtualCount > 0) score += 1000 + virtualCount * 2
     const custodyValuation = beian
       ? group.filter((row) => isCustodyValuationEmailRow(row, beian)).length
       : 0
@@ -252,6 +304,59 @@ function selectEmailSourceStream(
   }
 
   return Array.from(byDate.values()).sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+}
+
+/** Per-date best email row (virtual TA > attachment), with unit NAV correction for cum-as-unit rows. */
+export function selectEmailNavSeriesRows(
+  rows: EmailNavRawRow[],
+  beianHao: string,
+  aliases: string[],
+): EmailNavRawRow[] {
+  const filtered = rows.filter(
+    (row) => !isFofUnderlyingValuationEmailRow(row, beianHao) && emailRowMatchesFund(row, beianHao, aliases),
+  )
+  if (filtered.length === 0) return []
+
+  const aClass = isAClassFund(beianHao, aliases)
+  const pool = filtered.filter((row) => {
+    const meta = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""}`
+    return aClass ? /A类/u.test(meta) : !/A类/u.test(meta)
+  })
+  const candidates = pool.length > 0 ? pool : filtered
+
+  const beian = beianHao.trim().toUpperCase()
+  const byDate = new Map<string, EmailNavRawRow>()
+  for (const row of candidates) {
+    const prev = byDate.get(row.nav_date)
+    if (!prev) {
+      byDate.set(row.nav_date, row)
+      continue
+    }
+    byDate.set(row.nav_date, preferEmailNavRow(prev, row, beian))
+  }
+
+  const sorted = Array.from(byDate.values()).sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+  return applyEmailUnitNavCorrection(sorted)
+}
+
+function applyEmailUnitNavCorrection(rows: EmailNavRawRow[]): EmailNavRawRow[] {
+  let latestRatio: number | null = null
+  return rows.map((row) => {
+    if (isPostInvestmentVirtualNavEmail(row.subject)) {
+      const unit = parseOptionalNav(row.nav)
+      const cum = parseOptionalNav(row.cumulative_nav)
+      if (unit != null && cum != null && cum - unit > 0.05) {
+        latestRatio = unit / cum
+      }
+      return row
+    }
+    const unit = parseOptionalNav(row.nav)
+    if (unit == null || latestRatio == null) return row
+    const cum = parseOptionalNav(row.cumulative_nav)
+    const corrected = inferEmailUnitNav(unit, cum, row.subject, latestRatio)
+    if (Math.abs(corrected - unit) < 0.000001) return row
+    return { ...row, nav: String(+corrected.toFixed(6)) }
+  })
 }
 
 function rowsToEmailPoints(rows: EmailNavRawRow[]): EmailNavPoint[] {
@@ -318,8 +423,32 @@ export function buildEmailNavLatestJoins(
       ELSE COALESCE(e.fund_name, '') NOT ILIKE '%A类%' AND COALESCE(e.attachment_filename, '') NOT ILIKE '%A类%'
     END
   )`
+  const virtualFilter = sqlPostInvestmentVirtualNavFilter("e")
+  const virtualRatioSubquery = `
+    SELECT (ev.nav / NULLIF(ev.cumulative_nav, 0))::numeric AS ratio
+    FROM ops_email_nav_records ev
+    WHERE ${buildEmailNavMatchCondition("ev", beianHaoExpr, productNameExpr, shortNameExpr)}
+      AND ${buildEmailNavFofUnderlyingRejectFilter("ev", beianHaoExpr)}
+      AND ${sqlPostInvestmentVirtualNavFilter("ev")}
+      AND ev.nav_date <= ${cutoffExpr}
+      AND ev.nav IS NOT NULL
+      AND ev.cumulative_nav IS NOT NULL
+      AND ev.cumulative_nav - ev.nav > 0.05
+    ORDER BY ev.nav_date DESC, ev.id DESC
+    LIMIT 1`
+  const correctedNavExpr = `CASE
+    WHEN ${virtualFilter} THEN e.nav::numeric
+    WHEN e.cumulative_nav IS NOT NULL
+      AND ABS(e.nav - e.cumulative_nav) < 0.001
+      AND vr.ratio IS NOT NULL
+      AND (e.nav * vr.ratio) >= 0.1
+      AND (e.nav * vr.ratio) < e.nav
+      THEN (e.nav * vr.ratio)::numeric
+    ELSE e.nav::numeric
+  END`
   const emailNavOrder = `
         e.nav_date DESC,
+        CASE WHEN ${virtualFilter} THEN 0 ELSE 1 END,
         ${EMAIL_NAV_SOURCE_PRIORITY},
         CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
         CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
@@ -333,8 +462,9 @@ export function buildEmailNavLatestJoins(
 
   return `
     LEFT JOIN LATERAL (
-      SELECT e.nav::numeric AS nav, e.nav_date
+      SELECT ${correctedNavExpr} AS nav, e.nav_date
       FROM ops_email_nav_records e
+      LEFT JOIN LATERAL (${virtualRatioSubquery}) vr ON true
       WHERE ${match}
         AND ${fofReject}
         AND ${aClassGuard}
@@ -549,8 +679,7 @@ export async function loadEmailNavSeries(
     [beian, aliases],
   )
 
-  const primaryRows = rows.filter((row) => !isVirtualNavRow(row) && !isFofUnderlyingValuationEmailRow(row, beianHao))
-  const stream = selectEmailSourceStream(primaryRows.length > 0 ? primaryRows : rows, beian, aliases)
+  const stream = selectEmailNavSeriesRows(rows, beian, aliases)
   return rowsToEmailPoints(stream)
 }
 
@@ -1056,6 +1185,45 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
   return sorted
 }
 
+/** When 复权 drifted below 累计 (stale legacy adj), rechain from neighbors. */
+function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const sorted = rows.map((row) => ({ ...row }))
+
+  for (let i = 1; i < sorted.length; i += 1) {
+    const cum = parseOptionalNav(sorted[i].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i].cumulative_nav)
+    const adj = parseOptionalNav(sorted[i].cumulative_nav)
+    if (cum == null || adj == null || adj >= cum) continue
+
+    const prev = sorted[i - 1]
+    const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+    if (prevAdj == null || prevCum == null || prevCum <= 0 || prevAdj < prevCum - 0.001) continue
+
+    const rechained = +(prevAdj * cum / prevCum).toFixed(6)
+    if (isReasonableNav(rechained) && rechained >= cum) {
+      sorted[i].cumulative_nav = String(rechained)
+    }
+  }
+
+  let trailingRatio: number | null = null
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const cum = parseOptionalNav(sorted[i].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i].cumulative_nav)
+    const adj = parseOptionalNav(sorted[i].cumulative_nav)
+    if (cum == null || cum <= 0) continue
+    if (adj != null && adj >= cum) {
+      trailingRatio = adj / cum
+      continue
+    }
+    if (trailingRatio == null) continue
+    const filled = +(cum * trailingRatio).toFixed(6)
+    if (isReasonableNav(filled) && filled >= cum) {
+      sorted[i].cumulative_nav = String(filled)
+    }
+  }
+
+  return sorted
+}
+
 function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string> = new Set()): LegacyNavRow[] {
   let out = sanitizeMisassignedUnitNavRows(rows)
   out = repairCorruptUnitNavRows(out)
@@ -1064,6 +1232,7 @@ function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string>
   out = refreshStaleDerivedFields(out)
   out = refreshDerivedForUnitOnlyEmailRows(out, unitOnlyEmailDates)
   out = clampSanityNavRows(out)
+  out = repairAdjBelowCumRows(out)
   out = alignPreDividendNavRows(out)
   return recomputeNavPriceChanges(out)
 }
@@ -1148,12 +1317,16 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
       }
       if (emailAdj != null) {
         updated.cumulative_nav = String(emailAdj)
-      } else if (resolvedCum == null && emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {
+      } else if (resolvedCum != null) {
+        // Email refreshed unit + cum — drop stale legacy 复权 so finalizeNavSeries rechains adj.
+        updated.cumulative_nav = ""
+        unitOnlyEmailDates.add(row.price_date)
+      } else if (emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {
         unitOnlyEmailDates.add(row.price_date)
       }
       byDate.set(row.price_date, updated)
     } else {
-      if (resolvedCum == null && emailAdj == null) unitOnlyEmailDates.add(row.price_date)
+      if (emailAdj == null) unitOnlyEmailDates.add(row.price_date)
       byDate.set(row.price_date, {
         price_date: row.price_date,
         nav: String(resolvedUnitNav),
@@ -1184,6 +1357,35 @@ export function mergeLegacyWithTeamNav(
     ...teamRows.map((row) => ({ ...row })),
   ].sort((a, b) => a.price_date.localeCompare(b.price_date))
   return finalizeNavSeries(merged)
+}
+
+/** Return rows where adj >= cum >= unit is violated (empty = OK). */
+export function findNavInvariantViolations(rows: LegacyNavRow[]): Array<{
+  price_date: string
+  nav: number
+  cum_nav_withdrawal: number
+  cumulative_nav: number
+}> {
+  const out: Array<{
+    price_date: string
+    nav: number
+    cum_nav_withdrawal: number
+    cumulative_nav: number
+  }> = []
+  for (const row of rows) {
+    const unit = parseOptionalNav(row.nav)
+    const cum = parseOptionalNav(row.cum_nav_withdrawal) ?? parseOptionalNav(row.cumulative_nav)
+    const adj = parseOptionalNav(row.cumulative_nav)
+    if (unit == null || cum == null || adj == null) continue
+    if (adj + 0.0005 >= cum && cum + 0.0005 >= unit) continue
+    out.push({
+      price_date: row.price_date,
+      nav: unit,
+      cum_nav_withdrawal: cum,
+      cumulative_nav: adj,
+    })
+  }
+  return out
 }
 
 /** Recompute 涨跌幅 as percentage points from consecutive unit NAV (matches legacy DB + UI). */
