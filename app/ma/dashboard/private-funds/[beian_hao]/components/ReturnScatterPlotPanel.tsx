@@ -221,7 +221,24 @@ export const ReturnScatterPlotPanel = memo(function ReturnScatterPlotPanel({
     </div>
   )
 
-  if (!hasBenchmark) return null
+  if (!hasBenchmark) {
+    return (
+      <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold text-zinc-700">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500" />
+              收益散点图
+            </div>
+            {dateRangeLabel && <div className="text-xs text-zinc-400 mt-1">统计区间：{dateRangeLabel}</div>}
+          </div>
+        </div>
+        <div className="h-[320px] flex items-center justify-center text-sm text-zinc-400">
+          请在上方选择业绩基准并点击「开始分析」
+        </div>
+      </div>
+    )
+  }
 
   return (
     <>

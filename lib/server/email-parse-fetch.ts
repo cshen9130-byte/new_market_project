@@ -512,7 +512,7 @@ export async function fetchEmailParseRecords(options?: {
     }
   }
 
-  replaceEmailParseRecords(allParseRecords, scannedAccounts)
+  replaceEmailParseRecords(allParseRecords, scannedAccounts, since)
 
   let navSaved = 0
   try {

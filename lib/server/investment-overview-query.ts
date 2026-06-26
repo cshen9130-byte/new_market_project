@@ -278,6 +278,8 @@ export async function queryInvestmentAssetAllocation(params: {
   strategySource?: "company" | "platform"
   groupBy?: "strategy" | "tag"
   strategyLevel?: 1 | 2 | 3
+  /** When false, skip valuation history scan — uses cache NAV for snapshot only. */
+  includeSeries?: boolean
 }): Promise<InvestmentAssetAllocationResult> {
   const defaults = defaultDateRange()
   const startDate = params.startDate && isValidDate(params.startDate) ? params.startDate : defaults.start
@@ -287,6 +289,7 @@ export async function queryInvestmentAssetAllocation(params: {
   const strategyLevel = params.strategyLevel === 2 || params.strategyLevel === 3
     ? params.strategyLevel
     : 1
+  const includeSeries = params.includeSeries !== false
   const companyCols = strategyColumns("company")
   const platformCols = strategyColumns("platform")
 
@@ -326,7 +329,7 @@ export async function queryInvestmentAssetAllocation(params: {
   const productIds = filteredRows.map((r) => r.id)
   let history: HistoryRow[] = []
 
-  if (productIds.length > 0) {
+  if (includeSeries && productIds.length > 0) {
     history = await query<HistoryRow>(
       `SELECT DISTINCT ON (m.id, v.valuation_date)
               m.id::text AS product_id,

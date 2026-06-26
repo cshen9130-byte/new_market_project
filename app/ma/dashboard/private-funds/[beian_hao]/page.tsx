@@ -31,6 +31,9 @@ import { MonthlyReturnsCalendar } from "./components/MonthlyReturnsCalendar"
 import { RankPercentileTrendChart } from "./components/RankPercentileTrendChart"
 import { AnnualMetricsTable } from "./components/AnnualMetricsTable"
 import { AnnualRankRadarPanel } from "./components/AnnualRankRadarPanel"
+import { FundRatingPanel } from "./components/FundRatingPanel"
+import { ScenarioAnalysisPanel } from "./components/ScenarioAnalysisPanel"
+import { NavAttributionPanel } from "./components/NavAttributionPanel"
 
 const menuItems = [
   { key: "funds",      label: "基金" },
@@ -272,15 +275,15 @@ function fmtPct(v: string | null): { text: string; sign: 1 | -1 | 0 } {
   return { text: (n > 0 ? "+" : "") + n.toFixed(2) + "%", sign }
 }
 
-function PctSpan({ value, large = false }: { value: string | null; large?: boolean }) {
+function PctSpan({ value, large = false, className }: { value: string | null; large?: boolean; className?: string }) {
   const { text, sign } = fmtPct(value)
-  const cls = large ? "text-2xl font-bold tabular-nums" : "text-sm font-semibold tabular-nums"
+  const cls = className ?? (large ? "text-2xl font-bold tabular-nums" : "text-sm font-semibold tabular-nums")
   const color =
     sign === 1 ? RED :
     sign === -1 ? GREEN :
-    "text-zinc-500"
+    "#a1a1aa"
   return (
-    <span className={cls} style={typeof color === "string" && color.startsWith("rgb") ? { color } : undefined}>
+    <span className={cls} style={{ color }}>
       {text}
     </span>
   )
@@ -1877,27 +1880,28 @@ export default function PrivateFundDetailPage() {
         <div className="flex flex-1 flex-nowrap items-start justify-between min-w-0 gap-[clamp(0.125rem,0.7cqw,1.25rem)]">
         {/* 成立以来收益 */}
         <div className="min-w-0 flex flex-col items-start gap-0.5">
-          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: RED }}>
-            {metrics.ret_since_inception !== null ? "+" + metrics.ret_since_inception + "%" : "—"}
-          </span>
+          <PctSpan
+            value={metrics.ret_since_inception}
+            className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
+          />
           <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来收益</span>
         </div>
 
         {/* 今年以来收益 */}
         <div className="min-w-0 flex flex-col items-start gap-0.5">
-          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: RED }}>
-            {metrics.ytd_ret !== null
-              ? (parseFloat(metrics.ytd_ret) > 0 ? "+" : "") + metrics.ytd_ret + "%"
-              : "—"}
-          </span>
+          <PctSpan
+            value={metrics.ytd_ret}
+            className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
+          />
           <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">今年以来收益</span>
         </div>
 
         {/* 成立以来年化 */}
         <div className="min-w-0 flex flex-col items-start gap-0.5">
-          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: RED }}>
-            {metrics.ann_ret !== null ? "+" + metrics.ann_ret + "%" : "—"}
-          </span>
+          <PctSpan
+            value={metrics.ann_ret}
+            className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
+          />
           <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来年化</span>
         </div>
 
@@ -1912,7 +1916,16 @@ export default function PrivateFundDetailPage() {
         {/* 夏普比率 – computed since inception */}
         {metrics.sharpe_since_inception && (
           <div className="min-w-0 flex flex-col items-start gap-0.5">
-            <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums text-zinc-800 leading-tight whitespace-nowrap">
+            <span
+              className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
+              style={{
+                color: parseFloat(metrics.sharpe_since_inception) > 0
+                  ? RED
+                  : parseFloat(metrics.sharpe_since_inception) < 0
+                    ? GREEN
+                    : "#27272a",
+              }}
+            >
               {metrics.sharpe_since_inception}
             </span>
             <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来夏普比率</span>
@@ -2061,8 +2074,8 @@ export default function PrivateFundDetailPage() {
           <div className="flex items-start justify-between mb-2 flex-shrink-0 gap-3">
             <div>
               <div className="text-sm font-semibold text-zinc-800">
-                {chartMode === "nav" ? `净值走势（${filterNavType}）` : `收益曲线（${filterNavType}）`}
-              </div>
+              {chartMode === "nav" ? `净值走势（${filterNavType}）` : `收益曲线（${filterNavType}）`}
+            </div>
               {activeFrom && activeTo && (
                 <div className="text-[11px] text-zinc-400 mt-1 tabular-nums">
                   {activeFrom} ~ {activeTo}
@@ -2085,28 +2098,28 @@ export default function PrivateFundDetailPage() {
             </div>
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
               <div className="inline-flex text-xs">
-                <button
+              <button
                   type="button"
-                  onClick={() => setChartMode("return")}
+                onClick={() => setChartMode("return")}
                   className={`px-3 py-1 transition-colors border rounded-l ${
-                    chartMode === "return"
+                  chartMode === "return"
                       ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
                       : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
-                  }`}
-                >
-                  收益曲线
-                </button>
-                <button
+                }`}
+              >
+                收益曲线
+              </button>
+              <button
                   type="button"
-                  onClick={() => setChartMode("nav")}
+                onClick={() => setChartMode("nav")}
                   className={`px-3 py-1 transition-colors border rounded-r -ml-px ${
-                    chartMode === "nav"
+                  chartMode === "nav"
                       ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
                       : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
-                  }`}
-                >
-                  净值曲线
-                </button>
+                }`}
+              >
+                净值曲线
+              </button>
               </div>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
@@ -2548,7 +2561,47 @@ export default function PrivateFundDetailPage() {
         />
       )}
 
-      {detailTab !== "performance" && detailTab !== "product" && (
+      {detailTab === "rating" && (
+        <FundRatingPanel
+          beian_hao={beian_hao}
+          productName={info.product_name}
+          cutoffDate={intervalCutoffDate ?? activeTo}
+          navSource={navTableTitle}
+          sampleGroup={info.strategy_l1 ?? info.strategy_l2}
+          benchmarkKey={appliedBench}
+        />
+      )}
+
+      {detailTab === "scenario" && (
+        <ScenarioAnalysisPanel
+          beian_hao={beian_hao}
+          productName={info.product_name}
+          dateRangeLabel={`${activeFrom} ~ ${activeTo}`}
+          dateFrom={activeFrom}
+          dateTo={activeTo}
+          rows={filteredNavRows}
+          navType={filterNavType}
+          benchmarkSeries={benchmarkData}
+          benchmarkLabel={benchmarkLabel}
+          hasBenchmark={!!appliedBench}
+          defaultCategoryCode={appliedBench || "NHCI.NH"}
+        />
+      )}
+
+      {detailTab === "attribution" && (
+        <NavAttributionPanel
+          productName={info.product_name}
+          dateRangeLabel={`${activeFrom} ~ ${activeTo}`}
+          dateFrom={activeFrom}
+          dateTo={activeTo}
+          rows={filteredNavRows}
+          navType={filterNavType}
+          benchmarkSeries={benchmarkData}
+          hasBenchmark={!!appliedBench}
+        />
+      )}
+
+      {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && (
         <div className="min-h-[320px]" />
       )}
     </div>

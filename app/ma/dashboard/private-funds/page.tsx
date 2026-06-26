@@ -18003,7 +18003,14 @@ function InvestmentFofOverviewView() {
                         )}
                       </td>
                       <td className={`${scrollCell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                      <td className={`${scrollCell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
+                      <td className={`${scrollCell} tabular-nums font-medium`}>
+                        <div className="flex items-center gap-1.5">
+                          <span>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
+                          {row.latest_nav && (
+                            <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800 shrink-0">团队</span>
+                          )}
+                        </div>
+                      </td>
                       <td className={`${scrollCell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
                       <td className={`${scrollCell} text-right tabular-nums font-medium`}>{fmtMoney(row.market_value)}</td>
                       <td className={`${scrollCell} text-right tabular-nums`}>

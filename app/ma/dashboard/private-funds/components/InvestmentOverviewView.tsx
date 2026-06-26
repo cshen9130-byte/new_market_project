@@ -175,7 +175,8 @@ export function InvestmentOverviewView() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [allProducts, setAllProducts] = useState<InvestmentOverviewProduct[]>([])
   const [data, setData] = useState<InvestmentAssetAllocationResult | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [summaryLoading, setSummaryLoading] = useState(true)
+  const [seriesLoading, setSeriesLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showProductMenu, setShowProductMenu] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>("net_asset_value")
@@ -204,6 +205,12 @@ export function InvestmentOverviewView() {
   const productMenuRef = useRef<HTMLDivElement>(null)
   const fetchGenRef = useRef(0)
   const underlyingFetchGenRef = useRef(0)
+  const selectedIdsRef = useRef(selectedIds)
+  const allProductsLenRef = useRef(allProducts.length)
+  const productsInitializedRef = useRef(false)
+  const [selectionRevision, setSelectionRevision] = useState(0)
+  selectedIdsRef.current = selectedIds
+  allProductsLenRef.current = allProducts.length
 
   const loadData = useCallback(async (
     start: string,
@@ -211,9 +218,14 @@ export function InvestmentOverviewView() {
     ids: Set<string>,
     productCount: number,
     opts: { groupBy: "strategy" | "tag"; strategySource: "company" | "platform"; strategyLevel: 1 | 2 | 3 },
+    includeSeries: boolean,
   ) => {
     const fetchGen = ++fetchGenRef.current
-    setLoading(true)
+    if (includeSeries) {
+      setSeriesLoading(true)
+    } else {
+      setSummaryLoading(true)
+    }
     setError(null)
     try {
       const params = new URLSearchParams({
@@ -222,6 +234,7 @@ export function InvestmentOverviewView() {
         group_by: opts.groupBy,
         strategy_source: opts.strategySource,
         strategy_level: String(opts.strategyLevel),
+        include_series: includeSeries ? "1" : "0",
       })
       if (ids.size > 0 && productCount > 0 && ids.size < productCount) {
         ids.forEach((id) => params.append("product_id", id))
@@ -231,24 +244,35 @@ export function InvestmentOverviewView() {
       if (fetchGen !== fetchGenRef.current) return
       if (!res.ok) throw new Error(json.error || "加载失败")
       const payload = json as InvestmentAssetAllocationResult
-      setData(payload)
-      if (Array.isArray(payload.products)) {
-        setAllProducts((prev) => (prev.length > 0 ? prev : payload.products))
-        setSelectedIds((prev) => {
-          if (prev.size > 0) return prev
-          return new Set(payload.products.map((p) => p.id))
-        })
-      }
-      if (Array.isArray(payload.summary)) {
-        setVisibleGroups(new Set(payload.summary.map((r) => r.group_name)))
-        setSeriesSelectAll(true)
+      if (includeSeries) {
+        setData(payload)
+        setSeriesLoading(false)
+      } else {
+        setData((prev) => ({
+          ...payload,
+          series: prev?.series?.length ? prev.series : [],
+        }))
+        if (Array.isArray(payload.products) && !productsInitializedRef.current) {
+          productsInitializedRef.current = true
+          setAllProducts(payload.products)
+          setSelectedIds(new Set(payload.products.map((p) => p.id)))
+        }
+        if (Array.isArray(payload.summary)) {
+          setVisibleGroups(new Set(payload.summary.map((r) => r.group_name)))
+          setSeriesSelectAll(true)
+        }
+        setSummaryLoading(false)
       }
     } catch (e) {
       if (fetchGen !== fetchGenRef.current) return
       setError(e instanceof Error ? e.message : "加载失败")
-      setData(null)
-    } finally {
-      if (fetchGen === fetchGenRef.current) setLoading(false)
+      if (includeSeries) {
+        setSeriesLoading(false)
+      } else {
+        setSummaryLoading(false)
+        setSeriesLoading(false)
+        setData(null)
+      }
     }
   }, [])
 
@@ -288,22 +312,34 @@ export function InvestmentOverviewView() {
   }, [])
 
   useEffect(() => {
-    loadData(queryStart, queryEnd, selectedIds, allProducts.length, {
-      groupBy,
-      strategySource,
-      strategyLevel,
-    })
-  }, [queryStart, queryEnd, selectedIds, allProducts.length, groupBy, strategySource, strategyLevel, loadData])
+    const opts = { groupBy, strategySource, strategyLevel }
+    const ids = selectedIdsRef.current
+    const productCount = allProductsLenRef.current
+    let cancelled = false
+    setSeriesLoading(true)
+
+    void (async () => {
+      await loadData(queryStart, queryEnd, ids, productCount, opts, false)
+      if (cancelled) return
+      await loadData(queryStart, queryEnd, ids, productCount, opts, true)
+    })()
+
+    return () => {
+      cancelled = true
+      fetchGenRef.current += 1
+    }
+  }, [queryStart, queryEnd, groupBy, strategySource, strategyLevel, selectionRevision, loadData])
 
   useEffect(() => {
-    loadUnderlyingData(selectedIds, allProducts.length, {
+    if (summaryLoading) return
+    loadUnderlyingData(selectedIdsRef.current, allProductsLenRef.current, {
       groupBy: underlyingGroupBy,
       strategySource: underlyingStrategySource,
       strategyLevel: underlyingStrategyLevel,
     })
   }, [
-    selectedIds,
-    allProducts.length,
+    summaryLoading,
+    selectionRevision,
     underlyingGroupBy,
     underlyingStrategySource,
     underlyingStrategyLevel,
@@ -332,6 +368,7 @@ export function InvestmentOverviewView() {
     setQueryStart(range.start)
     setQueryEnd(range.end)
     setSelectedIds(new Set(allProducts.map((p) => p.id)))
+    setSelectionRevision((v) => v + 1)
   }
 
   function toggleProduct(id: string) {
@@ -341,11 +378,13 @@ export function InvestmentOverviewView() {
       else next.add(id)
       return next
     })
+    setSelectionRevision((v) => v + 1)
   }
 
   function toggleAllProducts(checked: boolean) {
     if (checked) setSelectedIds(new Set(allProducts.map((p) => p.id)))
     else setSelectedIds(new Set())
+    setSelectionRevision((v) => v + 1)
   }
 
   function handleSort(col: SortKey) {
@@ -876,16 +915,17 @@ export function InvestmentOverviewView() {
         </div>
       )}
 
-      {loading && !data ? (
-        <div className="flex items-center justify-center h-48 text-muted-foreground text-sm">
-          加载中…
+      {summaryLoading && !data ? (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-1 bg-background border rounded-xl shadow-sm p-4 h-[340px] animate-pulse bg-muted/20" />
+          <div className="lg:col-span-2 bg-background border rounded-xl shadow-sm h-[340px] animate-pulse bg-muted/20" />
         </div>
       ) : (
         <>
           {/* Donut + table */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-1 bg-background border rounded-xl shadow-sm p-4 relative">
-              {loading && data && (
+              {summaryLoading && data && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/60 text-xs text-muted-foreground">
                   更新中…
                 </div>
@@ -898,7 +938,7 @@ export function InvestmentOverviewView() {
             </div>
 
             <div className="lg:col-span-2 bg-background border rounded-xl shadow-sm overflow-hidden flex flex-col relative">
-              {loading && data && (
+              {summaryLoading && data && (
                 <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/60 text-xs text-muted-foreground">
                   更新中…
                 </div>
@@ -1023,7 +1063,12 @@ export function InvestmentOverviewView() {
           </div>
 
           {/* Trend chart */}
-          <div className="bg-background border rounded-xl shadow-sm p-4">
+          <div className="bg-background border rounded-xl shadow-sm p-4 relative">
+            {seriesLoading && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/60 text-xs text-muted-foreground">
+                {data?.series.length ? "更新中…" : "加载走势…"}
+              </div>
+            )}
             <div className="flex items-center justify-between mb-2 text-xs text-zinc-500">
               <span>统计区间: {data?.start_date} ~ {data?.end_date}</span>
               <label className="inline-flex items-center gap-1.5 cursor-pointer">
@@ -1198,7 +1243,12 @@ export function InvestmentOverviewView() {
           </div>
 
           {/* Allocation proportion — stacked area */}
-          <div className="bg-background border rounded-xl shadow-sm p-4">
+          <div className="bg-background border rounded-xl shadow-sm p-4 relative">
+            {seriesLoading && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/60 text-xs text-muted-foreground">
+                {data?.series.length ? "更新中…" : "加载走势…"}
+              </div>
+            )}
             <div className="flex items-center justify-between mb-2 text-xs text-zinc-500">
               <span>统计区间: {data?.start_date} ~ {data?.end_date}</span>
               <label className="inline-flex items-center gap-1.5 cursor-pointer">

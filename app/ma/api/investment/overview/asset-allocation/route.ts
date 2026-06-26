@@ -15,6 +15,8 @@ export async function GET(req: Request) {
     const levelRaw = parseInt(searchParams.get("strategy_level") || "1", 10)
     const strategyLevel = levelRaw === 2 || levelRaw === 3 ? levelRaw : 1
 
+    const includeSeries = searchParams.get("include_series") !== "0"
+
     const data = await queryInvestmentAssetAllocation({
       startDate: startDate || undefined,
       endDate: endDate || undefined,
@@ -22,6 +24,7 @@ export async function GET(req: Request) {
       strategySource,
       groupBy,
       strategyLevel,
+      includeSeries,
     })
 
     return NextResponse.json(data)

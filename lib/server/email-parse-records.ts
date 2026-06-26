@@ -111,28 +111,40 @@ function applyFilters(records: EmailParseRecord[], filters: EmailParseRecordFilt
 }
 
 /**
- * Replace parse records for the given accounts with the new scan results.
+ * Merge parse records for the given accounts with the new scan results.
  * Records belonging to accounts that were NOT in `scannedAccounts` are
  * preserved unchanged — so a temporary IMAP failure for one account does
  * not wipe out its previously-fetched records.
+ *
+ * When `scanSince` is provided, records from scanned accounts that fall
+ * before that date are kept; only the scan window is upserted. This allows
+ * a 7-day re-parse to refresh recent mail without discarding older history.
  *
  * @param records        Fresh records returned by the latest scan.
  * @param scannedAccounts Normalised account names that were actually attempted
  *                        in this scan run (regardless of success/failure per
  *                        email).  Pass an empty array to do a full replace
  *                        (legacy behaviour).
+ * @param scanSince      Start of the IMAP `since` window for this run.
  */
 export function replaceEmailParseRecords(
   records: Omit<EmailParseRecord, "id">[],
   scannedAccounts: string[] = [],
+  scanSince?: Date | null,
 ): EmailParseRecord[] {
   const store = readStore()
   const scanned = new Set(scannedAccounts.map((a) => a.trim().toLowerCase()))
   const doPerAccount = scanned.size > 0
+  const newKeys = new Set(records.map((r) => recordKey(r.crawlEmailAccount, r.uid)))
 
-  // Keep records from accounts that were NOT scanned this run.
   const preserved = doPerAccount
-    ? store.records.filter((r) => !scanned.has(r.crawlEmailAccount.trim().toLowerCase()))
+    ? store.records.filter((r) => {
+        const acct = r.crawlEmailAccount.trim().toLowerCase()
+        if (!scanned.has(acct)) return true
+        if (!scanSince) return false
+        if (new Date(r.sentAt) < scanSince) return true
+        return !newKeys.has(recordKey(r.crawlEmailAccount, r.uid))
+      })
     : []
 
   const existingByKey = new Map(store.records.map((r) => [recordKey(r.crawlEmailAccount, r.uid), r]))
@@ -165,13 +177,14 @@ export function listEmailParseRecords(filters: EmailParseRecordFilters = {}): {
   const pageSize = Math.min(100, Math.max(1, filters.pageSize ?? 20))
   const start = (page - 1) * pageSize
 
+  const all = store.records
   return {
     rows: filtered.slice(start, start + pageSize),
     total: filtered.length,
     stats: {
-      total: filtered.length,
-      success: filtered.filter((r) => r.tableNavStatus === "成功").length,
-      failure: filtered.filter((r) => r.tableNavStatus === "失败").length,
+      total: all.length,
+      success: all.filter((r) => r.tableNavStatus === "成功").length,
+      failure: all.filter((r) => r.tableNavStatus === "失败").length,
       lastUpdatedAt: store.lastUpdatedAt,
     },
   }

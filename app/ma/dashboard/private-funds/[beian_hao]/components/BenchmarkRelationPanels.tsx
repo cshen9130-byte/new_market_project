@@ -47,7 +47,19 @@ export const BenchmarkRelationPanels = memo(function BenchmarkRelationPanels({
 
   const corrColumns = corrMode === "interval" ? intervalCorrs : annualCorrs
 
-  if (!hasBenchmark) return null
+  if (!hasBenchmark) {
+    return (
+      <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">
+        <div className="flex items-center gap-2 text-sm font-semibold text-zinc-700 mb-4">
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500" />
+          区间相关系数
+        </div>
+        <div className="h-[120px] flex items-center justify-center text-sm text-zinc-400">
+          请在上方选择业绩基准并点击「开始分析」
+        </div>
+      </div>
+    )
+  }
 
   return (
     <>
