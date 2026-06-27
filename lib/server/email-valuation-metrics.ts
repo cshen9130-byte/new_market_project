@@ -11,6 +11,7 @@ export type EnrichedValuationSummary = ValuationSummary & {
   unit_nav: number
   net_asset_value: number
   custody_balance: number
+  paid_in_capital: number
 }
 
 export type FofUnderlyingMetric = {
@@ -42,6 +43,7 @@ const NON_UNDERLYING_ROW_KINDS = new Set([
   "stock",
   "bond",
   "repo",
+  "paid_in_capital",
 ])
 
 /** Whether a 估值表 row represents a FOF underlying fund holding. */
@@ -198,6 +200,26 @@ function resolveCustodyBalance(rows: ValuationRow[]): number {
   return bestValue
 }
 
+function resolvePaidInCapital(rows: ValuationRow[], netAssetValue: number, unitNav: number): number {
+  let bestValue = 0
+  for (const row of rows) {
+    const name = normalizeText(row.name)
+    if (!/实收资本/.test(name)) continue
+    const qty = parseAmount(row.quantity ?? row.position ?? row.volume)
+    const cost = parseAmount(row.cost ?? row.signed_cost)
+    const mv = pickRowMarketValue(row) || pickRowCost(row)
+    const value = qty > 0 ? qty : cost > 0 ? cost : mv
+    if (value > bestValue) bestValue = value
+  }
+
+  if (bestValue <= 0 && netAssetValue > 0 && unitNav > 0.05) {
+    const inferred = netAssetValue / unitNav
+    if (inferred > 1000) return inferred
+  }
+
+  return bestValue
+}
+
 function resolveTotalsFromRows(rows: ValuationRow[]): { totalAsset: number; totalLiability: number } {
   let totalAsset = 0
   let totalLiability = 0
@@ -265,6 +287,7 @@ export function enrichValuationMetrics(analysis: ValuationAnalysis): {
 
   const netAssetValue = resolveNetAssetValue(analysis.summary, rows)
   const custodyBalance = resolveCustodyBalance(rows)
+  const paidInCapital = resolvePaidInCapital(rows, netAssetValue, unitNav)
 
   if (!unitNav && isPlausibleUnitNav(analysis.summary.nav)) {
     unitNav = analysis.summary.nav
@@ -275,6 +298,7 @@ export function enrichValuationMetrics(analysis: ValuationAnalysis): {
     unit_nav: unitNav,
     net_asset_value: netAssetValue,
     custody_balance: custodyBalance,
+    paid_in_capital: paidInCapital,
     nav: netAssetValue || analysis.summary.nav,
   }
 

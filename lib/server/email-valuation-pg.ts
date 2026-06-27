@@ -5,6 +5,7 @@
 
 import { query } from "@/lib/db"
 import type { ValuationRow, ValuationSummary } from "@/lib/server/valuation-analyzer"
+import { resolveCustodianFromValuationRecord } from "@/lib/server/email-valuation-custodian"
 import { replaceValuationHoldings } from "@/lib/server/email-valuation-holdings-pg"
 import { upsertValuationMetricsForRecord } from "@/lib/server/email-valuation-metrics-pg"
 import type { FofUnderlyingMetric } from "@/lib/server/email-valuation-metrics"
@@ -23,8 +24,10 @@ export type EmailValuationInsert = {
   cumulativeNav: number | null
   custodyBalance: number | null
   netAssetValue: number | null
+  paidInCapital: number | null
   totalAsset: number | null
   totalLiability: number | null
+  custodian: string | null
   netAsset: number | null
   underlyingHoldings: FofUnderlyingMetric[]
   holdingsCount: number
@@ -52,6 +55,8 @@ const CREATE_TABLE_SQL = `
     net_asset            NUMERIC(20,2),
     custody_balance      NUMERIC(20,2),
     net_asset_value      NUMERIC(20,2),
+    paid_in_capital      NUMERIC(20,2),
+    custodian            TEXT,
     holdings_count       INT         NOT NULL DEFAULT 0,
     source               TEXT,
     summary              JSONB,
@@ -71,6 +76,10 @@ const MIGRATE_METRICS_COLUMNS_SQL = `
     ADD COLUMN IF NOT EXISTS custody_balance NUMERIC(20,2);
   ALTER TABLE ops_email_valuation_records
     ADD COLUMN IF NOT EXISTS net_asset_value NUMERIC(20,2);
+  ALTER TABLE ops_email_valuation_records
+    ADD COLUMN IF NOT EXISTS paid_in_capital NUMERIC(20,2);
+  ALTER TABLE ops_email_valuation_records
+    ADD COLUMN IF NOT EXISTS custodian TEXT;
 `
 
 const MIGRATE_TABLE_SQL = `
@@ -106,14 +115,26 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
   let recordsSaved = 0
   let holdingsSaved = 0
   for (const r of records) {
+    const custodian = resolveCustodianFromValuationRecord({
+      custodian: r.custodian,
+      summaryCustodian: r.summary?.custodian ?? null,
+      senderEmail: r.senderEmail,
+      subject: r.subject,
+      attachmentFilename: r.attachmentFilename,
+    })
+    const summary = {
+      ...r.summary,
+      custodian: custodian ?? r.summary?.custodian ?? null,
+    }
+
     const inserted = await query<{ id: string }>(
       `INSERT INTO ops_email_valuation_records
          (crawl_email_account, email_uid, sent_at, subject, sender_email,
           attachment_filename, product_code, fund_name, valuation_date,
           unit_nav, cumulative_nav, total_asset, total_liability, net_asset,
-          custody_balance, net_asset_value,
+          custody_balance, net_asset_value, paid_in_capital, custodian,
           holdings_count, source, summary, holdings)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
        ON CONFLICT (crawl_email_account, email_uid, attachment_filename, valuation_date) DO UPDATE SET
          sent_at           = EXCLUDED.sent_at,
          subject           = EXCLUDED.subject,
@@ -127,6 +148,8 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
          net_asset         = EXCLUDED.net_asset,
          custody_balance   = EXCLUDED.custody_balance,
          net_asset_value   = EXCLUDED.net_asset_value,
+         paid_in_capital   = EXCLUDED.paid_in_capital,
+         custodian         = EXCLUDED.custodian,
          holdings_count    = EXCLUDED.holdings_count,
          source            = EXCLUDED.source,
          summary           = EXCLUDED.summary,
@@ -149,9 +172,11 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
         r.netAsset ?? r.netAssetValue,
         r.custodyBalance,
         r.netAssetValue,
+        r.paidInCapital,
+        custodian,
         r.holdingsCount,
         r.source,
-        JSON.stringify(r.summary),
+        JSON.stringify(summary),
         JSON.stringify(r.holdings),
       ],
     )
@@ -177,6 +202,7 @@ export async function upsertEmailValuationRecords(records: EmailValuationInsert[
         cumulativeNav: r.cumulativeNav,
         custodyBalance: r.custodyBalance,
         netAssetValue: r.netAssetValue,
+        paidInCapital: r.paidInCapital,
         totalAsset: r.totalAsset,
         totalLiability: r.totalLiability,
         underlyingHoldings: r.underlyingHoldings ?? [],
@@ -269,4 +295,158 @@ export async function getEmailValuationRecordById(id: number): Promise<EmailValu
     [id],
   )
   return rows[0] ?? null
+}
+
+function resolveCustodianFromRecordRow(row: {
+  custodian: string | null
+  summary: ValuationSummary | null
+  sender_email: string | null
+  subject: string | null
+  attachment_filename: string | null
+}): string | null {
+  return resolveCustodianFromValuationRecord({
+    custodian: row.custodian,
+    summaryCustodian: row.summary?.custodian ?? null,
+    headerRows: row.summary?.header_rows ?? null,
+    senderEmail: row.sender_email,
+    subject: row.subject,
+    attachmentFilename: row.attachment_filename,
+  })
+}
+
+/** Resolve 托管券商 for a record and persist — for offline backfill only (may use IMAP). */
+export async function resolveAndPersistValuationCustodian(
+  recordId: number | null | undefined,
+): Promise<string | null> {
+  if (!recordId || recordId <= 0) return null
+  await ensureEmailValuationTable()
+
+  const rows = await query<{
+    id: string
+    custodian: string | null
+    summary: ValuationSummary | null
+    sender_email: string | null
+    subject: string | null
+    attachment_filename: string | null
+    crawl_email_account: string
+    email_uid: string
+  }>(
+    `SELECT id, custodian, summary, sender_email, subject, attachment_filename,
+            crawl_email_account, email_uid
+     FROM ops_email_valuation_records
+     WHERE id = $1
+     LIMIT 1`,
+    [recordId],
+  )
+
+  const row = rows[0]
+  if (!row) return null
+
+  let resolved = resolveCustodianFromRecordRow(row)
+  if (!resolved && row.attachment_filename?.trim()) {
+    const { refetchValuationCustodianFromEmail } = await import(
+      "@/lib/server/email-valuation-custodian-refetch"
+    )
+    resolved = await refetchValuationCustodianFromEmail({
+      crawlEmailAccount: row.crawl_email_account,
+      emailUid: row.email_uid,
+      attachmentFilename: row.attachment_filename,
+      subject: row.subject,
+      senderEmail: row.sender_email,
+    })
+  }
+
+  if (!resolved) return null
+
+  const existing = row.custodian?.trim() ?? row.summary?.custodian?.trim() ?? ""
+  if (existing === resolved) return resolved
+
+  await query(
+    `UPDATE ops_email_valuation_records
+     SET custodian = $2,
+         summary = COALESCE(summary, '{}'::jsonb) || jsonb_build_object('custodian', $2::text)
+     WHERE id = $1`,
+    [recordId, resolved],
+  )
+  await query(
+    `UPDATE ops_email_valuation_fund_metrics_latest
+     SET custodian = $2
+     WHERE valuation_record_id = $1`,
+    [recordId, resolved],
+  )
+
+  return resolved
+}
+
+/** Resolve 托管券商 from the latest stored valuation email for a fund. */
+export async function lookupLatestValuationCustodian(options: {
+  productCodes?: string[]
+  fundName?: string | null
+}): Promise<string | null> {
+  await ensureEmailValuationTable()
+
+  const codes = [...new Set((options.productCodes ?? []).map((c) => c.trim()).filter(Boolean))]
+  const fundName = options.fundName?.trim() ?? ""
+  if (codes.length === 0 && !fundName) return null
+
+  const conditions: string[] = []
+  const params: unknown[] = []
+  let idx = 1
+
+  if (codes.length > 0) {
+    conditions.push(`product_code = ANY($${idx++})`)
+    params.push(codes)
+  }
+  if (fundName) {
+    conditions.push(`fund_name ILIKE $${idx++}`)
+    params.push(`%${fundName}%`)
+  }
+
+  const rows = await query<{
+    id: string
+    custodian: string | null
+    summary: ValuationSummary | null
+    sender_email: string | null
+    subject: string | null
+    attachment_filename: string | null
+  }>(
+    `SELECT id, custodian, summary, sender_email, subject, attachment_filename
+     FROM ops_email_valuation_records
+     WHERE ${conditions.join(" OR ")}
+     ORDER BY valuation_date DESC, id DESC
+     LIMIT 10`,
+    params,
+  )
+
+  for (const row of rows) {
+    const resolved = resolveCustodianFromRecordRow(row)
+    if (resolved) return resolved
+  }
+  return null
+}
+
+/** Fast lookup from stored record metadata — never blocks on IMAP. */
+export async function lookupValuationCustodianByRecordId(
+  recordId: number | null | undefined,
+): Promise<string | null> {
+  if (!recordId || recordId <= 0) return null
+  await ensureEmailValuationTable()
+
+  const rows = await query<{
+    custodian: string | null
+    summary: ValuationSummary | null
+    sender_email: string | null
+    subject: string | null
+    attachment_filename: string | null
+  }>(
+    `SELECT custodian, summary, sender_email, subject, attachment_filename
+     FROM ops_email_valuation_records
+     WHERE id = $1
+     LIMIT 1`,
+    [recordId],
+  )
+
+  const row = rows[0]
+  if (!row) return null
+  return resolveCustodianFromRecordRow(row)
 }

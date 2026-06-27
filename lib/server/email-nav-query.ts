@@ -342,17 +342,15 @@ export function selectEmailNavSeriesRows(
 function applyEmailUnitNavCorrection(rows: EmailNavRawRow[]): EmailNavRawRow[] {
   let latestRatio: number | null = null
   return rows.map((row) => {
+    const unit = parseOptionalNav(row.nav)
+    const cum = parseOptionalNav(row.cumulative_nav)
+    if (unit != null && cum != null && cum - unit > 0.05) {
+      latestRatio = unit / cum
+    }
     if (isPostInvestmentVirtualNavEmail(row.subject)) {
-      const unit = parseOptionalNav(row.nav)
-      const cum = parseOptionalNav(row.cumulative_nav)
-      if (unit != null && cum != null && cum - unit > 0.05) {
-        latestRatio = unit / cum
-      }
       return row
     }
-    const unit = parseOptionalNav(row.nav)
     if (unit == null || latestRatio == null) return row
-    const cum = parseOptionalNav(row.cumulative_nav)
     const corrected = inferEmailUnitNav(unit, cum, row.subject, latestRatio)
     if (Math.abs(corrected - unit) < 0.000001) return row
     return { ...row, nav: String(+corrected.toFixed(6)) }
@@ -601,7 +599,7 @@ function filterEmailNavManageStream(
   const typeFiltered = rows.filter((row) =>
     navType === "virtual" ? isVirtualNavRow(row) : !isVirtualNavRow(row),
   )
-  return selectEmailSourceStream(typeFiltered, beian, aliases).map((row) => {
+  return selectEmailNavSeriesRows(typeFiltered, beian, aliases).map((row) => {
     const match = typeFiltered.find((r) => r.nav_date === row.nav_date && r.fund_name === row.fund_name)
       ?? typeFiltered.find((r) => r.nav_date === row.nav_date)
     return match ?? ({ ...row, id: row.nav_date } as EmailNavRawRowWithId)

@@ -1212,6 +1212,7 @@ export function PortfolioSectionShell({
   activeSideItem?: string
 }) {
   const menuItems = [
+    { key: "market", label: "市场", href: "/ma/dashboard/private-funds?tab=market&side=strategy-observation" },
     { key: "funds", label: "基金", href: "/ma/dashboard/private-funds?tab=funds" },
     { key: "portfolio", label: "组合", href: "/ma/dashboard/private-funds?tab=portfolio&side=port-new" },
     { key: "investment", label: "投资", href: "/ma/dashboard/private-funds?tab=investment" },

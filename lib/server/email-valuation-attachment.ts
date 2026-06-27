@@ -17,6 +17,7 @@ import {
   enrichValuationMetrics,
   type FofUnderlyingMetric,
 } from "@/lib/server/email-valuation-metrics"
+import { resolveCustodianFromValuationRecord } from "@/lib/server/email-valuation-custodian"
 
 export type ValuationAttachmentInfo = { filename: string; part: string }
 
@@ -29,8 +30,10 @@ export type ExtractedValuationData = {
   cumulativeNav: number | null
   custodyBalance: number | null
   netAssetValue: number | null
+  paidInCapital: number | null
   totalAsset: number | null
   totalLiability: number | null
+  custodian: string | null
   underlyingHoldings: FofUnderlyingMetric[]
   holdingsCount: number
   source: "attachment_valuation_table" | "body_html_table"
@@ -299,6 +302,8 @@ function buildExtractedValuation(
   filename: string,
   source: ExtractedValuationData["source"],
   headerScanDate: string | null = null,
+  senderEmail: string | null = null,
+  bodyText: string | null = null,
 ): ExtractedValuationData | null {
   if (!isSuccessfulValuation(analysis)) return null
 
@@ -333,6 +338,26 @@ function buildExtractedValuation(
     shared.fundName ??
     (enriched.fund_name && enriched.fund_name !== "未知基金" ? enriched.fund_name : null)
 
+  const paidInCapital =
+    enriched.paid_in_capital > 0
+      ? enriched.paid_in_capital
+      : netAssetValue != null && unitNav != null && unitNav > 0.05
+        ? netAssetValue / unitNav
+        : null
+
+  const custodian = resolveCustodianFromValuationRecord({
+    custodian: enriched.custodian ?? analysis.summary.custodian,
+    summaryCustodian: enriched.custodian ?? analysis.summary.custodian,
+    senderEmail,
+    subject,
+    attachmentFilename: filename,
+    bodyText,
+  })
+  analysis = {
+    ...analysis,
+    summary: { ...analysis.summary, custodian },
+  }
+
   return {
     analysis,
     productCode: shared.productCode,
@@ -342,8 +367,10 @@ function buildExtractedValuation(
     cumulativeNav: portfolioScan.cum,
     custodyBalance: enriched.custody_balance > 0 ? enriched.custody_balance : null,
     netAssetValue,
+    paidInCapital,
     totalAsset: enriched.total_asset > 0 ? enriched.total_asset : null,
     totalLiability: enriched.total_liability > 0 ? enriched.total_liability : null,
+    custodian,
     underlyingHoldings,
     holdingsCount: countMeaningfulHoldings(analysis.portfolio_data),
     source,
@@ -354,6 +381,7 @@ function buildExtractedValuation(
 export function extractValuationFromEmailBody(
   bodyText: string,
   subject: string,
+  senderEmail: string | null = null,
 ): ExtractedValuationData | null {
   if (!/估值表|估值/i.test(subject) && !/科目代码/.test(bodyText)) return null
 
@@ -373,7 +401,7 @@ export function extractValuationFromEmailBody(
 
   try {
     const analysis = parseValuationRows(rows, subject)
-    return buildExtractedValuation(analysis, subject, "", "body_html_table", null)
+    return buildExtractedValuation(analysis, subject, "", "body_html_table", null, senderEmail, bodyText)
   } catch {
     return null
   }
@@ -406,6 +434,7 @@ export function extractValuationFromBuffer(
   buffer: Buffer,
   filename: string,
   subject: string,
+  senderEmail: string | null = null,
 ): ExtractedValuationData | null {
   try {
     const headerScan = scanWorkbookNav(buffer)
@@ -416,6 +445,7 @@ export function extractValuationFromBuffer(
       filename,
       "attachment_valuation_table",
       headerScan.date,
+      senderEmail,
     )
   } catch {
     return null

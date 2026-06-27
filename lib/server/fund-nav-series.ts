@@ -11,7 +11,7 @@ import {
   loadManagedProductNavSeed,
   mergeManagedProductDetailNav,
 } from "@/lib/server/managed-product-nav-seed"
-import { loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
+import { loadManagedProductEmailPoints, loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
 
 function pickNavLevel(row: LegacyNavRow): number | null {
   for (const field of [row.cum_nav_withdrawal, row.cumulative_nav, row.nav]) {
@@ -75,7 +75,13 @@ async function loadMergedNavRows(
   if (!managedOverride) return navSeries
 
   try {
-    const [teamSeries, seedRows] = await Promise.all([
+    const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
+      loadManagedProductEmailPoints({
+        beian_hao: managedOverride.beian_hao,
+        product_name: managedOverride.product_name,
+        short_name: short_name || null,
+        extraNames,
+      }),
       loadManagedProductNavSeries({
         beian_hao: managedOverride.beian_hao,
         product_name: managedOverride.product_name,
@@ -85,6 +91,16 @@ async function loadMergedNavRows(
       Promise.resolve(loadManagedProductNavSeed(managedOverride.beian_hao)),
     ])
 
+    if (seedRows.length > 0) {
+      const legacyNoType6 = await loadPrivateFundLegacyNavRows(
+        beian_hao,
+        product_name,
+        short_name,
+        { excludeType6: true },
+      )
+      return mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyNoType6)
+    }
+
     if (teamSeries.length > 0) {
       const legacyNoType6 = await loadPrivateFundLegacyNavRows(
         beian_hao,
@@ -92,9 +108,6 @@ async function loadMergedNavRows(
         short_name,
         { excludeType6: true },
       )
-      if (seedRows.length > 0) {
-        return mergeManagedProductDetailNav(seedRows, teamSeries, legacyNoType6)
-      }
       const firstTeamDate = teamSeries[0]?.price_date ?? ""
       const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
       let base = mergeNavSeriesWithEmail(legacyNoType6, [])
@@ -138,6 +151,21 @@ function filterRowsByDate(
   cutoff.setDate(cutoff.getDate() - opts.days)
   const cutoffStr = cutoff.toISOString().slice(0, 10)
   return rows.filter((row) => row.price_date.slice(0, 10) >= cutoffStr)
+}
+
+export async function loadFundLatestUnitNav(
+  beian_hao: string,
+  product_name?: string,
+): Promise<{ nav: number | null; price_date: string | null }> {
+  const names = await resolveFundNames(beian_hao, product_name)
+  const rows = await loadMergedNavRows(beian_hao, names.product_name, names.short_name)
+  const latest = rows.at(-1)
+  if (!latest) return { nav: null, price_date: null }
+  const nav = parseFloat(latest.nav)
+  return {
+    nav: Number.isFinite(nav) && nav > 0 ? nav : null,
+    price_date: latest.price_date.slice(0, 10),
+  }
 }
 
 export async function loadFundNavRange(

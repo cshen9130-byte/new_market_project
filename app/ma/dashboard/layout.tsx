@@ -63,7 +63,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         <main
           className={cn(
             "flex-1 px-4 md:px-6 pb-6",
-            isPrivateFundsSection ? "min-h-0 overflow-hidden" : "overflow-y-auto",
+            isPrivateFundsSection ? "flex flex-col min-h-0 overflow-hidden" : "overflow-y-auto",
           )}
         >
           {children}

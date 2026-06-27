@@ -335,7 +335,7 @@ async function fetchMailbox(
         for (const att of valuationAttachments) {
           try {
             const buf = await downloadPart(client, String(uid), att.part)
-            const extracted = extractValuationFromBuffer(buf, att.filename, subject)
+            const extracted = extractValuationFromBuffer(buf, att.filename, subject, senderEmail)
             if (extracted) {
               valuationSavedForEmail = true
               valuationRecords.push({
@@ -348,8 +348,10 @@ async function fetchMailbox(
                 cumulativeNav: extracted.cumulativeNav,
                 custodyBalance: extracted.custodyBalance,
                 netAssetValue: extracted.netAssetValue,
+                paidInCapital: extracted.paidInCapital,
                 totalAsset: extracted.totalAsset,
                 totalLiability: extracted.totalLiability,
+                custodian: extracted.custodian,
                 netAsset: extracted.netAssetValue,
                 underlyingHoldings: extracted.underlyingHoldings,
                 holdingsCount: extracted.holdingsCount,
@@ -392,7 +394,7 @@ async function fetchMailbox(
         }
 
         if (!valuationSavedForEmail && hasValuation(subject, attachments)) {
-          const bodyExtracted = extractValuationFromEmailBody(bodyText, subject)
+          const bodyExtracted = extractValuationFromEmailBody(bodyText, subject, senderEmail)
           if (bodyExtracted) {
             valuationSavedForEmail = true
             valuationRecords.push({
@@ -405,8 +407,10 @@ async function fetchMailbox(
               cumulativeNav: bodyExtracted.cumulativeNav,
               custodyBalance: bodyExtracted.custodyBalance,
               netAssetValue: bodyExtracted.netAssetValue,
+              paidInCapital: bodyExtracted.paidInCapital,
               totalAsset: bodyExtracted.totalAsset,
               totalLiability: bodyExtracted.totalLiability,
+              custodian: bodyExtracted.custodian,
               netAsset: bodyExtracted.netAssetValue,
               underlyingHoldings: bodyExtracted.underlyingHoldings,
               holdingsCount: bodyExtracted.holdingsCount,

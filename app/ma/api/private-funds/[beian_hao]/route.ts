@@ -4,7 +4,7 @@ import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNa
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed, mergeManagedProductDetailNav } from "@/lib/server/managed-product-nav-seed"
-import { loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
+import { loadManagedProductEmailPoints, loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
 
 export const dynamic = "force-dynamic"
 
@@ -341,7 +341,13 @@ export async function GET(
   let nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
   if (managedOverride) {
     try {
-      const [teamSeries, seedRows] = await Promise.all([
+      const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
+        loadManagedProductEmailPoints({
+          beian_hao: managedOverride.beian_hao,
+          product_name: managedOverride.product_name,
+          short_name: shortName || null,
+          extraNames: emailNameAliases,
+        }),
         loadManagedProductNavSeries({
           beian_hao: managedOverride.beian_hao,
           product_name: managedOverride.product_name,
@@ -351,7 +357,17 @@ export async function GET(
         Promise.resolve(loadManagedProductNavSeed(managedOverride.beian_hao)),
       ])
       collectPriceDates(seedRows, teamNavDates)
-      if (teamSeries.length > 0) {
+      if (seedRows.length > 0) {
+        usesManagedTeamSeries = true
+        collectPriceDates(teamEmailPoints.map((row) => ({ price_date: row.price_date })), teamNavDates)
+        const legacyNoType6 = await loadPrivateFundLegacyNavRows(
+          routeBeianHao,
+          productName,
+          shortName,
+          { excludeType6: true },
+        )
+        nav_series = mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyNoType6)
+      } else if (teamSeries.length > 0) {
         usesManagedTeamSeries = true
         collectPriceDates(teamSeries, teamNavDates)
         const legacyNoType6 = await loadPrivateFundLegacyNavRows(
@@ -360,21 +376,13 @@ export async function GET(
           shortName,
           { excludeType6: true },
         )
-        if (seedRows.length > 0) {
-          nav_series = mergeManagedProductDetailNav(seedRows, teamSeries, legacyNoType6)
-        } else {
-          const firstTeamDate = teamSeries[0]?.price_date ?? ""
-          const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
-          let base = mergeNavSeriesWithEmail(legacyNoType6, [])
-          if (seedBackfill.length > 0) {
-            base = mergeLegacyWithTeamNav(base, seedBackfill)
-          }
-          nav_series = mergeLegacyWithTeamNav(base, teamSeries)
+        const firstTeamDate = teamSeries[0]?.price_date ?? ""
+        const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
+        let base = mergeNavSeriesWithEmail(legacyNoType6, [])
+        if (seedBackfill.length > 0) {
+          base = mergeLegacyWithTeamNav(base, seedBackfill)
         }
-      } else if (seedRows.length > 0) {
-        const seedLatest = seedRows[seedRows.length - 1].price_date
-        const emailAfterSeed = emailNavRows.filter((row) => row.price_date > seedLatest)
-        nav_series = mergeNavSeriesWithEmail(seedRows, emailAfterSeed)
+        nav_series = mergeLegacyWithTeamNav(base, teamSeries)
       } else {
         const legacyNoType6 = await loadPrivateFundLegacyNavRows(
           routeBeianHao,

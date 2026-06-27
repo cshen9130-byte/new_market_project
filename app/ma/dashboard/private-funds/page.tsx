@@ -1,13 +1,14 @@
 "use client"
 
-import { useEffect, useRef, useState, useCallback, type CSSProperties } from "react"
+import { useEffect, useRef, useState, useCallback, useMemo, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, Copy, Check } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
+import { ManagerSearchInput, ProductKeywordSearchInput } from "@/components/ma/private-fund-filter-search"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
@@ -17,6 +18,11 @@ import { InvestmentDirectPortfoliosView } from "./components/InvestmentDirectPor
 import { CustomFundsView } from "./components/CustomFundsView"
 import { CustomIndicesView } from "./components/CustomIndicesView"
 import { OperationsLedgerView } from "./components/OperationsLedgerView"
+import { StrategyObservationView } from "./components/StrategyObservationView"
+import { PeIndexView } from "./components/PeIndexView"
+import { PeIndustryView } from "./components/PeIndustryView"
+import { FuturesStyleView } from "./components/FuturesStyleView"
+import { EquityStyleView } from "./components/EquityStyleView"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -26,6 +32,7 @@ import {
 } from "@/lib/permissions"
 
 const menuItems = [
+  { key: "market", label: "市场" },
   { key: "funds", label: "基金" },
   { key: "portfolio", label: "组合" },
   { key: "investment", label: "投资" },
@@ -119,7 +126,26 @@ const portfolioSidebarGroups: SidebarGroup[] = [
   },
 ]
 
+const marketSidebarGroups: SidebarGroup[] = [
+  {
+    label: "风格因子",
+    items: [
+      { key: "futures-style", label: "期货风格因子" },
+      { key: "equity-style", label: "股票风格因子" },
+    ],
+  },
+  {
+    label: "私募观察",
+    items: [
+      { key: "strategy-observation", label: "策略观察" },
+      { key: "pe-index", label: "私募指数" },
+      { key: "pe-industry", label: "私募行业" },
+    ],
+  },
+]
+
 const TAB_DEFAULT_SIDE: Record<string, string> = {
+  market: "strategy-observation",
   funds: "private-funds",
   portfolio: "port-new",
   investment: "inv-tracking",
@@ -245,7 +271,6 @@ function FundFilterPanel({
   const [fundTypes, setFundTypes] = useState<string[]>([])
   const [orgSizes, setOrgSizes] = useState<string[]>([])
   const [moreInfoValues, setMoreInfoValues] = useState<Record<string, string>>({})
-  const [kwInput, setKwInput] = useState("")
   const [showSaveModal, setShowSaveModal] = useState(false)
   const [strategyHierarchy, setStrategyHierarchy] = useState<{ l1: string; l2s: string[] }[]>([])
 
@@ -312,14 +337,18 @@ function FundFilterPanel({
   if (filters.keyword)
     activeConditions.push({
       label: `关键字: ${filters.keyword}`,
-      clear: () => { onChange({ keyword: "" }); setKwInput("") },
+      clear: () => onChange({ keyword: "" }),
+    })
+  if (filters.manager)
+    activeConditions.push({
+      label: `管理人: ${filters.manager}`,
+      clear: () => onChange({ manager: "" }),
     })
 
   const lbl = "text-xs font-medium text-zinc-400 dark:text-zinc-500 shrink-0 w-[4.5rem] text-right pr-3 select-none"
 
   function clearAll() {
     onChange({ strategyFilters: [], keyword: "", manager: "", metricTab: "收益", period: "本周", range: "不限", inceptionPeriod: "", navDatePeriod: "", navFrequency: "" })
-    setKwInput("")
     setFundTypes([])
     setMoreInfoValues({})
   }
@@ -502,29 +531,14 @@ function FundFilterPanel({
       {/* 关键字 */}
       <div className="flex items-center gap-3 px-4 py-2.5">
         <span className={lbl}>关 键 字：</span>
-        <div className="flex items-center border rounded px-2 h-7 gap-1.5 bg-background w-60">
-          <input
-            className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
-            placeholder="输入产品/产品备案号，回车搜索"
-            value={kwInput}
-            onChange={(e) => setKwInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && onChange({ keyword: kwInput })}
-          />
-          <button
-            onClick={() => onChange({ keyword: kwInput })}
-            className="text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <Search className="h-3 w-3" />
-          </button>
-        </div>
-        <div className="flex items-center border rounded px-2 h-7 bg-background w-48">
-          <input
-            className="flex-1 text-xs outline-none bg-transparent placeholder:text-muted-foreground/50"
-            placeholder="请输入关键字并选择管理人"
-            value={filters.manager}
-            onChange={(e) => onChange({ manager: e.target.value })}
-          />
-        </div>
+        <ProductKeywordSearchInput
+          value={filters.keyword}
+          onChange={(keyword) => onChange({ keyword })}
+        />
+        <ManagerSearchInput
+          value={filters.manager}
+          onChange={(manager) => onChange({ manager })}
+        />
       </div>
 
       {/* 已选条件 */}
@@ -572,6 +586,94 @@ function loadTemplates(): SavedTemplate[] {
 }
 function saveTemplates(ts: SavedTemplate[]) {
   localStorage.setItem(TEMPLATES_KEY, JSON.stringify(ts))
+}
+
+function formatLocalDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+/** Weekly cutoff dates (today + prior Fridays) for the metric deadline picker. */
+function buildMetricCutoffDates(maxCount = 52, selected?: string): string[] {
+  const dates: string[] = []
+  const today = new Date()
+  today.setHours(12, 0, 0, 0)
+  const todayStr = formatLocalDate(today)
+
+  const cursor = new Date(today)
+  const dow = cursor.getDay()
+  cursor.setDate(cursor.getDate() - (dow >= 5 ? dow - 5 : dow + 2))
+
+  if (todayStr !== formatLocalDate(cursor)) {
+    dates.push(todayStr)
+  }
+
+  while (dates.length < maxCount) {
+    const iso = formatLocalDate(cursor)
+    if (!dates.includes(iso)) dates.push(iso)
+    cursor.setDate(cursor.getDate() - 7)
+    if (cursor.getFullYear() < today.getFullYear() - 5) break
+  }
+
+  if (selected && !dates.includes(selected)) {
+    dates.push(selected)
+    dates.sort((a, b) => b.localeCompare(a))
+  }
+  return dates
+}
+
+function CutoffDateDropdown({
+  value,
+  onChange,
+}: {
+  value: string
+  onChange: (date: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const options = useMemo(() => buildMetricCutoffDates(52, value), [value])
+
+  return (
+    <div className="flex items-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400">
+      <span className="font-medium text-zinc-800 dark:text-zinc-200">指标计算截止日期</span>
+      <span className="text-zinc-400 cursor-help" title="指标基于该截止日期的净值序列计算">(?)</span>
+      <span className="text-zinc-400">:</span>
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="inline-flex items-center gap-1 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors border rounded px-1.5 py-0.5 text-xs tabular-nums"
+        >
+          {value}
+          <ChevronDown className="h-3 w-3" />
+        </button>
+        {open && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+            <div
+              className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[140px] max-h-[240px] overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {options.map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => { onChange(d); setOpen(false) }}
+                  className={[
+                    "w-full text-left px-4 py-2 text-sm tabular-nums transition-colors",
+                    d === value ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-muted",
+                  ].join(" ")}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
 }
 
 function SaveFilterModal({ onSave, onClose }: {
@@ -781,13 +883,13 @@ type SortKey = "product_name" | "latest_nav" | "ret_1w" | "ret_1m" | "ret_3m" | 
 type SortDir = "asc" | "desc"
 
 function fmtNum(v: string | null, decimals = 4) {
-  if (!v) return "—"
+  if (v == null || v === "") return "—"
   const n = parseFloat(v)
   return isNaN(n) ? "—" : n.toFixed(decimals)
 }
 
 function fmtPct(v: string | null) {
-  if (!v) return "—"
+  if (v == null || v === "") return "—"
   const n = parseFloat(v)
   if (isNaN(n)) return "—"
   return (n >= 0 ? "+" : "") + n.toFixed(2) + "%"
@@ -800,6 +902,81 @@ function PctCell({ value }: { value: string | null }) {
   return <span className={n > 0 ? "text-red-500" : n < 0 ? "text-emerald-600" : ""}>{text}</span>
 }
 
+function CopyableInlineText({
+  text,
+  copyTitle,
+  label,
+}: {
+  text: string
+  copyTitle: string
+  label: ReactNode
+}) {
+  const [copied, setCopied] = useState(false)
+
+  async function handleCopy(e: MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // ignore
+    }
+  }
+
+  return (
+    <div className="group/copy inline-flex items-center max-w-full align-top">
+      {label}
+      <button
+        type="button"
+        onClick={handleCopy}
+        title={copied ? "已复制" : copyTitle}
+        className="flex-shrink-0 ml-0.5 p-0.5 rounded opacity-0 group-hover/copy:opacity-100 hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-opacity"
+      >
+        {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
+      </button>
+    </div>
+  )
+}
+
+function CopyableProductName({ beian_hao, product_name }: { beian_hao: string; product_name: string }) {
+  return (
+    <CopyableInlineText
+      text={product_name}
+      copyTitle="复制产品名称"
+      label={
+        <a
+          href={`/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="truncate min-w-0 font-medium text-blue-600 dark:text-blue-400 hover:underline leading-5"
+          title={product_name}
+        >
+          {product_name}
+        </a>
+      }
+    />
+  )
+}
+
+function CopyableManagerName({ manager }: { manager: string }) {
+  return (
+    <CopyableInlineText
+      text={manager}
+      copyTitle="复制管理人"
+      label={
+        <span
+          className="truncate min-w-0 text-blue-600 dark:text-blue-400 cursor-pointer hover:underline"
+          title={manager}
+        >
+          {manager}
+        </span>
+      }
+    />
+  )
+}
+
 function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; sortDir: SortDir }) {
   if (col !== sortKey) return <ChevronsUpDown className="h-3 w-3 ml-1 opacity-40 inline-block" />
   return sortDir === "asc"
@@ -808,76 +985,75 @@ function SortIcon({ col, sortKey, sortDir }: { col: SortKey; sortKey: SortKey; s
 }
 
 function PrivateFundTable({
-  strategyFilters, keyword, metricTab, period, range, inceptionPeriod, navDatePeriod, navFrequency,
-  templates, onLoadTemplate,
+  strategyFilters, keyword, manager, metricTab, period, range, inceptionPeriod, navDatePeriod, navFrequency,
+  templates, activeTemplateName, onLoadTemplate, onLoadDefault,
 }: {
-  strategyFilters: StrategyFilter[]; keyword: string
+  strategyFilters: StrategyFilter[]; keyword: string; manager: string
   metricTab: string; period: string; range: string; inceptionPeriod: string; navDatePeriod: string; navFrequency: string
-  templates: SavedTemplate[]; onLoadTemplate: (t: SavedTemplate) => void
+  templates: SavedTemplate[]; activeTemplateName: string | null
+  onLoadTemplate: (t: SavedTemplate) => void
+  onLoadDefault: () => void
 }) {
   const [page, setPage]         = useState(1)
   const [data, setData]         = useState<FundRow[]>([])
   const [totalPages, setTotalPages] = useState(1)
   const [total, setTotal]       = useState(0)
-  const [loading, setLoading]   = useState(false)
+  const [loading, setLoading]   = useState(true)
   const [sortKey, setSortKey]   = useState<SortKey>("product_name")
   const [sortDir, setSortDir]   = useState<SortDir>("asc")
   const [jumpVal, setJumpVal]   = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
-  const [showDatePicker, setShowDatePicker] = useState(false)
   const [addedCols, setAddedCols] = useState<AddedCol[]>([])
   const [showAddMetric, setShowAddMetric] = useState(false)
   const tableContainerRef = useRef<HTMLDivElement>(null)
-  const fakeScrollbarRef = useRef<HTMLDivElement>(null)
-  const [tableScrollWidth, setTableScrollWidth] = useState(0)
 
   const sfKey = JSON.stringify(strategyFilters)
+  const filterKey = `${sfKey}|${keyword}|${manager}|${metricTab}|${period}|${range}|${inceptionPeriod}|${navDatePeriod}|${navFrequency}|${cutoffDate}`
+  const fetchGenRef = useRef(0)
+  const prevFilterKeyRef = useRef(filterKey)
 
-  // Sync fake horizontal scrollbar with table container
   useEffect(() => {
-    const container = tableContainerRef.current
-    const fakeScrollbar = fakeScrollbarRef.current
-    if (!container || !fakeScrollbar) return
-    const onTableScroll = () => { fakeScrollbar.scrollLeft = container.scrollLeft }
-    const onFakeScroll = () => { container.scrollLeft = fakeScrollbar.scrollLeft }
-    container.addEventListener("scroll", onTableScroll)
-    fakeScrollbar.addEventListener("scroll", onFakeScroll)
-    return () => {
-      container.removeEventListener("scroll", onTableScroll)
-      fakeScrollbar.removeEventListener("scroll", onFakeScroll)
+    if (prevFilterKeyRef.current !== filterKey) {
+      prevFilterKeyRef.current = filterKey
+      if (page !== 1) {
+        setPage(1)
+        return
+      }
     }
-  }, [])
 
-  // Measure table scroll width to size the fake scrollbar phantom
-  useEffect(() => {
-    const update = () => {
-      if (tableContainerRef.current) setTableScrollWidth(tableContainerRef.current.scrollWidth)
-    }
-    update()
-    const t = setTimeout(update, 100)
-    return () => clearTimeout(t)
-  }, [data, addedCols])
+    const gen = ++fetchGenRef.current
+    const controller = new AbortController()
 
-  useEffect(() => {
-    setPage(1)
-  }, [sfKey, keyword, metricTab, period, range, inceptionPeriod, navDatePeriod, navFrequency, cutoffDate])
-
-  useEffect(() => {
     const sfParams = strategyFilters
       .map((f) => `&sf=${encodeURIComponent(f.l2s.length ? `${f.l1}:${f.l2s.join(",")}` : f.l1)}`)
       .join("")
     setLoading(true)
-    fetch(`/ma/api/private-funds/list?page=${page}&sort=${sortKey}&dir=${sortDir}${sfParams}&keyword=${encodeURIComponent(keyword)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&cutoff=${encodeURIComponent(cutoffDate)}`)
-      .then((r) => r.json())
+    fetch(`/ma/api/private-funds/list?page=${page}&sort=${sortKey}&dir=${sortDir}${sfParams}&keyword=${encodeURIComponent(keyword)}&manager=${encodeURIComponent(manager)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&cutoff=${encodeURIComponent(cutoffDate)}`, { signal: controller.signal })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json()
+      })
       .then((json) => {
+        if (gen !== fetchGenRef.current) return
         setData(json.data ?? [])
         setTotalPages(json.totalPages ?? 1)
         setTotal(json.total ?? 0)
         setSelected(new Set())
       })
-      .finally(() => setLoading(false))
-  }, [page, sortKey, sortDir, sfKey, keyword, metricTab, period, range, inceptionPeriod, navDatePeriod, navFrequency, cutoffDate])
+      .catch((err: unknown) => {
+        if (gen !== fetchGenRef.current) return
+        if (err instanceof DOMException && err.name === "AbortError") return
+        setData([])
+        setTotalPages(1)
+        setTotal(0)
+      })
+      .finally(() => {
+        if (gen === fetchGenRef.current) setLoading(false)
+      })
+
+    return () => controller.abort()
+  }, [page, sortKey, sortDir, filterKey, strategyFilters])
 
   function handleSort(col: SortKey) {
     if (col === sortKey) {
@@ -918,7 +1094,7 @@ function PrivateFundTable({
       const sfParams = strategyFilters
         .map((f) => `&sf=${encodeURIComponent(f.l2s.length ? `${f.l1}:${f.l2s.join(",")}` : f.l1)}`)
         .join("")
-      const url = `/ma/api/private-funds/list?export=1&sort=${sortKey}&dir=${sortDir}${sfParams}&keyword=${encodeURIComponent(keyword)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&cutoff=${encodeURIComponent(cutoffDate)}`
+      const url = `/ma/api/private-funds/list?export=1&sort=${sortKey}&dir=${sortDir}${sfParams}&keyword=${encodeURIComponent(keyword)}&manager=${encodeURIComponent(manager)}&metric=${encodeURIComponent(metricTab)}&period=${encodeURIComponent(period)}&range=${encodeURIComponent(range)}&inception=${encodeURIComponent(inceptionPeriod)}&navdate=${encodeURIComponent(navDatePeriod)}&navfreq=${encodeURIComponent(navFrequency)}&cutoff=${encodeURIComponent(cutoffDate)}`
       const json = await fetch(url).then((r) => r.json())
       rows = json.data ?? []
     }
@@ -962,10 +1138,32 @@ function PrivateFundTable({
   const stickyRight = { ops: 0, trend: 68 }
 
   const [showTemplates, setShowTemplates] = useState(false)
+  const [menuTemplates, setMenuTemplates] = useState<SavedTemplate[]>(templates)
   const [trackingDialogFund, setTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [teamTrackingDialogFund, setTeamTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [trackedMine, setTrackedMine] = useState<Set<string>>(new Set())
   const [trackedTeam, setTrackedTeam] = useState<Set<string>>(new Set())
+  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
+  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  function showTrendChart(beian_hao: string, anchor: HTMLElement) {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+    const rect = anchor.getBoundingClientRect()
+    hoverTimeout.current = setTimeout(() => {
+      setHoverChartPos({ x: rect.left, y: rect.top })
+      setHoverChartRow(beian_hao)
+    }, 200)
+  }
+
+  function hideTrendChart() {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+    hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
+  }
+
+  function keepTrendChartOpen() {
+    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+  }
 
   function refreshTrackedIds() {
     fetch("/ma/api/tracking-funds/tracked-ids")
@@ -983,55 +1181,51 @@ function PrivateFundTable({
     <div className="flex flex-col">
       {/* Toolbar */}
       <div className="flex items-center justify-between px-1 py-1.5 mb-1 flex-shrink-0">
-        <div className="flex items-center gap-1.5 text-sm text-zinc-600 dark:text-zinc-400">
-          <span className="font-medium text-zinc-800 dark:text-zinc-200">指标计算截止日期</span>
-          <div className="relative">
-            <button
-              onClick={() => setShowDatePicker((v) => !v)}
-              className="inline-flex items-center gap-1 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors border rounded px-1.5 py-0.5 text-xs">
-              <CalendarDays className="h-3 w-3" />
-              <span className="tabular-nums">{cutoffDate}</span>
-              <ChevronDown className="h-3 w-3" />
-            </button>
-            {showDatePicker && (
-              <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg p-3" onClick={(e) => e.stopPropagation()}>
-                <input
-                  type="date"
-                  value={cutoffDate}
-                  max={new Date().toISOString().slice(0, 10)}
-                  onChange={(e) => { if (e.target.value) { setCutoffDate(e.target.value); setShowDatePicker(false) } }}
-                  className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
-                  autoFocus
-                />
-              </div>
-            )}
-            {showDatePicker && <div className="fixed inset-0 z-30" onClick={() => setShowDatePicker(false)} />}
-          </div>
-        </div>
+        <CutoffDateDropdown value={cutoffDate} onChange={setCutoffDate} />
         <div className="flex items-center gap-2">
           <div className="relative">
             <button
-              onClick={() => setShowTemplates((v) => !v)}
+              onClick={() => {
+                setMenuTemplates(loadTemplates())
+                setShowTemplates((v) => !v)
+              }}
               className="inline-flex items-center gap-1.5 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors bg-muted/40 hover:bg-muted border border-border/50 rounded-lg px-2.5 py-1 text-xs">
               <LayoutTemplate className="h-3.5 w-3.5" />
-              <span>{templates.length === 0 ? "默认模板" : `模板 (${templates.length})`}</span>
+              <span>{activeTemplateName ?? "默认模板"}</span>
               <ChevronDown className="h-3 w-3" />
             </button>
             {showTemplates && (
-              <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg min-w-[180px] py-1" onClick={(e) => e.stopPropagation()}>
-                {templates.length === 0 ? (
-                  <div className="px-4 py-3 text-xs text-muted-foreground">暂无保存的模板</div>
-                ) : templates.map((t, i) => (
-                  <button key={i}
-                    onClick={() => { onLoadTemplate(t); setShowTemplates(false) }}
-                    className="w-full text-left px-4 py-2 text-xs hover:bg-muted transition-colors">
-                    <div className="font-medium">{t.name}</div>
-                    <div className="text-muted-foreground/60 text-[10px]">{t.savedAt}</div>
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setShowTemplates(false)} />
+                <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[160px]" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    onClick={() => { onLoadDefault(); setShowTemplates(false) }}
+                    className={[
+                      "w-full text-left px-4 py-2 text-sm transition-colors flex items-center gap-2",
+                      activeTemplateName === null ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-muted",
+                    ].join(" ")}>
+                    <LayoutTemplate className="h-3.5 w-3.5 text-zinc-400" /> 默认模板
                   </button>
-                ))}
-              </div>
+                  {menuTemplates.map((t, i) => (
+                    <button
+                      key={i}
+                      onClick={() => { onLoadTemplate(t); setShowTemplates(false) }}
+                      className={[
+                        "w-full text-left px-4 py-2 text-sm transition-colors truncate",
+                        activeTemplateName === t.name ? "bg-red-50 dark:bg-red-950/30" : "hover:bg-muted",
+                      ].join(" ")}>
+                      {t.name}
+                    </button>
+                  ))}
+                  <div className="border-t my-1" />
+                  <button
+                    onClick={() => { setShowTemplates(false); window.open("/ma/dashboard/settings?tab=metric-templates", "_blank") }}
+                    className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500">
+                    <Settings2 className="h-3.5 w-3.5" /> 管理模板
+                  </button>
+                </div>
+              </>
             )}
-            {showTemplates && <div className="fixed inset-0 z-30" onClick={() => setShowTemplates(false)} />}
           </div>
           <button onClick={() => setShowAddMetric(true)} className="inline-flex items-center gap-1.5 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 transition-colors bg-muted/40 hover:bg-muted border border-border/50 rounded-lg px-2.5 py-1 text-xs">
             <PlusCircle className="h-3.5 w-3.5" />
@@ -1045,71 +1239,75 @@ function PrivateFundTable({
       </div>
       <div
         ref={tableContainerRef}
-        className="overflow-x-scroll [scrollbar-width:none] [&::-webkit-scrollbar]:hidden rounded-t-lg border-x border-t"
+        className="rounded-lg border"
       >
-        <table className="text-sm border-collapse w-full" style={{ minWidth: 1480 }}>
-          <thead className="sticky top-0 z-20">
+        <table className="text-sm w-full" style={{ borderCollapse: "separate", borderSpacing: 0, minWidth: 1480 }}>
+          <thead className="sticky -top-5 z-20">
             <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
               {/* Checkbox */}
               <th style={{ left: stickyLeft.checkbox, width: 36, minWidth: 36 }}
-                className="sticky z-30 bg-muted/80 border-b border-r px-2 py-2.5">
+                className="sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-r px-2 py-2.5">
                 <input type="checkbox" className="rounded"
                   checked={selected.size === data.length && data.length > 0}
                   onChange={toggleAll} />
               </th>
               {/* 序号 */}
               <th style={{ left: stickyLeft.index, width: 44, minWidth: 44 }}
-                className={`sticky z-30 bg-muted/80 border-b border-r ${thBase}`}>序号</th>
+                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-r ${thBase}`}>序号</th>
               {/* 产品名称 */}
               <th style={{ left: stickyLeft.name, width: 220, minWidth: 220 }}
-                className={`sticky z-30 bg-muted/80 border-b border-r ${thSort}`}
+                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-r ${thSort}`}
                 onClick={() => handleSort("product_name")}>
                 产品名称<SortIcon col="product_name" sortKey={sortKey} sortDir={sortDir} />
               </th>
               {/* Scrollable cols */}
-              <th className={`${thBase} border-b`} style={{ minWidth: 88 }}>备案号</th>
-              <th className={`${thBase} border-b`} style={{ minWidth: 120 }}>管理人</th>
-              <th className={`${thBase} border-b`} style={{ minWidth: 96 }}>成立日期</th>
-              <th className={`${thSort} border-b`} style={{ minWidth: 88 }} onClick={() => handleSort("latest_nav")}>
+              <th className={`${thBase} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }}>备案号</th>
+              <th className={`${thBase} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 120 }}>管理人</th>
+              <th className={`${thBase} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 96 }}>成立日期</th>
+              <th className={`${thSort} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("latest_nav")}>
                 单位净值<SortIcon col="latest_nav" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1w")}>
+              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1w")}>
                 近一周收益<SortIcon col="ret_1w" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1m")}>
+              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1m")}>
                 近一月收益<SortIcon col="ret_1m" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_3m")}>
+              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_3m")}>
                 近三月收益<SortIcon col="ret_3m" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_6m")}>
+              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_6m")}>
                 近六月收益<SortIcon col="ret_6m" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1y")}>
+              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1y")}>
                 近一年收益<SortIcon col="ret_1y" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right`} style={{ minWidth: 88 }} onClick={() => handleSort("sharpe_1y")}>
+              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("sharpe_1y")}>
                 夏普(1Y)<SortIcon col="sharpe_1y" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right`} style={{ minWidth: 88 }} onClick={() => handleSort("calmar_1y")}>
+              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("calmar_1y")}>
                 卡玛(1Y)<SortIcon col="calmar_1y" sortKey={sortKey} sortDir={sortDir} />
               </th>
               {addedCols.map((col) => (
-                <th key={col.id} className={`${thBase} border-b text-right`} style={{ minWidth: 96 }}>
+                <th key={col.id} className={`${thBase} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 96 }}>
                   {col.label}
                 </th>
               ))}
               {/* Fixed right */}
               <th style={{ right: stickyRight.trend, width: 68, minWidth: 68 }}
-                className={`sticky z-30 bg-muted/80 border-b border-l ${thBase} text-center`}>走势</th>
+                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-l ${thBase} text-center`}>走势</th>
               <th style={{ right: stickyRight.ops, width: 68, minWidth: 68 }}
-                className={`sticky z-30 bg-muted/80 border-b border-l ${thBase} text-center`}>操作</th>
+                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-l ${thBase} text-center`}>操作</th>
             </tr>
           </thead>
           <tbody>
-            {loading ? (
+            {loading && data.length === 0 ? (
               <tr>
                 <td colSpan={16 + addedCols.length} className="py-20 text-center text-foreground">加载中…</td>
+              </tr>
+            ) : data.length === 0 ? (
+              <tr>
+                <td colSpan={16 + addedCols.length} className="py-20 text-center text-muted-foreground">暂无数据</td>
               </tr>
             ) : data.map((row, i) => {
               const isSelected = selected.has(row.beian_hao)
@@ -1139,15 +1337,7 @@ function PrivateFundTable({
                   {/* 产品名称 */}
                   <td style={{ left: stickyLeft.name, width: 220 }}
                     className={`${stickyCell} border-r px-3`}>
-                    <a
-                      href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="truncate font-medium text-blue-600 dark:text-blue-400 hover:underline leading-5 block"
-                      title={row.product_name}
-                    >
-                      {row.product_name}
-                    </a>
+                    <CopyableProductName beian_hao={row.beian_hao} product_name={row.product_name} />
                     {row.strategy_l1 && (
                       <div className="flex items-center gap-1 mt-0.5">
                         <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
@@ -1158,8 +1348,7 @@ function PrivateFundTable({
                   {/* Scrollable cells */}
                   <td className={`${cellBase} text-foreground tabular-nums`}>{row.beian_hao}</td>
                   <td className={`${cellBase}`}>
-                    <span className="text-blue-600 dark:text-blue-400 cursor-pointer hover:underline truncate block max-w-[112px]"
-                      title={row.manager}>{row.manager}</span>
+                    <CopyableManagerName manager={row.manager} />
                   </td>
                   <td className={`${cellBase} text-foreground tabular-nums whitespace-nowrap`}>
                     {row.inception_date ?? "—"}
@@ -1192,9 +1381,14 @@ function PrivateFundTable({
                   {/* Fixed right */}
                   <td style={{ right: stickyRight.trend, width: 68 }}
                     className={`${stickyCell} border-l text-center`}>
-                    <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
-                      <LineChart className="h-3.5 w-3.5" />
-                    </button>
+                    <div
+                      onMouseEnter={(e) => showTrendChart(row.beian_hao, e.currentTarget)}
+                      onMouseLeave={hideTrendChart}
+                    >
+                      <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
+                        <LineChart className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </td>
                   <td style={{ right: stickyRight.ops, width: 68 }}
                     className={`${stickyCell} border-l text-center`}>
@@ -1214,15 +1408,6 @@ function PrivateFundTable({
             })}
           </tbody>
         </table>
-      </div>
-
-      {/* Fake horizontal scrollbar — sticky at bottom of viewport as you scroll */}
-      <div
-        ref={fakeScrollbarRef}
-        className="overflow-x-auto border-x border-b rounded-b-lg sticky bottom-0 z-10 bg-background"
-        style={{ height: 14 }}
-      >
-        <div style={{ width: tableScrollWidth, height: 1 }} />
       </div>
 
       {/* Pagination */}
@@ -1277,6 +1462,26 @@ function PrivateFundTable({
           onClose={() => setShowAddMetric(false)}
         />
       )}
+      {hoverChartRow && hoverChartPos && (() => {
+        const popupW = 356
+        const popupH = 210
+        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
+        const gap = 16
+        const left = Math.max(8, hoverChartPos.x - popupW - gap)
+        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
+        const hoverRow = data.find((r) => r.beian_hao === hoverChartRow)
+        return (
+          <div
+            className="fixed z-[9999] bg-background border rounded-xl shadow-2xl"
+            style={{ left, top, width: popupW }}
+            onMouseEnter={keepTrendChartOpen}
+            onMouseLeave={hideTrendChart}
+          >
+            <div className="px-3 pt-3 pb-1 font-semibold text-sm border-b">收益走势</div>
+            <TrendHoverChart beian_hao={hoverChartRow} productName={hoverRow?.product_name ?? ""} />
+          </div>
+        )
+      })()}
       {trackingDialogFund && (
         <AddMyTrackingDialog
           open
@@ -21453,24 +21658,33 @@ function PrivateFundManagersView() {
 function PrivateFundView() {
   const [filters, setFilters] = useState<FilterState>({ strategyFilters: [], keyword: "", manager: "", metricTab: "收益", period: "本周", range: "不限", inceptionPeriod: "", navDatePeriod: "", navFrequency: "" })
   const [templates, setTemplates] = useState<SavedTemplate[]>(() => loadTemplates())
+  const [activeTemplateName, setActiveTemplateName] = useState<string | null>(null)
 
   function handleSaveTemplate(name: string) {
     const t: SavedTemplate = { name, filters, savedAt: new Date().toLocaleString("zh-CN", { hour12: false }) }
     const updated = [...templates.filter((x) => x.name !== name), t]
     setTemplates(updated)
     saveTemplates(updated)
+    setActiveTemplateName(name)
   }
 
   function handleLoadTemplate(t: SavedTemplate) {
     setFilters(t.filters)
+    setActiveTemplateName(t.name)
+  }
+
+  function handleLoadDefault() {
+    setFilters({ strategyFilters: [], keyword: "", manager: "", metricTab: "收益", period: "本周", range: "不限", inceptionPeriod: "", navDatePeriod: "", navFrequency: "" })
+    setActiveTemplateName(null)
   }
 
   return (
     <div className="flex flex-col">
-      <FundFilterPanel filters={filters} onChange={(f) => setFilters((p) => ({ ...p, ...f }))} onSave={handleSaveTemplate} />
+      <FundFilterPanel filters={filters} onChange={(f) => { setFilters((p) => ({ ...p, ...f })); setActiveTemplateName(null) }} onSave={handleSaveTemplate} />
       <PrivateFundTable
         strategyFilters={filters.strategyFilters}
         keyword={filters.keyword}
+        manager={filters.manager}
         metricTab={filters.metricTab}
         period={filters.period}
         range={filters.range}
@@ -21478,7 +21692,9 @@ function PrivateFundView() {
         navDatePeriod={filters.navDatePeriod}
         navFrequency={filters.navFrequency}
         templates={templates}
+        activeTemplateName={activeTemplateName}
         onLoadTemplate={handleLoadTemplate}
+        onLoadDefault={handleLoadDefault}
       />
     </div>
   )
@@ -21874,6 +22090,43 @@ export default function PrivateFundsPage() {
 
       {/* Body: sidebar + content */}
       <div className="flex flex-1 min-h-0">
+        {activeTab === "market" && (
+          <aside className="w-44 border-r bg-background flex-shrink-0">
+            <div className="flex items-center gap-2 px-4 py-4 border-b">
+              <div className="h-7 w-7 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+                <TrendingUp className="h-3.5 w-3.5 text-white" />
+              </div>
+              <span className="text-sm font-semibold text-foreground">宏观市场</span>
+            </div>
+            <nav className="flex flex-col pt-2 pb-4 overflow-y-auto">
+              {marketSidebarGroups.map((group) => {
+                const hasActive = group.items.some((i) => i.key === activeSideItem)
+                return (
+                  <div key={group.label}>
+                    <div className={[
+                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                    ].join(" ")}>{group.label}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        onClick={() => setActiveSideItem(item.key)}
+                        className={[
+                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                          activeSideItem === item.key
+                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
+                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                        ].join(" ")}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
+            </nav>
+          </aside>
+        )}
         {activeTab === "funds" && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <div className="flex items-center gap-2 px-4 py-4 border-b">
@@ -22030,7 +22283,17 @@ export default function PrivateFundsPage() {
         )}
 
         {/* Page content area */}
-        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-y-auto p-5">
+        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-auto p-5">
+          {activeTab === "market" && activeSideItem === "strategy-observation" && <StrategyObservationView />}
+          {activeTab === "market" && activeSideItem === "pe-index" && <PeIndexView />}
+          {activeTab === "market" && activeSideItem === "pe-industry" && <PeIndustryView />}
+          {activeTab === "market" && activeSideItem === "futures-style" && <FuturesStyleView />}
+          {activeTab === "market" && activeSideItem === "equity-style" && <EquityStyleView />}
+          {activeTab === "market" && activeSideItem !== "strategy-observation" && activeSideItem !== "pe-index" && activeSideItem !== "pe-industry" && activeSideItem !== "futures-style" && activeSideItem !== "equity-style" && (
+            <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+              该功能正在建设中，敬请期待
+            </div>
+          )}
           {activeTab === "funds" && activeSideItem === "private-funds" && <PrivateFundView />}
           {activeTab === "funds" && activeSideItem === "fund-managers-org" && <PrivateFundManagersView />}
           {activeTab === "funds" && activeSideItem === "fund-managers" && <PrivateFundManagersPersonalView />}

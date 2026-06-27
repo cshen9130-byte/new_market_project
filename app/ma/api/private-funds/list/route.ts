@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { enrichPrivateFundListMetrics } from "@/lib/server/private-fund-list-metrics"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -52,7 +53,7 @@ async function fetchHistoricalNavMap(
        nav::text AS nav,
        price_date::text AS price_date
      FROM private_fund_nav
-     WHERE beian_hao = ANY($1)
+     WHERE beian_hao = ANY($1::text[])
        AND price_date <= $2::date
        AND nav IS NOT NULL AND nav > 0
      ORDER BY beian_hao, price_date DESC`,
@@ -82,13 +83,13 @@ const BASE_SELECT = `
   i.manager,
   i.inception_date,
   i.benchmark,
-  i.ret_1w,
-  i.ret_1m,
-  i.ret_3m,
-  i.ret_6m,
-  i.ret_1y,
-  i.sharpe_1y,
-  i.calmar_1y
+  i.ret_1w::text AS ret_1w,
+  i.ret_1m::text AS ret_1m,
+  i.ret_3m::text AS ret_3m,
+  i.ret_6m::text AS ret_6m,
+  i.ret_1y::text AS ret_1y,
+  i.sharpe_1y::text AS sharpe_1y,
+  i.calmar_1y::text AS calmar_1y
 `
 
 export async function GET(req: Request) {
@@ -111,6 +112,7 @@ export async function GET(req: Request) {
       })
     : strategies.map((l1) => ({ l1, l2s: [] }))
   const keyword = (searchParams.get("keyword") || "").trim()
+  const manager = (searchParams.get("manager") || "").trim()
   const inceptionPeriod = (searchParams.get("inception") || "").trim()
   const navDatePeriod = (searchParams.get("navdate") || "").trim()
   const navFrequency = (searchParams.get("navfreq") || "").trim()
@@ -185,6 +187,10 @@ export async function GET(req: Request) {
   if (keyword) {
     filterParams.push(`%${keyword}%`)
     where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+  }
+  if (manager) {
+    filterParams.push(manager)
+    where.push(`i.manager = $${filterParams.length}`)
   }
   if (inceptionPeriod && inceptionPeriod !== "不限" && inceptionPeriod !== "自定义") {
     const INCEPTION_SQL: Record<string, string> = {
@@ -347,14 +353,17 @@ export async function GET(req: Request) {
     }
 
     // ─── Historical cutoff — paginate first, batch-fetch NAV for page only ────
+    const pageParams = [...filterParams, pageSize, offset]
+    const pPageLimit = filterParams.length + 1
+    const pPageOffset = filterParams.length + 2
     const [baseRows, countRow] = await Promise.all([
       query<Omit<FundListRow, "latest_nav" | "latest_nav_date">>(
         `SELECT ${BASE_SELECT}
          FROM private_fund_info i
          ${whereClause}
          ORDER BY ${orderSql}
-         LIMIT $${pLimit} OFFSET $${pOffset}`,
-        [...listParams, pageSize, offset],
+         LIMIT $${pPageLimit} OFFSET $${pPageOffset}`,
+        pageParams,
       ),
       countPromise,
     ])
@@ -384,15 +393,17 @@ export async function GET(req: Request) {
   }
 
   try {
-    if (preferStored) {
-      try {
-        return NextResponse.json(await fetchList(true))
-      } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : String(e)
-        if (!/latest_nav/i.test(message)) throw e
-      }
+    // Always paginate from precomputed private_fund_info; apply cutoff in enrichPrivateFundListMetrics.
+    let payload
+    try {
+      payload = await fetchList(true)
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e)
+      if (!/latest_nav/i.test(message)) throw e
+      payload = await fetchList(false)
     }
-    return NextResponse.json(await fetchList(false))
+    payload.data = await enrichPrivateFundListMetrics(payload.data, cutoffDate)
+    return NextResponse.json(payload)
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : "Failed to load private funds"
     return NextResponse.json({ error: message }, { status: 500 })

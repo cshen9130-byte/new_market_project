@@ -103,6 +103,82 @@ npx tsx scripts/test-nav-rechain.mjs
 
 ---
 
+## What Was Fixed (抱朴聚融祥和一号 — SSG947)
+
+### The Problem
+
+The verified xlsx seed (`data/managed-product-nav/SSG947.json`, through **2026-06-22**) was correct, but the fund detail chart and 团队净值 table showed corrupt rows after that date:
+
+| Date | Shown (wrong) | Expected |
+|---|---|---|
+| 2026-06-22 | unit 1.9983, cum **2.5612**, adj **2.5833** | unit 1.9983, cum **2.5632**, adj **~2.5893** |
+| 2026-06-23 | unit 1.9983, cum **1.9983**, adj **1.9983** | unit 1.9983, cum **2.5632**, adj **~2.5893** (rechained from seed) |
+| 2026-06-24 | unit 1.9764, cum **1.9764** | unit 1.9764, cum **~2.54**, adj **~2.57** (rechained from prior) |
+
+Symptoms: **-59.89% daily return** on 2026-06-23 despite flat unit NAV, and the 复权净值 chart line plunged toward zero at the end.
+
+The email data itself was fine — the **managed-product fetch/merge path** was wrong.
+
+### Root Causes
+
+1. **Split email selection logic** — The detail API used `selectEmailNavSeriesRows` (per-date best row + unit correction), but the 在管产品 team stream used `selectEmailSourceStream` via `filterEmailNavManageStream`. That locked onto a single `fund_name` stream and skipped `applyEmailUnitNavCorrection`.
+
+2. **Post-seed email finalized in isolation** — `mergeManagedProductDetailNav` took pre-finalized team rows (`mergeNavSeriesWithEmail([], emailPoints)`) and pasted them after the seed. Email rows finalized without the seed tail lost the unit/cum gap (~0.56). When 资产净值公告 stored **累计净值 in the unit column** (`nav == cumulative_nav`), cum and adj collapsed to unit level.
+
+3. **Unit/cum ratio only learned from TA virtual emails** — `applyEmailUnitNavCorrection` only established `unit/cum` ratio from post-investment virtual NAV subjects. SSG947 (and similar custody-only funds) establish the ratio from custody **估值表** rows where unit and cum are already separated — that path was missing.
+
+FOF multi-level 估值表 rejection (`isFofUnderlyingValuationEmailRow`) was already correct and unchanged.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Unified email selection for 在管产品 | `filterEmailNavManageStream` | Uses `selectEmailNavSeriesRows` (same as detail API / FOF list), not `selectEmailSourceStream` |
+| Unit/cum ratio from custody history | `applyEmailUnitNavCorrection` | Learns ratio from **any** prior email where `cum - unit > 0.05` (custody 估值表, virtual TA, etc.) |
+| Seed + email merge | `mergeManagedProductDetailNav` | Post-seed email merged via `mergeNavSeriesWithEmail(seedBase, extensionPoints)` so cum/adj rechains from the verified seed tail |
+| Email points loader | `loadManagedProductEmailPoints` | Returns corrected email + manual points before seed merge; used by detail route and `fund-nav-series.ts` |
+
+**Do not** block post-seed email for managed products with a seed file — email is still the primary source for dates after the xlsx reference ends. The seed is authoritative **through its last date**; email extends after that with proper rechaining.
+
+### Verified Correct Values (after fix)
+
+Seed reference (xlsx `抱朴聚融祥和一号净值20260627.xlsx`):
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-06-22 | 1.9983 | 2.5632 | ~2.5893 |
+
+When email sends `nav == cum == 1.9983` on 2026-06-23 (累计 stored as unit), merge against seed yields:
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-06-23 | 1.9983 | 2.5632 | ~2.5893 |
+
+When 资产净值公告 needs unit inference (custody 估值表 ratio ≈ 0.779):
+
+```
+inferred_unit = attachment_nav × (last_unit / last_cumulative) ≈ 1.9983 × 0.779 ≈ 1.5579
+```
+
+### Regression Checks
+
+SSG947-specific (no DB required):
+
+```bash
+npx tsx scripts/ma/test_ssg947_email.mjs
+```
+
+Still re-run SBAH99 / SNF018 checks after NAV pipeline edits:
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
+This fix does **not** change SBAH99 dividend formulas or SNF018 virtual-first FOF logic — only unifies managed-product email selection and seed+email merge context.
+
+---
+
 ### Step 1 — Detect the ex-dividend date (`isLikelyDividendExDate`)
 
 A date is considered ex-dividend when ALL of the following are true:
@@ -154,6 +230,9 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `propagateMissingAdjRows` | Fills adj for manual-upload rows — removing it leaves cum without adj for ops_team_nav_manual data |
 | `alignPreDividendNavRows` | Sets pre-dividend rows to unit = cum = adj — threshold `hasDividendOffset > 0.05` determines which rows are "pre-dividend" |
 | `repairAdjBelowCumRows` | Fixes stale legacy 复权 that drifted below 累计 when email refreshes unit+cum — runs before `alignPreDividendNavRows` |
+| `filterEmailNavManageStream` | Must use `selectEmailNavSeriesRows` — reverting to `selectEmailSourceStream` breaks 在管产品 email unit correction |
+| `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
+| `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
 | `finalizeNavSeries` (call order) | `syncExDivAdjustedNav` must run before `propagateMissingAdjRows`, which must run before `refreshStaleDerivedFields`, then `repairAdjBelowCumRows`, then `alignPreDividendNavRows` |
 
 ### After any change to the NAV pipeline
@@ -212,7 +291,17 @@ ops_email_nav_records  (email-parsed data, excluded for dates covered by manual)
 JSON seed files in data/managed-product-nav/<beian_hao>.json
 ```
 
-The managed product pipeline is in `lib/server/team-nav-manage-pg.ts → loadManagedProductNavSeries`.
+When a verified xlsx seed exists:
+
+- Seed rows are **authoritative through the seed's last date** (e.g. SSG947 through 2026-06-22).
+- Email extends **after** that date via `mergeManagedProductDetailNav(seed, emailPoints, legacy)`.
+- Post-seed email is merged **against the seed base** so cum/adj rechains from the verified tail — never finalized in isolation.
+
+Email selection for 在管产品 uses the same path as the detail page: `loadManagedProductEmailPoints` → `filterEmailNavManageStream` → `selectEmailNavSeriesRows` → `applyEmailUnitNavCorrection`.
+
+The managed product pipeline is in:
+- `lib/server/team-nav-manage-pg.ts` → `loadManagedProductEmailPoints`, `loadManagedProductNavSeries`
+- `lib/server/managed-product-nav-seed.ts` → `mergeManagedProductDetailNav`
 
 ---
 

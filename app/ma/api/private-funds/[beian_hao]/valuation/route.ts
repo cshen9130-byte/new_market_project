@@ -1,0 +1,23 @@
+import { NextResponse } from "next/server"
+import { getFundValuationAllocation } from "@/lib/server/fund-valuation-allocation"
+
+export const runtime = "nodejs"
+export const dynamic = "force-dynamic"
+
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ beian_hao: string }> },
+) {
+  try {
+    const { beian_hao: raw } = await params
+    const url = new URL(req.url)
+    const mode = url.searchParams.get("mode") === "all" ? "all" : "major"
+    const curves = url.searchParams.get("curves") === "1"
+    const data = await getFundValuationAllocation(raw, mode, { includeReturnCurves: curves })
+    return NextResponse.json(data)
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "读取失败"
+    console.error("[valuation]", message, e)
+    return NextResponse.json({ error: message }, { status: 500 })
+  }
+}

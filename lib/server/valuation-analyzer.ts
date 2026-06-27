@@ -13,6 +13,9 @@ export interface ValuationSummary {
   nav: number
   total_asset: number
   total_liability: number
+  custodian?: string | null
+  /** First ~20 header rows — used to re-extract 托管券商 from stored records. */
+  header_rows?: unknown[][]
 }
 
 export interface ValuationAnalysis {
@@ -33,6 +36,15 @@ type HeaderRole =
   | "market_value"
   | "market_weight"
   | "unrealized_pnl"
+  | "delta"
+  | "gamma"
+  | "vega"
+  | "theta"
+  | "rho"
+  | "expiry_date"
+  | "remaining_days"
+  | "multiplier"
+  | "currency_position_pct"
   | "suspension_info"
   | "rights_info"
   | "unknown"
@@ -185,6 +197,15 @@ function roleFromHeader(base: string, sub: string, colIdx: number, duplicateOrdi
   if (/成本/.test(joined) && /本币/.test(joined) && !/占比|增值/.test(joined)) return "cost"
   if (/市价|行情|结算价|最新价|现价|price/i.test(baseNorm)) return "price"
   if (/估值增值|浮动盈亏|未实现盈亏|valuation|pnl/i.test(baseNorm)) return "unrealized_pnl"
+  if (/^delta$/i.test(baseNorm)) return "delta"
+  if (/^gamma$/i.test(baseNorm)) return "gamma"
+  if (/^vega$/i.test(baseNorm)) return "vega"
+  if (/^theta$/i.test(baseNorm)) return "theta"
+  if (/^rho$/i.test(baseNorm)) return "rho"
+  if (/到期日/.test(baseNorm)) return "expiry_date"
+  if (/剩余天数/.test(baseNorm)) return "remaining_days"
+  if (/乘量/.test(baseNorm)) return "multiplier"
+  if (/币种持仓占比/.test(baseNorm)) return "currency_position_pct"
   if (/停牌/.test(baseNorm)) return "suspension_info"
   if (/权益/.test(baseNorm)) return "rights_info"
 
@@ -299,6 +320,98 @@ export function pickRowCost(row: ValuationRow): number {
   return 0
 }
 
+const CUSTODIAN_HEADER_LABELS = [
+  "基金托管人",
+  "托管人",
+  "托管人名称",
+  "托管券商",
+  "托管银行",
+  "托管机构",
+  "托管机构名称",
+  "基金托管机构",
+  "保管银行",
+] as const
+
+function isCustodianLabel(cell: string): boolean {
+  const label = normalizeText(cell)
+  if (CUSTODIAN_HEADER_LABELS.some((item) => normalizeText(item) === label)) return true
+  return /^(?:基金)?托管(?:人|机构|券商|银行)(?:名称)?$/.test(label)
+}
+
+const CUSTODIAN_INLINE_RE =
+  /(?:基金托管人|托管人名称|托管券商|托管银行|托管机构|托管人)\s*[：:]\s*([\u4e00-\u9fffA-Za-z0-9（）()·\s]+(?:证券|银行|信托|资产).*(?:有限公司|有限责任公司)?)/u
+
+function cleanHeaderMetadataValue(raw: string): string | null {
+  const text = raw.trim().replace(/\s+/g, " ")
+  if (!text || text.length < 2) return null
+  if (/^\d{4}[-/.年]/.test(text)) return null
+  if (/^[\d.,]+$/.test(text)) return null
+  const normalized = normalizeText(text)
+  if (/^(估值日期|净值日期|日期|产品代码|产品名称|基金名称|单位净值|累计净值|科目代码|科目名称)$/.test(normalized)) {
+    return null
+  }
+  if (/管理人|管理公司|投资顾问/.test(text) && !/托管/.test(text)) return null
+  if (/(?:证券|银行|信托|资产)/.test(text)) return text
+  if (/托管/.test(text) && /(?:公司|有限)/.test(text)) return text
+  return null
+}
+
+function looksLikeCustodianCell(value: string): boolean {
+  const text = String(value ?? "").trim()
+  if (!text) return false
+  return (
+    /(?:证券|银行).*(?:有限公司|有限责任公司)/.test(text)
+    || (/托管/.test(text) && /(?:公司|有限)/.test(text))
+  )
+}
+
+export function extractCustodianFromHeaderRows(rows: unknown[][], maxRow: number): string | null {
+  const scanLimit = Math.min(rows.length, maxRow)
+
+  for (let i = 0; i < scanLimit; i += 1) {
+    const row = rows[i] ?? []
+    const cells = row.map(cellToString)
+
+    for (let j = 0; j < cells.length; j += 1) {
+      const cell = cells[j]
+      const inline = cell.match(CUSTODIAN_INLINE_RE)
+      if (inline?.[1]) {
+        const value = cleanHeaderMetadataValue(inline[1].split(/[|｜]/)[0] ?? "")
+        if (value) return value
+      }
+
+      if (isCustodianLabel(cell)) {
+        for (let k = j + 1; k < Math.min(cells.length, j + 4); k += 1) {
+          const value = cleanHeaderMetadataValue(cells[k] ?? "")
+          if (value) return value
+        }
+        const below = rows[i + 1]?.map(cellToString) ?? []
+        for (let k = j; k < Math.min(below.length, j + 4); k += 1) {
+          const belowValue = cleanHeaderMetadataValue(below[k] ?? "")
+          if (belowValue) return belowValue
+        }
+      }
+    }
+
+    const joined = cells.filter(Boolean).join(" ")
+    const joinedMatch = joined.match(CUSTODIAN_INLINE_RE)
+    if (joinedMatch?.[1]) {
+      const value = cleanHeaderMetadataValue(joinedMatch[1].split(/[|｜]/)[0] ?? "")
+      if (value) return value
+    }
+  }
+
+  for (let i = 0; i < scanLimit; i += 1) {
+    for (const cell of (rows[i] ?? []).map(cellToString)) {
+      if (!cell || !looksLikeCustodianCell(cell)) continue
+      const value = cleanHeaderMetadataValue(cell.split(/[|｜]/)[0] ?? "")
+      if (value) return value
+    }
+  }
+
+  return null
+}
+
 function extractFundName(rows: unknown[][], headerRowIndex: number, filename: string): string {
   for (let i = 0; i < Math.min(headerRowIndex, 12); i++) {
     const joined = (rows[i] || []).map(cellToString).filter(Boolean).join(" ")
@@ -329,12 +442,15 @@ function extractFundName(rows: unknown[][], headerRowIndex: number, filename: st
 }
 
 function extractSummary(rows: unknown[][], headerRowIndex: number, columns: ColumnMeta[], filename: string): ValuationSummary {
+  const headerScanRows = Math.max(headerRowIndex + 12, 20)
   const summary: ValuationSummary = {
     fund_name: extractFundName(rows, headerRowIndex, filename),
     valuation_date: "",
     nav: 0,
     total_asset: 0,
     total_liability: 0,
+    custodian: extractCustodianFromHeaderRows(rows, headerScanRows),
+    header_rows: rows.slice(0, headerScanRows).map((row) => (row ?? []).map(cellToString)),
   }
 
   for (let i = 0; i < rows.length; i++) {
@@ -430,8 +546,14 @@ function inferAssetClass(symbol: string, name: string): string {
   return "其他"
 }
 
+function isOptionContract(code: string, name: string): boolean {
+  if (/期权/.test(name)) return true
+  return /[A-Za-z]{1,4}\d{3,4}[CPcp]\d+/.test(`${code}${name}`)
+}
+
 function inferRowKind(code: string, name: string): string {
   const compactCode = normalizeSubjectCode(code)
+  if (isOptionContract(code, name)) return "option"
   if (compactCode.startsWith("3102")) return "derivative"
   if (compactCode.startsWith("1001")) return "stock"
   if (compactCode.startsWith("1002")) return "bank_deposit"
@@ -445,6 +567,7 @@ function inferRowKind(code: string, name: string): string {
   if (compactCode.startsWith("1202")) return "repo"
   if (compactCode.startsWith("1203") || compactCode.startsWith("1207")) return "receivable"
   if (compactCode.startsWith("3003")) return "clearing"
+  if (compactCode.startsWith("4001") || /实收资本/.test(name)) return "paid_in_capital"
   if (/^22/.test(compactCode)) return "payable"
   return "other"
 }
@@ -465,6 +588,7 @@ function isOffsetOrSummaryRow(code: string, name: string): boolean {
 
   if (!name) return true
   if (/^(基金)?资产净值$/.test(normalizedName) || /^净资产$/.test(normalizedName)) return false
+  if (/^实收资本/.test(normalizedName)) return false
   if (/^(资产类合计|资产合计|资产总值|资产类总计)$/.test(normalizedName)) return false
   if (/^(负债类合计|负债合计|负债总值|负债类总计)$/.test(normalizedName)) return false
   if (!code) return true
@@ -546,6 +670,33 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
           obj.unrealized_pnl = numberValue
           obj.net_value_change = numberValue
           break
+        case "delta":
+          obj.delta = numberValue
+          break
+        case "gamma":
+          obj.gamma = numberValue
+          break
+        case "vega":
+          obj.vega = numberValue
+          break
+        case "theta":
+          obj.theta = numberValue
+          break
+        case "rho":
+          obj.rho = numberValue
+          break
+        case "expiry_date":
+          obj.expiry_date = stringValue
+          break
+        case "remaining_days":
+          obj.remaining_days = numberValue
+          break
+        case "multiplier":
+          obj.multiplier = numberValue
+          break
+        case "currency_position_pct":
+          obj.currency_position_pct = numberValue
+          break
       }
     }
 
@@ -573,7 +724,7 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
     row.row_kind = rowKind
     row.is_leaf = isLeaf
 
-    if (rowKind === "derivative") {
+    if (rowKind === "derivative" || rowKind === "option") {
       const symbol = extractContractSymbol(code, row.name)
       if (symbol) row.symbol = symbol
       row.direction = Number(row.signed_market_value ?? row.signed_cost ?? 0) < 0 ? "short" : "long"
@@ -591,6 +742,7 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
       row.include_in_detail &&
       (
         rowKind === "derivative" ||
+        rowKind === "option" ||
         rowKind === "stock" ||
         rowKind === "bond" ||
         rowKind === "fund_or_stock" ||

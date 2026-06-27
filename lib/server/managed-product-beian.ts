@@ -8,6 +8,13 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   衡颐海泰1号: "SBPU97",
 }
 
+/** Known 托管券商 for 在管产品 when registration tables are incomplete. */
+export const MANAGED_PRODUCT_CUSTODIAN_OVERRIDES: Readonly<Record<string, string>> = {
+  抱朴聚融祥和一号: "招商证券股份有限公司",
+  衡颐海宸1号: "光大证券股份有限公司",
+  衡颐承和FOF1号: "国泰海通证券股份有限公司",
+}
+
 /** Alternate 备案号 stored in legacy tables — map to canonical override code. */
 const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   S52247: "SSG947",
@@ -93,6 +100,26 @@ export function lookupManagedProductOverride(
     for (const [product_name, beian_hao] of Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)) {
       if (beian_hao === remapped) return { product_name, beian_hao }
     }
+  }
+  return null
+}
+
+export function lookupManagedProductCustodian(
+  productName: string | null | undefined,
+  beianHao?: string | null,
+): string | null {
+  const managed = beianHao ? lookupManagedProductOverride(beianHao) : null
+  if (managed?.product_name) {
+    const byCode = MANAGED_PRODUCT_CUSTODIAN_OVERRIDES[managed.product_name]
+    if (byCode) return byCode
+  }
+
+  const name = (productName ?? managed?.product_name ?? "").trim()
+  if (!name) return null
+  const exact = MANAGED_PRODUCT_CUSTODIAN_OVERRIDES[name]
+  if (exact) return exact
+  for (const [product, custodian] of Object.entries(MANAGED_PRODUCT_CUSTODIAN_OVERRIDES)) {
+    if (product.length >= 4 && name.includes(product)) return custodian
   }
   return null
 }

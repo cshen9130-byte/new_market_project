@@ -18,8 +18,10 @@ const CREATE_FUND_METRICS_SQL = `
     cumulative_nav       NUMERIC(16,6),
     custody_balance      NUMERIC(20,2),
     net_asset_value      NUMERIC(20,2),
+    paid_in_capital      NUMERIC(20,2),
     total_asset          NUMERIC(20,2),
     total_liability      NUMERIC(20,2),
+    custodian            TEXT,
     refreshed_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (fund_name)
   );
@@ -73,6 +75,12 @@ const MIGRATE_RECORDS_SQL = `
     ADD COLUMN IF NOT EXISTS custody_balance NUMERIC(20,2);
   ALTER TABLE ops_email_valuation_records
     ADD COLUMN IF NOT EXISTS net_asset_value NUMERIC(20,2);
+  ALTER TABLE ops_email_valuation_records
+    ADD COLUMN IF NOT EXISTS paid_in_capital NUMERIC(20,2);
+  ALTER TABLE ops_email_valuation_fund_metrics_latest
+    ADD COLUMN IF NOT EXISTS paid_in_capital NUMERIC(20,2);
+  ALTER TABLE ops_email_valuation_fund_metrics_latest
+    ADD COLUMN IF NOT EXISTS custodian TEXT;
 `
 
 const MIGRATE_UNDERLYING_MARKET_PK = `
@@ -132,6 +140,7 @@ export type EmailValuationMetricsInsert = {
   cumulativeNav: number | null
   custodyBalance: number | null
   netAssetValue: number | null
+  paidInCapital: number | null
   totalAsset: number | null
   totalLiability: number | null
   underlyingHoldings: FofUnderlyingMetric[]
@@ -143,9 +152,9 @@ export async function upsertValuationMetricsForRecord(data: EmailValuationMetric
 
   await query(
     `UPDATE ops_email_valuation_records
-     SET custody_balance = $2, net_asset_value = $3
+     SET custody_balance = $2, net_asset_value = $3, paid_in_capital = $4
      WHERE id = $1`,
-    [data.valuationRecordId, data.custodyBalance, data.netAssetValue],
+    [data.valuationRecordId, data.custodyBalance, data.netAssetValue, data.paidInCapital],
   )
 }
 
@@ -157,6 +166,11 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
 }> {
   await ensureEmailValuationMetricsTables()
   await ensureEmailValuationHoldingsTables()
+
+  const { backfillValuationCustodianFromRecords } = await import(
+    "@/lib/server/email-valuation-metrics-backfill"
+  )
+  await backfillValuationCustodianFromRecords()
 
   await query(
     `UPDATE ops_email_valuation_holdings
@@ -178,13 +192,13 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
     `WITH latest_records AS (
        SELECT DISTINCT ON (fund_key)
          id, product_code, fund_name, valuation_date,
-         unit_nav, cumulative_nav, custody_balance, net_asset_value,
-         total_asset, total_liability
+         unit_nav, cumulative_nav, custody_balance, net_asset_value, paid_in_capital,
+         total_asset, total_liability, custodian
        FROM (
          SELECT
            id, product_code, fund_name, valuation_date,
-           unit_nav, cumulative_nav, custody_balance, net_asset_value,
-           total_asset, total_liability,
+           unit_nav, cumulative_nav, custody_balance, net_asset_value, paid_in_capital,
+           total_asset, total_liability, custodian,
            COALESCE(NULLIF(TRIM(product_code), ''), NULLIF(TRIM(fund_name), '')) AS fund_key
          FROM ops_email_valuation_records
        ) src
@@ -194,13 +208,13 @@ export async function refreshEmailValuationMetricsLatest(): Promise<{
      inserted AS (
        INSERT INTO ops_email_valuation_fund_metrics_latest (
          product_code, fund_name, valuation_date, valuation_record_id,
-         unit_nav, cumulative_nav, custody_balance, net_asset_value,
-         total_asset, total_liability
+         unit_nav, cumulative_nav, custody_balance, net_asset_value, paid_in_capital,
+         total_asset, total_liability, custodian
        )
        SELECT
          product_code, fund_name, valuation_date, id,
-         unit_nav, cumulative_nav, custody_balance, net_asset_value,
-         total_asset, total_liability
+         unit_nav, cumulative_nav, custody_balance, net_asset_value, paid_in_capital,
+         total_asset, total_liability, custodian
        FROM latest_records
        RETURNING 1
      )
@@ -334,8 +348,10 @@ export type FundMetricsLatestRow = {
   cumulative_nav: string | null
   custody_balance: string | null
   net_asset_value: string | null
+  paid_in_capital: string | null
   total_asset: string | null
   total_liability: string | null
+  custodian: string | null
   refreshed_at: string
 }
 

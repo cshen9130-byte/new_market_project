@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 
 import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
 import type React from "react"
@@ -14,7 +14,10 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from "recharts"
-import { ArrowLeft, Database, Download, HelpCircle, Menu, X } from "lucide-react"
+import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Send, Siren, X } from "lucide-react"
+import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
+import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
+import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,6 +41,7 @@ import { FundCompanyPanel } from "./components/FundCompanyPanel"
 import { FundProfilePanel } from "./components/FundProfilePanel"
 
 const menuItems = [
+  { key: "market",     label: "市场" },
   { key: "funds",      label: "基金" },
   { key: "portfolio",  label: "组合" },
   { key: "investment", label: "投资" },
@@ -63,6 +67,7 @@ const fundsSidebarGroups = [
 ]
 
 const TAB_DEFAULT_SIDE: Record<string, string> = {
+  market: "strategy-observation",
   funds: "private-funds",
   portfolio: "port-simulated",
   investment: "inv-tracking",
@@ -81,6 +86,53 @@ const FUND_DETAIL_TABS = [
 ] as const
 
 type FundDetailTab = (typeof FUND_DETAIL_TABS)[number]["key"]
+
+function FundHeaderActionTip({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactElement
+}) {
+  return (
+    <UiTooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent
+        side="bottom"
+        sideOffset={8}
+        className="bg-zinc-800 text-white border-0 px-2.5 py-1 text-xs shadow-md [&>svg]:fill-zinc-800 [&>svg]:bg-zinc-800"
+      >
+        {label}
+      </TooltipContent>
+    </UiTooltip>
+  )
+}
+
+/** 估值表分析 – pie chart with one outlined slice (top-right quadrant). */
+function ValuationPieChartIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-hidden="true"
+    >
+      {/* Solid 3/4 – leaves a thin gap before the top-right slice */}
+      <path
+        d="M12 12 L21.2 12 A9.2 9.2 0 1 1 12 3.05 Z"
+        fill="currentColor"
+      />
+      {/* Outlined top-right slice – hollow center, red stroke */}
+      <path
+        d="M12 12 L12 2.55 A9.45 9.45 0 0 1 21.45 12 Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
 
 const ACTIVE_SIDE_ITEM = "private-funds"
 
@@ -947,6 +999,10 @@ export default function PrivateFundDetailPage() {
   const [fundPools, setFundPools] = useState<{ pool_key: string; pool_label: string }[]>([])
   const [availTeamTags, setAvailTeamTags] = useState<string[]>([])
   const [showTagEditor, setShowTagEditor] = useState(false)
+  const [trackedMine, setTrackedMine] = useState(false)
+  const [trackedTeam, setTrackedTeam] = useState(false)
+  const [showMyTrackingDialog, setShowMyTrackingDialog] = useState(false)
+  const [showTeamTrackingDialog, setShowTeamTrackingDialog] = useState(false)
 
   // ─── 编辑要素 modal ─────────────────────────────────────────────────────────
   type StrategyL2 = { l2: string; l3s: string[] }
@@ -1089,6 +1145,16 @@ export default function PrivateFundDetailPage() {
     setFundTags((p) => p.filter((t) => t !== tag))
   }
 
+  function refreshTrackedIds() {
+    fetch("/ma/api/tracking-funds/tracked-ids")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d?.mine)) setTrackedMine(d.mine.includes(beian_hao))
+        if (Array.isArray(d?.team)) setTrackedTeam(d.team.includes(beian_hao))
+      })
+      .catch(() => {})
+  }
+
   useEffect(() => {
     if (!beian_hao) return
     setLoading(true)
@@ -1107,6 +1173,7 @@ export default function PrivateFundDetailPage() {
       .then((r) => r.json())
       .then((d) => Array.isArray(d) ? setAvailTeamTags(d.map((t: { name: string }) => t.name)) : null)
       .catch(() => {})
+    refreshTrackedIds()
   }, [beian_hao])
 
   // Fetch peer monthly stats once the main fund data (and its resolved strategy) is available
@@ -1780,8 +1847,10 @@ export default function PrivateFundDetailPage() {
 
       {/* ── Header: fund name + strategy tags ────────────── */}
       <div className="mb-3">
-        <h1 className="text-2xl font-bold text-zinc-900 leading-tight">{info.product_name}</h1>
-        <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <h1 className="text-2xl font-bold text-zinc-900 leading-tight">{info.product_name}</h1>
+            <div className="flex flex-wrap items-center gap-1.5 mt-1.5 text-xs">
           {/* ── 策略标签（一级 / 二级 / 三级） ── */}
           {(info.strategy_l1 || info.strategy_l2 || info.strategy_l3) && (
             <>
@@ -1851,6 +1920,99 @@ export default function PrivateFundDetailPage() {
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
           </button>
+            </div>
+          </div>
+
+          {/* Header action icons */}
+          <div className="flex items-center gap-0.5 shrink-0 pt-0.5">
+            <FundHeaderActionTip label="估值表分析">
+              <button
+                type="button"
+                onClick={() => window.open(
+                  `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}/valuation`,
+                  "_blank",
+                  "noopener,noreferrer",
+                )}
+                className="p-1.5 rounded text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors"
+              >
+                <ValuationPieChartIcon className="h-[18px] w-[18px]" />
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="添加预警">
+              <button
+                type="button"
+                onClick={() => {}}
+                className="p-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+              >
+                <Siren className="h-[18px] w-[18px]" />
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="导出报告">
+              <button
+                type="button"
+                onClick={() => setDetailTab("materials")}
+                className="p-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+              >
+                <Files className="h-[18px] w-[18px]" />
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="截图">
+              <button
+                type="button"
+                onClick={() => {
+                  if (detailTab !== "performance") {
+                    setDetailTab("performance")
+                    window.setTimeout(() => { void handleDownloadNavChartImage() }, 150)
+                  } else {
+                    void handleDownloadNavChartImage()
+                  }
+                }}
+                className="p-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+              >
+                <Camera className="h-[18px] w-[18px]" />
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="对比">
+              <button
+                type="button"
+                onClick={() => router.push("/ma/dashboard/private-funds?tab=investment&side=inv-compare")}
+                className="px-1.5 py-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors text-xs font-semibold tracking-tight"
+              >
+                VS
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="添加到我的跟踪">
+              <button
+                type="button"
+                onClick={() => setShowMyTrackingDialog(true)}
+                className={[
+                  "relative p-1.5 rounded transition-colors",
+                  trackedMine
+                    ? "text-red-500 hover:text-red-600 hover:bg-red-50"
+                    : "text-zinc-500 hover:text-red-500 hover:bg-zinc-100",
+                ].join(" ")}
+              >
+                <Heart className={["h-[18px] w-[18px]", trackedMine ? "fill-current" : ""].join(" ")} />
+                {!trackedMine && (
+                  <Plus className="absolute -bottom-0.5 -right-0.5 h-2 w-2 stroke-[3]" />
+                )}
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="添加到团队跟踪">
+              <button
+                type="button"
+                onClick={() => setShowTeamTrackingDialog(true)}
+                className={[
+                  "p-1.5 rounded transition-colors",
+                  trackedTeam
+                    ? "text-red-500 hover:text-red-600 hover:bg-red-50"
+                    : "text-zinc-500 hover:text-red-500 hover:bg-zinc-100",
+                ].join(" ")}
+              >
+                <Send className={["h-[18px] w-[18px]", trackedTeam ? "fill-current" : ""].join(" ")} />
+              </button>
+            </FundHeaderActionTip>
+          </div>
         </div>
       </div>
 
@@ -2918,6 +3080,25 @@ export default function PrivateFundDetailPage() {
           </div>
         </div>
       </div>
+    )}
+
+    {showMyTrackingDialog && (
+      <AddMyTrackingDialog
+        open
+        beian_hao={beian_hao}
+        product_name={info.product_name}
+        onClose={() => setShowMyTrackingDialog(false)}
+        onSaved={refreshTrackedIds}
+      />
+    )}
+    {showTeamTrackingDialog && (
+      <AddToTeamTrackingDialog
+        open
+        beian_hao={beian_hao}
+        product_name={info.product_name}
+        onClose={() => setShowTeamTrackingDialog(false)}
+        onSaved={refreshTrackedIds}
+      />
     )}
     </>
   )

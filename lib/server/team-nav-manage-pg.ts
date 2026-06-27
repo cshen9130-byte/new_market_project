@@ -307,14 +307,14 @@ export async function saveTeamNavMissingSettings(params: {
   return { ok: true }
 }
 
-/** Team / manual NAV stream for 在管产品 — avoids corrupt legacy type6 rows. */
-export async function loadManagedProductNavSeries(params: {
+/** Email + manual NAV points for 在管产品 (corrected stream, not yet merged with seed). */
+export async function loadManagedProductEmailPoints(params: {
   beian_hao: string
   product_name: string
   short_name?: string | null
   nav_type?: "pre_fee" | "virtual"
   extraNames?: Array<string | null | undefined>
-}): Promise<LegacyNavRow[]> {
+}): Promise<EmailNavPoint[]> {
   const nav_type = params.nav_type ?? "pre_fee"
   const extraNames = params.extraNames ?? []
   const [emailPoints, manual] = await Promise.all([
@@ -336,7 +336,21 @@ export async function loadManagedProductNavSeries(params: {
     cumulative_nav: row.cumulative_nav ?? row.unit_nav,
   }))
 
-  return mergeNavSeriesWithEmail([], [...filteredEmail, ...manualPoints])
+  return [...filteredEmail, ...manualPoints].sort((a, b) =>
+    a.price_date.localeCompare(b.price_date),
+  )
+}
+
+/** Team / manual NAV stream for 在管产品 — avoids corrupt legacy type6 rows. */
+export async function loadManagedProductNavSeries(params: {
+  beian_hao: string
+  product_name: string
+  short_name?: string | null
+  nav_type?: "pre_fee" | "virtual"
+  extraNames?: Array<string | null | undefined>
+}): Promise<LegacyNavRow[]> {
+  const points = await loadManagedProductEmailPoints(params)
+  return mergeNavSeriesWithEmail([], points)
 }
 
 export async function listTeamNavManageRows(params: {
