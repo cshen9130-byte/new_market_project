@@ -2,10 +2,8 @@
 
 import { memo, useState, useMemo, useRef, useCallback, useEffect } from "react"
 import { Menu, X } from "lucide-react"
-import {
-  BarChart, Bar, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
-} from "recharts"
+import ReactECharts from "echarts-for-react"
+import type { EChartsOption } from "echarts"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { RED, GREEN, type NavRow, type BenchmarkPoint } from "./shared"
-import { computePeriodReturnBars, type PeriodGranularity } from "./periodReturns"
+import { computePeriodReturnBars, type PeriodGranularity, type PeriodReturnBar } from "./periodReturns"
 import { ReturnDistributionPanel } from "./ReturnDistributionPanel"
 import { RollingAnalysisPanel } from "./RollingAnalysisPanel"
 import { RollingRankPercentileTrendChart } from "./RollingRankPercentileTrendChart"
@@ -88,34 +86,116 @@ function fmtReturn(v: number | null): { text: string; color?: string } {
   return { text: (v > 0 ? "+" : "") + v.toFixed(2) + "%", color }
 }
 
-function ReturnBarTooltip({
-  active, payload, label, showExcess, productName, benchmarkLabel,
-}: {
-  active?: boolean
-  payload?: Array<{ dataKey?: string; value?: number; color?: string }>
-  label?: string
-  showExcess: boolean
-  productName: string
-  benchmarkLabel: string
-}) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="bg-white border border-zinc-100 shadow-md rounded-lg px-3 py-2 text-xs">
-      <div className="text-zinc-500 mb-1">{label}</div>
-      {payload.map((item) => {
-        const name =
-          item.dataKey === "fundPct" ? productName :
-          item.dataKey === "benchPct" ? `${benchmarkLabel}（基准）` :
-          item.dataKey === "excessPct" ? "超额" : String(item.dataKey)
-        const val = item.value as number
-        return (
-          <div key={item.dataKey} className="font-semibold tabular-nums" style={item.color ? { color: item.color } : undefined}>
-            {name}: {val > 0 ? "+" : ""}{val.toFixed(2)}%
-          </div>
-        )
-      })}
-    </div>
-  )
+type WinRateChartMode = "fund" | "dual" | "excess"
+
+function buildWinRateChartOption(
+  chartData: PeriodReturnBar[],
+  chartMode: WinRateChartMode,
+  productName: string,
+  benchmarkLabel: string,
+  yDomain: [number, number],
+): EChartsOption {
+  const labels = chartData.map((d) => d.label)
+  const axisLabel = { fontSize: 11, color: "#a1a1aa" }
+
+  const tooltipFormatter = (params: unknown) => {
+    const items = (Array.isArray(params) ? params : [params]) as Array<{
+      axisValue?: string
+      seriesName?: string
+      value?: number | null
+      color?: string
+    }>
+    if (!items.length) return ""
+    const lines = [`<div style="color:#71717a;margin-bottom:4px">${items[0].axisValue ?? ""}</div>`]
+    for (const item of items) {
+      const val = item.value
+      if (val === null || val === undefined || !Number.isFinite(val)) continue
+      const sign = val > 0 ? "+" : ""
+      lines.push(
+        `<div style="font-weight:600;color:${item.color ?? "#333"}">${item.seriesName}: ${sign}${val.toFixed(2)}%</div>`,
+      )
+    }
+    return lines.join("")
+  }
+
+  const base: EChartsOption = {
+    animation: false,
+    grid: { left: 48, right: 12, top: 8, bottom: 28 },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: tooltipFormatter,
+      confine: true,
+    },
+    xAxis: {
+      type: "category",
+      data: labels,
+      axisLabel: { ...axisLabel, hideOverlap: true },
+      axisLine: { lineStyle: { color: "#e4e4e7" } },
+      axisTick: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      min: yDomain[0],
+      max: yDomain[1],
+      axisLabel: { ...axisLabel, formatter: "{value}%" },
+      splitLine: { lineStyle: { type: "dashed", color: "#f4f4f5" } },
+    },
+  }
+
+  if (chartMode === "excess") {
+    return {
+      ...base,
+      series: [{
+        name: "超额",
+        type: "bar",
+        data: chartData.map((d) => {
+          const v = d.excessPct ?? d.fundPct
+          return { value: v, itemStyle: { color: v >= 0 ? RED : GREEN } }
+        }),
+        barMaxWidth: 14,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          lineStyle: { color: "#d4d4d8", type: "solid" },
+          data: [{ yAxis: 0 }],
+        },
+      }],
+    }
+  }
+
+  const series: EChartsOption["series"] = [{
+    name: productName,
+    type: "bar",
+    data: chartData.map((d) => ({
+      value: d.fundPct,
+      itemStyle: { color: d.fundPct >= 0 ? RED : GREEN },
+    })),
+    barMaxWidth: chartMode === "dual" ? 10 : 14,
+    markLine: {
+      silent: true,
+      symbol: "none",
+      lineStyle: { color: "#d4d4d8", type: "solid" },
+      data: [{ yAxis: 0 }],
+    },
+  }]
+
+  if (chartMode === "dual") {
+    series.push({
+      name: `${benchmarkLabel}（基准）`,
+      type: "bar",
+      data: chartData.map((d) => {
+        if (d.benchPct === null || !Number.isFinite(d.benchPct)) return { value: null }
+        return {
+          value: d.benchPct,
+          itemStyle: { color: d.benchPct >= 0 ? "#2563eb" : "#34d399" },
+        }
+      }),
+      barMaxWidth: 10,
+    })
+  }
+
+  return { ...base, series }
 }
 
 function StatsTableRow({
@@ -251,40 +331,20 @@ export const WinRateAnalysisPanel = memo(function WinRateAnalysisPanel({
     await downloadPanelImage(el, `${exportName}.png`)
   }, [exportName])
 
+  const chartMode: WinRateChartMode = showExcess && hasBenchmark ? "excess" : hasBenchmark && benchmarkSeries.length > 0 ? "dual" : "fund"
+
+  const chartOption = useMemo(
+    () => buildWinRateChartOption(chartData, chartMode, productName, benchmarkLabel, yDomain),
+    [chartData, chartMode, productName, benchmarkLabel, yDomain],
+  )
+
   const chartBlock = (height: number) => (
-    <div style={{ height }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" vertical={false} />
-          <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#a1a1aa" }} interval="preserveStartEnd" minTickGap={24} />
-          <YAxis domain={yDomain} tick={{ fontSize: 11, fill: "#a1a1aa" }} width={44}
-            tickFormatter={(v: number) => `${v}%`}
-            label={{ value: "收益率（%）", angle: -90, position: "insideLeft", offset: 8, style: { fontSize: 11, fill: "#a1a1aa" } }} />
-          <Tooltip content={(props) => (
-            <ReturnBarTooltip active={props.active} payload={props.payload as Array<{ dataKey?: string; value?: number; color?: string }>}
-              label={props.label as string} showExcess={showExcess} productName={productName} benchmarkLabel={benchmarkLabel} />
-          )} />
-          <ReferenceLine y={0} stroke="#d4d4d8" />
-          {hasBenchmark && !showExcess ? (
-            <>
-              <Bar dataKey="fundPct" name={productName} radius={[2, 2, 0, 0]}>
-                {chartData.map((entry, i) => <Cell key={`f-${i}`} fill={entry.fundPct >= 0 ? RED : GREEN} />)}
-              </Bar>
-              <Bar dataKey="benchPct" name={`${benchmarkLabel}（基准）`} radius={[2, 2, 0, 0]}>
-                {chartData.map((entry, i) => <Cell key={`b-${i}`} fill={entry.benchPct !== null && entry.benchPct >= 0 ? "#2563eb" : "#34d399"} />)}
-              </Bar>
-            </>
-          ) : (
-            <Bar dataKey={showExcess && hasBenchmark ? "excessPct" : "fundPct"} name={showExcess && hasBenchmark ? "超额" : productName} radius={[2, 2, 0, 0]}>
-              {chartData.map((entry, i) => {
-                const v = showExcess && hasBenchmark ? (entry.excessPct ?? entry.fundPct) : entry.fundPct
-                return <Cell key={i} fill={v >= 0 ? RED : GREEN} />
-              })}
-            </Bar>
-          )}
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
+    <ReactECharts
+      option={chartOption}
+      style={{ height, width: "100%" }}
+      notMerge
+      opts={{ renderer: "canvas" }}
+    />
   )
 
   if (!chartData.length) {
@@ -358,19 +418,19 @@ export const WinRateAnalysisPanel = memo(function WinRateAnalysisPanel({
         </div>
 
         <div className="flex items-center gap-4 text-xs text-zinc-600 mb-2">
-          {!(showExcess && hasBenchmark) && (
+          {chartMode !== "excess" && (
             <span className="inline-flex items-center gap-1.5">
               <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: RED }} />
               {productName}
             </span>
           )}
-          {hasBenchmark && !showExcess && (
+          {chartMode === "dual" && (
             <span className="inline-flex items-center gap-1.5">
               <span className="inline-block w-3 h-3 rounded-sm bg-blue-500" />
               {benchmarkLabel}（基准）
             </span>
           )}
-          {showExcess && hasBenchmark && (
+          {chartMode === "excess" && (
             <span className="inline-flex items-center gap-1.5">
               <span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: RED }} />
               超额

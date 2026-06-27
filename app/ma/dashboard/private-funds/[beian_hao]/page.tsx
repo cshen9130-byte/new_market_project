@@ -34,6 +34,8 @@ import { AnnualRankRadarPanel } from "./components/AnnualRankRadarPanel"
 import { FundRatingPanel } from "./components/FundRatingPanel"
 import { ScenarioAnalysisPanel } from "./components/ScenarioAnalysisPanel"
 import { NavAttributionPanel } from "./components/NavAttributionPanel"
+import { FundCompanyPanel } from "./components/FundCompanyPanel"
+import { FundProfilePanel } from "./components/FundProfilePanel"
 
 const menuItems = [
   { key: "funds",      label: "基金" },
@@ -2601,7 +2603,22 @@ export default function PrivateFundDetailPage() {
         />
       )}
 
-      {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && (
+      {detailTab === "company" && (
+        <FundCompanyPanel beian_hao={beian_hao} />
+      )}
+
+      {detailTab === "profile" && (
+        <FundProfilePanel
+          beian_hao={beian_hao}
+          fallback={{
+            product_name: info.product_name,
+            manager: info.manager,
+            inception_date: info.inception_date,
+          }}
+        />
+      )}
+
+      {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && detailTab !== "company" && detailTab !== "profile" && (
         <div className="min-h-[320px]" />
       )}
     </div>

@@ -1,6 +1,6 @@
 [
   {
-    "id": "0d832f0b-014a-4245-8510-d5fc98b98baf",
+    "id": "37dbc9bb-de47-451d-9843-762f45d0b530",
     "customerName": "抱朴聚融祥和一号私募证券投资基金",
     "taAccount": "S58006758813",
     "linkType": null,
@@ -9,11 +9,11 @@
     "investorName": null,
     "source": "邮箱抓取",
     "crawlEmailId": "03fe2782-62fb-4dcb-b73b-bb92587e4230",
-    "createdAt": "2026-06-10T08:24:40.103Z",
-    "updatedAt": "2026-06-10T08:24:40.103Z"
+    "createdAt": "2026-06-25T16:19:28.486Z",
+    "updatedAt": "2026-06-25T16:19:28.486Z"
   },
   {
-    "id": "e7f4bf1e-6123-451e-ae1d-4924059a47b5",
+    "id": "9257cd85-1099-4d48-9fb0-9e229e209e0f",
     "customerName": "衡颐承和FOF1号私募证券投资基金",
     "taAccount": "JA8009498977",
     "linkType": null,
@@ -22,11 +22,11 @@
     "investorName": null,
     "source": "邮箱抓取",
     "crawlEmailId": "03fe2782-62fb-4dcb-b73b-bb92587e4230",
-    "createdAt": "2026-06-10T08:24:40.103Z",
-    "updatedAt": "2026-06-10T08:24:40.103Z"
+    "createdAt": "2026-06-25T16:19:28.486Z",
+    "updatedAt": "2026-06-25T16:19:28.486Z"
   },
   {
-    "id": "19d565e0-6cad-4169-9b98-7c3baa5f087c",
+    "id": "65030699-7897-4711-b3ae-1b778b61e8c2",
     "customerName": "衡颐海泰1号私募证券投资基金",
     "taAccount": "S18852566466",
     "linkType": null,
@@ -35,11 +35,11 @@
     "investorName": null,
     "source": "邮箱抓取",
     "crawlEmailId": "03fe2782-62fb-4dcb-b73b-bb92587e4230",
-    "createdAt": "2026-06-10T08:24:40.103Z",
-    "updatedAt": "2026-06-10T08:24:40.103Z"
+    "createdAt": "2026-06-25T16:19:28.486Z",
+    "updatedAt": "2026-06-25T16:19:28.486Z"
   },
   {
-    "id": "997f5c8a-fe57-4303-847e-edb6af8d4794",
+    "id": "cfc6ad1f-1936-4b42-9f8b-558d781d4de0",
     "customerName": "荣熙共赢私募证券投资基金",
     "taAccount": "S58007873812",
     "linkType": null,
@@ -48,11 +48,11 @@
     "investorName": null,
     "source": "邮箱抓取",
     "crawlEmailId": "03fe2782-62fb-4dcb-b73b-bb92587e4230",
-    "createdAt": "2026-06-10T08:24:40.103Z",
-    "updatedAt": "2026-06-10T08:24:40.103Z"
+    "createdAt": "2026-06-25T16:19:28.486Z",
+    "updatedAt": "2026-06-25T16:19:28.486Z"
   },
   {
-    "id": "aa01385d-d113-40c8-891d-1326fc81ad16",
+    "id": "30dcc8a1-ebfd-4502-b0d3-ea20f0d7964c",
     "customerName": "上海荣熙私募基金管理有限公司－荣熙共赢私募证券投资基金",
     "taAccount": "S18852498101",
     "linkType": null,
@@ -61,7 +61,7 @@
     "investorName": null,
     "source": "邮箱抓取",
     "crawlEmailId": "03fe2782-62fb-4dcb-b73b-bb92587e4230",
-    "createdAt": "2026-06-10T08:24:40.103Z",
-    "updatedAt": "2026-06-10T08:24:40.103Z"
+    "createdAt": "2026-06-25T16:19:28.486Z",
+    "updatedAt": "2026-06-25T16:19:28.486Z"
   }
 ]

@@ -2,10 +2,8 @@
 
 import { memo, useState, useMemo, useRef, useCallback, useEffect } from "react"
 import { HelpCircle, Menu, X } from "lucide-react"
-import {
-  ComposedChart, Bar, Line,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine,
-} from "recharts"
+import ReactECharts from "echarts-for-react"
+import type { EChartsOption } from "echarts"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -25,6 +23,13 @@ interface DistributionBin {
   benchFreq: number
   benchCurve: number
 }
+
+const PERCENTILE_LINES = [
+  { key: "p5" as const, title: "5%分位线" },
+  { key: "p25" as const, title: "25%分位线" },
+  { key: "p75" as const, title: "75%分位线" },
+  { key: "p95" as const, title: "95%分位线" },
+]
 
 function percentile(sorted: number[], p: number): number {
   if (!sorted.length) return 0
@@ -89,6 +94,187 @@ function buildDistributionBins(
   }
 
   return bins
+}
+
+function buildPercentileMarkLine(
+  percentiles: Record<(typeof PERCENTILE_LINES)[number]["key"], number>,
+  yMax: number,
+) {
+  return {
+    silent: true,
+    symbol: "none",
+    animation: false,
+    lineStyle: { color: "#ef4444", type: "dashed", width: 1 },
+    data: PERCENTILE_LINES.flatMap(({ key, title }) => {
+      const x = percentiles[key]
+      const valueText = `${x >= 0 ? "+" : ""}${x.toFixed(2)}%`
+      return [[
+        {
+          coord: [x, 0],
+          label: {
+            show: true,
+            formatter: title,
+            position: "insideStartTop",
+            color: "#ef4444",
+            fontSize: 10,
+            distance: 4,
+          },
+        },
+        {
+          coord: [x, yMax],
+          label: {
+            show: true,
+            formatter: valueText,
+            position: "insideEndBottom",
+            color: "#ef4444",
+            fontSize: 10,
+            distance: 4,
+          },
+        },
+      ]]
+    }),
+  }
+}
+
+function buildDistributionChartOption(
+  bins: DistributionBin[],
+  binWidth: number,
+  yMax: number,
+  showFundHist: boolean,
+  showFundCurve: boolean,
+  showBenchHist: boolean,
+  showBenchCurve: boolean,
+  showPercentileLines: boolean,
+  percentiles: Record<(typeof PERCENTILE_LINES)[number]["key"], number>,
+  seriesLabel: string,
+  benchmarkLabel: string,
+): EChartsOption {
+  const axisLabel = { fontSize: 11, color: "#a1a1aa" }
+  let xMin = bins.length ? bins[0].center - binWidth / 2 : -5
+  let xMax = bins.length ? bins[bins.length - 1].center + binWidth / 2 : 5
+  if (showPercentileLines) {
+    for (const { key } of PERCENTILE_LINES) {
+      xMin = Math.min(xMin, percentiles[key] - binWidth)
+      xMax = Math.max(xMax, percentiles[key] + binWidth)
+    }
+  }
+  const barMaxWidth = bins.length ? Math.max(6, Math.min(22, 300 / bins.length)) : 12
+
+  const series: EChartsOption["series"] = []
+
+  if (showFundHist) {
+    series.push({
+      name: `${seriesLabel}-直方图`,
+      type: "bar",
+      data: bins.map((b) => [b.center, b.fundFreq]),
+      barMaxWidth,
+      itemStyle: { color: RED, opacity: 0.85 },
+      z: 2,
+    })
+  }
+
+  if (showFundCurve) {
+    series.push({
+      name: `${seriesLabel}-拟合曲线`,
+      type: "line",
+      data: bins.map((b) => [b.center, b.fundCurve]),
+      showSymbol: false,
+      lineStyle: { color: "#2563eb", width: 2 },
+      z: 3,
+    })
+  }
+
+  if (showBenchHist) {
+    series.push({
+      name: `${benchmarkLabel}（基准）-直方图`,
+      type: "bar",
+      data: bins.map((b) => [b.center, b.benchFreq]),
+      barMaxWidth,
+      itemStyle: { color: "#94a3b8", opacity: 0.7 },
+      z: 1,
+    })
+  }
+
+  if (showBenchCurve) {
+    series.push({
+      name: `${benchmarkLabel}（基准）-拟合曲线`,
+      type: "line",
+      data: bins.map((b) => [b.center, b.benchCurve]),
+      showSymbol: false,
+      lineStyle: { color: "#64748b", width: 2, type: "dashed" },
+      z: 3,
+    })
+  }
+
+  if (showPercentileLines) {
+    if (series.length === 0) {
+      series.push({
+        name: "_percentile_anchor",
+        type: "line",
+        data: [],
+        markLine: buildPercentileMarkLine(percentiles, yMax),
+        silent: true,
+        symbol: "none",
+        lineStyle: { opacity: 0 },
+      })
+    } else {
+      const first = series[0] as { markLine?: ReturnType<typeof buildPercentileMarkLine> }
+      first.markLine = buildPercentileMarkLine(percentiles, yMax)
+    }
+  }
+
+  return {
+    animation: false,
+    grid: { left: 48, right: 12, top: showPercentileLines ? 28 : 12, bottom: showPercentileLines ? 28 : 20 },
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      formatter: (params: unknown) => {
+        const items = (Array.isArray(params) ? params : [params]) as Array<{
+          seriesName?: string
+          value?: number | [number, number]
+          color?: string
+        }>
+        if (!items.length) return ""
+        const firstVal = items[0].value
+        const xVal = Array.isArray(firstVal) ? firstVal[0] : 0
+        const lines = [`<div style="color:#71717a;margin-bottom:4px">收益率 ${Number(xVal).toFixed(2)}%</div>`]
+        for (const item of items) {
+          const val = Array.isArray(item.value) ? item.value[1] : item.value
+          if (val === null || val === undefined || !Number.isFinite(val)) continue
+          lines.push(
+            `<div style="font-weight:600;color:${item.color ?? "#333"}">${item.seriesName}: ${Number(val).toFixed(2)}%</div>`,
+          )
+        }
+        return lines.join("")
+      },
+      confine: true,
+    },
+    xAxis: {
+      type: "value",
+      min: xMin,
+      max: xMax,
+      axisLabel: { ...axisLabel, formatter: (v: number) => `${v.toFixed(0)}%` },
+      axisLine: { lineStyle: { color: "#e4e4e7" } },
+      splitLine: { show: false },
+      name: "收益率",
+      nameLocation: "middle",
+      nameGap: 28,
+      nameTextStyle: { fontSize: 11, color: "#a1a1aa" },
+    },
+    yAxis: {
+      type: "value",
+      min: 0,
+      max: yMax,
+      axisLabel: { ...axisLabel, formatter: "{value}%" },
+      splitLine: { lineStyle: { type: "dashed", color: "#f4f4f5" } },
+      name: "频率",
+      nameLocation: "middle",
+      nameGap: 36,
+      nameTextStyle: { fontSize: 11, color: "#a1a1aa" },
+    },
+    series,
+  }
 }
 
 async function downloadPanelImage(el: HTMLElement, filename: string) {
@@ -180,9 +366,10 @@ export const ReturnDistributionPanel = memo(function ReturnDistributionPanel({
   const percentiles = useMemo(() => {
     const sorted = [...fundReturns].sort((a, b) => a - b)
     return {
+      p5: percentile(sorted, 0.05),
       p25: percentile(sorted, 0.25),
-      p50: percentile(sorted, 0.5),
       p75: percentile(sorted, 0.75),
+      p95: percentile(sorted, 0.95),
     }
   }, [fundReturns])
 
@@ -199,6 +386,28 @@ export const ReturnDistributionPanel = memo(function ReturnDistributionPanel({
     const max = Math.max(...vals)
     return Math.ceil(max / 5) * 5 + 5
   }, [bins, showFundHist, showFundCurve, showBenchHist, showBenchCurve])
+
+  const seriesLabel = showExcess && hasBenchmark ? "超额" : productName
+
+  const chartOption = useMemo(
+    () => buildDistributionChartOption(
+      bins,
+      binWidth,
+      yMax,
+      showFundHist,
+      showFundCurve,
+      showBenchHist && hasBenchmark,
+      showBenchCurve && hasBenchmark,
+      showPercentileLines,
+      percentiles,
+      seriesLabel,
+      benchmarkLabel,
+    ),
+    [
+      bins, binWidth, yMax, showFundHist, showFundCurve, showBenchHist, showBenchCurve,
+      showPercentileLines, percentiles, seriesLabel, benchmarkLabel, hasBenchmark,
+    ],
+  )
 
   const exportName = `${productName}_收益分布`
 
@@ -230,55 +439,13 @@ export const ReturnDistributionPanel = memo(function ReturnDistributionPanel({
     await downloadPanelImage(el, `${exportName}.png`)
   }, [exportName])
 
-  const seriesLabel = showExcess && hasBenchmark ? "超额" : productName
-
   const chartBlock = (height: number) => (
-    <div style={{ height }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <ComposedChart data={bins} margin={{ top: 8, right: 12, left: 0, bottom: 4 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f4f4f5" vertical={false} />
-          <XAxis
-            dataKey="center"
-            type="number"
-            domain={["dataMin", "dataMax"]}
-            tick={{ fontSize: 11, fill: "#a1a1aa" }}
-            tickFormatter={(v: number) => `${v.toFixed(0)}%`}
-            label={{ value: "收益率", position: "insideBottom", offset: -2, style: { fontSize: 11, fill: "#a1a1aa" } }}
-          />
-          <YAxis
-            domain={[0, yMax]}
-            tick={{ fontSize: 11, fill: "#a1a1aa" }}
-            width={44}
-            tickFormatter={(v: number) => `${v}%`}
-            label={{ value: "频率", angle: -90, position: "insideLeft", offset: 8, style: { fontSize: 11, fill: "#a1a1aa" } }}
-          />
-          <Tooltip
-            formatter={(value: number, name: string) => [`${value.toFixed(2)}%`, name]}
-            labelFormatter={(v: number) => `收益率 ${Number(v).toFixed(2)}%`}
-            contentStyle={{ fontSize: 12 }}
-          />
-          {showPercentileLines && (
-            <>
-              <ReferenceLine x={percentiles.p25} stroke="#f97316" strokeDasharray="4 3" label={{ value: "25%", position: "top", fontSize: 10, fill: "#f97316" }} />
-              <ReferenceLine x={percentiles.p50} stroke="#ef4444" strokeDasharray="4 3" label={{ value: "50%", position: "top", fontSize: 10, fill: "#ef4444" }} />
-              <ReferenceLine x={percentiles.p75} stroke="#f97316" strokeDasharray="4 3" label={{ value: "75%", position: "top", fontSize: 10, fill: "#f97316" }} />
-            </>
-          )}
-          {showFundHist && (
-            <Bar dataKey="fundFreq" name={`${seriesLabel}-直方图`} fill={RED} fillOpacity={0.85} radius={[2, 2, 0, 0]} />
-          )}
-          {showFundCurve && (
-            <Line dataKey="fundCurve" name={`${seriesLabel}-拟合曲线`} stroke="#2563eb" strokeWidth={2} dot={false} type="monotone" />
-          )}
-          {hasBenchmark && showBenchHist && (
-            <Bar dataKey="benchFreq" name={`${benchmarkLabel}（基准）-直方图`} fill="#94a3b8" fillOpacity={0.7} radius={[2, 2, 0, 0]} />
-          )}
-          {hasBenchmark && showBenchCurve && (
-            <Line dataKey="benchCurve" name={`${benchmarkLabel}（基准）-拟合曲线`} stroke="#64748b" strokeWidth={2} dot={false} type="monotone" strokeDasharray="5 3" />
-          )}
-        </ComposedChart>
-      </ResponsiveContainer>
-    </div>
+    <ReactECharts
+      option={chartOption}
+      style={{ height, width: "100%" }}
+      notMerge
+      opts={{ renderer: "canvas" }}
+    />
   )
 
   if (!fundReturns.length || !bins.length) return null
