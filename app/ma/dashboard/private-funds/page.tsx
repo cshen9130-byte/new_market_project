@@ -6406,7 +6406,7 @@ function OperationsParseLogsPanel() {
   const [fetching, setFetching] = useState(false)
   const [fetchMsg, setFetchMsg] = useState<string | null>(null)
   const [fetchMsgIsError, setFetchMsgIsError] = useState(false)
-  const [fetchDays, setFetchDays] = useState(31)
+  const [fetchDays, setFetchDays] = useState(400)
   const fetchPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)

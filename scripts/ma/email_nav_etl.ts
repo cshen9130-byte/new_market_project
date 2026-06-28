@@ -24,8 +24,8 @@ function parseDays(argv: string[]): number {
     const n = parseInt(flag.slice("--days=".length), 10)
     if (Number.isFinite(n) && n > 0) return n
   }
-  const env = parseInt(process.env.EMAIL_NAV_ETL_DAYS ?? "31", 10)
-  return Number.isFinite(env) && env > 0 ? env : 31
+  const env = parseInt(process.env.EMAIL_NAV_ETL_DAYS ?? "400", 10)
+  return Number.isFinite(env) && env > 0 ? Math.min(env, 730) : 400
 }
 
 async function main() {
@@ -49,6 +49,7 @@ async function main() {
       let managedFofUnderlyingRefreshed = 0
       let opsFofUnderlyingAdded = 0
       let detailFofUnderlyingAdded = 0
+      let investmentOverviewCache = { products: 0, navRows: 0, underlyingRows: 0 }
 
       const { syncEmailValuationToProductTables } = await import(
         "@/lib/server/email-valuation-sync-pg"
@@ -132,6 +133,15 @@ async function main() {
         console.error(`[email_nav_etl] tracking funds cache done (${trackingFundsListCache} rows)`)
       }
 
+      if (refreshManaged) {
+        console.error("[email_nav_etl] refresh-only: rebuilding investment overview cache…")
+        const { refreshInvestmentOverviewCache } = await import("@/lib/server/investment-overview-cache-pg")
+        investmentOverviewCache = await refreshInvestmentOverviewCache()
+        console.error(
+          `[email_nav_etl] investment overview cache done (products=${investmentOverviewCache.products}, nav=${investmentOverviewCache.navRows}, underlying=${investmentOverviewCache.underlyingRows})`,
+        )
+      }
+
       console.log(JSON.stringify({
         ok: true,
         skipped: false,
@@ -144,6 +154,9 @@ async function main() {
         managedFofUnderlyingRefreshed,
         opsFofUnderlyingAdded,
         detailFofUnderlyingAdded,
+        investmentOverviewProducts: investmentOverviewCache.products,
+        investmentOverviewNavRows: investmentOverviewCache.navRows,
+        investmentOverviewUnderlyingRows: investmentOverviewCache.underlyingRows,
       }))
       process.exit(0)
     } catch (e) {

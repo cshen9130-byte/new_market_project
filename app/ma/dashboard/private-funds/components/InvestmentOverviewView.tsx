@@ -218,14 +218,10 @@ export function InvestmentOverviewView() {
     ids: Set<string>,
     productCount: number,
     opts: { groupBy: "strategy" | "tag"; strategySource: "company" | "platform"; strategyLevel: 1 | 2 | 3 },
-    includeSeries: boolean,
   ) => {
     const fetchGen = ++fetchGenRef.current
-    if (includeSeries) {
-      setSeriesLoading(true)
-    } else {
-      setSummaryLoading(true)
-    }
+    setSummaryLoading(true)
+    setSeriesLoading(true)
     setError(null)
     try {
       const params = new URLSearchParams({
@@ -234,7 +230,7 @@ export function InvestmentOverviewView() {
         group_by: opts.groupBy,
         strategy_source: opts.strategySource,
         strategy_level: String(opts.strategyLevel),
-        include_series: includeSeries ? "1" : "0",
+        include_series: "1",
       })
       if (ids.size > 0 && productCount > 0 && ids.size < productCount) {
         ids.forEach((id) => params.append("product_id", id))
@@ -244,34 +240,24 @@ export function InvestmentOverviewView() {
       if (fetchGen !== fetchGenRef.current) return
       if (!res.ok) throw new Error(json.error || "加载失败")
       const payload = json as InvestmentAssetAllocationResult
-      if (includeSeries) {
-        setData(payload)
-        setSeriesLoading(false)
-      } else {
-        setData((prev) => ({
-          ...payload,
-          series: prev?.series?.length ? prev.series : [],
-        }))
-        if (Array.isArray(payload.products) && !productsInitializedRef.current) {
-          productsInitializedRef.current = true
-          setAllProducts(payload.products)
-          setSelectedIds(new Set(payload.products.map((p) => p.id)))
-        }
-        if (Array.isArray(payload.summary)) {
-          setVisibleGroups(new Set(payload.summary.map((r) => r.group_name)))
-          setSeriesSelectAll(true)
-        }
-        setSummaryLoading(false)
+      setData(payload)
+      if (Array.isArray(payload.products) && !productsInitializedRef.current) {
+        productsInitializedRef.current = true
+        setAllProducts(payload.products)
+        setSelectedIds(new Set(payload.products.map((p) => p.id)))
+      }
+      if (Array.isArray(payload.summary)) {
+        setVisibleGroups(new Set(payload.summary.map((r) => r.group_name)))
+        setSeriesSelectAll(true)
       }
     } catch (e) {
       if (fetchGen !== fetchGenRef.current) return
       setError(e instanceof Error ? e.message : "加载失败")
-      if (includeSeries) {
-        setSeriesLoading(false)
-      } else {
+      setData(null)
+    } finally {
+      if (fetchGen === fetchGenRef.current) {
         setSummaryLoading(false)
         setSeriesLoading(false)
-        setData(null)
       }
     }
   }, [])
@@ -313,36 +299,32 @@ export function InvestmentOverviewView() {
 
   useEffect(() => {
     const opts = { groupBy, strategySource, strategyLevel }
-    const ids = selectedIdsRef.current
-    const productCount = allProductsLenRef.current
-    let cancelled = false
-    setSeriesLoading(true)
-
-    void (async () => {
-      await loadData(queryStart, queryEnd, ids, productCount, opts, false)
-      if (cancelled) return
-      await loadData(queryStart, queryEnd, ids, productCount, opts, true)
-    })()
-
-    return () => {
-      cancelled = true
-      fetchGenRef.current += 1
-    }
-  }, [queryStart, queryEnd, groupBy, strategySource, strategyLevel, selectionRevision, loadData])
-
-  useEffect(() => {
-    if (summaryLoading) return
-    loadUnderlyingData(selectedIdsRef.current, allProductsLenRef.current, {
+    const underlyingOpts = {
       groupBy: underlyingGroupBy,
       strategySource: underlyingStrategySource,
       strategyLevel: underlyingStrategyLevel,
-    })
+    }
+    const ids = selectedIdsRef.current
+    const productCount = allProductsLenRef.current
+
+    void loadData(queryStart, queryEnd, ids, productCount, opts)
+    void loadUnderlyingData(ids, productCount, underlyingOpts)
+
+    return () => {
+      fetchGenRef.current += 1
+      underlyingFetchGenRef.current += 1
+    }
   }, [
-    summaryLoading,
+    queryStart,
+    queryEnd,
+    groupBy,
+    strategySource,
+    strategyLevel,
     selectionRevision,
     underlyingGroupBy,
     underlyingStrategySource,
     underlyingStrategyLevel,
+    loadData,
     loadUnderlyingData,
   ])
 

@@ -14,6 +14,11 @@ import {
   PortfolioFundPickerDialog,
   type PortfolioFundPickerItem,
 } from "@/components/ma/portfolio-fund-picker-dialog"
+import {
+  createFundCompareFromPicker,
+  loadLocalFundCompareRows,
+  saveFundCompare,
+} from "@/lib/ma-fund-compare-storage"
 
 type CompareScope = "team" | "mine"
 type CompareSortKey = "name" | "fund_count" | "updated_by" | "updated_date" | "created_by"
@@ -84,7 +89,7 @@ export function InvestmentFundCompareView() {
     setPage(1)
   }, [scopeTab, keyword, selectedTags.join("\u0001"), pageSize, creatorFilter])
 
-  useEffect(() => {
+  function loadCompareList() {
     setLoading(true)
     const params = new URLSearchParams({
       scope: scopeTab,
@@ -100,14 +105,43 @@ export function InvestmentFundCompareView() {
     fetch(`/ma/api/fund-compare/list?${params}`, { headers: userFetchHeaders() })
       .then((r) => r.json())
       .then((json) => {
-        setData(Array.isArray(json.data) ? json.data : [])
-        setTotal(typeof json.total === "number" ? json.total : 0)
+        const remote = Array.isArray(json.data) ? json.data as FundCompareRow[] : []
+        const local = loadLocalFundCompareRows(scopeTab, keyword)
+        const merged = [...local, ...remote.filter((r) => !local.some((l) => l.id === r.id))]
+        const filtered = creatorFilter.trim()
+          ? merged.filter((r) => (r.created_by ?? "").includes(creatorFilter.trim()))
+          : merged
+        const dir = sortDir === "asc" ? 1 : -1
+        filtered.sort((a, b) => {
+          const av = a[sortKey as keyof FundCompareRow]
+          const bv = b[sortKey as keyof FundCompareRow]
+          if (sortKey === "fund_count") return ((Number(av) || 0) - (Number(bv) || 0)) * dir
+          return String(av ?? "").localeCompare(String(bv ?? ""), "zh-CN") * dir
+        })
+        const start = (page - 1) * pageSize
+        setData(filtered.slice(start, start + pageSize))
+        setTotal(filtered.length)
       })
       .catch(() => {
-        setData([])
-        setTotal(0)
+        const local = loadLocalFundCompareRows(scopeTab, keyword)
+        const start = (page - 1) * pageSize
+        setData(local.slice(start, start + pageSize))
+        setTotal(local.length)
       })
       .finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    loadCompareList()
+  }, [scopeTab, page, pageSize, sortKey, sortDir, keyword, selectedTags, creatorFilter])
+
+  useEffect(() => {
+    function onUpdated() {
+      loadCompareList()
+    }
+    window.addEventListener("ma-fund-compares-updated", onUpdated)
+    return () => window.removeEventListener("ma-fund-compares-updated", onUpdated)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeTab, page, pageSize, sortKey, sortDir, keyword, selectedTags, creatorFilter])
 
   function handleSort(col: CompareSortKey) {
@@ -298,8 +332,15 @@ export function InvestmentFundCompareView() {
                 <td className="border-b px-3 py-2 text-center tabular-nums text-muted-foreground">
                   {(page - 1) * pageSize + i + 1}
                 </td>
-                <td className="border-b px-3 py-2 font-medium text-blue-600 dark:text-blue-400">
-                  {row.name}
+                <td className="border-b px-3 py-2 font-medium">
+                  <a
+                    href={`/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(row.id)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    {row.name}
+                  </a>
                 </td>
                 <td className="border-b px-3 py-2">
                   <div className="flex flex-wrap gap-1">
@@ -389,8 +430,16 @@ export function InvestmentFundCompareView() {
         open={showFundPicker}
         title="选择"
         onClose={() => setShowFundPicker(false)}
-        onConfirm={(_items: PortfolioFundPickerItem[]) => {
-          // TODO: create compare group with selected funds
+        onConfirm={(items: PortfolioFundPickerItem[]) => {
+          if (items.length === 0) return
+          const compare = createFundCompareFromPicker(items, scopeTab)
+          saveFundCompare(compare)
+          setShowFundPicker(false)
+          window.open(
+            `/ma/dashboard/private-funds/fund-compare/${encodeURIComponent(compare.id)}`,
+            "_blank",
+            "noopener,noreferrer",
+          )
         }}
       />
     </div>

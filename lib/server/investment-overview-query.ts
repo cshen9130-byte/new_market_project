@@ -5,9 +5,13 @@ import {
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
 import {
-  ensureManagedProductsListCachePopulated,
-} from "@/lib/server/managed-products-list-cache-pg"
+  ensureInvestmentOverviewCachePopulated,
+  investmentOverviewCacheReady,
+  loadInvestmentOverviewNavFromCache,
+  loadInvestmentOverviewProductsFromCache,
+} from "@/lib/server/investment-overview-cache-pg"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
+import { ensureManagedProductsListCachePopulated } from "@/lib/server/managed-products-list-cache-pg"
 
 export type InvestmentOverviewProduct = {
   id: string
@@ -271,6 +275,105 @@ function buildSeries(
   return points
 }
 
+async function queryInvestmentAssetAllocationFromCache(params: {
+  startDate: string
+  endDate: string
+  productIds?: string[]
+  strategySource: "company" | "platform"
+  groupBy: "strategy" | "tag"
+  strategyLevel: 1 | 2 | 3
+  includeSeries: boolean
+}): Promise<InvestmentAssetAllocationResult | null> {
+  void ensureInvestmentOverviewCachePopulated()
+  const ready = await investmentOverviewCacheReady()
+  if (!ready) return null
+
+  const productRows = await loadInvestmentOverviewProductsFromCache()
+  if (productRows.length === 0) return null
+
+  const selectedIds = new Set((params.productIds ?? []).map((id) => id.trim()).filter(Boolean))
+  const filteredRows = selectedIds.size > 0
+    ? productRows.filter((r) => selectedIds.has(r.id))
+    : productRows
+
+  const groupOpts: {
+    groupBy: "strategy" | "tag"
+    strategySource: "company" | "platform"
+    strategyLevel: 1 | 2 | 3
+  } = {
+    groupBy: params.groupBy,
+    strategySource: params.strategySource,
+    strategyLevel: params.strategyLevel,
+  }
+  const productIds = filteredRows.map((r) => r.id)
+  let history: HistoryRow[] = []
+
+  if (params.includeSeries && productIds.length > 0) {
+    history = await loadInvestmentOverviewNavFromCache(
+      productIds,
+      params.startDate,
+      params.endDate,
+    )
+  }
+
+  const latestNavByProduct = new Map<string, { date: string; nav: number }>()
+  for (const row of history) {
+    const nav = row.net_asset_value != null ? parseFloat(row.net_asset_value) : NaN
+    if (!Number.isFinite(nav) || nav <= 0) continue
+    const prev = latestNavByProduct.get(row.product_id)
+    if (!prev || row.valuation_date >= prev.date) {
+      latestNavByProduct.set(row.product_id, { date: row.valuation_date, nav })
+    }
+  }
+
+  const groupable: GroupableProduct[] = []
+  const products: InvestmentOverviewProduct[] = filteredRows.map((r) => {
+    const beian = resolveManagedProductBeian(r.product_name, r.beian_hao)
+    const cacheNav = r.net_asset_value != null ? parseFloat(r.net_asset_value) : null
+    const hist = latestNavByProduct.get(r.id)
+    const nav = hist?.nav ?? (cacheNav != null && Number.isFinite(cacheNav) ? cacheNav : null)
+    const group_name = resolveGroupName(r, groupOpts)
+    groupable.push({
+      id: r.id,
+      group_name,
+      net_asset_value: nav != null && nav > 0 ? round2(nav) : null,
+    })
+    return {
+      id: r.id,
+      product_name: r.product_name,
+      short_name: r.short_name,
+      beian_hao: beian,
+      group_name,
+      net_asset_value: nav != null && nav > 0 ? round2(nav) : null,
+      valuation_date: hist?.date ?? r.cache_nav_date,
+      team_tags: parseTeamTags(r.team_tags),
+      company_strategy_l1: r.company_strategy_l1,
+      company_strategy_l2: r.company_strategy_l2,
+      company_strategy_l3: r.company_strategy_l3,
+      platform_strategy_l1: r.platform_strategy_l1,
+      platform_strategy_l2: r.platform_strategy_l2,
+      platform_strategy_l3: r.platform_strategy_l3,
+    }
+  })
+
+  const { summary, total } = buildSummary(groupable)
+  const series = buildSeries(groupable, history, params.startDate, params.endDate)
+  const latestHistDate = history.map((h) => h.valuation_date).sort().at(-1)
+
+  return {
+    as_of_date: latestHistDate && latestHistDate <= params.endDate ? latestHistDate : params.endDate,
+    start_date: params.startDate,
+    end_date: params.endDate,
+    group_by: params.groupBy,
+    strategy_source: params.strategySource,
+    strategy_level: params.strategyLevel,
+    products,
+    summary,
+    total,
+    series,
+  }
+}
+
 export async function queryInvestmentAssetAllocation(params: {
   startDate?: string
   endDate?: string
@@ -292,6 +395,17 @@ export async function queryInvestmentAssetAllocation(params: {
   const includeSeries = params.includeSeries !== false
   const companyCols = strategyColumns("company")
   const platformCols = strategyColumns("platform")
+
+  const cached = await queryInvestmentAssetAllocationFromCache({
+    startDate,
+    endDate,
+    productIds: params.productIds,
+    strategySource,
+    groupBy,
+    strategyLevel,
+    includeSeries,
+  })
+  if (cached) return cached
 
   await ensureManagedProductsListCachePopulated()
   await ensureEmailValuationTable()
@@ -325,7 +439,11 @@ export async function queryInvestmentAssetAllocation(params: {
     ? productRows.filter((r) => selectedIds.has(r.id))
     : productRows
 
-  const groupOpts = { groupBy, strategySource, strategyLevel }
+  const groupOpts: {
+    groupBy: "strategy" | "tag"
+    strategySource: "company" | "platform"
+    strategyLevel: 1 | 2 | 3
+  } = { groupBy, strategySource, strategyLevel }
   const productIds = filteredRows.map((r) => r.id)
   let history: HistoryRow[] = []
 

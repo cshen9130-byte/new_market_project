@@ -109,18 +109,21 @@ export function AllocationTrendPanel({
         },
         splitLine: { lineStyle: { color: "#f4f4f5" } },
       },
-      series: activeSeries.map((s, i) => ({
-        type: "area",
-        stack: "allocation",
-        name: s.category,
-        smooth: true,
-        showSymbol: false,
-        lineStyle: { width: 1 },
-        areaStyle: { opacity: 0.85 },
-        emphasis: { focus: "series" },
-        data: s.values.map((v) => +v.toFixed(4)),
-        itemStyle: { color: colorForCategory(s.category, i) },
-      })),
+      series: activeSeries.map((s, i) => {
+        const color = colorForCategory(s.category, i)
+        return {
+          type: "line" as const,
+          stack: "allocation",
+          name: s.category,
+          smooth: true,
+          showSymbol: false,
+          lineStyle: { width: 0, color },
+          areaStyle: { color, opacity: 0.85 },
+          emphasis: { focus: "series" as const },
+          data: s.values.map((v) => +v.toFixed(4)),
+          itemStyle: { color },
+        }
+      }),
     }
   }, [dates, activeSeries])
 

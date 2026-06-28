@@ -14,11 +14,41 @@ import { OptionsPanel, type OptionRow } from "./OptionsPanel"
 import { GreeksPanel, TermAnalysisPanel, type GreekLetterRow, type TermAnalysisRow } from "./GreeksTermPanel"
 import { FofFundsPanel, type FundHoldingRow } from "./FofFundsPanel"
 import { FofReturnCurvePanel, type ReturnCurveSeries } from "./FofReturnCurvePanel"
+import { FofReturnAnalysisPanel } from "./FofReturnAnalysisPanel"
+import { ValuationEmptyAnalysis } from "./ValuationEmptyAnalysis"
 import { OtherHoldingsPanel, type OtherHoldingRow } from "./OtherHoldingsPanel"
 import {
   AllocationTrendPanel,
   type AllocationTrendSeries,
 } from "./AllocationTrendPanel"
+import {
+  SectorWeightTrendPanel,
+  type SectorWeightTrendData,
+} from "./SectorWeightTrendPanel"
+import {
+  LongShortMvTrendPanel,
+  type LongShortMvTrendData,
+} from "./LongShortMvTrendPanel"
+import {
+  ContractMvShareTrendPanel,
+  type ContractMvShareTrendData,
+} from "./ContractMvShareTrendPanel"
+import {
+  ContractEquityTrendPanel,
+  type ContractEquityTrendData,
+} from "./ContractEquityTrendPanel"
+import {
+  FofShareTrendPanel,
+  type FofTrendAnalysisData,
+} from "./FofShareTrendPanel"
+import { WinRateAnalysisPanel } from "../components/WinRateAnalysisPanel"
+import { FundPerformanceIndicatorsPanel } from "../components/FundPerformanceIndicatorsPanel"
+import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "../components/IntervalMetricsTable"
+import { MonthlyReturnsCalendar } from "../components/MonthlyReturnsCalendar"
+import { AnnualMetricsTable } from "../components/AnnualMetricsTable"
+import { buildFundIntervalMetricsFromNav } from "../components/performanceChartUtils"
+import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
+import { getNavFieldValue, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "../components/shared"
 
 type AllocationRow = {
   index: number
@@ -65,6 +95,11 @@ type AllocationTrendData = {
   series: AllocationTrendSeries[]
   has_data: boolean
   point_count: number
+  sector_trend?: SectorWeightTrendData
+  long_short_trend?: LongShortMvTrendData
+  contract_mv_trend?: ContractMvShareTrendData
+  contract_equity_trend?: ContractEquityTrendData
+  fof_trend?: FofTrendAnalysisData | null
 }
 
 const VALUATION_TABS = [
@@ -72,6 +107,7 @@ const VALUATION_TABS = [
   "产品表现",
   "持仓要素",
   "持仓分析",
+  "收益分析",
   "归因分析",
   "交易分析",
 ] as const
@@ -92,6 +128,41 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   portfolio: "port-simulated",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
+}
+
+const BENCHMARK_OPTIONS = [
+  { label: "无", key: "" },
+  { label: "沪深300指数", key: "IF" },
+  { label: "中证500指数", key: "IC" },
+  { label: "中证1000", key: "IM" },
+  { label: "上证50", key: "IH" },
+  { label: "南华商品指数", key: "NHCI.NH" },
+  { label: "国债ETF", key: "511010.SH" },
+  { label: "黄金ETF", key: "518880.SH" },
+] as const
+
+function benchmarkKeyFromLabel(label: string): string {
+  const hit = BENCHMARK_OPTIONS.find((o) => o.label === label)
+  if (hit) return hit.key
+  const text = label.replace(/\s+/g, "")
+  if (text.includes("中证1000")) return "IM"
+  if (text.includes("中证500")) return "IC"
+  if (text.includes("沪深300")) return "IF"
+  if (text.includes("上证50")) return "IH"
+  if (text.includes("南华商品")) return "NHCI.NH"
+  if (text.includes("国债")) return "511010.SH"
+  if (text.includes("黄金")) return "518880.SH"
+  return ""
+}
+
+function benchmarkLabelFromKey(key: string): string {
+  return BENCHMARK_OPTIONS.find((o) => o.key === key)?.label ?? "业绩基准"
+}
+
+function normalizeBenchmarkLabel(raw: string | null | undefined): string {
+  const key = benchmarkKeyFromLabel(raw ?? "")
+  if (key) return benchmarkLabelFromKey(key)
+  return "沪深300指数"
 }
 
 function fmtMoney(n: number): string {
@@ -203,6 +274,16 @@ export default function FundValuationAnalysisPage() {
   const [trendLoading, setTrendLoading] = useState(false)
   const [trendError, setTrendError] = useState<string | null>(null)
 
+  const [navRows, setNavRows] = useState<NavRow[]>([])
+  const [navLoading, setNavLoading] = useState(false)
+  const [navError, setNavError] = useState<string | null>(null)
+  const [benchmarkData, setBenchmarkData] = useState<BenchmarkPoint[]>([])
+  const [fundStrategy, setFundStrategy] = useState<string | null>(null)
+  const [filterNavType, setFilterNavType] = useState("复权净值")
+  const [peerMonthly, setPeerMonthly] = useState<PeerMonthlyRow[]>([])
+  const [peerYearly, setPeerYearly] = useState<PeerYearlyRow[]>([])
+  const [fundInfoMetrics, setFundInfoMetrics] = useState<IntervalMetricValues | null>(null)
+
   const loadData = useCallback((mode: ConfigMode) => {
     if (!beian_hao) return
     setLoading(true)
@@ -265,27 +346,118 @@ export default function FundValuationAnalysisPage() {
     void loadTrendData()
   }, [activeTab, beian_hao, filterFrom, filterTo, configMode, loadTrendData])
 
+  const loadReturnCurves = useCallback(async () => {
+    if (!beian_hao || !filterFrom || !filterTo) return
+    setCurvesLoading(true)
+    const modeQs = configMode === "major" ? "mode=major" : "mode=all"
+    try {
+      const r = await fetch(
+        `/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation?${modeQs}&curves=1&from=${encodeURIComponent(filterFrom)}&to=${encodeURIComponent(filterTo)}`,
+      )
+      if (!r.ok) {
+        setReturnCurves([])
+        return
+      }
+      const d = await r.json() as ValuationData
+      setReturnCurves(d.return_curves ?? [])
+    } catch {
+      setReturnCurves([])
+    } finally {
+      setCurvesLoading(false)
+    }
+  }, [beian_hao, configMode, filterFrom, filterTo])
+
+  const loadProductPerformance = useCallback(async () => {
+    if (!beian_hao || !filterFrom || !filterTo) return
+    setNavLoading(true)
+    setNavError(null)
+    try {
+      const r = await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`)
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({} as { error?: string }))
+        throw new Error(body.error ?? `HTTP ${r.status}`)
+      }
+      const json = await r.json() as {
+        nav_series?: NavRow[]
+        metrics?: { latest_nav_date?: string | null }
+        info?: {
+          strategy_l1?: string | null
+          strategy_l2?: string | null
+          benchmark?: string | null
+          ret_1w?: string | null
+          ret_1m?: string | null
+          ret_3m?: string | null
+          ret_6m?: string | null
+          ret_1y?: string | null
+          sharpe_1y?: string | null
+          calmar_1y?: string | null
+        }
+      }
+      const series = (json.nav_series ?? []).filter(
+        (row) => row.price_date >= filterFrom && row.price_date <= filterTo,
+      )
+      setNavRows(series)
+      setFundStrategy(json.info?.strategy_l1 ?? json.info?.strategy_l2 ?? null)
+      const info = json.info
+      setFundInfoMetrics(info ? {
+        ret_1w:    info.ret_1w    ? parseFloat(info.ret_1w)    : null,
+        ret_1m:    info.ret_1m    ? parseFloat(info.ret_1m)    : null,
+        ret_3m:    info.ret_3m    ? parseFloat(info.ret_3m)    : null,
+        ret_6m:    info.ret_6m    ? parseFloat(info.ret_6m)    : null,
+        ret_1y:    info.ret_1y    ? parseFloat(info.ret_1y)    : null,
+        sharpe_1y: info.sharpe_1y ? parseFloat(info.sharpe_1y) : null,
+        calmar_1y: info.calmar_1y ? parseFloat(info.calmar_1y) : null,
+      } : null)
+
+      const benchKey = benchmarkKeyFromLabel(filterBench)
+      if (!benchKey || series.length < 2) {
+        setBenchmarkData([])
+        return
+      }
+      const benchRes = await fetch(
+        `/ma/api/private-funds/benchmark?key=${encodeURIComponent(benchKey)}&from=${encodeURIComponent(filterFrom)}&to=${encodeURIComponent(filterTo)}`,
+      )
+      const benchJson = await benchRes.json() as { ok?: boolean; data?: BenchmarkPoint[] }
+      setBenchmarkData(benchRes.ok && benchJson.ok && Array.isArray(benchJson.data) ? benchJson.data : [])
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "加载失败"
+      setNavError(message)
+      setNavRows([])
+      setBenchmarkData([])
+    } finally {
+      setNavLoading(false)
+    }
+  }, [beian_hao, filterFrom, filterTo, filterBench])
+
+  useEffect(() => {
+    const needsNav = activeTab === "产品表现" || activeTab === "业绩指标"
+    if (!needsNav || !beian_hao || !filterFrom || !filterTo) return
+    void loadProductPerformance()
+  }, [activeTab, beian_hao, filterFrom, filterTo, filterBench, loadProductPerformance])
+
+  useEffect(() => {
+    if (!beian_hao || !fundStrategy) {
+      setPeerMonthly([])
+      setPeerYearly([])
+      return
+    }
+    const qs = `strategy=${encodeURIComponent(fundStrategy)}`
+    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/peer-monthly?${qs}`)
+      .then((r) => r.ok ? r.json() : { monthly: [] })
+      .then((d) => { if (Array.isArray(d.monthly)) setPeerMonthly(d.monthly) })
+      .catch(() => setPeerMonthly([]))
+    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/peer-yearly?${qs}`)
+      .then((r) => r.ok ? r.json() : { yearly: [] })
+      .then((d) => { if (Array.isArray(d.yearly)) setPeerYearly(d.yearly) })
+      .catch(() => setPeerYearly([]))
+  }, [beian_hao, fundStrategy])
+
   useEffect(() => {
     if (!beian_hao || loading || error || data?.layout_type !== "fof" || !data.has_data) return
-    let cancelled = false
-    setCurvesLoading(true)
-    const qs = configMode === "major" ? "mode=major&curves=1" : "mode=all&curves=1"
-    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation?${qs}`)
-      .then(async (r) => {
-        if (!r.ok) return null
-        return r.json() as Promise<ValuationData>
-      })
-      .then((d) => {
-        if (!cancelled && d) setReturnCurves(d.return_curves ?? [])
-      })
-      .catch(() => {
-        if (!cancelled) setReturnCurves([])
-      })
-      .finally(() => {
-        if (!cancelled) setCurvesLoading(false)
-      })
-    return () => { cancelled = true }
-  }, [beian_hao, configMode, loading, error, data?.layout_type, data?.has_data])
+    if (activeTab !== "收益分析" && activeTab !== "持仓要素") return
+    if (!filterFrom || !filterTo) return
+    void loadReturnCurves()
+  }, [beian_hao, configMode, loading, error, data?.layout_type, data?.has_data, activeTab, filterFrom, filterTo, loadReturnCurves])
 
   const navigateFunds = useCallback((tab: string, side?: string) => {
     const sideItem = side ?? TAB_DEFAULT_SIDE[tab] ?? "private-funds"
@@ -294,7 +466,76 @@ export default function FundValuationAnalysisPage() {
 
   const displayName = data?.product_name ?? data?.fund_name ?? beian_hao
   const navDateLabel = data?.unit_nav_date ?? data?.valuation_date?.slice(0, 10) ?? "—"
-  const isFofLayout = data?.layout_type === "fof"
+  const isFofLayout = data?.layout_type === "fof" || Boolean(trendData?.fof_trend)
+  const hasFundHoldings = (data?.fund_holdings?.length ?? 0) > 0
+  const showReturnAnalysis = isFofLayout && hasFundHoldings
+  const appliedBenchKey = benchmarkKeyFromLabel(filterBench)
+  const hasBenchmark = Boolean(appliedBenchKey && benchmarkData.length > 0)
+  const benchmarkLabel = benchmarkLabelFromKey(appliedBenchKey)
+  const productDateRangeLabel = filterFrom && filterTo ? `${filterFrom} ~ ${filterTo}` : ""
+
+  const intervalCutoffDate = useMemo(() => {
+    if (navRows.length > 0) {
+      const sorted = [...navRows].sort((a, b) => a.price_date.localeCompare(b.price_date))
+      return sorted[sorted.length - 1].price_date.slice(0, 10)
+    }
+    return filterTo.slice(0, 10)
+  }, [navRows, filterTo])
+
+  const fundIntervalMetrics = useMemo((): IntervalMetricValues => {
+    if (!intervalCutoffDate) {
+      return fundInfoMetrics ?? {
+        ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null, sharpe_1y: null, calmar_1y: null,
+      }
+    }
+    const fromNav = buildFundIntervalMetricsFromNav(navRows, filterNavType, intervalCutoffDate)
+    if (!fundInfoMetrics) return fromNav
+    return {
+      ret_1w:    fundInfoMetrics.ret_1w    ?? fromNav.ret_1w,
+      ret_1m:    fundInfoMetrics.ret_1m    ?? fromNav.ret_1m,
+      ret_3m:    fundInfoMetrics.ret_3m    ?? fromNav.ret_3m,
+      ret_6m:    fundInfoMetrics.ret_6m    ?? fromNav.ret_6m,
+      ret_1y:    fundInfoMetrics.ret_1y    ?? fromNav.ret_1y,
+      sharpe_1y: fundInfoMetrics.sharpe_1y ?? fromNav.sharpe_1y,
+      calmar_1y: fundInfoMetrics.calmar_1y ?? fromNav.calmar_1y,
+    }
+  }, [navRows, filterNavType, intervalCutoffDate, fundInfoMetrics])
+
+  const benchmarkIntervalMetrics = useMemo(() => {
+    if (!hasBenchmark || !benchmarkData.length || !intervalCutoffDate) return null
+    return buildBenchmarkIntervalMetrics(benchmarkData, intervalCutoffDate)
+  }, [hasBenchmark, benchmarkData, intervalCutoffDate])
+
+  const annualFundRows = useMemo((): AnnualFundRow[] => {
+    if (navRows.length < 2) return []
+    const groups = new Map<number, NavRow[]>()
+    for (const row of navRows) {
+      const year = parseInt(row.price_date.slice(0, 4), 10)
+      if (!groups.has(year)) groups.set(year, [])
+      groups.get(year)!.push(row)
+    }
+    const out: AnnualFundRow[] = []
+    for (const [year, rows] of groups) {
+      const sorted = [...rows].sort((a, b) => a.price_date.localeCompare(b.price_date))
+      const dates = sorted.map((r) => r.price_date)
+      const values = sorted.map((r) => getNavFieldValue(r, filterNavType))
+      const metrics = computeFundNavMetrics({ dates, values })
+      if (metrics) {
+        out.push({
+          year,
+          interval: `${dates[0]} ~ ${dates[dates.length - 1]}`,
+          metrics,
+        })
+      }
+    }
+    return out.sort((a, b) => b.year - a.year)
+  }, [navRows, filterNavType])
+
+  const peerByYear = useMemo(() => {
+    const m = new Map<number, PeerYearlyRow>()
+    for (const row of peerYearly) m.set(row.year, row)
+    return m
+  }, [peerYearly])
 
   const donutOption = useMemo(() => {
     if (!data?.allocation.length) return {}
@@ -348,6 +589,12 @@ export default function FundValuationAnalysisPage() {
     if (activeTab === "持仓分析") {
       void loadTrendData()
     }
+    if (activeTab === "收益分析" || activeTab === "持仓要素") {
+      void loadReturnCurves()
+    }
+    if (activeTab === "产品表现" || activeTab === "业绩指标") {
+      void loadProductPerformance()
+    }
   }
 
   function handleReset() {
@@ -360,8 +607,21 @@ export default function FundValuationAnalysisPage() {
       setFilterTo(to)
     }
     setFilterBench("沪深300指数")
+    setFilterNavType("复权净值")
     setConfigMode("major")
   }
+
+  useEffect(() => {
+    if (!data?.beian_hao) return
+    fetch(`/ma/api/private-funds/${encodeURIComponent(data.beian_hao)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((json: { info?: { benchmark?: string | null } } | null) => {
+        if (json?.info?.benchmark) {
+          setFilterBench(normalizeBenchmarkLabel(json.info.benchmark))
+        }
+      })
+      .catch(() => {})
+  }, [data?.beian_hao])
 
   function handleExportCsv() {
     if (!data?.allocation.length) return
@@ -523,14 +783,26 @@ export default function FundValuationAnalysisPage() {
           className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none"
         />
         <div className="flex items-center gap-1.5">
+          <span className="text-zinc-500 whitespace-nowrap">净值类型：</span>
+          <select
+            value={filterNavType}
+            onChange={(e) => setFilterNavType(e.target.value)}
+            className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[88px]"
+          >
+            {["单位净值", "累计净值", "复权净值"].map((o) => (
+              <option key={o}>{o}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-1.5">
           <span className="text-zinc-500 whitespace-nowrap">业绩基准：</span>
           <select
             value={filterBench}
             onChange={(e) => setFilterBench(e.target.value)}
             className="border border-zinc-200 rounded px-2 py-1 bg-white text-zinc-700 focus:outline-none min-w-[120px]"
           >
-            {["沪深300指数", "中证500指数", "无"].map((o) => (
-              <option key={o}>{o}</option>
+            {BENCHMARK_OPTIONS.map((o) => (
+              <option key={o.label}>{o.label}</option>
             ))}
           </select>
         </div>
@@ -555,7 +827,7 @@ export default function FundValuationAnalysisPage() {
       {/* Tabs */}
       <div className="flex items-center gap-6 border-b border-zinc-100 mb-4 overflow-x-auto bg-white px-1">
         {VALUATION_TABS.map((tab) => {
-          const enabled = tab === "持仓要素" || tab === "持仓分析"
+          const enabled = tab === "持仓要素" || tab === "持仓分析" || tab === "收益分析" || tab === "产品表现" || tab === "业绩指标"
           return (
           <button
             key={tab}
@@ -598,12 +870,125 @@ export default function FundValuationAnalysisPage() {
         </div>
       )}
 
+      {!loading && !error && activeTab === "业绩指标" && (
+        <>
+          {navError && (
+            <div className="bg-white rounded-lg border border-red-200 p-4 mb-4 text-sm text-red-600">
+              加载失败：{navError}
+            </div>
+          )}
+          {navLoading ? (
+            <div className="bg-white rounded-lg border border-zinc-100 p-12 text-center text-sm text-zinc-400">
+              加载业绩指标数据…
+            </div>
+          ) : navRows.length < 2 ? (
+            <div className="bg-white rounded-lg border border-zinc-100 p-12 text-center text-sm text-zinc-400">
+              所选区间净值数据不足，无法展示业绩指标分析
+            </div>
+          ) : (
+            <>
+              <FundPerformanceIndicatorsPanel
+                productName={displayName}
+                rows={navRows}
+                navType={filterNavType}
+                benchmarkSeries={benchmarkData}
+                benchmarkLabel={benchmarkLabel}
+                hasBenchmark={hasBenchmark}
+                dateFrom={filterFrom}
+                dateTo={filterTo}
+              />
+
+              <IntervalMetricsTable
+                productName={displayName}
+                sampleGroup={fundStrategy}
+                cutoffDate={intervalCutoffDate}
+                fundMetrics={fundIntervalMetrics}
+                benchmarkLabel={benchmarkLabel}
+                benchmarkMetrics={benchmarkIntervalMetrics}
+                hasBenchmark={hasBenchmark}
+              />
+
+              <MonthlyReturnsCalendar
+                productName={displayName}
+                sampleGroup={fundStrategy}
+                rows={navRows}
+                navType={filterNavType}
+                peerMonthly={peerMonthly}
+              />
+
+              {annualFundRows.length > 0 && (
+                <AnnualMetricsTable
+                  productName={displayName}
+                  sampleGroup={fundStrategy}
+                  dateRangeLabel={productDateRangeLabel}
+                  fundRows={annualFundRows}
+                  peerByYear={peerByYear}
+                  hasBenchmark={hasBenchmark}
+                />
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      {!loading && !error && activeTab === "产品表现" && (
+        <>
+          {navError && (
+            <div className="bg-white rounded-lg border border-red-200 p-4 mb-4 text-sm text-red-600">
+              加载失败：{navError}
+            </div>
+          )}
+          {navLoading ? (
+            <div className="bg-white rounded-lg border border-zinc-100 p-12 text-center text-sm text-zinc-400">
+              加载产品表现数据…
+            </div>
+          ) : navRows.length < 2 ? (
+            <div className="bg-white rounded-lg border border-zinc-100 p-12 text-center text-sm text-zinc-400">
+              所选区间净值数据不足，无法展示产品表现分析
+            </div>
+          ) : (
+            <WinRateAnalysisPanel
+              beian_hao={beian_hao}
+              productName={displayName}
+              dateRangeLabel={productDateRangeLabel}
+              rows={navRows}
+              navType={filterNavType}
+              benchmarkSeries={benchmarkData}
+              benchmarkLabel={benchmarkLabel}
+              hasBenchmark={hasBenchmark}
+              sampleGroup={fundStrategy}
+              companyStrategy={fundStrategy}
+            />
+          )}
+        </>
+      )}
+
+      {!loading && !error && activeTab === "收益分析" && (
+        showReturnAnalysis ? (
+          <FofReturnAnalysisPanel
+            series={returnCurves.length > 0 ? returnCurves : (data?.return_curves ?? [])}
+            fundHoldings={data?.fund_holdings ?? []}
+            loading={curvesLoading}
+            displayName={displayName}
+            fromDate={filterFrom}
+            toDate={filterTo}
+          />
+        ) : (
+          <ValuationEmptyAnalysis message="【当前产品没有基金持仓，不支持该类分析】" />
+        )
+      )}
+
       {!loading && !error && activeTab === "持仓分析" && (
         <>
           {trendError && (
             <div className="bg-white rounded-lg border border-red-200 p-4 mb-4 text-sm text-red-600">
               加载失败：{trendError}
             </div>
+          )}
+          {isFofLayout && (
+            <p className="text-xs text-zinc-500 mb-3">
+              基金持仓分析所显示的占比均为市值占资产净值。
+            </p>
           )}
           <AllocationTrendPanel
             dates={trendData?.dates ?? []}
@@ -613,6 +998,85 @@ export default function FundValuationAnalysisPage() {
             toDate={filterTo}
             loading={trendLoading}
           />
+          {isFofLayout ? (
+            <>
+              <FofShareTrendPanel
+                title="底层配置走势"
+                data={trendData?.fof_trend?.underlying_trend ?? null}
+                displayName={displayName}
+                fromDate={filterFrom}
+                toDate={filterTo}
+                loading={trendLoading}
+                chartType="area"
+                exportLabel="底层配置走势"
+              />
+              <FofShareTrendPanel
+                title="策略配置走势"
+                data={trendData?.fof_trend?.strategy_trend ?? null}
+                displayName={displayName}
+                fromDate={filterFrom}
+                toDate={filterTo}
+                loading={trendLoading}
+                chartType="area"
+                exportLabel="策略配置走势"
+                showStrategySelect
+              />
+              <FofShareTrendPanel
+                title="月末时点底层配置"
+                data={trendData?.fof_trend?.month_end_underlying ?? null}
+                displayName={displayName}
+                fromDate={filterFrom}
+                toDate={filterTo}
+                loading={trendLoading}
+                chartType="bar"
+                exportLabel="月末时点底层配置"
+                minPoints={1}
+              />
+              <FofShareTrendPanel
+                title="月末时点策略配置"
+                data={trendData?.fof_trend?.month_end_strategy ?? null}
+                displayName={displayName}
+                fromDate={filterFrom}
+                toDate={filterTo}
+                loading={trendLoading}
+                chartType="bar"
+                exportLabel="月末时点策略配置"
+                showStrategySelect
+                minPoints={1}
+              />
+            </>
+          ) : (
+            <>
+            <SectorWeightTrendPanel
+              data={trendData?.sector_trend ?? null}
+              displayName={displayName}
+              fromDate={filterFrom}
+              toDate={filterTo}
+              loading={trendLoading}
+            />
+            <LongShortMvTrendPanel
+              data={trendData?.long_short_trend ?? null}
+              displayName={displayName}
+              fromDate={filterFrom}
+              toDate={filterTo}
+              loading={trendLoading}
+            />
+            <ContractMvShareTrendPanel
+              data={trendData?.contract_mv_trend ?? null}
+              displayName={displayName}
+              fromDate={filterFrom}
+              toDate={filterTo}
+              loading={trendLoading}
+            />
+            <ContractEquityTrendPanel
+              data={trendData?.contract_equity_trend ?? null}
+              displayName={displayName}
+              fromDate={filterFrom}
+              toDate={filterTo}
+              loading={trendLoading}
+            />
+            </>
+          )}
         </>
       )}
 

@@ -41,6 +41,7 @@ export type ExtractedValuationData = {
 
 const VALUATION_FILENAME_RE = /估值表|估值|专用表/i
 const EXCLUDE_VALUATION_RE = /净值表|台账|份额明细|业绩报酬|虚拟净值表现/i
+const VALUATION_ZIP_RE = /\.zip$/i
 
 function normalizeName(name: string): string {
   return name.replace(/[\s\u3000:：]/g, "")
@@ -408,22 +409,31 @@ export function extractValuationFromEmailBody(
 }
 
 export function isValuationAttachmentFilename(filename: string): boolean {
+  if (VALUATION_ZIP_RE.test(filename)) {
+    return VALUATION_FILENAME_RE.test(filename)
+  }
   if (!/\.xlsx?$/i.test(filename)) return false
   if (EXCLUDE_VALUATION_RE.test(filename)) return false
   return VALUATION_FILENAME_RE.test(filename)
 }
 
-/** Pick spreadsheet attachments that look like 估值表 files. */
+/** Pick spreadsheet / batch zip attachments that look like 估值表 files. */
 export function selectValuationAttachments(
   subject: string,
   attachments: ValuationAttachmentInfo[],
 ): ValuationAttachmentInfo[] {
+  const valuationSubject = /估值表|估值/i.test(subject)
+  const zips = attachments.filter(
+    (a) => VALUATION_ZIP_RE.test(a.filename) && !EXCLUDE_VALUATION_RE.test(a.filename),
+  )
+  if (valuationSubject && zips.length > 0) return zips
+
   const spreadsheets = attachments.filter(
     (a) => /\.xlsx?$/i.test(a.filename) && !EXCLUDE_VALUATION_RE.test(a.filename),
   )
   const explicit = spreadsheets.filter((a) => isValuationAttachmentFilename(a.filename))
   if (explicit.length > 0) return explicit
-  if (/估值表|估值/i.test(subject)) {
+  if (valuationSubject) {
     return spreadsheets.filter((a) => !/净值表|每日净值|资产净值公告/i.test(a.filename))
   }
   return []

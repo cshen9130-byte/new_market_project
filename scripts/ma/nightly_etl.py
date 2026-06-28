@@ -2276,16 +2276,23 @@ def step_investment_pool_metrics() -> int:
     managed_valuation = int(result.get("managedProductsValuationSynced") or 0)
     fof_market = int(result.get("fofUnderlyingMarketSynced") or 0)
     fof_holdings = int(result.get("managedFofUnderlyingRefreshed") or 0)
+    inv_overview_products = int(result.get("investmentOverviewProducts") or 0)
+    inv_overview_nav = int(result.get("investmentOverviewNavRows") or 0)
+    inv_overview_underlying = int(result.get("investmentOverviewUnderlyingRows") or 0)
 
     log.info(
         "investment_pool_metrics: managed=%d fof=%d tracking=%d "
-        "valuation_sync(managed=%d fof=%d) fof_holdings=%d",
+        "valuation_sync(managed=%d fof=%d) fof_holdings=%d "
+        "inv_overview(products=%d nav=%d underlying=%d)",
         managed,
         fof,
         tracking,
         managed_valuation,
         fof_market,
         fof_holdings,
+        inv_overview_products,
+        inv_overview_nav,
+        inv_overview_underlying,
     )
     return managed + fof + tracking
 

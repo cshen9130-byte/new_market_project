@@ -749,6 +749,8 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
         rowKind === "private_fund"
       ),
     )
+    // Parsed successfully — parent/aggregate rows are valid hierarchy nodes, not parse failures.
+    row.parse_status = "success"
   }
 
   return result

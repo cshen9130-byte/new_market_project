@@ -13,6 +13,7 @@ export async function GET(req: Request) {
   const from = (searchParams.get("from") || "").trim()
   const to = (searchParams.get("to") || "").trim()
   const days = Math.max(30, Math.min(3650, Number(searchParams.get("days") || 90)))
+  const mode = (searchParams.get("mode") || "return").trim()
   if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
 
   const useRange = /^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to)
@@ -40,15 +41,26 @@ export async function GET(req: Request) {
 
   const fund: { d: string; v: number }[] = []
   if (navRows.length > 0) {
-    const firstVal = parseFloat(navRows[0].level)
-    if (Number.isFinite(firstVal) && firstVal > 0) {
+    if (mode === "nav") {
       for (const row of navRows) {
         const val = parseFloat(row.level)
         if (!Number.isFinite(val)) continue
         fund.push({
           d: row.price_date.slice(0, 10),
-          v: parseFloat(((val / firstVal - 1) * 100).toFixed(4)),
+          v: parseFloat(val.toFixed(4)),
         })
+      }
+    } else {
+      const firstVal = parseFloat(navRows[0].level)
+      if (Number.isFinite(firstVal) && firstVal > 0) {
+        for (const row of navRows) {
+          const val = parseFloat(row.level)
+          if (!Number.isFinite(val)) continue
+          fund.push({
+            d: row.price_date.slice(0, 10),
+            v: parseFloat(((val / firstVal - 1) * 100).toFixed(4)),
+          })
+        }
       }
     }
   }

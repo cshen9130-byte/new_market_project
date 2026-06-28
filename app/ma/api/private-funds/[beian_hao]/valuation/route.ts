@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server"
 import {
-  getFundAllocationTrend,
+  getFundValuationTrendAnalysis,
   getFundValuationAllocation,
 } from "@/lib/server/fund-valuation-allocation"
 
@@ -21,11 +21,15 @@ export async function GET(
     if (trend) {
       const from = url.searchParams.get("from") ?? ""
       const to = url.searchParams.get("to") ?? ""
-      const data = await getFundAllocationTrend(raw, from, to, mode)
+      const data = await getFundValuationTrendAnalysis(raw, from, to, mode)
       return NextResponse.json(data)
     }
 
-    const data = await getFundValuationAllocation(raw, mode, { includeReturnCurves: curves })
+    const data = await getFundValuationAllocation(raw, mode, {
+      includeReturnCurves: curves,
+      curvesFrom: url.searchParams.get("from") ?? undefined,
+      curvesTo: url.searchParams.get("to") ?? undefined,
+    })
     return NextResponse.json(data)
   } catch (e) {
     const message = e instanceof Error ? e.message : "读取失败"

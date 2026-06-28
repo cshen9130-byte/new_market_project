@@ -24,6 +24,7 @@ import { resolveRouteFundId, lookupFundInfoFallback, resolveFundBeianHao } from 
 import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { lookupManagedProductOverride, lookupManagedProductCustodian, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
+import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 
 export type AllocationMode = "major" | "all"
 
@@ -1027,46 +1028,205 @@ function buildOtherHoldings(holdings: HoldingRow[], netAssetValue: number): Othe
   return rows.map((row, i) => ({ index: i + 1, ...row }))
 }
 
+async function loadEmailNavSeriesForHolding(
+  holding: FundHoldingRow,
+  from: string,
+  to: string,
+): Promise<Array<{ date: string; nav: number }>> {
+  const codes = [...new Set(
+    [holding.beianHao, holding.valuationCode]
+      .map((c) => c?.trim())
+      .filter(Boolean) as string[],
+  )]
+
+  if (codes.length > 0) {
+    const rows = await query<{ nav_date: string; nav: string }>(
+      `SELECT nav_date::text AS nav_date, nav::text AS nav
+       FROM ops_email_nav_records
+       WHERE BTRIM(product_code) = ANY($1::text[])
+         AND nav_date >= $2::date
+         AND nav_date <= $3::date
+         AND nav IS NOT NULL
+       ORDER BY nav_date ASC, id DESC`,
+      [codes, from, to],
+    )
+    const points = rows
+      .map((row) => {
+        const nav = parsePlausibleNav(row.nav)
+        if (nav == null) return null
+        return { date: row.nav_date.slice(0, 10), nav }
+      })
+      .filter((p): p is { date: string; nav: number } => p != null)
+    if (points.length > 0) return dedupeNavPointsByDate(points)
+  }
+
+  const name = holding.fundName.trim()
+  if (!name) return []
+
+  const rows = await query<{ nav_date: string; nav: string }>(
+    `SELECT nav_date::text AS nav_date, nav::text AS nav
+     FROM ops_email_nav_records
+     WHERE ${sqlFundNameMatch("fund_name", "$1")}
+       AND nav_date >= $2::date
+       AND nav_date <= $3::date
+       AND nav IS NOT NULL
+     ORDER BY nav_date ASC, id DESC`,
+    [name, from, to],
+  )
+
+  return dedupeNavPointsByDate(
+    rows
+      .map((row) => {
+        const nav = parsePlausibleNav(row.nav)
+        if (nav == null) return null
+        return { date: row.nav_date.slice(0, 10), nav }
+      })
+      .filter((p): p is { date: string; nav: number } => p != null),
+  )
+}
+
+async function loadNavSeriesForHolding(
+  holding: FundHoldingRow,
+  from: string,
+  to: string,
+): Promise<Array<{ date: string; nav: number }>> {
+  const lookupId = holding.beianHao ?? holding.valuationCode ?? holding.fundName
+  if (!lookupId) return []
+
+  const names = await resolveFundNames(lookupId, holding.fundName)
+  const navRows = await loadFundNavSeries(
+    lookupId,
+    names.product_name,
+    names.short_name ?? "",
+    { from, to },
+  )
+  if (navRows.length < 1) return []
+
+  return navRows
+    .map((point) => {
+      const nav = parseFloat(point.level)
+      if (!Number.isFinite(nav) || nav <= 0) return null
+      return { date: point.price_date.slice(0, 10), nav }
+    })
+    .filter((p): p is { date: string; nav: number } => p != null)
+}
+
+function extractNavFromFundHolding(h: HoldingRow): number | null {
+  const signedMv = parseNum(h.signed_market_value) || parseNum(h.market_value)
+  return parsePlausibleNav(h.price) ?? deriveNavFromShares(h.quantity, signedMv)
+}
+
+function dedupeNavPointsByDate(
+  points: Array<{ date: string; nav: number }>,
+): Array<{ date: string; nav: number }> {
+  const byDate = new Map<string, number>()
+  for (const p of points) {
+    byDate.set(p.date.slice(0, 10), p.nav)
+  }
+  return [...byDate.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, nav]) => ({ date, nav }))
+}
+
+function normalizeFundDisplayName(fundName: string): string {
+  return fundName
+    .replace(/私募证券投资基金/g, "")
+    .replace(/私募基金/g, "")
+    .trim() || fundName
+}
+
+function fundHoldingRowLookupKeys(row: FundHoldingRow): string[] {
+  const keys = new Set<string>()
+  if (row.beianHao) keys.add(`code:${row.beianHao.trim().toUpperCase()}`)
+  if (row.valuationCode) keys.add(`code:${row.valuationCode.trim().toUpperCase()}`)
+  keys.add(`name:${row.fundName.trim()}`)
+  keys.add(`name:${normalizeFundDisplayName(row.fundName)}`)
+  return [...keys]
+}
+
+function snapshotHoldingLookupKeys(h: HoldingRow): string[] {
+  const keys = new Set<string>()
+  const identityKey = fundHoldingIdentityKey(h)
+  if (identityKey) keys.add(identityKey)
+  const code = String(h.symbol ?? h.subject_code ?? "").trim().toUpperCase()
+  if (code) keys.add(`code:${code}`)
+  const name = fundHoldingDisplayName(h)
+  if (name) {
+    keys.add(`name:${name}`)
+    keys.add(`name:${normalizeFundDisplayName(name)}`)
+  }
+  return [...keys]
+}
+
+function resolveSnapshotNavPoints(
+  holding: FundHoldingRow,
+  pointsByKey: Map<string, Array<{ date: string; nav: number }>>,
+): Array<{ date: string; nav: number }> {
+  let best: Array<{ date: string; nav: number }> = []
+  for (const key of fundHoldingRowLookupKeys(holding)) {
+    const points = pointsByKey.get(key)
+    if (points && points.length > best.length) {
+      best = dedupeNavPointsByDate(points)
+    }
+  }
+  return best
+}
+
 async function buildUnderlyingReturnCurves(
+  rawBeianHao: string,
   fundHoldings: FundHoldingRow[],
-  valuationDate: string | null,
+  fromDate: string | null,
+  toDate: string | null,
 ): Promise<ReturnCurveSeries[]> {
   if (fundHoldings.length === 0) return []
 
-  const to = valuationDate?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
-  const fromDate = new Date(`${to}T12:00:00`)
-  fromDate.setFullYear(fromDate.getFullYear() - 1)
-  const from = fromDate.toISOString().slice(0, 10)
+  const to = toDate?.slice(0, 10)
+    ?? fundHoldings.find((h) => h.navDate)?.navDate?.slice(0, 10)
+    ?? new Date().toISOString().slice(0, 10)
+  const defaultFrom = new Date(`${to}T12:00:00`)
+  defaultFrom.setFullYear(defaultFrom.getFullYear() - 1)
+  const from = fromDate?.slice(0, 10) ?? defaultFrom.toISOString().slice(0, 10)
+
+  const snapshots = await loadFundValuationTrendSnapshots(rawBeianHao, from, to)
+  const pointsByKey = new Map<string, Array<{ date: string; nav: number }>>()
+
+  for (const snapshot of snapshots) {
+    for (const h of dedupeFundHoldings(snapshot.holdings)) {
+      const nav = extractNavFromFundHolding(h)
+      if (nav == null) continue
+      const date = snapshot.date.slice(0, 10)
+      for (const key of snapshotHoldingLookupKeys(h)) {
+        const list = pointsByKey.get(key) ?? []
+        list.push({ date, nav })
+        pointsByKey.set(key, list)
+      }
+    }
+  }
 
   const tasks = fundHoldings.map(async (holding) => {
-    const lookupId = holding.beianHao ?? holding.valuationCode ?? holding.fundName
-    if (!lookupId) return null
+    const displayName = normalizeFundDisplayName(holding.fundName)
+    let navPoints = resolveSnapshotNavPoints(holding, pointsByKey)
 
-    const names = await resolveFundNames(lookupId, holding.fundName)
-    const navRows = await loadFundNavSeries(
-      lookupId,
-      names.product_name,
-      names.short_name ?? "",
-      { from, to },
-    )
-    if (navRows.length < 2) return null
-
-    const baseNav = parseFloat(navRows[0].level)
-    if (!Number.isFinite(baseNav) || baseNav <= 0) return null
-
-    const points = navRows.map((point) => {
-      const nav = parseFloat(point.level)
-      return {
-        date: point.price_date,
-        nav,
-        returnPct: Number.isFinite(nav) && baseNav > 0 ? (nav / baseNav - 1) * 100 : 0,
+    if (navPoints.length < 2) {
+      const emailFallback = await loadEmailNavSeriesForHolding(holding, from, to)
+      if (emailFallback.length >= navPoints.length) {
+        navPoints = emailFallback
       }
-    })
+    }
 
-    const displayName = holding.fundName
-      .replace(/私募证券投资基金/g, "")
-      .replace(/私募基金/g, "")
-      .trim() || holding.fundName
+    if (navPoints.length < 2) {
+      const fallback = await loadNavSeriesForHolding(holding, from, to)
+      if (fallback.length >= navPoints.length) {
+        navPoints = dedupeNavPointsByDate(fallback)
+      }
+    }
+
+    const baseNav = navPoints[0]?.nav ?? 0
+    const points: ReturnCurvePoint[] = navPoints.map((p) => ({
+      date: p.date,
+      nav: p.nav,
+      returnPct: baseNav > 0 ? (p.nav / baseNav - 1) * 100 : 0,
+    }))
 
     return {
       fundName: holding.fundName,
@@ -1077,22 +1237,17 @@ async function buildUnderlyingReturnCurves(
     } satisfies ReturnCurveSeries
   })
 
-  const results = await Promise.all(tasks)
-  return results
-    .filter((s): s is ReturnCurveSeries => s != null)
-    .sort((a, b) => {
-      const aLast = a.points.at(-1)?.returnPct ?? 0
-      const bLast = b.points.at(-1)?.returnPct ?? 0
-      return bLast - aLast
-    })
+  return Promise.all(tasks)
 }
 
 export async function getFundValuationAllocation(
   rawBeianHao: string,
   mode: AllocationMode = "major",
-  fetchOptions?: { includeReturnCurves?: boolean },
+  fetchOptions?: { includeReturnCurves?: boolean; curvesFrom?: string; curvesTo?: string },
 ): Promise<FundValuationAllocationResult> {
   const includeReturnCurves = fetchOptions?.includeReturnCurves ?? false
+  const curvesFrom = fetchOptions?.curvesFrom ?? null
+  const curvesTo = fetchOptions?.curvesTo ?? null
   const beian_hao = await resolveRouteFundId(rawBeianHao)
   const product_name = await resolveFundName(beian_hao)
 
@@ -1182,7 +1337,12 @@ export async function getFundValuationAllocation(
     ? buildOtherHoldings(holdings, net_asset_value)
     : []
   const return_curves = layout_type === "fof" && includeReturnCurves
-    ? await buildUnderlyingReturnCurves(fund_holdings, valuation_date)
+    ? await buildUnderlyingReturnCurves(
+      rawBeianHao,
+      fund_holdings,
+      curvesFrom ?? null,
+      curvesTo ?? valuation_date,
+    )
     : []
 
   const holdingExtras = layout_type === "derivative"
@@ -1313,6 +1473,90 @@ export type AllocationTrendResult = {
   point_count: number
 }
 
+export type SectorWeightTrendSeries = {
+  sector: string
+  values: number[]
+}
+
+export type SectorWeightTrendResult = {
+  dates: string[]
+  speculation: SectorWeightTrendSeries[]
+  hedging: SectorWeightTrendSeries[]
+  has_data: boolean
+  point_count: number
+}
+
+export type ValuationTrendAnalysisResult = AllocationTrendResult & {
+  sector_trend: SectorWeightTrendResult
+  long_short_trend: LongShortMvTrendResult
+  contract_mv_trend: ContractMvShareTrendResult
+  contract_equity_trend: ContractEquityTrendResult
+  fof_trend: FofTrendAnalysisResult | null
+}
+
+export type ContractMvShareSeries = {
+  contract: string
+  sector: string
+  values: number[]
+}
+
+export type ContractMvShareTrendResult = {
+  dates: string[]
+  series: ContractMvShareSeries[]
+  has_data: boolean
+  point_count: number
+}
+
+export type ContractEquityTrendResult = {
+  dates: string[]
+  speculation: ContractMvShareSeries[]
+  hedging: ContractMvShareSeries[]
+  has_data: boolean
+  point_count: number
+}
+
+export type FofShareTrendSeries = {
+  name: string
+  values: number[]
+}
+
+export type FofShareTrendResult = {
+  dates: string[]
+  series: FofShareTrendSeries[]
+  has_data: boolean
+  point_count: number
+}
+
+export type FofTrendAnalysisResult = {
+  underlying_trend: FofShareTrendResult
+  strategy_trend: FofShareTrendResult
+  month_end_underlying: FofShareTrendResult
+  month_end_strategy: FofShareTrendResult
+}
+
+export type LongShortMvTrendPoint = {
+  longPct: number
+  shortPct: number
+  netPct: number
+}
+
+export type LongShortMvTrendResult = {
+  dates: string[]
+  speculation: LongShortMvTrendPoint[]
+  hedging: LongShortMvTrendPoint[]
+  has_data: boolean
+  point_count: number
+}
+
+const SECTOR_TREND_ORDER = ["股指", "国债", "黑色", "有色", "能化", "农产"] as const
+
+type ValuationTrendSnapshot = {
+  date: string
+  holdings: HoldingRow[]
+  netAssetValue: number
+  custodyBalance: number
+}
+
 function holdingInsertToRow(h: ValuationHoldingInsert): HoldingRow {
   const numStr = (v: number | null | undefined) =>
     v == null || !Number.isFinite(v) ? null : String(v)
@@ -1390,22 +1634,500 @@ function computeSnapshotAllocation(
     : buildAllocation(sums, nav)
 }
 
-export async function getFundAllocationTrend(
-  rawBeianHao: string,
-  fromDate: string,
-  toDate: string,
-  mode: AllocationMode = "major",
-): Promise<AllocationTrendResult> {
-  const empty: AllocationTrendResult = {
+function sectorWeightPctByMode(
+  shares: DerivativeSectorShareRow[],
+  mode: "speculation" | "hedging",
+): Map<string, number> {
+  const weights = new Map<string, number>()
+  for (const sector of SECTOR_TREND_ORDER) {
+    const row = shares.find((s) => s.sector === sector)
+    if (!row) {
+      weights.set(sector, 0)
+      continue
+    }
+    weights.set(
+      sector,
+      mode === "speculation"
+        ? row.longMarketValue + row.shortMarketValue
+        : Math.abs(row.netMarketValue),
+    )
+  }
+  const total = [...weights.values()].reduce((sum, v) => sum + v, 0)
+  if (total <= 0) return weights
+  for (const [sector, value] of weights) {
+    weights.set(sector, (value / total) * 100)
+  }
+  return weights
+}
+
+function buildSectorWeightTrend(
+  snapshots: ValuationTrendSnapshot[],
+): SectorWeightTrendResult {
+  const empty: SectorWeightTrendResult = {
+    dates: [],
+    speculation: [],
+    hedging: [],
+    has_data: false,
+    point_count: 0,
+  }
+  if (snapshots.length === 0) return empty
+
+  const datedSnapshots: Array<{
+    date: string
+    speculation: Map<string, number>
+    hedging: Map<string, number>
+  }> = []
+
+  for (const snapshot of snapshots) {
+    const derivatives = buildDerivatives(snapshot.holdings, snapshot.netAssetValue)
+    if (derivatives.length === 0) continue
+    const shares = buildDerivativeSectorShares(derivatives, snapshot.netAssetValue)
+    datedSnapshots.push({
+      date: snapshot.date,
+      speculation: sectorWeightPctByMode(shares, "speculation"),
+      hedging: sectorWeightPctByMode(shares, "hedging"),
+    })
+  }
+
+  if (datedSnapshots.length === 0) return empty
+
+  const dates = datedSnapshots.map((s) => s.date)
+  const buildSeries = (mode: "speculation" | "hedging"): SectorWeightTrendSeries[] =>
+    SECTOR_TREND_ORDER.map((sector) => ({
+      sector,
+      values: datedSnapshots.map((snapshot) => +(snapshot[mode].get(sector) ?? 0).toFixed(4)),
+    }))
+
+  const speculation = buildSeries("speculation")
+  const hedging = buildSeries("hedging")
+
+  return {
+    dates,
+    speculation,
+    hedging,
+    has_data: speculation.some((s) => s.values.some((v) => v > 0)),
+    point_count: dates.length,
+  }
+}
+
+function filterDerivativesByPositionMode(
+  derivatives: DerivativeRow[],
+  mode: "speculation" | "hedging",
+): DerivativeRow[] {
+  if (mode === "speculation") return derivatives
+  return derivatives.filter((d) => d.sector === "股指" || d.sector === "国债")
+}
+
+function computeLongShortMvPct(
+  derivatives: DerivativeRow[],
+  netAssetValue: number,
+): LongShortMvTrendPoint {
+  const navBase = netAssetValue > 0 ? netAssetValue : 1
+  let longTotal = 0
+  let shortTotal = 0
+  for (const d of derivatives) {
+    const absMv = Math.abs(d.marketValue)
+    if (d.direction === "short") shortTotal += absMv
+    else longTotal += absMv
+  }
+  const longPct = (longTotal / navBase) * 100
+  const shortPct = (shortTotal / navBase) * 100
+  return {
+    longPct,
+    shortPct: -shortPct,
+    netPct: longPct - shortPct,
+  }
+}
+
+function buildLongShortMvTrend(
+  snapshots: ValuationTrendSnapshot[],
+): LongShortMvTrendResult {
+  const empty: LongShortMvTrendResult = {
+    dates: [],
+    speculation: [],
+    hedging: [],
+    has_data: false,
+    point_count: 0,
+  }
+  if (snapshots.length === 0) return empty
+
+  const datedSnapshots: Array<{
+    date: string
+    speculation: LongShortMvTrendPoint
+    hedging: LongShortMvTrendPoint
+  }> = []
+
+  for (const snapshot of snapshots) {
+    const derivatives = buildDerivatives(snapshot.holdings, snapshot.netAssetValue)
+    if (derivatives.length === 0) continue
+    datedSnapshots.push({
+      date: snapshot.date,
+      speculation: computeLongShortMvPct(
+        filterDerivativesByPositionMode(derivatives, "speculation"),
+        snapshot.netAssetValue,
+      ),
+      hedging: computeLongShortMvPct(
+        filterDerivativesByPositionMode(derivatives, "hedging"),
+        snapshot.netAssetValue,
+      ),
+    })
+  }
+
+  if (datedSnapshots.length === 0) return empty
+
+  return {
+    dates: datedSnapshots.map((s) => s.date),
+    speculation: datedSnapshots.map((s) => s.speculation),
+    hedging: datedSnapshots.map((s) => s.hedging),
+    has_data: datedSnapshots.some((s) => s.speculation.longPct > 0 || s.speculation.shortPct < 0),
+    point_count: datedSnapshots.length,
+  }
+}
+
+function derivativeContractLabel(row: DerivativeRow): string {
+  const name = row.contractName?.trim()
+  if (name) return name
+  return row.symbol?.trim() ?? ""
+}
+
+function buildContractMvShareTrend(
+  snapshots: ValuationTrendSnapshot[],
+): ContractMvShareTrendResult {
+  const empty: ContractMvShareTrendResult = {
     dates: [],
     series: [],
     has_data: false,
     point_count: 0,
   }
+  if (snapshots.length === 0) return empty
 
+  const datedMaps: Array<{ date: string; weights: Map<string, { pct: number; sector: string }> }> = []
+
+  for (const snapshot of snapshots) {
+    const derivatives = buildDerivatives(snapshot.holdings, snapshot.netAssetValue)
+    if (derivatives.length === 0) continue
+
+    const navBase = snapshot.netAssetValue > 0 ? snapshot.netAssetValue : 1
+    const weights = new Map<string, { pct: number; sector: string }>()
+    for (const d of derivatives) {
+      const key = derivativeContractLabel(d)
+      if (!key) continue
+      const pct = (Math.abs(d.marketValue) / navBase) * 100
+      const prev = weights.get(key)
+      if (prev) {
+        weights.set(key, { pct: prev.pct + pct, sector: prev.sector || d.sector })
+      } else {
+        weights.set(key, { pct, sector: d.sector })
+      }
+    }
+    if (weights.size === 0) continue
+    datedMaps.push({ date: snapshot.date, weights })
+  }
+
+  if (datedMaps.length === 0) return empty
+
+  const contractMeta = new Map<string, { sector: string; total: number }>()
+  for (const { weights } of datedMaps) {
+    for (const [contract, { pct, sector }] of weights) {
+      const meta = contractMeta.get(contract) ?? { sector, total: 0 }
+      meta.total += pct
+      if (sector && sector !== "其他") meta.sector = sector
+      contractMeta.set(contract, meta)
+    }
+  }
+
+  const sortedContracts = [...contractMeta.entries()]
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([contract, meta]) => ({ contract, sector: meta.sector }))
+
+  const dates = datedMaps.map((d) => d.date)
+  const series: ContractMvShareSeries[] = sortedContracts.map(({ contract, sector }) => ({
+    contract,
+    sector,
+    values: datedMaps.map(({ weights }) => +(weights.get(contract)?.pct ?? 0).toFixed(4)),
+  }))
+
+  return {
+    dates,
+    series,
+    has_data: series.some((s) => s.values.some((v) => v > 0)),
+    point_count: dates.length,
+  }
+}
+
+function buildContractSignedWeights(
+  derivatives: DerivativeRow[],
+  netAssetValue: number,
+): Map<string, { pct: number; sector: string }> {
+  const navBase = netAssetValue > 0 ? netAssetValue : 1
+  const weights = new Map<string, { pct: number; sector: string }>()
+  for (const d of derivatives) {
+    const key = derivativeContractLabel(d)
+    if (!key) continue
+    const pct = (d.marketValue / navBase) * 100
+    const prev = weights.get(key)
+    if (prev) {
+      weights.set(key, { pct: prev.pct + pct, sector: prev.sector || d.sector })
+    } else {
+      weights.set(key, { pct, sector: d.sector })
+    }
+  }
+  return weights
+}
+
+function buildContractEquitySeriesForMode(
+  datedMaps: Array<{ date: string; weights: Map<string, { pct: number; sector: string }> }>,
+): ContractMvShareSeries[] {
+  const contractMeta = new Map<string, { sector: string; total: number }>()
+  for (const { weights } of datedMaps) {
+    for (const [contract, { pct, sector }] of weights) {
+      const meta = contractMeta.get(contract) ?? { sector, total: 0 }
+      meta.total += Math.abs(pct)
+      if (sector && sector !== "其他") meta.sector = sector
+      contractMeta.set(contract, meta)
+    }
+  }
+
+  const sortedContracts = [...contractMeta.entries()]
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([contract, meta]) => ({ contract, sector: meta.sector }))
+
+  return sortedContracts.map(({ contract, sector }) => ({
+    contract,
+    sector,
+    values: datedMaps.map(({ weights }) => +(weights.get(contract)?.pct ?? 0).toFixed(4)),
+  }))
+}
+
+function buildContractEquityTrend(
+  snapshots: ValuationTrendSnapshot[],
+): ContractEquityTrendResult {
+  const empty: ContractEquityTrendResult = {
+    dates: [],
+    speculation: [],
+    hedging: [],
+    has_data: false,
+    point_count: 0,
+  }
+  if (snapshots.length === 0) return empty
+
+  const speculationMaps: Array<{ date: string; weights: Map<string, { pct: number; sector: string }> }> = []
+  const hedgingMaps: Array<{ date: string; weights: Map<string, { pct: number; sector: string }> }> = []
+
+  for (const snapshot of snapshots) {
+    const derivatives = buildDerivatives(snapshot.holdings, snapshot.netAssetValue)
+    if (derivatives.length === 0) continue
+
+    const specWeights = buildContractSignedWeights(
+      filterDerivativesByPositionMode(derivatives, "speculation"),
+      snapshot.netAssetValue,
+    )
+    if (specWeights.size > 0) {
+      speculationMaps.push({ date: snapshot.date, weights: specWeights })
+    }
+
+    const hedgeWeights = buildContractSignedWeights(
+      filterDerivativesByPositionMode(derivatives, "hedging"),
+      snapshot.netAssetValue,
+    )
+    if (hedgeWeights.size > 0) {
+      hedgingMaps.push({ date: snapshot.date, weights: hedgeWeights })
+    }
+  }
+
+  const dates = [...new Set([
+    ...speculationMaps.map((d) => d.date),
+    ...hedgingMaps.map((d) => d.date),
+  ])].sort()
+
+  if (dates.length === 0) return empty
+
+  const alignMaps = (
+    maps: Array<{ date: string; weights: Map<string, { pct: number; sector: string }> }>,
+  ) => {
+    const byDate = new Map(maps.map((d) => [d.date, d.weights]))
+    return dates.map((date) => ({ date, weights: byDate.get(date) ?? new Map() }))
+  }
+
+  const speculation = buildContractEquitySeriesForMode(alignMaps(speculationMaps))
+  const hedging = buildContractEquitySeriesForMode(alignMaps(hedgingMaps))
+
+  const hasValues = (series: ContractMvShareSeries[]) =>
+    series.some((s) => s.values.some((v) => Math.abs(v) > 0.001))
+
+  return {
+    dates,
+    speculation,
+    hedging,
+    has_data: hasValues(speculation) || hasValues(hedging),
+    point_count: dates.length,
+  }
+}
+
+function fundHoldingDisplayName(h: HoldingRow): string {
+  return String(h.subject_name ?? h.symbol ?? "").trim()
+}
+
+function fundHoldingBeianCode(h: HoldingRow): string | null {
+  const code = String(h.symbol ?? "").trim().toUpperCase()
+  return code || null
+}
+
+function extractUnderlyingFundWeights(
+  holdings: HoldingRow[],
+  netAssetValue: number,
+): Map<string, number> {
+  const navBase = netAssetValue > 0 ? netAssetValue : 1
+  const weights = new Map<string, number>()
+  for (const h of dedupeFundHoldings(holdings)) {
+    const name = fundHoldingDisplayName(h)
+    if (!name) continue
+    const mv = rowMarketValue(h)
+    if (mv <= 0) continue
+    weights.set(name, (weights.get(name) ?? 0) + (mv / navBase) * 100)
+  }
+  return weights
+}
+
+function extractStrategyFundWeights(
+  holdings: HoldingRow[],
+  netAssetValue: number,
+  strategyMap: Map<string, CompanyStrategyRow>,
+): Map<string, number> {
+  const navBase = netAssetValue > 0 ? netAssetValue : 1
+  const weights = new Map<string, number>()
+  for (const h of dedupeFundHoldings(holdings)) {
+    const mv = rowMarketValue(h)
+    if (mv <= 0) continue
+    const beian = fundHoldingBeianCode(h)
+    const name = fundHoldingDisplayName(h)
+    const strategyRow = (beian ? strategyMap.get(beian) : null) ?? strategyMap.get(name)
+    const label = formatFundStrategy(strategyRow?.l1, strategyRow?.l2) ?? "未配置"
+    weights.set(label, (weights.get(label) ?? 0) + (mv / navBase) * 100)
+  }
+  return weights
+}
+
+function buildFofShareSeriesFromMaps(
+  datedMaps: Array<{ date: string; weights: Map<string, number> }>,
+): FofShareTrendSeries[] {
+  const nameMeta = new Map<string, number>()
+  for (const { weights } of datedMaps) {
+    for (const [name, pct] of weights) {
+      nameMeta.set(name, (nameMeta.get(name) ?? 0) + Math.abs(pct))
+    }
+  }
+
+  const sortedNames = [...nameMeta.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name)
+
+  return sortedNames.map((name) => ({
+    name,
+    values: datedMaps.map(({ weights }) => +(weights.get(name) ?? 0).toFixed(4)),
+  }))
+}
+
+function emptyFofShareTrend(): FofShareTrendResult {
+  return { dates: [], series: [], has_data: false, point_count: 0 }
+}
+
+function finalizeFofShareTrend(
+  dates: string[],
+  series: FofShareTrendSeries[],
+): FofShareTrendResult {
+  return {
+    dates,
+    series,
+    has_data: series.some((s) => s.values.some((v) => v > 0.001)),
+    point_count: dates.length,
+  }
+}
+
+function pickMonthEndDates(dates: string[]): string[] {
+  const byMonth = new Map<string, string>()
+  for (const d of dates) {
+    byMonth.set(d.slice(0, 7), d)
+  }
+  return [...byMonth.values()].sort()
+}
+
+async function buildFofTrendAnalysis(
+  snapshots: ValuationTrendSnapshot[],
+): Promise<FofTrendAnalysisResult | null> {
+  const fofSnapshots = snapshots.filter(
+    (s) => detectValuationLayoutType(s.holdings) === "fof",
+  )
+  if (fofSnapshots.length === 0) return null
+
+  const beianCodes: string[] = []
+  const productNames: string[] = []
+  for (const snapshot of fofSnapshots) {
+    for (const h of dedupeFundHoldings(snapshot.holdings)) {
+      const code = fundHoldingBeianCode(h)
+      const name = fundHoldingDisplayName(h)
+      if (code) beianCodes.push(code)
+      if (name) productNames.push(name)
+    }
+  }
+
+  const strategyMap = await loadCompanyStrategyBatch(beianCodes, productNames)
+
+  const underlyingMaps: Array<{ date: string; weights: Map<string, number> }> = []
+  const strategyMaps: Array<{ date: string; weights: Map<string, number> }> = []
+
+  for (const snapshot of fofSnapshots) {
+    const underlying = extractUnderlyingFundWeights(snapshot.holdings, snapshot.netAssetValue)
+    if (underlying.size === 0) continue
+    underlyingMaps.push({ date: snapshot.date, weights: underlying })
+    strategyMaps.push({
+      date: snapshot.date,
+      weights: extractStrategyFundWeights(snapshot.holdings, snapshot.netAssetValue, strategyMap),
+    })
+  }
+
+  if (underlyingMaps.length === 0) {
+    return {
+      underlying_trend: emptyFofShareTrend(),
+      strategy_trend: emptyFofShareTrend(),
+      month_end_underlying: emptyFofShareTrend(),
+      month_end_strategy: emptyFofShareTrend(),
+    }
+  }
+
+  const dates = underlyingMaps.map((d) => d.date)
+  const monthEndDates = pickMonthEndDates(dates)
+  const filterMonthEnd = (
+    maps: Array<{ date: string; weights: Map<string, number> }>,
+  ) => maps.filter((m) => monthEndDates.includes(m.date))
+
+  const underlyingSeries = buildFofShareSeriesFromMaps(underlyingMaps)
+  const strategySeries = buildFofShareSeriesFromMaps(strategyMaps)
+  const monthEndUnderlyingMaps = filterMonthEnd(underlyingMaps)
+  const monthEndStrategyMaps = filterMonthEnd(strategyMaps)
+
+  return {
+    underlying_trend: finalizeFofShareTrend(dates, underlyingSeries),
+    strategy_trend: finalizeFofShareTrend(dates, strategySeries),
+    month_end_underlying: finalizeFofShareTrend(
+      monthEndDates,
+      buildFofShareSeriesFromMaps(monthEndUnderlyingMaps),
+    ),
+    month_end_strategy: finalizeFofShareTrend(
+      monthEndDates,
+      buildFofShareSeriesFromMaps(monthEndStrategyMaps),
+    ),
+  }
+}
+
+async function loadFundValuationTrendSnapshots(
+  rawBeianHao: string,
+  fromDate: string,
+  toDate: string,
+): Promise<ValuationTrendSnapshot[]> {
   const from = fromDate.slice(0, 10)
   const to = toDate.slice(0, 10)
-  if (!from || !to || from > to) return empty
+  if (!from || !to || from > to) return []
 
   const { product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
   await ensureEmailValuationTable()
@@ -1446,7 +2168,6 @@ export async function getFundAllocationTrend(
   )
 
   if (records.length === 0 && product_name) {
-    const fallbackParams: unknown[] = [`%${product_name.trim()}%`, from, to]
     records = await query<{
       id: string
       product_code: string | null
@@ -1470,11 +2191,11 @@ export async function getFundAllocationTrend(
          AND valuation_date <= $3::date
          AND jsonb_array_length(holdings) > 0
        ORDER BY valuation_date ASC, id DESC`,
-      fallbackParams,
+      [`%${product_name.trim()}%`, from, to],
     )
   }
 
-  if (records.length === 0) return empty
+  if (records.length === 0) return []
 
   const recordIds = records.map((r) => parseInt(r.id, 10)).filter((id) => Number.isFinite(id))
   const holdingRows = recordIds.length > 0
@@ -1495,7 +2216,7 @@ export async function getFundAllocationTrend(
     else holdingsByRecord.set(id, [row])
   }
 
-  const snapshots: { date: string; allocation: AllocationRow[] }[] = []
+  const snapshots: ValuationTrendSnapshot[] = []
   for (const record of records) {
     const recordId = parseInt(record.id, 10)
     let holdings = holdingsByRecord.get(recordId) ?? []
@@ -1508,24 +2229,47 @@ export async function getFundAllocationTrend(
     }
     if (holdings.length === 0) continue
 
-    const custodyBalance = parseNum(record.custody_balance)
-    const netAssetValue = parseNum(record.net_asset_value)
-    const allocation = computeSnapshotAllocation(holdings, mode, custodyBalance, netAssetValue)
-    if (allocation.length === 0) continue
-
     snapshots.push({
       date: record.valuation_date.slice(0, 10),
-      allocation,
+      holdings,
+      netAssetValue: parseNum(record.net_asset_value),
+      custodyBalance: parseNum(record.custody_balance),
     })
   }
 
-  if (snapshots.length === 0) return empty
+  return snapshots
+}
 
-  const dates = snapshots.map((s) => s.date)
+function buildAllocationTrendFromSnapshots(
+  snapshots: ValuationTrendSnapshot[],
+  mode: AllocationMode,
+): AllocationTrendResult {
+  const empty: AllocationTrendResult = {
+    dates: [],
+    series: [],
+    has_data: false,
+    point_count: 0,
+  }
+
+  const allocationSnapshots: { date: string; allocation: AllocationRow[] }[] = []
+  for (const snapshot of snapshots) {
+    const allocation = computeSnapshotAllocation(
+      snapshot.holdings,
+      mode,
+      snapshot.custodyBalance,
+      snapshot.netAssetValue,
+    )
+    if (allocation.length === 0) continue
+    allocationSnapshots.push({ date: snapshot.date, allocation })
+  }
+
+  if (allocationSnapshots.length === 0) return empty
+
+  const dates = allocationSnapshots.map((s) => s.date)
   const categoryOrder = new Map<string, { rowKind: string; order: number }>()
   let orderIdx = 0
 
-  for (const snapshot of snapshots) {
+  for (const snapshot of allocationSnapshots) {
     for (const row of snapshot.allocation) {
       if (!categoryOrder.has(row.category)) {
         categoryOrder.set(row.category, { rowKind: row.rowKind, order: orderIdx++ })
@@ -1546,7 +2290,7 @@ export async function getFundAllocationTrend(
   const series: AllocationTrendSeries[] = sortedCategories.map(([category, meta]) => ({
     category,
     rowKind: meta.rowKind,
-    values: snapshots.map((snapshot) => {
+    values: allocationSnapshots.map((snapshot) => {
       const row = snapshot.allocation.find((r) => r.category === category)
       return row?.pct ?? 0
     }),
@@ -1558,6 +2302,66 @@ export async function getFundAllocationTrend(
     has_data: series.some((s) => s.values.some((v) => v > 0)),
     point_count: dates.length,
   }
+}
+
+export async function getFundValuationTrendAnalysis(
+  rawBeianHao: string,
+  fromDate: string,
+  toDate: string,
+  mode: AllocationMode = "major",
+): Promise<ValuationTrendAnalysisResult> {
+  const snapshots = await loadFundValuationTrendSnapshots(rawBeianHao, fromDate, toDate)
+  const fof_trend = await buildFofTrendAnalysis(snapshots)
+  return {
+    ...buildAllocationTrendFromSnapshots(snapshots, mode),
+    sector_trend: buildSectorWeightTrend(snapshots),
+    long_short_trend: buildLongShortMvTrend(snapshots),
+    contract_mv_trend: buildContractMvShareTrend(snapshots),
+    contract_equity_trend: buildContractEquityTrend(snapshots),
+    fof_trend,
+  }
+}
+
+export async function getFundAllocationTrend(
+  rawBeianHao: string,
+  fromDate: string,
+  toDate: string,
+  mode: AllocationMode = "major",
+): Promise<AllocationTrendResult> {
+  const snapshots = await loadFundValuationTrendSnapshots(rawBeianHao, fromDate, toDate)
+  return buildAllocationTrendFromSnapshots(snapshots, mode)
+}
+
+async function enrichCandidateCodesFromValuationHistory(
+  candidateCodes: Set<string>,
+  productName: string | null,
+): Promise<void> {
+  if (!productName?.trim()) return
+  await ensureEmailValuationTable()
+  const rows = await query<{ product_code: string }>(
+    `SELECT DISTINCT BTRIM(product_code) AS product_code
+     FROM ops_email_valuation_records
+     WHERE BTRIM(COALESCE(product_code, '')) <> ''
+       AND ${sqlFundNameMatch("fund_name", "$1")}
+     LIMIT 50`,
+    [productName.trim()],
+  )
+  for (const row of rows) {
+    if (row.product_code) candidateCodes.add(row.product_code)
+  }
+}
+
+function buildFundValuationRecordWhere(
+  candidateCodes: string[],
+  productName: string | null,
+): { clause: string; params: unknown[] } {
+  const params: unknown[] = [candidateCodes]
+  let clause = `product_code = ANY($1::text[])`
+  if (productName?.trim()) {
+    params.push(productName.trim())
+    clause = `(${clause} OR ${sqlFundNameMatch("fund_name", "$2")})`
+  }
+  return { clause, params }
 }
 
 async function resolveFundValuationCandidateCodes(rawBeianHao: string): Promise<{
@@ -1572,6 +2376,7 @@ async function resolveFundValuationCandidateCodes(rawBeianHao: string): Promise<
   if (remapped) candidateCodes.add(remapped)
   const override = lookupManagedProductOverride(beian_hao)
   if (override?.beian_hao) candidateCodes.add(override.beian_hao)
+  await enrichCandidateCodesFromValuationHistory(candidateCodes, product_name)
   return { beian_hao, product_name, candidateCodes: [...candidateCodes] }
 }
 
@@ -1579,20 +2384,28 @@ export async function listFundValuationEmailRecords(
   rawBeianHao: string,
   options?: { limit?: number; offset?: number },
 ): Promise<{ records: EmailValuationRecordRow[]; total: number }> {
+  await ensureEmailValuationTable()
   const { product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
+  const { clause, params } = buildFundValuationRecordWhere(candidateCodes, product_name)
+  const limit = Math.min(options?.limit ?? 50, 500)
+  const offset = options?.offset ?? 0
 
-  const byCode = await listEmailValuationRecords({
-    productCodes: candidateCodes,
-    limit: options?.limit ?? 50,
-    offset: options?.offset ?? 0,
-  })
-  if (byCode.total > 0 || !product_name) return byCode
+  const countRows = await query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM ops_email_valuation_records
+     WHERE ${clause} AND valuation_date IS NOT NULL`,
+    params,
+  )
+  const total = parseInt(countRows[0]?.count ?? "0", 10)
 
-  return listEmailValuationRecords({
-    fundName: product_name,
-    limit: options?.limit ?? 50,
-    offset: options?.offset ?? 0,
-  })
+  const records = await query<EmailValuationRecordRow>(
+    `SELECT * FROM ops_email_valuation_records
+     WHERE ${clause} AND valuation_date IS NOT NULL
+     ORDER BY valuation_date DESC, id DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset],
+  )
+
+  return { records, total }
 }
 
 export async function getFundValuationCalendarSummary(rawBeianHao: string): Promise<{
@@ -1601,56 +2414,132 @@ export async function getFundValuationCalendarSummary(rawBeianHao: string): Prom
   dateTo: string | null
   dates: string[]
   entries: Array<{ date: string; id: number; attachmentFilename: string | null }>
+  inceptionDate: string | null
+  needsEmailBackfill: boolean
 }> {
   await ensureEmailValuationTable()
-  const { product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
+  const { beian_hao, product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
+  const { clause, params } = buildFundValuationRecordWhere(candidateCodes, product_name)
 
-  async function querySummary(whereClause: string, queryParams: unknown[]) {
-    const summaryRows = await query<{ total: string; date_from: string | null; date_to: string | null }>(
-      `SELECT COUNT(*)::text AS total,
-              MIN(valuation_date)::text AS date_from,
-              MAX(valuation_date)::text AS date_to
-       FROM ops_email_valuation_records
-       WHERE ${whereClause} AND valuation_date IS NOT NULL`,
-      queryParams,
-    )
-    const dateRows = await query<{ valuation_date: string }>(
-      `SELECT DISTINCT valuation_date::text AS valuation_date
-       FROM ops_email_valuation_records
-       WHERE ${whereClause} AND valuation_date IS NOT NULL
-       ORDER BY valuation_date`,
-      queryParams,
-    )
-    const entryRows = await query<{
-      valuation_date: string
-      id: number
-      attachment_filename: string | null
-    }>(
-      `SELECT DISTINCT ON (valuation_date)
-              valuation_date::text AS valuation_date,
-              id,
-              attachment_filename
-       FROM ops_email_valuation_records
-       WHERE ${whereClause} AND valuation_date IS NOT NULL
-       ORDER BY valuation_date ASC, id DESC`,
-      queryParams,
-    )
-    const summary = summaryRows[0]
-    return {
-      total: parseInt(summary?.total ?? "0", 10),
-      dateFrom: summary?.date_from?.slice(0, 10) ?? null,
-      dateTo: summary?.date_to?.slice(0, 10) ?? null,
-      dates: dateRows.map((r) => r.valuation_date.slice(0, 10)),
-      entries: entryRows.map((r) => ({
-        date: r.valuation_date.slice(0, 10),
-        id: r.id,
-        attachmentFilename: r.attachment_filename,
-      })),
+  const fundMeta = await resolveFundMeta(beian_hao, product_name, { includeLatestNav: false })
+  const inceptionDate = fundMeta.inception_date?.slice(0, 10) ?? null
+
+  const summaryRows = await query<{ total: string; date_from: string | null; date_to: string | null }>(
+    `SELECT COUNT(*)::text AS total,
+            MIN(valuation_date)::text AS date_from,
+            MAX(valuation_date)::text AS date_to
+     FROM ops_email_valuation_records
+     WHERE ${clause} AND valuation_date IS NOT NULL`,
+    params,
+  )
+  const dateRows = await query<{ valuation_date: string }>(
+    `SELECT DISTINCT valuation_date::text AS valuation_date
+     FROM ops_email_valuation_records
+     WHERE ${clause} AND valuation_date IS NOT NULL
+     ORDER BY valuation_date`,
+    params,
+  )
+  const entryRows = await query<{
+    valuation_date: string
+    id: number
+    attachment_filename: string | null
+  }>(
+    `SELECT DISTINCT ON (valuation_date)
+            valuation_date::text AS valuation_date,
+            id,
+            attachment_filename
+     FROM ops_email_valuation_records
+     WHERE ${clause} AND valuation_date IS NOT NULL
+     ORDER BY valuation_date ASC, id DESC`,
+    params,
+  )
+
+  const summary = summaryRows[0]
+  const dateFrom = summary?.date_from?.slice(0, 10) ?? null
+  const dateTo = summary?.date_to?.slice(0, 10) ?? null
+
+  let needsEmailBackfill = false
+  const seedRows = loadManagedProductNavSeed(beian_hao)
+  const seedStart = seedRows.length > 0
+    ? seedRows.reduce((min, row) => {
+        const d = row.price_date?.slice(0, 10)
+        return d && (!min || d < min) ? d : min
+      }, null as string | null)
+    : null
+  const expectedStart = seedStart ?? inceptionDate
+
+  if (expectedStart && dateFrom) {
+    const expectedMs = Date.parse(expectedStart)
+    const earliestMs = Date.parse(dateFrom)
+    if (Number.isFinite(expectedMs) && Number.isFinite(earliestMs) && earliestMs - expectedMs > 45 * 86400000) {
+      needsEmailBackfill = true
     }
+  } else if (inceptionDate && dateFrom) {
+    const inceptionMs = Date.parse(inceptionDate)
+    const earliestMs = Date.parse(dateFrom)
+    if (Number.isFinite(inceptionMs) && Number.isFinite(earliestMs) && earliestMs - inceptionMs > 45 * 86400000) {
+      needsEmailBackfill = true
+    }
+  } else if (!dateFrom || (summary && parseInt(summary.total ?? "0", 10) < 30)) {
+    needsEmailBackfill = true
+  } else if (seedRows.length > 0 && summary) {
+    const total = parseInt(summary.total ?? "0", 10)
+    if (total + 30 < seedRows.length) needsEmailBackfill = true
   }
 
-  const byCode = await querySummary("product_code = ANY($1::text[])", [candidateCodes])
-  if (byCode.total > 0 || !product_name) return byCode
+  return {
+    total: parseInt(summary?.total ?? "0", 10),
+    dateFrom,
+    dateTo,
+    dates: dateRows.map((r) => r.valuation_date.slice(0, 10)),
+    entries: entryRows.map((r) => ({
+      date: r.valuation_date.slice(0, 10),
+      id: r.id,
+      attachmentFilename: r.attachment_filename,
+    })),
+    inceptionDate,
+    needsEmailBackfill,
+  }
+}
 
-  return querySummary("fund_name ILIKE $1", [`%${product_name}%`])
+export async function syncFundValuationEmailsFromMailbox(
+  rawBeianHao: string,
+  options?: { days?: number },
+): Promise<{ days: number; valuationSaved: number; zipBatchSaved: number; errors: string[] }> {
+  const { beian_hao, product_name } = await resolveFundValuationCandidateCodes(rawBeianHao)
+  const fundMeta = await resolveFundMeta(beian_hao, product_name, { includeLatestNav: false })
+  const inception = fundMeta.inception_date?.slice(0, 10) ?? null
+  const seedRows = loadManagedProductNavSeed(beian_hao)
+  const seedStart = seedRows.length > 0
+    ? seedRows.reduce((min, row) => {
+        const d = row.price_date?.slice(0, 10)
+        return d && (!min || d < min) ? d : min
+      }, null as string | null)
+    : null
+  const rangeStart = seedStart ?? inception
+
+  const { emailLookbackDaysForDateRange, resolveEmailParseLookbackDays } = await import(
+    "@/lib/server/email-parse-lookback"
+  )
+  const days = options?.days != null
+    ? resolveEmailParseLookbackDays(options.days)
+    : rangeStart
+      ? emailLookbackDaysForDateRange(rangeStart)
+      : resolveEmailParseLookbackDays()
+
+  const errors: string[] = []
+  const { ingestZipValuationBatchEmails } = await import("@/lib/server/email-valuation-zip-ingest")
+  const zipResult = await ingestZipValuationBatchEmails({ days })
+  errors.push(...zipResult.errors)
+
+  const { fetchEmailParseRecords } = await import("@/lib/server/email-parse-fetch")
+  const result = await fetchEmailParseRecords({ days })
+  errors.push(...result.errors)
+
+  return {
+    days,
+    valuationSaved: result.valuationSaved + zipResult.recordsSaved,
+    zipBatchSaved: zipResult.recordsSaved,
+    errors,
+  }
 }

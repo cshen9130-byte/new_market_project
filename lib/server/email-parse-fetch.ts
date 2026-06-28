@@ -25,12 +25,18 @@ import {
   extractValuationFromEmailBody,
   selectValuationAttachments,
 } from "@/lib/server/email-valuation-attachment"
+import {
+  expandValuationZipBuffer,
+  isValuationZipFilename,
+  zipInnerAttachmentKey,
+} from "@/lib/server/email-valuation-zip"
 import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
 import {
   upsertEmailValuationRecords,
   type EmailValuationInsert,
 } from "@/lib/server/email-valuation-pg"
 import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
+import { resolveEmailParseLookbackDays } from "@/lib/server/email-parse-lookback"
 
 export type EmailParseFetchResult = {
   emailsScanned: number
@@ -147,7 +153,7 @@ function hasPostTableNav(body: string): boolean {
 
 function hasValuation(subject: string, attachments: AttachmentInfo[]): boolean {
   if (/估值表|估值/i.test(subject)) return true
-  return attachments.some((a) => /估值表|估值|专用表/i.test(a.filename))
+  return attachments.some((a) => /估值表|估值|专用表/i.test(a.filename) || /\.zip$/i.test(a.filename))
 }
 
 function hasLedger(subject: string, attachments: AttachmentInfo[]): boolean {
@@ -335,55 +341,77 @@ async function fetchMailbox(
         for (const att of valuationAttachments) {
           try {
             const buf = await downloadPart(client, String(uid), att.part)
-            const extracted = extractValuationFromBuffer(buf, att.filename, subject, senderEmail)
-            if (extracted) {
-              valuationSavedForEmail = true
-              valuationRecords.push({
-                ...emailMeta,
-                attachmentFilename: att.filename,
-                productCode: extracted.productCode,
-                fundName: extracted.fundName,
-                valuationDate: extracted.valuationDate,
-                unitNav: extracted.unitNav,
-                cumulativeNav: extracted.cumulativeNav,
-                custodyBalance: extracted.custodyBalance,
-                netAssetValue: extracted.netAssetValue,
-                paidInCapital: extracted.paidInCapital,
-                totalAsset: extracted.totalAsset,
-                totalLiability: extracted.totalLiability,
-                custodian: extracted.custodian,
-                netAsset: extracted.netAssetValue,
-                underlyingHoldings: extracted.underlyingHoldings,
-                holdingsCount: extracted.holdingsCount,
-                source: extracted.source,
-                summary: extracted.analysis.summary,
-                holdings: extracted.analysis.portfolio_data,
-              })
-            } else {
-              errors.push(
-                `${account.account} UID ${uid} valuation ${att.filename}: no holdings parsed`,
-              )
+            const payloads: Array<{ storedFilename: string; parseFilename: string; buffer: Buffer }> = isValuationZipFilename(
+              att.filename,
+            )
+              ? expandValuationZipBuffer(buf, att.filename).map((inner) => ({
+                  storedFilename: zipInnerAttachmentKey(att.filename, inner.filename),
+                  parseFilename: inner.filename,
+                  buffer: inner.buffer,
+                }))
+              : [{ storedFilename: att.filename, parseFilename: att.filename, buffer: buf }]
+
+            if (payloads.length === 0) {
+              errors.push(`${account.account} UID ${uid} valuation ${att.filename}: empty zip`)
+              continue
             }
 
-            if (navDatesFromAttachments.size === 0) {
-              const navRow =
-                extracted?.unitNav != null
-                  ? {
-                      nav: extracted.unitNav,
-                      navDate: extracted.valuationDate,
-                      cumulativeNav: extracted.cumulativeNav,
-                      productCode: extracted.productCode,
-                      fundName: extracted.fundName,
-                      source: "attachment_valuation_table" as const,
-                    }
-                  : extractNavFromValuationBuffer(buf, att.filename, subject)
-              if (navRow?.navDate && navRow.nav != null) {
-                navDatesFromAttachments.add(navRow.navDate)
-                navRecords.push({
+            for (const payload of payloads) {
+              const extracted = extractValuationFromBuffer(
+                payload.buffer,
+                payload.parseFilename,
+                subject,
+                senderEmail,
+              )
+              if (extracted) {
+                valuationSavedForEmail = true
+                valuationRecords.push({
                   ...emailMeta,
-                  ...navRow,
-                  attachmentFilename: att.filename,
+                  attachmentFilename: payload.storedFilename,
+                  productCode: extracted.productCode,
+                  fundName: extracted.fundName,
+                  valuationDate: extracted.valuationDate,
+                  unitNav: extracted.unitNav,
+                  cumulativeNav: extracted.cumulativeNav,
+                  custodyBalance: extracted.custodyBalance,
+                  netAssetValue: extracted.netAssetValue,
+                  paidInCapital: extracted.paidInCapital,
+                  totalAsset: extracted.totalAsset,
+                  totalLiability: extracted.totalLiability,
+                  custodian: extracted.custodian,
+                  netAsset: extracted.netAssetValue,
+                  underlyingHoldings: extracted.underlyingHoldings,
+                  holdingsCount: extracted.holdingsCount,
+                  source: extracted.source,
+                  summary: extracted.analysis.summary,
+                  holdings: extracted.analysis.portfolio_data,
                 })
+              } else if (!isValuationZipFilename(att.filename)) {
+                errors.push(
+                  `${account.account} UID ${uid} valuation ${payload.parseFilename}: no holdings parsed`,
+                )
+              }
+
+              if (navDatesFromAttachments.size === 0 && !isValuationZipFilename(att.filename)) {
+                const navRow =
+                  extracted?.unitNav != null
+                    ? {
+                        nav: extracted.unitNav,
+                        navDate: extracted.valuationDate,
+                        cumulativeNav: extracted.cumulativeNav,
+                        productCode: extracted.productCode,
+                        fundName: extracted.fundName,
+                        source: "attachment_valuation_table" as const,
+                      }
+                    : extractNavFromValuationBuffer(payload.buffer, payload.parseFilename, subject)
+                if (navRow?.navDate && navRow.nav != null) {
+                  navDatesFromAttachments.add(navRow.navDate)
+                  navRecords.push({
+                    ...emailMeta,
+                    ...navRow,
+                    attachmentFilename: payload.storedFilename,
+                  })
+                }
               }
             }
           } catch (e) {
@@ -473,7 +501,7 @@ export async function fetchEmailParseRecords(options?: {
 }): Promise<EmailParseFetchResult> {
   const errors: string[] = []
   const since = new Date()
-  since.setDate(since.getDate() - (options?.days ?? 31))
+  since.setDate(since.getDate() - resolveEmailParseLookbackDays(options?.days))
 
   const accounts: CrawlEmailAccount[] = []
   if (options?.crawlEmailId) {

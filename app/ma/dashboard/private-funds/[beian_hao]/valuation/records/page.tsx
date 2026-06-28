@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
@@ -9,8 +9,7 @@ import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
   ValuationParseDialog,
-  exportValuationRecordCsv,
-  fetchValuationRecordDetail,
+  downloadValuationAttachment,
 } from "./ValuationParseDialog"
 
 type CalendarEntry = {
@@ -25,6 +24,8 @@ type CalendarSummary = {
   dateTo: string | null
   dates: string[]
   entries: CalendarEntry[]
+  inceptionDate?: string | null
+  needsEmailBackfill?: boolean
 }
 
 const WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -102,25 +103,24 @@ function ActionTip({
 function CalendarDayCell({
   day,
   entry,
-  displayName,
   onViewParse,
 }: {
   day: number
   entry: CalendarEntry
-  displayName: string
   onViewParse: (recordId: number) => void
 }) {
   const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   async function handleExport(e: React.MouseEvent) {
     e.stopPropagation()
     if (exporting) return
     setExporting(true)
+    setExportError(null)
     try {
-      const detail = await fetchValuationRecordDetail(entry.id)
-      exportValuationRecordCsv(detail, displayName)
-    } catch {
-      // ignore — user can retry
+      await downloadValuationAttachment(entry.id, entry.attachmentFilename)
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : "下载失败")
     } finally {
       setExporting(false)
     }
@@ -141,6 +141,7 @@ function CalendarDayCell({
             onClick={(e) => { void handleExport(e) }}
             disabled={exporting}
             className="p-0.5 text-[#4a90d9] hover:text-[#3a7bc8] disabled:opacity-50 transition-colors"
+            title={exportError ?? undefined}
           >
             <CloudDownload className="h-4 w-4" />
           </button>
@@ -174,6 +175,20 @@ export default function ValuationRecordsCalendarPage() {
   const [viewYear, setViewYear] = useState(() => new Date().getFullYear())
   const [viewMonth, setViewMonth] = useState(() => new Date().getMonth() + 1)
   const [parseRecordId, setParseRecordId] = useState<number | null>(null)
+  const [syncingHistory, setSyncingHistory] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const backfillAttemptedRef = useRef(false)
+
+  const loadCalendar = useCallback(async () => {
+    const res = await fetch(
+      `/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation/records?view=calendar`,
+    )
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({} as { error?: string }))
+      throw new Error(body.error ?? `HTTP ${res.status}`)
+    }
+    return res.json() as Promise<CalendarSummary>
+  }, [beian_hao])
 
   const navigateFunds = useCallback((tab: string, side?: string) => {
     const sideItem = side ?? TAB_DEFAULT_SIDE[tab] ?? "private-funds"
@@ -188,14 +203,7 @@ export default function ValuationRecordsCalendarPage() {
       fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation?mode=major`)
         .then(async (r) => (r.ok ? r.json() as Promise<{ product_name?: string | null; fund_name?: string | null }> : null))
         .catch(() => null),
-      fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation/records?view=calendar`)
-        .then(async (r) => {
-          if (!r.ok) {
-            const body = await r.json().catch(() => ({} as { error?: string }))
-            throw new Error(body.error ?? `HTTP ${r.status}`)
-          }
-          return r.json() as Promise<CalendarSummary>
-        }),
+      loadCalendar(),
     ])
       .then(([fund, calendar]) => {
         if (fund) {
@@ -212,7 +220,42 @@ export default function ValuationRecordsCalendarPage() {
       })
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
       .finally(() => setLoading(false))
-  }, [beian_hao])
+  }, [beian_hao, loadCalendar])
+
+  useEffect(() => {
+    if (!beian_hao || !summary?.needsEmailBackfill || backfillAttemptedRef.current) return
+    backfillAttemptedRef.current = true
+    setSyncingHistory(true)
+    setSyncMessage("正在从邮箱同步历史估值表…")
+
+    void (async () => {
+      try {
+        const res = await fetch(
+          `/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation/fetch-emails`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+        )
+        const body = await res.json().catch(() => ({} as { error?: string; valuationSaved?: number; zipBatchSaved?: number; days?: number }))
+        if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`)
+
+        const calendar = await loadCalendar()
+        setSummary(calendar)
+        if (calendar.dateFrom) {
+          const [y, m] = calendar.dateFrom.split("-").map(Number)
+          if (y && m) {
+            setViewYear(y)
+            setViewMonth(m)
+          }
+        }
+        const zipPart = body.zipBatchSaved ? `（含历史压缩包 ${body.zipBatchSaved} 条）` : ""
+        setSyncMessage(`已同步 ${body.valuationSaved ?? 0} 条估值表${zipPart}（扫描 ${body.days ?? ""} 天邮件）`)
+      } catch (e) {
+        setSyncMessage(e instanceof Error ? e.message : "同步历史估值表失败")
+      } finally {
+        setSyncingHistory(false)
+        window.setTimeout(() => setSyncMessage(null), 8000)
+      }
+    })()
+  }, [beian_hao, summary?.needsEmailBackfill, loadCalendar])
 
   const entryByDate = useMemo(() => {
     const map = new Map<string, CalendarEntry>()
@@ -271,6 +314,11 @@ export default function ValuationRecordsCalendarPage() {
               <p className="text-sm text-zinc-500">
                 共{summary?.total ?? 0}个估值表，截止时间为 {rangeLabel}
               </p>
+              {(syncingHistory || syncMessage) && (
+                <p className={`text-xs mt-1 ${syncingHistory ? "text-zinc-400" : "text-emerald-600"}`}>
+                  {syncMessage ?? "正在从邮箱同步历史估值表…"}
+                </p>
+              )}
             </div>
 
             <div className="flex items-center gap-1 border border-zinc-200 rounded bg-white">
@@ -333,7 +381,6 @@ export default function ValuationRecordsCalendarPage() {
                         key={`${cell.date}-${index}`}
                         day={cell.day}
                         entry={entry}
-                        displayName={displayName}
                         onViewParse={setParseRecordId}
                       />
                     )

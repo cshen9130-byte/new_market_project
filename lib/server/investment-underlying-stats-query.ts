@@ -3,6 +3,11 @@ import {
   buildFofUnderlyingBeianJoins,
 } from "@/lib/server/fof-underlying-query"
 import { ensureManagedFofUnderlyingTable, refreshManagedFofUnderlying } from "@/lib/server/managed-fof-underlying-pg"
+import {
+  ensureInvestmentOverviewCachePopulated,
+  investmentOverviewCacheReady,
+  loadInvestmentOverviewUnderlyingFromCache,
+} from "@/lib/server/investment-overview-cache-pg"
 
 export type InvestmentUnderlyingProduct = {
   product_key: string
@@ -169,6 +174,109 @@ function buildSummary(
   }
 }
 
+function aggregateUnderlyingFromCache(
+  rows: Array<{
+    product_key: string
+    product_name: string
+    beian_hao: string | null
+    market_value: string | null
+    valuation_date: string | null
+    manager_name: string | null
+    company_strategy_l1: string | null
+    company_strategy_l2: string | null
+    company_strategy_l3: string | null
+    platform_strategy_l1: string | null
+    platform_strategy_l2: string | null
+    platform_strategy_l3: string | null
+  }>,
+  groupOpts: {
+    groupBy: "strategy" | "manager"
+    strategySource: "company" | "platform"
+    strategyLevel: 1 | 2 | 3
+  },
+): InvestmentUnderlyingStatsResult {
+  const byKey = new Map<string, {
+    product_name: string
+    beian_hao: string | null
+    market_value: number
+    valuation_date: string | null
+    manager_name: string | null
+    company_strategy_l1: string | null
+    company_strategy_l2: string | null
+    company_strategy_l3: string | null
+    platform_strategy_l1: string | null
+    platform_strategy_l2: string | null
+    platform_strategy_l3: string | null
+  }>()
+
+  for (const row of rows) {
+    const mv = row.market_value != null ? parseFloat(row.market_value) : NaN
+    if (!Number.isFinite(mv) || mv <= 0) continue
+    const cur = byKey.get(row.product_key)
+    if (!cur) {
+      byKey.set(row.product_key, {
+        product_name: row.product_name,
+        beian_hao: row.beian_hao,
+        market_value: mv,
+        valuation_date: row.valuation_date,
+        manager_name: row.manager_name,
+        company_strategy_l1: row.company_strategy_l1,
+        company_strategy_l2: row.company_strategy_l2,
+        company_strategy_l3: row.company_strategy_l3,
+        platform_strategy_l1: row.platform_strategy_l1,
+        platform_strategy_l2: row.platform_strategy_l2,
+        platform_strategy_l3: row.platform_strategy_l3,
+      })
+      continue
+    }
+    cur.market_value += mv
+    if (row.valuation_date && (!cur.valuation_date || row.valuation_date > cur.valuation_date)) {
+      cur.valuation_date = row.valuation_date
+    }
+  }
+
+  const products: InvestmentUnderlyingProduct[] = Array.from(byKey.entries()).map(([product_key, r]) => {
+    const group_name = resolveGroupName(r, groupOpts)
+    return {
+      product_key,
+      product_name: r.product_name,
+      beian_hao: r.beian_hao,
+      group_name,
+      market_value: round2(r.market_value),
+      valuation_date: r.valuation_date,
+      manager_name: r.manager_name,
+      company_strategy_l1: r.company_strategy_l1,
+      company_strategy_l2: r.company_strategy_l2,
+      company_strategy_l3: r.company_strategy_l3,
+      platform_strategy_l1: r.platform_strategy_l1,
+      platform_strategy_l2: r.platform_strategy_l2,
+      platform_strategy_l3: r.platform_strategy_l3,
+    }
+  })
+
+  const groupable = products.map((p) => ({
+    group_name: p.group_name,
+    market_value: p.market_value,
+  }))
+  const { summary, total } = buildSummary(groupable)
+
+  const asOfDate = products
+    .map((p) => p.valuation_date)
+    .filter(Boolean)
+    .sort()
+    .at(-1) ?? new Date().toISOString().slice(0, 10)
+
+  return {
+    as_of_date: asOfDate,
+    group_by: groupOpts.groupBy,
+    strategy_source: groupOpts.strategySource,
+    strategy_level: groupOpts.strategyLevel,
+    products,
+    summary,
+    total,
+  }
+}
+
 export async function queryInvestmentUnderlyingStats(params: {
   managedProductIds?: string[]
   groupBy?: "strategy" | "manager"
@@ -180,8 +288,24 @@ export async function queryInvestmentUnderlyingStats(params: {
   const strategyLevel = params.strategyLevel === 2 || params.strategyLevel === 3
     ? params.strategyLevel
     : 1
+  const selectedIds = (params.managedProductIds ?? []).map((id) => id.trim()).filter(Boolean)
   const companyCols = strategyColumns("company")
   const platformCols = strategyColumns("platform")
+
+  const groupOpts: {
+    groupBy: "strategy" | "manager"
+    strategySource: "company" | "platform"
+    strategyLevel: 1 | 2 | 3
+  } = { groupBy, strategySource, strategyLevel }
+
+  await ensureInvestmentOverviewCachePopulated()
+  const cacheReady = await investmentOverviewCacheReady()
+  if (cacheReady) {
+    const cachedRows = await loadInvestmentOverviewUnderlyingFromCache(
+      selectedIds.length > 0 ? selectedIds : undefined,
+    )
+    return aggregateUnderlyingFromCache(cachedRows, groupOpts)
+  }
 
   await ensureManagedFofUnderlyingTable()
 
@@ -194,7 +318,6 @@ export async function queryInvestmentUnderlyingStats(params: {
     })
   }
 
-  const selectedIds = (params.managedProductIds ?? []).map((id) => id.trim()).filter(Boolean)
   const filterParams: unknown[] = []
   let filterSql = ""
   if (selectedIds.length > 0) {
@@ -252,11 +375,6 @@ export async function queryInvestmentUnderlyingStats(params: {
     filterParams,
   )
 
-  const groupOpts: {
-    groupBy: "strategy" | "manager"
-    strategySource: "company" | "platform"
-    strategyLevel: 1 | 2 | 3
-  } = { groupBy, strategySource, strategyLevel }
   const products: InvestmentUnderlyingProduct[] = rows.map((r) => {
     const mv = r.market_value != null ? parseFloat(r.market_value) : null
     const group_name = resolveGroupName(r, groupOpts)
