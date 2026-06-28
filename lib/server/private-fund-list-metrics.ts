@@ -107,6 +107,70 @@ async function loadNavHistoryBatch(
   return out
 }
 
+function rowMissingOneYearMetrics(row: FundListMetricsRow): boolean {
+  return !metricText(row.ret_1y) || !metricText(row.sharpe_1y) || !metricText(row.calmar_1y)
+}
+
+function enrichRowFromNavHistory<T extends FundListMetricsRow>(
+  row: T,
+  history: NavPoint[],
+  asOfDate: string,
+  opts: {
+    historical: boolean
+    latest_nav?: string | null
+    latest_nav_date?: string | null
+  },
+): T {
+  const latest_nav = opts.historical ? (opts.latest_nav ?? null) : row.latest_nav
+  const latest_nav_date = opts.historical ? (opts.latest_nav_date ?? null) : row.latest_nav_date
+  const currentNav = latest_nav != null ? parseFloat(latest_nav) : NaN
+
+  const next: T = opts.historical
+    ? {
+        ...row,
+        latest_nav,
+        latest_nav_date,
+        ret_1w: null,
+        ret_1m: null,
+        ret_3m: null,
+        ret_6m: null,
+        ret_1y: null,
+        sharpe_1y: null,
+        calmar_1y: null,
+      }
+    : {
+        ...row,
+        ret_1w: metricText(row.ret_1w),
+        ret_1m: metricText(row.ret_1m),
+        ret_3m: metricText(row.ret_3m),
+        ret_6m: metricText(row.ret_6m),
+        ret_1y: metricText(row.ret_1y),
+        sharpe_1y: metricText(row.sharpe_1y),
+        calmar_1y: metricText(row.calmar_1y),
+      }
+
+  if (!Number.isFinite(currentNav) || currentNav <= 0 || history.length === 0) {
+    return next
+  }
+
+  for (const { key, days } of RETURN_WINDOWS) {
+    if (!opts.historical && key !== "ret_1y" && next[key] != null) continue
+    const baseNav = navAtOrBefore(history, addDays(asOfDate, days))
+    const computed = pctReturnText(currentNav, baseNav)
+    if (computed != null) next[key] = computed
+  }
+
+  const needsSharpe = opts.historical || next.sharpe_1y == null
+  const needsCalmar = opts.historical || next.calmar_1y == null
+  if (needsSharpe || needsCalmar) {
+    const risk = computeOneYearRiskMetrics(asOfDate, history)
+    if (needsSharpe && risk.sharpe_1y != null) next.sharpe_1y = String(risk.sharpe_1y)
+    if (needsCalmar && risk.calmar_1y != null) next.calmar_1y = String(risk.calmar_1y)
+  }
+
+  return next
+}
+
 /** Fill NAV / return / risk metrics, honoring an optional historical cutoff date. */
 export async function enrichPrivateFundListMetrics<T extends FundListMetricsRow>(
   rows: T[],
@@ -117,20 +181,39 @@ export async function enrichPrivateFundListMetrics<T extends FundListMetricsRow>
   const today = new Date().toISOString().slice(0, 10)
   const historical = Boolean(cutoffDate && cutoffDate < today)
 
-  const normalize = (row: T): T => ({
-    ...row,
-    ret_1w: metricText(row.ret_1w),
-    ret_1m: metricText(row.ret_1m),
-    ret_3m: metricText(row.ret_3m),
-    ret_6m: metricText(row.ret_6m),
-    ret_1y: metricText(row.ret_1y),
-    sharpe_1y: metricText(row.sharpe_1y),
-    calmar_1y: metricText(row.calmar_1y),
-  })
-
-  // Fast path — use precomputed columns from private_fund_info (no NAV table scan).
   if (!historical) {
-    return rows.map(normalize)
+    const normalized = rows.map((row) => ({
+      ...row,
+      ret_1w: metricText(row.ret_1w),
+      ret_1m: metricText(row.ret_1m),
+      ret_3m: metricText(row.ret_3m),
+      ret_6m: metricText(row.ret_6m),
+      ret_1y: metricText(row.ret_1y),
+      sharpe_1y: metricText(row.sharpe_1y),
+      calmar_1y: metricText(row.calmar_1y),
+    }))
+    const rowsNeedingNav = normalized.filter(rowMissingOneYearMetrics)
+    if (rowsNeedingNav.length === 0) return normalized
+
+    const asOfByBeian = new Map(
+      rowsNeedingNav.map((row) => [row.beian_hao, asOfDateForRow(row, cutoffDate)]),
+    )
+    const minSinceDate = [...asOfByBeian.values()]
+      .map((date) => addDays(date, NAV_LOOKBACK_DAYS))
+      .sort()[0]
+    const historyByBeian = await loadNavHistoryBatch(
+      rowsNeedingNav.map((row) => row.beian_hao),
+      minSinceDate,
+    )
+
+    return normalized.map((row) => {
+      if (!rowMissingOneYearMetrics(row)) return row
+      const asOfDate = asOfByBeian.get(row.beian_hao) ?? asOfDateForRow(row, cutoffDate)
+      const fullHistory = historyByBeian.get(row.beian_hao) ?? []
+      const sinceDate = addDays(asOfDate, NAV_LOOKBACK_DAYS)
+      const history = fullHistory.filter((point) => point.nav_date >= sinceDate)
+      return enrichRowFromNavHistory(row, history, asOfDate, { historical: false })
+    })
   }
 
   const asOfByBeian = new Map(
@@ -148,39 +231,13 @@ export async function enrichPrivateFundListMetrics<T extends FundListMetricsRow>
   return rows.map((row) => {
     const asOfDate = asOfByBeian.get(row.beian_hao) ?? asOfDateForRow(row, cutoffDate)
     const cutoffNav = navAtCutoff.get(row.beian_hao)
-    const latest_nav = cutoffNav?.nav ?? null
-    const latest_nav_date = cutoffNav?.price_date ?? null
-    const currentNav = latest_nav != null ? parseFloat(latest_nav) : NaN
-
     const fullHistory = historyByBeian.get(row.beian_hao) ?? []
     const sinceDate = addDays(asOfDate, NAV_LOOKBACK_DAYS)
     const history = fullHistory.filter((point) => point.nav_date >= sinceDate)
-
-    const next: T = {
-      ...row,
-      latest_nav,
-      latest_nav_date,
-      ret_1w: null,
-      ret_1m: null,
-      ret_3m: null,
-      ret_6m: null,
-      ret_1y: null,
-      sharpe_1y: null,
-      calmar_1y: null,
-    }
-
-    if (Number.isFinite(currentNav) && currentNav > 0 && history.length > 0) {
-      for (const { key, days } of RETURN_WINDOWS) {
-        const baseNav = navAtOrBefore(history, addDays(asOfDate, days))
-        const computed = pctReturnText(currentNav, baseNav)
-        if (computed != null) next[key] = computed
-      }
-
-      const risk = computeOneYearRiskMetrics(asOfDate, history)
-      if (risk.sharpe_1y != null) next.sharpe_1y = String(risk.sharpe_1y)
-      if (risk.calmar_1y != null) next.calmar_1y = String(risk.calmar_1y)
-    }
-
-    return next
+    return enrichRowFromNavHistory(row, history, asOfDate, {
+      historical: true,
+      latest_nav: cutoffNav?.nav ?? null,
+      latest_nav_date: cutoffNav?.price_date ?? null,
+    })
   })
 }

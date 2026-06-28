@@ -238,6 +238,7 @@ export type EmailValuationRecordRow = {
 
 export async function listEmailValuationRecords(options?: {
   productCode?: string
+  productCodes?: string[]
   fundName?: string
   valuationDateFrom?: string
   valuationDateTo?: string
@@ -250,7 +251,10 @@ export async function listEmailValuationRecords(options?: {
   const params: unknown[] = []
   let idx = 1
 
-  if (options?.productCode) {
+  if (options?.productCodes?.length) {
+    conditions.push(`product_code = ANY($${idx++}::text[])`)
+    params.push(options.productCodes)
+  } else if (options?.productCode) {
     conditions.push(`product_code = $${idx++}`)
     params.push(options.productCode)
   }

@@ -14,7 +14,8 @@ Usage
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
-  EMAIL_NAV_ETL_DAYS                    — email lookback window (default 31)
+  EMAIL_NAV_ETL_DAYS                    — email lookback window for nightly sync (default 400;
+                                          set to 45 after initial backfill for faster runs)
 
 Required env vars (loaded automatically from .env / .env.local):
   DATABASE_URL                          — e.g. postgresql://user:pass@localhost/market_data
@@ -28,6 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta
@@ -2219,150 +2221,42 @@ def step_private_fund_indicators(conn) -> int:
     """Recompute ret_1w/1m/3m/6m/1y, sharpe_1y, calmar_1y for every fund in
     private_fund_info from the raw private_fund_nav time-series.
 
-    This makes the 私募基金 dashboard page load instantly — the API simply
-    reads pre-computed values from private_fund_info rather than scanning the
-    entire NAV table on every request.
+    Delegates to scripts/ma/private_fund_indicators_etl.py (same logic as manual runs).
     """
-    try:
-        import math
-        import numpy as np
-        import pandas as pd
-    except ImportError:
-        log.error("pandas / numpy not installed — skipping private_fund_indicators")
-        return 0
-
-    today    = date.today()
-    lookback = today - timedelta(days=400)
-
-    log.info("private_fund_indicators: loading NAV data since %s …", lookback)
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT beian_hao, price_date, nav
-            FROM private_fund_nav
-            WHERE price_date >= %s
-              AND nav IS NOT NULL
-              AND nav > 0
-            ORDER BY beian_hao, price_date
-            """,
-            (lookback,),
+    _ = conn  # standalone script uses DATABASE_URL / DB_* from env
+    log.info("private_fund_indicators: running private_fund_indicators_etl.py …")
+    script_path = SCRIPT_DIR / "private_fund_indicators_etl.py"
+    python_exe = os.environ.get("PYTHON_EXE") or (
+        "py" if sys.platform == "win32" else "python3"
+    )
+    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
+    result = subprocess.run(
+        prefix + [str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=3600,
+        env={**os.environ},
+        cwd=str(SCRIPT_DIR.parent.parent),
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout:
+        log.info(stdout)
+    if stderr:
+        for line in stderr.splitlines():
+            log.info(line)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"private_fund_indicators_etl.py failed (exit {result.returncode}): "
+            f"{stderr or stdout or 'no output'}"
         )
-        rows = cur.fetchall()
-
-    if not rows:
-        log.warning("private_fund_indicators: no NAV data found — skipping.")
-        return 0
-
-    df              = pd.DataFrame(rows, columns=["beian_hao", "price_date", "nav"])
-    df["price_date"] = pd.to_datetime(df["price_date"])
-    df["nav"]        = df["nav"].astype(float)
-
-    log.info("private_fund_indicators: %d NAV rows for %d funds.",
-             len(df), df["beian_hao"].nunique())
-
-    RISK_FREE = 0.03
-    SQRT252   = math.sqrt(252)
-    MIN_PTS   = 20
-
-    def base_nav(gdf, cutoff):
-        sub = gdf.loc[gdf["price_date"].dt.date <= cutoff]
-        return float(sub.iloc[-1]["nav"]) if not sub.empty else None
-
-    def pct_ret(latest, base):
-        if base is None or base <= 0:
-            return None
-        return round((latest / base - 1) * 100, 4)
-
-    results: list = []
-    for beian_hao, gdf in df.groupby("beian_hao", sort=False):
-        gdf        = gdf.sort_values("price_date")
-        latest_row = gdf.iloc[-1]
-        latest_nav = float(latest_row["nav"])
-        # Use the fund's own latest NAV date as the reference so that returns
-        # are measured up to the most-recent data point, not today's date
-        # (which may be days/weeks after the last NAV for weekly/monthly funds).
-        ref_date   = latest_row["price_date"].date()
-
-        cutoff_1w  = ref_date - timedelta(days=7)
-        cutoff_1m  = ref_date - timedelta(days=30)
-        cutoff_3m  = ref_date - timedelta(days=91)
-        cutoff_6m  = ref_date - timedelta(days=182)
-        cutoff_1y  = ref_date - timedelta(days=365)
-
-        ret_1w = pct_ret(latest_nav, base_nav(gdf, cutoff_1w))
-        ret_1m = pct_ret(latest_nav, base_nav(gdf, cutoff_1m))
-        ret_3m = pct_ret(latest_nav, base_nav(gdf, cutoff_3m))
-        ret_6m = pct_ret(latest_nav, base_nav(gdf, cutoff_6m))
-        b1y    = base_nav(gdf, cutoff_1y)
-        ret_1y = pct_ret(latest_nav, b1y)
-
-        sharpe_1y: float | None = None
-        calmar_1y: float | None = None
-
-        sub_1y = gdf.loc[gdf["price_date"].dt.date >= cutoff_1y]
-        if len(sub_1y) >= MIN_PTS and ret_1y is not None:
-            nav_arr    = sub_1y["nav"].to_numpy(dtype=float)
-            daily_rets = np.diff(nav_arr) / nav_arr[:-1]
-            if len(daily_rets) >= MIN_PTS - 1:
-                # Infer reporting frequency via the MEDIAN inter-observation gap,
-                # then snap to the nearest standard period count.  Using median
-                # (not mean) makes this robust to occasional missing data gaps
-                # that would otherwise inflate avg_interval and shrink periods_per_yr.
-                dates_in_win  = sub_1y["price_date"].values
-                intervals_d   = np.diff(dates_in_win) / np.timedelta64(1, "D")
-                median_gap    = float(np.median(intervals_d)) if len(intervals_d) else 7.0
-                if   median_gap <= 3:   periods_p_yr = 252.0   # daily
-                elif median_gap <= 10:  periods_p_yr = 52.0    # weekly
-                elif median_gap <= 20:  periods_p_yr = 26.0    # bi-weekly
-                elif median_gap <= 50:  periods_p_yr = 12.0    # monthly
-                else:                   periods_p_yr = 4.0     # quarterly
-                ann_vol = float(daily_rets.std()) * math.sqrt(periods_p_yr)
-                if ann_vol > 0:
-                    ann_ret   = ret_1y / 100.0
-                    sharpe_1y = round((ann_ret - RISK_FREE) / ann_vol, 4)
-                rolling_max = np.maximum.accumulate(nav_arr)
-                drawdowns   = (rolling_max - nav_arr) / rolling_max
-                max_dd      = float(drawdowns.max())
-                if max_dd > 0 and ret_1y is not None:
-                    calmar_1y = round((ret_1y / 100.0) / max_dd, 4)
-
-        results.append((ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
-                        sharpe_1y, calmar_1y, latest_nav, ref_date, beian_hao))
-
-    log.info("private_fund_indicators: updating %d rows in private_fund_info …", len(results))
-
-    BATCH = 1_000
-    updated = 0
-    for i in range(0, len(results), BATCH):
-        batch = results[i : i + BATCH]
-        with conn.cursor() as cur:
-            execute_values(
-                cur,
-                """
-                UPDATE private_fund_info AS t SET
-                    ret_1w          = v.ret_1w::numeric,
-                    ret_1m          = v.ret_1m::numeric,
-                    ret_3m          = v.ret_3m::numeric,
-                    ret_6m          = v.ret_6m::numeric,
-                    ret_1y          = v.ret_1y::numeric,
-                    sharpe_1y       = v.sharpe_1y::numeric,
-                    calmar_1y       = v.calmar_1y::numeric,
-                    latest_nav      = v.latest_nav::numeric,
-                    latest_nav_date = v.latest_nav_date::date,
-                    updated_at      = NOW()
-                FROM (VALUES %s) AS v(
-                    ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
-                    sharpe_1y, calmar_1y, latest_nav, latest_nav_date, beian_hao
-                )
-                WHERE t.beian_hao = v.beian_hao
-                """,
-                batch,
-            )
-        conn.commit()
-        updated += len(batch)
-
-    log.info("private_fund_indicators: done — %d funds updated.", updated)
-    return updated
+    match = re.search(r"Done\.\s+(\d+)\s+funds updated", stderr + stdout)
+    if match:
+        return int(match.group(1))
+    match = re.search(r"ETL completed successfully \((\d+) funds\)", stderr + stdout)
+    if match:
+        return int(match.group(1))
+    return 0
 
 
 def step_investment_pool_metrics() -> int:
@@ -2406,9 +2300,9 @@ def step_email_nav_parse(days: int | None = None) -> int:
     lookback = days
     if lookback is None:
         try:
-            lookback = int(os.environ.get("EMAIL_NAV_ETL_DAYS", "31"))
+            lookback = int(os.environ.get("EMAIL_NAV_ETL_DAYS", "400"))
         except ValueError:
-            lookback = 31
+            lookback = 400
 
     log.info("email_nav_parse: fetching fund emails (last %d days) …", lookback)
     result = run_node_script(
@@ -2487,7 +2381,7 @@ ORDERED_STEPS = [
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
-    "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表
+    "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "warm_mom_cache",                # warm MOM dashboard API caches

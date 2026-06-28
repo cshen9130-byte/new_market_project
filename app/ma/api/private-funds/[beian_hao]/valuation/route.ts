@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server"
-import { getFundValuationAllocation } from "@/lib/server/fund-valuation-allocation"
+import {
+  getFundAllocationTrend,
+  getFundValuationAllocation,
+} from "@/lib/server/fund-valuation-allocation"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -13,6 +16,15 @@ export async function GET(
     const url = new URL(req.url)
     const mode = url.searchParams.get("mode") === "all" ? "all" : "major"
     const curves = url.searchParams.get("curves") === "1"
+    const trend = url.searchParams.get("trend") === "1"
+
+    if (trend) {
+      const from = url.searchParams.get("from") ?? ""
+      const to = url.searchParams.get("to") ?? ""
+      const data = await getFundAllocationTrend(raw, from, to, mode)
+      return NextResponse.json(data)
+    }
+
     const data = await getFundValuationAllocation(raw, mode, { includeReturnCurves: curves })
     return NextResponse.json(data)
   } catch (e) {

@@ -1,12 +1,13 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type React from "react"
 import { useParams, useRouter } from "next/navigation"
 import Link from "next/link"
 import ReactECharts from "echarts-for-react"
-import { ArrowLeft, Camera, Download } from "lucide-react"
+import { ArrowLeft, BarChart2, Camera, Download } from "lucide-react"
 import { FundDatabaseShell } from "@/components/ma/fund-database-shell"
+import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import { DerivativesPanel, type DerivativeRow } from "./DerivativesPanel"
 import { SectorMarketSharePanel, type DerivativeSectorShareRow } from "./SectorMarketSharePanel"
 import { OptionsPanel, type OptionRow } from "./OptionsPanel"
@@ -14,6 +15,10 @@ import { GreeksPanel, TermAnalysisPanel, type GreekLetterRow, type TermAnalysisR
 import { FofFundsPanel, type FundHoldingRow } from "./FofFundsPanel"
 import { FofReturnCurvePanel, type ReturnCurveSeries } from "./FofReturnCurvePanel"
 import { OtherHoldingsPanel, type OtherHoldingRow } from "./OtherHoldingsPanel"
+import {
+  AllocationTrendPanel,
+  type AllocationTrendSeries,
+} from "./AllocationTrendPanel"
 
 type AllocationRow = {
   index: number
@@ -53,6 +58,13 @@ type ValuationData = {
   term_analysis: TermAnalysisRow[]
   has_data: boolean
   match_method: string | null
+}
+
+type AllocationTrendData = {
+  dates: string[]
+  series: AllocationTrendSeries[]
+  has_data: boolean
+  point_count: number
 }
 
 const VALUATION_TABS = [
@@ -123,6 +135,10 @@ function resolvePeriodRange(
   }
 }
 
+function valuationEndDate(data: ValuationData | null | undefined): string {
+  return data?.valuation_date?.slice(0, 10) ?? data?.unit_nav_date ?? ""
+}
+
 function MetricLine({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="text-sm leading-7">
@@ -130,6 +146,37 @@ function MetricLine({ label, value }: { label: string; value: React.ReactNode })
       <span className="font-semibold text-zinc-900 tabular-nums">{value}</span>
     </div>
   )
+}
+
+function HeaderActionTip({
+  label,
+  children,
+}: {
+  label: string
+  children: React.ReactElement
+}) {
+  return (
+    <UiTooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent
+        side="bottom"
+        sideOffset={8}
+        className="bg-zinc-800 text-white border-0 px-2.5 py-1 text-xs shadow-md [&>svg]:fill-zinc-800 [&>svg]:bg-zinc-800"
+      >
+        {label}
+      </TooltipContent>
+    </UiTooltip>
+  )
+}
+
+async function downloadPageScreenshot(el: HTMLElement, filename: string) {
+  const { default: html2canvas } = await import("html2canvas-pro")
+  const canvas = await html2canvas(el, { backgroundColor: "#ffffff", scale: 2, useCORS: true })
+  const url = canvas.toDataURL("image/png")
+  const a = document.createElement("a")
+  a.href = url
+  a.download = filename
+  a.click()
 }
 
 export default function FundValuationAnalysisPage() {
@@ -140,7 +187,7 @@ export default function FundValuationAnalysisPage() {
   const [data, setData] = useState<ValuationData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeTab] = useState<(typeof VALUATION_TABS)[number]>("持仓要素")
+  const [activeTab, setActiveTab] = useState<(typeof VALUATION_TABS)[number]>("持仓要素")
   const [configMode, setConfigMode] = useState<ConfigMode>("major")
 
   const [filterPeriod, setFilterPeriod] = useState("一年")
@@ -150,6 +197,11 @@ export default function FundValuationAnalysisPage() {
 
   const [returnCurves, setReturnCurves] = useState<ReturnCurveSeries[]>([])
   const [curvesLoading, setCurvesLoading] = useState(false)
+  const captureRef = useRef<HTMLDivElement>(null)
+
+  const [trendData, setTrendData] = useState<AllocationTrendData | null>(null)
+  const [trendLoading, setTrendLoading] = useState(false)
+  const [trendError, setTrendError] = useState<string | null>(null)
 
   const loadData = useCallback((mode: ConfigMode) => {
     if (!beian_hao) return
@@ -167,7 +219,7 @@ export default function FundValuationAnalysisPage() {
       })
       .then((d) => {
         setData(d)
-        const endDate = d.unit_nav_date ?? d.valuation_date?.slice(0, 10) ?? ""
+        const endDate = valuationEndDate(d)
         if (endDate) {
           const { from, to } = resolvePeriodRange("一年", endDate, d.inception_date)
           setFilterFrom(from)
@@ -181,6 +233,37 @@ export default function FundValuationAnalysisPage() {
   useEffect(() => {
     loadData(configMode)
   }, [loadData, configMode])
+
+  const loadTrendData = useCallback(async () => {
+    if (!beian_hao || !filterFrom || !filterTo) return null
+    setTrendLoading(true)
+    setTrendError(null)
+    const qs = configMode === "major" ? "mode=major" : "mode=all"
+    try {
+      const r = await fetch(
+        `/ma/api/private-funds/${encodeURIComponent(beian_hao)}/valuation?trend=1&from=${encodeURIComponent(filterFrom)}&to=${encodeURIComponent(filterTo)}&${qs}`,
+      )
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({} as { error?: string }))
+        throw new Error(body.error ?? `HTTP ${r.status}`)
+      }
+      const d = await r.json() as AllocationTrendData
+      setTrendData(d)
+      return d
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "加载失败"
+      setTrendError(message)
+      setTrendData(null)
+      return null
+    } finally {
+      setTrendLoading(false)
+    }
+  }, [beian_hao, configMode, filterFrom, filterTo])
+
+  useEffect(() => {
+    if (activeTab !== "持仓分析" || !beian_hao || !filterFrom || !filterTo) return
+    void loadTrendData()
+  }, [activeTab, beian_hao, filterFrom, filterTo, configMode, loadTrendData])
 
   useEffect(() => {
     if (!beian_hao || loading || error || data?.layout_type !== "fof" || !data.has_data) return
@@ -253,16 +336,23 @@ export default function FundValuationAnalysisPage() {
   function applyPeriod(period: string) {
     setFilterPeriod(period)
     if (period === "自定义" || !data) return
-    const endDate = data.unit_nav_date ?? data.valuation_date?.slice(0, 10) ?? ""
+    const endDate = valuationEndDate(data)
     if (!endDate) return
     const { from, to } = resolvePeriodRange(period, endDate, data.inception_date)
     setFilterFrom(from)
     setFilterTo(to)
   }
 
+  function handleStartAnalysis() {
+    loadData(configMode)
+    if (activeTab === "持仓分析") {
+      void loadTrendData()
+    }
+  }
+
   function handleReset() {
     if (!data) return
-    const endDate = data.unit_nav_date ?? data.valuation_date?.slice(0, 10) ?? ""
+    const endDate = valuationEndDate(data)
     setFilterPeriod("一年")
     if (endDate) {
       const { from, to } = resolvePeriodRange("一年", endDate, data.inception_date)
@@ -289,6 +379,13 @@ export default function FundValuationAnalysisPage() {
     URL.revokeObjectURL(a.href)
   }
 
+  const handleScreenshot = useCallback(async () => {
+    const el = captureRef.current
+    if (!el) return
+    const dateLabel = data?.valuation_date?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
+    await downloadPageScreenshot(el, `${displayName}_估值表分析_${dateLabel}.png`)
+  }, [data?.valuation_date, displayName])
+
   return (
     <FundDatabaseShell onNavigate={navigateFunds}>
       <div className="min-h-0">
@@ -300,6 +397,7 @@ export default function FundValuationAnalysisPage() {
         返回基金详情
       </Link>
 
+      <div ref={captureRef}>
       {/* Header */}
       <div className="bg-white rounded-lg border border-zinc-100 px-5 py-4 mb-3">
         <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
@@ -309,10 +407,27 @@ export default function FundValuationAnalysisPage() {
               估值表分析
             </span>
           </div>
-          <div className="flex items-center gap-1 text-zinc-400">
-            <button type="button" className="p-1.5 rounded hover:bg-zinc-100 hover:text-zinc-600 transition-colors" title="截图">
-              <Camera className="h-4 w-4" />
-            </button>
+          <div className="flex items-center gap-0.5 shrink-0">
+            <HeaderActionTip label="截图">
+              <button
+                type="button"
+                onClick={() => { void handleScreenshot() }}
+                className="p-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+              >
+                <Camera className="h-[18px] w-[18px]" />
+              </button>
+            </HeaderActionTip>
+            <HeaderActionTip label="估值表列表">
+              <button
+                type="button"
+                onClick={() => router.push(
+                  `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}/valuation/records`,
+                )}
+                className="p-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+              >
+                <BarChart2 className="h-[18px] w-[18px]" />
+              </button>
+            </HeaderActionTip>
           </div>
         </div>
 
@@ -429,7 +544,7 @@ export default function FundValuationAnalysisPage() {
           </button>
           <button
             type="button"
-            onClick={() => loadData(configMode)}
+            onClick={handleStartAnalysis}
             className="px-3 py-1.5 rounded bg-red-500 text-white hover:bg-red-600 font-medium transition-colors"
           >
             开始分析
@@ -439,23 +554,27 @@ export default function FundValuationAnalysisPage() {
 
       {/* Tabs */}
       <div className="flex items-center gap-6 border-b border-zinc-100 mb-4 overflow-x-auto bg-white px-1">
-        {VALUATION_TABS.map((tab) => (
+        {VALUATION_TABS.map((tab) => {
+          const enabled = tab === "持仓要素" || tab === "持仓分析"
+          return (
           <button
             key={tab}
             type="button"
-            disabled={tab !== "持仓要素"}
+            disabled={!enabled}
+            onClick={() => enabled && setActiveTab(tab)}
             className={[
               "pb-2.5 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px shrink-0",
               tab === activeTab
                 ? "text-red-500 border-red-500 font-medium"
-                : tab === "持仓要素"
+                : enabled
                   ? "text-zinc-500 border-transparent hover:text-zinc-700"
                   : "text-zinc-300 border-transparent cursor-not-allowed",
             ].join(" ")}
           >
             {tab}
           </button>
-        ))}
+          )
+        })}
       </div>
 
       {loading && (
@@ -470,16 +589,34 @@ export default function FundValuationAnalysisPage() {
         </div>
       )}
 
-      {!loading && !error && data && !data.has_data && (
+      {!loading && !error && data && !data.has_data && activeTab === "持仓要素" && (
         <div className="bg-white rounded-lg border border-zinc-100 p-10 text-center">
           <p className="text-zinc-700 font-medium mb-2">暂无估值表数据</p>
           <p className="text-sm text-zinc-500 max-w-lg mx-auto leading-relaxed">
-            尚未从邮件中抓取到该基金的估值表。请确认运维邮箱已收到估值表附件，并在「运维 → 邮件解析」中查看抓取状态。
+            尚未从邮件中抓取到该基金的估值表。估值表由 nightly ETL 从运维邮箱同步，请确认邮箱已收到附件，或在「运维 → 邮件解析」中手动触发抓取。
           </p>
         </div>
       )}
 
-      {!loading && !error && data?.has_data && (
+      {!loading && !error && activeTab === "持仓分析" && (
+        <>
+          {trendError && (
+            <div className="bg-white rounded-lg border border-red-200 p-4 mb-4 text-sm text-red-600">
+              加载失败：{trendError}
+            </div>
+          )}
+          <AllocationTrendPanel
+            dates={trendData?.dates ?? []}
+            series={trendData?.series ?? []}
+            displayName={displayName}
+            fromDate={filterFrom}
+            toDate={filterTo}
+            loading={trendLoading}
+          />
+        </>
+      )}
+
+      {!loading && !error && data?.has_data && activeTab === "持仓要素" && (
         <>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-1 bg-white rounded-lg border border-zinc-100 p-4 shadow-sm">
@@ -509,8 +646,8 @@ export default function FundValuationAnalysisPage() {
               <div className="inline-flex rounded border border-zinc-200 overflow-hidden text-xs">
                 {!isFofLayout && ([
                   ["major", "大类配置"],
-                  ["strategy1", "一级战略"],
-                  ["strategy2", "二级战略"],
+                  ["strategy1", "一级策略"],
+                  ["strategy2", "二级策略"],
                 ] as const).map(([key, label]) => (
                   <button
                     key={key}
@@ -551,7 +688,7 @@ export default function FundValuationAnalysisPage() {
             </table>
             {configMode !== "major" && !isFofLayout && (
               <p className="px-4 py-3 text-xs text-zinc-400 border-t border-zinc-50">
-                一级/二级战略视图开发中，当前展示全部资产类别。
+                一级/二级策略视图开发中，当前展示全部资产类别。
               </p>
             )}
           </div>
@@ -605,6 +742,7 @@ export default function FundValuationAnalysisPage() {
         )}
         </>
       )}
+      </div>
       </div>
     </FundDatabaseShell>
   )

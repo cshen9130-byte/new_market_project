@@ -173,7 +173,7 @@ export function DerivativesPanel({ derivatives, valuationDate, displayName }: Pr
             type="button"
             className="px-3 py-1 rounded border border-red-500 text-red-500 hover:bg-red-50 font-medium"
           >
-            报批
+            详情
           </button>
           <button
             type="button"

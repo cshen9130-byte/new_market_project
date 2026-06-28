@@ -10,9 +10,15 @@ import {
 } from "@/lib/server/option-contract-code"
 import { loadOptionMarketGreeks } from "@/lib/server/option-greeks-market"
 import { inferDerivativeSector, DERIVATIVE_SECTOR_CHART_ORDER, type DerivativeSector } from "@/lib/server/derivative-sector"
-import { listFundLatestValuationHoldings } from "@/lib/server/email-valuation-holdings-pg"
+import {
+  listFundLatestValuationHoldings,
+  mapValuationRowsToHoldings,
+  type FundLatestHoldingRow,
+  type ValuationHoldingInsert,
+} from "@/lib/server/email-valuation-holdings-pg"
+import { ensureEmailValuationTable, listEmailValuationRecords, lookupLatestValuationCustodian, lookupValuationCustodianByRecordId, type EmailValuationRecordRow } from "@/lib/server/email-valuation-pg"
+import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 import { listFundMetricsLatest } from "@/lib/server/email-valuation-metrics-pg"
-import { lookupLatestValuationCustodian, lookupValuationCustodianByRecordId } from "@/lib/server/email-valuation-pg"
 import { resolveValuationCustodian, normalizeRegistrationCustodian } from "@/lib/server/email-valuation-custodian"
 import { resolveRouteFundId, lookupFundInfoFallback, resolveFundBeianHao } from "@/lib/server/fof-underlying-query"
 import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
@@ -1292,4 +1298,359 @@ export async function getFundValuationAllocation(
     has_data: allocation.length > 0 || fund_holdings.length > 0 || derivatives.length > 0,
     match_method,
   }
+}
+
+export type AllocationTrendSeries = {
+  category: string
+  rowKind: string
+  values: number[]
+}
+
+export type AllocationTrendResult = {
+  dates: string[]
+  series: AllocationTrendSeries[]
+  has_data: boolean
+  point_count: number
+}
+
+function holdingInsertToRow(h: ValuationHoldingInsert): HoldingRow {
+  const numStr = (v: number | null | undefined) =>
+    v == null || !Number.isFinite(v) ? null : String(v)
+
+  return {
+    id: 0,
+    valuation_record_id: h.valuationRecordId,
+    product_code: h.productCode,
+    fund_name: h.fundName,
+    valuation_date: h.valuationDate,
+    row_index: h.rowIndex,
+    subject_code: h.subjectCode,
+    original_subject_code: h.originalSubjectCode,
+    subject_name: h.subjectName,
+    symbol: h.symbol,
+    row_kind: h.rowKind,
+    direction: h.direction,
+    exchange: h.exchange,
+    asset_class: h.assetClass,
+    currency: h.currency,
+    fx_rate: numStr(h.fxRate),
+    quantity: numStr(h.quantity),
+    unit_cost: numStr(h.unitCost),
+    cost: numStr(h.cost),
+    signed_cost: numStr(h.signedCost),
+    price: numStr(h.price),
+    market_value: numStr(h.marketValue),
+    signed_market_value: numStr(h.signedMarketValue),
+    unrealized_pnl: numStr(h.unrealizedPnl),
+    cost_weight: numStr(h.costWeight),
+    market_weight: numStr(h.marketWeight),
+    is_leaf: h.isLeaf,
+    include_in_detail: h.includeInDetail,
+    include_in_analysis: h.includeInAnalysis,
+    extra: h.extra,
+    refreshed_at: "",
+  }
+}
+
+function jsonHoldingsToRows(
+  recordId: number,
+  meta: { productCode: string | null; fundName: string | null; valuationDate: string },
+  holdings: ValuationRow[],
+): HoldingRow[] {
+  if (!Array.isArray(holdings) || holdings.length === 0) return []
+  return mapValuationRowsToHoldings(holdings, {
+    valuationRecordId: recordId,
+    productCode: meta.productCode,
+    fundName: meta.fundName,
+    valuationDate: meta.valuationDate,
+  })
+    .filter((h) => h.subjectCode && h.subjectName)
+    .map(holdingInsertToRow)
+}
+
+function computeSnapshotAllocation(
+  holdings: HoldingRow[],
+  mode: AllocationMode,
+  custodyBalance: number,
+  netAssetValue: number,
+): AllocationRow[] {
+  const sums = aggregateByRowKind(holdings, mode)
+  if (custodyBalance > 0) {
+    sums.set("bank_deposit", custodyBalance)
+  }
+
+  let nav = netAssetValue
+  if (nav <= 0) {
+    nav = [...sums.values()].reduce((s, v) => s + v, 0)
+  }
+
+  const layout_type = detectValuationLayoutType(holdings)
+  return layout_type === "fof"
+    ? aggregateFofAllocation(holdings, nav, custodyBalance)
+    : buildAllocation(sums, nav)
+}
+
+export async function getFundAllocationTrend(
+  rawBeianHao: string,
+  fromDate: string,
+  toDate: string,
+  mode: AllocationMode = "major",
+): Promise<AllocationTrendResult> {
+  const empty: AllocationTrendResult = {
+    dates: [],
+    series: [],
+    has_data: false,
+    point_count: 0,
+  }
+
+  const from = fromDate.slice(0, 10)
+  const to = toDate.slice(0, 10)
+  if (!from || !to || from > to) return empty
+
+  const { product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
+  await ensureEmailValuationTable()
+
+  const namePattern = product_name?.trim() ? `%${product_name.trim()}%` : null
+  const recordParams: unknown[] = [candidateCodes]
+  let nameClause = ""
+  if (namePattern) {
+    recordParams.push(namePattern)
+    nameClause = `OR fund_name ILIKE $${recordParams.length}`
+  }
+  recordParams.push(from, to)
+
+  let records = await query<{
+    id: string
+    product_code: string | null
+    fund_name: string | null
+    valuation_date: string
+    custody_balance: string | null
+    net_asset_value: string | null
+    holdings: ValuationRow[]
+  }>(
+    `SELECT DISTINCT ON (valuation_date)
+       id,
+       product_code,
+       fund_name,
+       valuation_date::text AS valuation_date,
+       custody_balance::text AS custody_balance,
+       net_asset_value::text AS net_asset_value,
+       holdings
+     FROM ops_email_valuation_records
+     WHERE (product_code = ANY($1::text[]) ${nameClause})
+       AND valuation_date >= $${recordParams.length - 1}::date
+       AND valuation_date <= $${recordParams.length}::date
+       AND jsonb_array_length(holdings) > 0
+     ORDER BY valuation_date ASC, id DESC`,
+    recordParams,
+  )
+
+  if (records.length === 0 && product_name) {
+    const fallbackParams: unknown[] = [`%${product_name.trim()}%`, from, to]
+    records = await query<{
+      id: string
+      product_code: string | null
+      fund_name: string | null
+      valuation_date: string
+      custody_balance: string | null
+      net_asset_value: string | null
+      holdings: ValuationRow[]
+    }>(
+      `SELECT DISTINCT ON (valuation_date)
+         id,
+         product_code,
+         fund_name,
+         valuation_date::text AS valuation_date,
+         custody_balance::text AS custody_balance,
+         net_asset_value::text AS net_asset_value,
+         holdings
+       FROM ops_email_valuation_records
+       WHERE fund_name ILIKE $1
+         AND valuation_date >= $2::date
+         AND valuation_date <= $3::date
+         AND jsonb_array_length(holdings) > 0
+       ORDER BY valuation_date ASC, id DESC`,
+      fallbackParams,
+    )
+  }
+
+  if (records.length === 0) return empty
+
+  const recordIds = records.map((r) => parseInt(r.id, 10)).filter((id) => Number.isFinite(id))
+  const holdingRows = recordIds.length > 0
+    ? await query<FundLatestHoldingRow>(
+      `SELECT *
+       FROM ops_email_valuation_holdings
+       WHERE valuation_record_id = ANY($1::bigint[])
+       ORDER BY valuation_record_id, row_index`,
+      [recordIds],
+    )
+    : []
+
+  const holdingsByRecord = new Map<number, HoldingRow[]>()
+  for (const row of holdingRows) {
+    const id = row.valuation_record_id
+    const list = holdingsByRecord.get(id)
+    if (list) list.push(row)
+    else holdingsByRecord.set(id, [row])
+  }
+
+  const snapshots: { date: string; allocation: AllocationRow[] }[] = []
+  for (const record of records) {
+    const recordId = parseInt(record.id, 10)
+    let holdings = holdingsByRecord.get(recordId) ?? []
+    if (holdings.length === 0) {
+      holdings = jsonHoldingsToRows(recordId, {
+        productCode: record.product_code,
+        fundName: record.fund_name,
+        valuationDate: record.valuation_date.slice(0, 10),
+      }, Array.isArray(record.holdings) ? record.holdings : [])
+    }
+    if (holdings.length === 0) continue
+
+    const custodyBalance = parseNum(record.custody_balance)
+    const netAssetValue = parseNum(record.net_asset_value)
+    const allocation = computeSnapshotAllocation(holdings, mode, custodyBalance, netAssetValue)
+    if (allocation.length === 0) continue
+
+    snapshots.push({
+      date: record.valuation_date.slice(0, 10),
+      allocation,
+    })
+  }
+
+  if (snapshots.length === 0) return empty
+
+  const dates = snapshots.map((s) => s.date)
+  const categoryOrder = new Map<string, { rowKind: string; order: number }>()
+  let orderIdx = 0
+
+  for (const snapshot of snapshots) {
+    for (const row of snapshot.allocation) {
+      if (!categoryOrder.has(row.category)) {
+        categoryOrder.set(row.category, { rowKind: row.rowKind, order: orderIdx++ })
+      }
+    }
+  }
+
+  const sortedCategories = [...categoryOrder.entries()]
+    .sort((a, b) => {
+      const ai = DISPLAY_ORDER.indexOf(a[1].rowKind)
+      const bi = DISPLAY_ORDER.indexOf(b[1].rowKind)
+      const ao = ai >= 0 ? ai : 999
+      const bo = bi >= 0 ? bi : 999
+      if (ao !== bo) return ao - bo
+      return a[1].order - b[1].order
+    })
+
+  const series: AllocationTrendSeries[] = sortedCategories.map(([category, meta]) => ({
+    category,
+    rowKind: meta.rowKind,
+    values: snapshots.map((snapshot) => {
+      const row = snapshot.allocation.find((r) => r.category === category)
+      return row?.pct ?? 0
+    }),
+  }))
+
+  return {
+    dates,
+    series,
+    has_data: series.some((s) => s.values.some((v) => v > 0)),
+    point_count: dates.length,
+  }
+}
+
+async function resolveFundValuationCandidateCodes(rawBeianHao: string): Promise<{
+  beian_hao: string
+  product_name: string | null
+  candidateCodes: string[]
+}> {
+  const beian_hao = await resolveRouteFundId(rawBeianHao)
+  const product_name = await resolveFundName(beian_hao)
+  const candidateCodes = new Set<string>([beian_hao])
+  const remapped = remapManagedProductBeianCode(beian_hao)
+  if (remapped) candidateCodes.add(remapped)
+  const override = lookupManagedProductOverride(beian_hao)
+  if (override?.beian_hao) candidateCodes.add(override.beian_hao)
+  return { beian_hao, product_name, candidateCodes: [...candidateCodes] }
+}
+
+export async function listFundValuationEmailRecords(
+  rawBeianHao: string,
+  options?: { limit?: number; offset?: number },
+): Promise<{ records: EmailValuationRecordRow[]; total: number }> {
+  const { product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
+
+  const byCode = await listEmailValuationRecords({
+    productCodes: candidateCodes,
+    limit: options?.limit ?? 50,
+    offset: options?.offset ?? 0,
+  })
+  if (byCode.total > 0 || !product_name) return byCode
+
+  return listEmailValuationRecords({
+    fundName: product_name,
+    limit: options?.limit ?? 50,
+    offset: options?.offset ?? 0,
+  })
+}
+
+export async function getFundValuationCalendarSummary(rawBeianHao: string): Promise<{
+  total: number
+  dateFrom: string | null
+  dateTo: string | null
+  dates: string[]
+  entries: Array<{ date: string; id: number; attachmentFilename: string | null }>
+}> {
+  await ensureEmailValuationTable()
+  const { product_name, candidateCodes } = await resolveFundValuationCandidateCodes(rawBeianHao)
+
+  async function querySummary(whereClause: string, queryParams: unknown[]) {
+    const summaryRows = await query<{ total: string; date_from: string | null; date_to: string | null }>(
+      `SELECT COUNT(*)::text AS total,
+              MIN(valuation_date)::text AS date_from,
+              MAX(valuation_date)::text AS date_to
+       FROM ops_email_valuation_records
+       WHERE ${whereClause} AND valuation_date IS NOT NULL`,
+      queryParams,
+    )
+    const dateRows = await query<{ valuation_date: string }>(
+      `SELECT DISTINCT valuation_date::text AS valuation_date
+       FROM ops_email_valuation_records
+       WHERE ${whereClause} AND valuation_date IS NOT NULL
+       ORDER BY valuation_date`,
+      queryParams,
+    )
+    const entryRows = await query<{
+      valuation_date: string
+      id: number
+      attachment_filename: string | null
+    }>(
+      `SELECT DISTINCT ON (valuation_date)
+              valuation_date::text AS valuation_date,
+              id,
+              attachment_filename
+       FROM ops_email_valuation_records
+       WHERE ${whereClause} AND valuation_date IS NOT NULL
+       ORDER BY valuation_date ASC, id DESC`,
+      queryParams,
+    )
+    const summary = summaryRows[0]
+    return {
+      total: parseInt(summary?.total ?? "0", 10),
+      dateFrom: summary?.date_from?.slice(0, 10) ?? null,
+      dateTo: summary?.date_to?.slice(0, 10) ?? null,
+      dates: dateRows.map((r) => r.valuation_date.slice(0, 10)),
+      entries: entryRows.map((r) => ({
+        date: r.valuation_date.slice(0, 10),
+        id: r.id,
+        attachmentFilename: r.attachment_filename,
+      })),
+    }
+  }
+
+  const byCode = await querySummary("product_code = ANY($1::text[])", [candidateCodes])
+  if (byCode.total > 0 || !product_name) return byCode
+
+  return querySummary("fund_name ILIKE $1", [`%${product_name}%`])
 }

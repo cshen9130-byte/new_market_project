@@ -162,6 +162,22 @@ async function main() {
       days,
       skipNavLatestRefresh: parseOnly,
     })
+
+    if (!parseOnly) {
+      console.error("[email_nav_etl] backfilling normalized valuation holdings…")
+    }
+    try {
+      const { backfillValuationHoldingsFromRecords } = await import(
+        "@/lib/server/email-valuation-holdings-pg"
+      )
+      const backfill = await backfillValuationHoldingsFromRecords()
+      console.error(
+        `[email_nav_etl] holdings backfill done (records=${backfill.recordsProcessed}, rows=${backfill.holdingsSaved})`,
+      )
+    } catch (err) {
+      console.warn("[email_nav_etl] holdings backfill skipped:", err)
+    }
+
     console.log(
       JSON.stringify({
         ok: true,
