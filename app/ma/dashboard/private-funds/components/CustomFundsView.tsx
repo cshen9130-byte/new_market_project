@@ -19,9 +19,12 @@ import {
   Search,
   Settings2,
   Trash2,
+  TrendingUp,
 } from "lucide-react"
 import { authService } from "@/lib/auth"
 import { CustomFundCreateDialog } from "./CustomFundCreateDialog"
+import { customFundDetailHref } from "@/components/ma/custom-fund-detail-view"
+import { customFundNavManageHref } from "@/components/ma/custom-fund-nav-manage-view"
 
 type ScopeTab = "team" | "mine"
 
@@ -193,8 +196,152 @@ function TrendHoverChart({ productCode }: { productCode: string }) {
   )
 }
 
-const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
+const thBase = "px-3 py-0 h-9 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap box-border leading-tight align-middle"
 const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+const tdBase = "px-3 py-0 h-9 border-b whitespace-nowrap box-border align-middle leading-tight"
+const thScroll = `${thSort} min-w-[6.75rem]`
+const thScrollWide = `${thSort} min-w-[8.5rem]`
+const tdScroll = `${tdBase} min-w-[6.75rem]`
+const tdScrollWide = `${tdBase} min-w-[8.5rem]`
+const stickyHeadBg = "bg-muted/40 dark:bg-muted/20"
+
+const TEAM_MIDDLE_COLS = [
+  ["strategy_l1", "一级策略", thScroll],
+  ["strategy_l2", "二级策略", thScroll],
+  ["latest_nav", "单位净值", thScroll],
+  ["latest_nav_date", "净值日期", thScroll],
+  ["cumulative_nav", "累计净值", thScroll],
+  ["latest_price_change", "涨跌幅", thScroll],
+  ["ret_1m", "近一月收益", thScroll],
+  ["ret_3m", "近三月收益", thScroll],
+  ["ret_6m", "近六月收益", thScroll],
+  ["ret_1y", "近一年收益", thScroll],
+  ["ret_ann_since_inception", "成立以来年化", thScrollWide],
+  ["ret_ytd", "今年以来收益", thScrollWide],
+  ["sharpe_1y", "近一年夏普比率", thScrollWide],
+  ["calmar_1y", "近一年卡玛比率", thScrollWide],
+  ["metric_calc_time", "指标计算时间", thScrollWide],
+  ["nav_completeness", "净值完整度", thScrollWide],
+  ["inception_date", "成立日期", thScroll],
+  ["fund_type", "基金类型", thScroll],
+  ["nav_frequency", "净值频率", thScroll],
+  ["team_member", "团队成员", thScroll],
+  ["remark", "备注", thScrollWide],
+  ["created_by", "创建人", thScroll],
+  ["created_at", "创建时间", thScrollWide],
+] as const
+
+const MINE_MIDDLE_COLS = [
+  ["latest_nav", "单位净值", thScroll],
+  ["latest_nav_date", "净值日期", thScroll],
+  ["cumulative_nav", "累计净值", thScroll],
+  ["ret_1w", "近一周收益", thScroll],
+  ["ret_1m", "近一月收益", thScroll],
+  ["ret_3m", "近三月收益", thScroll],
+  ["ret_6m", "近六月收益", thScroll],
+  ["ret_1y", "近一年收益", thScroll],
+  ["sharpe_1y", "近一年夏普比率", thScrollWide],
+  ["calmar_1y", "近一年卡玛比率", thScrollWide],
+  ["benchmark_index", "基准指数", thScroll],
+  ["fund_type", "运作", thScroll],
+] as const
+
+function CustomFundRowMenu({
+  rowKey,
+  openRowMenu,
+  onOpenChange,
+  onNavManage,
+  onScaleManage,
+  onEdit,
+  onDelete,
+}: {
+  rowKey: string
+  openRowMenu: string | null
+  onOpenChange: (key: string | null) => void
+  onNavManage: () => void
+  onScaleManage: () => void
+  onEdit: () => void
+  onDelete: () => void
+}) {
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const [pos, setPos] = useState<{ top?: number; bottom?: number; right: number } | null>(null)
+  const open = openRowMenu === rowKey
+
+  useEffect(() => {
+    if (!open || !btnRef.current) return
+    const rect = btnRef.current.getBoundingClientRect()
+    const spaceBelow = window.innerHeight - rect.bottom
+    if (spaceBelow < 160) {
+      setPos({ bottom: window.innerHeight - rect.top + 4, right: window.innerWidth - rect.right })
+    } else {
+      setPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
+    }
+  }, [open])
+
+  function close() {
+    onOpenChange(null)
+  }
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onOpenChange(open ? null : rowKey)
+        }}
+        className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest"
+      >
+        ···
+      </button>
+      {open && pos && createPortal(
+        <>
+          <div className="fixed inset-0 z-[100]" onClick={close} />
+          <div
+            className="fixed z-[101] bg-background border rounded-lg shadow-lg py-1 min-w-[148px]"
+            style={{ top: pos.top, bottom: pos.bottom, right: pos.right }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => { onNavManage(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+            >
+              <LineChart className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              净值管理
+            </button>
+            <button
+              type="button"
+              onClick={() => { onScaleManage(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+            >
+              <TrendingUp className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              规模管理
+            </button>
+            <button
+              type="button"
+              onClick={() => { onEdit(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"
+            >
+              <Pencil className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              编辑
+            </button>
+            <button
+              type="button"
+              onClick={() => { onDelete(); close() }}
+              className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500"
+            >
+              <Trash2 className="h-3.5 w-3.5 shrink-0" />
+              删除
+            </button>
+          </div>
+        </>,
+        document.body,
+      )}
+    </>
+  )
+}
 
 interface AddedCol {
   id: string
@@ -312,6 +459,7 @@ export function CustomFundsView() {
   const [showAddMetric, setShowAddMetric] = useState(false)
   const [showNavUpload, setShowNavUpload] = useState(false)
   const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const [listRefreshKey, setListRefreshKey] = useState(0)
   const [addedCols, setAddedCols] = useState<AddedCol[]>([])
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null)
   const [metricTemplates, setMetricTemplates] = useState(() => loadMetricTemplates())
@@ -319,12 +467,20 @@ export function CustomFundsView() {
   const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
   const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
+  const middleScrollRef = useRef<HTMLDivElement>(null)
+  const middleHeaderScrollRef = useRef<HTMLDivElement>(null)
+
+  function syncMiddleScroll(source: "header" | "body") {
+    const body = middleScrollRef.current
+    const header = middleHeaderScrollRef.current
+    if (!body || !header) return
+    if (source === "body") header.scrollLeft = body.scrollLeft
+    else body.scrollLeft = header.scrollLeft
+  }
 
   const isTeam = scopeTab === "team"
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const teamTableColSpan = 29 + addedCols.length
-  const mineTableColSpan = 18 + addedCols.length
-  const tableColSpan = isTeam ? teamTableColSpan : mineTableColSpan
   const l2Options = strategyL1
     ? (strategyHierarchy.find((n) => n.l1 === strategyL1)?.l2s ?? [])
     : []
@@ -392,7 +548,7 @@ export function CustomFundsView() {
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, scopeTab, strategySource, strategyL1, strategyL2, teamMember, personalTags, keyword, sortKey, sortDir, cutoffDate, isTeam])
+  }, [page, pageSize, scopeTab, strategySource, strategyL1, strategyL2, teamMember, personalTags, keyword, sortKey, sortDir, cutoffDate, isTeam, listRefreshKey])
 
   function handleSort(col: CustomFundSortKey) {
     if (sortKey === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"))
@@ -699,6 +855,10 @@ export function CustomFundsView() {
         open={showCreateDialog}
         scope={scopeTab}
         onClose={() => setShowCreateDialog(false)}
+        onSaved={() => {
+          setPage(1)
+          setListRefreshKey((k) => k + 1)
+        }}
       />
 
       <div className="flex flex-col flex-1 min-h-0 rounded-lg border bg-background overflow-hidden">
@@ -815,229 +975,268 @@ export function CustomFundsView() {
           </div>
         </div>
 
-        <div className="overflow-auto flex-1 min-h-0">
-        <table className="text-sm border-collapse w-full" style={{ minWidth: isTeam ? 2600 : 1800 }}>
-          <thead className="bg-muted/30 sticky top-0 z-10">
-            <tr>
-              <th className={`${thBase} w-10`}>
-                <input type="checkbox" checked={data.length > 0 && selected.size === data.length} onChange={toggleAll} className="rounded accent-zinc-700" />
-              </th>
-              {isTeam ? (
-                <>
-                  {([
-                    ["serial_no", "编号"],
-                    ["product_name", "产品名称"],
-                    ["product_code", "产品编码"],
-                    ["strategy_l1", "一级策略"],
-                    ["strategy_l2", "二级策略"],
-                    ["latest_nav", "单位净值"],
-                    ["latest_nav_date", "净值日期"],
-                    ["cumulative_nav", "累计净值"],
-                    ["latest_price_change", "涨跌幅"],
-                    ["ret_1m", "近一月收益"],
-                    ["ret_3m", "近三月收益"],
-                    ["ret_6m", "近六月收益"],
-                    ["ret_1y", "近一年收益"],
-                    ["ret_ann_since_inception", "成立以来年化"],
-                    ["ret_ytd", "今年以来收益"],
-                    ["sharpe_1y", "近一年夏普比率"],
-                    ["calmar_1y", "近一年卡玛比率"],
-                    ["metric_calc_time", "指标计算时间"],
-                    ["nav_completeness", "净值完整度"],
-                    ["inception_date", "成立日期"],
-                    ["fund_type", "基金类型"],
-                    ["nav_frequency", "净值频率"],
-                    ["team_member", "团队成员"],
-                    ["remark", "备注"],
-                    ["created_by", "创建人"],
-                    ["created_at", "创建时间"],
-                  ] as const).map(([key, label]) => (
-                    <th key={key} className={thSort} onClick={() => handleSort(key as CustomFundSortKey)}>
-                      {label}
-                      <SortIcon active={sortKey === key} dir={sortDir} />
-                    </th>
-                  ))}
-                  {addedCols.map((col) => (
-                    <th key={col.id} className={thBase}>{col.label}</th>
-                  ))}
-                  <th className={thBase}>走势</th>
-                </>
-              ) : (
-                <>
-                  <th className={thBase}>序号</th>
-                  {([
-                    ["product_code", "基金ID"],
-                    ["product_name", "产品名称"],
-                  ] as const).map(([key, label]) => (
-                    <th key={key} className={thSort} onClick={() => handleSort(key as CustomFundSortKey)}>
-                      {label}
-                      <SortIcon active={sortKey === key} dir={sortDir} />
-                    </th>
-                  ))}
-                  <th className={thBase}>个人标签</th>
-                  {([
-                    ["latest_nav", "单位净值"],
-                    ["latest_nav_date", "净值日期"],
-                    ["cumulative_nav", "累计净值"],
-                    ["ret_1w", "近一周收益"],
-                    ["ret_1m", "近一月收益"],
-                    ["ret_3m", "近三月收益"],
-                    ["ret_6m", "近六月收益"],
-                    ["ret_1y", "近一年收益"],
-                    ["sharpe_1y", "近一年夏普比率"],
-                    ["calmar_1y", "近一年卡玛比率"],
-                    ["benchmark_index", "基准指数"],
-                    ["fund_type", "运作"],
-                  ] as const).map(([key, label]) => (
-                    <th key={key} className={thSort} onClick={() => handleSort(key as CustomFundSortKey)}>
-                      {label}
-                      <SortIcon active={sortKey === key} dir={sortDir} />
-                    </th>
-                  ))}
-                  {addedCols.map((col) => (
-                    <th key={col.id} className={thBase}>{col.label}</th>
-                  ))}
-                </>
-              )}
-              <th className={`${thBase} sticky right-0 bg-muted/30`}>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={tableColSpan} className="text-center py-16 text-muted-foreground text-sm">加载中…</td></tr>
-            ) : data.length === 0 ? (
-              <tr>
-                <td colSpan={tableColSpan} className="text-center py-16 text-muted-foreground text-sm">
-                  <div className="flex flex-col items-center gap-2">
-                    <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
-                    <span>暂无数据</span>
-                  </div>
-                </td>
-              </tr>
-            ) : data.map((row, i) => (
-              <tr key={row.id} className="border-t hover:bg-muted/20 transition-colors">
-                <td className="px-3 py-2.5">
-                  <input
-                    type="checkbox"
-                    checked={selected.has(row.id)}
-                    onChange={() => {
-                      setSelected((prev) => {
-                        const next = new Set(prev)
-                        if (next.has(row.id)) next.delete(row.id)
-                        else next.add(row.id)
-                        return next
-                      })
-                    }}
-                    className="rounded accent-zinc-700"
-                  />
-                </td>
-                {isTeam ? (
-                  <>
-                    <td className="px-3 py-2.5 tabular-nums text-muted-foreground">{row.serial_no ?? "—"}</td>
-                    <td className="px-3 py-2.5">
-                      <span className="text-blue-600 hover:underline cursor-pointer">{row.product_name}</span>
-                    </td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.product_code ?? "—"}</td>
-                    <td className="px-3 py-2.5">{row.strategy_l1 ?? "—"}</td>
-                    <td className="px-3 py-2.5">{row.strategy_l2 ?? "—"}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{fmtNav(row.latest_nav)}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.latest_nav_date ?? "—"}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{fmtNav(row.cumulative_nav)}</td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.latest_price_change} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_1m} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_3m} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_6m} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_1y} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_ann_since_inception} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_ytd} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><RatioCell value={row.sharpe_1y} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><RatioCell value={row.calmar_1y} /></td>
-                    <td className="px-3 py-2.5 tabular-nums text-muted-foreground">{row.metric_calc_time ?? "—"}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.nav_completeness ?? "—"}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.inception_date ?? "—"}</td>
-                    <td className="px-3 py-2.5">{row.fund_type ?? "—"}</td>
-                    <td className="px-3 py-2.5">{row.nav_frequency ?? "—"}</td>
-                    <td className="px-3 py-2.5">{row.team_member ?? "—"}</td>
-                    <td className="px-3 py-2.5 max-w-[120px] truncate" title={row.remark ?? undefined}>{row.remark ?? "—"}</td>
-                    <td className="px-3 py-2.5">{row.created_by ?? currentUser?.username ?? "—"}</td>
-                    <td className="px-3 py-2.5 tabular-nums text-muted-foreground">{row.created_at ?? "—"}</td>
-                    {addedCols.map((col) => (
-                      <td key={col.id} className="px-3 py-2.5 tabular-nums text-muted-foreground">—</td>
-                    ))}
-                    <td className="px-3 py-2.5">
-                      {row.product_code ? (
-                        <button
-                          className="text-red-500 hover:text-red-600"
-                          onMouseEnter={(e) => {
-                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-                            const rect = e.currentTarget.getBoundingClientRect()
-                            setHoverChartPos({ x: rect.left, y: rect.bottom + 4 })
-                            setHoverChartRow(row.product_code!)
-                          }}
-                          onMouseLeave={() => {
-                            hoverTimeout.current = setTimeout(() => {
-                              setHoverChartRow(null)
-                              setHoverChartPos(null)
-                            }, 200)
-                          }}
-                        >
-                          <LineChart className="h-4 w-4" />
-                        </button>
-                      ) : "—"}
-                    </td>
-                  </>
-                ) : (
-                  <>
-                    <td className="px-3 py-2.5 tabular-nums text-center text-muted-foreground">{(page - 1) * pageSize + i + 1}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.product_code ?? "—"}</td>
-                    <td className="px-3 py-2.5">
-                      <span className="text-blue-600 hover:underline cursor-pointer">{row.product_name}</span>
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex flex-wrap gap-1">
-                        {row.personal_tags && row.personal_tags.length > 0
-                          ? row.personal_tags.map((t) => (
-                            <span key={t} className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-50 text-red-500 border border-red-200 dark:bg-red-950/20 dark:border-red-800">{t}</span>
-                          ))
-                          : <span className="text-muted-foreground">—</span>}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2.5 tabular-nums">{fmtNav(row.latest_nav)}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{row.latest_nav_date ?? "—"}</td>
-                    <td className="px-3 py-2.5 tabular-nums">{fmtNav(row.cumulative_nav)}</td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_1w} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_1m} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_3m} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_6m} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><PctCell value={row.ret_1y} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><RatioCell value={row.sharpe_1y} /></td>
-                    <td className="px-3 py-2.5 tabular-nums"><RatioCell value={row.calmar_1y} /></td>
-                    <td className="px-3 py-2.5">{row.benchmark_index ?? "—"}</td>
-                    <td className="px-3 py-2.5">{row.fund_type ?? "—"}</td>
-                    {addedCols.map((col) => (
-                      <td key={col.id} className="px-3 py-2.5 tabular-nums text-muted-foreground">—</td>
-                    ))}
-                  </>
-                )}
-                <td className="px-3 py-2.5 sticky right-0 bg-background">
-                  <div className="flex items-center gap-1.5">
-                    <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors" title="编辑">
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-red-500 transition-colors" title="删除">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                    {isTeam && (
-                      <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors" title="分析">
-                        <BarChart2 className="h-3.5 w-3.5" />
-                      </button>
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+          <div className={`flex shrink-0 items-center border-b ${stickyHeadBg}`}>
+            <table className="text-sm border-collapse shrink-0 w-[22.5rem] table-fixed border-r border-zinc-200 dark:border-zinc-700">
+              <thead>
+                <tr>
+                  <th className={`${thBase} w-10 px-2 text-center`}>
+                    <input type="checkbox" checked={data.length > 0 && selected.size === data.length} onChange={toggleAll} className="rounded accent-zinc-700" />
+                  </th>
+                  <th className={`${thBase} w-12 text-center`}>序号</th>
+                  <th className={`${thSort} w-24`} onClick={() => handleSort("product_code")}>
+                    基金ID
+                    <SortIcon active={sortKey === "product_code"} dir={sortDir} />
+                  </th>
+                  <th className={`${thSort} w-[11rem]`} onClick={() => handleSort("product_name")}>
+                    产品名称
+                    <SortIcon active={sortKey === "product_name"} dir={sortDir} />
+                  </th>
+                </tr>
+              </thead>
+            </table>
+            <div
+              ref={middleHeaderScrollRef}
+              className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden self-center [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+              onScroll={() => syncMiddleScroll("header")}
+            >
+              <table className="text-sm border-collapse w-max">
+                <thead>
+                  <tr>
+                    {isTeam ? (
+                      TEAM_MIDDLE_COLS.map(([key, label, cls]) => (
+                        <th key={key} className={cls} onClick={() => handleSort(key as CustomFundSortKey)}>
+                          {label}
+                          <SortIcon active={sortKey === key} dir={sortDir} />
+                        </th>
+                      ))
+                    ) : (
+                      <>
+                        <th className={thScrollWide}>个人标签</th>
+                        {MINE_MIDDLE_COLS.map(([key, label, cls]) => (
+                          <th key={key} className={cls} onClick={() => handleSort(key as CustomFundSortKey)}>
+                            {label}
+                            <SortIcon active={sortKey === key} dir={sortDir} />
+                          </th>
+                        ))}
+                      </>
                     )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    {addedCols.map((col) => (
+                      <th key={col.id} className={thScrollWide}>{col.label}</th>
+                    ))}
+                  </tr>
+                </thead>
+              </table>
+            </div>
+            <table className="text-sm border-collapse shrink-0 w-[8.25rem] table-fixed border-l border-zinc-200 dark:border-zinc-700 shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.06)]">
+              <thead>
+                <tr>
+                  <th className={`${thBase} w-14 text-center`}>走势</th>
+                  <th className={`${thBase} w-[4.75rem] text-center`}>操作</th>
+                </tr>
+              </thead>
+            </table>
+          </div>
+
+          <div className="flex flex-1 min-h-0 overflow-y-auto">
+            {loading ? (
+              <div className="flex flex-1 items-center justify-center py-16 text-muted-foreground text-sm">加载中…</div>
+            ) : data.length === 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center py-16 text-muted-foreground text-sm gap-2">
+                <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
+                <span>暂无数据</span>
+              </div>
+            ) : (
+              <div className="flex w-full items-start">
+                <table className="text-sm border-collapse shrink-0 w-[22.5rem] table-fixed border-r border-zinc-200 dark:border-zinc-700">
+                  <tbody>
+                    {data.map((row, i) => {
+                      const isSelected = selected.has(row.id)
+                      const rowBg = isSelected ? "bg-blue-50 dark:bg-blue-950/30" : "bg-background"
+                      const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/30" : "group-hover:bg-muted/20"
+                      const cell = `${tdBase} ${rowBg} ${hoverBg} transition-colors`
+                      return (
+                        <tr key={row.id} className="group">
+                          <td className={`${cell} w-10 px-2 text-center`}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {
+                                setSelected((prev) => {
+                                  const next = new Set(prev)
+                                  if (next.has(row.id)) next.delete(row.id)
+                                  else next.add(row.id)
+                                  return next
+                                })
+                              }}
+                              className="rounded accent-zinc-700"
+                            />
+                          </td>
+                          <td className={`${cell} w-12 text-center tabular-nums text-muted-foreground`}>
+                            {(page - 1) * pageSize + i + 1}
+                          </td>
+                          <td className={`${cell} w-24 tabular-nums`}>{row.product_code ?? "—"}</td>
+                          <td className={`${cell} w-[11rem]`}>
+                            <a
+                              href={row.product_code ? customFundDetailHref(row.product_code) : "#"}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 hover:underline block truncate"
+                              title={row.product_name}
+                            >
+                              {row.product_name}
+                            </a>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+
+                <div
+                  ref={middleScrollRef}
+                  className="flex-1 min-w-0 overflow-x-auto self-start"
+                  onScroll={() => syncMiddleScroll("body")}
+                >
+                  <table className="text-sm border-collapse w-max">
+                    <tbody>
+                      {data.map((row) => {
+                        const isSelected = selected.has(row.id)
+                        const rowBg = isSelected ? "bg-blue-50 dark:bg-blue-950/30" : "bg-background"
+                        const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/30" : "group-hover:bg-muted/20"
+                        const scrollCell = `${tdScroll} ${rowBg} ${hoverBg} transition-colors`
+                        const scrollCellWide = `${tdScrollWide} ${rowBg} ${hoverBg} transition-colors`
+                        return (
+                          <tr key={row.id} className="group">
+                            {isTeam ? (
+                              <>
+                                <td className={scrollCell}>{row.strategy_l1 ?? "—"}</td>
+                                <td className={scrollCell}>{row.strategy_l2 ?? "—"}</td>
+                                <td className={`${scrollCell} tabular-nums`}>{fmtNav(row.latest_nav)}</td>
+                                <td className={`${scrollCell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                                <td className={`${scrollCell} tabular-nums`}>{fmtNav(row.cumulative_nav)}</td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.latest_price_change} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_1m} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_3m} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_6m} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_1y} /></td>
+                                <td className={`${scrollCellWide} tabular-nums`}><PctCell value={row.ret_ann_since_inception} /></td>
+                                <td className={`${scrollCellWide} tabular-nums`}><PctCell value={row.ret_ytd} /></td>
+                                <td className={`${scrollCellWide} tabular-nums`}><RatioCell value={row.sharpe_1y} /></td>
+                                <td className={`${scrollCellWide} tabular-nums`}><RatioCell value={row.calmar_1y} /></td>
+                                <td className={`${scrollCellWide} tabular-nums text-muted-foreground`}>{row.metric_calc_time ?? "—"}</td>
+                                <td className={`${scrollCellWide} tabular-nums`}>{row.nav_completeness ?? "—"}</td>
+                                <td className={`${scrollCell} tabular-nums`}>{row.inception_date ?? "—"}</td>
+                                <td className={scrollCell}>{row.fund_type ?? "—"}</td>
+                                <td className={scrollCell}>{row.nav_frequency ?? "—"}</td>
+                                <td className={scrollCell}>{row.team_member ?? "—"}</td>
+                                <td className={`${scrollCellWide} truncate`} title={row.remark ?? undefined}>{row.remark ?? "—"}</td>
+                                <td className={scrollCell}>{row.created_by ?? currentUser?.username ?? "—"}</td>
+                                <td className={`${scrollCellWide} tabular-nums text-muted-foreground`}>{row.created_at ?? "—"}</td>
+                              </>
+                            ) : (
+                              <>
+                                <td className={scrollCellWide}>
+                                  <div className="flex flex-wrap gap-1">
+                                    {row.personal_tags && row.personal_tags.length > 0
+                                      ? row.personal_tags.map((t) => (
+                                        <span key={t} className="inline-block px-1.5 py-0.5 rounded text-[10px] bg-red-50 text-red-500 border border-red-200 dark:bg-red-950/20 dark:border-red-800">{t}</span>
+                                      ))
+                                      : <span className="text-muted-foreground">—</span>}
+                                  </div>
+                                </td>
+                                <td className={`${scrollCell} tabular-nums`}>{fmtNav(row.latest_nav)}</td>
+                                <td className={`${scrollCell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
+                                <td className={`${scrollCell} tabular-nums`}>{fmtNav(row.cumulative_nav)}</td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_1w} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_1m} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_3m} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_6m} /></td>
+                                <td className={`${scrollCell} tabular-nums`}><PctCell value={row.ret_1y} /></td>
+                                <td className={`${scrollCellWide} tabular-nums`}><RatioCell value={row.sharpe_1y} /></td>
+                                <td className={`${scrollCellWide} tabular-nums`}><RatioCell value={row.calmar_1y} /></td>
+                                <td className={scrollCell}>{row.benchmark_index ?? "—"}</td>
+                                <td className={scrollCell}>{row.fund_type ?? "—"}</td>
+                              </>
+                            )}
+                            {addedCols.map((col) => (
+                              <td key={col.id} className={`${scrollCellWide} tabular-nums text-muted-foreground`}>—</td>
+                            ))}
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <table className="text-sm border-collapse shrink-0 w-[8.25rem] table-fixed border-l border-zinc-200 dark:border-zinc-700 shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.06)]">
+                  <tbody>
+                    {data.map((row) => {
+                      const isSelected = selected.has(row.id)
+                      const rowBg = isSelected ? "bg-blue-50 dark:bg-blue-950/30" : "bg-background"
+                      const hoverBg = isSelected ? "group-hover:bg-blue-100 dark:group-hover:bg-blue-900/30" : "group-hover:bg-muted/20"
+                      const cell = `${tdBase} ${rowBg} ${hoverBg} transition-colors`
+                      return (
+                        <tr key={row.id} className="group">
+                          <td className={`${cell} w-14 text-center`}>
+                            {row.product_code ? (
+                              <button
+                                type="button"
+                                className="inline-flex p-1 rounded text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors"
+                                onMouseEnter={(e) => {
+                                  if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
+                                  const rect = e.currentTarget.getBoundingClientRect()
+                                  setHoverChartPos({ x: rect.left, y: rect.bottom + 4 })
+                                  setHoverChartRow(row.product_code!)
+                                }}
+                                onMouseLeave={() => {
+                                  hoverTimeout.current = setTimeout(() => {
+                                    setHoverChartRow(null)
+                                    setHoverChartPos(null)
+                                  }, 200)
+                                }}
+                              >
+                                <LineChart className="h-4 w-4" />
+                              </button>
+                            ) : "—"}
+                          </td>
+                          <td className={`${cell} w-[4.75rem]`}>
+                            <div className="flex items-center justify-center gap-0.5">
+                              <button
+                                type="button"
+                                title="净值管理"
+                                onClick={() => {
+                                  if (row.product_code) {
+                                    window.open(customFundNavManageHref(row.product_code), "_blank", "noopener,noreferrer")
+                                  }
+                                }}
+                                className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+                              >
+                                <BarChart2 className="h-3.5 w-3.5" />
+                              </button>
+                              <CustomFundRowMenu
+                                rowKey={row.id}
+                                openRowMenu={openRowMenu}
+                                onOpenChange={setOpenRowMenu}
+                                onNavManage={() => {
+                                  if (row.product_code) {
+                                    window.open(customFundNavManageHref(row.product_code), "_blank", "noopener,noreferrer")
+                                  }
+                                }}
+                                onScaleManage={() => {}}
+                                onEdit={() => {}}
+                                onDelete={() => {}}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center justify-between gap-3 px-3 py-2 flex-shrink-0 text-xs text-muted-foreground border-t bg-background">

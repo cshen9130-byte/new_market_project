@@ -135,14 +135,16 @@ function ValuationPieChartIcon({ className }: { className?: string }) {
   )
 }
 
-const ACTIVE_SIDE_ITEM = "private-funds"
+const DEFAULT_ACTIVE_SIDE_ITEM = "private-funds"
 
 function FundDetailPageShell({
   children,
   onNavigateFunds,
+  activeSideItem = DEFAULT_ACTIVE_SIDE_ITEM,
 }: {
   children: React.ReactNode
   onNavigateFunds: (tab: string, side?: string) => void
+  activeSideItem?: string
 }) {
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -175,7 +177,7 @@ function FundDetailPageShell({
           </div>
           <nav className="flex flex-col pt-2 pb-4 overflow-y-auto">
             {fundsSidebarGroups.map((group) => {
-              const hasActive = group.items.some((i) => i.key === ACTIVE_SIDE_ITEM)
+              const hasActive = group.items.some((i) => i.key === activeSideItem)
               return (
                 <div key={group.label}>
                   <div className={[
@@ -189,7 +191,7 @@ function FundDetailPageShell({
                       onClick={() => onNavigateFunds("funds", item.key)}
                       className={[
                         "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
-                        item.key === ACTIVE_SIDE_ITEM
+                        item.key === activeSideItem
                           ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
                           : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
                       ].join(" ")}
@@ -243,6 +245,7 @@ interface Metrics {
 }
 
 interface DetailData {
+  is_custom_fund?: boolean
   info:       FundInfo
   nav_series: NavRow[]
   metrics:    Metrics
@@ -944,6 +947,16 @@ export default function PrivateFundDetailPage() {
     } catch { return "" }
   }
 
+  function userFetchHeaders(): Record<string, string> {
+    try {
+      const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+      const id = u?.id ?? ""
+      return id ? { "x-market-user-id": id } : {}
+    } catch {
+      return {}
+    }
+  }
+
   async function loadFundMeta(id: string) {
     try {
       const res = await fetch(`/ma/api/ops/fund-tags?beian_hao=${encodeURIComponent(id)}`)
@@ -983,7 +996,7 @@ export default function PrivateFundDetailPage() {
     setLoading(true)
     setError(null)
     setPeerMonthly([])
-    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`)
+    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`, { headers: userFetchHeaders() })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json() as Promise<DetailData>
@@ -1601,9 +1614,14 @@ export default function PrivateFundDetailPage() {
     router.push(`/ma/dashboard/private-funds?tab=${tab}&side=${sideItem}`)
   }, [router])
 
+  const activeSideItem = data?.is_custom_fund ? "custom-funds" : DEFAULT_ACTIVE_SIDE_ITEM
+  const backHref = data?.is_custom_fund
+    ? "/ma/dashboard/private-funds?tab=funds&side=custom-funds"
+    : "/ma/dashboard/private-funds"
+
   if (loading) {
     return (
-      <FundDetailPageShell onNavigateFunds={navigateToFundsPage}>
+      <FundDetailPageShell onNavigateFunds={navigateToFundsPage} activeSideItem={DEFAULT_ACTIVE_SIDE_ITEM}>
         <div className="flex items-center justify-center h-40 text-zinc-400 text-sm">加载中…</div>
       </FundDetailPageShell>
     )
@@ -1611,7 +1629,7 @@ export default function PrivateFundDetailPage() {
 
   if (error || !data) {
     return (
-      <FundDetailPageShell onNavigateFunds={navigateToFundsPage}>
+      <FundDetailPageShell onNavigateFunds={navigateToFundsPage} activeSideItem={DEFAULT_ACTIVE_SIDE_ITEM}>
         <div className="flex items-center justify-center h-40 text-red-500 text-sm">
           加载失败：{error ?? "未知错误"}
         </div>
@@ -1639,11 +1657,11 @@ export default function PrivateFundDetailPage() {
 
   return (
     <>
-    <FundDetailPageShell onNavigateFunds={navigateToFundsPage}>
+    <FundDetailPageShell onNavigateFunds={navigateToFundsPage} activeSideItem={activeSideItem}>
     <div>
       {/* Back link */}
       <a
-        href="/ma/dashboard/private-funds"
+        href={backHref}
         className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-700 mb-4 transition-colors"
       >
         <ArrowLeft className="w-3.5 h-3.5" />

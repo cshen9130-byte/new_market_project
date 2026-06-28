@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
 import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
@@ -172,7 +173,13 @@ export async function GET(
   if (!info) {
     info = (await lookupFundInfoFallback(rawId)) ?? (rawId !== beian_hao ? await lookupFundInfoFallback(beian_hao) : null)
   }
-  if (!info) return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+  if (!info) {
+    const ownerUserId = String(_req.headers.get("x-market-user-id") || "").trim() || undefined
+    const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
+      ?? (rawId !== beian_hao ? tryGetCustomFundPrivateDetail(beian_hao, ownerUserId) : null)
+    if (customDetail) return NextResponse.json(customDetail)
+    return NextResponse.json({ error: "Fund not found" }, { status: 404 })
+  }
 
   const routeBeianHao = info.beian_hao || beian_hao
 

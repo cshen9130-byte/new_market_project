@@ -55,22 +55,30 @@ function getColMetricValue(metrics: IntervalMetricValues, col: IntervalColDef): 
   return null
 }
 
+function isValidDateInput(value: string): boolean {
+  if (!value) return false
+  return Number.isFinite(new Date(value).getTime())
+}
+
 export function calcMetricInterval(cutoff: string, days: number): string {
+  if (!isValidDateInput(cutoff)) return "—"
   const end = new Date(cutoff)
   const start = new Date(cutoff)
   start.setDate(start.getDate() - days)
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return "—"
   const fmt = (d: Date) => d.toISOString().slice(0, 10)
   return `${fmt(start)} ~ ${fmt(end)}`
 }
 
 function computeBenchmarkPeriodReturn(series: BenchmarkPoint[], cutoff: string, days: number): number | null {
-  if (!series.length || !cutoff) return null
+  if (!series.length || !isValidDateInput(cutoff)) return null
   const sorted = [...series].sort((a, b) => a.date.localeCompare(b.date))
   const upToCutoff = sorted.filter((p) => p.date <= cutoff)
   if (!upToCutoff.length) return null
   const endVal = upToCutoff[upToCutoff.length - 1].value
   const startDate = new Date(cutoff)
   startDate.setDate(startDate.getDate() - days)
+  if (!Number.isFinite(startDate.getTime())) return null
   const startStr = startDate.toISOString().slice(0, 10)
   const upToStart = sorted.filter((p) => p.date <= startStr)
   if (!upToStart.length) return null

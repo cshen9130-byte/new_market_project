@@ -10071,6 +10071,55 @@ interface OpsProductRowMenuItem {
   destructive?: boolean
 }
 
+/** 估值表分析 – pie chart with one outlined slice (top-right quadrant). */
+function ValuationPieChartIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        d="M12 12 L21.2 12 A9.2 9.2 0 1 1 12 3.05 Z"
+        fill="currentColor"
+      />
+      <path
+        d="M12 12 L12 2.55 A9.45 9.45 0 0 1 21.45 12 Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function openValuationAnalysisPage(beian_hao: string) {
+  window.open(
+    `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}/valuation`,
+    "_blank",
+    "noopener,noreferrer",
+  )
+}
+
+function ValuationAnalysisButton({ beian_hao }: { beian_hao: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={() => openValuationAnalysisPage(beian_hao)}
+          className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ValuationPieChartIcon className="h-3.5 w-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>估值表分析</TooltipContent>
+    </Tooltip>
+  )
+}
+
 function OpsNavManageButton({ onClick }: { onClick?: () => void }) {
   return (
     <Tooltip>
@@ -16572,7 +16621,8 @@ function InvestmentManagedProductsView() {
                       </td>
                       <td style={invStickyRightColStyle(invStickyRight.docs)} className={stickyRightDocs}>—</td>
                       <td style={invStickyRightColStyle(invStickyRight.ops)} className={stickyRightOps}>
-                        <div className="flex items-center justify-center">
+                        <div className="flex items-center justify-center gap-1">
+                          {row.beian_hao && <ValuationAnalysisButton beian_hao={row.beian_hao} />}
                           <InvestmentManagedProductRowMenu
                             onQueryElements={() => openInvElementsDialog(row.beian_hao, row.product_name)}
                             onEditTags={() => openInvTagDialog(row.beian_hao, row.product_name)}

@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server"
+import { listCustomFundTeamMembers } from "@/lib/server/custom-funds"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-/** Team member options for custom fund filters — empty until user directory is wired up. */
 export async function GET() {
-  return NextResponse.json({ data: [] })
+  return NextResponse.json({ data: listCustomFundTeamMembers() })
 }

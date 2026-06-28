@@ -151,14 +151,37 @@ function StrategyTabBody({
   )
 }
 
+function currentUserName(): string {
+  if (typeof window === "undefined") return ""
+  try {
+    const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+    return u?.name || u?.email || ""
+  } catch {
+    return ""
+  }
+}
+
+function userFetchHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {}
+  try {
+    const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+    const id = u?.id ?? ""
+    return id ? { "x-market-user-id": id } : {}
+  } catch {
+    return {}
+  }
+}
+
 export function CustomFundCreateDialog({
   open,
   scope,
   onClose,
+  onSaved,
 }: {
   open: boolean
   scope: ScopeTab
   onClose: () => void
+  onSaved?: () => void
 }) {
   const isTeam = scope === "team"
   const [formTab, setFormTab] = useState<FormTab>("basic")
@@ -175,6 +198,7 @@ export function CustomFundCreateDialog({
   const [teamL2, setTeamL2] = useState("")
   const [teamL3, setTeamL3] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   function resetForm() {
     setFormTab("basic")
@@ -199,6 +223,7 @@ export function CustomFundCreateDialog({
   useEffect(() => {
     if (!open) return
     resetForm()
+    setError(null)
     loadTeamTags()
     fetch("/ma/api/tracking-funds/strategies?strategy_source=platform&pool=all")
       .then((r) => r.json())
@@ -235,9 +260,45 @@ export function CustomFundCreateDialog({
   async function handleConfirm() {
     if (!fundName.trim() || !benchmark) return
     setSubmitting(true)
+    setError(null)
     try {
-      // API will be wired when custom-funds storage is ready
+      const res = await fetch("/ma/api/custom-funds/create", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...userFetchHeaders(),
+        },
+        body: JSON.stringify({
+          scope,
+          product_name: fundName.trim(),
+          benchmark_index: benchmark,
+          tags: selectedTags,
+          platform_strategy_l1: platformL1 || undefined,
+          platform_strategy_l2: platformL2 || undefined,
+          platform_strategy_l3: platformL3 || undefined,
+          team_strategy_l1: teamL1 || undefined,
+          team_strategy_l2: teamL2 || undefined,
+          team_strategy_l3: teamL3 || undefined,
+          created_by: currentUserName(),
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) {
+        setError(
+          json.error === "missing_product_name"
+            ? "请填写基金名称"
+            : json.error === "missing_benchmark"
+              ? "请选择基准指数"
+              : json.error === "unauthorized"
+                ? "请先登录"
+                : "创建失败，请稍后重试",
+        )
+        return
+      }
+      onSaved?.()
       onClose()
+    } catch {
+      setError("网络错误，请重试")
     } finally {
       setSubmitting(false)
     }
@@ -394,6 +455,7 @@ export function CustomFundCreateDialog({
         </div>
 
         <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
+          {error && <span className="text-sm text-red-500 mr-auto">{error}</span>}
           <button type="button" onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
           <button
             type="button"

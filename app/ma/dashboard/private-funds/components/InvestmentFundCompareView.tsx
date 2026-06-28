@@ -9,13 +9,21 @@ import {
   Inbox,
   MoreHorizontal,
   Search,
+  Trash2,
 } from "lucide-react"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import {
   PortfolioFundPickerDialog,
   type PortfolioFundPickerItem,
 } from "@/components/ma/portfolio-fund-picker-dialog"
 import {
   createFundCompareFromPicker,
+  deleteFundCompare,
   loadLocalFundCompareRows,
   saveFundCompare,
 } from "@/lib/ma-fund-compare-storage"
@@ -162,6 +170,12 @@ export function InvestmentFundCompareView() {
 
   function toggleTag(tag: string) {
     setSelectedTags((prev) => (prev.includes(tag) ? prev.filter((x) => x !== tag) : [...prev, tag]))
+  }
+
+  function handleDelete(row: FundCompareRow) {
+    if (!window.confirm(`确定删除对比组「${row.name}」吗？`)) return
+    deleteFundCompare(row.id)
+    loadCompareList()
   }
 
   function pageButtons(): (number | "…")[] {
@@ -362,13 +376,26 @@ export function InvestmentFundCompareView() {
                 </td>
                 <td className="border-b px-3 py-2">{row.created_by ?? "—"}</td>
                 <td className="border-b px-3 py-2 text-center">
-                  <button
-                    type="button"
-                    className="inline-flex items-center justify-center p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
-                    title="更多操作"
-                  >
-                    <MoreHorizontal className="h-4 w-4" />
-                  </button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+                        title="更多操作"
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-28">
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onClick={() => handleDelete(row)}
+                      >
+                        <Trash2 className="mr-2 h-3.5 w-3.5" />
+                        删除
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </td>
               </tr>
             ))}
