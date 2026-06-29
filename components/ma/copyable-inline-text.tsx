@@ -3,6 +3,38 @@
 import { useState, type MouseEvent, type ReactNode } from "react"
 import { Copy, Check } from "lucide-react"
 
+/**
+ * Copy text to the clipboard with a fallback for insecure (plain-HTTP) origins.
+ * `navigator.clipboard` only exists in secure contexts (HTTPS / localhost), so
+ * on the internal HTTP server it is undefined — we fall back to a hidden
+ * textarea + document.execCommand("copy").
+ */
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  if (typeof navigator !== "undefined" && navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // fall through to legacy path
+    }
+  }
+  try {
+    const textarea = document.createElement("textarea")
+    textarea.value = text
+    textarea.setAttribute("readonly", "")
+    textarea.style.position = "fixed"
+    textarea.style.top = "-9999px"
+    textarea.style.left = "-9999px"
+    document.body.appendChild(textarea)
+    textarea.select()
+    const ok = document.execCommand("copy")
+    document.body.removeChild(textarea)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 export function CopyableInlineText({
   text,
   copyTitle,
@@ -17,12 +49,10 @@ export function CopyableInlineText({
   async function handleCopy(e: MouseEvent) {
     e.preventDefault()
     e.stopPropagation()
-    try {
-      await navigator.clipboard.writeText(text)
+    const ok = await copyTextToClipboard(text)
+    if (ok) {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // ignore
     }
   }
 

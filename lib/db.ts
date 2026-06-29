@@ -12,14 +12,22 @@ declare global {
 }
 
 function makePool(): Pool {
+  // statement_timeout prevents hung queries from blocking the app indefinitely.
+  // connectionTimeoutMillis limits how long we wait to acquire a pool connection.
+  const sharedOpts = {
+    statement_timeout:        60_000,   // 60 s per query
+    connectionTimeoutMillis:  10_000,   // 10 s to get a connection from the pool
+    idleTimeoutMillis:        30_000,
+  }
   const url = process.env.DATABASE_URL
-  if (url) return new Pool({ connectionString: url })
+  if (url) return new Pool({ connectionString: url, ...sharedOpts })
   return new Pool({
     host:     process.env.DB_HOST     || "localhost",
     port:     parseInt(process.env.DB_PORT || "5432"),
     database: process.env.DB_NAME     || "market_data",
     user:     process.env.DB_USER     || "market_user",
     password: process.env.DB_PASSWORD || "",
+    ...sharedOpts,
   })
 }
 

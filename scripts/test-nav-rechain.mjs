@@ -25,8 +25,15 @@ const maxAdj = Math.max(...out.map((r) => parseFloat(r.cumulative_nav)))
 assert("spike removed", maxAdj < 10)
 const r22 = out.find((r) => r.price_date === "2026-06-22")
 const r18 = out.find((r) => r.price_date === "2026-06-18")
-const pct = (parseFloat(r22.cumulative_nav) / parseFloat(r18.cumulative_nav) - 1) * 100
-assert("adj pct ~ -2%", Math.abs(pct + 2.02) < 0.15)
+// Daily return is unit-NAV based on a non-ex-div date: 1.2846/1.3111 - 1 ≈ -2.02%.
+const dailyPct = parseFloat(r22.price_change)
+assert("0622 daily return ~ -2.02%", Math.abs(dailyPct + 2.02) < 0.15)
+// 复权 must rechain at the *cumulative* rate (not the unit rate), so the adj/cum
+// ratio stays constant across rows — the documented behavior since the
+// "cum-ratio rechaining" fix. (Asserting the old unit-ratio adj move here is wrong.)
+const ratio18 = parseFloat(r18.cumulative_nav) / parseFloat(r18.cum_nav_withdrawal)
+const ratio22 = parseFloat(r22.cumulative_nav) / parseFloat(r22.cum_nav_withdrawal)
+assert("adj/cum ratio preserved after rechain", Math.abs(ratio22 - ratio18) < 0.001)
 console.log("0622", r22)
 
 // ex-div: cumulative stored as unit on 2026-04-30

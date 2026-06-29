@@ -468,3 +468,55 @@ On dividend ex-dates the economic return is the cumulative NAV ratio, not the un
 ### Fix 4 — `nav-cleaner.ts` `detectColumns` adjustedScore threshold
 
 `adjustedIndex` was assigned whenever `adjustedScore > 1`. Since a fully-numeric column has a baseline score of 3 (`numericCount/sampleCount × 3`), any column could be picked as the 复权净值 column even with no matching header. In 3-column attachments (date, unit, cum) the last column was wrongly treated as adj, shifting unitIndex to the cum column. Raised threshold to `> 4` so a header keyword match (adds 5) is required before assigning a column as 复权净值.
+
+---
+
+## What Was Fixed (2026-06-30 — site-wide loading hang, stale FOF cache, copy button, stale test)
+
+A user reported fund detail pages stuck on 加载中 / blank white pages, plus 荣熙恒盈2号A类 (BAH99A) still showing a wrong NAV in FOF概览. Four distinct issues were found and fixed.
+
+### Fix 1 — Site-wide loading hang from a PostgreSQL lock cascade
+
+**Symptom:** Clicking any fund hung on 加载中; some pages rendered fully blank (the dashboard layout returns `null` while `/api/auth/me` is pending, and that request was frozen too). Server logs showed `connect ECONNREFUSED` and a growing queue of stuck connections.
+
+**Root cause — a 3-step cascade on `ops_email_nav_records`:**
+
+1. A `SELECT … ILIKE '%…%'` on `ops_email_nav_records` ran for **40+ minutes** (full table scan), holding a shared lock.
+2. Every new server worker calls `ensureEmailNavTable()`, which ran `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE … ADD COLUMN`. That DDL needs an `ACCESS EXCLUSIVE` lock, so it **queued behind** the slow SELECT.
+3. Once DDL is queued for a lock, PostgreSQL blocks **all** subsequent reads/writes on that table — so every API request (including `/api/auth/me`) froze. 12+ connections piled up.
+
+**The Correct Fixes Applied:**
+
+| Area | File / function | What changed |
+|---|---|---|
+| Per-query safety net | `lib/db.ts` `makePool` | Added `statement_timeout: 60_000`, `connectionTimeoutMillis: 10_000`, `idleTimeoutMillis: 30_000`. Because `statement_timeout` counts lock-wait time, a stuck SELECT **or** a lock-waiting `ALTER TABLE` now aborts after 60 s instead of hanging forever — worst case is a brief stall, never a site-wide freeze. Applies to every table's DDL, not just email. |
+| Skip DDL on the hot path | `lib/server/email-nav-pg.ts` `ensureEmailNavTable` / `_runEnsure` | Now first checks `information_schema.columns` + `pg_constraint`. If the table, both migrated columns (`attachment_filename`, `adjusted_nav`), and the `uq_email_nav_record_date` constraint already exist (the normal production case), it **skips all DDL** — so it never takes an `ACCESS EXCLUSIVE` lock. DDL runs only on first deploy. |
+
+**Recovery action (one-time):** terminated the 40-min SELECT and the queued `ALTER TABLE` with `pg_terminate_backend`, which instantly unblocked the connection queue. Diagnostic/recovery script: `scripts/ma/_kill_blocking_queries.ts` (run with `--kill`).
+
+**Rule:** never run `ALTER TABLE` unconditionally on a request path. Guard all `ensureXxxTable()` helpers with an existence check, and rely on the pool `statement_timeout` as the backstop.
+
+### Fix 2 — 荣熙恒盈2号A类 (BAH99A) wrong NAV was a stale cache, not the email logic
+
+The email-selection logic was already correct (verified: `selectEmailNavSeriesRows` and `BatchNavResolver` both return **1.2729**, correctly rejecting the `6273466.11` 虚拟计提净值表 share-count row via `isPlausibleEmailUnitNav` / `preferEmailNavRow`). But `ops_fof_overview_list_cache` still held the old `6273466.11` from **before** the BAH99A fix was deployed — and its nightly rebuild had not re-run (likely killed by the lock cascade above).
+
+**Fix:** rebuilt the cache via `refreshFofOverviewListCache()` (recomputes all 44 funds from the corrected `BatchNavResolver`, so already-correct funds stay correct). BAH99A cache went `6273466.11 → 1.2729` (daily return −0.14%). Script: `scripts/ma/_refresh_fof_cache.ts`.
+
+**Rule:** `ops_fof_overview_list_cache` only auto-rebuilds when **empty** (`ensureFofOverviewListCachePopulated`) or via the nightly ETL. After deploying any email-selection / NAV fix, rebuild the cache or the FOF list keeps serving stale values.
+
+### Fix 3 — Copy button next to product names did nothing over plain HTTP
+
+**Root cause:** the internal site is served over **plain HTTP** (`http://8.154.33.143`). `navigator.clipboard` only exists in *secure contexts* (HTTPS / localhost), so it was `undefined`, the call threw, and an empty `catch` swallowed it silently.
+
+**Fix** (`components/ma/copyable-inline-text.tsx`): added `copyTextToClipboard()` — uses `navigator.clipboard` only when `window.isSecureContext`, otherwise falls back to a hidden-textarea + `document.execCommand("copy")`. Covers all `CopyableInlineText` / `CopyableProductName` / `CopyableProductText` / `FundProductNameLink` usages.
+
+### Fix 4 — Stale assertion in `scripts/test-nav-rechain.mjs`
+
+The `adj pct ~ -2%` assertion checked `adj_0622 / adj_0618 ≈ −2.02%`. That encoded the **old unit-ratio** adj rechain, which commits `1caf71ae` / `b50e3237` deliberately replaced with **cum-ratio** rechaining (see "Step 3 — Forward-chain" above). With cum-ratio rechaining the adj move is −1.74% (correct), while −2.02% is actually the **unit-NAV daily return** (`price_change`).
+
+**Fix:** the assertion now checks the two correct properties instead: (1) the 0622 `price_change` ≈ −2.02% (unit-based daily return on a non-ex-div date), and (2) the adj/cum ratio is preserved between 0618 and 0622 (constant ratio ⇒ cum-ratio rechain). This was a stale test, **not** a code regression — the cum-ratio behavior is the documented, intended one.
+
+### What this session did NOT change
+
+- No change to any protected NAV function (`syncExDivAdjustedNav`, `rechainDerivedFromPrev`, `propagateMissingAdjRows`, `repairAdjBelowCumRows`, `mergeNavSeriesWithEmail`, etc.) — `lib/server/email-nav-query.ts` and `managed-product-nav-seed.ts` are byte-identical to before.
+- All regression checks pass afterward: `scripts/test-nav-rechain.mjs` (40+ assertions), `scripts/ma/check_fof_nav_invariant.ts` (all 44 funds `adj ≥ cum ≥ unit`), `scripts/ma/_diag_bah99a_route.ts` (routing).

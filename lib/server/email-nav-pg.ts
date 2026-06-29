@@ -63,12 +63,52 @@ const MIGRATE_TABLE_SQL = `
 `
 
 let tableEnsured = false
+// Prevent concurrent DDL races: only one in-flight call at a time per process.
+let ensureInFlight: Promise<void> | null = null
 
 export async function ensureEmailNavTable(): Promise<void> {
   if (tableEnsured) return
-  await query(CREATE_TABLE_SQL)
-  await query(MIGRATE_TABLE_SQL)
-  tableEnsured = true
+  if (ensureInFlight) return ensureInFlight
+  ensureInFlight = _runEnsure().finally(() => { ensureInFlight = null })
+  return ensureInFlight
+}
+
+async function _runEnsure(): Promise<void> {
+  // Fast path: check whether the table and all migrated columns/constraints
+  // already exist. If so, skip ALL DDL — this avoids the ACCESS EXCLUSIVE locks
+  // that ALTER TABLE requires. (Those locks were what cascaded into the
+  // site-wide hang when they queued behind a long-running SELECT.)
+  const schemaCheck = await query<{ col_count: string; has_constraint: boolean }>(`
+    SELECT
+      (SELECT COUNT(*) FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name   = 'ops_email_nav_records'
+           AND column_name  IN ('attachment_filename', 'adjusted_nav')) AS col_count,
+      EXISTS (SELECT 1 FROM pg_constraint
+              WHERE conname = 'uq_email_nav_record_date') AS has_constraint
+  `).catch(() => [] as { col_count: string; has_constraint: boolean }[])
+
+  const colCount = parseInt(schemaCheck[0]?.col_count ?? "0", 10)
+  const hasConstraint = schemaCheck[0]?.has_constraint === true
+
+  if (colCount >= 2 && hasConstraint) {
+    // Schema is already fully migrated — skip all DDL.
+    tableEnsured = true
+    return
+  }
+
+  // Schema needs to be created or migrated. The DDL is idempotent
+  // (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS), so concurrent
+  // callers are safe — Postgres serializes them with brief table locks, and
+  // the pool-level statement_timeout prevents any indefinite wait.
+  try {
+    await query(CREATE_TABLE_SQL)
+    await query(MIGRATE_TABLE_SQL)
+    tableEnsured = true
+  } catch (err) {
+    console.error("[ensureEmailNavTable] DDL failed:", err)
+    // Leave tableEnsured false so a later request can retry.
+  }
 }
 
 /**
