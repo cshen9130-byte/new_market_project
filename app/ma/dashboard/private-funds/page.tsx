@@ -5433,6 +5433,8 @@ function OperationsTeamTagsTab() {
   const [editingTag, setEditingTag] = useState<OpsTagRow | null>(null)
   const [editTagName, setEditTagName] = useState("")
   const [editTagSaving, setEditTagSaving] = useState(false)
+  const [importingBfl, setImportingBfl] = useState(false)
+  const [importResult, setImportResult] = useState<{ added: number; skipped: number } | null>(null)
 
   function currentUserName(): string {
     try {
@@ -5494,6 +5496,31 @@ function OperationsTeamTagsTab() {
     }
   }
 
+  async function importFromBflOps() {
+    setImportingBfl(true)
+    setImportResult(null)
+    try {
+      const bflRes = await fetch("/ma/api/tracking-funds/team-tags?pool=bfl_ops")
+      const bflTags: string[] = await bflRes.json()
+      const existingNames = new Set(tags.map((t) => t.name))
+      const toAdd = bflTags.filter((t) => !existingNames.has(t))
+      const userName = currentUserName()
+      let added = 0
+      for (const tagName of toAdd) {
+        const res = await fetch("/ma/api/ops/team-tags", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ category: tagCategory, name: tagName, user_name: userName }),
+        })
+        if (res.ok) added++
+      }
+      setImportResult({ added, skipped: bflTags.length - toAdd.length })
+      if (added > 0) loadTags(tagCategory)
+    } catch { /* ignore */ } finally {
+      setImportingBfl(false)
+    }
+  }
+
   return (
     <>
       {/* Category filter + action */}
@@ -5503,7 +5530,7 @@ function OperationsTeamTagsTab() {
           {TAG_CATEGORIES.map((c) => (
             <button
               key={c.key}
-              onClick={() => setTagCategory(c.key)}
+              onClick={() => { setTagCategory(c.key); setImportResult(null) }}
               className={[
                 "px-3 py-1 rounded text-sm font-medium transition-all border",
                 tagCategory === c.key
@@ -5515,12 +5542,27 @@ function OperationsTeamTagsTab() {
             </button>
           ))}
         </div>
-        <button
-          onClick={() => { setNewTagName(""); setShowNewTagModal(true) }}
-          className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
-        >
-          新建标签
-        </button>
+        <div className="flex items-center gap-2">
+          {importResult && (
+            <span className="text-xs text-zinc-500">
+              已导入 <span className="text-green-600 font-medium">{importResult.added}</span> 个，
+              已存在 <span className="text-zinc-400">{importResult.skipped}</span> 个
+            </span>
+          )}
+          <button
+            onClick={importFromBflOps}
+            disabled={importingBfl}
+            className="px-3 py-1.5 border border-zinc-300 hover:border-zinc-400 text-zinc-600 hover:text-zinc-800 text-sm font-medium rounded transition-colors disabled:opacity-50"
+          >
+            {importingBfl ? "导入中…" : "从bfl运维池导入"}
+          </button>
+          <button
+            onClick={() => { setNewTagName(""); setShowNewTagModal(true) }}
+            className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
+          >
+            新建标签
+          </button>
+        </div>
       </div>
 
       {/* Table */}
@@ -6407,6 +6449,7 @@ function OperationsParseLogsPanel() {
   const [fetchMsg, setFetchMsg] = useState<string | null>(null)
   const [fetchMsgIsError, setFetchMsgIsError] = useState(false)
   const [fetchDays, setFetchDays] = useState(400)
+  const [fetchDaysDisplay, setFetchDaysDisplay] = useState("400")
   const fetchPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
@@ -6792,11 +6835,13 @@ function OperationsParseLogsPanel() {
               type="number"
               min={1}
               max={365}
-              value={fetchDays}
+              value={fetchDaysDisplay}
               onChange={(e) => {
+                setFetchDaysDisplay(e.target.value)
                 const v = parseInt(e.target.value, 10)
                 if (Number.isFinite(v) && v > 0) setFetchDays(v)
               }}
+              onBlur={() => setFetchDaysDisplay(String(fetchDays))}
               disabled={fetching}
               className="w-16 px-2 py-1.5 border rounded text-sm text-center disabled:opacity-40"
               title="扫描天数"

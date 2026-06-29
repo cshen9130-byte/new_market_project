@@ -382,7 +382,10 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
   const navCandidates = scoredColumns.filter((column) => column.index !== dateIndex)
 
   const adjustedCandidate = [...navCandidates].sort((left, right) => right.adjustedScore - left.adjustedScore)[0] ?? null
-  let adjustedIndex = adjustedCandidate && adjustedCandidate.adjustedScore > 1 ? adjustedCandidate.index : null
+  // Require an explicit header keyword match (score contribution ≥ 5) beyond the baseline
+  // numeric-only score (3).  A threshold of > 4 prevents bare-numeric columns from being
+  // mis-assigned as 复权净值 in 3-column attachments that omit the adjusted NAV column.
+  let adjustedIndex = adjustedCandidate && adjustedCandidate.adjustedScore > 4 ? adjustedCandidate.index : null
 
   const withdrawalCandidate = [...navCandidates]
     .filter((column) => column.index !== adjustedIndex)

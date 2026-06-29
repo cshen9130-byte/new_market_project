@@ -864,8 +864,19 @@ function isReasonableNav(n: number): boolean {
   return Number.isFinite(n) && n >= 0.1 && n <= 100
 }
 
-/** Rechain 累计 / 复权 from the prior row when email refreshed unit NAV only. */
-function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string; adj: string } | null {
+/**
+ * Rechain 累计 / 复权 from the prior row when email refreshed unit NAV only.
+ *
+ * @param currCum - Current row's cum_nav_withdrawal if already set (e.g. email provided it).
+ *   When supplied and the dividend check passes, this value is used directly as the output cum
+ *   instead of estimating from the unit-ratio. This prevents refreshDerivedForUnitOnlyEmailRows
+ *   from discarding a correctly set cumulative NAV on ex-dividend dates.
+ */
+function rechainDerivedFromPrev(
+  prev: LegacyNavRow,
+  unit: number,
+  currCum?: number | null,
+): { cum: string; adj: string } | null {
   const prevUnit = parseOptionalNav(prev.nav)
   const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
   let prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
@@ -883,9 +894,12 @@ function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string
   const prevCumW = parseOptionalNav(prev.cum_nav_withdrawal) ?? prevCum
 
   // Ex-dividend day: unit dropped while cumulative NAV stays near its prior level.
-  if (isLikelyDividendExDate(prevUnit, unit, prevCumW)) {
+  // When currCum is available (set by email), pass it to the dividend check so the
+  // new cumulative level (not the dropped unit) is used for comparison.
+  if (isLikelyDividendExDate(prevUnit, unit, prevCumW, currCum ?? undefined)) {
     const cumUnitGap = prevCumW - prevUnit
-    const cum = cumUnitGap > 0.01 ? unit + cumUnitGap : prevCumW * unitRatio
+    // Prefer the already-known currCum; fall back to estimation only when absent.
+    const cum = currCum ?? (cumUnitGap > 0.01 ? unit + cumUnitGap : prevCumW * unitRatio)
     // Grow adj at the cumulative rate so the adj/cum ratio is preserved (≥ 1).
     const adj = prevCumW > 0 ? prevAdj * cum / prevCumW : prevAdj * unitRatio
     if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null
@@ -907,7 +921,14 @@ function rechainDerivedFromPrev(prev: LegacyNavRow, unit: number): { cum: string
   return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
 }
 
-/** Refresh derived NAV only on dates where email supplied unit NAV without cumulative. */
+/**
+ * Refresh derived NAV only on dates where email supplied unit NAV without cumulative.
+ *
+ * When the row already has a cum_nav_withdrawal (set by mergeNavSeriesWithEmail from the email),
+ * pass it to rechainDerivedFromPrev so ex-dividend dates are correctly detected even when the
+ * previous row had unit == cum (no prior dividend history).  Without this, a fund receiving its
+ * first dividend would have its correctly-sourced cumulative NAV overwritten with unit NAV.
+ */
 function refreshDerivedForUnitOnlyEmailRows(
   rows: LegacyNavRow[],
   unitOnlyEmailDates: Set<string>,
@@ -919,7 +940,8 @@ function refreshDerivedForUnitOnlyEmailRows(
     if (!unitOnlyEmailDates.has(sorted[i].price_date) || i === 0) continue
     const unit = parseOptionalNav(sorted[i].nav)
     if (unit == null) continue
-    const rechained = rechainDerivedFromPrev(sorted[i - 1], unit)
+    const currCum = parseOptionalNav(sorted[i].cum_nav_withdrawal)
+    const rechained = rechainDerivedFromPrev(sorted[i - 1], unit, currCum)
     if (rechained) {
       sorted[i].cum_nav_withdrawal = rechained.cum
       sorted[i].cumulative_nav = rechained.adj
@@ -1392,9 +1414,21 @@ export function recomputeNavPriceChanges(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = [...rows].sort((a, b) => a.price_date.localeCompare(b.price_date))
   return sorted.map((row, i) => {
     if (i === 0) return { ...row, price_change: "" }
-    const prev = parseFloat(sorted[i - 1].nav)
-    const nav = parseFloat(row.nav)
-    if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(nav)) return row
-    return { ...row, price_change: String(((nav / prev - 1) * 100)) }
+    const prevRow = sorted[i - 1]
+    const prevUnit = parseFloat(prevRow.nav)
+    const unit = parseFloat(row.nav)
+    if (!Number.isFinite(prevUnit) || prevUnit <= 0 || !Number.isFinite(unit)) return row
+
+    // On dividend ex-dates, unit drops sharply while cumulative NAV stays flat.
+    // Use the cumulative NAV ratio for the economic return (matches what investors see).
+    const prevCum = parseOptionalNav(prevRow.cum_nav_withdrawal) ?? parseOptionalNav(prevRow.cumulative_nav) ?? prevUnit
+    const currCum = parseOptionalNav(row.cum_nav_withdrawal) ?? parseOptionalNav(row.cumulative_nav) ?? unit
+    if (isLikelyDividendExDate(prevUnit, unit, prevCum, currCum)) {
+      if (prevCum > 0 && Number.isFinite(currCum)) {
+        return { ...row, price_change: String(((currCum / prevCum - 1) * 100)) }
+      }
+    }
+
+    return { ...row, price_change: String(((unit / prevUnit - 1) * 100)) }
   })
 }

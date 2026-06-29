@@ -90,6 +90,7 @@ export type FundHoldingRow = {
   shares: number | null
   suspensionInfo: string
   beianHao: string | null
+  rowKind: string
 }
 
 export type OtherHoldingRow = {
@@ -940,6 +941,7 @@ async function buildFundHoldings(
         marketPct: normalizeMarketWeightPct(parseNum(h.market_weight), signedMv, netAssetValue),
         shares: qty > 0 ? qty : null,
         beianHao: h.symbol ? String(h.symbol).trim().toUpperCase() : null,
+        rowKind: h.row_kind ?? "other",
         extra: h.extra ?? {},
       }
     })
@@ -998,6 +1000,7 @@ async function buildFundHoldings(
       shares: row.shares,
       suspensionInfo,
       beianHao: resolvedBeians[i] ?? row.beianHao,
+      rowKind: row.rowKind,
     }
   })
 }

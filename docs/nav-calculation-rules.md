@@ -309,3 +309,40 @@ The managed product pipeline is in:
 
 - Micro-dividends where unit NAV still rises on the ex-div date (market return > dividend per unit) are **not detected** by `isLikelyDividendExDate` since there is no unit drop. For large dividends like 荣熙恒盈2号's 0.21/unit this cannot happen.
 - `复权净值` is always computed, never stored from manual uploads. Slight numerical differences vs fund-manager-provided adj values are expected (~0.001–0.003 range).
+
+---
+
+## What Was Fixed (百奕小天鹅2号B类 — 2026-06-22 Dividend)
+
+### Context
+
+The fund paid a large dividend (~0.3384/unit) on 2026-06-22 (ex-date). Excel verified:
+
+| Date | 单位净值 | 累计净值 | 涨跌幅 |
+|---|---|---|---|
+| 2026-06-18 | 1.3552 | 1.3552 | +1.29% |
+| 2026-06-22 | 1.0500 | 1.3884 | **+2.45%** |
+| 2026-06-23 | 1.0192 | 1.3576 | -2.93% |
+
+Before fixes, the UI showed unit=cum=adj=1.05 on 2026-06-22 and price_change=−22.82%.
+
+### Fix 1 — `email-nav-extract.ts` section 2b (`perfRowM` index)
+
+In the Huatai 虚拟业绩报酬 body-table parser, `cumulativeNav` was reading `perfRowM[7]` (unit NAV) instead of `perfRowM[8]` (actual cumulative NAV). Changed index from 7 → 8.
+
+Row format: `CODE FUNDNAME DATE S-CODE INVESTOR HOLDINGS VIRTUAL_NAV UNIT_NAV CUM_NAV`  
+Groups: `[6]=VIRTUAL_NAV  [7]=UNIT_NAV  [8]=CUM_NAV`
+
+### Fix 2 — `email-nav-query.ts` `rechainDerivedFromPrev` / `refreshDerivedForUnitOnlyEmailRows`
+
+When an email provides both unit and cumulative NAV (no adj), the date is added to `unitOnlyEmailDates` so `refreshDerivedForUnitOnlyEmailRows` can rechain `复权净值`. However, `rechainDerivedFromPrev` was called **without** the current cum, so `isLikelyDividendExDate` used unit (1.05) as the cumulative reference. That caused the check `cumRef >= prevCum * 0.995` (1.05 ≥ 1.3484) to fail, so it fell through to the non-dividend path and **overwrote the correct cum (1.3884) with unit (1.05)**.
+
+Fix: `rechainDerivedFromPrev` now accepts an optional `currCum` argument. `refreshDerivedForUnitOnlyEmailRows` reads `cum_nav_withdrawal` from the merged row and passes it as `currCum`. When the dividend check passes, `cum = currCum` is used directly instead of estimating from the unit ratio.
+
+### Fix 3 — `email-nav-query.ts` `recomputeNavPriceChanges`
+
+On dividend ex-dates the economic return is the cumulative NAV ratio, not the unit ratio. The function was always dividing by the unit NAV, producing -22.5% instead of +2.45%. Fix: when `isLikelyDividendExDate` is true for the current row, use the cum ratio `(currCum / prevCum - 1) * 100` for `price_change`.
+
+### Fix 4 — `nav-cleaner.ts` `detectColumns` adjustedScore threshold
+
+`adjustedIndex` was assigned whenever `adjustedScore > 1`. Since a fully-numeric column has a baseline score of 3 (`numericCount/sampleCount × 3`), any column could be picked as the 复权净值 column even with no matching header. In 3-column attachments (date, unit, cum) the last column was wrongly treated as adj, shifting unitIndex to the cum column. Raised threshold to `> 4` so a header keyword match (adds 5) is required before assigning a column as 复权净值.

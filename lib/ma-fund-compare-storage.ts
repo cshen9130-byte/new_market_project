@@ -85,17 +85,25 @@ export function loadFundCompare(id: string): SavedFundCompare | null {
 
 export function saveFundCompare(compare: SavedFundCompare) {
   if (typeof window === "undefined") return
-  const existing = loadAllFundCompares()
-  const next = [compare, ...existing.filter((c) => c.id !== compare.id)]
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  window.dispatchEvent(new Event("ma-fund-compares-updated"))
+  try {
+    const existing = loadAllFundCompares()
+    const next = [compare, ...existing.filter((c) => c.id !== compare.id)]
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.dispatchEvent(new Event("ma-fund-compares-updated"))
+  } catch {
+    // localStorage may be unavailable (private mode, quota exceeded, security restrictions)
+  }
 }
 
 export function deleteFundCompare(id: string) {
   if (typeof window === "undefined") return
-  const next = loadAllFundCompares().filter((c) => c.id !== id)
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  window.dispatchEvent(new Event("ma-fund-compares-updated"))
+  try {
+    const next = loadAllFundCompares().filter((c) => c.id !== id)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.dispatchEvent(new Event("ma-fund-compares-updated"))
+  } catch {
+    // localStorage may be unavailable
+  }
 }
 
 function fmtDate(iso: string | null | undefined) {

@@ -321,8 +321,10 @@ export function extractNavData(
   }
 
   // ── 2b. Body: Huatai 虚拟业绩报酬 table row (no colons) ───────────────────
-  // TA891A 瀛岳核心...A类 20260326 S18852474004 荣熙共赢... 996412.91 2.0085 ...
-  // AVH67B 倍致灵泰...B类 20260529 S18852498101 上海荣熙... - 荣熙共赢... 2000000 0.9506 ...
+  // Row format: CODE FUNDNAME DATE(YYYYMMDD) S-CODE INVESTOR HOLDINGS VIRTUAL_NAV UNIT_NAV CUM_NAV
+  // TA891A 瀛岳核心...A类 20260326 S18852474004 荣熙共赢... 996412.91 2.0085 <unit> <cum>
+  // AVH67B 倍致灵泰...B类 20260529 S18852498101 上海荣熙... - 荣熙共赢... 2000000 0.9506 <unit> <cum>
+  // Groups: [6]=VIRTUAL_NAV  [7]=UNIT_NAV  [8]=CUM_NAV (same three-decimal order as section 4)
   if (/虚拟业绩报酬/.test(subject) || /虚拟单位净值/.test(bodyText)) {
     const perfRowM = bodyText.match(
       /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{8})\s+S[A-Z0-9]+\s+(.+?)\s+([\d,]+(?:\.\d+)?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
@@ -331,7 +333,7 @@ export function extractNavData(
       return {
         nav:          parseFloat(perfRowM[6]),
         navDate:      normaliseDate(perfRowM[3]) ?? subjectDate(subject),
-        cumulativeNav: parseFloat(perfRowM[7]),
+        cumulativeNav: parseFloat(perfRowM[8]),
         adjustedNav: null,
         productCode:  shared.productCode ?? perfRowM[1],
         fundName:       shared.fundName ?? normalizeFundDisplayName(perfRowM[2]),

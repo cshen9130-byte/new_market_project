@@ -18,6 +18,21 @@ export type FundHoldingRow = {
   shares: number | null
   suspensionInfo: string
   beianHao: string | null
+  rowKind: string
+}
+
+/** Returns true if the holding row should be treated as a stock/equity rather than a fund. */
+function isStockRow(row: FundHoldingRow): boolean {
+  if (row.rowKind === "stock") return true
+  if (row.rowKind === "fund_or_stock") {
+    // If valuationCode is a 6-digit numeric A-share ticker → stock
+    const code = (row.valuationCode ?? "").replace(/\.(SZ|SH|BJ)$/i, "").trim()
+    if (/^\d{6}$/.test(code)) return true
+    // If there is no code AND no resolved fund registration number,
+    // it is almost certainly a direct equity holding, not a fund.
+    if (!row.valuationCode && !row.beianHao) return true
+  }
+  return false
 }
 
 type Props = {
@@ -95,19 +110,91 @@ function SortTh({
   )
 }
 
+function StockHoldingsTable({
+  rows,
+  valuationDate,
+  displayName,
+  onExport,
+}: {
+  rows: FundHoldingRow[]
+  valuationDate: string | null
+  displayName: string
+  onExport: () => void
+}) {
+  const dateLabel = valuationDate?.slice(0, 10) ?? "—"
+  const totalMarketValue = rows.reduce((s, r) => s + r.marketValue, 0)
+  const totalMarketPct = rows.reduce((s, r) => s + r.marketPct, 0)
+  return (
+    <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-3 pb-2 border-b border-zinc-100">
+        <div>
+          <div className="text-amber-600 font-semibold text-sm leading-tight">股票</div>
+          <div className="flex items-center gap-1.5 text-xs text-zinc-400 mt-0.5">
+            <span className="text-zinc-600">FOF底层</span>
+            <Clock className="h-3 w-3" />
+            <span>{dateLabel}</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onExport}
+          disabled={!rows.length}
+          className="inline-flex items-center px-3 py-1 text-xs font-medium bg-amber-500 hover:bg-amber-600 text-white rounded transition-colors disabled:opacity-40"
+        >
+          导出
+        </button>
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-zinc-100 bg-zinc-50">
+            <th className="px-2 py-2 text-left font-semibold text-zinc-500 w-10">序号</th>
+            <th className="px-2 py-2 text-left font-semibold text-zinc-500 min-w-[140px]">股票名称</th>
+            <th className="px-2 py-2 text-left font-semibold text-zinc-500 whitespace-nowrap">股票代码</th>
+            <th className="px-2 py-2 text-right font-semibold text-zinc-500 whitespace-nowrap">市值占比</th>
+            <th className="px-2 py-2 text-right font-semibold text-zinc-500 whitespace-nowrap">市值</th>
+            <th className="px-2 py-2 text-right font-semibold text-zinc-500 whitespace-nowrap">份额</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={`${row.fundName}-${i}`} className="border-b border-zinc-50 hover:bg-zinc-50/50">
+              <td className="px-2 py-2 text-zinc-500 tabular-nums">{i + 1}</td>
+              <td className="px-2 py-2 text-zinc-800 font-medium">{row.fundName}</td>
+              <td className="px-2 py-2 text-zinc-600 tabular-nums whitespace-nowrap">{row.valuationCode ?? "—"}</td>
+              <td className="px-2 py-2 text-right tabular-nums text-zinc-600 whitespace-nowrap">{fmtPct(row.marketPct)}</td>
+              <td className="px-2 py-2 text-right tabular-nums text-zinc-800 whitespace-nowrap">{fmtMoney(row.marketValue)}</td>
+              <td className="px-2 py-2 text-right tabular-nums text-zinc-800 whitespace-nowrap">{fmtShares(row.shares)}</td>
+            </tr>
+          ))}
+          <tr className="bg-zinc-50 font-medium border-t border-zinc-100">
+            <td className="px-2 py-2" colSpan={2} />
+            <td className="px-2 py-2 text-zinc-600">合计</td>
+            <td className="px-2 py-2 text-right tabular-nums text-zinc-600 whitespace-nowrap">{fmtPct(totalMarketPct)}</td>
+            <td className="px-2 py-2 text-right tabular-nums text-zinc-800 whitespace-nowrap">{fmtMoney(totalMarketValue)}</td>
+            <td className="px-2 py-2" />
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
   const [strategyTab, setStrategyTab] = useState<string>("全部")
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [sortKey, setSortKey] = useState<SortKey | null>("marketValue")
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc")
 
+  const fundOnlyRows = useMemo(() => rows.filter((r) => !isStockRow(r)), [rows])
+  const stockOnlyRows = useMemo(() => rows.filter((r) => isStockRow(r)), [rows])
+
   const strategyTabs = useMemo(() => {
-    const configured = [...new Set(rows.map((r) => r.fundStrategy).filter(Boolean))] as string[]
+    const configured = [...new Set(fundOnlyRows.map((r) => r.fundStrategy).filter(Boolean))] as string[]
     return ["全部", ...configured, "未配置"]
-  }, [rows])
+  }, [fundOnlyRows])
 
   const filtered = useMemo(() => {
-    let list = rows
+    let list = fundOnlyRows
     if (strategyTab === "未配置") {
       list = list.filter((r) => !r.fundStrategy)
     } else if (strategyTab !== "全部") {
@@ -121,7 +208,7 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
       })
     }
     return list.map((row, i) => ({ ...row, index: i + 1 }))
-  }, [rows, strategyTab, sortKey, sortDir])
+  }, [fundOnlyRows, strategyTab, sortKey, sortDir])
 
   const totalMarketValue = filtered.reduce((s, r) => s + r.marketValue, 0)
   const totalMarketPct = filtered.reduce((s, r) => s + r.marketPct, 0)
@@ -186,7 +273,32 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
     URL.revokeObjectURL(a.href)
   }
 
+  function handleExportStocks() {
+    const exportRows = stockOnlyRows.map((r, i) => ({ ...r, index: i + 1 }))
+    if (!exportRows.length) return
+    const lines = [
+      ["序号", "股票名称", "股票代码", "市值占比", "市值", "份额"].join(","),
+      ...exportRows.map((r) =>
+        [
+          r.index,
+          r.fundName,
+          r.valuationCode ?? "",
+          r.marketPct.toFixed(4),
+          r.marketValue.toFixed(2),
+          r.shares?.toFixed(2) ?? "",
+        ].join(","),
+      ),
+    ]
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" })
+    const a = document.createElement("a")
+    a.href = URL.createObjectURL(blob)
+    a.download = `${displayName}_股票_${dateLabel}.csv`
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+
   return (
+  <>
     <div className="mt-4 bg-white rounded-lg border border-zinc-100 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 pt-3 pb-2">
         <div>
@@ -282,7 +394,7 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
           {filtered.length === 0 ? (
             <tr>
               <td colSpan={15} className="px-4 py-8 text-center text-sm text-zinc-400">
-                {rows.length === 0 ? "暂无基金持仓" : "无匹配结果"}
+                {fundOnlyRows.length === 0 ? "暂无基金持仓" : "无匹配结果"}
               </td>
             </tr>
           ) : (
@@ -340,5 +452,15 @@ export function FofFundsPanel({ rows, valuationDate, displayName }: Props) {
         </tbody>
       </table>
     </div>
+
+    {stockOnlyRows.length > 0 && (
+      <StockHoldingsTable
+        rows={stockOnlyRows}
+        valuationDate={valuationDate}
+        displayName={displayName}
+        onExport={handleExportStocks}
+      />
+    )}
+  </>
   )
 }

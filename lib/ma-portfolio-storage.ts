@@ -126,17 +126,25 @@ export function loadLocalPortfolioRows(keyword = ""): PortfolioListRow[] {
 
 export function savePortfolio(portfolio: SavedPortfolio) {
   if (typeof window === "undefined") return
-  const existing = loadAllPortfolios()
-  const next = [portfolio, ...existing.filter((p) => p.id !== portfolio.id)]
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  window.dispatchEvent(new Event("ma-portfolios-updated"))
+  try {
+    const existing = loadAllPortfolios()
+    const next = [portfolio, ...existing.filter((p) => p.id !== portfolio.id)]
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.dispatchEvent(new Event("ma-portfolios-updated"))
+  } catch {
+    // localStorage may be unavailable (private mode, quota exceeded, security restrictions)
+  }
 }
 
 export function deletePortfolio(id: string) {
   if (typeof window === "undefined") return
-  const next = loadAllPortfolios().filter((p) => p.id !== id)
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  window.dispatchEvent(new Event("ma-portfolios-updated"))
+  try {
+    const next = loadAllPortfolios().filter((p) => p.id !== id)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
+    window.dispatchEvent(new Event("ma-portfolios-updated"))
+  } catch {
+    // localStorage may be unavailable
+  }
 }
 
 export function loadAllPortfolios(): SavedPortfolio[] {
