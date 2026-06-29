@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react"
 import { ChevronsUpDown, Menu } from "lucide-react"
+import { CopyableInlineText } from "@/components/ma/copyable-inline-text"
 import {
   annualCorrelationColumns,
   buildFundCorrelationRow,
@@ -131,7 +132,15 @@ export function FundCompareCorrelationTable({
                       "px-3 py-2.5 text-sm font-medium border-r border-zinc-100 whitespace-nowrap sticky left-0 z-10",
                       rowIndex % 2 === 1 ? "bg-zinc-50/40" : "bg-white",
                     ].join(" ")}>
-                      {row.name}
+                      <CopyableInlineText
+                        text={row.name}
+                        copyTitle="复制产品名称"
+                        label={
+                          <span className="whitespace-nowrap" title={row.name}>
+                            {row.name}
+                          </span>
+                        }
+                      />
                     </td>
                     {columns.map((col) => {
                       const cell = cellMap.get(col.key)

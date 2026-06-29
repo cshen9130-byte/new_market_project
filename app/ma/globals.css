@@ -123,3 +123,54 @@
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  .scrollbar-subtle {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--muted-foreground) 22%, transparent) transparent;
+  }
+
+  .dark .scrollbar-subtle {
+    scrollbar-color: color-mix(in oklch, var(--muted-foreground) 28%, transparent) transparent;
+  }
+
+  .scrollbar-subtle::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  .scrollbar-subtle::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .scrollbar-subtle::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .scrollbar-subtle::-webkit-scrollbar-track:vertical {
+    margin-block: 12px;
+  }
+
+  .scrollbar-subtle::-webkit-scrollbar-track:horizontal {
+    margin-inline: 12px;
+  }
+
+  .scrollbar-subtle::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--muted-foreground) 18%, transparent);
+    border-radius: 9999px;
+    border: 1.5px solid transparent;
+    background-clip: padding-box;
+  }
+
+  .scrollbar-subtle:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--muted-foreground) 32%, transparent);
+  }
+
+  .dark .scrollbar-subtle::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--muted-foreground) 24%, transparent);
+  }
+
+  .dark .scrollbar-subtle:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in oklch, var(--muted-foreground) 38%, transparent);
+  }
+}

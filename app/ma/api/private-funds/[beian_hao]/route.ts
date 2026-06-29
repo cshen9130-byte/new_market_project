@@ -171,7 +171,9 @@ export async function GET(
 
   let info = infoRows[0] ?? bflRows[0] ?? trackingRow
   if (!info) {
-    info = (await lookupFundInfoFallback(rawId)) ?? (rawId !== beian_hao ? await lookupFundInfoFallback(beian_hao) : null)
+    info =
+      (await lookupFundInfoFallback(beian_hao))
+      ?? (rawId !== beian_hao ? await lookupFundInfoFallback(rawId) : null)
   }
   if (!info) {
     const ownerUserId = String(_req.headers.get("x-market-user-id") || "").trim() || undefined

@@ -179,6 +179,124 @@ This fix does **not** change SBAH99 dividend formulas or SNF018 virtual-first FO
 
 ---
 
+## What Was Fixed (荣熙恒盈2号A类 — BAH99A)
+
+**荣熙恒盈2号A类** is a separate share class from **荣熙恒盈2号** (SBAH99). It appears in FOF概览 as an underlying holding with its own备案号 **BAH99A**. Two independent bugs were fixed: wrong NAV in the list, and wrong fund detail page when clicking the name.
+
+---
+
+### Fix 1 — FOF list showed share count as unit NAV
+
+#### The Problem
+
+Two email streams arrive on the same date for this A-class share:
+
+| Source | Example date | Stored `nav` | Actual meaning |
+|---|---|---|---|
+| **【净值表】** attachment (`product_code = BAH99A`) | 2026-06-26 | **1.2729** | Correct 单位净值 |
+| **虚拟计提净值表** attachment (`product_code` null) | 2026-06-26 | **6273466.11** | 持仓份额 mis-parsed as unit NAV |
+
+Symptoms on FOF监控 → 概要汇总:
+
+- 最新单位净值 showed **6273466.1100** instead of **~1.27**
+- 近一周/一月/三月/六月收益 showed absurd values (e.g. +478,488,558%)
+
+The **【净值表】** row with correct unit + cum was already in `ops_email_nav_records`; the bad row won selection.
+
+#### Root Causes
+
+1. **Equal source tier** — Both rows are `attachment_nav_table`; tie-break used higher `id`, favouring the later 虚拟计提 ingest.
+2. **Name batch before beian batch** — `BatchNavResolver` checks `emailByName` before `emailByBeian`. The name-keyed stream had only the bad row (no `product_code`); the beian-keyed stream (`BAH99A`) had the correct row but was never reached.
+3. **No plausibility guard** — Nothing rejected unit NAV in the millions when cumulative was ~1.48.
+
+#### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Plausibility check | `isPlausibleEmailUnitNav` | Unit NAV must be 0.1–50 and not orders of magnitude above cumulative |
+| Per-date row tie-break | `preferEmailNavRow` | After source tier: prefer plausible unit NAV → matching `product_code` → deprioritize `虚拟计提净值表` subjects |
+| FOF list SQL | `buildEmailNavLatestJoins` ORDER BY | Same plausible-nav / product-code / accrual-table ordering in lateral joins |
+| Nightly cache ETL | `loadEmailNavBatch`, `loadEmailNavByNameBatch` | Use `preferEmailNavRow` instead of source-tier-only dedupe |
+| Resolver fallback | `BatchNavResolver.resolveAt` | When name batch NAV is implausible, use beian batch if plausible |
+
+#### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 |
+|---|---|---|
+| 2026-06-26 | **1.2729** | 1.4829 |
+
+After cache refresh, `ops_fof_overview_list_cache` shows `unit_nav = 1.272900` for 荣熙恒盈2号A类.
+
+#### Regression Checks
+
+```bash
+npx tsx scripts/ma/_diag_slu153_nav.ts
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
+---
+
+### Fix 2 — Clicking the name opened 荣熙恒盈2号 (SBAH99) instead of A类
+
+#### The Problem
+
+Clicking **荣熙恒盈2号A类** in FOF概览 opened the fund detail page for **荣熙恒盈2号** (managed product SBAH99): wrong title, wrong NAV series (~1.28 main-class), wrong 团队净值 seed merge.
+
+Link target was `/ma/dashboard/private-funds/BAH99A` but routing resolved it to SBAH99.
+
+#### Root Causes
+
+1. **`remapManagedProductBeianCode("BAH99A")`** mapped A-class code to parent `SBAH99` (intended for 在管产品 only, not FOF底层 share classes).
+2. **`lookupManagedProductOverride("荣熙恒盈2号A类")`** matched parent via `id.includes("荣熙恒盈2号")` without checking share class.
+3. **`resolveManagedProductBeian`** had the same loose `includes` match.
+4. **Detail API fallback order** called `lookupFundInfoFallback(rawId)` before `lookupFundInfoFallback(beian_hao)`, so fuzzy name lookup returned SBAH99 even after `resolveRouteFundId` had correctly found BAH99A.
+5. **`lookupFundInfoFallback` queries** lacked `sqlShareClassProductNameGuard`, so `荣熙恒盈2号A类` matched the parent row in `private_fund_info_bfl`.
+
+#### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Share-class override matching | `managedProductOverrideNameMatches`, `resolveManagedProductBeian`, `lookupManagedProductOverride` | Parent name `includes` only when share class matches (both null or same A/B/C) |
+| Remove A-class remap | `remapManagedProductBeianCode` | Removed `BAH99A` / `SBAH99A` → `SBAH99`; share-class codes stay distinct |
+| Route resolution order | `resolveFundBeianHao` | Direct beian lookup in DB **first**; managed override only when code is not already registered |
+| Detail API fallback | `app/ma/api/private-funds/[beian_hao]/route.ts` | `lookupFundInfoFallback(beian_hao)` before `lookupFundInfoFallback(rawId)` |
+| Name fallback guards | `lookupFundInfoFallback` | `sqlShareClassProductNameGuard` on bfl / managed_products / type6 / email queries |
+
+#### Verified Routing (after fix)
+
+| URL / identifier | Resolves to | Product name |
+|---|---|---|
+| `BAH99A` | `BAH99A` | 荣熙恒盈2号A类 |
+| `荣熙恒盈2号A类` | `BAH99A` | 荣熙恒盈2号A类 |
+| `SBAH99` | `SBAH99` | 荣熙恒盈2号 (unchanged) |
+| `荣熙恒盈2号` | `SBAH99` | 荣熙恒盈2号 (unchanged) |
+
+#### Regression Checks
+
+```bash
+npx tsx scripts/ma/_diag_bah99a_route.ts
+```
+
+---
+
+### What This Fix Does NOT Change
+
+- SBAH99 dividend formulas (`syncExDivAdjustedNav`, `rechainDerivedFromPrev`, etc.)
+- SNF018 virtual-first FOF email priority
+- SSG947 managed-product seed + email merge
+- Main-class 荣熙恒盈2号 detail page and 在管产品 NAV pipeline
+
+Still re-run SBAH99 checks after any edit to `email-nav-query.ts` or `managed-product-beian.ts`:
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
+---
+
+## Dividend Rechaining (SBAH99 reference)
+
 ### Step 1 — Detect the ex-dividend date (`isLikelyDividendExDate`)
 
 A date is considered ex-dividend when ALL of the following are true:
@@ -233,6 +351,10 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `filterEmailNavManageStream` | Must use `selectEmailNavSeriesRows` — reverting to `selectEmailSourceStream` breaks 在管产品 email unit correction |
 | `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
 | `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
+| `preferEmailNavRow` / `isPlausibleEmailUnitNav` | Reject 虚拟计提 share-count rows; prefer `product_code`-matched 净值表 — reverting to id-only tie-break breaks BAH99A FOF list |
+| `resolveFundBeianHao` | Direct beian DB lookup must run before managed-product override — otherwise BAH99A routes to SBAH99 |
+| `remapManagedProductBeianCode` | Do not remap A/B/C share-class codes (e.g. BAH99A) to parent 在管产品 beian |
+| `lookupManagedProductOverride` | Must use share-class-aware name match — loose `includes` maps A类 names to parent managed product |
 | `finalizeNavSeries` (call order) | `syncExDivAdjustedNav` must run before `propagateMissingAdjRows`, which must run before `refreshStaleDerivedFields`, then `repairAdjBelowCumRows`, then `alignPreDividendNavRows` |
 
 ### After any change to the NAV pipeline

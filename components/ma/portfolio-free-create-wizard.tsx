@@ -305,7 +305,7 @@ function modelLabel(model: ModelKey) {
   return MODEL_OPTIONS.find((m) => m.key === model)?.label ?? model
 }
 
-function SectionTitle({ children }: { children: ReactNode }) {
+export function SectionTitle({ children }: { children: ReactNode }) {
   return (
     <div className="flex items-center gap-2 mb-4">
       <span className="w-1 h-4 rounded-full bg-red-500 flex-shrink-0" />
@@ -314,7 +314,7 @@ function SectionTitle({ children }: { children: ReactNode }) {
   )
 }
 
-function WizardSteps({ currentStep }: { currentStep: number }) {
+export function WizardSteps({ currentStep }: { currentStep: number }) {
   return (
     <div className="flex items-center justify-center gap-0 py-6 border-b bg-background flex-shrink-0">
       {WIZARD_STEPS.map((label, index) => {

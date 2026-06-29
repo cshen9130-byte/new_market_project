@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, Copy, Check } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { ManagerSearchInput, ProductKeywordSearchInput } from "@/components/ma/private-fund-filter-search"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
+import { CopyableInlineText, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
 import { InvestmentFundCompareView } from "./components/InvestmentFundCompareView"
@@ -902,64 +903,6 @@ function PctCell({ value }: { value: string | null }) {
   return <span className={n > 0 ? "text-red-500" : n < 0 ? "text-emerald-600" : ""}>{text}</span>
 }
 
-function CopyableInlineText({
-  text,
-  copyTitle,
-  label,
-}: {
-  text: string
-  copyTitle: string
-  label: ReactNode
-}) {
-  const [copied, setCopied] = useState(false)
-
-  async function handleCopy(e: MouseEvent) {
-    e.preventDefault()
-    e.stopPropagation()
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // ignore
-    }
-  }
-
-  return (
-    <div className="group/copy inline-flex items-center max-w-full align-top">
-      {label}
-      <button
-        type="button"
-        onClick={handleCopy}
-        title={copied ? "已复制" : copyTitle}
-        className="flex-shrink-0 ml-0.5 p-0.5 rounded opacity-0 group-hover/copy:opacity-100 hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-opacity"
-      >
-        {copied ? <Check className="h-3 w-3 text-emerald-600" /> : <Copy className="h-3 w-3" />}
-      </button>
-    </div>
-  )
-}
-
-function CopyableProductName({ beian_hao, product_name }: { beian_hao: string; product_name: string }) {
-  return (
-    <CopyableInlineText
-      text={product_name}
-      copyTitle="复制产品名称"
-      label={
-        <a
-          href={`/ma/dashboard/private-funds/${encodeURIComponent(beian_hao)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="truncate min-w-0 font-medium text-blue-600 dark:text-blue-400 hover:underline leading-5"
-          title={product_name}
-        >
-          {product_name}
-        </a>
-      }
-    />
-  )
-}
-
 function CopyableManagerName({ manager }: { manager: string }) {
   return (
     <CopyableInlineText
@@ -1134,8 +1077,20 @@ function PrivateFundTable({
 
   // Sticky offsets (px): checkbox=36, index=44, name=220
   const stickyLeft = { checkbox: 0, index: 36, name: 80 }
-  // Sticky right: ops=0, trend=68
-  const stickyRight = { ops: 0, trend: 68 }
+  const pfStickyRightColW = 68
+  const stickyRight = { ops: 0, trend: pfStickyRightColW }
+  const pfStickyRightColStyle = (right: number): CSSProperties => ({
+    right,
+    width: pfStickyRightColW,
+    minWidth: pfStickyRightColW,
+    maxWidth: pfStickyRightColW,
+  })
+  const pfStickyHeadBg = "bg-muted dark:bg-zinc-900"
+  const pfStickyHeadZ = "z-40"
+  const pfStickyBodyZ = "z-20"
+  const pfStickyRightShadow = "shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.35)]"
+  const pfStickyLeftShadow = "shadow-[4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[4px_0_8px_-4px_rgba(0,0,0,0.35)]"
+  const pfScrollThBg = "bg-muted/40 dark:bg-muted/20 relative z-0"
 
   const [showTemplates, setShowTemplates] = useState(false)
   const [menuTemplates, setMenuTemplates] = useState<SavedTemplate[]>(templates)
@@ -1239,65 +1194,65 @@ function PrivateFundTable({
       </div>
       <div
         ref={tableContainerRef}
-        className="rounded-lg border"
+        className="overflow-auto rounded-lg border flex-1 min-h-0 scrollbar-subtle"
       >
-        <table className="text-sm w-full" style={{ borderCollapse: "separate", borderSpacing: 0, minWidth: 1480 }}>
-          <thead className="sticky -top-5 z-20">
-            <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
+        <table className="text-sm border-separate border-spacing-0 w-full" style={{ minWidth: 1480 }}>
+          <thead className="sticky top-0 z-30">
+            <tr className="border-b">
               {/* Checkbox */}
               <th style={{ left: stickyLeft.checkbox, width: 36, minWidth: 36 }}
-                className="sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-r px-2 py-2.5">
+                className={`sticky top-0 ${pfStickyHeadZ} ${pfStickyHeadBg} border-b border-r px-2 py-2.5 box-border`}>
                 <input type="checkbox" className="rounded"
                   checked={selected.size === data.length && data.length > 0}
                   onChange={toggleAll} />
               </th>
               {/* 序号 */}
               <th style={{ left: stickyLeft.index, width: 44, minWidth: 44 }}
-                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-r ${thBase}`}>序号</th>
+                className={`sticky top-0 ${pfStickyHeadZ} ${pfStickyHeadBg} border-b border-r ${thBase} box-border`}>序号</th>
               {/* 产品名称 */}
               <th style={{ left: stickyLeft.name, width: 220, minWidth: 220 }}
-                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-r ${thSort}`}
+                className={`sticky top-0 ${pfStickyHeadZ} ${pfStickyHeadBg} border-b border-r ${pfStickyLeftShadow} ${thSort} box-border`}
                 onClick={() => handleSort("product_name")}>
                 产品名称<SortIcon col="product_name" sortKey={sortKey} sortDir={sortDir} />
               </th>
               {/* Scrollable cols */}
-              <th className={`${thBase} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }}>备案号</th>
-              <th className={`${thBase} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 120 }}>管理人</th>
-              <th className={`${thBase} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 96 }}>成立日期</th>
-              <th className={`${thSort} border-b bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("latest_nav")}>
+              <th className={`${thBase} border-b ${pfScrollThBg}`} style={{ minWidth: 88 }}>备案号</th>
+              <th className={`${thBase} border-b ${pfScrollThBg}`} style={{ minWidth: 120 }}>管理人</th>
+              <th className={`${thBase} border-b ${pfScrollThBg}`} style={{ minWidth: 96 }}>成立日期</th>
+              <th className={`${thSort} border-b ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("latest_nav")}>
                 单位净值<SortIcon col="latest_nav" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1w")}>
+              <th className={`${thSort} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1w")}>
                 近一周收益<SortIcon col="ret_1w" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1m")}>
+              <th className={`${thSort} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1m")}>
                 近一月收益<SortIcon col="ret_1m" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_3m")}>
+              <th className={`${thSort} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_3m")}>
                 近三月收益<SortIcon col="ret_3m" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_6m")}>
+              <th className={`${thSort} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_6m")}>
                 近六月收益<SortIcon col="ret_6m" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1y")}>
+              <th className={`${thSort} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("ret_1y")}>
                 近一年收益<SortIcon col="ret_1y" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("sharpe_1y")}>
+              <th className={`${thSort} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("sharpe_1y")}>
                 夏普(1Y)<SortIcon col="sharpe_1y" sortKey={sortKey} sortDir={sortDir} />
               </th>
-              <th className={`${thSort} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 88 }} onClick={() => handleSort("calmar_1y")}>
+              <th className={`${thSort} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("calmar_1y")}>
                 卡玛(1Y)<SortIcon col="calmar_1y" sortKey={sortKey} sortDir={sortDir} />
               </th>
               {addedCols.map((col) => (
-                <th key={col.id} className={`${thBase} border-b text-right bg-muted/40 dark:bg-muted/20`} style={{ minWidth: 96 }}>
+                <th key={col.id} className={`${thBase} border-b text-right ${pfScrollThBg}`} style={{ minWidth: 96 }}>
                   {col.label}
                 </th>
               ))}
               {/* Fixed right */}
-              <th style={{ right: stickyRight.trend, width: 68, minWidth: 68 }}
-                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-l ${thBase} text-center`}>走势</th>
-              <th style={{ right: stickyRight.ops, width: 68, minWidth: 68 }}
-                className={`sticky z-30 bg-muted/40 dark:bg-muted/20 border-b border-l ${thBase} text-center`}>操作</th>
+              <th style={pfStickyRightColStyle(stickyRight.trend)}
+                className={`sticky top-0 ${pfStickyHeadZ} ${pfStickyHeadBg} border-b border-l border-zinc-200 dark:border-zinc-700 ${pfStickyRightShadow} ${thBase} text-center overflow-hidden box-border`}>走势</th>
+              <th style={pfStickyRightColStyle(stickyRight.ops)}
+                className={`sticky top-0 ${pfStickyHeadZ} ${pfStickyHeadBg} border-b border-l ${thBase} text-center overflow-hidden box-border`}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -1313,8 +1268,8 @@ function PrivateFundTable({
               const isSelected = selected.has(row.beian_hao)
               const rowBg = isSelected ? "bg-blue-50/40 dark:bg-blue-950/20" : "bg-background"
               const hoverBg = "group-hover:bg-muted/30"
-              const cellBase = `border-b px-3 py-0 ${rowBg} ${hoverBg} transition-colors`
-              const stickyCell = `sticky z-10 ${rowBg} ${hoverBg} transition-colors border-b`
+              const cellBase = `border-b px-3 py-0 relative z-0 ${rowBg} ${hoverBg} transition-colors`
+              const stickyCell = `sticky ${pfStickyBodyZ} ${rowBg} ${hoverBg} transition-colors border-b overflow-hidden box-border`
 
               return (
                 <tr key={row.beian_hao} className="group" style={{ height: 52 }}>
@@ -1336,7 +1291,7 @@ function PrivateFundTable({
                   </td>
                   {/* 产品名称 */}
                   <td style={{ left: stickyLeft.name, width: 220 }}
-                    className={`${stickyCell} border-r px-3`}>
+                    className={`${stickyCell} border-r px-3 ${pfStickyLeftShadow}`}>
                     <CopyableProductName beian_hao={row.beian_hao} product_name={row.product_name} />
                     {row.strategy_l1 && (
                       <div className="flex items-center gap-1 mt-0.5">
@@ -1379,8 +1334,8 @@ function PrivateFundTable({
                     )
                   })}
                   {/* Fixed right */}
-                  <td style={{ right: stickyRight.trend, width: 68 }}
-                    className={`${stickyCell} border-l text-center`}>
+                  <td style={pfStickyRightColStyle(stickyRight.trend)}
+                    className={`${stickyCell} border-l border-zinc-200 dark:border-zinc-700 ${pfStickyRightShadow} text-center`}>
                     <div
                       onMouseEnter={(e) => showTrendChart(row.beian_hao, e.currentTarget)}
                       onMouseLeave={hideTrendChart}
@@ -1390,7 +1345,7 @@ function PrivateFundTable({
                       </button>
                     </div>
                   </td>
-                  <td style={{ right: stickyRight.ops, width: 68 }}
+                  <td style={pfStickyRightColStyle(stickyRight.ops)}
                     className={`${stickyCell} border-l text-center`}>
                     <div className="flex items-center justify-center gap-1">
                       <AddToTrackingButton
@@ -1655,6 +1610,30 @@ type TrackTeamTagMode = "and" | "or"
 
 function InvestmentTrackingView({ variant = "investment" }: { variant?: "investment" | "operations" } = {}) {
   const isOps = variant === "operations"
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const navManageBeian = searchParams.get("beian_hao")
+  const navManageProductName = searchParams.get("product_name") ?? ""
+  const navManageMode = isOps && searchParams.get("nav") === "manage" && !!navManageBeian
+
+  function openNavManage(beian_hao: string, product_name: string) {
+    const params = new URLSearchParams()
+    params.set("tab", "operations")
+    params.set("side", "ops-tracking")
+    params.set("nav", "manage")
+    params.set("beian_hao", beian_hao)
+    params.set("product_name", product_name)
+    window.open(`/ma/dashboard/private-funds?${params.toString()}`, "_blank", "noopener,noreferrer")
+  }
+
+  function closeNavManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("nav")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
   const [trackTab, setTrackTab] = useState<"team" | "mine">("team")
   const [activePool, setActivePool] = useState("bfl")
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
@@ -1797,6 +1776,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [addFundSaving, setAddFundSaving] = useState(false)
   const [addFundError, setAddFundError] = useState<string | null>(null)
   const [dataReloadKey, setDataReloadKey] = useState(0)
+  const [trackingNavUploadTarget, setTrackingNavUploadTarget] = useState<{ beian_hao: string; product_name: string } | null>(null)
   // Batch add dialog
   const [showBatchAddDialog, setShowBatchAddDialog] = useState(false)
   const [batchAddTargetPool, setBatchAddTargetPool] = useState("")
@@ -2291,6 +2271,21 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     setPage(1)
   }
 
+  if (navManageMode && navManageBeian) {
+    return (
+      <OperationsTeamNavManageView
+        beian_hao={navManageBeian}
+        product_name={navManageProductName}
+        onBack={closeNavManage}
+        backLabel="返回跟踪产品"
+      />
+    )
+  }
+
+  const selectedOpsRow = isOps && selected.size === 1
+    ? data.find((row) => selected.has(row.beian_hao)) ?? null
+    : null
+
   return (
     <div className="flex flex-col h-full min-w-0 overflow-x-hidden">
       {isOps ? (
@@ -2624,6 +2619,17 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 <ClipboardList className="h-3.5 w-3.5" /> 操作日志
               </button>
               <button
+                type="button"
+                disabled={!selectedOpsRow?.beian_hao}
+                onClick={() => {
+                  if (!selectedOpsRow?.beian_hao) return
+                  setTrackingNavUploadTarget({ beian_hao: selectedOpsRow.beian_hao, product_name: selectedOpsRow.product_name })
+                }}
+                className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground"
+              >
+                批量上传净值
+              </button>
+              <button
                 onClick={() => { setFieldConfigDraft([...fieldConfigSelected]); setFieldConfigTab("基本信息"); setShowFieldConfigDialog(true) }}
                 className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
                 <Settings2 className="h-3.5 w-3.5" /> 字段配置
@@ -2879,13 +2885,12 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       </td>
                       <td className={`${cell} text-center tabular-nums`}>{(page - 1) * 50 + i + 1}</td>
                       <td className={cell}>
-                        <a
-                          href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <CopyableProductName
+                          beian_hao={row.beian_hao}
+                          product_name={row.product_name}
+                          short_name={row.short_name}
                           className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[240px]"
-                          title={row.product_name}
-                        >{row.short_name || row.product_name}</a>
+                        />
                         {row.strategy_l1 && (
                           <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
                             {row.strategy_l1}
@@ -2898,21 +2903,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
                       <td className={`${cell} text-center`}>
                         <div className="flex items-center justify-center gap-1">
-                          <div
-                            onMouseEnter={(e) => {
-                              if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-                              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                              hoverTimeout.current = setTimeout(() => {
-                                setHoverChartPos({ x: rect.right + 8, y: rect.top })
-                                setHoverChartRow(row.beian_hao)
-                              }, 200)
-                            }}
-                            onMouseLeave={() => {
-                              if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-                              hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
-                            }}>
-                            <button className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"><LineChart className="h-3.5 w-3.5" /></button>
-                          </div>
+                          <OpsNavManageButton
+                            onClick={() => openNavManage(row.beian_hao, row.product_name)}
+                          />
                           <TrackingRowMenu
                             beian_hao={row.beian_hao}
                             product_name={row.product_name}
@@ -2998,13 +2991,12 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       </td>
                       <td className={`${stickyCell} text-center tabular-nums sticky left-8`}>{(page - 1) * 50 + i + 1}</td>
                       <td className={`${stickyCell} sticky left-[72px] border-r border-zinc-200 dark:border-zinc-700`}>
-                        <a
-                          href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <CopyableProductName
+                          beian_hao={row.beian_hao}
+                          product_name={row.product_name}
+                          short_name={row.short_name}
                           className="font-medium text-blue-600 dark:text-blue-400 leading-5 truncate max-w-[220px] hover:underline block"
-                          title={row.product_name}
-                        >{row.short_name || row.product_name}</a>
+                        />
                         {row.strategy_l1 && (
                           <div className="flex items-center gap-1 mt-0.5">
                             <span className="inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground/50 flex-shrink-0" />
@@ -3498,13 +3490,12 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       </td>
                       <td className={`${cell} text-center tabular-nums`}>{(page - 1) * 50 + i + 1}</td>
                       <td className={cell}>
-                        <a
-                          href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <CopyableProductName
+                          beian_hao={row.beian_hao}
+                          product_name={row.product_name}
+                          short_name={row.short_name}
                           className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[240px]"
-                          title={row.product_name}
-                        >{row.short_name || row.product_name}</a>
+                        />
                         {row.strategy_l1 && (
                           <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
                             {row.strategy_l1}
@@ -5374,6 +5365,37 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             </div>
           </div>
         </div>
+      )}
+
+      {isOps && (
+        <OpsTeamNavUploadDialog
+          open={!!trackingNavUploadTarget}
+          product_name={trackingNavUploadTarget?.product_name ?? ""}
+          onClose={() => setTrackingNavUploadTarget(null)}
+          onUpload={async (uploadRows) => {
+            if (!trackingNavUploadTarget?.beian_hao) return
+            const res = await fetch("/ma/api/ops/team-data/nav/upload", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                beian_hao: trackingNavUploadTarget.beian_hao,
+                product_name: trackingNavUploadTarget.product_name,
+                nav_type: "pre_fee",
+                rows: uploadRows.map((r) => ({
+                  nav_date: r.date,
+                  unit_nav: r.unit_nav,
+                  cumulative_nav: r.cumulative_nav,
+                })),
+              }),
+            })
+            if (!res.ok) {
+              const json = await res.json().catch(() => ({}))
+              throw new Error(json.error || "upload_failed")
+            }
+            setTrackingNavUploadTarget(null)
+            setDataReloadKey((k) => k + 1)
+          }}
+        />
       )}
 
     </div>
@@ -8565,9 +8587,16 @@ function DirectFieldConfigDialog({
   )
 }
 
-type OpsElementsTab = "platform" | "subscription" | "attachment" | "team"
+type OpsElementsTab = "basic" | "platform" | "subscription" | "attachment" | "team"
 
 interface OpsFundElementsData {
+  fund_name: string | null
+  register_number: string | null
+  advisor: string | null
+  fund_manager: string | null
+  inception_date: string | null
+  puton_date: string | null
+  custodian: string | null
   platform_l1: string | null
   platform_l2: string | null
   platform_l3: string | null
@@ -8591,6 +8620,7 @@ interface OpsFundElementsData {
 }
 
 const OPS_ELEMENTS_TABS: { key: OpsElementsTab; label: string }[] = [
+  { key: "basic", label: "基本信息" },
   { key: "platform", label: "平台策略" },
   { key: "subscription", label: "申赎信息" },
   { key: "attachment", label: "要素附件" },
@@ -8634,11 +8664,19 @@ function OpsEditElementsDialog({
   product_name: string
   onClose: () => void
 }) {
-  const [tab, setTab] = useState<OpsElementsTab>("platform")
+  const [tab, setTab] = useState<OpsElementsTab>("basic")
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [platformTree, setPlatformTree] = useState<TrackStrategyNode[]>([])
   const [teamTree, setTeamTree] = useState<TrackStrategyNode[]>([])
+
+  const [fundFullName, setFundFullName] = useState("")
+  const [registerNumber, setRegisterNumber] = useState("")
+  const [advisor, setAdvisor] = useState("")
+  const [fundManager, setFundManager] = useState("")
+  const [inceptionDate, setInceptionDate] = useState("")
+  const [filingDate, setFilingDate] = useState("")
+  const [custodian, setCustodian] = useState("")
 
   const [platformL1, setPlatformL1] = useState("")
   const [platformL2, setPlatformL2] = useState("")
@@ -8676,7 +8714,7 @@ function OpsEditElementsDialog({
 
   useEffect(() => {
     if (!open || !beian_hao) return
-    setTab("platform")
+    setTab("basic")
     setLoading(true)
     Promise.all([
       fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beian_hao)}`).then((r) => r.json()),
@@ -8688,6 +8726,13 @@ function OpsEditElementsDialog({
         if (Array.isArray(tTree)) setTeamTree(tTree)
         if (data?.error) return
         const d = data as OpsFundElementsData
+        setFundFullName(d.fund_name ?? "")
+        setRegisterNumber(d.register_number ?? beian_hao)
+        setAdvisor(d.advisor ?? "")
+        setFundManager(d.fund_manager ?? "")
+        setInceptionDate(d.inception_date ?? "")
+        setFilingDate(d.puton_date ?? "")
+        setCustodian(d.custodian ?? "")
         setPlatformL1(d.platform_l1 ?? "")
         setPlatformL2(d.platform_l2 ?? "")
         setPlatformL3s(d.platform_l3 ? d.platform_l3.split(/[，,]/).map((s) => s.trim()).filter(Boolean) : [])
@@ -8745,6 +8790,19 @@ function OpsEditElementsDialog({
     if (!beian_hao) return
     setSaving(true)
     try {
+      await fetch("/ma/api/ops/fund-elements", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          beian_hao,
+          fund_name: fundFullName || null,
+          advisor: advisor || null,
+          fund_manager: fundManager || null,
+          inception_date: inceptionDate || null,
+          puton_date: filingDate || null,
+          custodian: custodian || null,
+        }),
+      })
       await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -8875,6 +8933,37 @@ function OpsEditElementsDialog({
         <div className="flex-1 overflow-y-auto px-6 pb-4 min-h-[320px]">
           {loading ? (
             <div className="flex items-center justify-center py-16 text-muted-foreground text-sm">加载中…</div>
+          ) : tab === "basic" ? (
+            <div className="grid grid-cols-2 gap-x-8 gap-y-3 text-sm">
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>产品全称：</OpsElementsFieldLabel>
+                <input value={fundFullName} onChange={(e) => setFundFullName(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>备案编号：</OpsElementsFieldLabel>
+                <input value={registerNumber} readOnly className="flex-1 border rounded px-3 py-1.5 text-sm bg-muted/40 text-muted-foreground cursor-not-allowed" />
+              </div>
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>投资顾问：</OpsElementsFieldLabel>
+                <input value={advisor} onChange={(e) => setAdvisor(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>基金管理人：</OpsElementsFieldLabel>
+                <input value={fundManager} onChange={(e) => setFundManager(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>成立日期：</OpsElementsFieldLabel>
+                <input type="date" value={inceptionDate} onChange={(e) => setInceptionDate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>备案日期：</OpsElementsFieldLabel>
+                <input type="date" value={filingDate} onChange={(e) => setFilingDate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="col-span-2 flex items-center gap-3">
+                <OpsElementsFieldLabel>托管券商：</OpsElementsFieldLabel>
+                <input value={custodian} onChange={(e) => setCustodian(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+            </div>
           ) : tab === "platform" ? (
             <div className="space-y-4">
               <OpsElementsNotice>
@@ -10148,6 +10237,16 @@ function openValuationAnalysisPage(beian_hao: string) {
   )
 }
 
+function openOpsValuationManage(side: string, beian_hao: string, product_name: string) {
+  const params = new URLSearchParams()
+  params.set("tab", "operations")
+  params.set("side", side)
+  params.set("valuation", "manage")
+  params.set("beian_hao", beian_hao)
+  params.set("product_name", product_name)
+  window.open(`/ma/dashboard/private-funds?${params.toString()}`, "_blank", "noopener,noreferrer")
+}
+
 function ValuationAnalysisButton({ beian_hao }: { beian_hao: string }) {
   return (
     <Tooltip>
@@ -10229,6 +10328,7 @@ function OpsProductRowMenu({
   onElementsManage,
   onPermissionManage,
   onNoteManage,
+  onValuationManage,
   onScaleManage,
   extraItems = [],
   footerItems = [],
@@ -10243,6 +10343,7 @@ function OpsProductRowMenu({
   onElementsManage: () => void
   onPermissionManage: () => void
   onNoteManage: () => void
+  onValuationManage?: () => void
   onScaleManage?: () => void
   extraItems?: OpsProductRowMenuItem[]
   footerItems?: OpsProductRowMenuItem[]
@@ -10294,7 +10395,11 @@ function OpsProductRowMenu({
 
   const standardStubs: OpsProductRowMenuItem[] = [
     ...(showLedgerManage ? [{ label: "台账管理", icon: ClipboardList }] : []),
-    { label: "估值表管理", icon: BarChart2 },
+    {
+      label: "估值表管理",
+      icon: BarChart2,
+      onClick: () => { if (beian_hao) onValuationManage?.() },
+    },
   ]
 
   function renderItem(item: OpsProductRowMenuItem, i: number) {
@@ -10378,6 +10483,20 @@ function OpsProductRowMenu({
 }
 
 function OperationsDirectView() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const manageBeian = searchParams.get("beian_hao")
+  const manageProductName = searchParams.get("product_name") ?? ""
+  const valuationManageMode = searchParams.get("valuation") === "manage" && !!manageBeian
+
+  function closeValuationManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("valuation")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
   const [fundClass, setFundClass] = useState<DirectFundClass>("private")
   const [strategySource, setStrategySource] = useState<"company" | "platform">("platform")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
@@ -10607,6 +10726,17 @@ function OperationsDirectView() {
   const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
   const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
 
+  if (valuationManageMode && manageBeian) {
+    return (
+      <OperationsTeamValuationManageView
+        beian_hao={manageBeian}
+        product_name={manageProductName}
+        onBack={closeValuationManage}
+        backLabel="返回直投产品"
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col h-full min-w-0">
       {/* Filters */}
@@ -10809,13 +10939,12 @@ function OperationsDirectView() {
                   </td>
                   <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
                   <td className={cell}>
-                    <a
-                      href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <CopyableProductName
+                      beian_hao={row.beian_hao}
+                      product_name={row.product_name}
+                      short_name={row.short_name}
                       className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[220px]"
-                      title={row.product_name}
-                    >{row.short_name || row.product_name}</a>
+                    />
                     {row.strategy_l1 && (
                       <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
                         {row.strategy_l1}
@@ -10839,6 +10968,7 @@ function OperationsDirectView() {
                         onElementsManage={() => setDirectElementsDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
                         onPermissionManage={() => setDirectPermissionDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
                         onNoteManage={() => setDirectNoteDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
+                        onValuationManage={() => openOpsValuationManage("ops-direct", row.beian_hao, row.product_name)}
                         onScaleManage={() => setDirectScaleDialog({ beian_hao: row.beian_hao, product_name: row.product_name })}
                         footerItems={[{ label: "移除", icon: MinusCircle, destructive: true }]}
                       />
@@ -11198,6 +11328,39 @@ interface FofUnderlyingRow {
 }
 
 function OperationsFofUnderlyingView() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const navManageBeian = searchParams.get("beian_hao")
+  const navManageProductName = searchParams.get("product_name") ?? ""
+  const navManageMode = searchParams.get("nav") === "manage" && !!navManageBeian
+  const valuationManageMode = searchParams.get("valuation") === "manage" && !!navManageBeian
+
+  function openNavManage(beian_hao: string, product_name: string) {
+    const params = new URLSearchParams()
+    params.set("tab", "operations")
+    params.set("side", "ops-fof")
+    params.set("nav", "manage")
+    params.set("beian_hao", beian_hao)
+    params.set("product_name", product_name)
+    window.open(`/ma/dashboard/private-funds?${params.toString()}`, "_blank", "noopener,noreferrer")
+  }
+
+  function closeNavManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("nav")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
+  function closeValuationManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("valuation")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
   const [fundClass, setFundClass] = useState<"private" | "public">("private")
   const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
@@ -11226,9 +11389,8 @@ function OperationsFofUnderlyingView() {
   const [fofNoteDialog, setFofNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [fofSyncNavDialog, setFofSyncNavDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [fofScaleDialog, setFofScaleDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
-  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
-  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
-  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [fofNavUploadTarget, setFofNavUploadTarget] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [fofListReloadKey, setFofListReloadKey] = useState(0)
   const fofFundSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
@@ -11272,7 +11434,7 @@ function OperationsFofUnderlyingView() {
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [page, pageSize, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, fofFundSelected?.register_number])
+  }, [page, pageSize, strategySource, strategyL1, holdingStatus, keyword, sortKey, sortDir, fofFundSelected?.register_number, fofListReloadKey])
 
   useEffect(() => {
     fetch("/ma/api/ops/fof-underlying/fof-funds")
@@ -11346,6 +11508,30 @@ function OperationsFofUnderlyingView() {
 
   const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
   const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  if (navManageMode && navManageBeian) {
+    return (
+      <OperationsTeamNavManageView
+        beian_hao={navManageBeian}
+        product_name={navManageProductName}
+        onBack={closeNavManage}
+        backLabel="返回FOF底层"
+      />
+    )
+  }
+
+  if (valuationManageMode && navManageBeian) {
+    return (
+      <OperationsTeamValuationManageView
+        beian_hao={navManageBeian}
+        product_name={navManageProductName}
+        onBack={closeValuationManage}
+        backLabel="返回FOF底层"
+      />
+    )
+  }
+
+  const selectedRow = selected.size === 1 ? data.find((row) => selected.has(row.id)) ?? null : null
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -11515,8 +11701,16 @@ function OperationsFofUnderlyingView() {
         <button onClick={() => setShowFofAuditLog(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
           <ClipboardList className="h-3.5 w-3.5" /> 操作日志
         </button>
-        <button disabled={selected.size === 0} className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground">
-          批量上传要素
+        <button
+          type="button"
+          disabled={!selectedRow?.beian_hao}
+          onClick={() => {
+            if (!selectedRow?.beian_hao) return
+            setFofNavUploadTarget({ beian_hao: selectedRow.beian_hao, product_name: selectedRow.product_name })
+          }}
+          className="inline-flex items-center gap-1 transition-colors disabled:opacity-40 disabled:cursor-not-allowed hover:text-foreground"
+        >
+          批量上传净值
         </button>
         <button onClick={() => setShowFofFieldConfig(true)} className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
           <Settings2 className="h-3.5 w-3.5" /> 字段配置
@@ -11600,23 +11794,9 @@ function OperationsFofUnderlyingView() {
                   <td className={`${cell} text-right pr-4`}>
                     <div className="flex items-center justify-end gap-4">
                       {row.beian_hao && (
-                        <div
-                          onMouseEnter={(e) => {
-                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                            hoverTimeout.current = setTimeout(() => {
-                              setHoverChartPos({ x: rect.right + 8, y: rect.top })
-                              setHoverChartRow(row.beian_hao)
-                            }, 200)
-                          }}
-                          onMouseLeave={() => {
-                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-                            hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
-                          }}>
-                          <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
-                            <LineChart className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                        <OpsNavManageButton
+                          onClick={() => openNavManage(row.beian_hao!, row.product_name)}
+                        />
                       )}
                       <OpsProductRowMenu
                         rowKey={row.id}
@@ -11626,6 +11806,7 @@ function OperationsFofUnderlyingView() {
                         onElementsManage={() => setFofElementsDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                         onPermissionManage={() => setFofPermissionDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                         onNoteManage={() => setFofNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onValuationManage={() => openOpsValuationManage("ops-fof", row.beian_hao!, row.product_name)}
                         onScaleManage={() => setFofScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                         extraItems={[{
                           label: "同步净值",
@@ -11641,23 +11822,6 @@ function OperationsFofUnderlyingView() {
           </tbody>
         </table>
       </div>
-
-      {hoverChartRow && hoverChartPos && (() => {
-        const popupW = 356
-        const popupH = 210
-        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
-        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
-        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
-        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
-        return (
-          <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
-            style={{ left, top }}
-            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
-            onMouseLeave={() => setHoverChartRow(null)}>
-            <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
-          </div>
-        )
-      })()}
 
       <div className="flex items-center justify-between pt-3 flex-shrink-0">
         <span className="text-sm text-zinc-500">
@@ -11725,6 +11889,34 @@ function OperationsFofUnderlyingView() {
         beian_hao={fofScaleDialog?.beian_hao ?? null}
         product_name={fofScaleDialog?.product_name ?? ""}
         onClose={() => setFofScaleDialog(null)}
+      />
+      <OpsTeamNavUploadDialog
+        open={!!fofNavUploadTarget}
+        product_name={fofNavUploadTarget?.product_name ?? ""}
+        onClose={() => setFofNavUploadTarget(null)}
+        onUpload={async (uploadRows) => {
+          if (!fofNavUploadTarget?.beian_hao) return
+          const res = await fetch("/ma/api/ops/team-data/nav/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              beian_hao: fofNavUploadTarget.beian_hao,
+              product_name: fofNavUploadTarget.product_name,
+              nav_type: "pre_fee",
+              rows: uploadRows.map((r) => ({
+                nav_date: r.date,
+                unit_nav: r.unit_nav,
+                cumulative_nav: r.cumulative_nav,
+              })),
+            }),
+          })
+          if (!res.ok) {
+            const json = await res.json().catch(() => ({}))
+            throw new Error(json.error || "upload_failed")
+          }
+          setFofNavUploadTarget(null)
+          setFofListReloadKey((k) => k + 1)
+        }}
       />
     </div>
   )
@@ -12866,10 +13058,12 @@ function OperationsTeamNavManageView({
   beian_hao,
   product_name,
   onBack,
+  backLabel = "返回团队数据",
 }: {
   beian_hao: string
   product_name: string
   onBack: () => void
+  backLabel?: string
 }) {
   const [navType, setNavType] = useState<"pre_fee" | "virtual">("pre_fee")
   const [rows, setRows] = useState<TeamNavManageRow[]>([])
@@ -12925,7 +13119,7 @@ function OperationsTeamNavManageView({
           onClick={onBack}
           className="text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
-          ← 返回团队数据
+          ← {backLabel}
         </button>
       </div>
 
@@ -13161,6 +13355,140 @@ function OperationsTeamNavManageView({
   )
 }
 
+const TEAM_VALUATION_UPLOAD_MAX_FILES = 100
+
+function OperationsTeamValuationManageView({
+  beian_hao,
+  product_name,
+  onBack,
+  backLabel = "返回团队数据",
+}: {
+  beian_hao: string
+  product_name: string
+  onBack: () => void
+  backLabel?: string
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function uploadFiles(rawFiles: FileList | File[]) {
+    const files = Array.from(rawFiles).filter((file) => /\.xlsx?$/i.test(file.name))
+    if (files.length === 0) {
+      setError("请上传 .xls 或 .xlsx 格式的估值表")
+      setMessage(null)
+      return
+    }
+    if (files.length > TEAM_VALUATION_UPLOAD_MAX_FILES) {
+      setError(`每次最多上传 ${TEAM_VALUATION_UPLOAD_MAX_FILES} 份估值表`)
+      setMessage(null)
+      return
+    }
+
+    setUploading(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const form = new FormData()
+      form.append("beian_hao", beian_hao)
+      form.append("product_name", product_name)
+      for (const file of files) form.append("files", file)
+
+      const res = await fetch("/ma/api/ops/team-data/valuation/upload", {
+        method: "POST",
+        body: form,
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(typeof json.error === "string" ? json.error : "上传失败")
+      }
+
+      const saved = typeof json.saved === "number" ? json.saved : files.length
+      const failed = Array.isArray(json.failed) ? json.failed as string[] : []
+      if (failed.length > 0) {
+        setMessage(`成功上传 ${saved} 份估值表，${failed.length} 份失败`)
+      } else {
+        setMessage(`成功上传 ${saved} 份估值表`)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "上传失败")
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0 px-6 py-4">
+      <div className="flex items-center gap-2 mb-4 flex-shrink-0">
+        <h1 className="text-xl font-semibold text-foreground">{product_name}</h1>
+        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-red-50 text-red-500 border border-red-200 dark:bg-red-950/30 dark:border-red-800">
+          估值表管理
+        </span>
+      </div>
+
+      <div className="bg-amber-50 border border-amber-200 text-sm text-zinc-800 px-4 py-3 mb-6 rounded flex-shrink-0 dark:bg-amber-950/20 dark:border-amber-800 dark:text-amber-100">
+        请确保该资产已上传4级估值表，否则可能无法解析。
+      </div>
+
+      <div
+        className={[
+          "flex flex-col items-center justify-center rounded-lg border-2 border-dashed bg-muted/30 min-h-[280px] px-6 py-12 transition-colors flex-shrink-0",
+          isDragOver ? "border-red-400 bg-red-50/30 dark:bg-red-950/10" : "border-muted-foreground/20",
+        ].join(" ")}
+        onDragOver={(e) => { e.preventDefault(); setIsDragOver(true) }}
+        onDragLeave={() => setIsDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setIsDragOver(false)
+          if (e.dataTransfer.files.length > 0) void uploadFiles(e.dataTransfer.files)
+        }}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files?.length) void uploadFiles(e.target.files)
+            e.target.value = ""
+          }}
+        />
+        <button
+          type="button"
+          disabled={uploading}
+          onClick={() => fileInputRef.current?.click()}
+          className="px-6 py-2 rounded border bg-background text-sm hover:bg-muted transition-colors disabled:opacity-50 mb-4"
+        >
+          {uploading ? "上传中…" : "上传估值表"}
+        </button>
+        <p className="text-sm text-muted-foreground text-center">
+          请上传【{product_name}】的估值表，估值表格式限制为.xls和.xlsx
+        </p>
+        <p className="text-sm text-muted-foreground text-center mt-1">
+          可拖拽上传，每次最多上传100份。
+        </p>
+        {message && <p className="text-sm text-green-600 dark:text-green-400 mt-4 text-center">{message}</p>}
+        {error && <p className="text-sm text-red-500 mt-4 text-center">{error}</p>}
+      </div>
+
+      <button
+        type="button"
+        onClick={onBack}
+        className="self-center mt-6 px-8 py-2 rounded border text-sm text-muted-foreground hover:bg-muted transition-colors flex-shrink-0"
+      >
+        返回列表
+      </button>
+
+      <p className="text-xs text-muted-foreground mt-auto pt-8 flex-shrink-0">
+        备注: 每次最多只能报 <span className="text-red-500 font-medium">100份</span> 估值表，请上传交易日数据。
+      </p>
+    </div>
+  )
+}
+
 // ─── OperationsTeamDataView ──────────────────────────────────────────────────
 
 type TeamDataSortKey =
@@ -13187,6 +13515,7 @@ function OperationsTeamDataView() {
   const navManageBeian = searchParams.get("beian_hao")
   const navManageProductName = searchParams.get("product_name") ?? ""
   const navManageMode = searchParams.get("nav") === "manage" && !!navManageBeian
+  const valuationManageMode = searchParams.get("valuation") === "manage" && !!navManageBeian
 
   function openNavManage(beian_hao: string, product_name: string) {
     const params = new URLSearchParams()
@@ -13201,6 +13530,14 @@ function OperationsTeamDataView() {
   function closeNavManage() {
     const params = new URLSearchParams(searchParams.toString())
     params.delete("nav")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
+  function closeValuationManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("valuation")
     params.delete("beian_hao")
     params.delete("product_name")
     router.push(`/ma/dashboard/private-funds?${params.toString()}`)
@@ -13643,6 +13980,16 @@ function OperationsTeamDataView() {
     )
   }
 
+  if (valuationManageMode && navManageBeian) {
+    return (
+      <OperationsTeamValuationManageView
+        beian_hao={navManageBeian}
+        product_name={navManageProductName}
+        onBack={closeValuationManage}
+      />
+    )
+  }
+
   return (
     <div className="flex flex-col h-full min-w-0">
       <div className="bg-background border rounded-xl shadow-sm text-xs mb-3 overflow-hidden divide-y flex-shrink-0">
@@ -14006,6 +14353,7 @@ function OperationsTeamDataView() {
                           onElementsManage={() => setTeamElementsDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                           onPermissionManage={() => {}}
                           onNoteManage={() => setTeamNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                          onValuationManage={() => openOpsValuationManage("ops-team-data", row.beian_hao!, row.product_name)}
                           onScaleManage={() => setTeamScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                           extraItems={[{
                             label: "同步净值",
@@ -14828,40 +15176,40 @@ function fmtMarketWeight(v: string | null | undefined): string {
   return pct.toFixed(2) + "%"
 }
 
-function FundProductNameLink({
-  beian_hao,
-  product_name,
-  short_name,
-  className,
-}: {
-  beian_hao: string | null
-  product_name: string
-  short_name?: string | null
-  className?: string
-}) {
-  const label = short_name || product_name
-  const href = `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao || product_name)}`
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={className ?? "block max-w-[200px]"}
-      title={product_name}
-    >
-      <span className="font-medium text-blue-600 dark:text-blue-400 hover:underline truncate block leading-5">
-        {label}
-      </span>
-      {beian_hao && (
-        <span className="text-[10px] text-muted-foreground tabular-nums leading-4 block truncate">
-          {beian_hao}
-        </span>
-      )}
-    </a>
-  )
-}
-
 function OperationsManagedProductsView() {
+  const searchParams = useSearchParams()
+  const router = useRouter()
+  const navManageBeian = searchParams.get("beian_hao")
+  const navManageProductName = searchParams.get("product_name") ?? ""
+  const navManageMode = searchParams.get("nav") === "manage" && !!navManageBeian
+  const valuationManageMode = searchParams.get("valuation") === "manage" && !!navManageBeian
+
+  function openNavManage(beian_hao: string, product_name: string) {
+    const params = new URLSearchParams()
+    params.set("tab", "operations")
+    params.set("side", "ops-active-funds")
+    params.set("nav", "manage")
+    params.set("beian_hao", beian_hao)
+    params.set("product_name", product_name)
+    window.open(`/ma/dashboard/private-funds?${params.toString()}`, "_blank")
+  }
+
+  function closeNavManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("nav")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
+  function closeValuationManage() {
+    const params = new URLSearchParams(searchParams.toString())
+    params.delete("valuation")
+    params.delete("beian_hao")
+    params.delete("product_name")
+    router.push(`/ma/dashboard/private-funds?${params.toString()}`)
+  }
+
   const [strategySource, setStrategySource] = useState<"company" | "platform">("company")
   const [strategyHierarchy, setStrategyHierarchy] = useState<TrackStrategyNode[]>([])
   const [strategyL1, setStrategyL1] = useState("")
@@ -14913,9 +15261,6 @@ function OperationsManagedProductsView() {
   const [managedNoteDialog, setManagedNoteDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [managedSyncNavDialog, setManagedSyncNavDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [managedScaleDialog, setManagedScaleDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
-  const [hoverChartRow, setHoverChartRow] = useState<string | null>(null)
-  const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
-  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
@@ -15059,6 +15404,28 @@ function OperationsManagedProductsView() {
 
   const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
   const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
+
+  if (navManageMode && navManageBeian) {
+    return (
+      <OperationsTeamNavManageView
+        beian_hao={navManageBeian}
+        product_name={navManageProductName}
+        onBack={closeNavManage}
+        backLabel="返回在管产品"
+      />
+    )
+  }
+
+  if (valuationManageMode && navManageBeian) {
+    return (
+      <OperationsTeamValuationManageView
+        beian_hao={navManageBeian}
+        product_name={navManageProductName}
+        onBack={closeValuationManage}
+        backLabel="返回在管产品"
+      />
+    )
+  }
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -15330,23 +15697,9 @@ function OperationsManagedProductsView() {
                   <td className={`${cell} text-center`}>
                     <div className="flex items-center justify-center gap-4">
                       {row.beian_hao && (
-                        <div
-                          onMouseEnter={(e) => {
-                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                            hoverTimeout.current = setTimeout(() => {
-                              setHoverChartPos({ x: rect.right + 8, y: rect.top })
-                              setHoverChartRow(row.beian_hao)
-                            }, 200)
-                          }}
-                          onMouseLeave={() => {
-                            if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-                            hoverTimeout.current = setTimeout(() => setHoverChartRow(null), 150)
-                          }}>
-                          <button type="button" className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors">
-                            <LineChart className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
+                        <OpsNavManageButton
+                          onClick={() => openNavManage(row.beian_hao!, row.product_name)}
+                        />
                       )}
                       <OpsProductRowMenu
                         rowKey={row.id}
@@ -15356,6 +15709,7 @@ function OperationsManagedProductsView() {
                         onElementsManage={() => setManagedElementsDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                         onPermissionManage={() => setManagedPermissionDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                         onNoteManage={() => setManagedNoteDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
+                        onValuationManage={() => openOpsValuationManage("ops-active-funds", row.beian_hao!, row.product_name)}
                         onScaleManage={() => setManagedScaleDialog({ beian_hao: row.beian_hao!, product_name: row.product_name })}
                         extraItems={[{
                           label: "同步净值",
@@ -15380,23 +15734,6 @@ function OperationsManagedProductsView() {
           </tbody>
         </table>
       </div>
-
-      {hoverChartRow && hoverChartPos && (() => {
-        const popupW = 356
-        const popupH = 210
-        const vw = typeof window !== "undefined" ? window.innerWidth : 1920
-        const vh = typeof window !== "undefined" ? window.innerHeight : 1080
-        const left = hoverChartPos.x + popupW > vw ? hoverChartPos.x - popupW - 16 : hoverChartPos.x
-        const top = Math.min(hoverChartPos.y, vh - popupH - 8)
-        return (
-          <div className="fixed z-50 bg-background border rounded-lg shadow-xl pointer-events-none"
-            style={{ left, top }}
-            onMouseEnter={() => { if (hoverTimeout.current) clearTimeout(hoverTimeout.current) }}
-            onMouseLeave={() => setHoverChartRow(null)}>
-            <TrendHoverChart beian_hao={hoverChartRow} productName={data.find((r) => r.beian_hao === hoverChartRow)?.product_name ?? ""} />
-          </div>
-        )
-      })()}
 
       <div className="flex items-center justify-between pt-3 flex-shrink-0">
         <span className="text-sm text-zinc-500">
@@ -19719,7 +20056,9 @@ function InvestmentTrackingManagersView() {
                               {row.manager_name}
                             </span>
                           </td>
-                          <td className={`${tdBase} max-w-[240px] truncate`} title={row.product_name}>{row.product_name}</td>
+                          <td className={`${tdBase} max-w-[240px]`}>
+                            <CopyableProductText product_name={row.product_name} className="truncate block" />
+                          </td>
                           <td className={tdBase}>{row.beian_hao}</td>
                           <td className={`${tdBase} text-right tabular-nums`}>
                             {row.unit_nav ? parseFloat(row.unit_nav).toFixed(4) : "—"}
@@ -19839,7 +20178,9 @@ function InvestmentTrackingManagersView() {
                               {row.manager_name}
                             </span>
                           </td>
-                          <td className={`${tdBase} max-w-[240px] truncate`} title={row.product_name}>{row.product_name}</td>
+                          <td className={`${tdBase} max-w-[240px]`}>
+                            <CopyableProductText product_name={row.product_name} className="truncate block" />
+                          </td>
                           <td className={tdBase}>{row.beian_hao}</td>
                           <td className={`${tdBase} text-right tabular-nums`}>
                             {row.unit_nav ? parseFloat(row.unit_nav).toFixed(4) : "—"}
@@ -20743,11 +21084,12 @@ function PortfolioNewView() {
   const [modelTab, setModelTab] = useState<PortfolioModelTab>("mean-variance")
 
   function handleCreate(buildType: "free" | "model") {
-    if (buildType === "free") {
-      window.open("/ma/dashboard/private-funds/portfolio/create?build=free", "_blank", "noopener,noreferrer")
-      return
-    }
-    window.alert("模型构建创建功能即将上线，敬请期待")
+    const query = buildType === "model" ? "model" : "free"
+    window.open(
+      `/ma/dashboard/private-funds/portfolio/create?build=${query}`,
+      "_blank",
+      "noopener,noreferrer",
+    )
   }
 
   return (
@@ -22378,7 +22720,7 @@ export default function PrivateFundsPage() {
         )}
 
         {/* Page content area */}
-        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-auto p-5">
+        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-auto p-5 scrollbar-subtle">
           {activeTab === "market" && activeSideItem === "strategy-observation" && <StrategyObservationView />}
           {activeTab === "market" && activeSideItem === "pe-index" && <PeIndexView />}
           {activeTab === "market" && activeSideItem === "pe-industry" && <PeIndustryView />}

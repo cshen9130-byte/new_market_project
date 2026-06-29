@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import { CopyableInlineText } from "@/components/ma/copyable-inline-text"
 import {
   BarChart2,
   ChevronDown,
@@ -1077,15 +1078,21 @@ export function CustomFundsView() {
                           </td>
                           <td className={`${cell} w-24 tabular-nums`}>{row.product_code ?? "—"}</td>
                           <td className={`${cell} w-[11rem]`}>
-                            <a
-                              href={row.product_code ? customFundDetailHref(row.product_code) : "#"}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-blue-600 hover:underline block truncate"
-                              title={row.product_name}
-                            >
-                              {row.product_name}
-                            </a>
+                            <CopyableInlineText
+                              text={row.product_name}
+                              copyTitle="复制产品名称"
+                              label={
+                                <a
+                                  href={row.product_code ? customFundDetailHref(row.product_code) : "#"}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:underline block truncate min-w-0"
+                                  title={row.product_name}
+                                >
+                                  {row.product_name}
+                                </a>
+                              }
+                            />
                           </td>
                         </tr>
                       )

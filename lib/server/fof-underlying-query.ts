@@ -289,12 +289,6 @@ export async function resolveFundBeianHao(identifier: string): Promise<string | 
   const id = identifier.trim()
   if (!id) return null
 
-  const managedOverride = resolveManagedProductBeian(id)
-  if (managedOverride) return managedOverride
-
-  const remapped = remapManagedProductBeianCode(id)
-  if (remapped) return remapped
-
   const directRows = await query<{ code: string }>(
     `SELECT beian_hao AS code FROM private_fund_info WHERE beian_hao = $1
      UNION ALL
@@ -305,12 +299,14 @@ export async function resolveFundBeianHao(identifier: string): Promise<string | 
     [id],
   )
   if (directRows[0]?.code) {
-    const code = directRows[0].code
-    const remappedCode = remapManagedProductBeianCode(code)
-    if (remappedCode) return remappedCode
-    const mainClass = await resolveManagedProductMainBeian(code)
-    return mainClass ?? code
+    return directRows[0].code
   }
+
+  const managedOverride = resolveManagedProductBeian(id)
+  if (managedOverride) return managedOverride
+
+  const remapped = remapManagedProductBeianCode(id)
+  if (remapped) return remapped
 
   try {
     const nameRows = await query<{ beian_hao: string | null }>(
@@ -405,6 +401,7 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
        FROM managed_products m
        WHERE m.product_name <> '合计'
          AND ${sqlFundNameMatch("m.product_name", "$1")}
+         AND ${sqlShareClassProductNameGuard("m.product_name", "$1")}
        LIMIT 1`,
       [id],
     )
@@ -467,8 +464,10 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
               strategy_two AS strategy_l2,
               strategy_three AS strategy_l3
        FROM private_fund_info_bfl bfl
-       WHERE ${sqlFundNameMatch("bfl.product_name", "$1")}
-          OR ${sqlFundNameMatch("bfl.short_name", "$1")}
+       WHERE (${sqlFundNameMatch("bfl.product_name", "$1")}
+          OR ${sqlFundNameMatch("bfl.short_name", "$1")})
+         AND ${sqlShareClassProductNameGuard("bfl.product_name", "$1")}
+         AND ${sqlShareClassProductNameGuard("COALESCE(bfl.short_name, bfl.product_name)", "$1")}
        ORDER BY LEAST(
          ${sqlFundNameMatchPriority("bfl.product_name", "$1")},
          ${sqlFundNameMatchPriority("bfl.short_name", "$1")}
@@ -499,8 +498,9 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
               company_strategy_two AS strategy_l2,
               company_strategy_three AS strategy_l3
        FROM type6_ops_team_full o
-       WHERE ${sqlFundNameMatch("o.fund_name", "$1")}
-          OR ${sqlFundNameMatch("o.fund_short_name", "$1")}
+       WHERE (${sqlFundNameMatch("o.fund_name", "$1")}
+          OR ${sqlFundNameMatch("o.fund_short_name", "$1")})
+         AND ${sqlShareClassProductNameGuard("COALESCE(o.fund_short_name, o.fund_name)", "$1")}
        ORDER BY o.updated_at DESC NULLS LAST, o.id DESC
        LIMIT 1`,
       [id],
@@ -524,7 +524,10 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
        FROM ops_email_nav_records
        WHERE (
          NULLIF(BTRIM(product_code), '') IS NOT NULL AND UPPER(BTRIM(product_code)) = UPPER(BTRIM($1))
-       ) OR ${sqlFundNameMatch("fund_name", "$1")}
+       ) OR (
+         ${sqlFundNameMatch("fund_name", "$1")}
+         AND ${sqlEmailNavShareClassGuard("fund_name", "$1", "product_code")}
+       )
        ORDER BY nav_date DESC NULLS LAST, id DESC
        LIMIT 1`,
       [id],

@@ -7,6 +7,7 @@ import {
   ChevronsUpDown,
   Download,
 } from "lucide-react"
+import { CopyableInlineText } from "@/components/ma/copyable-inline-text"
 import {
   WIN_RATE_GRANULARITY_LABELS,
   buildWinRateRow,
@@ -279,14 +280,20 @@ export function FundCompareWinRateTable({
                 return (
                   <tr key={row.key} className="hover:bg-muted/20">
                     <td className={`${tdBase} font-medium`}>
-                      <span className="inline-flex items-center gap-1.5">
-                        {row.name}
-                        {row.isBenchmark && (
-                          <span className="inline-block px-1 py-0.5 rounded text-[10px] border border-zinc-200 bg-zinc-50 text-zinc-500">
-                            基准
+                      <CopyableInlineText
+                        text={row.name}
+                        copyTitle="复制产品名称"
+                        label={
+                          <span className="inline-flex items-center gap-1.5" title={row.name}>
+                            {row.name}
+                            {row.isBenchmark && (
+                              <span className="inline-block px-1 py-0.5 rounded text-[10px] border border-zinc-200 bg-zinc-50 text-zinc-500">
+                                基准
+                              </span>
+                            )}
                           </span>
-                        )}
-                      </span>
+                        }
+                      />
                     </td>
                     <td className={tdBase}>
                       {s.totalPeriods > 0 ? `${s.totalPeriods} ${labels.unit}` : "—"}

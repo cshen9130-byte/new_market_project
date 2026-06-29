@@ -2,6 +2,8 @@
  * Canonical 备案号 for 在管产品 rows — overrides fuzzy auto-resolution when
  * the business defines a fixed product ↔ code mapping.
  */
+import { shareClassFromProductName } from "@/lib/server/share-class-product"
+
 export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   荣熙恒盈2号: "SBAH99",
   抱朴聚融祥和一号: "SSG947",
@@ -21,6 +23,16 @@ const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   SBP097: "SBPU97",
 }
 
+/** Parent managed-product name must not swallow A/B/C share-class variants. */
+function managedProductOverrideNameMatches(
+  overrideProductName: string,
+  identifier: string,
+): boolean {
+  if (identifier === overrideProductName) return true
+  if (overrideProductName.length < 4 || !identifier.includes(overrideProductName)) return false
+  return shareClassFromProductName(overrideProductName) === shareClassFromProductName(identifier)
+}
+
 export function resolveManagedProductBeian(
   productName: string,
   autoResolved?: string | null,
@@ -34,7 +46,7 @@ export function resolveManagedProductBeian(
   const exact = MANAGED_PRODUCT_BEIAN_OVERRIDES[name]
   if (exact) return exact
   for (const [product_name, beian_hao] of Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)) {
-    if (product_name.length >= 4 && name.includes(product_name)) return beian_hao
+    if (managedProductOverrideNameMatches(product_name, name)) return beian_hao
   }
   if (!auto) return null
   return MANAGED_PRODUCT_BEIAN_ALIASES[auto.toUpperCase()] ?? auto
@@ -72,9 +84,6 @@ export function remapManagedProductBeianCode(code: string): string | null {
   for (const canonical of Object.values(MANAGED_PRODUCT_BEIAN_OVERRIDES)) {
     if (normalized === canonical.toUpperCase()) return canonical
   }
-  if (normalized === "SBAH99A" || normalized === "BAH99A") {
-    return MANAGED_PRODUCT_BEIAN_OVERRIDES["荣熙恒盈2号"] ?? null
-  }
   const aliased = MANAGED_PRODUCT_BEIAN_ALIASES[normalized]
   if (aliased) return aliased
   return null
@@ -90,7 +99,7 @@ export function lookupManagedProductOverride(
     if (
       id === product_name
       || upper === beian_hao.toUpperCase()
-      || (product_name.length >= 4 && id.includes(product_name))
+      || managedProductOverrideNameMatches(product_name, id)
     ) {
       return { product_name, beian_hao }
     }

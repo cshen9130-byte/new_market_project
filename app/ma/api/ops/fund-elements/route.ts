@@ -16,6 +16,12 @@ export async function GET(req: Request) {
 
   const [elementsRows, teamRows, pfiRows, bflRows] = await Promise.all([
     query<{
+      fund_name: string | null
+      register_number: string | null
+      advisor: string | null
+      inception_date: string | null
+      puton_date: string | null
+      mandator_name: string | null
       open_day: string | null
       is_temporary_open: number | null
       fee_purchase: string | null
@@ -30,7 +36,9 @@ export async function GET(req: Request) {
       fee_admin_service: string | null
       fee_pay: string | null
     }>(
-      `SELECT open_day, is_temporary_open,
+      `SELECT fund_name, register_number, advisor,
+              inception_date::text, puton_date::text, mandator_name,
+              open_day, is_temporary_open,
               fee_purchase, add_amount, fee_redeem,
               precautious_line, closed_period, stop_line,
               fee_manage_rate::text, fee_trust, fee_manage,
@@ -59,8 +67,8 @@ export async function GET(req: Request) {
       [beian_hao]
     ).catch(() => []),
 
-    query<{ benchmark: string | null }>(
-      `SELECT benchmark FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
+    query<{ manager: string | null; benchmark: string | null }>(
+      `SELECT manager, benchmark FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
       [beian_hao]
     ).catch(() => []),
 
@@ -75,10 +83,9 @@ export async function GET(req: Request) {
 
   const el = elementsRows[0]
   const team = teamRows[0]
-  const benchmark =
-    pfiRows[0]?.benchmark ||
-    bflRows[0]?.benchmark_index ||
-    null
+  const pfi = pfiRows[0]
+  const benchmark = pfi?.benchmark || bflRows[0]?.benchmark_index || null
+  const fund_manager = pfi?.manager || el?.advisor || null
 
   const is_temporary_open =
     el?.is_temporary_open != null
@@ -91,6 +98,13 @@ export async function GET(req: Request) {
       : null
 
   return NextResponse.json({
+    fund_name: el?.fund_name ?? null,
+    register_number: el?.register_number ?? beian_hao,
+    advisor: el?.advisor ?? null,
+    fund_manager,
+    inception_date: el?.inception_date ? el.inception_date.slice(0, 10) : null,
+    puton_date: el?.puton_date ? el.puton_date.slice(0, 10) : null,
+    custodian: el?.mandator_name ?? null,
     platform_l1: team?.platform_strategy_one ?? null,
     platform_l2: team?.platform_strategy_two ?? null,
     platform_l3: team?.platform_strategy_three ?? null,
@@ -113,4 +127,91 @@ export async function GET(req: Request) {
     fee_admin_service: el?.fee_admin_service ?? null,
     fee_pay: el?.fee_pay ?? null,
   })
+}
+
+function normalizeDate(value: unknown): string | null {
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s) return null
+  return s.slice(0, 10)
+}
+
+export async function PATCH(req: Request) {
+  const body = await req.json().catch(() => null)
+  const beian_hao = String(body?.beian_hao ?? "").trim()
+  if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
+
+  const fund_name = body.fund_name != null ? String(body.fund_name).trim() || null : undefined
+  const advisor = body.advisor != null ? String(body.advisor).trim() || null : undefined
+  const fund_manager = body.fund_manager != null ? String(body.fund_manager).trim() || null : undefined
+  const inception_date = body.inception_date !== undefined ? normalizeDate(body.inception_date) : undefined
+  const puton_date = body.puton_date !== undefined ? normalizeDate(body.puton_date) : undefined
+  const custodian = body.custodian != null ? String(body.custodian).trim() || null : undefined
+
+  try {
+    const existing = await query<{ id: number }>(
+      `SELECT id FROM basicinfo_bfl_track
+       WHERE register_number = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [beian_hao]
+    )
+
+    if (existing[0]) {
+      await query(
+        `UPDATE basicinfo_bfl_track
+         SET fund_name = $2,
+             advisor = $3,
+             inception_date = $4::date,
+             puton_date = $5::date,
+             mandator_name = $6,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [
+          existing[0].id,
+          fund_name ?? null,
+          advisor ?? null,
+          inception_date ?? null,
+          puton_date ?? null,
+          custodian ?? null,
+        ]
+      )
+    } else {
+      await query(
+        `INSERT INTO basicinfo_bfl_track
+           (register_number, record_key, fund_name, advisor, inception_date, puton_date, mandator_name, updated_at)
+         VALUES ($1, $1, $2, $3, $4::date, $5::date, $6, NOW())`,
+        [
+          beian_hao,
+          fund_name ?? null,
+          advisor ?? null,
+          inception_date ?? null,
+          puton_date ?? null,
+          custodian ?? null,
+        ]
+      )
+    }
+
+    if (fund_manager !== undefined) {
+      await query(
+        `UPDATE private_fund_info SET manager = $2 WHERE beian_hao = $1`,
+        [beian_hao, fund_manager]
+      ).catch(() => undefined)
+    }
+
+    if (advisor !== undefined || custodian !== undefined) {
+      await query(
+        `UPDATE private_fund_info_bfl
+         SET investment_advisor = $2,
+             custodian = $3
+         WHERE beian_hao = $1`,
+        [beian_hao, advisor ?? null, custodian ?? null]
+      ).catch(() => undefined)
+    }
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    console.error("[ops/fund-elements PATCH]", err)
+    return NextResponse.json({ error: "Database error" }, { status: 500 })
+  }
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
+import { CopyableProductName } from "@/components/ma/copyable-inline-text"
 import {
   CalendarDays,
   ChevronDown,
@@ -1280,15 +1281,12 @@ export function InvestmentDirectProductsView() {
                   </td>
                   <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
                   <td className={cell}>
-                    <a
-                      href={`/ma/dashboard/private-funds/${encodeURIComponent(row.beian_hao)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <CopyableProductName
+                      beian_hao={row.beian_hao}
+                      product_name={row.product_name}
+                      short_name={row.short_name}
                       className="font-medium text-blue-600 dark:text-blue-400 hover:underline block truncate max-w-[220px]"
-                      title={row.product_name}
-                    >
-                      {row.short_name || row.product_name}
-                    </a>
+                    />
                     {!isPublic && !isTeam && row.strategy_l1 && (
                       <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[10px] border border-amber-300/80 text-amber-700 bg-amber-50 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-700/50">
                         {row.strategy_l1}{row.strategy_l2 ? ` · ${row.strategy_l2}` : ""}

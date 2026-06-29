@@ -107,11 +107,61 @@ function sourceTier(source: string | null | undefined, subject?: string | null):
   return emailNavSourceTier(source, subject)
 }
 
-function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
+const MAX_PLAUSIBLE_EMAIL_UNIT_NAV = 50
+
+/** Reject share-count / cost columns mis-parsed as unit NAV (e.g. 虚拟计提净值表 holdings). */
+export function isPlausibleEmailUnitNav(
+  nav: number | null | undefined,
+  cumulativeNav?: number | null,
+): boolean {
+  if (nav == null || !Number.isFinite(nav) || nav < 0.1 || nav > MAX_PLAUSIBLE_EMAIL_UNIT_NAV) {
+    return false
+  }
+  const cum = cumulativeNav ?? null
+  if (cum != null && Number.isFinite(cum) && cum > 0 && nav > cum * 10) return false
+  return true
+}
+
+function isVirtualAccrualNavTableRow(row: EmailNavRawRow): boolean {
+  const meta = `${row.subject ?? ""}${row.attachment_filename ?? ""}`
+  return /虚拟计提净值表/u.test(meta)
+}
+
+function productCodeMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
+  if (!beian) return false
+  return (row.product_code ?? "").trim().toUpperCase() === beian.trim().toUpperCase()
+}
+
+export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
   const currentTier = sourceTier(current.source, current.subject)
   const candidateTier = sourceTier(candidate.source, candidate.subject)
   if (currentTier !== candidateTier) {
     return candidateTier < currentTier ? candidate : current
+  }
+
+  const currentPlausible = isPlausibleEmailUnitNav(
+    parseOptionalNav(current.nav),
+    parseOptionalNav(current.cumulative_nav),
+  )
+  const candidatePlausible = isPlausibleEmailUnitNav(
+    parseOptionalNav(candidate.nav),
+    parseOptionalNav(candidate.cumulative_nav),
+  )
+  if (currentPlausible !== candidatePlausible) {
+    return candidatePlausible ? candidate : current
+  }
+
+  if (beian) {
+    const candCode = productCodeMatchesBeian(candidate, beian)
+    const currCode = productCodeMatchesBeian(current, beian)
+    if (candCode && !currCode) return candidate
+    if (currCode && !candCode) return current
+  }
+
+  const candAccrual = isVirtualAccrualNavTableRow(candidate)
+  const currAccrual = isVirtualAccrualNavTableRow(current)
+  if (candAccrual !== currAccrual) {
+    return currAccrual ? candidate : current
   }
 
   const rowHasBeian = beian && `${candidate.attachment_filename ?? ""}${candidate.subject ?? ""}`.toUpperCase().includes(beian)
@@ -448,6 +498,20 @@ export function buildEmailNavLatestJoins(
         e.nav_date DESC,
         CASE WHEN ${virtualFilter} THEN 0 ELSE 1 END,
         ${EMAIL_NAV_SOURCE_PRIORITY},
+        CASE
+          WHEN e.nav::numeric >= 0.1
+            AND e.nav::numeric <= ${MAX_PLAUSIBLE_EMAIL_UNIT_NAV}
+            AND (
+              e.cumulative_nav IS NULL
+              OR e.nav::numeric <= e.cumulative_nav::numeric * 10
+            )
+          THEN 0 ELSE 1 END,
+        CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
+          AND BTRIM(COALESCE(e.product_code, '')) = BTRIM(${beianHaoExpr})
+          THEN 0 ELSE 1 END,
+        CASE WHEN COALESCE(e.subject, '') ILIKE '%虚拟计提净值表%'
+          OR COALESCE(e.attachment_filename, '') ILIKE '%虚拟计提净值表%'
+          THEN 1 ELSE 0 END,
         CASE WHEN COALESCE(e.fund_name, '') NOT LIKE '资产净值公告_%' THEN 0 ELSE 1 END,
         CASE WHEN ${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> ''
           AND (

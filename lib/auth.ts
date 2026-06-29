@@ -164,4 +164,23 @@ export const authService = {
       return authService.getCurrentUser()
     }
   },
+
+  updateProfile: async (
+    updates: Partial<{ name: string; password: string; currentPassword: string }>,
+  ): Promise<{ success: boolean; user?: User; error?: string }> => {
+    try {
+      const uid = currentUserId()
+      if (!uid) return { success: false, error: "未登录" }
+      const data = await jsonFetch<{ ok: true; user: User }>("/api/auth/profile", {
+        method: "PUT",
+        body: JSON.stringify(updates),
+        headers: { "x-market-user-id": uid },
+      })
+      localStorage.setItem("currentUser", JSON.stringify(data.user))
+      return { success: true, user: data.user }
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "更新失败"
+      return { success: false, error: message }
+    }
+  },
 }

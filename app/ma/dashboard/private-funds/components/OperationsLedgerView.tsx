@@ -14,6 +14,11 @@ import {
   Settings2,
   Trash2,
 } from "lucide-react"
+import { AddSingleLedgerDialog, BatchUploadLedgerDialog } from "./OperationsLedgerDialogs"
+import {
+  LEDGER_FIELD_CONFIG_DEFAULT,
+  OperationsLedgerFieldConfigDialog,
+} from "./OperationsLedgerFieldConfigDialog"
 
 type RunStatus = "running" | "liquidated"
 type LedgerSortKey = "apply_date" | "confirm_date"
@@ -21,8 +26,11 @@ type LedgerSortKey = "apply_date" | "confirm_date"
 interface LedgerRow {
   id: string
   fof_fund_name: string
+  fof_register_number: string | null
   transaction_type: string
+  underlying_type: string | null
   underlying_fund_name: string
+  underlying_beian_hao: string | null
   apply_date: string
   confirm_date: string
   confirmed_shares: string | null
@@ -30,6 +38,8 @@ interface LedgerRow {
   confirmed_unit_nav: string | null
   transaction_fee: string | null
   performance_fee: string | null
+  share_balance: string | null
+  dividend_per_unit: string | null
   source: string | null
   remark: string | null
 }
@@ -45,20 +55,35 @@ interface UnderlyingOption {
   short_name: string | null
 }
 
-const LEDGER_FIELD_CONFIG_DEFAULT = [
-  "fof_fund_name",
-  "transaction_type",
-  "underlying_fund_name",
-  "apply_date",
-  "confirm_date",
-  "confirmed_shares",
+const LEDGER_FIELD_LABELS: Record<string, string> = {
+  fof_fund_name: "FOF基金",
+  fof_register_number: "FOF基金备案号",
+  transaction_type: "交易类型",
+  underlying_type: "底层类型",
+  underlying_fund_name: "底层基金",
+  underlying_beian_hao: "底层备案号",
+  apply_date: "申请日期",
+  confirm_date: "确认日期",
+  confirmed_amount: "确认净额",
+  confirmed_shares: "确认份额",
+  confirmed_unit_nav: "确认单位净值",
+  transaction_fee: "交易费用",
+  performance_fee: "业绩报酬",
+  share_balance: "份额余额",
+  dividend_per_unit: "每单位分红",
+  source: "来源",
+  remark: "备注",
+}
+
+const NUMERIC_LEDGER_FIELDS = new Set([
   "confirmed_amount",
+  "confirmed_shares",
   "confirmed_unit_nav",
   "transaction_fee",
   "performance_fee",
-  "source",
-  "remark",
-]
+  "share_balance",
+  "dividend_per_unit",
+])
 
 export function OperationsLedgerView() {
   const [runStatus, setRunStatus] = useState<RunStatus>("running")
@@ -92,6 +117,9 @@ export function OperationsLedgerView() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchSelectMode, setBatchSelectMode] = useState(false)
   const [showAddLedgerMenu, setShowAddLedgerMenu] = useState(false)
+  const [showSingleLedgerDialog, setShowSingleLedgerDialog] = useState(false)
+  const [showBatchLedgerDialog, setShowBatchLedgerDialog] = useState(false)
+  const [listRefreshKey, setListRefreshKey] = useState(0)
   const [showFieldConfig, setShowFieldConfig] = useState(false)
   const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>([...LEDGER_FIELD_CONFIG_DEFAULT])
 
@@ -141,6 +169,7 @@ export function OperationsLedgerView() {
     appliedApplyDateTo,
     sortKey,
     sortDir,
+    listRefreshKey,
   ])
 
   useEffect(() => {
@@ -220,7 +249,69 @@ export function OperationsLedgerView() {
 
   const thBase = "px-3 py-3 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap"
   const thSort = `${thBase} cursor-pointer select-none hover:text-zinc-800 dark:hover:text-zinc-200`
-  const visibleCols = new Set(fieldConfigSelected)
+  const visibleFieldKeys = fieldConfigSelected.filter((key) => LEDGER_FIELD_LABELS[key])
+
+  function renderHeader(key: string) {
+    const label = LEDGER_FIELD_LABELS[key]
+    if (key === "apply_date" || key === "confirm_date") {
+      return (
+        <th key={key} className={thSort} onClick={() => handleSort(key)}>
+          {label}<SortIcon col={key} />
+        </th>
+      )
+    }
+    if (key === "transaction_type" || key === "source") {
+      return (
+        <th key={key} className={`${thBase} min-w-[90px]`}>
+          <span className="inline-flex items-center gap-0.5">
+            {label}
+            <ChevronDown className="h-3 w-3 opacity-40" />
+          </span>
+        </th>
+      )
+    }
+    if (key === "confirmed_shares") {
+      return (
+        <th key={key} className={`${thBase} min-w-[90px]`}>
+          <span className="inline-flex items-center gap-0.5">
+            {label}
+            <HelpCircle className="h-3 w-3 opacity-40" />
+          </span>
+        </th>
+      )
+    }
+    return (
+      <th key={key} className={`${thBase} min-w-[90px]`}>
+        {label}
+      </th>
+    )
+  }
+
+  function renderCell(key: string, row: LedgerRow, cell: string) {
+    const value = row[key as keyof LedgerRow]
+    const display = value == null || value === "" ? "—" : String(value)
+    if (key === "fof_fund_name" || key === "underlying_fund_name") {
+      return (
+        <td key={key} className={`${cell} truncate max-w-[180px]`} title={display === "—" ? undefined : display}>
+          {display}
+        </td>
+      )
+    }
+    if (key === "remark") {
+      return (
+        <td key={key} className={`${cell} text-muted-foreground truncate max-w-[120px]`} title={display === "—" ? undefined : display}>
+          {display}
+        </td>
+      )
+    }
+    if (NUMERIC_LEDGER_FIELDS.has(key)) {
+      return <td key={key} className={`${cell} text-right tabular-nums`}>{display}</td>
+    }
+    if (key === "apply_date" || key === "confirm_date") {
+      return <td key={key} className={`${cell} tabular-nums`}>{display}</td>
+    }
+    return <td key={key} className={cell}>{display}</td>
+  }
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -430,17 +521,23 @@ export function OperationsLedgerView() {
               >
                 <button
                   type="button"
-                  onClick={() => setShowAddLedgerMenu(false)}
+                  onClick={() => {
+                    setShowAddLedgerMenu(false)
+                    setShowSingleLedgerDialog(true)
+                  }}
                   className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
                 >
-                  手动添加
+                  单条台账
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowAddLedgerMenu(false)}
+                  onClick={() => {
+                    setShowAddLedgerMenu(false)
+                    setShowBatchLedgerDialog(true)
+                  }}
                   className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors"
                 >
-                  批量导入
+                  批量上传
                 </button>
               </div>
             </>
@@ -462,61 +559,7 @@ export function OperationsLedgerView() {
                 />
               </th>
               <th className={`${thBase} w-10 text-center`}>序号</th>
-              {visibleCols.has("fof_fund_name") && (
-                <th className={`${thBase} min-w-[140px]`}>FOF基金</th>
-              )}
-              {visibleCols.has("transaction_type") && (
-                <th className={`${thBase} min-w-[90px]`}>
-                  <span className="inline-flex items-center gap-0.5">
-                    交易类型
-                    <ChevronDown className="h-3 w-3 opacity-40" />
-                  </span>
-                </th>
-              )}
-              {visibleCols.has("underlying_fund_name") && (
-                <th className={`${thBase} min-w-[140px]`}>底层基金</th>
-              )}
-              {visibleCols.has("apply_date") && (
-                <th className={thSort} onClick={() => handleSort("apply_date")}>
-                  申请日期<SortIcon col="apply_date" />
-                </th>
-              )}
-              {visibleCols.has("confirm_date") && (
-                <th className={thSort} onClick={() => handleSort("confirm_date")}>
-                  确认日期<SortIcon col="confirm_date" />
-                </th>
-              )}
-              {visibleCols.has("confirmed_shares") && (
-                <th className={`${thBase} min-w-[90px]`}>
-                  <span className="inline-flex items-center gap-0.5">
-                    确认份额
-                    <HelpCircle className="h-3 w-3 opacity-40" />
-                  </span>
-                </th>
-              )}
-              {visibleCols.has("confirmed_amount") && (
-                <th className={`${thBase} min-w-[90px]`}>确认金额</th>
-              )}
-              {visibleCols.has("confirmed_unit_nav") && (
-                <th className={`${thBase} min-w-[100px]`}>确认单位净值</th>
-              )}
-              {visibleCols.has("transaction_fee") && (
-                <th className={`${thBase} min-w-[80px]`}>交易费用</th>
-              )}
-              {visibleCols.has("performance_fee") && (
-                <th className={`${thBase} min-w-[80px]`}>业绩报酬</th>
-              )}
-              {visibleCols.has("source") && (
-                <th className={`${thBase} min-w-[70px]`}>
-                  <span className="inline-flex items-center gap-0.5">
-                    来源
-                    <ChevronDown className="h-3 w-3 opacity-40" />
-                  </span>
-                </th>
-              )}
-              {visibleCols.has("remark") && (
-                <th className={`${thBase} min-w-[80px]`}>备注</th>
-              )}
+              {visibleFieldKeys.map(renderHeader)}
               <th className={`${thBase} text-center w-20 sticky right-0 z-30 bg-muted/40 dark:bg-muted/20 border-l`}>操作</th>
             </tr>
           </thead>
@@ -551,42 +594,7 @@ export function OperationsLedgerView() {
                     />
                   </td>
                   <td className={`${cell} text-center tabular-nums text-muted-foreground`}>{(page - 1) * pageSize + i + 1}</td>
-                  {visibleCols.has("fof_fund_name") && (
-                    <td className={`${cell} truncate max-w-[180px]`} title={row.fof_fund_name}>{row.fof_fund_name}</td>
-                  )}
-                  {visibleCols.has("transaction_type") && (
-                    <td className={cell}>{row.transaction_type}</td>
-                  )}
-                  {visibleCols.has("underlying_fund_name") && (
-                    <td className={`${cell} truncate max-w-[180px]`} title={row.underlying_fund_name}>{row.underlying_fund_name}</td>
-                  )}
-                  {visibleCols.has("apply_date") && (
-                    <td className={`${cell} tabular-nums`}>{row.apply_date}</td>
-                  )}
-                  {visibleCols.has("confirm_date") && (
-                    <td className={`${cell} tabular-nums`}>{row.confirm_date}</td>
-                  )}
-                  {visibleCols.has("confirmed_shares") && (
-                    <td className={`${cell} text-right tabular-nums`}>{row.confirmed_shares ?? "—"}</td>
-                  )}
-                  {visibleCols.has("confirmed_amount") && (
-                    <td className={`${cell} text-right tabular-nums`}>{row.confirmed_amount ?? "—"}</td>
-                  )}
-                  {visibleCols.has("confirmed_unit_nav") && (
-                    <td className={`${cell} text-right tabular-nums`}>{row.confirmed_unit_nav ?? "—"}</td>
-                  )}
-                  {visibleCols.has("transaction_fee") && (
-                    <td className={`${cell} text-right tabular-nums`}>{row.transaction_fee ?? "—"}</td>
-                  )}
-                  {visibleCols.has("performance_fee") && (
-                    <td className={`${cell} text-right tabular-nums`}>{row.performance_fee ?? "—"}</td>
-                  )}
-                  {visibleCols.has("source") && (
-                    <td className={cell}>{row.source ?? "—"}</td>
-                  )}
-                  {visibleCols.has("remark") && (
-                    <td className={`${cell} text-muted-foreground truncate max-w-[120px]`} title={row.remark ?? undefined}>{row.remark || "—"}</td>
-                  )}
+                  {visibleFieldKeys.map((key) => renderCell(key, row, cell))}
                   <td className={`${cell} text-center sticky right-0 bg-background group-hover:bg-muted border-l`}>
                     <div className="flex items-center justify-center gap-2 text-muted-foreground">
                       <button type="button" className="hover:text-foreground"><Pencil className="h-3.5 w-3.5" /></button>
@@ -653,64 +661,26 @@ export function OperationsLedgerView() {
         </div>
       </div>
 
-      {showFieldConfig && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setShowFieldConfig(false)}>
-          <div className="bg-background rounded-lg shadow-xl w-full max-w-md" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-5 py-4 border-b">
-              <span className="font-semibold text-sm">字段配置</span>
-              <button type="button" onClick={() => setShowFieldConfig(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
-            </div>
-            <div className="px-5 py-4 space-y-2 max-h-80 overflow-y-auto">
-              {[
-                ["fof_fund_name", "FOF基金"],
-                ["transaction_type", "交易类型"],
-                ["underlying_fund_name", "底层基金"],
-                ["apply_date", "申请日期"],
-                ["confirm_date", "确认日期"],
-                ["confirmed_shares", "确认份额"],
-                ["confirmed_amount", "确认金额"],
-                ["confirmed_unit_nav", "确认单位净值"],
-                ["transaction_fee", "交易费用"],
-                ["performance_fee", "业绩报酬"],
-                ["source", "来源"],
-                ["remark", "备注"],
-              ].map(([key, label]) => (
-                <label key={key} className="flex items-center gap-2 text-sm cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="rounded h-3.5 w-3.5"
-                    checked={fieldConfigSelected.includes(key)}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setFieldConfigSelected((prev) => [...prev, key])
-                      } else {
-                        setFieldConfigSelected((prev) => prev.filter((k) => k !== key))
-                      }
-                    }}
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-            <div className="px-5 py-3 border-t flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setFieldConfigSelected([...LEDGER_FIELD_CONFIG_DEFAULT])}
-                className="px-3 py-1.5 text-xs border rounded hover:bg-muted transition-colors"
-              >
-                恢复默认
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowFieldConfig(false)}
-                className="px-3 py-1.5 text-xs bg-red-500 hover:bg-red-600 text-white rounded transition-colors"
-              >
-                确定
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AddSingleLedgerDialog
+        open={showSingleLedgerDialog}
+        onClose={() => setShowSingleLedgerDialog(false)}
+        onSaved={() => setListRefreshKey((k) => k + 1)}
+      />
+      <BatchUploadLedgerDialog
+        open={showBatchLedgerDialog}
+        onClose={() => setShowBatchLedgerDialog(false)}
+        onUploaded={() => setListRefreshKey((k) => k + 1)}
+      />
+
+      <OperationsLedgerFieldConfigDialog
+        open={showFieldConfig}
+        selected={fieldConfigSelected}
+        onClose={() => setShowFieldConfig(false)}
+        onConfirm={(fields) => {
+          setFieldConfigSelected(fields)
+          setShowFieldConfig(false)
+        }}
+      />
     </div>
   )
 }

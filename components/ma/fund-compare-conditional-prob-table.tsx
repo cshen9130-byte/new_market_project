@@ -6,6 +6,7 @@ import {
   fmtConditionalPct,
   type ConditionalProbabilityStats,
 } from "@/lib/fund-compare-conditional-prob"
+import { CopyableInlineText } from "@/components/ma/copyable-inline-text"
 import type { WinRateGranularity } from "@/lib/fund-compare-win-rate"
 
 interface FundInput {
@@ -120,7 +121,13 @@ export function FundCompareConditionalProbTable({
                   className={rowIndex % 2 === 1 ? "bg-zinc-50/40" : "bg-white"}
                 >
                   <td className="px-3 py-2.5 text-sm font-medium border-r border-zinc-100 whitespace-nowrap">
-                    {row.name}
+                    <CopyableInlineText
+                      text={row.name}
+                      copyTitle="复制产品名称"
+                      label={
+                        <span title={row.name}>{row.name}</span>
+                      }
+                    />
                   </td>
                   <td className="px-3 py-2.5 text-center text-sm tabular-nums whitespace-nowrap">
                     {row.stats.totalPeriods}{periodUnit}

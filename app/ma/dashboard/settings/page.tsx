@@ -1,14 +1,22 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useSearchParams } from "next/navigation"
+import { authService, type User } from "@/lib/auth"
 
 // ─── localStorage keys ───────────────────────────────────────────────────────
 const METRIC_TEMPLATES_KEY = "tracking_metric_templates"
 const CALC_SETTINGS_KEY    = "tracking_calc_settings"
+const COMPARE_TEMPLATES_KEY = "tracking_compare_templates"
+const COMMON_BENCHMARKS_KEY = "tracking_common_benchmarks"
 
 interface MetricItem { period: string; metric: string }
 interface MetricTemplate { name: string; items: MetricItem[] }
+interface CompareTemplate { name: string; indicators: string[] }
+interface CommonBenchmark { type: string; name: string }
+
+const BENCHMARK_TYPE_OPTIONS = ["指数", "私募指数", "自定义"]
+const BENCHMARK_NAME_OPTIONS = ["沪深300", "中证500", "上证指数", "创业板指", "中证1000", "南华商品指数"]
 
 const ADD_METRIC_PERIODS = [
   "本周","本月","近一周","近一月","近三月",
@@ -38,12 +46,12 @@ const DEFAULT_CALC: CalcSettings = {
   periodCalc:   "连乘",
   excessCalc:   "除法",
   annualCalc:   "复利",
-  weeklyNav:    "周频时展示月末最后交易日净值",
-  watermark:    true,
+  weeklyNav:    "周频计算只用月末最后交易日净值",
+  watermark:    false,
 }
 
 const LEFT_NAV = [
-  { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "常用注册", "登录设置"] },
+  { group: "个人中心", items: ["用户中心", "个人积分", "个人标签", "个人配置", "邀请注册", "登录设置"] },
   { group: "团队管理", items: ["评分设置", "指令设置", "报告设置"] },
 ]
 
@@ -112,6 +120,11 @@ function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: str
 
   useEffect(() => { loadTags(tagCategory) }, [tagCategory])
 
+  useEffect(() => {
+    const next = PERSONAL_TAG_CATEGORIES.find((c) => c.param === initialCategory)?.key
+    if (next) setTagCategory(next)
+  }, [initialCategory])
+
   async function createTag() {
     if (!newTagName.trim()) return
     setNewTagSaving(true)
@@ -160,18 +173,19 @@ function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: str
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2 text-sm">
-          <span className="text-zinc-500 font-medium">分类：</span>
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-zinc-500">分类：</span>
           {PERSONAL_TAG_CATEGORIES.map((c) => (
             <button
               key={c.key}
+              type="button"
               onClick={() => setTagCategory(c.key)}
               className={[
-                "px-3 py-1 rounded text-sm font-medium transition-all border",
+                "px-1 py-0.5 text-sm transition-colors",
                 tagCategory === c.key
-                  ? "bg-red-50 text-red-500 border-red-300 dark:bg-red-950/20 dark:border-red-700"
-                  : "border-transparent text-zinc-600 dark:text-zinc-400 hover:text-foreground",
+                  ? "text-red-500 font-medium"
+                  : "text-zinc-600 dark:text-zinc-400 hover:text-foreground",
               ].join(" ")}
             >
               {c.label}
@@ -179,10 +193,11 @@ function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: str
           ))}
         </div>
         <button
+          type="button"
           onClick={() => { setNewTagName(""); setShowNewModal(true) }}
           className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
         >
-          新增标签
+          新建标签
         </button>
       </div>
 
@@ -192,8 +207,8 @@ function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: str
             <tr className="bg-muted/40 border-b">
               <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">标签名称</th>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">最后修改</th>
-              <th className="px-4 py-3 text-right text-xs font-semibold text-zinc-500 w-24">操作</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">最近修改</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-24">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -211,11 +226,12 @@ function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: str
             ) : tags.map((tag, i) => (
               <tr key={tag.id} className="border-b hover:bg-muted/20 transition-colors">
                 <td className="px-4 py-3 text-muted-foreground tabular-nums">{i + 1}</td>
-                <td className="px-4 py-3 font-medium">{tag.name}</td>
+                <td className="px-4 py-3">{tag.name}</td>
                 <td className="px-4 py-3 tabular-nums text-muted-foreground">{fmtTagDateTime(tag.updated_at)}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center justify-end gap-3">
+                  <div className="flex items-center gap-4">
                     <button
+                      type="button"
                       title="编辑"
                       className="text-muted-foreground hover:text-foreground transition-colors"
                       onClick={() => { setEditingTag(tag); setEditTagName(tag.name) }}
@@ -223,6 +239,7 @@ function PersonalTagsPanel({ initialCategory = "fund" }: { initialCategory?: str
                       <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><path d="M11 9H8a1 1 0 0 0-1 1v5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2"/><path d="M15.5 5.5a2 2 0 0 1 3 3L12 15l-4 1 1-4 6.5-6.5z"/></svg>
                     </button>
                     <button
+                      type="button"
                       title="删除"
                       className="text-muted-foreground hover:text-red-500 transition-colors"
                       onClick={() => deleteTag(tag.id)}
@@ -350,12 +367,11 @@ function CalcSettingsPanel() {
         <div className="space-y-0.5 pl-1">
           {row("默认净值类型", settings.navType)}
           {row("无风险利率", settings.riskFreeRate + "%")}
-          {row("期间计算", settings.periodCalc ?? "连乘")}
           {row("超额计算", settings.excessCalc)}
           {row("年化计算", settings.annualCalc)}
           {row("周频净值", settings.weeklyNav)}
           <div className="flex items-center gap-1 text-sm text-zinc-700 dark:text-zinc-300 py-1.5">
-            <span className="text-zinc-500 dark:text-zinc-400 w-28 shrink-0">报表水印：</span>
+            <span className="text-zinc-500 dark:text-zinc-400 w-28 shrink-0">图表水印：</span>
             <button
               onClick={() => {
                 const next = { ...settings, watermark: !settings.watermark }
@@ -396,9 +412,9 @@ function CalcSettingsPanel() {
           </Field>
           <Field label="周频净值">
             <RadioGroup value={draft.weeklyNav} onChange={(v) => setDraft({ ...draft, weeklyNav: v })}
-              options={["周频时展示月末最后交易日净值", "展示最新净值"]} />
+              options={["周频计算只用月末最后交易日净值", "展示最新净值"]} />
           </Field>
-          <Field label="报表水印">
+          <Field label="图表水印">
             <button
               onClick={() => setDraft({ ...draft, watermark: !draft.watermark })}
               className={["relative inline-flex h-5 w-9 items-center rounded-full transition-colors", draft.watermark ? "bg-red-400" : "bg-zinc-300"].join(" ")}
@@ -434,6 +450,54 @@ function RadioGroup({ value, onChange, options }: { value: string; onChange: (v:
           {o}
         </label>
       ))}
+    </div>
+  )
+}
+
+function EmptyTableState({ colSpan }: { colSpan: number }) {
+  return (
+    <tr>
+      <td colSpan={colSpan} className="py-16 text-center">
+        <div className="flex flex-col items-center gap-2 text-zinc-400">
+          <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-6l-2 3H10l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+          <span className="text-sm">暂无数据</span>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function TemplatePagination({ total, page, pageSize, onPageChange }: { total: number; page: number; pageSize: number; onPageChange: (p: number) => void }) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  return (
+    <div className="flex items-center justify-end gap-2 mt-3 text-xs text-zinc-500">
+      <span>共 {total} 条</span>
+      <button
+        disabled={page <= 1}
+        onClick={() => onPageChange(page - 1)}
+        className="w-6 h-6 rounded border border-border flex items-center justify-center hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+        ‹
+      </button>
+      <span className="w-6 h-6 rounded border border-red-300 bg-red-50 text-red-500 flex items-center justify-center font-medium">{page}</span>
+      <button
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+        className="w-6 h-6 rounded border border-border flex items-center justify-center hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+        ›
+      </button>
+    </div>
+  )
+}
+
+function TableActionIcons({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+  return (
+    <div className="flex items-center gap-3 text-zinc-400">
+      <button title="编辑" onClick={onEdit} className="hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
+      <button title="删除" onClick={onDelete} className="hover:text-red-500 transition-colors">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+      </button>
     </div>
   )
 }
@@ -499,7 +563,6 @@ function MetricTemplatesPanel() {
     if (page > maxPage) setPage(maxPage)
   }
 
-  const totalPages = Math.max(1, Math.ceil(templates.length / PAGE_SIZE))
   const pageRows = templates.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   return (
@@ -509,7 +572,7 @@ function MetricTemplatesPanel() {
         <button
           onClick={openNew}
           className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">
-          新建模板
+          新增模板
         </button>
       </div>
 
@@ -525,14 +588,7 @@ function MetricTemplatesPanel() {
           </thead>
           <tbody>
             {pageRows.length === 0 ? (
-              <tr>
-                <td colSpan={3} className="py-16 text-center">
-                  <div className="flex flex-col items-center gap-2 text-zinc-400">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round"><path d="M22 12h-6l-2 3H10l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
-                    <span className="text-sm">暂无数据</span>
-                  </div>
-                </td>
-              </tr>
+              <EmptyTableState colSpan={3} />
             ) : pageRows.map((t, i) => {
               const globalIdx = (page - 1) * PAGE_SIZE + i
               return (
@@ -540,20 +596,7 @@ function MetricTemplatesPanel() {
                   <td className="px-4 py-3 text-zinc-500 text-xs">{globalIdx + 1}</td>
                   <td className="px-4 py-3 font-medium text-zinc-700 dark:text-zinc-200">{t.name}</td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-3 text-zinc-400">
-                      {/* Share / export icon */}
-                      <button title="导出" className="hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
-                      </button>
-                      {/* Edit icon */}
-                      <button title="编辑" onClick={() => openEdit(globalIdx)} className="hover:text-zinc-700 dark:hover:text-zinc-200 transition-colors">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                      </button>
-                      {/* Delete icon */}
-                      <button title="删除" onClick={() => deleteTemplate(globalIdx)} className="hover:text-red-500 transition-colors">
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
-                      </button>
-                    </div>
+                    <TableActionIcons onEdit={() => openEdit(globalIdx)} onDelete={() => deleteTemplate(globalIdx)} />
                   </td>
                 </tr>
               )
@@ -562,23 +605,7 @@ function MetricTemplatesPanel() {
         </table>
       </div>
 
-      {/* Pagination */}
-      <div className="flex items-center justify-end gap-2 mt-3 text-xs text-zinc-500">
-        <span>共 {templates.length} 条</span>
-        <button
-          disabled={page <= 1}
-          onClick={() => setPage((p) => p - 1)}
-          className="w-6 h-6 rounded border border-border flex items-center justify-center hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          ‹
-        </button>
-        <span className="w-6 h-6 rounded border border-red-300 bg-red-50 text-red-500 flex items-center justify-center font-medium">{page}</span>
-        <button
-          disabled={page >= totalPages}
-          onClick={() => setPage((p) => p + 1)}
-          className="w-6 h-6 rounded border border-border flex items-center justify-center hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-          ›
-        </button>
-      </div>
+      <TemplatePagination total={templates.length} page={page} pageSize={PAGE_SIZE} onPageChange={setPage} />
 
       {/* Step 1: name input dialog */}
       {newStep === 1 && (
@@ -778,6 +805,855 @@ function MetricPickerDialog({
   )
 }
 
+// ─── CompareAnalysisTemplatesPanel ────────────────────────────────────────────
+function CompareAnalysisTemplatesPanel() {
+  const [templates, setTemplates] = useState<CompareTemplate[]>(() => readLS<CompareTemplate[]>(COMPARE_TEMPLATES_KEY, []))
+  const [page, setPage] = useState(1)
+  const PAGE_SIZE = 10
+  const [showNewModal, setShowNewModal] = useState(false)
+  const [newName, setNewName] = useState("")
+  const [newNameTouched, setNewNameTouched] = useState(false)
+  const [editIdx, setEditIdx] = useState<number | null>(null)
+  const [editName, setEditName] = useState("")
+  const [editIndicators, setEditIndicators] = useState<string[]>([])
+
+  const allIndicators = ADD_METRIC_GROUPS.flat()
+
+  function persist(updated: CompareTemplate[]) {
+    setTemplates(updated)
+    localStorage.setItem(COMPARE_TEMPLATES_KEY, JSON.stringify(updated))
+  }
+
+  function saveNew() {
+    setNewNameTouched(true)
+    if (!newName.trim()) return
+    persist([...templates, { name: newName.trim(), indicators: [] }])
+    setShowNewModal(false)
+    setNewName("")
+    setNewNameTouched(false)
+  }
+
+  function openEdit(i: number) {
+    const t = templates[i]
+    setEditIdx(i)
+    setEditName(t.name)
+    setEditIndicators([...t.indicators])
+  }
+
+  function saveEdit() {
+    if (editIdx === null || !editName.trim()) return
+    persist(templates.map((t, i) => i === editIdx ? { name: editName.trim(), indicators: editIndicators } : t))
+    setEditIdx(null)
+  }
+
+  function deleteTemplate(i: number) {
+    persist(templates.filter((_, idx) => idx !== i))
+    const newTotal = templates.length - 1
+    const maxPage = Math.max(1, Math.ceil(newTotal / PAGE_SIZE))
+    if (page > maxPage) setPage(maxPage)
+  }
+
+  const pageRows = templates.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-end mb-4">
+        <button
+          onClick={() => { setNewName(""); setNewNameTouched(false); setShowNewModal(true) }}
+          className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">
+          + 新增模板
+        </button>
+      </div>
+
+      <div className="flex-1 border border-border rounded overflow-hidden">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-zinc-50 dark:bg-zinc-800/60 border-b border-border">
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400 w-16">序号</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400 w-48">模板名称</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400">分析指标</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400 w-28">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pageRows.length === 0 ? (
+              <EmptyTableState colSpan={4} />
+            ) : pageRows.map((t, i) => {
+              const globalIdx = (page - 1) * PAGE_SIZE + i
+              return (
+                <tr key={globalIdx} className="border-b border-border last:border-0 hover:bg-muted/30 transition-colors">
+                  <td className="px-4 py-3 text-zinc-500 text-xs">{globalIdx + 1}</td>
+                  <td className="px-4 py-3 font-medium text-zinc-700 dark:text-zinc-200">{t.name}</td>
+                  <td className="px-4 py-3 text-zinc-600 dark:text-zinc-300">{t.indicators.length ? t.indicators.join("、") : "—"}</td>
+                  <td className="px-4 py-3">
+                    <TableActionIcons onEdit={() => openEdit(globalIdx)} onDelete={() => deleteTemplate(globalIdx)} />
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <TemplatePagination total={templates.length} page={page} pageSize={PAGE_SIZE} onPageChange={setPage} />
+
+      {showNewModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowNewModal(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[420px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <span className="font-semibold text-base">新增模板</span>
+              <button onClick={() => setShowNewModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none transition-colors">×</button>
+            </div>
+            <div className="px-6 py-6">
+              <div className="flex items-start gap-3">
+                <span className="text-sm text-zinc-500 shrink-0 pt-1.5">
+                  <span className="text-red-500 mr-0.5">*</span>模板名称：
+                </span>
+                <div className="flex-1">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={newName}
+                    onChange={(e) => { setNewName(e.target.value); setNewNameTouched(true) }}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveNew() }}
+                    placeholder="如：对比分析模板"
+                    className={[
+                      "w-full rounded border px-3 py-1.5 text-sm focus:outline-none focus:ring-1",
+                      newNameTouched && !newName.trim()
+                        ? "border-red-400 focus:ring-red-400"
+                        : "border-border focus:ring-ring",
+                    ].join(" ")}
+                  />
+                  {newNameTouched && !newName.trim() && (
+                    <p className="mt-1 text-xs text-red-500">请输入模板名称</p>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t">
+              <button onClick={() => setShowNewModal(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button onClick={saveNew} className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">确 定</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editIdx !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setEditIdx(null)}>
+          <div className="bg-background rounded-lg shadow-xl flex flex-col" style={{ width: 720, maxHeight: "80vh" }} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <span className="font-semibold text-base">编辑模板</span>
+              <button onClick={() => setEditIdx(null)} className="text-muted-foreground hover:text-foreground text-xl leading-none transition-colors">×</button>
+            </div>
+            <div className="px-6 py-5 overflow-y-auto">
+              <div className="flex items-center gap-3 mb-5">
+                <span className="text-sm text-zinc-500 shrink-0">模板名称：</span>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="flex-1 rounded border border-border px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring bg-background"
+                />
+              </div>
+              <p className="text-sm font-medium text-zinc-700 dark:text-zinc-200 mb-3">分析指标</p>
+              <div className="grid gap-x-6 gap-y-2.5" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+                {allIndicators.map((metric) => {
+                  const checked = editIndicators.includes(metric)
+                  return (
+                    <label key={metric} className="inline-flex items-center gap-2 cursor-pointer text-sm text-zinc-600 dark:text-zinc-300">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setEditIndicators(checked
+                            ? editIndicators.filter((m) => m !== metric)
+                            : [...editIndicators, metric])
+                        }}
+                        className="accent-red-500 h-3.5 w-3.5 flex-shrink-0 rounded"
+                      />
+                      {metric}
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t">
+              <button onClick={() => setEditIdx(null)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button onClick={saveEdit} className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">确 定</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── CommonBenchmarksPanel ────────────────────────────────────────────────────
+function CommonBenchmarksPanel() {
+  const [benchmarks, setBenchmarks] = useState<CommonBenchmark[]>(() => readLS<CommonBenchmark[]>(COMMON_BENCHMARKS_KEY, []))
+  const [dragIdx, setDragIdx] = useState<number | null>(null)
+  const [showAddModal, setShowAddModal] = useState(false)
+  const [editIdx, setEditIdx] = useState<number | null>(null)
+  const [draftType, setDraftType] = useState(BENCHMARK_TYPE_OPTIONS[0])
+  const [draftName, setDraftName] = useState(BENCHMARK_NAME_OPTIONS[0])
+
+  function persist(updated: CommonBenchmark[]) {
+    setBenchmarks(updated)
+    localStorage.setItem(COMMON_BENCHMARKS_KEY, JSON.stringify(updated))
+  }
+
+  function openAdd() {
+    setEditIdx(null)
+    setDraftType(BENCHMARK_TYPE_OPTIONS[0])
+    setDraftName(BENCHMARK_NAME_OPTIONS[0])
+    setShowAddModal(true)
+  }
+
+  function openEdit(i: number) {
+    const b = benchmarks[i]
+    setEditIdx(i)
+    setDraftType(b.type)
+    setDraftName(b.name)
+    setShowAddModal(true)
+  }
+
+  function saveBenchmark() {
+    if (!draftName.trim()) return
+    const entry = { type: draftType, name: draftName.trim() }
+    if (editIdx === null) {
+      persist([...benchmarks, entry])
+    } else {
+      persist(benchmarks.map((b, i) => i === editIdx ? entry : b))
+    }
+    setShowAddModal(false)
+    setEditIdx(null)
+  }
+
+  function deleteBenchmark(i: number) {
+    persist(benchmarks.filter((_, idx) => idx !== i))
+  }
+
+  function moveRow(from: number, to: number) {
+    if (from === to) return
+    const arr = [...benchmarks]
+    const [moved] = arr.splice(from, 1)
+    arr.splice(to, 0, moved)
+    persist(arr)
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between mb-4">
+        <span className="text-sm text-zinc-500 dark:text-zinc-400">说明：可拖动排序。</span>
+        <button
+          onClick={openAdd}
+          className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">
+          添加基准
+        </button>
+      </div>
+
+      <div className="flex-1 border border-border rounded overflow-hidden">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-zinc-50 dark:bg-zinc-800/60 border-b border-border">
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400 w-16">序号</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400 w-32">类型</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400">名称</th>
+              <th className="text-left px-4 py-2.5 text-xs font-semibold text-zinc-500 dark:text-zinc-400 w-28">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {benchmarks.length === 0 ? (
+              <EmptyTableState colSpan={4} />
+            ) : benchmarks.map((b, i) => (
+              <tr
+                key={`${b.type}-${b.name}-${i}`}
+                draggable
+                onDragStart={() => setDragIdx(i)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => { if (dragIdx !== null) moveRow(dragIdx, i); setDragIdx(null) }}
+                onDragEnd={() => setDragIdx(null)}
+                className={[
+                  "border-b border-border last:border-0 hover:bg-muted/30 transition-colors cursor-grab",
+                  dragIdx === i ? "opacity-50" : "",
+                ].join(" ")}
+              >
+                <td className="px-4 py-3 text-zinc-500 text-xs">{i + 1}</td>
+                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-300">{b.type}</td>
+                <td className="px-4 py-3 font-medium text-zinc-700 dark:text-zinc-200">{b.name}</td>
+                <td className="px-4 py-3">
+                  <TableActionIcons onEdit={() => openEdit(i)} onDelete={() => deleteBenchmark(i)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showAddModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowAddModal(false)}>
+          <div className="bg-background rounded-lg shadow-xl w-[420px]" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-6 py-4 border-b">
+              <span className="font-semibold text-base">{editIdx === null ? "添加基准" : "编辑基准"}</span>
+              <button onClick={() => setShowAddModal(false)} className="text-muted-foreground hover:text-foreground text-xl leading-none transition-colors">×</button>
+            </div>
+            <div className="px-6 py-6 space-y-4">
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-zinc-500 shrink-0 w-12">类型：</span>
+                <select
+                  value={draftType}
+                  onChange={(e) => setDraftType(e.target.value)}
+                  className="flex-1 rounded border border-border px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                >
+                  {BENCHMARK_TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-sm text-zinc-500 shrink-0 w-12">名称：</span>
+                {draftType === "指数" ? (
+                  <select
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    className="flex-1 rounded border border-border px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                  >
+                    {BENCHMARK_NAME_OPTIONS.map((n) => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    autoFocus
+                    type="text"
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    className="flex-1 rounded border border-border px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                  />
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-6 py-3 border-t">
+              <button onClick={() => setShowAddModal(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
+              <button onClick={saveBenchmark} className="px-5 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">确 定</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── UserCenterPanel ──────────────────────────────────────────────────────────
+function outlineBtn(label: string, onClick?: () => void) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="shrink-0 px-3 py-1 border border-red-500 text-red-500 rounded text-sm hover:bg-red-50 dark:hover:bg-red-950/20 transition-colors"
+    >
+      {label}
+    </button>
+  )
+}
+
+function UserCenterPanel() {
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [modal, setModal] = useState<"name" | "password" | "phone" | "wechat" | "email" | null>(null)
+  const [draftName, setDraftName] = useState("")
+  const [currentPassword, setCurrentPassword] = useState("")
+  const [newPassword, setNewPassword] = useState("")
+  const [confirmPassword, setConfirmPassword] = useState("")
+  const [draftEmail, setDraftEmail] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      const current = await authService.refreshCurrentUser()
+      if (!cancelled) {
+        setUser(current)
+        setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  function closeModal() {
+    setModal(null)
+    setError(null)
+    setDraftName("")
+    setCurrentPassword("")
+    setNewPassword("")
+    setConfirmPassword("")
+    setDraftEmail("")
+  }
+
+  async function saveName() {
+    if (!draftName.trim()) {
+      setError("请输入用户名")
+      return
+    }
+    setSaving(true)
+    setError(null)
+    const res = await authService.updateProfile({ name: draftName.trim() })
+    setSaving(false)
+    if (!res.success) {
+      setError(res.error || "保存失败")
+      return
+    }
+    setUser(res.user ?? user)
+    closeModal()
+  }
+
+  async function savePassword() {
+    if (!currentPassword) {
+      setError("请输入当前密码")
+      return
+    }
+    if (!newPassword || newPassword.length < 6) {
+      setError("新密码至少 6 位")
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setError("两次输入的新密码不一致")
+      return
+    }
+    setSaving(true)
+    setError(null)
+    const res = await authService.updateProfile({ password: newPassword, currentPassword })
+    setSaving(false)
+    if (!res.success) {
+      setError(res.error || "保存失败")
+      return
+    }
+    setUser(res.user ?? user)
+    closeModal()
+  }
+
+  async function saveEmail() {
+    if (!draftEmail.trim()) {
+      setError("请输入邮箱")
+      return
+    }
+    setError("邮箱绑定功能暂未开放")
+  }
+
+  const infoRow = (label: string, value: React.ReactNode, action?: React.ReactNode) => (
+    <div className="flex items-center py-3 border-b border-border/60 last:border-b-0">
+      <span className="text-sm text-zinc-500 dark:text-zinc-400 w-24 shrink-0">{label}</span>
+      <span className="flex-1 text-sm text-zinc-800 dark:text-zinc-200">{value}</span>
+      {action && <div className="ml-4">{action}</div>}
+    </div>
+  )
+
+  const sectionTitle = (icon: React.ReactNode, title: string) => (
+    <div className="flex items-center gap-2 pb-3 mb-1 border-b border-border">
+      {icon}
+      <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">{title}</span>
+    </div>
+  )
+
+  if (loading) {
+    return <div className="py-20 text-center text-sm text-muted-foreground">加载中…</div>
+  }
+
+  return (
+    <div>
+      <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-6">用户中心</h2>
+
+      <div className="space-y-8">
+        <section>
+          {sectionTitle(
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-red-500"><circle cx="12" cy="8" r="4"/><path d="M6 20v-2a6 6 0 0 1 12 0v2"/></svg>,
+            "用户信息",
+          )}
+          <div className="pl-1">
+            {infoRow("用户名", user?.name || "—", outlineBtn("修改用户名", () => { setDraftName(user?.name || ""); setModal("name") }))}
+            {infoRow("公司信息", "—")}
+            {infoRow("到期时间", "—")}
+            {infoRow("密码", "已设置", outlineBtn("修改密码", () => setModal("password")))}
+            {infoRow("手机绑定", "未绑定", outlineBtn("修改手机号", () => setModal("phone")))}
+          </div>
+        </section>
+
+        <section>
+          {sectionTitle(
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-500"><path d="M9 12a4 4 0 1 0 4-4"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2Z"/><path d="M16 8h.01"/></svg>,
+            "微信绑定",
+          )}
+          <div className="flex items-center py-3">
+            <span className="text-sm text-zinc-500 dark:text-zinc-400 w-24 shrink-0">绑定状态</span>
+            <span className="flex-1 text-sm text-zinc-600 dark:text-zinc-300">
+              未绑定，绑定后可使用微信登录，接收推送信息
+            </span>
+            {outlineBtn("绑定", () => setModal("wechat"))}
+          </div>
+        </section>
+
+        <section>
+          {sectionTitle(
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>,
+            "邮箱绑定",
+          )}
+          <div className="flex items-center py-3">
+            <span className="text-sm text-zinc-500 dark:text-zinc-400 w-24 shrink-0">绑定状态</span>
+            <span className="flex-1 text-sm text-zinc-600 dark:text-zinc-300">
+              未绑定，绑定后可用于接收报警信息
+            </span>
+            {outlineBtn("绑定邮箱", () => { setDraftEmail(user?.email || ""); setModal("email") })}
+          </div>
+        </section>
+      </div>
+
+      {modal === "name" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closeModal}>
+          <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">修改用户名</span>
+              <button onClick={closeModal} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="flex items-center gap-3 mb-4">
+              <label className="text-sm shrink-0">用户名：</label>
+              <input
+                autoFocus
+                className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !saving && saveName()}
+              />
+            </div>
+            {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <button onClick={closeModal} className="px-4 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button onClick={saveName} disabled={saving} className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {saving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal === "password" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closeModal}>
+          <div className="bg-background border rounded-lg shadow-xl w-[420px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">修改密码</span>
+              <button onClick={closeModal} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            <div className="space-y-3 mb-4">
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-20">当前密码</label>
+                <input type="password" className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} />
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-20">新密码</label>
+                <input type="password" className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="text-sm shrink-0 w-20">确认密码</label>
+                <input type="password" className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+              </div>
+            </div>
+            {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <button onClick={closeModal} className="px-4 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              <button onClick={savePassword} disabled={saving} className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                {saving ? "保存中…" : "确 定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(modal === "phone" || modal === "wechat" || modal === "email") && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closeModal}>
+          <div className="bg-background border rounded-lg shadow-xl w-[400px] p-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <span className="font-semibold text-base">
+                {modal === "phone" ? "修改手机号" : modal === "wechat" ? "微信绑定" : "绑定邮箱"}
+              </span>
+              <button onClick={closeModal} className="text-muted-foreground hover:text-foreground text-xl leading-none">×</button>
+            </div>
+            {modal === "email" ? (
+              <div className="flex items-center gap-3 mb-4">
+                <label className="text-sm shrink-0">邮箱：</label>
+                <input
+                  autoFocus
+                  type="email"
+                  className="flex-1 border rounded px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring bg-background"
+                  value={draftEmail}
+                  onChange={(e) => setDraftEmail(e.target.value)}
+                />
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground mb-4">该功能暂未开放，敬请期待。</p>
+            )}
+            {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
+            <div className="flex justify-end gap-2">
+              <button onClick={closeModal} className="px-4 py-1.5 border rounded text-sm hover:bg-muted transition-colors">取 消</button>
+              {modal === "email" && (
+                <button onClick={saveEmail} disabled={saving} className="px-4 py-1.5 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors disabled:opacity-40">
+                  {saving ? "保存中…" : "确 定"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── PersonalPointsPanel ──────────────────────────────────────────────────────
+interface PointRecord {
+  id: number
+  date: string
+  item: string
+  points: number
+}
+
+function PersonalPointsPanel() {
+  const [records] = useState<PointRecord[]>([])
+  const totalPoints = records.reduce((sum, r) => sum + r.points, 0)
+
+  return (
+    <div>
+      <div className="flex items-center gap-4 mb-8 px-4 py-5 rounded-lg border border-border/60 bg-muted/20">
+        <div className="shrink-0 w-16 h-16 flex items-center justify-center text-red-400/80">
+          <svg xmlns="http://www.w3.org/2000/svg" width="56" height="56" viewBox="0 0 64 64" fill="none">
+            <rect x="8" y="12" width="48" height="32" rx="3" stroke="currentColor" strokeWidth="1.5"/>
+            <rect x="12" y="16" width="40" height="22" rx="1" fill="currentColor" opacity="0.08"/>
+            <rect x="14" y="19" width="14" height="3" rx="1" fill="currentColor" opacity="0.25"/>
+            <rect x="14" y="25" width="20" height="2" rx="1" fill="currentColor" opacity="0.15"/>
+            <rect x="14" y="30" width="16" height="2" rx="1" fill="currentColor" opacity="0.15"/>
+            <path d="M22 44h20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            <path d="M32 44v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            <path d="M24 50h16" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
+        </div>
+        <p className="text-sm text-zinc-700 dark:text-zinc-200">
+          当前个人账户积分：
+          <span className="text-red-500 font-semibold tabular-nums">{totalPoints}</span>
+        </p>
+      </div>
+
+      <div className="mb-4 flex items-center gap-2">
+        <span className="inline-block w-2 h-2 rounded-sm bg-blue-500 shrink-0" />
+        <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-200">积分明细</span>
+      </div>
+
+      <div className="overflow-auto rounded border">
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="bg-muted/40 border-b">
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-36">日期</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">变动事项</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-24">积分</th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="py-20 text-center text-muted-foreground">
+                  <div className="flex flex-col items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+                    <span>暂无数据</span>
+                  </div>
+                </td>
+              </tr>
+            ) : records.map((row, i) => (
+              <tr key={row.id} className="border-b hover:bg-muted/20 transition-colors">
+                <td className="px-4 py-3 text-muted-foreground tabular-nums">{i + 1}</td>
+                <td className="px-4 py-3 tabular-nums text-muted-foreground">{row.date}</td>
+                <td className="px-4 py-3">{row.item}</td>
+                <td className="px-4 py-3 tabular-nums">{row.points > 0 ? `+${row.points}` : row.points}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ─── InviteRegistrationPanel ──────────────────────────────────────────────────
+function InviteRegistrationPanel() {
+  const [tab, setTab] = useState<"link" | "users">("link")
+  const [user, setUser] = useState<User | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [copied, setCopied] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const posterRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      const current = await authService.refreshCurrentUser()
+      if (!cancelled) {
+        setUser(current)
+        setLoading(false)
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [])
+
+  const inviteUrl = user && typeof window !== "undefined"
+    ? `${window.location.origin}/login?uid=${encodeURIComponent(user.id)}`
+    : ""
+
+  const qrSrc = inviteUrl
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(inviteUrl)}`
+    : ""
+
+  async function copyLink() {
+    if (!inviteUrl) return
+    try {
+      await navigator.clipboard.writeText(inviteUrl)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 2000)
+    } catch {
+      window.prompt("复制链接", inviteUrl)
+    }
+  }
+
+  async function downloadPoster() {
+    if (!posterRef.current) return
+    setDownloading(true)
+    try {
+      const { default: html2canvas } = await import("html2canvas")
+      const canvas = await html2canvas(posterRef.current, { scale: 2, backgroundColor: null })
+      const link = document.createElement("a")
+      link.download = "推广海报.png"
+      link.href = canvas.toDataURL("image/png")
+      link.click()
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  if (loading) {
+    return <div className="py-20 text-center text-sm text-muted-foreground">加载中…</div>
+  }
+
+  return (
+    <div>
+      <div className="border-b border-border mb-6">
+        <div className="flex gap-6">
+          {([
+            ["link", "邀请链接"],
+            ["users", "已邀用户"],
+          ] as const).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setTab(key)}
+              className={[
+                "pb-3 text-sm font-medium border-b-2 transition-colors",
+                tab === key
+                  ? "border-red-500 text-red-500"
+                  : "border-transparent text-zinc-500 dark:text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200",
+              ].join(" ")}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tab === "link" ? (
+        <div className="flex flex-col items-center">
+          <p className="text-sm text-zinc-600 dark:text-zinc-300 mb-6">发送链接给好友，邀请注册。</p>
+
+          <div className="w-full max-w-2xl flex items-center border border-border rounded overflow-hidden bg-background mb-10">
+            <div className="px-3 text-red-500 shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </div>
+            <input
+              readOnly
+              value={inviteUrl}
+              className="flex-1 px-2 py-2.5 text-sm text-zinc-700 dark:text-zinc-200 bg-transparent outline-none"
+            />
+            <button
+              type="button"
+              onClick={copyLink}
+              className="shrink-0 px-5 py-2.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors"
+            >
+              {copied ? "已复制" : "复制链接"}
+            </button>
+          </div>
+
+          <div
+            ref={posterRef}
+            className="w-[280px] rounded-2xl overflow-hidden shadow-lg mb-6"
+            style={{ background: "linear-gradient(180deg, #ffb347 0%, #ffcc33 45%, #fff4dc 100%)" }}
+          >
+            <div className="px-6 pt-6 pb-5 text-center">
+              <div className="flex items-center justify-center gap-2 mb-4">
+                <div className="w-8 h-8 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold">AI</div>
+                <span className="text-lg font-bold text-red-600">母基金AI投研</span>
+              </div>
+              <p className="text-2xl font-bold text-zinc-800 leading-tight mb-4">
+                邀请好友<br />立即注册
+              </p>
+              <div className="mx-auto mb-4 w-40 h-28 relative">
+                <svg viewBox="0 0 160 112" className="w-full h-full" aria-hidden="true">
+                  <rect x="20" y="18" width="72" height="52" rx="4" fill="#fff" opacity="0.9"/>
+                  <rect x="26" y="24" width="60" height="34" rx="2" fill="#fde68a"/>
+                  <path d="M30 48h52" stroke="#f97316" strokeWidth="2"/>
+                  <path d="M30 54h36" stroke="#fdba74" strokeWidth="2"/>
+                  <rect x="98" y="34" width="28" height="48" rx="6" fill="#fff" opacity="0.95"/>
+                  <rect x="102" y="40" width="20" height="32" rx="2" fill="#fef3c7"/>
+                  <circle cx="48" cy="82" r="14" fill="#ef4444"/>
+                  <circle cx="48" cy="78" r="6" fill="#fff"/>
+                </svg>
+              </div>
+              <div className="inline-block px-5 py-1.5 rounded-full bg-sky-100 text-sky-700 text-sm font-medium mb-2">
+                {user?.name || "用户"}
+              </div>
+              <p className="text-xs text-zinc-600 mb-4">邀请你注册母基金AI投研系统</p>
+              {qrSrc ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={qrSrc} alt="邀请二维码" width={120} height={120} className="mx-auto rounded bg-white p-1" />
+              ) : (
+                <div className="mx-auto w-[120px] h-[120px] bg-white rounded" />
+              )}
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={downloadPoster}
+            disabled={downloading}
+            className="px-6 py-2 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50"
+          >
+            {downloading ? "生成中…" : "下载推广海报"}
+          </button>
+        </div>
+      ) : (
+        <div className="overflow-auto rounded border">
+          <table className="w-full text-sm border-collapse">
+            <thead>
+              <tr className="bg-muted/40 border-b">
+                <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-16">序号</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500">用户名</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-44">注册时间</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-zinc-500 w-24">状态</th>
+              </tr>
+            </thead>
+            <tbody>
+              <EmptyTableState colSpan={4} />
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Placeholder panels ───────────────────────────────────────────────────────
 function PlaceholderPanel({ title }: { title: string }) {
   return (
@@ -842,6 +1718,18 @@ export default function SettingsPage() {
           <div className="p-8">
             <PersonalTagsPanel initialCategory={categoryParam} />
           </div>
+        ) : activeLeft === "用户中心" ? (
+          <div className="p-8">
+            <UserCenterPanel />
+          </div>
+        ) : activeLeft === "个人积分" ? (
+          <div className="p-8">
+            <PersonalPointsPanel />
+          </div>
+        ) : activeLeft === "邀请注册" ? (
+          <div className="p-8">
+            <InviteRegistrationPanel />
+          </div>
         ) : activeLeft !== "个人配置" ? (
           <div className="p-8">
             <h2 className="text-base font-semibold text-zinc-700 dark:text-zinc-200 mb-6">{activeLeft}</h2>
@@ -869,17 +1757,19 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            {/* Notice banner */}
-            <div className="mx-8 mt-5 px-4 py-2.5 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
-              设置的超额、年化的计算方式和无风险收益、周频净值过滤规则等个性化选项，仅用于所有基金分析、基金对比、组合分析等详情页，不适用基金列表指标。平台默认无风险收益2%，超额计算默认除法，年化默认为复利，默认展示月末未交易日净值。
-            </div>
+            {/* Notice banner — only on 计算设置 */}
+            {activeTab === "计算设置" && (
+              <div className="mx-8 mt-5 px-4 py-2.5 rounded bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-400 leading-relaxed">
+                设置的超额、年化的计算方式和无风险收益、周频净值过滤规则等个性化选项，仅用于所有基金分析、基金对比、组合分析等详情页，不适用基金列表指标。平台默认无风险收益2%，超额计算默认除法，年化默认为复利，默认展示月末未交易日净值。
+              </div>
+            )}
 
             {/* Tab content */}
             <div className="px-8 py-6">
               {activeTab === "计算设置" && <CalcSettingsPanel />}
               {activeTab === "指标模板" && <MetricTemplatesPanel />}
-              {activeTab === "对比分析模板" && <PlaceholderPanel title="对比分析模板" />}
-              {activeTab === "常用基准" && <PlaceholderPanel title="常用基准" />}
+              {activeTab === "对比分析模板" && <CompareAnalysisTemplatesPanel />}
+              {activeTab === "常用基准" && <CommonBenchmarksPanel />}
             </div>
           </>
         )}

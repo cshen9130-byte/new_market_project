@@ -2,6 +2,7 @@
 
 import { memo, useMemo, useState } from "react"
 import { Download, HelpCircle } from "lucide-react"
+import { CopyableProductText } from "@/components/ma/copyable-inline-text"
 import { RED, GREEN, type BenchmarkPoint } from "./shared"
 import {
   SAMPLE_INDICATOR_OPTIONS,
@@ -302,7 +303,9 @@ export const IntervalMetricsTable = memo(function IntervalMetricsTable({
           </thead>
           <tbody>
             <tr className="border-b border-zinc-50">
-              <td className="px-4 py-2.5 text-xs text-zinc-800 font-medium">{productName}</td>
+              <td className="px-4 py-2.5 text-xs text-zinc-800 font-medium">
+                <CopyableProductText product_name={productName} />
+              </td>
               {visibleColumns.map((col) => (
                 <td key={`${col.period}__${col.metric}`} className="px-3 py-2.5 text-center text-xs">
                   {col.type === "pct"

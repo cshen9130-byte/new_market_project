@@ -11,6 +11,8 @@ import {
   emailRowMatchesFund,
   inferEmailUnitNav,
   isPostInvestmentVirtualNavEmail,
+  preferEmailNavRow,
+  isPlausibleEmailUnitNav,
 } from "@/lib/server/email-nav-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
@@ -208,7 +210,7 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
   for (const row of rows) {
     const dedupe = `${row.code}\0${row.nav_date.slice(0, 10)}`
     const prev = bestByCodeDate.get(dedupe)
-    if (!prev || emailNavSourceTier(row.source, row.subject) < emailNavSourceTier(prev.source, prev.subject)) {
+    if (!prev || preferEmailNavRow(prev, row, row.code) === row) {
       bestByCodeDate.set(dedupe, row)
     }
   }
@@ -279,7 +281,9 @@ async function loadEmailNavByNameBatch(
   for (const row of rows) {
     const dedupe = `${row.matched_name}\0${row.nav_date.slice(0, 10)}`
     const prev = bestByNameDate.get(dedupe)
-    if (!prev || emailNavSourceTier(row.source, row.subject) < emailNavSourceTier(prev.source, prev.subject)) {
+    const override = lookupManagedProductOverride(row.matched_name)
+    const beianForPick = (row.code ?? "").trim() || override?.beian_hao || ""
+    if (!prev || preferEmailNavRow(prev, row, beianForPick) === row) {
       bestByNameDate.set(dedupe, row)
     }
   }
@@ -608,7 +612,15 @@ export class BatchNavResolver {
       resolveEmailNavAt(this.emailByName.get(identity.product_name), beforeDate) ??
       (short ? resolveEmailNavAt(this.emailByName.get(short), beforeDate) : null)
     const emailBeian = beian ? resolveEmailNavAt(this.emailByBeian.get(beian), beforeDate) : null
-    const emailPoint = emailName ?? emailBeian
+    let emailPoint = emailName ?? emailBeian
+    if (
+      emailName
+      && emailBeian
+      && !isPlausibleEmailUnitNav(emailName.nav)
+      && isPlausibleEmailUnitNav(emailBeian.nav)
+    ) {
+      emailPoint = emailBeian
+    }
 
     if (seedPoint && seedLatest && beforeDate <= seedLatest) {
       return seedPoint
