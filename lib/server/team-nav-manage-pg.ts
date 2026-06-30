@@ -6,6 +6,7 @@ import {
   type EmailNavPoint,
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
+import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 
 export type TeamNavManageRow = {
   id: string
@@ -48,6 +49,84 @@ async function ensureTeamNavManualTable(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_ops_team_nav_manual_beian_date
       ON ops_team_nav_manual (beian_hao, nav_date DESC)
   `)
+}
+
+/** Batch-load manual team NAV for list-cache / managed-product list overlays. */
+export async function loadManualTeamNavBatch(
+  beianHaos: string[],
+  nav_type: "pre_fee" | "virtual" = "pre_fee",
+): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
+  await ensureTeamNavManualTable()
+  const codes = [...new Set(beianHaos.map((b) => b.trim()).filter(Boolean))]
+  const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  if (codes.length === 0) return out
+
+  const rows = await query<{ beian_hao: string; nav_date: string; unit_nav: string }>(
+    `SELECT beian_hao, nav_date::text AS nav_date, unit_nav::text AS unit_nav
+     FROM ops_team_nav_manual
+     WHERE beian_hao = ANY($1::text[]) AND nav_type = $2
+     ORDER BY beian_hao, nav_date ASC`,
+    [codes, nav_type],
+  )
+  for (const row of rows) {
+    const list = out.get(row.beian_hao) ?? []
+    list.push({ nav_date: row.nav_date, unit_nav: row.unit_nav })
+    out.set(row.beian_hao, list)
+  }
+  return out
+}
+
+/** Post-seed NAV extensions for managed-product overrides (email + manual team). */
+export async function loadManagedProductPostSeedExtensions(
+  beianHaos: string[],
+): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
+  const codes = [...new Set(beianHaos.map((b) => b.trim()).filter(Boolean))]
+  const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  if (codes.length === 0) return out
+
+  const seedLatestByBeian = new Map<string, string>()
+  for (const code of codes) {
+    const seed = loadManagedProductNavSeed(code)
+    if (seed.length === 0) continue
+    seedLatestByBeian.set(code, seed[seed.length - 1].price_date)
+  }
+  if (seedLatestByBeian.size === 0) return out
+
+  const minSeedLatest = [...seedLatestByBeian.values()].sort()[0]
+  const [teamMap, emailRows] = await Promise.all([
+    loadManualTeamNavBatch(codes),
+    query<{ code: string; nav_date: string; nav: string }>(
+      `SELECT DISTINCT ON (BTRIM(product_code), nav_date)
+              BTRIM(product_code) AS code,
+              nav_date::text AS nav_date,
+              nav::text AS nav
+       FROM ops_email_nav_records
+       WHERE BTRIM(product_code) = ANY($1::text[])
+         AND nav_date > $2::date
+         AND nav > 0
+       ORDER BY BTRIM(product_code), nav_date, id DESC`,
+      [codes, minSeedLatest],
+    ),
+  ])
+
+  for (const code of codes) {
+    const seedLatest = seedLatestByBeian.get(code)
+    if (!seedLatest) continue
+    const byDate = new Map<string, { nav_date: string; unit_nav: string }>()
+    for (const row of emailRows) {
+      if (row.code !== code || row.nav_date <= seedLatest) continue
+      byDate.set(row.nav_date, { nav_date: row.nav_date, unit_nav: row.nav })
+    }
+    for (const row of teamMap.get(code) ?? []) {
+      if (row.nav_date <= seedLatest) continue
+      byDate.set(row.nav_date, row)
+    }
+    out.set(
+      code,
+      [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date)),
+    )
+  }
+  return out
 }
 
 async function loadManualTeamNavRows(

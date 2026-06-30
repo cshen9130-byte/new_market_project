@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { refreshManagedProductsListCache } from "@/lib/server/managed-products-list-cache-pg"
 import { uploadTeamNavRows } from "@/lib/server/team-nav-manage-pg"
 
 export const runtime = "nodejs"
@@ -37,6 +38,10 @@ export async function POST(req: Request) {
       }
       return NextResponse.json({ error: "invalid_rows" }, { status: 400 })
     }
+
+    void refreshManagedProductsListCache().catch((err) => {
+      console.error("[team-data/nav/upload] cache refresh failed:", err)
+    })
 
     return NextResponse.json({ ok: true, count: result.count })
   } catch (err) {

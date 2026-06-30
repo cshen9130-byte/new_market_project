@@ -57,7 +57,14 @@ const TEMPLATES_BY_CATEGORY: Record<TemplateCategory, ReportTemplate[]> = {
       badgeLabel: "周报",
     },
   ],
-  monthly: [],
+  monthly: [
+    {
+      id: "monthly-pe-official",
+      title: "私募基金月报-官方",
+      description: "适用组合策略基金",
+      badgeLabel: "月报",
+    },
+  ],
   other: [],
 }
 

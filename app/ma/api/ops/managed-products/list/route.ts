@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server"
-import { resolveManagedProductBeian, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { resolveManagedProductBeian, lookupManagedProductOverride, MANAGED_PRODUCT_BEIAN_OVERRIDES } from "@/lib/server/managed-product-beian"
 import {
   computeManagedProductOneYearRiskMetrics,
-  resolveManagedProductSeedNavAt,
+  resolveManagedProductListNavAt,
 } from "@/lib/server/managed-product-nav-seed"
 import { query, fmtIso } from "@/lib/db"
 import {
@@ -20,6 +20,7 @@ import {
   ensureManagedProductsListCachePopulated,
   useManagedProductsListCache,
 } from "@/lib/server/managed-products-list-cache-pg"
+import { loadManagedProductPostSeedExtensions } from "@/lib/server/team-nav-manage-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -130,20 +131,28 @@ function mapRow(r: {
   }
 }
 
-function applyManagedSeedNavOverride(row: ManagedRow, asOfDate: string): ManagedRow {
+function applyManagedSeedNavOverride(
+  row: ManagedRow,
+  asOfDate: string,
+  teamNavByBeian: Map<string, Array<{ nav_date: string; unit_nav: string }>>,
+): ManagedRow {
   const override =
     lookupManagedProductOverride(row.product_name)
     ?? (row.beian_hao ? lookupManagedProductOverride(row.beian_hao) : null)
   const beian_hao = resolveManagedProductBeian(row.product_name, row.beian_hao)
   if (!override) return { ...row, beian_hao }
 
-  const seedPoint = resolveManagedProductSeedNavAt(override.beian_hao, asOfDate)
-  if (!seedPoint) return { ...row, beian_hao }
+  const listPoint = resolveManagedProductListNavAt(
+    override.beian_hao,
+    asOfDate,
+    teamNavByBeian.get(override.beian_hao) ?? [],
+  )
+  if (!listPoint) return { ...row, beian_hao }
 
-  const unitNav = parseFloat(seedPoint.nav)
+  const unitNav = parseFloat(listPoint.nav)
   let latest_price_change = row.latest_price_change
-  if (seedPoint.prev_nav != null) {
-    const prev = parseFloat(seedPoint.prev_nav)
+  if (listPoint.prev_nav != null) {
+    const prev = parseFloat(listPoint.prev_nav)
     if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
       latest_price_change = String(unitNav / prev - 1)
     }
@@ -152,8 +161,8 @@ function applyManagedSeedNavOverride(row: ManagedRow, asOfDate: string): Managed
   return {
     ...row,
     beian_hao,
-    latest_nav: seedPoint.nav,
-    latest_nav_date: seedPoint.nav_date,
+    latest_nav: listPoint.nav,
+    latest_nav_date: listPoint.nav_date,
     latest_price_change,
     nav_is_team: true,
   }
@@ -193,6 +202,11 @@ export async function GET(req: Request) {
     const hasCutoff   = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
     const asOfDate    = hasCutoff ? cutoffRaw : new Date().toISOString().slice(0, 10)
     const useCache    = useManagedProductsListCache(cutoffRaw)
+    const teamNavByBeian = await loadManagedProductPostSeedExtensions(
+      Object.values(MANAGED_PRODUCT_BEIAN_OVERRIDES),
+    )
+    const applyManagedNav = (row: ManagedRow) =>
+      applyManagedSeedNavOverride(row, asOfDate, teamNavByBeian)
 
     // ─── FAST PATH — plain 2-table join, no lateral scans ───────────────────
     if (useCache) {
@@ -291,7 +305,7 @@ export async function GET(req: Request) {
       )
 
       return NextResponse.json({
-        data: rows.map(mapRow).map((row) => applyManagedSeedNavOverride(row, asOfDate)).map(applyManagedRiskOverride),
+        data: rows.map(mapRow).map(applyManagedNav).map(applyManagedRiskOverride),
         total,
         page,
         pageSize,
@@ -412,7 +426,7 @@ export async function GET(req: Request) {
     )
 
     return NextResponse.json({
-      data: rows.map(mapRow).map((row) => applyManagedSeedNavOverride(row, asOfDate)).map(applyManagedRiskOverride),
+      data: rows.map(mapRow).map(applyManagedNav).map(applyManagedRiskOverride),
       total,
       page,
       pageSize,

@@ -30,29 +30,44 @@ export function extractManagerBrand(managerName: string): string | null {
 }
 
 export async function resolveManagerAndProduct(beian_hao: string): Promise<{ manager: string; productName: string }> {
-  for (const sql of [
-    `SELECT manager, product_name FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
-    `SELECT COALESCE(advisor, advisor2, '') AS manager,
-            COALESCE(fund_short_name, fund_name, '') AS product_name
-     FROM basicinfo_bfl_track
-     WHERE register_number = $1
-     ORDER BY updated_at DESC NULLS LAST, id DESC
-     LIMIT 1`,
-  ]) {
+  let manager = ""
+  let productName = ""
+
+  try {
+    const rows = await query<{ manager: string | null; product_name: string | null }>(
+      `SELECT manager, product_name FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
+      [beian_hao],
+    )
+    manager = rows[0]?.manager?.trim() ?? ""
+    productName = rows[0]?.product_name?.trim() ?? ""
+  } catch {
+    // optional table
+  }
+
+  if (!manager || !productName) {
     try {
-      const rows = await query<{ manager: string | null; product_name: string | null }>(sql, [beian_hao])
-      const manager = rows[0]?.manager?.trim() ?? ""
-      const productName = rows[0]?.product_name?.trim() ?? ""
-      if (manager || productName) return { manager, productName }
+      const rows = await query<{ manager: string | null; product_name: string | null }>(
+        `SELECT COALESCE(NULLIF(BTRIM(advisor), ''), NULLIF(BTRIM(advisor2), ''), '') AS manager,
+                COALESCE(NULLIF(BTRIM(fund_short_name), ''), NULLIF(BTRIM(fund_name), ''), '') AS product_name
+         FROM basicinfo_bfl_track
+         WHERE register_number = $1 OR record_key = $1
+         ORDER BY updated_at DESC NULLS LAST, id DESC
+         LIMIT 1`,
+        [beian_hao],
+      )
+      if (!manager) manager = rows[0]?.manager?.trim() ?? ""
+      if (!productName) productName = rows[0]?.product_name?.trim() ?? ""
     } catch {
       // optional table/column
     }
   }
 
-  const managed = lookupManagedProductOverride(beian_hao)
-  if (managed) return { manager: "", productName: managed.product_name }
+  if (!productName) {
+    const managed = lookupManagedProductOverride(beian_hao)
+    if (managed) productName = managed.product_name
+  }
 
-  return { manager: "", productName: "" }
+  return { manager, productName }
 }
 
 export async function lookupManagerList(manager: string, productName: string): Promise<ManagerListRow | null> {

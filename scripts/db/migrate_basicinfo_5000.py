@@ -325,6 +325,7 @@ def main() -> None:
                 execute_values(cur, upsert_sql, rows, template=template, page_size=500)
                 cur.execute("SELECT COUNT(*) FROM basicinfo_bfl_track")
                 total = cur.fetchone()[0]
+                cur.execute("ANALYZE basicinfo_bfl_track")
     except Exception as exc:
         conn.close()
         if "permission denied for table basicinfo_bfl_track" in str(exc):

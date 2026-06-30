@@ -73,6 +73,44 @@ export function mergeManagedProductDetailNav(
   return mergeNavSeriesWithEmail(seedBase, extensionPoints)
 }
 
+export type ManagedListNavPoint = {
+  nav: string
+  nav_date: string
+  prev_nav: string | null
+}
+
+/** Latest NAV on or before asOfDate — seed through its last date, then team/manual extensions. */
+export function resolveManagedProductListNavAt(
+  beianHao: string,
+  asOfDate: string,
+  postSeedTeamNav: Array<{ nav_date: string; unit_nav: string }> = [],
+): ManagedListNavPoint | null {
+  const seed = loadManagedProductNavSeed(beianHao)
+  if (seed.length === 0) return null
+
+  const seedLatest = seed[seed.length - 1].price_date
+  const merged: Array<{ nav_date: string; nav: string }> = []
+
+  for (const row of seed) {
+    if (row.price_date <= asOfDate) {
+      merged.push({ nav_date: row.price_date, nav: row.nav })
+    }
+  }
+  for (const row of postSeedTeamNav) {
+    const nav_date = row.nav_date.slice(0, 10)
+    if (nav_date > seedLatest && nav_date <= asOfDate) {
+      merged.push({ nav_date, nav: row.unit_nav })
+    }
+  }
+
+  if (merged.length === 0) return null
+  merged.sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+
+  const best = merged[merged.length - 1]
+  const prev = merged.length > 1 ? merged[merged.length - 2].nav : null
+  return { nav: best.nav, nav_date: best.nav_date, prev_nav: prev }
+}
+
 /** Latest verified seed point on or before asOfDate (only within seed file coverage). */
 export function resolveManagedProductSeedNavAt(
   beianHao: string,

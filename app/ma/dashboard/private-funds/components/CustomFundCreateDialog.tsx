@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import { ChevronDown, RefreshCw, Settings2 } from "lucide-react"
 
 type ScopeTab = "team" | "mine"
@@ -199,6 +200,11 @@ export function CustomFundCreateDialog({
   const [teamL3, setTeamL3] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => {
+    setMounted(true)
+  }, [])
 
   function resetForm() {
     setFormTab("basic")
@@ -304,10 +310,10 @@ export function CustomFundCreateDialog({
     }
   }
 
-  if (!open) return null
+  if (!open || !mounted) return null
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={onClose}>
       <div className="bg-background rounded-lg shadow-xl w-[640px] max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
           <span className="font-semibold text-base">{isTeam ? "新增团队自建" : "新增我的自建"}</span>
@@ -467,6 +473,7 @@ export function CustomFundCreateDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

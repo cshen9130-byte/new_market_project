@@ -87,11 +87,7 @@ async function loadBfl(beian_hao: string): Promise<BflRow[]> {
   }
 }
 
-async function loadTrack(
-  beian_hao: string,
-  productName: string,
-  shortName: string,
-): Promise<TrackRow[]> {
+async function loadTrack(beian_hao: string): Promise<TrackRow[]> {
   try {
     return await query<TrackRow>(
       `SELECT fund_name, fund_short_name, register_number,
@@ -103,13 +99,10 @@ async function loadTrack(
               fee_admin_service, fee_pay,
               updated_at::text
        FROM basicinfo_bfl_track
-       WHERE register_number = $1
-          OR record_key = $1
-          OR ($2 <> '' AND (fund_name = $2 OR fund_short_name = $2))
-          OR ($3 <> '' AND (fund_name = $3 OR fund_short_name = $3))
+       WHERE register_number = $1 OR record_key = $1
        ORDER BY updated_at DESC NULLS LAST, id DESC
        LIMIT 1`,
-      [beian_hao, productName, shortName],
+      [beian_hao],
     )
   } catch {
     return []
@@ -137,7 +130,7 @@ export async function GET(
     const productName = pfi?.product_name ?? bfl?.product_name ?? ""
     const shortName = bfl?.short_name ?? ""
 
-    const trackRows = await loadTrack(beian_hao, productName, shortName)
+    const trackRows = await loadTrack(beian_hao)
     const track = trackRows[0]
 
     const inceptionDate =
@@ -167,7 +160,7 @@ export async function GET(
         null,
       fund_type: bfl?.fund_type ?? "私募证券投资基金",
       advisor: track?.advisor ?? bfl?.investment_advisor ?? null,
-      fund_manager: pfi?.manager ?? null,
+      fund_manager: pfi?.manager?.trim() || track?.advisor?.trim() || null,
       register_number: track?.register_number ?? beian_hao,
       inception_date: inceptionDate,
       operation_date: null,

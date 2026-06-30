@@ -25,9 +25,10 @@ import { resolveManagedProductBeian, lookupManagedProductOverride } from "@/lib/
 import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
-  resolveManagedProductSeedNavAt,
+  resolveManagedProductListNavAt,
 } from "@/lib/server/managed-product-nav-seed"
 import { managedShortExpr } from "@/lib/server/managed-products-nav-query"
+import { loadManagedProductPostSeedExtensions } from "@/lib/server/team-nav-manage-pg"
 import {
   loadEmailFundMetricsLookup,
   resolveEmailFundMetrics,
@@ -130,6 +131,21 @@ export async function refreshManagedProductsListCache(): Promise<number> {
   }))
   const navResolver = await BatchNavResolver.create(identities, asOfDate)
 
+  const overrideBeians = [
+    ...new Set(
+      products
+        .map((p) => {
+          const beian = resolveManagedProductBeian(p.product_name, p.beian_hao)
+          const override =
+            lookupManagedProductOverride(p.product_name)
+            ?? (beian ? lookupManagedProductOverride(beian) : null)
+          return override?.beian_hao ?? null
+        })
+        .filter(Boolean) as string[],
+    ),
+  ]
+  const postSeedByBeian = await loadManagedProductPostSeedExtensions(overrideBeians)
+
   const beianHaos = products.map((p) => p.beian_hao).filter(Boolean) as string[]
   logProgress("loading strategy & risk metadata…")
   const [riskFromInfo, opsStrategyMap, bflStrategyMap] = await Promise.all([
@@ -173,12 +189,16 @@ export async function refreshManagedProductsListCache(): Promise<number> {
       ?? (beian ? lookupManagedProductOverride(beian) : null)
 
     if (managedOverride) {
-      const seedPoint = resolveManagedProductSeedNavAt(managedOverride.beian_hao, asOfDate)
-      if (seedPoint) {
-        unitNav = parseFloat(seedPoint.nav)
-        navDate = seedPoint.nav_date
-        if (seedPoint.prev_nav != null) {
-          const prev = parseFloat(seedPoint.prev_nav)
+      const listPoint = resolveManagedProductListNavAt(
+        managedOverride.beian_hao,
+        asOfDate,
+        postSeedByBeian.get(managedOverride.beian_hao) ?? [],
+      )
+      if (listPoint) {
+        unitNav = parseFloat(listPoint.nav)
+        navDate = listPoint.nav_date
+        if (listPoint.prev_nav != null) {
+          const prev = parseFloat(listPoint.prev_nav)
           if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
             returnPct = unitNav / prev - 1
           }

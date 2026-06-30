@@ -217,20 +217,30 @@ export async function GET(
     shortName = bflNameRows[0].short_name
   }
 
-  const bflTrackRows = await query<{ scale: string | null; manager_names: string | null }>(
-    `SELECT scale, manager_names
+  const bflTrackRows = await query<{
+    scale: string | null
+    manager_names: string | null
+    advisor: string | null
+    inception_date: string | null
+  }>(
+    `SELECT scale, manager_names, advisor, inception_date::text AS inception_date
      FROM basicinfo_bfl_track
-     WHERE register_number = $1
-        OR record_key = $1
-        OR ($2 <> '' AND (fund_name = $2 OR fund_short_name = $2))
-        OR ($3 <> '' AND (fund_name = $3 OR fund_short_name = $3))
+     WHERE register_number = $1 OR record_key = $1
      ORDER BY updated_at DESC NULLS LAST, id DESC
      LIMIT 1`,
-    [routeBeianHao, productName, shortName]
-  ).catch(() => [] as { scale: string | null; manager_names: string | null }[])
+    [routeBeianHao]
+  ).catch(() => [] as {
+    scale: string | null
+    manager_names: string | null
+    advisor: string | null
+    inception_date: string | null
+  }[])
 
-  const scale = bflTrackRows[0]?.scale ?? null
-  const manager_names = bflTrackRows[0]?.manager_names ?? null
+  const bflTrack = bflTrackRows[0]
+  const scale = bflTrack?.scale ?? null
+  const manager_names = bflTrack?.manager_names ?? null
+  const trackAdvisor = bflTrack?.advisor?.trim() || null
+  const trackInception = bflTrack?.inception_date?.slice(0, 10) ?? null
 
   let navRows: {
     price_date: string
@@ -478,7 +488,14 @@ export async function GET(
   }
 
   return NextResponse.json({
-    info: { ...info, strategy_l3, scale, manager_names },
+    info: {
+      ...info,
+      strategy_l3,
+      scale,
+      manager_names,
+      inception_date: info.inception_date?.slice(0, 10) ?? trackInception,
+      manager: info.manager?.trim() || trackAdvisor || info.manager,
+    },
     nav_series,
     nav_data_source,
     metrics: {
