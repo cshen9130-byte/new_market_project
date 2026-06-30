@@ -230,10 +230,12 @@ def _can_load_font_path(path: str | os.PathLike[str]) -> bool:
     except OSError:
         return False
     try:
-        from matplotlib import ft2font
-
-        font = ft2font.FT2Font(candidate)
-        font.close()
+        fontManager.addfont(candidate)
+        return True
+    except Exception:
+        pass
+    try:
+        FontProperties(fname=candidate).get_name()
         return True
     except Exception:
         return False
