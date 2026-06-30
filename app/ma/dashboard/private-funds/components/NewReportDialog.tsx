@@ -8,6 +8,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { FofWeeklyReportDialog } from "./FofWeeklyReportDialog"
+import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
 
 type TemplateCategory = "weekly" | "monthly" | "other"
 
@@ -16,6 +18,7 @@ interface ReportTemplate {
   title: string
   description: string
   badgeLabel: string
+  exampleUrl?: string
 }
 
 const TEMPLATE_CATEGORIES: { key: TemplateCategory; label: string }[] = [
@@ -31,6 +34,7 @@ const TEMPLATES_BY_CATEGORY: Record<TemplateCategory, ReportTemplate[]> = {
       title: "跟踪产品（通用曲线版）",
       description: "显示产品指标和曲线",
       badgeLabel: "周报",
+      exampleUrl: "/ma/api/reports/fof-weekly/example",
     },
     {
       id: "weekly-track-general",
@@ -86,7 +90,15 @@ function TemplateThumbnail({ badgeLabel }: { badgeLabel: string }) {
   )
 }
 
-function TemplateCard({ template }: { template: ReportTemplate }) {
+function TemplateCard({
+  template,
+  onViewExample,
+  onUseTemplate,
+}: {
+  template: ReportTemplate
+  onViewExample?: (template: ReportTemplate) => void
+  onUseTemplate?: (template: ReportTemplate) => void
+}) {
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-background">
       <div className="border-b bg-zinc-50/80 px-4 py-5 dark:bg-zinc-900/40">
@@ -96,11 +108,20 @@ function TemplateCard({ template }: { template: ReportTemplate }) {
         <h3 className="text-sm font-semibold text-foreground leading-snug">{template.title}</h3>
         <p className="mt-1.5 flex-1 text-xs leading-relaxed text-zinc-400">{template.description}</p>
         <div className="mt-3 flex items-center justify-center gap-3 border-t pt-3 text-xs">
-          <button type="button" className="text-sky-600 hover:text-sky-700 dark:text-sky-400">
+          <button
+            type="button"
+            disabled={!template.exampleUrl}
+            onClick={() => onViewExample?.(template)}
+            className="text-sky-600 hover:text-sky-700 disabled:cursor-not-allowed disabled:text-zinc-300 dark:text-sky-400 dark:disabled:text-zinc-600"
+          >
             查看范例
           </button>
           <span className="h-3 w-px bg-border" />
-          <button type="button" className="text-sky-600 hover:text-sky-700 dark:text-sky-400">
+          <button
+            type="button"
+            onClick={() => onUseTemplate?.(template)}
+            className="text-sky-600 hover:text-sky-700 dark:text-sky-400"
+          >
             使用模板
           </button>
         </div>
@@ -117,14 +138,47 @@ export function NewReportDialog({
   onClose: () => void
 }) {
   const [category, setCategory] = useState<TemplateCategory>("weekly")
+  const [fofWeeklyOpen, setFofWeeklyOpen] = useState(false)
+  const [exampleTemplate, setExampleTemplate] = useState<ReportTemplate | null>(null)
 
   useEffect(() => {
-    if (open) setCategory("weekly")
+    if (open) {
+      setCategory("weekly")
+      setFofWeeklyOpen(false)
+      setExampleTemplate(null)
+    }
   }, [open])
 
   const templates = TEMPLATES_BY_CATEGORY[category]
 
+  function handleUseTemplate(template: ReportTemplate) {
+    if (template.id === "weekly-track-curve") {
+      setFofWeeklyOpen(true)
+    }
+  }
+
+  if (fofWeeklyOpen) {
+    return (
+      <>
+        <FofWeeklyReportDialog
+          open={open}
+          onClose={onClose}
+          onBack={() => setFofWeeklyOpen(false)}
+        />
+        {exampleTemplate?.exampleUrl && (
+          <ReportTemplateExampleDialog
+            open
+            title={exampleTemplate.title}
+            exampleUrl={exampleTemplate.exampleUrl}
+            onClose={() => setExampleTemplate(null)}
+          />
+        )}
+      </>
+    )
+  }
+
   return (
+    <>
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose() }}>
       <DialogContent className="flex max-h-[85vh] w-[960px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px]" showCloseButton>
         <DialogHeader className="border-b px-6 py-4 text-left">
@@ -160,7 +214,12 @@ export function NewReportDialog({
             {templates.length > 0 ? (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {templates.map((template) => (
-                  <TemplateCard key={template.id} template={template} />
+                  <TemplateCard
+                    key={template.id}
+                    template={template}
+                    onViewExample={(t) => setExampleTemplate(t)}
+                    onUseTemplate={handleUseTemplate}
+                  />
                 ))}
               </div>
             ) : (
@@ -172,5 +231,14 @@ export function NewReportDialog({
         </div>
       </DialogContent>
     </Dialog>
+    {exampleTemplate?.exampleUrl && (
+      <ReportTemplateExampleDialog
+        open
+        title={exampleTemplate.title}
+        exampleUrl={exampleTemplate.exampleUrl}
+        onClose={() => setExampleTemplate(null)}
+      />
+    )}
+    </>
   )
 }

@@ -9,6 +9,7 @@ build/
 
 # Caches
 .next/cache/
+.tmp/
 
 # Logs
 npm-debug.log*
