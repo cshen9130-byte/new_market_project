@@ -24,6 +24,7 @@ import { PeIndexView } from "./components/PeIndexView"
 import { PeIndustryView } from "./components/PeIndustryView"
 import { FuturesStyleView } from "./components/FuturesStyleView"
 import { EquityStyleView } from "./components/EquityStyleView"
+import { ReportsManagementView } from "./components/ReportsManagementView"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -38,6 +39,7 @@ const menuItems = [
   { key: "portfolio", label: "组合" },
   { key: "investment", label: "投资" },
   { key: "operations", label: "运维" },
+  { key: "reports", label: "报告" },
 ]
 
 interface SidebarGroup {
@@ -111,6 +113,21 @@ const operationsSidebarGroups: SidebarGroup[] = [
   },
 ]
 
+const reportsSidebarGroups: SidebarGroup[] = [
+  {
+    label: "报告管理",
+    items: [
+      { key: "rpt-mine", label: "我的报告" },
+    ],
+  },
+  {
+    label: "自定义报告Beta",
+    items: [
+      { key: "rpt-templates", label: "模板管理" },
+    ],
+  },
+]
+
 const portfolioSidebarGroups: SidebarGroup[] = [
   {
     label: "模拟组合",
@@ -151,6 +168,7 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   portfolio: "port-new",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
+  reports: "rpt-mine",
 }
 
 const TRACK_STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"]
@@ -22681,6 +22699,45 @@ export default function PrivateFundsPage() {
           </aside>
         )}
 
+        {activeTab === "reports" && (
+          <aside className="w-44 border-r bg-background flex-shrink-0">
+            <div className="flex items-center gap-2 px-4 py-4 border-b">
+              <div className="h-7 w-7 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+                <ClipboardList className="h-3.5 w-3.5 text-white" />
+              </div>
+              <span className="text-sm font-semibold text-foreground">报告工厂</span>
+            </div>
+            <nav className="flex flex-col pt-2 pb-4">
+              {reportsSidebarGroups.map((group) => {
+                const hasActive = group.items.some((i) => i.key === activeSideItem)
+                return (
+                  <div key={group.label}>
+                    <div className={[
+                      "px-4 pt-3 pb-1 text-[11px] font-semibold tracking-wide select-none",
+                      hasActive ? "text-red-500" : "text-zinc-400 dark:text-zinc-500",
+                    ].join(" ")}>{group.label}</div>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => setActiveSideItem(item.key)}
+                        className={[
+                          "w-full text-left pl-5 pr-3 py-1.5 text-sm transition-colors focus:outline-none relative",
+                          activeSideItem === item.key
+                            ? "text-red-600 dark:text-red-400 font-medium bg-red-50/60 dark:bg-red-950/20 before:absolute before:right-0 before:top-1 before:bottom-1 before:w-[3px] before:bg-red-500"
+                            : "text-zinc-600 dark:text-zinc-400 hover:text-foreground hover:bg-muted/40",
+                        ].join(" ")}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )
+              })}
+            </nav>
+          </aside>
+        )}
+
         {activeTab === "portfolio" && (
           <aside className="w-44 border-r bg-background flex-shrink-0">
             <div className="flex items-center gap-2 px-4 py-4 border-b">
@@ -22772,6 +22829,12 @@ export default function PrivateFundsPage() {
           {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView />}
           {activeTab === "operations" && activeSideItem === "ops-ledger" && <OperationsLedgerView />}
           {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-ledger" && (
+            <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
+              该功能正在建设中，敬请期待
+            </div>
+          )}
+          {activeTab === "reports" && activeSideItem === "rpt-mine" && <ReportsManagementView />}
+          {activeTab === "reports" && activeSideItem !== "rpt-mine" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

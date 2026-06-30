@@ -47,6 +47,7 @@ const menuItems = [
   { key: "portfolio",  label: "组合" },
   { key: "investment", label: "投资" },
   { key: "operations", label: "运维" },
+  { key: "reports",    label: "报告" },
 ]
 
 const fundsSidebarGroups = [
@@ -73,6 +74,7 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   portfolio: "port-simulated",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
+  reports: "rpt-mine",
 }
 
 const FUND_DETAIL_TABS = [

@@ -9,6 +9,7 @@ const menuItems = [
   { key: "portfolio", label: "组合", href: "/ma/dashboard/private-funds?tab=portfolio&side=port-new" },
   { key: "investment", label: "投资", href: "/ma/dashboard/private-funds?tab=investment&side=inv-compare" },
   { key: "operations", label: "运维", href: "/ma/dashboard/private-funds?tab=operations" },
+  { key: "reports", label: "报告", href: "/ma/dashboard/private-funds?tab=reports&side=rpt-mine" },
 ]
 
 const investmentSidebarGroups = [

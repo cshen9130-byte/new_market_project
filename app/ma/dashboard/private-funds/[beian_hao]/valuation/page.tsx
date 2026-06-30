@@ -128,6 +128,7 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
   portfolio: "port-simulated",
   investment: "inv-tracking",
   operations: "ops-strategy-tags",
+  reports: "rpt-mine",
 }
 
 const BENCHMARK_OPTIONS = [

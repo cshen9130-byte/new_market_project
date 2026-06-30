@@ -9,6 +9,7 @@ const menuItems = [
   { key: "portfolio", label: "组合" },
   { key: "investment", label: "投资" },
   { key: "operations", label: "运维" },
+  { key: "reports", label: "报告" },
 ]
 
 const fundsSidebarGroups = [
