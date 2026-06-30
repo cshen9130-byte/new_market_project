@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.font_manager import FontProperties
+from matplotlib.font_manager import FontProperties, fontManager
 from matplotlib.patches import FancyBboxPatch, Rectangle
 
 # ── 配色（中国基金惯例：红涨绿跌，融入高端金色与深红） ──────────────────────────
@@ -183,21 +183,122 @@ def compute_interval_returns(df: pd.DataFrame, fund_name: str = PRODUCT_NAME) ->
     return rows
 
 
-def get_cn_font() -> FontProperties | None:
-    for path in [
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_FONTS_DIR = _SCRIPT_DIR / "fonts"
+
+_CN_FONT_CANDIDATE_NAMES = [
+    "Noto Sans CJK SC",
+    "Noto Sans SC",
+    "Source Han Sans SC",
+    "WenQuanYi Micro Hei",
+    "WenQuanYi Zen Hei",
+    "Microsoft YaHei",
+    "SimHei",
+    "SimSun",
+    "PingFang SC",
+]
+
+_CN_FONT_FILE_KEYWORDS = (
+    "notosanscjk",
+    "notosanssc",
+    "sourcehansans",
+    "wqy",
+    "microhei",
+    "zenhei",
+    "simhei",
+    "yahei",
+    "simsun",
+    "pingfang",
+)
+
+
+def _is_usable_font_path(path: str | os.PathLike[str]) -> bool:
+    candidate = str(path)
+    if not candidate or not os.path.isfile(candidate):
+        return False
+    lower = candidate.lower()
+    return "dejavu" not in lower and lower.endswith((".ttf", ".ttc", ".otf"))
+
+
+def _iter_font_search_dirs() -> list[str]:
+    dirs = [
+        str(_FONTS_DIR),
+        os.environ.get("FOF_REPORT_FONT_DIR", ""),
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+        os.path.expanduser("~/.local/share/fonts"),
+        os.path.expanduser("~/.fonts"),
+        "C:/Windows/Fonts",
+        "/System/Library/Fonts",
+        "/Library/Fonts",
+    ]
+    return [d for d in dirs if d and os.path.isdir(d)]
+
+
+def find_cn_font_path() -> str | None:
+    env_path = os.environ.get("FOF_REPORT_FONT_PATH", "").strip()
+    if _is_usable_font_path(env_path):
+        return env_path
+
+    for search_dir in _iter_font_search_dirs():
+        for root, _, files in os.walk(search_dir):
+            for filename in files:
+                lower = filename.lower()
+                if not lower.endswith((".ttf", ".ttc", ".otf")):
+                    continue
+                if any(key in lower for key in _CN_FONT_FILE_KEYWORDS):
+                    path = os.path.join(root, filename)
+                    if _is_usable_font_path(path):
+                        return path
+
+    for name in _CN_FONT_CANDIDATE_NAMES:
+        try:
+            path = fontManager.findfont(FontProperties(family=name), fallback_to_default=False)
+            if _is_usable_font_path(path):
+                return path
+        except Exception:
+            continue
+
+    legacy_paths = [
         "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/msyhbd.ttc",
         "C:/Windows/Fonts/simhei.ttf",
         "C:/Windows/Fonts/simsun.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-    ]:
-        if os.path.exists(path):
-            try:
-                return FontProperties(fname=path)
-            except Exception:
-                continue
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+    ]
+    for path in legacy_paths:
+        if _is_usable_font_path(path):
+            return path
     return None
+
+
+def configure_cn_font() -> tuple[FontProperties | None, FontProperties | None]:
+    path = find_cn_font_path()
+    if not path:
+        matplotlib.rcParams["axes.unicode_minus"] = False
+        return None, None
+
+    try:
+        fontManager.addfont(path)
+    except Exception:
+        pass
+
+    fp = FontProperties(fname=path)
+    family = fp.get_name()
+    matplotlib.rcParams["axes.unicode_minus"] = False
+    matplotlib.rcParams["font.sans-serif"] = [family, "DejaVu Sans"]
+    matplotlib.rcParams["font.family"] = "sans-serif"
+
+    fp_bold = FontProperties(fname=path)
+    fp_bold.set_weight("bold")
+    return fp, fp_bold
+
+
+def get_cn_font() -> FontProperties | None:
+    fp, _ = configure_cn_font()
+    return fp
 
 
 def find_nav_file(base_dir: str) -> str:
@@ -390,10 +491,17 @@ def ret_color(val: float) -> str:
 
 
 def draw_text(ax, x, y, text, fp, size=12, color=C_TEXT, weight="normal", ha="left", va="center"):
-    kwargs = dict(fontsize=size, color=color, weight=weight, ha=ha, va=va)
-    if fp:
-        kwargs["fontproperties"] = fp
-    ax.text(x, y, text, **kwargs)
+    if fp is not None:
+        font_file = fp.get_file()
+        font_props = FontProperties(fname=font_file) if font_file else FontProperties(family=fp.get_name())
+        if weight != "normal":
+            font_props.set_weight(weight)
+        ax.text(
+            x, y, text,
+            fontproperties=font_props, fontsize=size, color=color, ha=ha, va=va,
+        )
+        return
+    ax.text(x, y, text, fontsize=size, color=color, weight=weight, ha=ha, va=va)
 
 
 def draw_kpi_card(ax, x, y, w, h, label, value, fp, value_color=None):
@@ -550,13 +658,11 @@ def make_report(
     interval_rows = compute_interval_returns(plot_df, fund_name=product_name)
     metrics = compute_metrics(df, as_of)
 
-    fp = get_cn_font()
-    fp_bold = FontProperties(fname=fp.get_file()) if fp and fp.get_file() else fp
-    if fp_bold:
-        fp_bold.set_weight("bold")
-
-    matplotlib.rcParams["axes.unicode_minus"] = False
-    matplotlib.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "SimSun"]
+    fp, fp_bold = configure_cn_font()
+    if fp is None:
+        raise RuntimeError(
+            "未找到可用的中文字体。请在服务器执行: bash scripts/deploy/setup-haitai-week-report.sh"
+        )
 
     fig_w, fig_h = 7.5, 12.5
     fig = plt.figure(figsize=(fig_w, fig_h), facecolor=C_BG)

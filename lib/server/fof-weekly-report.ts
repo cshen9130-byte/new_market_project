@@ -18,6 +18,18 @@ const execFileAsync = promisify(execFile)
 const REPORT_TMP_ROOT = path.join(process.cwd(), ".tmp", "fof-weekly-reports")
 const SCRIPT_DIR = path.join(process.cwd(), "haitai_week_report")
 const SCRIPT_PATH = path.join(SCRIPT_DIR, "generate_fof_weekly_report.py")
+const BUNDLED_CN_FONT = path.join(SCRIPT_DIR, "fonts", "NotoSansSC-Regular.otf")
+
+function resolveReportFontEnv(): Record<string, string> {
+  const configured = process.env.FOF_REPORT_FONT_PATH?.trim()
+  if (configured && existsSync(configured)) {
+    return { FOF_REPORT_FONT_PATH: configured }
+  }
+  if (existsSync(BUNDLED_CN_FONT)) {
+    return { FOF_REPORT_FONT_PATH: BUNDLED_CN_FONT }
+  }
+  return {}
+}
 
 export type FofWeeklyReportRequest = {
   product_name: string
@@ -394,6 +406,7 @@ export async function generateFofWeeklyReport(
       cwd: SCRIPT_DIR,
       env: {
         ...process.env,
+        ...resolveReportFontEnv(),
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
       },

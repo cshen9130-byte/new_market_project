@@ -15,6 +15,11 @@ module.exports = {
         // Ensure Python uses the project venv on server
         PYTHON_EXE: process.env.PYTHON_EXE || "/root/new_market_project/.venv/bin/python3",
 
+        // Chinese font for FOF weekly report charts (installed by setup-haitai-week-report.sh)
+        FOF_REPORT_FONT_PATH:
+          process.env.FOF_REPORT_FONT_PATH ||
+          "/root/new_market_project/haitai_week_report/fonts/NotoSansSC-Regular.otf",
+
         // EmQuant native libs path
         LD_LIBRARY_PATH:
           process.env.LD_LIBRARY_PATH || "/root/new_market_project/EMQuantAPI_Python/EMQuantAPI_Python/python3/libs/linux/x64",

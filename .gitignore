@@ -11,6 +11,9 @@ build/
 .next/cache/
 .tmp/
 
+# Downloaded report fonts (installed by setup-haitai-week-report.sh)
+haitai_week_report/fonts/
+
 # Logs
 npm-debug.log*
 pnpm-debug.log*
