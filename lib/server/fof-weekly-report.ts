@@ -20,12 +20,21 @@ const SCRIPT_DIR = path.join(process.cwd(), "haitai_week_report")
 const SCRIPT_PATH = path.join(SCRIPT_DIR, "generate_fof_weekly_report.py")
 const BUNDLED_CN_FONT = path.join(SCRIPT_DIR, "fonts", "NotoSansSC-Regular.otf")
 
+function isLikelyValidFontFile(filePath: string): boolean {
+  try {
+    const stat = statSync(filePath)
+    return stat.isFile() && stat.size >= 100_000
+  } catch {
+    return false
+  }
+}
+
 function resolveReportFontEnv(): Record<string, string> {
   const configured = process.env.FOF_REPORT_FONT_PATH?.trim()
-  if (configured && existsSync(configured)) {
+  if (configured && isLikelyValidFontFile(configured)) {
     return { FOF_REPORT_FONT_PATH: configured }
   }
-  if (existsSync(BUNDLED_CN_FONT)) {
+  if (isLikelyValidFontFile(BUNDLED_CN_FONT)) {
     return { FOF_REPORT_FONT_PATH: BUNDLED_CN_FONT }
   }
   return {}
