@@ -5,10 +5,14 @@ import type {
 } from "@/lib/custom-fund-nav-rules-types"
 import { replaceCustomFundNavRows } from "@/lib/server/custom-fund-nav"
 import { loadMergedFundNavRows } from "@/lib/server/fund-nav-series"
-import type { LegacyNavRow } from "@/lib/server/email-nav-query"
+import { loadPrivateFundLegacyNavRows, type LegacyNavRow } from "@/lib/server/email-nav-query"
 import { findCustomFundByName } from "@/lib/server/custom-funds"
-import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
-import { loadManagedProductNavSeries, listTeamNavManageRows } from "@/lib/server/team-nav-manage-pg"
+import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import {
+  loadManagedProductNavSeed,
+  mergeManagedProductDetailNav,
+} from "@/lib/server/managed-product-nav-seed"
+import { loadManagedProductEmailPoints, listTeamNavManageRows } from "@/lib/server/team-nav-manage-pg"
 
 type AdjPoint = { date: string; adj: number }
 
@@ -109,6 +113,26 @@ async function lookupFofUnderlying(productName: string): Promise<{ beian_hao: st
   return rows[0]
 }
 
+async function loadManagedProductAdjustedSeries(entry: FundSpliceEntry): Promise<AdjPoint[]> {
+  const managed = await lookupManagedProduct(entry.product_name)
+  const beian = resolveManagedProductBeian(managed.product_name, managed.beian_hao) ?? managed.beian_hao
+  const seedRows = loadManagedProductNavSeed(beian)
+
+  if (entry.nav_source === "团队净值") {
+    const teamEmailPoints = await loadManagedProductEmailPoints({
+      beian_hao: beian,
+      product_name: managed.product_name,
+      short_name: null,
+    })
+    const legacyRows = await loadPrivateFundLegacyNavRows(beian, managed.product_name, null, {
+      excludeType6: true,
+    })
+    return legacyRowsToPoints(mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyRows))
+  }
+
+  return legacyRowsToPoints(await loadMergedFundNavRows(beian, managed.product_name, ""))
+}
+
 async function loadAdjustedSeries(entry: FundSpliceEntry): Promise<AdjPoint[]> {
   const name = entry.product_name.trim()
   if (!name) return []
@@ -123,15 +147,8 @@ async function loadAdjustedSeries(entry: FundSpliceEntry): Promise<AdjPoint[]> {
         return [{ date: row.price_date.slice(0, 10), adj }]
       })
     }
-    case "在管产品": {
-      const managed = await lookupManagedProduct(name)
-      const rows = await loadManagedProductNavSeries({
-        beian_hao: managed.beian_hao,
-        product_name: managed.product_name,
-        short_name: null,
-      })
-      return legacyRowsToPoints(rows)
-    }
+    case "在管产品":
+      return loadManagedProductAdjustedSeries(entry)
     case "FOF底层": {
       const fof = await lookupFofUnderlying(name)
       const rows = await loadMergedFundNavRows(fof.beian_hao, fof.product_name, "")
@@ -195,8 +212,24 @@ function computeSplicedNav(
     if (prevFundIdx < 0) {
       prevFundIdx = points.reduce((acc, p, idx) => (p.date <= prevEndDate ? idx : acc), -1)
     }
+
     if (prevFundIdx < 0) {
-      throw new Error(`「${funds[i].product_name}」缺少拼接切换前的净值`)
+      const firstAfter = points.findIndex((p) => p.date > prevEndDate)
+      if (firstAfter < 0) {
+        throw new Error(
+          `「${funds[i].product_name}」在切换日期（${prevEndDate}）之后没有净值，请检查第二只基金的数据起始日期`,
+        )
+      }
+      output.push({ date: points[firstAfter].date, adj: lastOut })
+      lastOut = output[output.length - 1].adj
+      for (let j = firstAfter + 1; j < points.length; j += 1) {
+        const prev = points[j - 1]
+        const curr = points[j]
+        if (curr.adj <= 0 || prev.adj <= 0) continue
+        lastOut = lastOut * (curr.adj / prev.adj)
+        output.push({ date: curr.date, adj: lastOut })
+      }
+      continue
     }
 
     for (let j = prevFundIdx + 1; j < points.length; j += 1) {
@@ -248,6 +281,65 @@ function generateFixedIncomeNav(startDate: string, annualReturnRate: string): Ad
 export type GenerateNavResult =
   | { ok: true; count: number }
   | { ok: false; error: string }
+
+export type SuggestTailResult =
+  | {
+      ok: true
+      tail_nav_date: string
+      fund1_last_date: string
+      fund2_first_date: string
+      hint: string
+    }
+  | { ok: false; error: string }
+
+/** Pick fund-1 tail date = last fund-1 NAV before fund-2 begins (handoff point). */
+export async function suggestSpliceTailDate(
+  startDate: string,
+  fund1: FundSpliceEntry,
+  fund2: FundSpliceEntry,
+): Promise<SuggestTailResult> {
+  try {
+    const start = normalizeDate(startDate)
+    if (!start) return { ok: false, error: "请选择开始时间" }
+    if (!fund1.product_name.trim() || !fund2.product_name.trim()) {
+      return { ok: false, error: "请先选择前两只基金" }
+    }
+
+    const [seg1, seg2] = await Promise.all([
+      loadAdjustedSeries(fund1),
+      loadAdjustedSeries(fund2),
+    ])
+    const f1Dates = seg1.map((p) => p.date).filter((d) => d >= start).sort()
+    const f2Dates = seg2.map((p) => p.date).sort()
+    if (!f1Dates.length) {
+      return { ok: false, error: `「${fund1.product_name}」在开始日期之后没有净值` }
+    }
+    if (!f2Dates.length) {
+      return { ok: false, error: `「${fund2.product_name}」没有可用净值` }
+    }
+
+    const f2First = f2Dates.find((d) => d >= start) ?? f2Dates[0]
+    const beforeF2 = f1Dates.filter((d) => d < f2First)
+    const tail = beforeF2.length
+      ? beforeF2[beforeF2.length - 1]
+      : f1Dates.includes(f2First)
+        ? f2First
+        : f1Dates[f1Dates.length - 1]
+
+    return {
+      ok: true,
+      tail_nav_date: tail,
+      fund1_last_date: tail,
+      fund2_first_date: f2First,
+      hint:
+        tail === f2First
+          ? `第一只基金与第二只基金在 ${tail} 同日衔接`
+          : `第一只基金接至 ${tail}，第二只基金从 ${f2First} 起按收益率衔接`,
+    }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "自动选择失败" }
+  }
+}
 
 export async function generateCustomFundNavFromRule(
   productCode: string,

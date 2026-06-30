@@ -213,6 +213,8 @@ function FundSpliceRow({
   onChange,
   onAdd,
   onRemove,
+  onAutoTailDate,
+  autoTailLoading,
 }: {
   index: number
   row: FundSpliceEntry
@@ -222,6 +224,8 @@ function FundSpliceRow({
   onChange: (next: FundSpliceEntry) => void
   onAdd: () => void
   onRemove: () => void
+  onAutoTailDate?: () => void
+  autoTailLoading?: boolean
 }) {
   return (
     <div className={FUND_SPLICE_ROW_GRID}>
@@ -250,12 +254,24 @@ function FundSpliceRow({
       </select>
       <div className="min-w-0">
         {showTailDate ? (
-          <DatePickerInput
-            value={row.tail_nav_date}
-            onChange={(tail_nav_date) => onChange({ ...row, tail_nav_date })}
-            placeholder="选择日期"
-            className="w-full"
-          />
+          <div className="flex flex-col gap-1 min-w-0">
+            <DatePickerInput
+              value={row.tail_nav_date}
+              onChange={(tail_nav_date) => onChange({ ...row, tail_nav_date })}
+              placeholder="选择日期"
+              className="w-full"
+            />
+            {onAutoTailDate && (
+              <button
+                type="button"
+                onClick={onAutoTailDate}
+                disabled={autoTailLoading}
+                className="text-left text-[11px] text-blue-600 hover:text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline"
+              >
+                {autoTailLoading ? "计算中…" : "自动对接下一只"}
+              </button>
+            )}
+          </div>
         ) : null}
       </div>
       <div className="flex items-center justify-center">
@@ -353,12 +369,15 @@ export function CustomFundNavGenerationRulesDialog({
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
+  const [tailHint, setTailHint] = useState("")
+  const [autoTailLoading, setAutoTailLoading] = useState(false)
   const [showCalcRules, setShowCalcRules] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setShowCalcRules(false)
     setError("")
+    setTailHint("")
     setLoading(true)
     fetch(`/ma/api/custom-funds/nav-rules?code=${encodeURIComponent(productCode)}`, {
       headers: userFetchHeaders(),
@@ -382,6 +401,41 @@ export function CustomFundNavGenerationRulesDialog({
 
   function updateFund(index: number, next: FundSpliceEntry) {
     setFunds((prev) => prev.map((row, i) => (i === index ? next : row)))
+    if (index === 0) setTailHint("")
+  }
+
+  async function handleAutoTailDate() {
+    if (!startDate || !funds[0]?.product_name.trim() || !funds[1]?.product_name.trim()) {
+      setError("请先填写开始时间，并选择前两只基金")
+      return
+    }
+    setAutoTailLoading(true)
+    setError("")
+    try {
+      const res = await fetch("/ma/api/custom-funds/nav-rules/suggest-tail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+        body: JSON.stringify({
+          code: productCode,
+          start_date: startDate,
+          fund1: funds[0],
+          fund2: funds[1],
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(String(json.message || "自动选择失败"))
+      }
+      setFunds((prev) => prev.map((row, i) => (
+        i === 0 ? { ...row, tail_nav_date: String(json.tail_nav_date ?? "") } : row
+      )))
+      setTailHint(String(json.hint ?? ""))
+    } catch (err) {
+      setTailHint("")
+      setError(err instanceof Error ? err.message : "自动选择失败")
+    } finally {
+      setAutoTailLoading(false)
+    }
   }
 
   function handleClearRules() {
@@ -477,7 +531,7 @@ export function CustomFundNavGenerationRulesDialog({
           {ruleType === "splice" && (
             <>
               <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                请按实际拼接顺序选择基金，且要求拼接日期头尾两只基金均有净值。
+                请按实际拼接顺序选择基金。第一只基金的「尾部净值日期」应接在第二只基金开始之前；可点击「自动对接下一只」自动填入。
               </div>
 
               <div className="flex items-center gap-3">
@@ -487,7 +541,7 @@ export function CustomFundNavGenerationRulesDialog({
                 </span>
                 <DatePickerInput
                   value={startDate}
-                  onChange={setStartDate}
+                  onChange={(v) => { setStartDate(v); setTailHint("") }}
                   placeholder="选择开始时间"
                 />
               </div>
@@ -518,8 +572,13 @@ export function CustomFundNavGenerationRulesDialog({
                         onChange={(next) => updateFund(index, next)}
                         onAdd={() => setFunds((prev) => [...prev, emptyFund()])}
                         onRemove={() => setFunds((prev) => prev.slice(0, -1))}
+                        onAutoTailDate={index === 0 ? handleAutoTailDate : undefined}
+                        autoTailLoading={index === 0 ? autoTailLoading : false}
                       />
                     ))}
+                    {tailHint && (
+                      <p className="text-xs text-blue-600 dark:text-blue-400">{tailHint}</p>
+                    )}
                   </div>
                 )}
               </div>

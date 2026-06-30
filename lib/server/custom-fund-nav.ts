@@ -269,23 +269,22 @@ export function replaceCustomFundNavRows(
 ): void {
   const code = productCode.trim()
   const now = new Date().toISOString()
-  const merged: CustomFundNavRow[] = rows
-    .map((row) => {
-      const nav_date = normalizeDate(row.nav_date ?? "")
-      const unit_nav = String(row.unit_nav ?? "").trim()
-      if (!nav_date || !unit_nav || !Number.isFinite(parseFloat(unit_nav))) return null
-      const formatted = fmtNav4(unit_nav)
-      return {
-        id: randomUUID(),
-        nav_date,
-        unit_nav: formatted,
-        cumulative_nav: formatted,
-        nav_source: navSource,
-        created_at: now,
-      }
+  const merged: CustomFundNavRow[] = []
+  for (const row of rows) {
+    const nav_date = normalizeDate(row.nav_date ?? "")
+    const unit_nav = String(row.unit_nav ?? "").trim()
+    if (!nav_date || !unit_nav || !Number.isFinite(parseFloat(unit_nav))) continue
+    const formatted = fmtNav4(unit_nav)
+    merged.push({
+      id: randomUUID(),
+      nav_date,
+      unit_nav: formatted,
+      cumulative_nav: formatted,
+      nav_source: navSource,
+      created_at: now,
     })
-    .filter((row): row is CustomFundNavRow => row != null)
-    .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+  }
+  merged.sort((a, b) => a.nav_date.localeCompare(b.nav_date))
 
   writeRawRows(code, merged)
 }
