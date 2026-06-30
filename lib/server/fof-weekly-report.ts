@@ -43,65 +43,110 @@ type PythonInvocation = {
   prefixArgs: string[]
 }
 
-async function findPython(scriptDir: string): Promise<PythonInvocation> {
-  const venvPython =
+function pushPythonCandidate(out: PythonInvocation[], executable: string, prefixArgs: string[] = []) {
+  if (!executable || !existsSync(executable)) return
+  if (out.some((item) => item.executable === executable && item.prefixArgs.join(" ") === prefixArgs.join(" "))) {
+    return
+  }
+  out.push({ executable, prefixArgs })
+}
+
+function listPythonCandidates(scriptDir: string): PythonInvocation[] {
+  const cwd = process.cwd()
+  const out: PythonInvocation[] = []
+
+  pushPythonCandidate(
+    out,
     process.platform === "win32"
       ? path.join(scriptDir, ".venv", "Scripts", "python.exe")
-      : path.join(scriptDir, ".venv", "bin", "python")
-  if (existsSync(venvPython)) return { executable: venvPython, prefixArgs: [] }
+      : path.join(scriptDir, ".venv", "bin", "python"),
+  )
 
-  const envPy = process.env.PYTHON_EXECUTABLE
-  if (envPy && existsSync(envPy)) return { executable: envPy, prefixArgs: [] }
+  for (const key of ["PYTHON_EXE", "PYTHON_EXECUTABLE"] as const) {
+    pushPythonCandidate(out, process.env[key] ?? "")
+  }
+
+  if (process.platform === "win32") {
+    pushPythonCandidate(out, path.join(cwd, ".venv", "Scripts", "python.exe"))
+  } else {
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python"))
+  }
 
   if (process.platform === "win32") {
     const localAppData = process.env.LOCALAPPDATA ?? ""
-    const pyCandidates = [
-      path.join(localAppData, "Programs", "Python", "Launcher", "py.exe"),
-      path.join(process.env.SystemRoot ?? "C:\\Windows", "py.exe"),
-    ]
-    for (const pyExe of pyCandidates) {
-      if (existsSync(pyExe)) return { executable: pyExe, prefixArgs: ["-3"] }
-    }
-
-    try {
-      const { stdout } = await execFileAsync("where.exe", ["py"], { timeout: 5000 })
-      for (const line of stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
-        if (existsSync(line) && !line.toLowerCase().includes("windowsapps")) {
-          return { executable: line, prefixArgs: ["-3"] }
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-
-    const pythonRoot = path.join(localAppData, "Programs", "Python")
-    if (existsSync(pythonRoot)) {
-      const { readdirSync } = await import("fs")
-      const installs = readdirSync(pythonRoot)
-        .filter((name) => /^Python\d/i.test(name))
-        .sort()
-        .reverse()
-      for (const dir of installs) {
-        const exe = path.join(pythonRoot, dir, "python.exe")
-        if (existsSync(exe)) return { executable: exe, prefixArgs: [] }
-      }
-    }
-
-    try {
-      const { stdout } = await execFileAsync("where.exe", ["python"], { timeout: 5000 })
-      for (const line of stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
-        if (existsSync(line) && !line.toLowerCase().includes("windowsapps")) {
-          return { executable: line, prefixArgs: [] }
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-
-    return { executable: "py", prefixArgs: ["-3"] }
+    pushPythonCandidate(out, path.join(localAppData, "Programs", "Python", "Launcher", "py.exe"), ["-3"])
+    pushPythonCandidate(out, path.join(process.env.SystemRoot ?? "C:\\Windows", "py.exe"), ["-3"])
   }
 
-  return { executable: "python3", prefixArgs: [] }
+  return out
+}
+
+async function appendPathPythonCandidates(out: PythonInvocation[]): Promise<void> {
+  if (process.platform !== "win32") return
+  try {
+    const { stdout } = await execFileAsync("where.exe", ["py"], { timeout: 5000 })
+    for (const line of stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+      pushPythonCandidate(out, line, ["-3"])
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { stdout } = await execFileAsync("where.exe", ["python"], { timeout: 5000 })
+    for (const line of stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+      if (line.toLowerCase().includes("windowsapps")) continue
+      pushPythonCandidate(out, line)
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+async function pythonHasReportDeps(invocation: PythonInvocation): Promise<boolean> {
+  try {
+    await execFileAsync(
+      invocation.executable,
+      [...invocation.prefixArgs, "-c", "import pandas, matplotlib, akshare, openpyxl"],
+      { timeout: 15_000 },
+    )
+    return true
+  } catch {
+    return false
+  }
+}
+
+function pythonDepsInstallHint(): string {
+  if (process.platform === "win32") {
+    return "py -3 -m pip install -r haitai_week_report/requirements.txt"
+  }
+  return "bash scripts/deploy/setup-haitai-week-report.sh"
+}
+
+async function findPython(scriptDir: string): Promise<PythonInvocation> {
+  const candidates = listPythonCandidates(scriptDir)
+  await appendPathPythonCandidates(candidates)
+
+  const tried: string[] = []
+  for (const candidate of candidates) {
+    tried.push(candidate.executable)
+    if (await pythonHasReportDeps(candidate)) return candidate
+  }
+
+  if (process.platform !== "win32") {
+    pushPythonCandidate(candidates, "python3")
+  } else {
+    pushPythonCandidate(candidates, "py", ["-3"])
+  }
+  const fallback = candidates.at(-1)
+  if (fallback) {
+    tried.push(fallback.executable)
+    if (await pythonHasReportDeps(fallback)) return fallback
+  }
+
+  throw new Error(
+    `Python 报告依赖未安装，请在项目目录执行: ${pythonDepsInstallHint()}${tried.length ? `（已尝试: ${[...new Set(tried)].join(", ")}）` : ""}`,
+  )
 }
 
 export async function resolveProductBeianHao(product_name: string, beian_hao?: string): Promise<string> {
@@ -365,9 +410,7 @@ export async function generateFofWeeklyReport(
     const detail = [errStderr, errStdout].filter(Boolean).join("\n").trim()
     console.error("[fof-weekly-report] Python failed:", detail || msg)
     if (detail.includes("No module named") || detail.includes("ModuleNotFoundError")) {
-      throw new Error(
-        "Python 依赖未安装，请在 haitai_week_report 目录执行: py -3 -m pip install -r requirements.txt",
-      )
+      throw new Error(`Python 报告依赖未安装，请在项目目录执行: ${pythonDepsInstallHint()}`)
     }
     const userMessage = detail.replace(/^错误:\s*/m, "").trim()
     throw new Error(userMessage || msg || "报告生成失败")

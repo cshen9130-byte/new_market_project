@@ -164,57 +164,68 @@ function DatePickerInput({
   )
 }
 
-function SavePresetModal({
+function SavePresetDialog({
+  open,
+  onOpenChange,
   onSave,
-  onClose,
 }: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onSave: (name: string) => void
-  onClose: () => void
 }) {
   const [name, setName] = useState("")
 
+  useEffect(() => {
+    if (open) setName("")
+  }, [open])
+
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40" onClick={onClose}>
-      <div
-        className="w-[400px] rounded-lg border bg-background p-6 shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-5 flex items-center justify-between">
-          <span className="text-base font-semibold">保存配置</span>
-          <button type="button" onClick={onClose} className="text-lg leading-none text-muted-foreground hover:text-foreground">
-            ×
-          </button>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md gap-0 p-0" showCloseButton>
+        <DialogHeader className="border-b px-6 py-4 text-left">
+          <DialogTitle className="text-base font-semibold">保存配置</DialogTitle>
+        </DialogHeader>
+        <div className="px-6 py-5">
+          <div className="mb-6 flex items-center gap-3">
+            <label className="shrink-0 text-sm font-medium text-zinc-700 dark:text-zinc-300">配置名称</label>
+            <input
+              autoFocus
+              className="flex-1 rounded border bg-background px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
+              placeholder="例如：金舆基石一号 · 周报"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && name.trim()) {
+                  onSave(name.trim())
+                  onOpenChange(false)
+                }
+              }}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => onOpenChange(false)}
+              className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!name.trim()) return
+                onSave(name.trim())
+                onOpenChange(false)
+              }}
+              disabled={!name.trim()}
+              className="rounded bg-red-500 px-4 py-1.5 text-sm text-white transition-colors hover:bg-red-600 disabled:opacity-40"
+            >
+              保存
+            </button>
+          </div>
         </div>
-        <div className="mb-6 flex items-center gap-3">
-          <label className="shrink-0 text-sm font-medium text-zinc-700 dark:text-zinc-300">配置名称</label>
-          <input
-            autoFocus
-            className="flex-1 rounded border bg-background px-3 py-1.5 text-sm outline-none focus:ring-1 focus:ring-ring"
-            placeholder="例如：金舆基石一号 · 周报"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && name.trim() && onSave(name.trim())}
-          />
-        </div>
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border px-4 py-1.5 text-sm transition-colors hover:bg-muted"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={() => name.trim() && onSave(name.trim())}
-            disabled={!name.trim()}
-            className="rounded bg-red-500 px-4 py-1.5 text-sm text-white transition-colors hover:bg-red-600 disabled:opacity-40"
-          >
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -382,7 +393,6 @@ export function FofWeeklyReportDialog({
   function handleSavePreset(name: string) {
     if (!productName.trim()) {
       setError("请先填写产品名称后再保存配置")
-      setShowSavePresetModal(false)
       return
     }
 
@@ -400,7 +410,6 @@ export function FofWeeklyReportDialog({
     const next = upsertFofWeeklyReportPreset(preset)
     setPresets(next)
     setSelectedPresetName(name)
-    setShowSavePresetModal(false)
     setPresetMessage(`已保存配置「${name}」`)
     setError(null)
   }
@@ -513,6 +522,7 @@ export function FofWeeklyReportDialog({
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(next) => { if (!next) onClose() }}>
       <DialogContent className="flex max-h-[90vh] w-[920px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[920px]" showCloseButton>
         <DialogHeader className="border-b px-6 py-4 text-left">
@@ -736,12 +746,12 @@ export function FofWeeklyReportDialog({
           )}
         </div>
       </DialogContent>
-      {showSavePresetModal && (
-        <SavePresetModal
-          onSave={handleSavePreset}
-          onClose={() => setShowSavePresetModal(false)}
-        />
-      )}
     </Dialog>
+    <SavePresetDialog
+      open={showSavePresetModal}
+      onOpenChange={setShowSavePresetModal}
+      onSave={handleSavePreset}
+    />
+    </>
   )
 }
