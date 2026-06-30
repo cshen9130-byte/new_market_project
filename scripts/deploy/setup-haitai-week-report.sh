@@ -18,9 +18,18 @@ fi
 
 FONT_DIR="$ROOT/haitai_week_report/fonts"
 FONT_FILE="$FONT_DIR/NotoSansSC-Regular.otf"
+FONT_DOWNLOAD_TIMEOUT="${FOF_FONT_DOWNLOAD_TIMEOUT:-60}"
 FONT_URLS=(
   "https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf"
   "https://github.com/notofonts/noto-cjk/raw/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf"
+)
+
+SYSTEM_FONT_CANDIDATES=(
+  "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+  "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
+  "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"
+  "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
+  "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc"
 )
 
 install_system_fonts() {
@@ -47,6 +56,22 @@ install_system_fonts() {
   fi
 }
 
+link_system_font() {
+  mkdir -p "$FONT_DIR"
+  if [[ -f "$FONT_FILE" ]]; then
+    return 0
+  fi
+
+  for src in "${SYSTEM_FONT_CANDIDATES[@]}"; do
+    if [[ -f "$src" ]]; then
+      ln -sf "$src" "$FONT_FILE" 2>/dev/null || cp -f "$src" "$FONT_FILE"
+      echo "Using system font: $src -> $FONT_FILE"
+      return 0
+    fi
+  done
+  return 1
+}
+
 download_bundled_font() {
   mkdir -p "$FONT_DIR"
   if [[ -f "$FONT_FILE" ]]; then
@@ -54,15 +79,15 @@ download_bundled_font() {
     return 0
   fi
 
-  echo "Downloading Noto Sans SC font..."
+  echo "Downloading Noto Sans SC font (timeout ${FONT_DOWNLOAD_TIMEOUT}s)..."
   for url in "${FONT_URLS[@]}"; do
     echo "Trying $url"
     if command -v curl >/dev/null 2>&1; then
-      if curl -fsSL "$url" -o "$FONT_FILE"; then
+      if curl -fsSL --connect-timeout 10 --max-time "$FONT_DOWNLOAD_TIMEOUT" "$url" -o "$FONT_FILE"; then
         return 0
       fi
     elif command -v wget >/dev/null 2>&1; then
-      if wget -qO "$FONT_FILE" "$url"; then
+      if wget -q --timeout=10 --tries=2 -O "$FONT_FILE" "$url"; then
         return 0
       fi
     else
@@ -70,14 +95,44 @@ download_bundled_font() {
       return 1
     fi
     rm -f "$FONT_FILE"
+    echo "Download failed, trying next URL..."
   done
   echo "警告: 所有字体下载地址均失败" >&2
   return 1
 }
 
-refresh_font_cache() {
+ensure_cn_font() {
+  if [[ -f "$FONT_FILE" ]]; then
+    echo "Bundled font already exists: $FONT_FILE"
+    return 0
+  fi
+
+  refresh_fc_cache
+
+  if link_system_font; then
+    return 0
+  fi
+
+  if [[ "${FOF_SKIP_FONT_DOWNLOAD:-}" == "1" ]]; then
+    echo "警告: FOF_SKIP_FONT_DOWNLOAD=1 且未找到系统字体" >&2
+    return 1
+  fi
+
+  download_bundled_font || return 1
+}
+
+refresh_fc_cache() {
   if command -v fc-cache >/dev/null 2>&1; then
     fc-cache -f >/dev/null 2>&1 || true
+    echo "fontconfig cache refreshed."
+  fi
+}
+
+refresh_font_cache() {
+  refresh_fc_cache
+  if ! "$PY" -c "import matplotlib" >/dev/null 2>&1; then
+    echo "Skipping Matplotlib font cache refresh (matplotlib not installed yet)."
+    return 0
   fi
   "$PY" - <<'PY'
 from matplotlib import font_manager
@@ -88,12 +143,13 @@ PY
 
 echo "Using Python: $PY"
 install_system_fonts
-download_bundled_font || true
-refresh_font_cache
+ensure_cn_font || true
 
 echo "Installing Python dependencies..."
 "$PY" -m pip install --upgrade pip
 "$PY" -m pip install -r "$ROOT/haitai_week_report/requirements.txt"
+
+refresh_font_cache
 
 echo "Verifying imports and Chinese font..."
 "$PY" - <<'PY'
