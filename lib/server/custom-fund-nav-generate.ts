@@ -7,7 +7,10 @@ import { replaceCustomFundNavRows } from "@/lib/server/custom-fund-nav"
 import { loadMergedFundNavRows } from "@/lib/server/fund-nav-series"
 import { loadPrivateFundLegacyNavRows, type LegacyNavRow } from "@/lib/server/email-nav-query"
 import { findCustomFundByName } from "@/lib/server/custom-funds"
-import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import {
+  lookupManagedProductOverride,
+  resolveManagedProductBeian,
+} from "@/lib/server/managed-product-beian"
 import {
   loadManagedProductNavSeed,
   mergeManagedProductDetailNav,
