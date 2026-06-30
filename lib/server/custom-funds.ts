@@ -87,6 +87,20 @@ export type CreateCustomFundInput = {
   created_by?: string
 }
 
+export type UpdateCustomFundInput = {
+  product_code: string
+  ownerUserId?: string
+  product_name: string
+  benchmark_index: string
+  tags?: string[]
+  platform_strategy_l1?: string
+  platform_strategy_l2?: string
+  platform_strategy_l3?: string
+  team_strategy_l1?: string
+  team_strategy_l2?: string
+  team_strategy_l3?: string
+}
+
 function storageDir(): string {
   return getServerStoragePath("custom_funds")
 }
@@ -209,6 +223,51 @@ export function createCustomFund(input: CreateCustomFundInput): CustomFundRecord
   funds.push(fund)
   writeFunds(funds)
   return fund
+}
+
+export function updateCustomFund(input: UpdateCustomFundInput): CustomFundRecord | null {
+  const funds = readFunds()
+  const code = input.product_code.trim()
+  const idx = funds.findIndex((fund) => fund.product_code === code)
+  if (idx === -1) return null
+
+  const fund = funds[idx]
+  if (fund.scope === "mine" && input.ownerUserId && fund.owner_user_id !== input.ownerUserId) {
+    return null
+  }
+
+  funds[idx] = {
+    ...fund,
+    product_name: input.product_name.trim(),
+    benchmark_index: input.benchmark_index,
+    tags: input.tags ?? [],
+    platform_strategy_l1: input.platform_strategy_l1?.trim() || null,
+    platform_strategy_l2: input.platform_strategy_l2?.trim() || null,
+    platform_strategy_l3: input.platform_strategy_l3?.trim() || null,
+    team_strategy_l1: input.team_strategy_l1?.trim() || null,
+    team_strategy_l2: input.team_strategy_l2?.trim() || null,
+    team_strategy_l3: input.team_strategy_l3?.trim() || null,
+  }
+  writeFunds(funds)
+  return funds[idx]
+}
+
+export function deleteCustomFund(productCode: string, ownerUserId?: string): boolean {
+  const code = productCode.trim()
+  if (!code) return false
+  const funds = readFunds()
+  const idx = funds.findIndex((fund) => fund.product_code === code)
+  if (idx === -1) return false
+
+  const fund = funds[idx]
+  if (fund.scope === "mine" && ownerUserId && fund.owner_user_id !== ownerUserId) {
+    return false
+  }
+
+  funds.splice(idx, 1)
+  writeFunds(funds)
+  navHelpers().clearCustomFundNav(code)
+  return true
 }
 
 export function listCustomFunds(params: CustomFundListParams): {

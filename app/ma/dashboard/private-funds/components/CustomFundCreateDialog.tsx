@@ -178,13 +178,16 @@ export function CustomFundCreateDialog({
   scope,
   onClose,
   onSaved,
+  editProductCode,
 }: {
   open: boolean
   scope: ScopeTab
   onClose: () => void
   onSaved?: () => void
+  editProductCode?: string | null
 }) {
   const isTeam = scope === "team"
+  const isEdit = !!editProductCode
   const [formTab, setFormTab] = useState<FormTab>("basic")
   const [fundName, setFundName] = useState("")
   const [benchmark, setBenchmark] = useState("")
@@ -199,6 +202,7 @@ export function CustomFundCreateDialog({
   const [teamL2, setTeamL2] = useState("")
   const [teamL3, setTeamL3] = useState("")
   const [submitting, setSubmitting] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mounted, setMounted] = useState(false)
 
@@ -220,10 +224,35 @@ export function CustomFundCreateDialog({
   }
 
   function loadTeamTags() {
-    fetch("/ma/api/ops/team-tags?category=fund")
+    const url = isTeam
+      ? "/ma/api/ops/team-tags?category=fund"
+      : `/ma/api/ops/team-tags?category=fund_personal&owner=${encodeURIComponent(currentUserName())}`
+    fetch(url)
       .then((r) => r.json())
       .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
       .catch(() => setTeamTagOptions([]))
+  }
+
+  function populateFromDetail(fund: {
+    product_name: string
+    benchmark_index: string
+    tags: string[]
+    platform_strategy_l1: string | null
+    platform_strategy_l2: string | null
+    platform_strategy_l3: string | null
+    team_strategy_l1: string | null
+    team_strategy_l2: string | null
+    team_strategy_l3: string | null
+  }) {
+    setFundName(fund.product_name)
+    setBenchmark(fund.benchmark_index)
+    setSelectedTags(fund.tags ?? [])
+    setPlatformL1(fund.platform_strategy_l1 ?? "")
+    setPlatformL2(fund.platform_strategy_l2 ?? "")
+    setPlatformL3(fund.platform_strategy_l3 ?? "")
+    setTeamL1(fund.team_strategy_l1 ?? "")
+    setTeamL2(fund.team_strategy_l2 ?? "")
+    setTeamL3(fund.team_strategy_l3 ?? "")
   }
 
   useEffect(() => {
@@ -239,7 +268,21 @@ export function CustomFundCreateDialog({
       .then((r) => r.json())
       .then((d) => { if (Array.isArray(d)) setTeamTree(d) })
       .catch(() => setTeamTree([]))
-  }, [open])
+
+    if (editProductCode) {
+      setLoading(true)
+      fetch(`/ma/api/custom-funds/detail?code=${encodeURIComponent(editProductCode)}`, {
+        headers: userFetchHeaders(),
+      })
+        .then((r) => {
+          if (!r.ok) throw new Error("load_failed")
+          return r.json()
+        })
+        .then((fund) => populateFromDetail(fund))
+        .catch(() => setError("加载失败，请稍后重试"))
+        .finally(() => setLoading(false))
+    }
+  }, [open, editProductCode])
 
   function handlePlatformL1(next: string) {
     setPlatformL1(next)
@@ -268,26 +311,33 @@ export function CustomFundCreateDialog({
     setSubmitting(true)
     setError(null)
     try {
-      const res = await fetch("/ma/api/custom-funds/create", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...userFetchHeaders(),
+      const payload = {
+        scope,
+        product_name: fundName.trim(),
+        benchmark_index: benchmark,
+        tags: selectedTags,
+        platform_strategy_l1: platformL1 || undefined,
+        platform_strategy_l2: platformL2 || undefined,
+        platform_strategy_l3: platformL3 || undefined,
+        team_strategy_l1: teamL1 || undefined,
+        team_strategy_l2: teamL2 || undefined,
+        team_strategy_l3: teamL3 || undefined,
+        ...(isEdit ? {} : { created_by: currentUserName() }),
+      }
+
+      const res = await fetch(
+        isEdit ? "/ma/api/custom-funds/update" : "/ma/api/custom-funds/create",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...userFetchHeaders(),
+          },
+          body: JSON.stringify(
+            isEdit ? { ...payload, product_code: editProductCode } : payload,
+          ),
         },
-        body: JSON.stringify({
-          scope,
-          product_name: fundName.trim(),
-          benchmark_index: benchmark,
-          tags: selectedTags,
-          platform_strategy_l1: platformL1 || undefined,
-          platform_strategy_l2: platformL2 || undefined,
-          platform_strategy_l3: platformL3 || undefined,
-          team_strategy_l1: teamL1 || undefined,
-          team_strategy_l2: teamL2 || undefined,
-          team_strategy_l3: teamL3 || undefined,
-          created_by: currentUserName(),
-        }),
-      })
+      )
       const json = await res.json()
       if (!res.ok) {
         setError(
@@ -297,7 +347,11 @@ export function CustomFundCreateDialog({
               ? "请选择基准指数"
               : json.error === "unauthorized"
                 ? "请先登录"
-                : "创建失败，请稍后重试",
+                : json.error === "not_found"
+                  ? "未找到该基金"
+                  : isEdit
+                    ? "保存失败，请稍后重试"
+                    : "创建失败，请稍后重试",
         )
         return
       }
@@ -316,7 +370,11 @@ export function CustomFundCreateDialog({
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40" onClick={onClose}>
       <div className="bg-background rounded-lg shadow-xl w-[640px] max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
-          <span className="font-semibold text-base">{isTeam ? "新增团队自建" : "新增我的自建"}</span>
+          <span className="font-semibold text-base">
+            {isEdit
+              ? (isTeam ? "编辑团队自建" : "编辑我的自建")
+              : (isTeam ? "新增团队自建" : "新增我的自建")}
+          </span>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
         </div>
 
@@ -349,6 +407,10 @@ export function CustomFundCreateDialog({
         </div>
 
         <div className="px-6 py-5 overflow-y-auto flex-1 min-h-0">
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-sm text-muted-foreground">加载中…</div>
+          ) : (
+            <>
           {formTab === "basic" && (
             <div className="flex flex-col gap-4">
               <div className="flex items-start gap-3">
@@ -458,6 +520,8 @@ export function CustomFundCreateDialog({
               onL3={setTeamL3}
             />
           )}
+            </>
+          )}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
@@ -465,7 +529,7 @@ export function CustomFundCreateDialog({
           <button type="button" onClick={onClose} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取消</button>
           <button
             type="button"
-            disabled={submitting || !fundName.trim() || !benchmark}
+            disabled={submitting || loading || !fundName.trim() || !benchmark}
             onClick={handleConfirm}
             className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >

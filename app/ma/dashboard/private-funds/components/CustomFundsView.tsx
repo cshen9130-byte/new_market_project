@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { CopyableInlineText } from "@/components/ma/copyable-inline-text"
 import {
+  AlertCircle,
   BarChart2,
   ChevronDown,
   ChevronsUpDown,
@@ -26,6 +27,7 @@ import { authService } from "@/lib/auth"
 import { CustomFundCreateDialog } from "./CustomFundCreateDialog"
 import { customFundDetailHref } from "@/components/ma/custom-fund-detail-view"
 import { customFundNavManageHref } from "@/components/ma/custom-fund-nav-manage-view"
+import { CustomFundScaleManageDialog } from "@/components/ma/custom-fund-scale-manage-dialog"
 
 type ScopeTab = "team" | "mine"
 
@@ -469,6 +471,10 @@ export function CustomFundsView() {
   const [hoverChartPos, setHoverChartPos] = useState<{ x: number; y: number } | null>(null)
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
+  const [scaleDialog, setScaleDialog] = useState<{ product_code: string; product_name: string } | null>(null)
+  const [editDialog, setEditDialog] = useState<{ product_code: string } | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ product_code: string; product_name: string } | null>(null)
+  const [deleteSubmitting, setDeleteSubmitting] = useState(false)
   const middleScrollRef = useRef<HTMLDivElement>(null)
   const middleHeaderScrollRef = useRef<HTMLDivElement>(null)
 
@@ -612,6 +618,26 @@ export function CustomFundsView() {
     a.download = `${isTeam ? "团队自建" : "我的自建"}_${new Date().toISOString().slice(0, 10)}.csv`
     a.click()
     URL.revokeObjectURL(a.href)
+  }
+
+  async function handleDeleteConfirm() {
+    if (!deleteConfirm || deleteSubmitting) return
+    setDeleteSubmitting(true)
+    try {
+      const res = await fetch("/ma/api/custom-funds/delete", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...userFetchHeaders(),
+        },
+        body: JSON.stringify({ product_code: deleteConfirm.product_code }),
+      })
+      if (!res.ok) return
+      setDeleteConfirm(null)
+      setListRefreshKey((k) => k + 1)
+    } finally {
+      setDeleteSubmitting(false)
+    }
   }
 
   function pageButtons(): (number | "…")[] {
@@ -861,6 +887,50 @@ export function CustomFundsView() {
           setListRefreshKey((k) => k + 1)
         }}
       />
+
+      <CustomFundCreateDialog
+        open={!!editDialog}
+        scope={scopeTab}
+        editProductCode={editDialog?.product_code ?? null}
+        onClose={() => setEditDialog(null)}
+        onSaved={() => setListRefreshKey((k) => k + 1)}
+      />
+
+      <CustomFundScaleManageDialog
+        open={!!scaleDialog}
+        productCode={scaleDialog?.product_code ?? null}
+        productName={scaleDialog?.product_name ?? ""}
+        onClose={() => setScaleDialog(null)}
+      />
+
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40" onClick={() => !deleteSubmitting && setDeleteConfirm(null)}>
+          <div className="bg-background rounded-lg shadow-xl w-[360px] p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-6">
+              <AlertCircle className="h-5 w-5 text-amber-500 shrink-0" />
+              <p className="text-sm text-foreground">确定要删除基金吗？</p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={deleteSubmitting}
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={deleteSubmitting}
+                onClick={() => void handleDeleteConfirm()}
+                className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deleteSubmitting ? "处理中…" : "确定"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-col flex-1 min-h-0 rounded-lg border bg-background overflow-hidden">
         <div className="relative z-50 flex items-center justify-end px-3 py-2 flex-shrink-0 text-xs border-b border-border/60">
@@ -1230,9 +1300,21 @@ export function CustomFundsView() {
                                     window.open(customFundNavManageHref(row.product_code), "_blank", "noopener,noreferrer")
                                   }
                                 }}
-                                onScaleManage={() => {}}
-                                onEdit={() => {}}
-                                onDelete={() => {}}
+                                onScaleManage={() => {
+                                  if (row.product_code) {
+                                    setScaleDialog({ product_code: row.product_code, product_name: row.product_name })
+                                  }
+                                }}
+                                onEdit={() => {
+                                  if (row.product_code) {
+                                    setEditDialog({ product_code: row.product_code })
+                                  }
+                                }}
+                                onDelete={() => {
+                                  if (row.product_code) {
+                                    setDeleteConfirm({ product_code: row.product_code, product_name: row.product_name })
+                                  }
+                                }}
                               />
                             </div>
                           </td>
