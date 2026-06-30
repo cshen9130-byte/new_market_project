@@ -58,9 +58,7 @@ install_system_fonts() {
 
 link_system_font() {
   mkdir -p "$FONT_DIR"
-  if [[ -f "$FONT_FILE" ]]; then
-    return 0
-  fi
+  rm -f "$FONT_FILE"
 
   for src in "${SYSTEM_FONT_CANDIDATES[@]}"; do
     if [[ -f "$src" ]]; then
@@ -70,6 +68,44 @@ link_system_font() {
     fi
   done
   return 1
+}
+
+font_file_is_valid() {
+  [[ -f "$FONT_FILE" ]] || return 1
+  local size
+  size=$(stat -c%s "$FONT_FILE" 2>/dev/null || stat -f%z "$FONT_FILE" 2>/dev/null || echo 0)
+  [[ "$size" -ge 100000 ]] || return 1
+  local magic
+  magic=$(head -c 4 "$FONT_FILE" 2>/dev/null || true)
+  [[ "$magic" == "OTTO" || "$magic" == $'\x00\x01\x00\x00' || "$magic" == "ttcf" ]] || return 1
+  return 0
+}
+
+validate_bundled_font_python() {
+  "$PY" - <<'PY'
+from pathlib import Path
+from matplotlib import ft2font
+
+path = Path("haitai_week_report/fonts/NotoSansSC-Regular.otf")
+if not path.is_file() or path.stat().st_size < 100_000:
+    raise SystemExit(1)
+font = ft2font.FT2Font(str(path))
+font.close()
+PY
+}
+
+repair_bundled_font() {
+  if font_file_is_valid && validate_bundled_font_python 2>/dev/null; then
+    echo "Bundled font OK: $FONT_FILE"
+    return 0
+  fi
+
+  if [[ -e "$FONT_FILE" ]]; then
+    echo "Removing invalid bundled font: $FONT_FILE"
+    rm -f "$FONT_FILE"
+  fi
+
+  link_system_font
 }
 
 download_bundled_font() {
@@ -102,14 +138,9 @@ download_bundled_font() {
 }
 
 ensure_cn_font() {
-  if [[ -f "$FONT_FILE" ]]; then
-    echo "Bundled font already exists: $FONT_FILE"
-    return 0
-  fi
-
   refresh_fc_cache
 
-  if link_system_font; then
+  if repair_bundled_font; then
     return 0
   fi
 
@@ -119,6 +150,7 @@ ensure_cn_font() {
   fi
 
   download_bundled_font || return 1
+  repair_bundled_font
 }
 
 refresh_fc_cache() {
@@ -149,6 +181,9 @@ echo "Installing Python dependencies..."
 "$PY" -m pip install --upgrade pip
 "$PY" -m pip install -r "$ROOT/haitai_week_report/requirements.txt"
 
+refresh_font_cache
+
+repair_bundled_font || true
 refresh_font_cache
 
 echo "Verifying imports and Chinese font..."

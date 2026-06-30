@@ -1,6 +1,6 @@
 import { execFile } from "child_process"
 import { createHash, randomUUID } from "crypto"
-import { existsSync } from "fs"
+import { existsSync, statSync } from "fs"
 import { mkdir, readFile, readdir, writeFile } from "fs/promises"
 import path from "path"
 import { promisify } from "util"

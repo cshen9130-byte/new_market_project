@@ -220,6 +220,40 @@ def _is_usable_font_path(path: str | os.PathLike[str]) -> bool:
     return "dejavu" not in lower and lower.endswith((".ttf", ".ttc", ".otf"))
 
 
+def _can_load_font_path(path: str | os.PathLike[str]) -> bool:
+    candidate = str(path)
+    if not _is_usable_font_path(candidate):
+        return False
+    try:
+        if os.path.getsize(candidate) < 100_000:
+            return False
+    except OSError:
+        return False
+    try:
+        from matplotlib import ft2font
+
+        font = ft2font.FT2Font(candidate)
+        font.close()
+        return True
+    except Exception:
+        return False
+
+
+def _legacy_font_paths() -> list[str]:
+    return [
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/msyhbd.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
+    ]
+
+
 def _iter_font_search_dirs() -> list[str]:
     dirs = [
         str(_FONTS_DIR),
@@ -235,44 +269,51 @@ def _iter_font_search_dirs() -> list[str]:
     return [d for d in dirs if d and os.path.isdir(d)]
 
 
-def find_cn_font_path() -> str | None:
+def _collect_cn_font_candidates() -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: str | os.PathLike[str] | None) -> None:
+        if not path:
+            return
+        normalized = os.path.normpath(str(path))
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        candidates.append(normalized)
+
+    for path in _legacy_font_paths():
+        add(path)
+
     env_path = os.environ.get("FOF_REPORT_FONT_PATH", "").strip()
-    if _is_usable_font_path(env_path):
-        return env_path
+    add(env_path)
+    add(_FONTS_DIR / "NotoSansSC-Regular.otf")
 
     for search_dir in _iter_font_search_dirs():
+        if search_dir == str(_FONTS_DIR):
+            continue
+        if not os.path.isdir(search_dir):
+            continue
         for root, _, files in os.walk(search_dir):
             for filename in files:
                 lower = filename.lower()
                 if not lower.endswith((".ttf", ".ttc", ".otf")):
                     continue
                 if any(key in lower for key in _CN_FONT_FILE_KEYWORDS):
-                    path = os.path.join(root, filename)
-                    if _is_usable_font_path(path):
-                        return path
+                    add(os.path.join(root, filename))
 
     for name in _CN_FONT_CANDIDATE_NAMES:
         try:
-            path = fontManager.findfont(FontProperties(family=name), fallback_to_default=False)
-            if _is_usable_font_path(path):
-                return path
+            add(fontManager.findfont(FontProperties(family=name), fallback_to_default=False))
         except Exception:
             continue
 
-    legacy_paths = [
-        "C:/Windows/Fonts/msyh.ttc",
-        "C:/Windows/Fonts/msyhbd.ttc",
-        "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/simsun.ttc",
-        "/System/Library/Fonts/PingFang.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-        "/usr/share/fonts/wqy-microhei/wqy-microhei.ttc",
-    ]
-    for path in legacy_paths:
-        if _is_usable_font_path(path):
+    return candidates
+
+
+def find_cn_font_path() -> str | None:
+    for path in _collect_cn_font_candidates():
+        if _can_load_font_path(path):
             return path
     return None
 
@@ -289,13 +330,20 @@ def configure_cn_font() -> tuple[FontProperties | None, FontProperties | None]:
         pass
 
     fp = FontProperties(fname=path)
-    family = fp.get_name()
+    try:
+        family = fp.get_name()
+    except Exception:
+        family = os.path.basename(path)
+
     matplotlib.rcParams["axes.unicode_minus"] = False
     matplotlib.rcParams["font.sans-serif"] = [family, "DejaVu Sans"]
     matplotlib.rcParams["font.family"] = "sans-serif"
 
     fp_bold = FontProperties(fname=path)
-    fp_bold.set_weight("bold")
+    try:
+        fp_bold.set_weight("bold")
+    except Exception:
+        pass
     return fp, fp_bold
 
 
