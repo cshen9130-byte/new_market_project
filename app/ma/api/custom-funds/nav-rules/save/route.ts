@@ -9,6 +9,7 @@ import {
   clearCustomFundNavGenerationRule,
   saveCustomFundNavGenerationRule,
 } from "@/lib/server/custom-fund-nav-rules"
+import { generateCustomFundNavFromRule } from "@/lib/server/custom-fund-nav-generate"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -116,7 +117,11 @@ export async function POST(req: Request) {
       mom_non_fixed_item: momNonFixedItem,
       mom_extra_dates: momExtraDates,
     })
-    return NextResponse.json({ ok: true, rule: saved })
+    const generated = await generateCustomFundNavFromRule(productCode, saved)
+    if (!generated.ok) {
+      return NextResponse.json({ error: "generate_failed", message: generated.error }, { status: 400 })
+    }
+    return NextResponse.json({ ok: true, rule: saved, generated_count: generated.count })
   }
 
   return NextResponse.json({ error: "bad_action" }, { status: 400 })

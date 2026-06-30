@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { CalendarDays, CirclePlus, MinusCircle } from "lucide-react"
 import {
   DEFAULT_SPLICE_FUNDS,
+  FUND_SPLICE_CATEGORIES,
   type CustomFundNavGenerationRule,
   type FundSpliceEntry,
   type MomLongExtraDate,
@@ -16,8 +17,38 @@ const RULE_TYPES: { key: NavGenRuleType; label: string }[] = [
   { key: "mom_long", label: "计算MOM多头净值" },
 ]
 
-const FUND_CATEGORIES = ["私募基金", "自建基金", "跟踪产品"]
 const NAV_SOURCES = ["平台净值", "团队净值"]
+
+function productSearchUrl(category: string, query: string): string {
+  const q = encodeURIComponent(query.trim())
+  switch (category) {
+    case "自建基金":
+      return `/ma/api/custom-funds/list?scope=team&keyword=${q}&pageSize=20`
+    case "跟踪产品":
+      return `/ma/api/tracking-funds/search?q=${q}`
+    case "在管产品":
+      return `/ma/api/ops/managed-products/list?keyword=${q}&pageSize=20`
+    case "FOF底层":
+      return `/ma/api/tracking-fof-underlying/list?keyword=${q}&pageSize=20`
+    default:
+      return `/ma/api/private-funds/products/search?q=${q}`
+  }
+}
+
+function parseProductSearchResults(category: string, json: unknown): string[] {
+  if (Array.isArray(json)) {
+    return json
+      .map((item) => (typeof item === "string" ? item : (item as { product_name?: string }).product_name))
+      .filter((name): name is string => !!name)
+  }
+  if (json && typeof json === "object" && Array.isArray((json as { data?: unknown[] }).data)) {
+    return (json as { data: { product_name?: string }[] }).data
+      .map((row) => row.product_name)
+      .filter((name): name is string => !!name)
+  }
+  void category
+  return []
+}
 
 function userFetchHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {}
@@ -101,9 +132,11 @@ function RuleFormRow({
 function ProductSearchInput({
   value,
   onChange,
+  fundCategory,
 }: {
   value: string
   onChange: (value: string) => void
+  fundCategory: string
 }) {
   const [query, setQuery] = useState(value)
   const [options, setOptions] = useState<string[]>([])
@@ -120,13 +153,13 @@ function ProductSearchInput({
       return
     }
     const timer = window.setTimeout(() => {
-      fetch(`/ma/api/private-funds/products/search?q=${encodeURIComponent(query.trim())}`)
+      fetch(productSearchUrl(fundCategory, query))
         .then((r) => r.json())
-        .then((rows) => setOptions(Array.isArray(rows) ? rows : []))
+        .then((json) => setOptions(parseProductSearchResults(fundCategory, json)))
         .catch(() => setOptions([]))
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [query, open])
+  }, [query, open, fundCategory])
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
@@ -198,12 +231,13 @@ function FundSpliceRow({
       </span>
       <select
         value={row.fund_category}
-        onChange={(e) => onChange({ ...row, fund_category: e.target.value })}
+        onChange={(e) => onChange({ ...row, fund_category: e.target.value, product_name: "" })}
         className="h-9 w-full rounded border border-border bg-background px-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
       >
-        {FUND_CATEGORIES.map((item) => <option key={item} value={item}>{item}</option>)}
+        {FUND_SPLICE_CATEGORIES.map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
       <ProductSearchInput
+        fundCategory={row.fund_category}
         value={row.product_name}
         onChange={(product_name) => onChange({ ...row, product_name })}
       />
@@ -362,8 +396,9 @@ export function CustomFundNavGenerationRulesDialog({
     setError("")
   }
 
+  const spliceFundCount = funds.filter((f) => f.product_name.trim()).length
   const canSave = !loading && !saving && (
-    ruleType === "splice"
+    (ruleType === "splice" && !!startDate && spliceFundCount >= 2)
     || (ruleType === "fixed_income" && !!startDate && !!annualReturnRate.trim())
     || (ruleType === "mom_long" && !!momProductName && !!startDate && !!momFixedItem.trim() && !!momNonFixedItem.trim())
   )
@@ -397,6 +432,7 @@ export function CustomFundNavGenerationRulesDialog({
         if (json.error === "missing_annual_return_rate") throw new Error("请填写年化收益率")
         if (json.error === "missing_mom_product") throw new Error("请选择产品")
         if (json.error === "missing_mom_adjustments") throw new Error("请填写固定项和非固定项")
+        if (json.error === "generate_failed") throw new Error(String(json.message || "净值生成失败"))
         throw new Error("保存失败")
       }
       onSaved?.()
@@ -538,6 +574,7 @@ export function CustomFundNavGenerationRulesDialog({
               <div className="space-y-4">
                 <RuleFormRow label="选择产品">
                   <ProductSearchInput
+                    fundCategory="私募基金"
                     value={momProductName}
                     onChange={setMomProductName}
                   />

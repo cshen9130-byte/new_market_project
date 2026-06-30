@@ -293,6 +293,17 @@ export function getCustomFundByCode(productCode: string): CustomFundRecord | nul
   return readFunds().find((fund) => fund.product_code === code) ?? null
 }
 
+export function findCustomFundByName(productName: string): CustomFundRecord | null {
+  const name = productName.trim()
+  if (!name) return null
+  const funds = readFunds()
+  return (
+    funds.find((fund) => fund.product_name === name)
+    ?? funds.find((fund) => fund.product_name.includes(name) || name.includes(fund.product_name))
+    ?? null
+  )
+}
+
 function canAccessFund(fund: CustomFundRecord, ownerUserId?: string): boolean {
   if (fund.scope === "mine" && ownerUserId && fund.owner_user_id !== ownerUserId) {
     return false

@@ -1,5 +1,15 @@
 export type NavGenRuleType = "splice" | "fixed_income" | "mom_long"
 
+export const FUND_SPLICE_CATEGORIES = [
+  "私募基金",
+  "自建基金",
+  "跟踪产品",
+  "在管产品",
+  "FOF底层",
+] as const
+
+export type FundSpliceCategory = (typeof FUND_SPLICE_CATEGORIES)[number]
+
 export type FundSpliceEntry = {
   fund_category: string
   product_name: string

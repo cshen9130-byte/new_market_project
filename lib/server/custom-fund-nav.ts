@@ -262,6 +262,34 @@ export function uploadCustomFundNavRows(
   return { count }
 }
 
+export function replaceCustomFundNavRows(
+  productCode: string,
+  rows: Array<{ nav_date: string; unit_nav: string }>,
+  navSource = "规则生成",
+): void {
+  const code = productCode.trim()
+  const now = new Date().toISOString()
+  const merged: CustomFundNavRow[] = rows
+    .map((row) => {
+      const nav_date = normalizeDate(row.nav_date ?? "")
+      const unit_nav = String(row.unit_nav ?? "").trim()
+      if (!nav_date || !unit_nav || !Number.isFinite(parseFloat(unit_nav))) return null
+      const formatted = fmtNav4(unit_nav)
+      return {
+        id: randomUUID(),
+        nav_date,
+        unit_nav: formatted,
+        cumulative_nav: formatted,
+        nav_source: navSource,
+        created_at: now,
+      }
+    })
+    .filter((row): row is CustomFundNavRow => row != null)
+    .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+
+  writeRawRows(code, merged)
+}
+
 export function clearCustomFundNav(productCode: string): void {
   writeRawRows(productCode.trim(), [])
 }

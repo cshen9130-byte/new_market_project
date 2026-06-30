@@ -181,6 +181,14 @@ export async function loadFundNavRange(
   }
 }
 
+export async function loadMergedFundNavRows(
+  beian_hao: string,
+  product_name: string,
+  short_name: string,
+): Promise<LegacyNavRow[]> {
+  return loadMergedNavRows(beian_hao, product_name, short_name)
+}
+
 export async function loadFundNavSeries(
   beian_hao: string,
   product_name: string,

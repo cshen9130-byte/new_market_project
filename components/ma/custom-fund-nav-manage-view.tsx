@@ -143,6 +143,7 @@ export function CustomFundNavManageView({ productCode }: { productCode: string }
   const scopeNote = fund?.scope === "mine"
     ? "我的自建版本仅本人可见，净值如更新，会重新计算复权净值，可5分钟后刷新查看。"
     : "团队自建版本团队内访客可见，净值如更新，会重新计算复权净值，可5分钟后刷新查看。"
+  const hasRuleGeneratedNav = rows.some((row) => row.nav_source === "规则生成")
 
   return (
     <FundDatabaseShell activeSideItem="custom-funds" onNavigate={navigateFunds}>
@@ -196,6 +197,12 @@ export function CustomFundNavManageView({ productCode }: { productCode: string }
             </button>
           </div>
         </div>
+
+        {hasRuleGeneratedNav && (
+          <div className="mt-4 rounded border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+            系统根据多基金拼接自动生成了净值。
+          </div>
+        )}
 
         <div className="mt-4 overflow-auto rounded-lg border flex-1 min-h-[360px] bg-background">
           <table className="text-sm border-collapse w-full">
