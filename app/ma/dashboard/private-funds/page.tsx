@@ -174,8 +174,12 @@ const TAB_DEFAULT_SIDE: Record<string, string> = {
 
 const TRACK_STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"]
 const ORG_SIZE_OPTS = ["不限", "100亿以上", "50-100亿", "20-50亿", "10-20亿", "5-10亿", "0-5亿"]
+// "all" / "mine_all" are client-only pseudo tabs kept first at all times; every
+// other pool definition (label, order, existence) lives in the DB and is loaded
+// from /ma/api/tracking-funds/pools.
+const TEAM_ALL_POOL = { key: "all", label: "全部" }
 const DEFAULT_POOLS = [
-  { key: "all", label: "全部" },
+  TEAM_ALL_POOL,
   { key: "bfl_ops", label: "bfl 运维池" },
   { key: "bfl", label: "bfl跟踪池" },
   { key: "tracking", label: "跟踪池" },
@@ -184,6 +188,36 @@ const DEFAULT_POOLS = [
   { key: "hy", label: "hy跟踪池" },
   { key: "fof", label: "FOF&MOM跟踪" },
 ]
+const MINE_ALL_POOL = { key: "mine_all", label: "全部" }
+const DEFAULT_MINE_POOLS = [
+  MINE_ALL_POOL,
+  { key: "mine_default", label: "默认我的跟踪" },
+]
+
+// localStorage keys used to render the last-known pool tabs instantly on load
+// (keeps the fast-loading feel) before the authoritative server list arrives.
+const POOLS_CACHE_KEY = "tracking_team_pools_cache"
+const MINE_POOLS_CACHE_KEY = "tracking_mine_pools_cache"
+
+type PoolDef = { key: string; label: string }
+
+function readPoolsCache(cacheKey: string, fallback: PoolDef[]): PoolDef[] {
+  if (typeof window === "undefined") return fallback
+  try {
+    const raw = localStorage.getItem(cacheKey)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed) && parsed.every((p) => p && typeof p.key === "string" && typeof p.label === "string")) {
+      return parsed as PoolDef[]
+    }
+  } catch { /* ignore corrupt cache */ }
+  return fallback
+}
+
+function writePoolsCache(cacheKey: string, pools: PoolDef[]): void {
+  if (typeof window === "undefined") return
+  try { localStorage.setItem(cacheKey, JSON.stringify(pools)) } catch { /* ignore quota */ }
+}
 
 const STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"] as const
 const MORE_INFO_TABS = ["基金类型", "基金成立日期", "净值日期", "净值频率", "净值完整度", "是否代表产品", "基金规模提示", "基金信披情况", "基金策略确认", "投资区域", "运作状态", "机构管理规模", "机构办公地址"] as const
@@ -1682,7 +1716,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [jumpVal, setJumpVal] = useState("")
   const [data, setData] = useState<TrackFundRow[]>([])
   const [total, setTotal] = useState(0)
-  const [pools, setPools] = useState<{ key: string; label: string }[]>(DEFAULT_POOLS)
+  const [pools, setPools] = useState<{ key: string; label: string }[]>(() => readPoolsCache(POOLS_CACHE_KEY, DEFAULT_POOLS))
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [showNewPoolDialog, setShowNewPoolDialog] = useState(false)
@@ -1690,11 +1724,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [showManageDialog, setShowManageDialog] = useState(false)
   const [editingPoolKey, setEditingPoolKey] = useState<string | null>(null)
   const [editingPoolLabel, setEditingPoolLabel] = useState("")
+  const [poolDragIdx, setPoolDragIdx] = useState<number | null>(null)
+  const [minePoolDragIdx, setMinePoolDragIdx] = useState<number | null>(null)
   const [myActivePool, setMyActivePool] = useState("mine_default")
-  const [myPools, setMyPools] = useState<{ key: string; label: string }[]>([
-    { key: "mine_all", label: "全部" },
-    { key: "mine_default", label: "默认我的跟踪" },
-  ])
+  const [myPools, setMyPools] = useState<{ key: string; label: string }[]>(() => readPoolsCache(MINE_POOLS_CACHE_KEY, DEFAULT_MINE_POOLS))
   const [showMineNewPoolDialog, setShowMineNewPoolDialog] = useState(false)
   const [mineNewPoolName, setMineNewPoolName] = useState("")
   const [showMineManageDialog, setShowMineManageDialog] = useState(false)
@@ -1854,7 +1887,15 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     return id ? { "x-market-user-id": id } : {}
   }
 
+  // Keys created optimistically but not yet confirmed by the server, so a poll
+  // that races ahead of the DB write doesn't make them flicker away.
+  const pendingPoolCreatesRef = useRef<Set<string>>(new Set())
+  // Keys deleted optimistically; suppressed from the server list until the DB
+  // write commits so a racing poll doesn't briefly resurrect them.
+  const poolTombstonesRef = useRef<Set<string>>(new Set())
+
   function persistPoolCreate(poolKey: string, label: string, scope: "team" | "mine", rollback: () => void) {
+    pendingPoolCreatesRef.current.add(poolKey)
     fetch("/ma/api/tracking-funds/pools", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...userFetchHeaders() },
@@ -1867,6 +1908,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         }
       })
       .catch((err: unknown) => {
+        pendingPoolCreatesRef.current.delete(poolKey)
         rollback()
         const msg = err instanceof Error ? err.message : "网络错误"
         console.error("[persistPoolCreate]", msg)
@@ -1883,33 +1925,86 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }
 
   function persistPoolDelete(poolKey: string) {
+    poolTombstonesRef.current.add(poolKey)
+    pendingPoolCreatesRef.current.delete(poolKey)
     fetch(`/ma/api/tracking-funds/pools?pool_key=${encodeURIComponent(poolKey)}`, {
       method: "DELETE",
       headers: { ...userFetchHeaders() },
     }).catch(() => {})
   }
 
+  function persistPoolReorder(scope: "team" | "mine", keys: string[]) {
+    fetch("/ma/api/tracking-funds/pools", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+      body: JSON.stringify({ scope, keys }),
+    }).catch(() => {})
+  }
+
+  // Drag-to-reorder within a manage dialog. `pinnedKey` (all / mine_all) always
+  // stays first and is excluded from the draggable list.
+  function reorderPools(
+    scope: "team" | "mine",
+    cacheKey: string,
+    pinnedKey: string,
+    from: number,
+    to: number,
+  ) {
+    const setter = scope === "team" ? setPools : setMyPools
+    setter((prev) => {
+      const pinned = prev.filter((p) => p.key === pinnedKey)
+      const rest = prev.filter((p) => p.key !== pinnedKey)
+      if (from < 0 || from >= rest.length || to < 0 || to >= rest.length || from === to) return prev
+      const next = [...rest]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      const combined = [...pinned, ...next]
+      writePoolsCache(cacheKey, combined)
+      persistPoolReorder(scope, next.map((p) => p.key))
+      return combined
+    })
+  }
+
   // Load persisted pool definitions so team pools created by any account are
   // visible to everyone, and "mine" pools survive reloads for the same user.
+  // The DB is the source of truth: the server list wins for labels, order and
+  // existence, so renames/deletes/reorders persist across reloads. Optimistic
+  // local creates/deletes are reconciled via the pending/tombstone refs above.
   // Polls every 30 s and re-syncs on tab focus so changes made by other
   // accounts appear without requiring a manual page refresh.
   useEffect(() => {
     type ApiPool = { pool_key: string; label: string }
 
-    // Only ever ADD pools from the server into local state — never remove.
-    // Removal is handled explicitly by the delete action. This prevents
-    // optimistic local pools (not yet confirmed in DB) from disappearing
-    // when the next poll fires before the DB write completes.
-    function mergePools(
+    function reconcilePools(
       setter: typeof setPools,
+      cacheKey: string,
+      specialPool: PoolDef,
       incoming: ApiPool[],
     ) {
+      const serverKeys = new Set(incoming.map((p) => p?.pool_key).filter(Boolean) as string[])
+      // Server has confirmed our deletes/creates — clear the local bookkeeping.
+      for (const k of [...poolTombstonesRef.current]) {
+        if (!serverKeys.has(k)) poolTombstonesRef.current.delete(k)
+      }
+      for (const k of [...pendingPoolCreatesRef.current]) {
+        if (serverKeys.has(k)) pendingPoolCreatesRef.current.delete(k)
+      }
+
       setter((prev) => {
-        const existing = new Set(prev.map((p) => p.key))
-        const extra = incoming
-          .filter((p) => p?.pool_key && !existing.has(p.pool_key))
-          .map((p) => ({ key: p.pool_key, label: p.label }))
-        return extra.length ? [...prev, ...extra] : prev
+        const result: PoolDef[] = [specialPool]
+        for (const p of incoming) {
+          if (!p?.pool_key || p.pool_key === specialPool.key) continue
+          if (poolTombstonesRef.current.has(p.pool_key)) continue
+          result.push({ key: p.pool_key, label: p.label })
+        }
+        // Keep optimistic creates that the server hasn't acknowledged yet.
+        for (const pk of pendingPoolCreatesRef.current) {
+          if (result.some((r) => r.key === pk)) continue
+          const local = prev.find((x) => x.key === pk)
+          if (local) result.push(local)
+        }
+        writePoolsCache(cacheKey, result)
+        return result
       })
     }
 
@@ -1917,14 +2012,14 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       fetch("/ma/api/tracking-funds/pools?scope=team")
         .then((r) => r.json())
         .then((d) => {
-          if (Array.isArray(d?.data)) mergePools(setPools, d.data)
+          if (Array.isArray(d?.data)) reconcilePools(setPools, POOLS_CACHE_KEY, TEAM_ALL_POOL, d.data)
           else if (d?.error) console.error("[loadPools team]", d.error, d.detail)
         })
         .catch((e) => console.error("[loadPools team fetch]", e))
       fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: { ...userFetchHeaders() } })
         .then((r) => r.json())
         .then((d) => {
-          if (Array.isArray(d?.data)) mergePools(setMyPools, d.data)
+          if (Array.isArray(d?.data)) reconcilePools(setMyPools, MINE_POOLS_CACHE_KEY, MINE_ALL_POOL, d.data)
           else if (d?.error) console.error("[loadPools mine]", d.error, d.detail)
         })
         .catch((e) => console.error("[loadPools mine fetch]", e))
@@ -4833,8 +4928,20 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               </thead>
               <tbody>
                 {myPools.filter((p) => p.key !== "mine_all").map((p, idx) => (
-                  <tr key={p.key} className="border-b last:border-0 hover:bg-muted/30">
-                    <td className="py-2 px-3 text-muted-foreground">{idx + 1}</td>
+                  <tr
+                    key={p.key}
+                    draggable={mineEditingPoolKey !== p.key}
+                    onDragStart={() => setMinePoolDragIdx(idx)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault()
+                      if (minePoolDragIdx !== null) reorderPools("mine", MINE_POOLS_CACHE_KEY, "mine_all", minePoolDragIdx, idx)
+                      setMinePoolDragIdx(null)
+                    }}
+                    onDragEnd={() => setMinePoolDragIdx(null)}
+                    className={`border-b last:border-0 hover:bg-muted/30 ${minePoolDragIdx === idx ? "opacity-50" : ""}`}
+                  >
+                    <td className="py-2 px-3 text-muted-foreground cursor-move select-none" title="拖动排序">⠿ {idx + 1}</td>
                     <td className="py-2 px-3">
                       {mineEditingPoolKey === p.key ? (
                         <input
@@ -5043,8 +5150,20 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </thead>
                 <tbody className="divide-y">
                   {pools.filter((p) => p.key !== "all").map((p, idx) => (
-                    <tr key={p.key} className="hover:bg-muted/30 transition-colors">
-                      <td className="px-6 py-3 text-muted-foreground">{idx + 1}</td>
+                    <tr
+                      key={p.key}
+                      draggable={editingPoolKey !== p.key}
+                      onDragStart={() => setPoolDragIdx(idx)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={(e) => {
+                        e.preventDefault()
+                        if (poolDragIdx !== null) reorderPools("team", POOLS_CACHE_KEY, "all", poolDragIdx, idx)
+                        setPoolDragIdx(null)
+                      }}
+                      onDragEnd={() => setPoolDragIdx(null)}
+                      className={`hover:bg-muted/30 transition-colors ${poolDragIdx === idx ? "opacity-50" : ""}`}
+                    >
+                      <td className="px-6 py-3 text-muted-foreground cursor-move select-none" title="拖动排序">⠿ {idx + 1}</td>
                       <td className="px-4 py-3">
                         {editingPoolKey === p.key ? (
                           <input
