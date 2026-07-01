@@ -12,7 +12,7 @@ import {
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
 import { loadManagedUnderlyingMarketValueMap } from "@/lib/server/managed-fof-underlying-pg"
-import { isPlausibleRiskRatio } from "@/lib/server/managed-product-nav-seed"
+import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   addDays,
   BatchNavResolver,
@@ -182,7 +182,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     } else if (navDate) {
       const risk = computeOneYearRiskMetrics(
         navDate,
-        navResolver.mergedHistory(identity, sinceRisk),
+        navResolver.mergedHistoryForRiskMetrics(identity, sinceRisk),
       )
       sharpe_1y = isPlausibleRiskRatio(risk.sharpe_1y) ? risk.sharpe_1y : null
       calmar_1y = isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createHash } from "crypto"
 import { query } from "@/lib/db"
+import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -128,6 +129,7 @@ export async function POST(req: Request) {
               [bh, (tag as string).trim()]
             )
           }
+          await syncFundTeamTagsToSource(bh)
         }
         return NextResponse.json({ ok: true, count: ids.length })
       }

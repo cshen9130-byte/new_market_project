@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query, fmtIso } from "@/lib/db"
+import { sanitizeRiskMetricText } from "@/lib/fund-nav-metrics"
 import {
   buildEmailNavLatestExprs,
   buildEmailNavLatestJoins,
@@ -151,8 +152,8 @@ function mapRow(r: {
     ret_3m: r.ret_3m,
     ret_6m: r.ret_6m,
     ret_1y: r.ret_1y,
-    sharpe_1y: r.sharpe_1y,
-    calmar_1y: r.calmar_1y,
+    sharpe_1y: sanitizeRiskMetricText(r.sharpe_1y),
+    calmar_1y: sanitizeRiskMetricText(r.calmar_1y),
   }
 }
 

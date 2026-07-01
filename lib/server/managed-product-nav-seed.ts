@@ -1,7 +1,13 @@
 import fs from "fs"
 import path from "path"
 
-import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
+import {
+  computeFundNavMetrics,
+  isPlausibleRiskRatio,
+  MAX_PLAUSIBLE_RISK_RATIO,
+} from "@/lib/fund-nav-metrics"
+
+export { isPlausibleRiskRatio, MAX_PLAUSIBLE_RISK_RATIO }
 import {
   mergeLegacyWithTeamNav,
   mergeNavSeriesWithEmail,
@@ -19,14 +25,6 @@ export type NavHistoryPoint = { nav_date: string; nav: number }
 
 const seedCache = new Map<string, LegacyNavRow[]>()
 const MIN_RISK_POINTS = 20
-const MAX_PLAUSIBLE_RATIO = 50
-
-export function isPlausibleRiskRatio(
-  value: number | null | undefined,
-  maxAbs = MAX_PLAUSIBLE_RATIO,
-): value is number {
-  return value != null && Number.isFinite(value) && Math.abs(value) <= maxAbs
-}
 
 /** Team/email unit NAV may only override seed on dates after the verified reference ends. */
 export function buildTeamUnitOverlayAfterSeed(

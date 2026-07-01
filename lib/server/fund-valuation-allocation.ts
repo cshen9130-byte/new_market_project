@@ -34,6 +34,7 @@ import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/li
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { lookupManagedProductOverride, lookupManagedProductCustodian, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import { readValuationCache } from "@/lib/server/valuation-precomputed-cache"
 
 export type AllocationMode = "major" | "all"
 
@@ -1732,6 +1733,29 @@ export async function getFundValuationAllocation(
   const includeReturnCurves = fetchOptions?.includeReturnCurves ?? false
   const curvesFrom = fetchOptions?.curvesFrom ?? null
   const curvesTo = fetchOptions?.curvesTo ?? null
+
+  // ── Serve from pre-computed cache when possible ───────────────────────────
+  if (mode === "major") {
+    if (!includeReturnCurves) {
+      const cached = await readValuationCache<FundValuationAllocationResult>(
+        rawBeianHao,
+        "snapshot",
+      )
+      if (cached) return cached
+    } else if (curvesFrom && curvesTo) {
+      // Curves request: try combining cached snapshot + cached curves
+      const [snapshot, curves] = await Promise.all([
+        readValuationCache<FundValuationAllocationResult>(rawBeianHao, "snapshot"),
+        readValuationCache<ReturnCurveSeries[]>(rawBeianHao, "curves", {
+          fromDate: curvesFrom,
+          toDate: curvesTo,
+        }),
+      ])
+      if (snapshot && curves) return { ...snapshot, return_curves: curves }
+      if (snapshot) return snapshot
+    }
+  }
+
   const beian_hao = await resolveRouteFundId(rawBeianHao)
   const product_name = await resolveFundName(beian_hao)
 
@@ -2821,6 +2845,16 @@ export async function getFundValuationTrendAnalysis(
   toDate: string,
   mode: AllocationMode = "major",
 ): Promise<ValuationTrendAnalysisResult> {
+  // ── Serve from pre-computed cache when possible ───────────────────────────
+  if (mode === "major") {
+    const cached = await readValuationCache<ValuationTrendAnalysisResult>(
+      rawBeianHao,
+      "trend",
+      { fromDate, toDate },
+    )
+    if (cached) return cached
+  }
+
   const snapshots = await loadFundValuationTrendSnapshots(rawBeianHao, fromDate, toDate)
   const fof_trend = await buildFofTrendAnalysis(snapshots)
   return {

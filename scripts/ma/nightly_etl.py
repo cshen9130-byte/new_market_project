@@ -2259,6 +2259,31 @@ def step_private_fund_indicators(conn) -> int:
     return 0
 
 
+def step_valuation_cache() -> int:
+    """Pre-compute 估值表分析 page data (snapshot + trend + curves) for all managed funds.
+
+    Results are stored in ops_valuation_precomputed_cache so the API can serve
+    them instantly from cache instead of recomputing per request.
+
+    Runs after investment_pool_metrics so the *_latest tables are fresh.
+    """
+    log.info("valuation_cache: pre-computing 估值表分析 data for all funds …")
+    result = run_node_script("precompute_valuation_cache.ts", timeout=3600)
+    if not result:
+        raise RuntimeError("valuation_cache: no result from precompute_valuation_cache.ts")
+    ok = int(result.get("ok") or 0)
+    failed = int(result.get("failed") or 0)
+    total = int(result.get("total") or 0)
+    error_count = int(result.get("errorCount") or 0)
+    log.info(
+        "valuation_cache: ok=%d failed=%d total=%d errors=%d",
+        ok, failed, total, error_count,
+    )
+    for err in (result.get("errors") or [])[:10]:
+        log.warning("  valuation_cache: %s", err)
+    return ok
+
+
 def step_investment_pool_metrics() -> int:
     """Refresh 在管产品 + FOF底层 + 跟踪产品 list caches from stored email NAV / 估值表."""
     log.info("investment_pool_metrics: rebuilding managed / FOF / tracking list caches …")
@@ -2391,6 +2416,7 @@ ORDERED_STEPS = [
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
+    "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)
     "warm_mom_cache",                # warm MOM dashboard API caches
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
 ]
@@ -2506,6 +2532,7 @@ def main():
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
+        "valuation_cache":                 lambda: step_valuation_cache(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),
     }

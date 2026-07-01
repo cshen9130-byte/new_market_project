@@ -12,6 +12,9 @@ import { ManagerSearchInput, ProductKeywordSearchInput } from "@/components/ma/p
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { CopyableInlineText, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
+import { DueDiligenceCalendarView } from "./components/DueDiligenceCalendarView"
+import { DueDiligenceReportView } from "./components/DueDiligenceReportView"
+import { InvestmentNotesView } from "./components/InvestmentNotesView"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
 import { InvestmentFundCompareView } from "./components/InvestmentFundCompareView"
 import { InvestmentDirectProductsView } from "./components/InvestmentDirectProductsView"
@@ -33,6 +36,25 @@ import {
   isAllowedInvestmentSideItem,
 } from "@/lib/permissions"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import {
+  fetchFundTeamTagOptions,
+  notifyTeamTagsChanged,
+  subscribeTeamTagsChanged,
+} from "@/lib/team-tags-events"
+import {
+  DIRECT_FIELD_DEFAULT,
+  FIELD_CONFIG_STORAGE_KEYS,
+  fieldConfigSplitAround,
+  FOF_FIELD_DEFAULT,
+  MANAGED_FIELD_DEFAULT,
+  OPS_MANAGED_FIELD_DEFAULT,
+  OPS_FOF_FIELD_DEFAULT,
+  PRODUCT_FIELD_DEFAULT,
+  readProductFieldConfig,
+  writeProductFieldConfig,
+} from "@/lib/ma/product-field-config"
+import { ProductFieldConfigDialog } from "./components/ProductFieldConfigDialog"
+import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./components/product-field-config-table"
 
 const menuItems = [
   { key: "market", label: "市场" },
@@ -67,6 +89,14 @@ const fundsSidebarGroups: SidebarGroup[] = [
 ]
 
 const investmentSidebarGroups: SidebarGroup[] = [
+  {
+    label: "尽调池",
+    items: [
+      { key: "inv-dd-calendar", label: "尽调日历" },
+      { key: "inv-dd-report", label: "尽调报告" },
+      { key: "inv-dd-notes", label: "投资笔记" },
+    ],
+  },
   {
     label: "跟踪池",
     items: [
@@ -1529,6 +1559,12 @@ interface TrackFundRow {
   short_name: string | null
   strategy_l1: string | null
   strategy_l2: string | null
+  platform_strategy_l1: string | null
+  platform_strategy_l2: string | null
+  platform_strategy_l3: string | null
+  company_strategy_l1: string | null
+  company_strategy_l2: string | null
+  company_strategy_l3: string | null
   manager: string | null
   inception_date: string | null
   latest_nav: string | null
@@ -1740,9 +1776,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [showTeamBatchMenu, setShowTeamBatchMenu] = useState(false)
   const [showMineBatchMenu, setShowMineBatchMenu] = useState(false)
   const [showFieldConfigDialog, setShowFieldConfigDialog] = useState(false)
-  const [fieldConfigTab, setFieldConfigTab] = useState<string>("基本信息")
-  const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>(["最新净值日期", "最新单位净值", "最新涨跌幅"])
-  const [fieldConfigDraft, setFieldConfigDraft] = useState<string[]>(["最新净值日期", "最新单位净值", "最新涨跌幅"])
+  const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.tracking, PRODUCT_FIELD_DEFAULT))
   const [showAuditLogDialog, setShowAuditLogDialog] = useState(false)
   const [showBatchTagDialog, setShowBatchTagDialog] = useState(false)
   const [batchTagSelected, setBatchTagSelected] = useState<string[]>([])
@@ -2089,12 +2123,23 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }, [strategySource, sourcePool])
 
   useEffect(() => {
-    const params = new URLSearchParams({ pool: sourcePool })
-    fetch(`/ma/api/tracking-funds/team-tags?${params}`)
-      .then((r) => r.json())
-      .then((d) => Array.isArray(d) ? setTeamTagOptions(d) : null)
-      .catch(() => {})
-  }, [sourcePool])
+    fetchFundTeamTagOptions().then(setTeamTagOptions)
+  }, [sourcePool, dataReloadKey])
+
+  useEffect(() => {
+    return subscribeTeamTagsChanged((detail) => {
+      fetchFundTeamTagOptions().then((tags) => {
+        setTeamTagOptions(tags)
+        setEditTagTeamTags(tags)
+        setBatchTagTeamTags(tags)
+      })
+      if (detail?.oldName && detail?.newName) {
+        setTeamTags((prev) => prev.map((t) => (t === detail.oldName ? detail.newName! : t)))
+        setEditTagSelected((prev) => prev.map((t) => (t === detail.oldName ? detail.newName! : t)))
+        setBatchTagSelected((prev) => prev.map((t) => (t === detail.oldName ? detail.newName! : t)))
+      }
+    })
+  }, [])
 
   const totalPages = Math.max(1, Math.ceil(total / 50))
   const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}\u0000${teamCutoffDate}\u0000${dataReloadKey}`
@@ -2111,6 +2156,35 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     return sortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  const teamConfigColSpan = 3 + fieldConfigSelected.length + 7 + 3
+  const mineConfigColSpan = 3 + fieldConfigSelected.length + 4 + 3
+
+  function renderFieldConfigHeader(label: string) {
+    return (
+      <ProductFieldConfigHeader
+        key={label}
+        label={label}
+        thSort={thSort}
+        thBase={thBase}
+        sortCol={sortCol}
+        onSort={handleSort}
+        SortIcon={SortIco}
+        rightAlign={label === "最新涨跌幅"}
+      />
+    )
+  }
+
+  function renderFieldConfigCell(label: string, row: TrackFundRow, cell: string) {
+    return (
+      <ProductFieldConfigCell
+        key={label}
+        label={label}
+        row={row}
+        cell={cell}
+      />
+    )
   }
 
   function toggleAll() {
@@ -2753,7 +2827,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 批量上传净值
               </button>
               <button
-                onClick={() => { setFieldConfigDraft([...fieldConfigSelected]); setFieldConfigTab("基本信息"); setShowFieldConfigDialog(true) }}
+                onClick={() => setShowFieldConfigDialog(true)}
                 className="inline-flex items-center gap-1 hover:text-foreground transition-colors">
                 <Settings2 className="h-3.5 w-3.5" /> 字段配置
               </button>
@@ -2922,7 +2996,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       <button onClick={() => setShowTeamMoreMenu(false)} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                         <RefreshCw className="h-3.5 w-3.5 text-zinc-400" /> 刷新指标
                       </button>
-                      <button onClick={() => { setShowTeamMoreMenu(false); setFieldConfigDraft([...fieldConfigSelected]); setFieldConfigTab("基本信息"); setShowFieldConfigDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                      <button onClick={() => { setShowTeamMoreMenu(false); setShowFieldConfigDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                         <Settings2 className="h-3.5 w-3.5 text-zinc-400" /> 字段配置
                       </button>
                       <button onClick={() => { setShowTeamMoreMenu(false); setShowAuditLogDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
@@ -3058,9 +3132,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   </th>
                   <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted/40 dark:bg-muted/20`}>序号</th>
                   <th className={`${thSort} min-w-[200px] sticky left-[72px] z-30 bg-muted/40 dark:bg-muted/20 border-r border-zinc-200 dark:border-zinc-700`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
-                  <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<SortIco col="latest_nav_date" /></th>
-                  <th className={`${thSort} min-w-[90px]`} onClick={() => handleSort("latest_nav")}>最新单位净值<SortIco col="latest_nav" /></th>
-                  <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("latest_price_change")}>最新涨跌幅<SortIco col="latest_price_change" /></th>
+                  {fieldConfigSelected.map(renderFieldConfigHeader)}
                   <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
                     <div>近一周收益<SortIco col="ret_1w" /></div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 7)}</div>}
@@ -3090,11 +3162,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={teamConfigColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isSupportedPool ? (
-                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
+                  <tr><td colSpan={teamConfigColSpan} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
                 ) : data.length === 0 ? (
-                  <tr><td colSpan={16} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
+                  <tr><td colSpan={teamConfigColSpan} className="py-20 text-center text-muted-foreground">暂无数据</td></tr>
                 ) : data.map((row, i) => {
                   const isSelected = selected.has(row.beian_hao)
                   const bg = isSelected ? "bg-blue-50 dark:bg-blue-950/40" : "bg-background"
@@ -3127,11 +3199,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           </div>
                         )}
                       </td>
-                      <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                      <td className={`${cell} tabular-nums`}>
-                        <div className="font-medium leading-5">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</div>
-                      </td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                      {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
                         {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 7)}</div>}
@@ -3510,7 +3578,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       <button onClick={() => setShowMineMoreMenu(false)} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                         <RefreshCw className="h-3.5 w-3.5 text-zinc-400" /> 刷新指标
                       </button>
-                      <button onClick={() => { setShowMineMoreMenu(false); setFieldConfigDraft([...fieldConfigSelected]); setFieldConfigTab("基本信息"); setShowFieldConfigDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                      <button onClick={() => { setShowMineMoreMenu(false); setShowFieldConfigDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                         <Settings2 className="h-3.5 w-3.5 text-zinc-400" /> 字段配置
                       </button>
                       <button onClick={() => { setShowMineMoreMenu(false); setShowAuditLogDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
@@ -3557,9 +3625,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                   <th className={`${thBase} w-8 px-2`}><input type="checkbox" className="rounded h-3 w-3" /></th>
                   <th className={`${thBase} w-10`}>序号</th>
                   <th className={`${thBase} min-w-[200px]`}>产品名称</th>
-                  <th className={`${thBase} min-w-[100px]`}>最新净値日期</th>
-                  <th className={`${thBase} min-w-[90px]`}>最新单位净値</th>
-                  <th className={`${thBase} text-right min-w-[88px]`}>最新涨跌幅</th>
+                  {fieldConfigSelected.map((label) => (
+                    <th key={label} className={`${thBase} min-w-[100px]`}>{label}</th>
+                  ))}
                   <th className={`${thBase} text-right min-w-[88px]`}>
                     <div>近一周收益</div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 7)}</div>}
@@ -3583,12 +3651,12 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               </thead>
               <tbody>
                 {loading ? (
-                  <tr><td colSpan={13} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+                  <tr><td colSpan={mineConfigColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
                 ) : !isMyPoolSupported ? (
-                  <tr><td colSpan={13} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
+                  <tr><td colSpan={mineConfigColSpan} className="py-20 text-center text-muted-foreground">请选择一个跟踪池查看数据</td></tr>
                 ) : data.length === 0 ? (
                   <tr>
-                    <td colSpan={13} className="py-20 text-center text-muted-foreground">
+                    <td colSpan={mineConfigColSpan} className="py-20 text-center text-muted-foreground">
                       <div className="flex flex-col items-center gap-2">
                         <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="text-muted-foreground/40"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
                         <span>暂无数据</span>
@@ -3625,9 +3693,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           </span>
                         )}
                       </td>
-                      <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                      <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
+                      {fieldConfigSelected.map((label) => renderFieldConfigCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w} />
                         {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(mineCutoffDate, 7)}</div>}
@@ -4273,6 +4339,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       body: JSON.stringify({ beian_hao: editTagBeianHao, tags: editTagSelected }),
                     })
                     setShowEditTagDialog(false)
+                    setDataReloadKey((k) => k + 1)
                   } finally {
                     setEditTagSaving(false)
                   }
@@ -4409,93 +4476,16 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         </div>
       )}
 
-      {/* Field config dialog */}
-      {showFieldConfigDialog && (() => {
-        const FIELD_TABS = ["基本信息", "申赎信息", "团队策略/标签/池", "净值信息", "团队字段", "其他"]
-        const FIELD_OPTIONS: Record<string, string[]> = {
-          "基本信息": ["备案编码", "成立日期", "基金全称", "备案日期", "基准指数", "基金管理人", "管理人规模", "投资顾问", "托管券商", "平台一级策略", "平台二级策略", "平台三级策略"],
-          "申赎信息": ["申购状态", "赎回状态", "申购费率", "赎回费率", "最低申购金额", "封闭期"],
-          "团队策略/标签/池": ["团队一级策略", "团队二级策略", "团队三级策略", "团队标签", "所在跟踪池"],
-          "净值信息": ["成立以来收益", "近两年收益", "近三年收益", "最大回撤", "年化收益", "年化波动率", "信息比率", "卡玛比率"],
-          "团队字段": ["团队评级", "团队备注", "关注度"],
-          "其他": ["产品规模", "基金托管人", "外部评级"],
-        }
-        const opts = FIELD_OPTIONS[fieldConfigTab] ?? []
-        const toggleDraft = (f: string) => {
-          setFieldConfigDraft((prev) => prev.includes(f) ? prev.filter((x) => x !== f) : [...prev, f])
-        }
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowFieldConfigDialog(false)}>
-            <div className="bg-background rounded-lg shadow-xl w-[760px] flex flex-col" style={{ maxHeight: "80vh" }} onClick={(e) => e.stopPropagation()}>
-              {/* Header */}
-              <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
-                <span className="font-semibold text-base">字段配置</span>
-                <button onClick={() => setShowFieldConfigDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
-              </div>
-              {/* Body */}
-              <div className="flex flex-1 overflow-hidden">
-                {/* Left: tabs + fields */}
-                <div className="flex-1 flex flex-col min-w-0 px-6 py-4">
-                  {/* Tab row */}
-                  <div className="flex items-center gap-4 mb-4 flex-wrap">
-                    {FIELD_TABS.map((tab) => (
-                      <label key={tab} className="flex items-center gap-1.5 cursor-pointer text-sm whitespace-nowrap">
-                        <input
-                          type="radio"
-                          name="fieldConfigTab"
-                          checked={fieldConfigTab === tab}
-                          onChange={() => setFieldConfigTab(tab)}
-                          className="accent-red-500 h-3.5 w-3.5"
-                        />
-                        {tab}
-                      </label>
-                    ))}
-                  </div>
-                  {/* Checkboxes grid */}
-                  <div className="grid grid-cols-3 gap-x-6 gap-y-3">
-                    {opts.map((f) => (
-                      <label key={f} className="flex items-center gap-2 cursor-pointer text-sm">
-                        <input
-                          type="checkbox"
-                          checked={fieldConfigDraft.includes(f)}
-                          onChange={() => toggleDraft(f)}
-                          className="rounded h-3.5 w-3.5 accent-red-500"
-                        />
-                        {f}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                {/* Right: selected list */}
-                <div className="w-48 border-l flex flex-col px-4 py-4 flex-shrink-0">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm text-zinc-600">已选({fieldConfigDraft.length})</span>
-                    <button onClick={() => setFieldConfigDraft([])} className="text-xs text-red-500 hover:text-red-600 transition-colors">清空</button>
-                  </div>
-                  <div className="flex-1 overflow-y-auto space-y-1.5">
-                    {fieldConfigDraft.map((f) => (
-                      <div key={f} className="flex items-center justify-between text-sm py-0.5">
-                        <span className="text-zinc-700 dark:text-zinc-300 truncate">{f}</span>
-                        <button onClick={() => toggleDraft(f)} className="text-zinc-400 hover:text-zinc-600 transition-colors ml-1 flex-shrink-0">×</button>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="text-xs text-zinc-400 mt-3 leading-snug">已选列表可拖拉上下排序</p>
-                </div>
-              </div>
-              {/* Footer */}
-              <div className="flex items-center justify-end gap-2 px-6 py-3 border-t flex-shrink-0">
-                <button onClick={() => setShowFieldConfigDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
-                <button
-                  onClick={() => { setFieldConfigSelected([...fieldConfigDraft]); setShowFieldConfigDialog(false) }}
-                  className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors">
-                  确 定
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      })()}
+      <ProductFieldConfigDialog
+        open={showFieldConfigDialog}
+        selected={fieldConfigSelected}
+        onClose={() => setShowFieldConfigDialog(false)}
+        onConfirm={(fields) => {
+          setFieldConfigSelected(fields)
+          writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.tracking, fields)
+          setShowFieldConfigDialog(false)
+        }}
+      />
 
       {/* Single add dialog */}
       {showSingleAddDialog && (
@@ -5611,8 +5601,6 @@ function OperationsTeamTagsTab() {
   const [editingTag, setEditingTag] = useState<OpsTagRow | null>(null)
   const [editTagName, setEditTagName] = useState("")
   const [editTagSaving, setEditTagSaving] = useState(false)
-  const [importingBfl, setImportingBfl] = useState(false)
-  const [importResult, setImportResult] = useState<{ added: number; skipped: number } | null>(null)
 
   function currentUserName(): string {
     try {
@@ -5645,6 +5633,7 @@ function OperationsTeamTagsTab() {
         setShowNewTagModal(false)
         setNewTagName("")
         loadTags(tagCategory)
+        if (tagCategory === "fund") notifyTeamTagsChanged()
       }
     } finally { setNewTagSaving(false) }
   }
@@ -5659,8 +5648,11 @@ function OperationsTeamTagsTab() {
         body: JSON.stringify({ name: editTagName.trim(), user_name: currentUserName() }),
       })
       if (res.ok) {
+        const oldName = editingTag.name
+        const newName = editTagName.trim()
         setEditingTag(null)
         loadTags(tagCategory)
+        if (tagCategory === "fund") notifyTeamTagsChanged({ oldName, newName })
       }
     } finally { setEditTagSaving(false) }
   }
@@ -5669,33 +5661,9 @@ function OperationsTeamTagsTab() {
     const res = await fetch(`/ma/api/ops/team-tags/${id}`, { method: "DELETE" })
     if (res.ok) {
       setTags((prev) => prev.filter((t) => t.id !== id))
+      if (tagCategory === "fund") notifyTeamTagsChanged()
     } else {
       loadTags(tagCategory)
-    }
-  }
-
-  async function importFromBflOps() {
-    setImportingBfl(true)
-    setImportResult(null)
-    try {
-      const bflRes = await fetch("/ma/api/tracking-funds/team-tags?pool=bfl_ops")
-      const bflTags: string[] = await bflRes.json()
-      const existingNames = new Set(tags.map((t) => t.name))
-      const toAdd = bflTags.filter((t) => !existingNames.has(t))
-      const userName = currentUserName()
-      let added = 0
-      for (const tagName of toAdd) {
-        const res = await fetch("/ma/api/ops/team-tags", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ category: tagCategory, name: tagName, user_name: userName }),
-        })
-        if (res.ok) added++
-      }
-      setImportResult({ added, skipped: bflTags.length - toAdd.length })
-      if (added > 0) loadTags(tagCategory)
-    } catch { /* ignore */ } finally {
-      setImportingBfl(false)
     }
   }
 
@@ -5708,7 +5676,7 @@ function OperationsTeamTagsTab() {
           {TAG_CATEGORIES.map((c) => (
             <button
               key={c.key}
-              onClick={() => { setTagCategory(c.key); setImportResult(null) }}
+              onClick={() => setTagCategory(c.key)}
               className={[
                 "px-3 py-1 rounded text-sm font-medium transition-all border",
                 tagCategory === c.key
@@ -5721,19 +5689,6 @@ function OperationsTeamTagsTab() {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          {importResult && (
-            <span className="text-xs text-zinc-500">
-              已导入 <span className="text-green-600 font-medium">{importResult.added}</span> 个，
-              已存在 <span className="text-zinc-400">{importResult.skipped}</span> 个
-            </span>
-          )}
-          <button
-            onClick={importFromBflOps}
-            disabled={importingBfl}
-            className="px-3 py-1.5 border border-zinc-300 hover:border-zinc-400 text-zinc-600 hover:text-zinc-800 text-sm font-medium rounded transition-colors disabled:opacity-50"
-          >
-            {importingBfl ? "导入中…" : "从bfl运维池导入"}
-          </button>
           <button
             onClick={() => { setNewTagName(""); setShowNewTagModal(true) }}
             className="px-4 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded transition-colors"
@@ -10698,7 +10653,7 @@ function OperationsDirectView() {
   const [dataReloadKey, setDataReloadKey] = useState(0)
   const addDirectSearchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [showDirectFieldConfig, setShowDirectFieldConfig] = useState(false)
-  const [directFieldConfigSelected, setDirectFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [directFieldConfigSelected, setDirectFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.opsDirect, DIRECT_FIELD_DEFAULT))
   const [showDirectAuditLog, setShowDirectAuditLog] = useState(false)
   const [directElementsDialog, setDirectElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [directPermissionDialog, setDirectPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -10841,12 +10796,41 @@ function OperationsDirectView() {
     setPage(1)
   }
 
-  function DirectSortIcon({ col }: { col: DirectSortKey }) {
+  function DirectSortIcon({ col }: { col: DirectSortKey | string }) {
     if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return sortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
+
+  function renderDirectFieldHeader(label: string) {
+    return (
+      <ProductFieldConfigHeader
+        key={label}
+        label={label}
+        thSort={thSort}
+        thBase={thBase}
+        sortCol={sortKey}
+        onSort={(col) => handleSort(col as DirectSortKey)}
+        SortIcon={DirectSortIcon}
+        rightAlign={label === "最新涨跌幅" || label === "持仓市值(元)"}
+      />
+    )
+  }
+
+  function renderDirectFieldCell(label: string, row: DirectFundRow, cell: string) {
+    return (
+      <ProductFieldConfigCell
+        key={label}
+        label={label}
+        row={row}
+        cell={cell}
+        valuationDate={row.valuation_date}
+      />
+    )
+  }
+
+  const directColSpan = 3 + directFieldConfigSelected.length + 3
 
   function toggleAll() {
     if (selected.size === data.length && data.length > 0) setSelected(new Set())
@@ -11065,11 +11049,7 @@ function OperationsDirectView() {
               </th>
               <th className={`${thBase} w-10`}>序号</th>
               <th className={`${thSort} min-w-[180px]`} onClick={() => handleSort("product_name")}>产品名称<DirectSortIcon col="product_name" /></th>
-              <th className={`${thBase} min-w-[90px]`}>备案编码</th>
-              <th className={`${thSort} min-w-[90px]`} onClick={() => handleSort("latest_nav")}>单位净值<DirectSortIcon col="latest_nav" /></th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>净值日期<DirectSortIcon col="latest_nav_date" /></th>
-              <th className={`${thSort} text-right min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<DirectSortIcon col="latest_price_change" /></th>
-              <th className={`${thSort} text-right min-w-[110px]`} onClick={() => handleSort("holding_mv")}>持仓市值(元)<DirectSortIcon col="holding_mv" /></th>
+              {directFieldConfigSelected.map(renderDirectFieldHeader)}
               <th className={`${thSort} text-right min-w-[90px]`} onClick={() => handleSort("holding_shares")}>持仓份额<DirectSortIcon col="holding_shares" /></th>
               <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
               <th className={`${thBase} text-center w-16`}>操作</th>
@@ -11077,10 +11057,10 @@ function OperationsDirectView() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+              <tr><td colSpan={directColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
             ) : data.length === 0 ? (
               <tr>
-                <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                <td colSpan={directColSpan} className="py-20 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-2">
                     <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
                     <span>暂无数据</span>
@@ -11115,11 +11095,7 @@ function OperationsDirectView() {
                       </span>
                     )}
                   </td>
-                  <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao}</td>
-                  <td className={`${cell} tabular-nums font-medium`}>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</td>
-                  <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                  <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
-                  <td className={`${cell} text-right tabular-nums`}>{row.holding_mv ?? "—"}</td>
+                  {directFieldConfigSelected.map((label) => renderDirectFieldCell(label, row, cell))}
                   <td className={`${cell} text-right tabular-nums`}>{row.holding_shares ?? "—"}</td>
                   <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
                   <td className={`${cell} text-center`}>
@@ -11432,12 +11408,13 @@ function OperationsDirectView() {
         </div>
       )}
 
-      <DirectFieldConfigDialog
+      <ProductFieldConfigDialog
         open={showDirectFieldConfig}
         selected={directFieldConfigSelected}
         onClose={() => setShowDirectFieldConfig(false)}
         onConfirm={(fields) => {
           setDirectFieldConfigSelected(fields)
+          writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.opsDirect, fields)
           setShowDirectFieldConfig(false)
         }}
       />
@@ -11555,7 +11532,7 @@ function OperationsFofUnderlyingView() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
   const [showFofFieldConfig, setShowFofFieldConfig] = useState(false)
-  const [fofFieldConfigSelected, setFofFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [fofFieldConfigSelected, setFofFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.opsFof, OPS_FOF_FIELD_DEFAULT))
   const [showFofAuditLog, setShowFofAuditLog] = useState(false)
   const [fofElementsDialog, setFofElementsDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [fofPermissionDialog, setFofPermissionDialog] = useState<{ beian_hao: string; product_name: string } | null>(null)
@@ -11634,12 +11611,41 @@ function OperationsFofUnderlyingView() {
     setPage(1)
   }
 
-  function FofSortIcon({ col }: { col: FofSortKey }) {
+  function FofSortIcon({ col }: { col: FofSortKey | string }) {
     if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return sortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
+
+  function renderOpsFofFieldHeader(label: string) {
+    return (
+      <ProductFieldConfigHeader
+        key={label}
+        label={label}
+        thSort={thSort}
+        thBase={thBase}
+        sortCol={sortKey}
+        onSort={(col) => handleSort(col as FofSortKey)}
+        SortIcon={FofSortIcon}
+        rightAlign={label === "最新涨跌幅"}
+      />
+    )
+  }
+
+  function renderOpsFofFieldCell(label: string, row: FofUnderlyingRow, cell: string) {
+    return (
+      <ProductFieldConfigCell
+        key={label}
+        label={label}
+        row={row}
+        cell={cell}
+        showTeamNavBadge={Boolean(row.nav_estimated && row.latest_nav)}
+      />
+    )
+  }
+
+  const opsFofColSpan = 3 + fofFieldConfigSelected.length + 2
 
   function toggleAll() {
     if (selected.size === data.length && data.length > 0) setSelected(new Set())
@@ -11906,20 +11912,17 @@ function OperationsFofUnderlyingView() {
               </th>
               <th className={`${thBase} w-10 text-center`}>序号</th>
               <th className={`${thSort} min-w-[200px]`} onClick={() => handleSort("product_name")}>产品名称<FofSortIcon col="product_name" /></th>
-              <th className={`${thBase} min-w-[90px]`}>备案编码</th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>单位净值<FofSortIcon col="latest_nav" /></th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>净值日期<FofSortIcon col="latest_nav_date" /></th>
-              <th className={`${thSort} min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<FofSortIcon col="latest_price_change" /></th>
+              {fofFieldConfigSelected.map(renderOpsFofFieldHeader)}
               <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
               <th className={`${thBase} text-right pr-4 w-24`}>操作</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={9} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+              <tr><td colSpan={opsFofColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
             ) : data.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-20 text-center text-muted-foreground">
+                <td colSpan={opsFofColSpan} className="py-20 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-2">
                     <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
                     <span>暂无数据</span>
@@ -11952,17 +11955,7 @@ function OperationsFofUnderlyingView() {
                       </span>
                     )}
                   </td>
-                  <td className={`${cell} tabular-nums text-muted-foreground whitespace-nowrap`}>{row.beian_hao ?? "—"}</td>
-                  <td className={`${cell} tabular-nums whitespace-nowrap`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-medium">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
-                      {row.nav_estimated && row.latest_nav && (
-                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800 shrink-0">团队</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className={`${cell} tabular-nums whitespace-nowrap`}>{row.latest_nav_date ?? "—"}</td>
-                  <td className={`${cell} tabular-nums whitespace-nowrap`}><TrackPctCell value={row.latest_price_change} /></td>
+                  {fofFieldConfigSelected.map((label) => renderOpsFofFieldCell(label, row, cell))}
                   <td className={`${cell} tabular-nums whitespace-nowrap text-muted-foreground`}>{row.valuation_date ?? "—"}</td>
                   <td className={`${cell} text-right pr-4`}>
                     <div className="flex items-center justify-end gap-4">
@@ -12026,11 +12019,15 @@ function OperationsFofUnderlyingView() {
         </div>
       </div>
 
-      <DirectFieldConfigDialog
+      <ProductFieldConfigDialog
         open={showFofFieldConfig}
         selected={fofFieldConfigSelected}
         onClose={() => setShowFofFieldConfig(false)}
-        onConfirm={(fields) => { setFofFieldConfigSelected(fields); setShowFofFieldConfig(false) }}
+        onConfirm={(fields) => {
+          setFofFieldConfigSelected(fields)
+          writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.opsFof, fields)
+          setShowFofFieldConfig(false)
+        }}
       />
       <OpsAuditLogDialog open={showFofAuditLog} onClose={() => setShowFofAuditLog(false)} />
       <OpsEditElementsDialog
@@ -15295,6 +15292,8 @@ interface ManagedProductRow {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  platform_strategy_l1?: string | null
+  company_strategy_l1?: string | null
   latest_nav: string | null
   latest_nav_date: string | null
   latest_price_change: string | null
@@ -15420,7 +15419,7 @@ function OperationsManagedProductsView() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [openRowMenu, setOpenRowMenu] = useState<string | null>(null)
   const [showManagedFieldConfig, setShowManagedFieldConfig] = useState(false)
-  const [managedFieldConfigSelected, setManagedFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [managedFieldConfigSelected, setManagedFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.opsActive, OPS_MANAGED_FIELD_DEFAULT))
   const [showManagedAuditLog, setShowManagedAuditLog] = useState(false)
   const [showManagedAddMenu, setShowManagedAddMenu] = useState(false)
   const [showManagedSingleAddDialog, setShowManagedSingleAddDialog] = useState(false)
@@ -15456,10 +15455,16 @@ function OperationsManagedProductsView() {
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
   useEffect(() => {
-    fetch("/ma/api/ops/team-tags?category=fund")
-      .then((r) => r.json())
-      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
-      .catch(() => {})
+    fetchFundTeamTagOptions().then(setTeamTagOptions)
+  }, [])
+
+  useEffect(() => {
+    return subscribeTeamTagsChanged((detail) => {
+      fetchFundTeamTagOptions().then(setTeamTagOptions)
+      if (detail?.oldName && detail?.newName) {
+        setTeamTags((prev) => prev.map((t) => (t === detail.oldName ? detail.newName! : t)))
+      }
+    })
   }, [])
 
   useEffect(() => {
@@ -15547,12 +15552,42 @@ function OperationsManagedProductsView() {
     setPage(1)
   }
 
-  function ManagedSortIcon({ col }: { col: ManagedSortKey }) {
+  function ManagedSortIcon({ col }: { col: ManagedSortKey | string }) {
     if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return sortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
   }
+
+  function renderManagedFieldHeader(label: string) {
+    return (
+      <ProductFieldConfigHeader
+        key={label}
+        label={label}
+        thSort={thSort}
+        thBase={thBase}
+        sortCol={sortKey}
+        onSort={(col) => handleSort(col as ManagedSortKey)}
+        SortIcon={ManagedSortIcon}
+        rightAlign={label === "最新涨跌幅"}
+      />
+    )
+  }
+
+  function renderManagedFieldCell(label: string, row: ManagedProductRow, cell: string) {
+    return (
+      <ProductFieldConfigCell
+        key={label}
+        label={label}
+        row={row}
+        cell={cell}
+        valuationDate={row.valuation_date}
+        showTeamNavBadge={Boolean(row.latest_nav)}
+      />
+    )
+  }
+
+  const managedColSpan = 3 + managedFieldConfigSelected.length + 2
 
   function toggleAll() {
     if (selected.size === data.length && data.length > 0) setSelected(new Set())
@@ -15823,22 +15858,17 @@ function OperationsManagedProductsView() {
               </th>
               <th className={`${thBase} w-10`}>序号</th>
               <th className={`${thSort} min-w-[160px]`} onClick={() => handleSort("product_name")}>产品名称<ManagedSortIcon col="product_name" /></th>
-              <th className={`${thBase} min-w-[90px]`}>备案编码</th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>单位净值<ManagedSortIcon col="latest_nav" /></th>
-              <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>净值日期<ManagedSortIcon col="latest_nav_date" /></th>
-              <th className={`${thSort} text-right min-w-[80px]`} onClick={() => handleSort("latest_price_change")}>涨跌幅<ManagedSortIcon col="latest_price_change" /></th>
-              <th className={`${thSort} text-right min-w-[100px]`} onClick={() => handleSort("custody_balance")}>托管户余额<ManagedSortIcon col="custody_balance" /></th>
-              <th className={`${thSort} text-right min-w-[120px]`} onClick={() => handleSort("net_asset_value")}>资产净值<ManagedSortIcon col="net_asset_value" /></th>
+              {managedFieldConfigSelected.map(renderManagedFieldHeader)}
               <th className={`${thBase} min-w-[100px]`}>估值表日期</th>
               <th className={`${thBase} text-center w-20`}>操作</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={11} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
+              <tr><td colSpan={managedColSpan} className="py-20 text-center text-muted-foreground">加载中…</td></tr>
             ) : data.length === 0 ? (
               <tr>
-                <td colSpan={11} className="py-20 text-center text-muted-foreground">
+                <td colSpan={managedColSpan} className="py-20 text-center text-muted-foreground">
                   <div className="flex flex-col items-center gap-2">
                     <Inbox className="h-10 w-10 opacity-30" strokeWidth={1} />
                     <span>暂无数据</span>
@@ -15871,19 +15901,7 @@ function OperationsManagedProductsView() {
                       </span>
                     )}
                   </td>
-                  <td className={`${cell} tabular-nums text-muted-foreground`}>{row.beian_hao ?? "—"}</td>
-                  <td className={`${cell} tabular-nums`}>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-medium">{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
-                      {row.latest_nav && (
-                        <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800">团队</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                  <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
-                  <td className={`${cell} text-right tabular-nums`}>{fmtMoney(row.custody_balance)}</td>
-                  <td className={`${cell} text-right tabular-nums font-medium`}>{fmtMoney(row.net_asset_value)}</td>
+                  {managedFieldConfigSelected.map((label) => renderManagedFieldCell(label, row, cell))}
                   <td className={`${cell} tabular-nums`}>{row.valuation_date ?? "—"}</td>
                   <td className={`${cell} text-center`}>
                     <div className="flex items-center justify-center gap-4">
@@ -15956,11 +15974,15 @@ function OperationsManagedProductsView() {
         </div>
       </div>
 
-      <DirectFieldConfigDialog
+      <ProductFieldConfigDialog
         open={showManagedFieldConfig}
         selected={managedFieldConfigSelected}
         onClose={() => setShowManagedFieldConfig(false)}
-        onConfirm={(fields) => { setManagedFieldConfigSelected(fields); setShowManagedFieldConfig(false) }}
+        onConfirm={(fields) => {
+          setManagedFieldConfigSelected(fields)
+          writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.opsActive, fields)
+          setShowManagedFieldConfig(false)
+        }}
       />
       <OpsAuditLogDialog open={showManagedAuditLog} onClose={() => setShowManagedAuditLog(false)} />
       <OpsEditElementsDialog
@@ -16464,7 +16486,7 @@ function InvestmentManagedProductsView() {
   const [showInterval, setShowInterval] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [showInvFieldConfig, setShowInvFieldConfig] = useState(false)
-  const [invFieldConfigSelected, setInvFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [invFieldConfigSelected, setInvFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invActive, MANAGED_FIELD_DEFAULT))
   const [showInvAddMetric, setShowInvAddMetric] = useState(false)
   const [invAddedCols, setInvAddedCols] = useState<AddedCol[]>([])
   const [showInvTemplateMenu, setShowInvTemplateMenu] = useState(false)
@@ -16524,10 +16546,16 @@ function InvestmentManagedProductsView() {
   const invSelectedBeianCount = data.filter((r) => selected.has(r.id) && r.beian_hao).length
 
   useEffect(() => {
-    fetch("/ma/api/ops/team-tags?category=fund")
-      .then((r) => r.json())
-      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
-      .catch(() => {})
+    fetchFundTeamTagOptions().then(setTeamTagOptions)
+  }, [])
+
+  useEffect(() => {
+    return subscribeTeamTagsChanged((detail) => {
+      fetchFundTeamTagOptions().then(setTeamTagOptions)
+      if (detail?.oldName && detail?.newName) {
+        setTeamTags((prev) => prev.map((t) => (t === detail.oldName ? detail.newName! : t)))
+      }
+    })
   }, [])
 
   useEffect(() => {
@@ -16658,11 +16686,39 @@ function InvestmentManagedProductsView() {
     setPage(1)
   }
 
-  function InvSortIcon({ col }: { col: InvManagedSortKey }) {
+  function InvSortIcon({ col }: { col: InvManagedSortKey | string }) {
     if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return sortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function renderInvFieldHeader(label: string) {
+    return (
+      <ProductFieldConfigHeader
+        key={label}
+        label={label}
+        thSort={`${thSort} relative z-0 ${invStickyHeadBg}`}
+        thBase={`${thBase} relative z-0 ${invStickyHeadBg}`}
+        sortCol={sortKey}
+        onSort={(col) => handleSort(col as InvManagedSortKey)}
+        SortIcon={InvSortIcon}
+        rightAlign={label === "最新涨跌幅"}
+      />
+    )
+  }
+
+  function renderInvFieldCell(label: string, row: ManagedProductRow, cell: string) {
+    return (
+      <ProductFieldConfigCell
+        key={label}
+        label={label}
+        row={row}
+        cell={cell}
+        valuationDate={row.valuation_date}
+        showTeamNavBadge={Boolean(row.latest_nav)}
+      />
+    )
   }
 
   function toggleAll() {
@@ -16705,7 +16761,8 @@ function InvestmentManagedProductsView() {
     URL.revokeObjectURL(a.href)
   }
 
-  const colSpan = 18 + invAddedCols.length
+  const invNavTotalSplit = fieldConfigSplitAround(invFieldConfigSelected, "资产净值")
+  const colSpan = 3 + invFieldConfigSelected.length + 7 + invAddedCols.length + 3
   const invStickyHeadBg = "bg-muted dark:bg-zinc-900"
   const invStickyCellBg = "bg-background dark:bg-background"
   const invStickyHeadZ = "z-40"
@@ -17046,11 +17103,7 @@ function InvestmentManagedProductsView() {
               </th>
               <th className={`${thBase} sticky top-0 left-8 ${invStickyHeadZ} ${invStickyHeadBg} w-10 box-border`}>序号</th>
               <th className={`${thSort} min-w-[200px] max-w-[200px] sticky top-0 left-[72px] ${invStickyHeadZ} ${invStickyHeadBg} box-border border-r border-zinc-200 dark:border-zinc-700 ${invStickyLeftShadow}`} onClick={() => handleSort("product_name")}>产品名称<InvSortIcon col="product_name" /></th>
-              <th className={`${thSort} min-w-[100px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<InvSortIcon col="latest_nav_date" /></th>
-              <th className={`${thSort} min-w-[100px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("latest_nav")}>最新单位净值<InvSortIcon col="latest_nav" /></th>
-              <th className={`${thSort} text-right min-w-[88px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("latest_price_change")}>最新涨跌幅<InvSortIcon col="latest_price_change" /></th>
-              <th className={`${thSort} text-right min-w-[110px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("custody_balance")}>托管账户余额<InvSortIcon col="custody_balance" /></th>
-              <th className={`${thSort} text-right min-w-[120px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("net_asset_value")}>资产净值<InvSortIcon col="net_asset_value" /></th>
+              {invFieldConfigSelected.map(renderInvFieldHeader)}
               <th className={`${thSort} text-right min-w-[88px] relative z-0 ${invStickyHeadBg}`} onClick={() => handleSort("ret_1w")}>
                 <div>近一周收益<InvSortIcon col="ret_1w" /></div>
                 {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 7)}</div>}
@@ -17130,23 +17183,7 @@ function InvestmentManagedProductsView() {
                           </div>
                         )}
                       </td>
-                      <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                      <td className={`${cell} tabular-nums font-medium`}>
-                        <div className="flex items-center gap-1.5">
-                          <span>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
-                          {row.latest_nav && (
-                            <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800 shrink-0">团队</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
-                      <td className={`${cell} text-right tabular-nums`}>
-                        <div>{fmtMoney(row.custody_balance)}</div>
-                        {row.valuation_date && row.custody_balance && (
-                          <div className="text-[10px] text-zinc-400 mt-0.5">{row.valuation_date}</div>
-                        )}
-                      </td>
-                      <td className={`${cell} text-right tabular-nums font-medium`}>{fmtMoney(row.net_asset_value)}</td>
+                      {invFieldConfigSelected.map((label) => renderInvFieldCell(label, row, cell))}
                       <td className={`${cell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w ?? null} />
                         {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 7)}</div>}
@@ -17220,8 +17257,11 @@ function InvestmentManagedProductsView() {
                   <td className={`border-b px-2 py-2 sticky left-0 ${invStickyBodyZ} bg-muted w-8 box-border`} />
                   <td className={`border-b px-2 py-2 sticky left-8 ${invStickyBodyZ} bg-muted w-10 box-border`} />
                   <td className={`border-b px-3 py-2 text-zinc-600 sticky left-[72px] ${invStickyBodyZ} bg-muted border-r border-zinc-200 dark:border-zinc-700 ${invStickyLeftShadow}`}>合计</td>
-                  <td className="border-b px-3 py-2 bg-muted" colSpan={4} />
-                  <td className="border-b px-3 py-2 text-right tabular-nums bg-muted">{fmtMoney(totalNetAssetValue)}</td>
+                  {invNavTotalSplit.before > 0 && <td className="border-b px-3 py-2 bg-muted" colSpan={invNavTotalSplit.before} />}
+                  {invNavTotalSplit.hasTotal && (
+                    <td className="border-b px-3 py-2 text-right tabular-nums bg-muted">{fmtMoney(totalNetAssetValue)}</td>
+                  )}
+                  {invNavTotalSplit.after > 0 && <td className="border-b px-3 py-2 bg-muted" colSpan={invNavTotalSplit.after} />}
                   <td className="border-b px-3 py-2 bg-muted" colSpan={7} />
                   {invAddedCols.map((col) => (
                     <td key={col.id} className="border-b px-3 py-2 bg-muted" />
@@ -17407,6 +17447,7 @@ function InvestmentManagedProductsView() {
                       body: JSON.stringify({ beian_hao: invTagBeianHao, tags: invTagSelected }),
                     })
                     setShowInvTagDialog(false)
+                    setInvDataReloadKey((k) => k + 1)
                   } finally {
                     setInvTagSaving(false)
                   }
@@ -17734,11 +17775,15 @@ function InvestmentManagedProductsView() {
         </div>
       )}
 
-      <DirectFieldConfigDialog
+      <ProductFieldConfigDialog
         open={showInvFieldConfig}
         selected={invFieldConfigSelected}
         onClose={() => setShowInvFieldConfig(false)}
-        onConfirm={(fields) => { setInvFieldConfigSelected(fields); setShowInvFieldConfig(false) }}
+        onConfirm={(fields) => {
+          setInvFieldConfigSelected(fields)
+          writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invActive, fields)
+          setShowInvFieldConfig(false)
+        }}
       />
 
       {showInvAddMetric && (
@@ -17853,7 +17898,7 @@ function InvestmentFofOverviewView() {
   const [favoritesOnly, setFavoritesOnly] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
   const [showFofFieldConfig, setShowFofFieldConfig] = useState(false)
-  const [fofFieldConfigSelected, setFofFieldConfigSelected] = useState<string[]>([...DIRECT_FIELD_CONFIG_DEFAULT])
+  const [fofFieldConfigSelected, setFofFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invFof, FOF_FIELD_DEFAULT))
   const [showFofAddMetric, setShowFofAddMetric] = useState(false)
   const [fofAddedCols, setFofAddedCols] = useState<AddedCol[]>([])
   const [showFofTemplateMenu, setShowFofTemplateMenu] = useState(false)
@@ -17885,6 +17930,7 @@ function InvestmentFofOverviewView() {
   const [fofTagSelected, setFofTagSelected] = useState<string[]>([])
   const [fofTagTeamTags, setFofTagTeamTags] = useState<string[]>([])
   const [fofTagSaving, setFofTagSaving] = useState(false)
+  const [fofOverviewReloadKey, setFofOverviewReloadKey] = useState(0)
   const [showFofStrategyDialog, setShowFofStrategyDialog] = useState(false)
   const [fofStrategyBeianHao, setFofStrategyBeianHao] = useState<string | null>(null)
   const [fofStrategyName, setFofStrategyName] = useState("")
@@ -18047,10 +18093,16 @@ function InvestmentFofOverviewView() {
   }
 
   useEffect(() => {
-    fetch("/ma/api/ops/team-tags?category=fund")
-      .then((r) => r.json())
-      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
-      .catch(() => {})
+    fetchFundTeamTagOptions().then(setTeamTagOptions)
+  }, [])
+
+  useEffect(() => {
+    return subscribeTeamTagsChanged((detail) => {
+      fetchFundTeamTagOptions().then(setTeamTagOptions)
+      if (detail?.oldName && detail?.newName) {
+        setTeamTags((prev) => prev.map((t) => (t === detail.oldName ? detail.newName! : t)))
+      }
+    })
   }, [])
 
   useEffect(() => {
@@ -18108,7 +18160,7 @@ function InvestmentFofOverviewView() {
         setSelected(new Set())
       })
       .finally(() => setLoading(false))
-  }, [viewTab, page, pageSize, fundClass, strategySource, strategyL1, teamTagMode, teamTags, holdingStatus, keyword, sortKey, sortDir, cutoffDate, fofFundSelected?.register_number, favoritesOnly, fofFavorites])
+  }, [viewTab, page, pageSize, fundClass, strategySource, strategyL1, teamTagMode, teamTags, holdingStatus, keyword, sortKey, sortDir, cutoffDate, fofFundSelected?.register_number, favoritesOnly, fofFavorites, fofOverviewReloadKey])
 
   useEffect(() => {
     if (viewTab !== "detail") return
@@ -18174,11 +18226,38 @@ function InvestmentFofOverviewView() {
     setPage(1)
   }
 
-  function FofOverviewSortIcon({ col }: { col: FofOverviewSortKey }) {
+  function FofOverviewSortIcon({ col }: { col: FofOverviewSortKey | string }) {
     if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return sortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function renderInvFofFieldHeader(label: string) {
+    return (
+      <ProductFieldConfigHeader
+        key={label}
+        label={label}
+        thSort={fofScrollHeadSort}
+        thBase={fofScrollHead}
+        sortCol={sortKey}
+        onSort={(col) => handleSort(col as FofOverviewSortKey)}
+        SortIcon={FofOverviewSortIcon}
+        rightAlign={label === "最新涨跌幅" || label === "市值"}
+      />
+    )
+  }
+
+  function renderInvFofFieldCell(label: string, row: FofOverviewRow, scrollCell: string) {
+    return (
+      <ProductFieldConfigCell
+        key={label}
+        label={label}
+        row={row}
+        cell={scrollCell}
+        showTeamNavBadge={Boolean(row.latest_nav)}
+      />
+    )
   }
 
   function FofDetailSortIcon({ col }: { col: FofDetailSortKey }) {
@@ -18250,7 +18329,9 @@ function InvestmentFofOverviewView() {
     URL.revokeObjectURL(a.href)
   }
 
-  const colSpan = 17 + fofAddedCols.length
+  const fofMvTotalSplit = fieldConfigSplitAround(fofFieldConfigSelected, "市值")
+  const colSpan = 3 + fofFieldConfigSelected.length + 7 + fofAddedCols.length + 3
+  const fofScrollMinW = 1900 + fofFieldConfigSelected.length * 100 + fofAddedCols.length * 96
   const detailColSpan = 18 + fofAddedCols.length
   const fofStickyHeadBg = "bg-muted dark:bg-zinc-900"
   const fofStickyCellBg = "bg-background dark:bg-background"
@@ -18272,7 +18353,6 @@ function InvestmentFofOverviewView() {
     minWidth: width,
     maxWidth: width,
   })
-  const fofScrollMinW = 2500 + fofAddedCols.length * 96
   const fofDetailStickyChkW = 32
   const fofDetailStickySeqW = 40
   const fofDetailStickyFofW = 160
@@ -18754,10 +18834,7 @@ function InvestmentFofOverviewView() {
               >
                 产品名称<FofOverviewSortIcon col="product_name" />
               </th>
-              <th className={`${fofScrollHeadSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<FofOverviewSortIcon col="latest_nav_date" /></th>
-              <th className={`${fofScrollHeadSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>最新单位净值<FofOverviewSortIcon col="latest_nav" /></th>
-              <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("latest_price_change")}>最新涨跌幅<FofOverviewSortIcon col="latest_price_change" /></th>
-              <th className={`${fofScrollHeadSort} text-right min-w-[120px]`} onClick={() => handleSort("market_value")}>市值<FofOverviewSortIcon col="market_value" /></th>
+              {fofFieldConfigSelected.map(renderInvFofFieldHeader)}
               <th className={`${fofScrollHeadSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
                 <div>近一周收益<FofOverviewSortIcon col="ret_1w" /></div>
                 {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 7)}</div>}
@@ -18849,17 +18926,7 @@ function InvestmentFofOverviewView() {
                           </div>
                         )}
                       </td>
-                      <td className={`${scrollCell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                      <td className={`${scrollCell} tabular-nums font-medium`}>
-                        <div className="flex items-center gap-1.5">
-                          <span>{row.latest_nav ? parseFloat(row.latest_nav).toFixed(4) : "—"}</span>
-                          {row.latest_nav && (
-                            <span className="inline-block px-1 py-0.5 rounded text-[10px] bg-orange-100 text-orange-700 border border-orange-200 dark:bg-orange-950/40 dark:text-orange-400 dark:border-orange-800 shrink-0">团队</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className={`${scrollCell} text-right tabular-nums`}><TrackPctCell value={row.latest_price_change} /></td>
-                      <td className={`${scrollCell} text-right tabular-nums font-medium`}>{fmtMoney(row.market_value)}</td>
+                      {fofFieldConfigSelected.map((label) => renderInvFofFieldCell(label, row, scrollCell))}
                       <td className={`${scrollCell} text-right tabular-nums`}>
                         <TrackPctCell value={row.ret_1w ?? null} />
                         {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(cutoffDate, 7)}</div>}
@@ -18957,8 +19024,11 @@ function InvestmentFofOverviewView() {
                   >
                     合计
                   </td>
-                  <td className="border-b px-3 py-2 bg-muted" colSpan={3} />
-                  <td className="border-b px-3 py-2 text-right tabular-nums bg-muted">{fmtMoney(totalMarketValue)}</td>
+                  {fofMvTotalSplit.before > 0 && <td className="border-b px-3 py-2 bg-muted" colSpan={fofMvTotalSplit.before} />}
+                  {fofMvTotalSplit.hasTotal && (
+                    <td className="border-b px-3 py-2 text-right tabular-nums bg-muted">{fmtMoney(totalMarketValue)}</td>
+                  )}
+                  {fofMvTotalSplit.after > 0 && <td className="border-b px-3 py-2 bg-muted" colSpan={fofMvTotalSplit.after} />}
                   <td className="border-b px-3 py-2 bg-muted" colSpan={7 + fofAddedCols.length} />
                   <td style={fofStickyRightColStyle(fofStickyRight.trend)} className={`border-b py-2 sticky ${fofStickyBodyZ} bg-muted border-l border-zinc-200 dark:border-zinc-700 ${fofStickyRightShadow}`} />
                   <td style={fofStickyRightColStyle(fofStickyRight.docs)} className={`border-b py-2 sticky ${fofStickyBodyZ} bg-muted`} />
@@ -19352,6 +19422,7 @@ function InvestmentFofOverviewView() {
                       body: JSON.stringify({ beian_hao: fofTagBeianHao, tags: fofTagSelected }),
                     })
                     setShowFofTagDialog(false)
+                    setFofOverviewReloadKey((k) => k + 1)
                   } finally {
                     setFofTagSaving(false)
                   }
@@ -19501,11 +19572,15 @@ function InvestmentFofOverviewView() {
         </div>
       )}
 
-      <DirectFieldConfigDialog
+      <ProductFieldConfigDialog
         open={showFofFieldConfig}
         selected={fofFieldConfigSelected}
         onClose={() => setShowFofFieldConfig(false)}
-        onConfirm={(fields) => { setFofFieldConfigSelected(fields); setShowFofFieldConfig(false) }}
+        onConfirm={(fields) => {
+          setFofFieldConfigSelected(fields)
+          writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invFof, fields)
+          setShowFofFieldConfig(false)
+        }}
       />
 
       {showFofAddMetric && (
@@ -19655,10 +19730,16 @@ function InvestmentTrackingManagersView() {
   })
 
   useEffect(() => {
-    fetch("/ma/api/ops/team-tags?category=fund")
-      .then((r) => r.json())
-      .then((d) => { if (Array.isArray(d)) setTeamTagOptions(d.map((t: { name: string }) => t.name)) })
-      .catch(() => {})
+    fetchFundTeamTagOptions().then(setTeamTagOptions)
+  }, [])
+
+  useEffect(() => {
+    return subscribeTeamTagsChanged((detail) => {
+      fetchFundTeamTagOptions().then(setTeamTagOptions)
+      if (detail?.oldName && detail?.newName) {
+        setTeamTags((prev) => prev.map((t) => (t === detail.oldName ? detail.newName! : t)))
+      }
+    })
   }, [])
 
   useEffect(() => { setMgrMounted(true) }, [])
@@ -23027,12 +23108,15 @@ export default function PrivateFundsPage() {
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-compare") && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct") && activeSideItem === "inv-direct" && <InvestmentDirectProductsView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct-portfolio") && activeSideItem === "inv-direct-portfolio" && <InvestmentDirectPortfoliosView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-calendar") && activeSideItem === "inv-dd-calendar" && <DueDiligenceCalendarView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-report") && activeSideItem === "inv-dd-report" && <DueDiligenceReportView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-notes") && activeSideItem === "inv-dd-notes" && <InvestmentNotesView />}
           {activeTab === "investment" && !isAllowedInvestmentSideItem(currentUser, activeSideItem) && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               无权限访问该页面
             </div>
           )}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && (
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && activeSideItem !== "inv-dd-calendar" && activeSideItem !== "inv-dd-report" && activeSideItem !== "inv-dd-notes" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

@@ -4,7 +4,7 @@
  */
 
 import { query } from "@/lib/db"
-import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
+import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   collectFundNameAliases,
   emailNavSourceTier,
@@ -77,6 +77,9 @@ export const RETURN_OFFSETS = [
   { key: "ret_6m" as const, days: 180 },
   { key: "ret_1y" as const, days: 365 },
 ]
+
+/** History window for batch preload — must cover 1y returns from each fund's latest NAV. */
+export const NAV_HISTORY_LOOKBACK_DAYS = 400
 
 export function fmtDate(d: string | Date | null): string | null {
   if (!d) return null
@@ -462,6 +465,151 @@ async function loadType6NavBatch(
   return { byBeian, byProduct }
 }
 
+type LatestNavDateHints = {
+  byBeian: Map<string, string>
+  byProduct: Map<string, string>
+}
+
+/** Cheap MAX(price_date) probes — used to detect funds whose latest NAV is outside the default window. */
+async function loadLatestNavDateHints(
+  beians: string[],
+  names: string[],
+): Promise<LatestNavDateHints> {
+  const byBeian = new Map<string, string>()
+  const byProduct = new Map<string, string>()
+  if (beians.length === 0 && names.length === 0) return { byBeian, byProduct }
+
+  const mergeLatest = (map: Map<string, string>, key: string, date: string) => {
+    const prev = map.get(key)
+    if (!prev || date > prev) map.set(key, date)
+  }
+
+  const [beianRows, productRows] = await Promise.all([
+    beians.length > 0
+      ? query<{ beian_hao: string; latest_date: string }>(
+          `SELECT beian_hao, MAX(price_date)::text AS latest_date
+           FROM (
+             SELECT NULLIF(BTRIM(beian_hao), '') AS beian_hao, price_date
+             FROM private_fund_nav_group WHERE beian_hao = ANY($1)
+             UNION ALL
+             SELECT NULLIF(BTRIM(beian_hao), ''), price_date
+             FROM private_fund_nav_group_hy WHERE beian_hao = ANY($1)
+             UNION ALL
+             SELECT NULLIF(BTRIM(beian_hao), ''), price_date
+             FROM private_fund_nav WHERE beian_hao = ANY($1)
+             UNION ALL
+             SELECT NULLIF(BTRIM(beian_hao), ''), price_date
+             FROM private_fund_nav_group_type6 WHERE beian_hao = ANY($1)
+           ) u
+           WHERE beian_hao IS NOT NULL
+           GROUP BY beian_hao`,
+          [beians],
+        )
+      : Promise.resolve([]),
+    names.length > 0
+      ? query<{ product_name: string; latest_date: string }>(
+          `SELECT product_name, MAX(price_date)::text AS latest_date
+           FROM (
+             SELECT product_name, price_date FROM private_fund_nav_group WHERE product_name = ANY($1)
+             UNION ALL
+             SELECT product_name, price_date FROM private_fund_nav_group_hy WHERE product_name = ANY($1)
+             UNION ALL
+             SELECT product_name, price_date FROM private_fund_nav WHERE product_name = ANY($1)
+             UNION ALL
+             SELECT product_name, price_date FROM private_fund_nav_group_type6 WHERE product_name = ANY($1)
+           ) u
+           WHERE product_name IS NOT NULL
+           GROUP BY product_name`,
+          [names],
+        )
+      : Promise.resolve([]),
+  ])
+
+  for (const row of beianRows) {
+    mergeLatest(byBeian, row.beian_hao, row.latest_date.slice(0, 10))
+  }
+  for (const row of productRows) {
+    mergeLatest(byProduct, row.product_name, row.latest_date.slice(0, 10))
+  }
+
+  if (beians.length > 0) {
+    const emailRows = await query<{ code: string; latest_date: string }>(
+      `SELECT BTRIM(product_code) AS code, MAX(nav_date)::text AS latest_date
+       FROM ops_email_nav_records
+       WHERE BTRIM(product_code) = ANY($1) AND nav IS NOT NULL
+       GROUP BY BTRIM(product_code)`,
+      [beians],
+    )
+    for (const row of emailRows) {
+      mergeLatest(byBeian, row.code, row.latest_date.slice(0, 10))
+    }
+  }
+
+  return { byBeian, byProduct }
+}
+
+function latestNavDateForIdentity(
+  identity: ProductNavIdentity,
+  hints: LatestNavDateHints,
+): string | null {
+  const beian = (identity.beian_hao ?? "").trim()
+  const short = (identity.short_name ?? "").trim()
+  return (
+    (beian ? hints.byBeian.get(beian) : undefined) ??
+    hints.byProduct.get(identity.product_name) ??
+    (short ? hints.byProduct.get(short) : undefined) ??
+    null
+  )
+}
+
+function collectStaleNavKeys(
+  products: ProductNavIdentity[],
+  hints: LatestNavDateHints,
+  defaultSince: string,
+): { staleBeians: string[]; staleNames: string[]; staleSince: string | null } {
+  const staleBeianSet = new Set<string>()
+  const staleNameSet = new Set<string>()
+  let staleSince: string | null = null
+
+  for (const product of products) {
+    const latest = latestNavDateForIdentity(product, hints)
+    if (!latest || latest >= defaultSince) continue
+
+    const needSince = addDays(latest, NAV_HISTORY_LOOKBACK_DAYS)
+    if (staleSince == null || needSince < staleSince) staleSince = needSince
+
+    const beian = (product.beian_hao ?? "").trim()
+    const short = (product.short_name ?? "").trim()
+    if (beian) staleBeianSet.add(beian)
+    staleNameSet.add(product.product_name)
+    if (short) staleNameSet.add(short)
+  }
+
+  return {
+    staleBeians: [...staleBeianSet],
+    staleNames: [...staleNameSet],
+    staleSince,
+  }
+}
+
+function mergeNavPointMaps(target: Map<string, NavPoint[]>, source: Map<string, NavPoint[]>): void {
+  for (const [key, points] of source) {
+    const existing = target.get(key)
+    if (!existing) {
+      target.set(key, points)
+      continue
+    }
+    const byDate = new Map(existing.map((p) => [p.nav_date, p]))
+    for (const p of points) byDate.set(p.nav_date, p)
+    target.set(
+      key,
+      [...byDate.entries()]
+        .sort(([a], [b]) => b.localeCompare(a))
+        .map(([, p]) => p),
+    )
+  }
+}
+
 export function computeOneYearRiskMetrics(
   navDate: string | null,
   history: NavPoint[],
@@ -486,9 +634,11 @@ export function computeOneYearRiskMetrics(
   const metrics = computeFundNavMetrics({ dates, values })
   if (!metrics) return { sharpe_1y: null, calmar_1y: null }
 
+  const sharpe = Number.isFinite(metrics.sharpe) ? Math.round(metrics.sharpe * 10000) / 10000 : null
+  const calmar = Number.isFinite(metrics.calmar) ? Math.round(metrics.calmar * 10000) / 10000 : null
   return {
-    sharpe_1y: Number.isFinite(metrics.sharpe) ? Math.round(metrics.sharpe * 10000) / 10000 : null,
-    calmar_1y: Number.isFinite(metrics.calmar) ? Math.round(metrics.calmar * 10000) / 10000 : null,
+    sharpe_1y: isPlausibleRiskRatio(sharpe) ? sharpe : null,
+    calmar_1y: isPlausibleRiskRatio(calmar) ? calmar : null,
   }
 }
 
@@ -523,7 +673,6 @@ export class BatchNavResolver {
   }
 
   static async create(products: ProductNavIdentity[], asOfDate: string): Promise<BatchNavResolver> {
-    const sinceDate = addDays(asOfDate, 400)
     const names = [
       ...new Set(
         products.flatMap((p) => [p.product_name, (p.short_name ?? "").trim()].filter(Boolean)),
@@ -538,6 +687,10 @@ export class BatchNavResolver {
         ],
       ),
     ]
+
+    const hints = await loadLatestNavDateHints(beians, names)
+    const defaultSince = addDays(asOfDate, NAV_HISTORY_LOOKBACK_DAYS)
+    const { staleBeians, staleNames, staleSince } = collectStaleNavKeys(products, hints, defaultSince)
 
     const seedByBeian = new Map<string, NavPoint[]>()
     const seedLatestByBeian = new Map<string, string>()
@@ -561,11 +714,26 @@ export class BatchNavResolver {
     }
 
     const [emailByBeian, emailByName, type6, legacy] = await Promise.all([
-      loadEmailNavBatch(beians, sinceDate),
-      loadEmailNavByNameBatch(names, sinceDate),
-      loadType6NavBatch(beians, names, sinceDate),
-      loadLegacyNavBatch(beians, names, sinceDate),
+      loadEmailNavBatch(beians, defaultSince),
+      loadEmailNavByNameBatch(names, defaultSince),
+      loadType6NavBatch(beians, names, defaultSince),
+      loadLegacyNavBatch(beians, names, defaultSince),
     ])
+
+    if (staleSince && (staleBeians.length > 0 || staleNames.length > 0)) {
+      const [staleEmail, staleEmailName, staleType6, staleLegacy] = await Promise.all([
+        loadEmailNavBatch(staleBeians, staleSince),
+        loadEmailNavByNameBatch(staleNames, staleSince),
+        loadType6NavBatch(staleBeians, staleNames, staleSince),
+        loadLegacyNavBatch(staleBeians, staleNames, staleSince),
+      ])
+      mergeNavPointMaps(emailByBeian, staleEmail)
+      mergeNavPointMaps(emailByName, staleEmailName)
+      mergeNavPointMaps(type6.byBeian, staleType6.byBeian)
+      mergeNavPointMaps(type6.byProduct, staleType6.byProduct)
+      mergeNavPointMaps(legacy.byBeian, staleLegacy.byBeian)
+      mergeNavPointMaps(legacy.byProduct, staleLegacy.byProduct)
+    }
 
     return new BatchNavResolver(
       emailByBeian,
@@ -647,7 +815,7 @@ export class BatchNavResolver {
 
   /** Return vs the immediately previous NAV point (same semantics as email-nav en_prev). */
   resolvePreviousNav(identity: ProductNavIdentity, navDate: string): NavPoint | null {
-    const history = this.mergedHistory(identity, addDays(navDate, 400))
+    const history = this.mergedHistory(identity, addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS))
     for (let i = history.length - 1; i >= 0; i--) {
       if (history[i].nav_date < navDate) return history[i]
     }
@@ -678,6 +846,19 @@ export class BatchNavResolver {
   }
 
   mergedHistory(identity: ProductNavIdentity, sinceDate: string): NavPoint[] {
+    return this.buildMergedHistory(identity, sinceDate, "display")
+  }
+
+  /** Risk metrics: type6/legacy override email on same dates so drawdowns are preserved. */
+  mergedHistoryForRiskMetrics(identity: ProductNavIdentity, sinceDate: string): NavPoint[] {
+    return this.buildMergedHistory(identity, sinceDate, "risk")
+  }
+
+  private buildMergedHistory(
+    identity: ProductNavIdentity,
+    sinceDate: string,
+    mode: "display" | "risk",
+  ): NavPoint[] {
     const beian = (identity.beian_hao ?? "").trim()
     const short = (identity.short_name ?? "").trim()
     const byDate = new Map<string, NavPoint>()
@@ -687,49 +868,44 @@ export class BatchNavResolver {
       ?? (beian ? lookupManagedProductOverride(beian) : null)
     const seedLatest = override ? this.seedLatestByBeian.get(override.beian_hao) : undefined
 
-    for (const p of this.legacyByBeian.get(beian) ?? []) {
-      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
-    }
-    for (const p of this.legacyByProduct.get(identity.product_name) ?? []) {
-      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
-    }
-    if (short) {
-      for (const p of this.legacyByProduct.get(short) ?? []) {
-        if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+    const apply = (points: NavPoint[] | undefined, opts?: { email?: boolean }) => {
+      for (const p of points ?? []) {
+        if (p.nav_date < sinceDate) continue
+        if (!isPlausibleEmailUnitNav(p.nav)) continue
+        if (opts?.email && seedLatest && p.nav_date <= seedLatest) continue
+        byDate.set(p.nav_date, p)
       }
     }
-    for (const p of this.type6ByBeian.get(beian) ?? []) {
-      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+
+    const legacyLayers = () => {
+      apply(this.legacyByBeian.get(beian))
+      apply(this.legacyByProduct.get(identity.product_name))
+      if (short) apply(this.legacyByProduct.get(short))
     }
-    for (const p of this.type6ByProduct.get(identity.product_name) ?? []) {
-      if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
+    const type6Layers = () => {
+      apply(this.type6ByBeian.get(beian))
+      apply(this.type6ByProduct.get(identity.product_name))
+      if (short) apply(this.type6ByProduct.get(short))
     }
-    if (short) {
-      for (const p of this.type6ByProduct.get(short) ?? []) {
-        if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
-      }
+    const emailLayers = () => {
+      apply(this.emailByBeian.get(beian), { email: true })
+      apply(this.emailByName.get(identity.product_name), { email: true })
+      if (short) apply(this.emailByName.get(short), { email: true })
     }
-    for (const p of this.emailByBeian.get(beian) ?? []) {
-      if (p.nav_date >= sinceDate) {
-        if (!seedLatest || p.nav_date > seedLatest) byDate.set(p.nav_date, p)
-      }
+    const seedLayer = () => {
+      if (override) apply(this.seedByBeian.get(override.beian_hao))
     }
-    for (const p of this.emailByName.get(identity.product_name) ?? []) {
-      if (p.nav_date >= sinceDate) {
-        if (!seedLatest || p.nav_date > seedLatest) byDate.set(p.nav_date, p)
-      }
-    }
-    if (short) {
-      for (const p of this.emailByName.get(short) ?? []) {
-        if (p.nav_date >= sinceDate) {
-          if (!seedLatest || p.nav_date > seedLatest) byDate.set(p.nav_date, p)
-        }
-      }
-    }
-    if (override) {
-      for (const p of this.seedByBeian.get(override.beian_hao) ?? []) {
-        if (p.nav_date >= sinceDate) byDate.set(p.nav_date, p)
-      }
+
+    if (mode === "display") {
+      legacyLayers()
+      type6Layers()
+      emailLayers()
+      seedLayer()
+    } else {
+      emailLayers()
+      legacyLayers()
+      type6Layers()
+      seedLayer()
     }
 
     return [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, p]) => p)
@@ -798,12 +974,85 @@ export async function loadPrivateFundRiskMetrics(
     [codes],
   )
   for (const row of rows) {
+    const sharpe = row.sharpe_1y != null ? parseFloat(row.sharpe_1y) : null
+    const calmar = row.calmar_1y != null ? parseFloat(row.calmar_1y) : null
     out.set(row.beian_hao, {
-      sharpe_1y: row.sharpe_1y != null ? parseFloat(row.sharpe_1y) : null,
-      calmar_1y: row.calmar_1y != null ? parseFloat(row.calmar_1y) : null,
+      sharpe_1y: isPlausibleRiskRatio(sharpe) ? sharpe : null,
+      calmar_1y: isPlausibleRiskRatio(calmar) ? calmar : null,
     })
   }
   return out
+}
+
+export type TrackFundMetricsFields = {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  latest_nav: string | null
+  latest_nav_date: string | null
+  latest_price_change: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
+}
+
+/** Fill NAV / return metrics for list rows whose cache entry is empty (stale platform NAV). */
+export async function enrichTrackFundMetricsRows<T extends TrackFundMetricsFields>(
+  rows: T[],
+  asOfDate: string,
+): Promise<T[]> {
+  const needs = rows.filter((row) => !row.latest_nav)
+  if (needs.length === 0) return rows
+
+  const identities = needs.map((row) => ({
+    beian_hao: row.beian_hao,
+    product_name: row.product_name,
+    short_name: row.short_name,
+  }))
+  const resolver = await BatchNavResolver.create(identities, asOfDate)
+  const patches = new Map<string, Partial<T>>()
+
+  for (const row of needs) {
+    const identity = {
+      beian_hao: row.beian_hao,
+      product_name: row.product_name,
+      short_name: row.short_name,
+    }
+    const latest = resolver.resolveAt(identity, asOfDate)
+    if (!latest) continue
+
+    const returnPct = resolver.calcDailyReturnPct(identity, latest.nav, latest.nav_date, null)
+    const returns = resolver.calcPeriodReturns(identity, latest.nav, latest.nav_date)
+    const risk = computeOneYearRiskMetrics(
+      latest.nav_date,
+      resolver.mergedHistoryForRiskMetrics(
+        identity,
+        addDays(latest.nav_date, NAV_HISTORY_LOOKBACK_DAYS),
+      ),
+    )
+
+    patches.set(row.beian_hao, {
+      latest_nav: String(latest.nav),
+      latest_nav_date: latest.nav_date,
+      latest_price_change: returnPct != null ? String(returnPct) : null,
+      ret_1w: returns.ret_1w != null ? String(returns.ret_1w) : null,
+      ret_1m: returns.ret_1m != null ? String(returns.ret_1m) : null,
+      ret_3m: returns.ret_3m != null ? String(returns.ret_3m) : null,
+      ret_6m: returns.ret_6m != null ? String(returns.ret_6m) : null,
+      ret_1y: returns.ret_1y != null ? String(returns.ret_1y) : null,
+      sharpe_1y: risk.sharpe_1y != null ? String(risk.sharpe_1y) : null,
+      calmar_1y: risk.calmar_1y != null ? String(risk.calmar_1y) : null,
+    } as Partial<T>)
+  }
+
+  return rows.map((row) => {
+    const patch = patches.get(row.beian_hao)
+    return patch ? { ...row, ...patch } : row
+  })
 }
 
 /** Chunked INSERT to stay within Postgres parameter limits. */

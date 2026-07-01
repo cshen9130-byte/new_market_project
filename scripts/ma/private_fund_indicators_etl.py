@@ -95,6 +95,14 @@ SQRT_252       = math.sqrt(252)
 MIN_POINTS     = 20          # minimum NAV observations for Sharpe / Calmar
 LOOKBACK_DAYS  = 400         # load 400 days of history (>365 + buffer for weekends)
 BATCH_SIZE     = 1_000       # rows per UPDATE batch
+MIN_CALMAR_DRAWDOWN = 1e-4   # below ~0.01% drawdown, Calmar is numerically unstable
+MAX_PLAUSIBLE_RATIO = 50.0   # cap absurd Sharpe / Calmar from bad inputs
+
+
+def _plausible_ratio(value: float | None) -> float | None:
+    if value is None or not math.isfinite(value):
+        return None
+    return value if abs(value) <= MAX_PLAUSIBLE_RATIO else None
 
 # ── DB connection ─────────────────────────────────────────────────────────────
 
@@ -177,15 +185,15 @@ def compute_fund_metrics(
             ann_vol = float(daily_rets.std()) * math.sqrt(periods_p_yr)
             if ann_vol > 0:
                 ann_ret    = ret_1y / 100.0
-                sharpe_1y  = round((ann_ret - RISK_FREE_RATE) / ann_vol, 4)
+                sharpe_1y  = _plausible_ratio(round((ann_ret - RISK_FREE_RATE) / ann_vol, 4))
 
             # Max drawdown
             rolling_max = np.maximum.accumulate(nav_arr)
             drawdowns   = (rolling_max - nav_arr) / rolling_max
             max_dd      = float(drawdowns.max())
-            if max_dd > 0:
+            if max_dd >= MIN_CALMAR_DRAWDOWN:
                 ann_ret   = ret_1y / 100.0
-                calmar_1y = round(ann_ret / max_dd, 4)
+                calmar_1y = _plausible_ratio(round(ann_ret / max_dd, 4))
 
     return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y, latest_nav, ref_date)
 

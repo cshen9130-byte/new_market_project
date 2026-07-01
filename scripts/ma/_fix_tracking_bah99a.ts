@@ -2,10 +2,7 @@
  * Targeted fix: update BAH99A row in ops_tracking_funds_list_cache
  * using the correct email NAV (same logic the FOF cache already verified).
  *
- * The full refreshTrackingFundsListCache() times out (6163 funds × ILIKE scan).
- * The email selection logic is already correct (isPlausibleEmailUnitNav /
- * preferEmailNavRow reject the 6273466.11 share-count row). Only the cache
- * row is stale — same root cause as the FOF overview list fix (see docs).
+ * Also recomputes sharpe/calmar from type6 history (email must not erase drawdowns).
  */
 import { loadProjectEnvFiles } from "@/lib/server/load-project-env"
 loadProjectEnvFiles()
@@ -37,15 +34,15 @@ function addDays(dateStr: string, days: number): string {
 
 async function main() {
   const { query } = await import("@/lib/db")
+  const { computeOneYearRiskMetrics } = await import("@/lib/server/list-cache-nav-batch")
 
   console.log("BEFORE:", (await query(
-    `SELECT unit_nav::text, nav_date::text, return_pct::text, ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text
+    `SELECT unit_nav::text, nav_date::text, return_pct::text, ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text, sharpe_1y::text, calmar_1y::text
      FROM ops_tracking_funds_list_cache WHERE beian_hao = 'BAH99A'`,
   ))[0] ?? "(none)")
 
-  // Latest correct nav (product_code exact match, plausible range)
-  const latestRows = await query<{ nav_date: string; nav: string; cumulative_nav: string | null }>(
-    `SELECT nav_date::text, nav::text, cumulative_nav::text
+  const latestRows = await query<{ nav_date: string; nav: string }>(
+    `SELECT nav_date::text, nav::text
      FROM ops_email_nav_records
      WHERE BTRIM(product_code) = 'BAH99A'
        AND nav IS NOT NULL
@@ -57,7 +54,6 @@ async function main() {
   const latestDate = latestRows[0].nav_date.slice(0, 10)
   const latestNav = parseFloat(latestRows[0].nav)
 
-  // Compute period returns
   const prevDay     = await navAtOrBefore(query, addDays(latestDate, -1))
   const prev7d      = await navAtOrBefore(query, addDays(latestDate, -7))
   const prev30d     = await navAtOrBefore(query, addDays(latestDate, -30))
@@ -74,13 +70,18 @@ async function main() {
   const ret6m     = ret(prev180d)
   const ret1y     = ret(prev365d)
 
-  console.log(`Latest: ${latestDate} unit_nav=${latestNav}`)
-  console.log(`  prev_day=${prevDay}  return_pct=${returnPct?.toFixed(6)}`)
-  console.log(`  prev_7d=${prev7d}   ret_1w=${ret1w?.toFixed(6)}`)
-  console.log(`  prev_30d=${prev30d}  ret_1m=${ret1m?.toFixed(6)}`)
-  console.log(`  prev_90d=${prev90d}  ret_3m=${ret3m?.toFixed(6)}`)
-  console.log(`  prev_180d=${prev180d} ret_6m=${ret6m?.toFixed(6)}`)
-  console.log(`  prev_365d=${prev365d} ret_1y=${ret1y?.toFixed(6)}`)
+  const type6 = await query<{ nav_date: string; nav: string }>(
+    `SELECT price_date::text AS nav_date, nav::text
+     FROM private_fund_nav_group_type6
+     WHERE beian_hao = 'BAH99A'
+       AND nav IS NOT NULL AND nav::numeric BETWEEN 0.1 AND 50
+     ORDER BY price_date ASC`,
+  )
+  const risk = computeOneYearRiskMetrics(
+    latestDate,
+    type6.map((r) => ({ nav_date: r.nav_date, nav: parseFloat(r.nav) })),
+  )
+  console.log("type6 1Y risk:", risk)
 
   await query(
     `UPDATE ops_tracking_funds_list_cache
@@ -92,13 +93,15 @@ async function main() {
          ret_3m     = $6,
          ret_6m     = $7,
          ret_1y     = $8,
+         sharpe_1y  = $9,
+         calmar_1y  = $10,
          refreshed_at = NOW()
      WHERE beian_hao = 'BAH99A'`,
-    [latestNav, latestDate, returnPct, ret1w, ret1m, ret3m, ret6m, ret1y],
+    [latestNav, latestDate, returnPct, ret1w, ret1m, ret3m, ret6m, ret1y, risk.sharpe_1y, risk.calmar_1y],
   )
 
   console.log("AFTER:", (await query(
-    `SELECT unit_nav::text, nav_date::text, return_pct::text, ret_1w::text, ret_1m::text, ret_3m::text
+    `SELECT unit_nav::text, nav_date::text, return_pct::text, ret_1w::text, ret_1m::text, ret_3m::text, sharpe_1y::text, calmar_1y::text
      FROM ops_tracking_funds_list_cache WHERE beian_hao = 'BAH99A'`,
   ))[0] ?? "(none)")
 

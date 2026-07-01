@@ -95,10 +95,10 @@ async function seedTeamDefaults(): Promise<void> {
 async function seedMineDefault(userKey: string): Promise<void> {
   await query(
     `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
-     SELECT $1, $2, 'mine', $3, 0, NOW()
+     SELECT $1::text, $2::text, 'mine', $3::text, 0, NOW()
      WHERE NOT EXISTS (
        SELECT 1 FROM tracking_custom_pools
-       WHERE pool_key = $1 AND scope = 'mine' AND user_key = $3
+       WHERE pool_key = $1::text AND scope = 'mine' AND user_key = $3::text
      )`,
     [DEFAULT_MINE_POOL.pool_key, DEFAULT_MINE_POOL.label, userKey],
   )

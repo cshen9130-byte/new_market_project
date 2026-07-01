@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { authService } from "@/lib/auth"
+import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -63,6 +64,8 @@ export async function PUT(req: Request) {
       [beian_hao, tag, username]
     )
   }
+
+  await syncFundTeamTagsToSource(beian_hao)
 
   return NextResponse.json({ ok: true })
 }

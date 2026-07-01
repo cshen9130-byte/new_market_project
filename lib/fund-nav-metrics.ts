@@ -17,6 +17,24 @@ export interface FundNavMetrics {
 
 const RF = 0.02
 
+/** Calmar below ~0.01% drawdown is numerically unstable and not meaningful. */
+export const MIN_CALMAR_DRAWDOWN = 1e-4
+
+export const MAX_PLAUSIBLE_RISK_RATIO = 50
+
+export function isPlausibleRiskRatio(
+  value: number | null | undefined,
+  maxAbs = MAX_PLAUSIBLE_RISK_RATIO,
+): value is number {
+  return value != null && Number.isFinite(value) && Math.abs(value) <= maxAbs
+}
+
+export function sanitizeRiskMetricText(value: string | null | undefined): string | null {
+  if (value == null || value === "") return null
+  const n = parseFloat(String(value))
+  return isPlausibleRiskRatio(n) ? String(n) : null
+}
+
 function mean(arr: number[]): number {
   return arr.reduce((s, v) => s + v, 0) / arr.length
 }
@@ -85,7 +103,7 @@ export function computeFundNavMetrics(slice: NavMetricSlice): FundNavMetrics | n
     }
   }
 
-  const calmar = maxDD > 0 ? annRet / maxDD : NaN
+  const calmar = maxDD >= MIN_CALMAR_DRAWDOWN ? annRet / maxDD : NaN
   const downRets = rets.filter((r) => r < 0)
   const downsideRisk =
     downRets.length > 0

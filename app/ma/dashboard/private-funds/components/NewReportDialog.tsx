@@ -13,6 +13,7 @@ import { ProductMonthlyReportDialog } from "./ProductMonthlyReportDialog"
 import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
 
 type TemplateCategory = "weekly" | "monthly" | "other"
+type ReportWizardStep = "pick" | "fof-weekly" | "product-monthly"
 
 interface ReportTemplate {
   id: string
@@ -141,16 +142,14 @@ export function NewReportDialog({
   open: boolean
   onClose: () => void
 }) {
+  const [step, setStep] = useState<ReportWizardStep>("pick")
   const [category, setCategory] = useState<TemplateCategory>("weekly")
-  const [fofWeeklyOpen, setFofWeeklyOpen] = useState(false)
-  const [productMonthlyOpen, setProductMonthlyOpen] = useState(false)
   const [exampleTemplate, setExampleTemplate] = useState<ReportTemplate | null>(null)
 
   useEffect(() => {
     if (open) {
+      setStep("pick")
       setCategory("weekly")
-      setFofWeeklyOpen(false)
-      setProductMonthlyOpen(false)
       setExampleTemplate(null)
     }
   }, [open])
@@ -159,117 +158,95 @@ export function NewReportDialog({
 
   function handleUseTemplate(template: ReportTemplate) {
     if (template.id === "weekly-track-curve") {
-      setFofWeeklyOpen(true)
+      setStep("fof-weekly")
+      return
     }
     if (template.id === "monthly-pe-official") {
-      setProductMonthlyOpen(true)
+      setStep("product-monthly")
     }
-  }
-
-  if (fofWeeklyOpen) {
-    return (
-      <>
-        <FofWeeklyReportDialog
-          open={open}
-          onClose={onClose}
-          onBack={() => setFofWeeklyOpen(false)}
-        />
-        {exampleTemplate?.exampleUrl && (
-          <ReportTemplateExampleDialog
-            open
-            title={exampleTemplate.title}
-            exampleUrl={exampleTemplate.exampleUrl}
-            onClose={() => setExampleTemplate(null)}
-          />
-        )}
-      </>
-    )
-  }
-
-  if (productMonthlyOpen) {
-    return (
-      <>
-        <ProductMonthlyReportDialog
-          open={open}
-          onClose={onClose}
-          onBack={() => setProductMonthlyOpen(false)}
-        />
-        {exampleTemplate?.exampleUrl && (
-          <ReportTemplateExampleDialog
-            open
-            title={exampleTemplate.title}
-            exampleUrl={exampleTemplate.exampleUrl}
-            exampleKind={exampleTemplate.exampleKind}
-            onClose={() => setExampleTemplate(null)}
-          />
-        )}
-      </>
-    )
   }
 
   return (
     <>
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose() }}>
-      <DialogContent className="flex max-h-[85vh] w-[960px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px]" showCloseButton>
-        <DialogHeader className="border-b px-6 py-4 text-left">
-          <DialogTitle className="text-base font-semibold">新建报告</DialogTitle>
-        </DialogHeader>
+      <Dialog open={open} onOpenChange={(next) => { if (!next) onClose() }}>
+        {step === "pick" && (
+          <DialogContent className="flex max-h-[85vh] w-[960px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[960px]" showCloseButton>
+            <DialogHeader className="border-b px-6 py-4 text-left">
+              <DialogTitle className="text-base font-semibold">新建报告</DialogTitle>
+            </DialogHeader>
 
-        <div className="flex min-h-0 flex-1">
-          <aside className="w-36 shrink-0 border-r bg-background">
-            <div className="px-4 pt-4 pb-1 text-[11px] font-semibold tracking-wide text-zinc-400 select-none">
-              模板分类
+            <div className="flex min-h-0 flex-1">
+              <aside className="w-36 shrink-0 border-r bg-background">
+                <div className="px-4 pt-4 pb-1 text-[11px] font-semibold tracking-wide text-zinc-400 select-none">
+                  模板分类
+                </div>
+                <nav className="flex flex-col pb-4">
+                  {TEMPLATE_CATEGORIES.map((item) => (
+                    <button
+                      key={item.key}
+                      type="button"
+                      onClick={() => setCategory(item.key)}
+                      className={[
+                        "w-full px-4 py-2 text-left text-sm transition-colors",
+                        category === item.key
+                          ? "font-medium text-red-600 dark:text-red-400"
+                          : "text-zinc-600 dark:text-zinc-400 hover:text-foreground",
+                      ].join(" ")}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </nav>
+              </aside>
+
+              <div className="min-w-0 flex-1 overflow-y-auto px-6 py-5">
+                <p className="mb-5 text-sm text-zinc-400">联系客服，提交自定义模板。</p>
+                {templates.length > 0 ? (
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                    {templates.map((template) => (
+                      <TemplateCard
+                        key={template.id}
+                        template={template}
+                        onViewExample={(t) => setExampleTemplate(t)}
+                        onUseTemplate={handleUseTemplate}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+                    暂无模板
+                  </div>
+                )}
+              </div>
             </div>
-            <nav className="flex flex-col pb-4">
-              {TEMPLATE_CATEGORIES.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  onClick={() => setCategory(item.key)}
-                  className={[
-                    "w-full px-4 py-2 text-left text-sm transition-colors",
-                    category === item.key
-                      ? "font-medium text-red-600 dark:text-red-400"
-                      : "text-zinc-600 dark:text-zinc-400 hover:text-foreground",
-                  ].join(" ")}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </nav>
-          </aside>
-
-          <div className="min-w-0 flex-1 overflow-y-auto px-6 py-5">
-            <p className="mb-5 text-sm text-zinc-400">联系客服，提交自定义模板。</p>
-            {templates.length > 0 ? (
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {templates.map((template) => (
-                  <TemplateCard
-                    key={template.id}
-                    template={template}
-                    onViewExample={(t) => setExampleTemplate(t)}
-                    onUseTemplate={handleUseTemplate}
-                  />
-                ))}
-              </div>
-            ) : (
-              <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-                暂无模板
-              </div>
-            )}
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-    {exampleTemplate?.exampleUrl && (
-      <ReportTemplateExampleDialog
-        open
-        title={exampleTemplate.title}
-        exampleUrl={exampleTemplate.exampleUrl}
-        exampleKind={exampleTemplate.exampleKind}
-        onClose={() => setExampleTemplate(null)}
-      />
-    )}
+          </DialogContent>
+        )}
+        {step === "fof-weekly" && (
+          <FofWeeklyReportDialog
+            embedded
+            open={open}
+            onClose={onClose}
+            onBack={() => setStep("pick")}
+          />
+        )}
+        {step === "product-monthly" && (
+          <ProductMonthlyReportDialog
+            embedded
+            open={open}
+            onClose={onClose}
+            onBack={() => setStep("pick")}
+          />
+        )}
+      </Dialog>
+      {exampleTemplate?.exampleUrl && (
+        <ReportTemplateExampleDialog
+          open
+          title={exampleTemplate.title}
+          exampleUrl={exampleTemplate.exampleUrl}
+          exampleKind={exampleTemplate.exampleKind}
+          onClose={() => setExampleTemplate(null)}
+        />
+      )}
     </>
   )
 }

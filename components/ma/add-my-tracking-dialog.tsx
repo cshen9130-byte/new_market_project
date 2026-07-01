@@ -134,20 +134,22 @@ export function AddMyTrackingDialog({
       .catch(() => {})
   }, [open, beian_hao])
 
-  function openPoolPicker() {
+  function openPoolPicker(e: React.MouseEvent) {
+    e.stopPropagation()
     const el = poolFieldRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
     setPoolPickerPos({ top: rect.bottom + 2, left: rect.left, width: rect.width })
-    setShowPoolPicker(true)
+    window.setTimeout(() => setShowPoolPicker(true), 0)
   }
 
-  function openTagPicker() {
+  function openTagPicker(e: React.MouseEvent) {
+    e.stopPropagation()
     const el = tagFieldRef.current
     if (!el) return
     const rect = el.getBoundingClientRect()
     setTagPickerPos({ top: rect.bottom + 2, left: rect.left, width: rect.width })
-    setShowTagPicker(true)
+    window.setTimeout(() => setShowTagPicker(true), 0)
   }
 
   function toggleTeamPool(key: string) {
@@ -204,7 +206,7 @@ export function AddMyTrackingDialog({
 
   if (!open) return null
 
-  const labelW = "w-20 shrink-0 text-right text-sm"
+  const labelW = "w-24 shrink-0 text-right text-sm whitespace-nowrap"
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={onClose}>
@@ -298,9 +300,9 @@ export function AddMyTrackingDialog({
           </div>
 
           {/* 个人标签 */}
-          <div className="flex items-start gap-3">
-            <span className={`${labelW} pt-1.5`}>个人标签：</span>
-            <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2">
+          <div className="flex items-center gap-3">
+            <span className={labelW}>个人标签：</span>
+            <div className="flex flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto bg-muted/30 rounded px-3 py-2 min-w-0">
               {personalTagOptions.length === 0 && (
                 <span className="text-sm text-muted-foreground flex-shrink-0">个人标签</span>
               )}
@@ -310,7 +312,7 @@ export function AddMyTrackingDialog({
                   type="button"
                   onClick={() => setPersonalTagsSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
                   className={[
-                    "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                    "inline-flex shrink-0 items-center px-2.5 py-0.5 rounded border text-xs transition-all",
                     personalTagsSelected.includes(tag)
                       ? "bg-red-50 text-red-500 border-red-300"
                       : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
@@ -372,18 +374,22 @@ export function AddMyTrackingDialog({
       {/* Pool picker portal */}
       {mounted && showPoolPicker && poolPickerPos && createPortal(
         <>
-          <div className="fixed inset-0 z-[200]" onClick={() => setShowPoolPicker(false)} />
           <div
-            className="fixed z-[201] bg-background border rounded-lg shadow-lg p-2 flex flex-wrap gap-1.5"
+            className="fixed inset-0 z-[200]"
+            onClick={(e) => { e.stopPropagation(); setShowPoolPicker(false) }}
+          />
+          <div
+            className="fixed z-[201] bg-background border rounded-lg shadow-lg p-2 flex flex-nowrap gap-1.5 overflow-x-auto"
             style={{ top: poolPickerPos.top, left: poolPickerPos.left, width: poolPickerPos.width }}
+            onClick={(e) => e.stopPropagation()}
           >
             {teamPoolOptions.map((p) => (
               <button
                 key={p.key}
                 type="button"
-                onClick={() => toggleTeamPool(p.key)}
+                onClick={(e) => { e.stopPropagation(); toggleTeamPool(p.key) }}
                 className={[
-                  "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
+                  "inline-flex shrink-0 items-center px-2.5 py-0.5 rounded border text-xs transition-all",
                   teamPoolsSelected.includes(p.key)
                     ? "bg-red-50 text-red-500 border-red-300"
                     : "bg-background border-border text-zinc-600 hover:border-red-300 hover:text-red-500",
@@ -400,16 +406,23 @@ export function AddMyTrackingDialog({
       {/* Tag picker portal */}
       {mounted && showTagPicker && tagPickerPos && teamTagOptions.length > 0 && createPortal(
         <>
-          <div className="fixed inset-0 z-[200]" onClick={() => setShowTagPicker(false)} />
+          <div
+            className="fixed inset-0 z-[200]"
+            onClick={(e) => { e.stopPropagation(); setShowTagPicker(false) }}
+          />
           <div
             className="fixed z-[201] bg-background border rounded-lg shadow-lg p-2 flex flex-wrap gap-1.5"
             style={{ top: tagPickerPos.top, left: tagPickerPos.left, width: tagPickerPos.width }}
+            onClick={(e) => e.stopPropagation()}
           >
             {teamTagOptions.map((tag) => (
               <button
                 key={tag}
                 type="button"
-                onClick={() => setTeamTagsSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setTeamTagsSelected((p) => p.includes(tag) ? p.filter((t) => t !== tag) : [...p, tag])
+                }}
                 className={[
                   "inline-flex items-center px-2.5 py-0.5 rounded border text-xs transition-all",
                   teamTagsSelected.includes(tag)

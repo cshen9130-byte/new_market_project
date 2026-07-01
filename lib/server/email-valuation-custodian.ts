@@ -28,12 +28,26 @@ const DIRECT_CUSTODIAN_SENDER_SUFFIXES: ReadonlyArray<[RegExp, string]> = [
   [/@[a-z0-9.-]*ebscn\.com$/i, "光大证券股份有限公司"],
 ]
 
+/** Extract just the company-name portion from a raw custodian string.
+ *
+ * Raw 估值表 cells often append fund names or account labels after the company
+ * name, e.g. "招商证券股份有限公司_荣熙恒盈2号私募证券投资基金_专用名".
+ * This regex captures only up to the first 有限公司 / 有限责任公司 suffix.
+ */
+const COMPANY_NAME_RE =
+  /([\u4e00-\u9fffA-Za-z0-9（）()·\s]+?(?:证券|银行|信托|资产|托管)[\u4e00-\u9fffA-Za-z0-9（）()·\s]*?(?:股份有限公司|有限责任公司|有限公司))/u
+
+function extractCompanyName(text: string): string {
+  const m = text.match(COMPANY_NAME_RE)
+  return m?.[1]?.trim() ?? text
+}
+
 export function normalizeCustodianName(raw: string | null | undefined): string | null {
   const text = String(raw ?? "").trim().replace(/\s+/g, " ")
   if (!text || text.length < 4) return null
   if (/^[\d.,]+$/.test(text)) return null
-  if (/(?:证券|银行|信托|资产)/.test(text)) return text
-  if (/托管/.test(text) && /(?:公司|有限)/.test(text)) return text
+  if (/(?:证券|银行|信托|资产)/.test(text)) return extractCompanyName(text)
+  if (/托管/.test(text) && /(?:公司|有限)/.test(text)) return extractCompanyName(text)
   return null
 }
 
@@ -42,6 +56,10 @@ export function normalizeRegistrationCustodian(raw: string | null | undefined): 
   const text = String(raw ?? "").trim().replace(/\s+/g, " ")
   if (!text || text.length < 2) return null
   if (/^[\d.,]+$/.test(text)) return null
+  // Strip any fund name / account label appended after the company suffix
+  if (/(?:证券|银行|信托|资产|托管)/.test(text) && /(?:有限公司|有限责任公司)/.test(text)) {
+    return extractCompanyName(text)
+  }
   return text
 }
 

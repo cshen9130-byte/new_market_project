@@ -5,6 +5,7 @@ import {
   resolveManagedProductListNavAt,
 } from "@/lib/server/managed-product-nav-seed"
 import { query, fmtIso } from "@/lib/db"
+import { sanitizeRiskMetricText } from "@/lib/fund-nav-metrics"
 import {
   buildManagedProductsFrom,
   fofUnderlyingShortExpr,
@@ -74,6 +75,8 @@ interface ManagedRow {
   net_asset_value: string | null
   valuation_date: string | null
   nav_is_team: boolean
+  platform_strategy_l1?: string | null
+  company_strategy_l1?: string | null
   ret_1w?: string | null
   ret_1m?: string | null
   ret_3m?: string | null
@@ -89,6 +92,8 @@ function mapRow(r: {
   product_name: string
   short_name: string | null
   strategy_l1: string | null
+  platform_strategy_l1?: string | null
+  company_strategy_l1?: string | null
   latest_unit_nav: string | null
   latest_nav_date: string | Date | null
   latest_return_pct: string | null
@@ -110,6 +115,8 @@ function mapRow(r: {
     product_name: r.product_name,
     short_name: r.short_name,
     strategy_l1: r.strategy_l1,
+    platform_strategy_l1: r.platform_strategy_l1 ?? null,
+    company_strategy_l1: r.company_strategy_l1 ?? null,
     latest_nav: r.latest_unit_nav,
     latest_nav_date: r.latest_nav_date ? fmtIso(r.latest_nav_date) : null,
     latest_price_change: r.latest_return_pct != null ? String(parseFloat(r.latest_return_pct)) : null,
@@ -126,8 +133,8 @@ function mapRow(r: {
     ret_3m: r.ret_3m,
     ret_6m: r.ret_6m,
     ret_1y: r.ret_1y,
-    sharpe_1y: r.sharpe_1y,
-    calmar_1y: r.calmar_1y,
+    sharpe_1y: sanitizeRiskMetricText(r.sharpe_1y),
+    calmar_1y: sanitizeRiskMetricText(r.calmar_1y),
   }
 }
 
@@ -271,7 +278,10 @@ export async function GET(req: Request) {
 
       const rows = await query<{
         id: string; beian_hao: string | null; product_name: string; short_name: string | null
-        strategy_l1: string | null; latest_unit_nav: string | null; latest_nav_date: string | null
+        strategy_l1: string | null
+        platform_strategy_l1: string | null
+        company_strategy_l1: string | null
+        latest_unit_nav: string | null; latest_nav_date: string | null
         latest_return_pct: string | null; custody_account_balance: string | null
         net_asset_value: string | null; sequence_no: number | null
         ret_1w: string | null; ret_1m: string | null; ret_3m: string | null
@@ -285,6 +295,8 @@ export async function GET(req: Request) {
            m.product_name,
            cache.short_name,
            ${stratCol}                          AS strategy_l1,
+           cache.platform_strategy_l1,
+           cache.company_strategy_l1,
            cache.unit_nav::text                 AS latest_unit_nav,
            cache.nav_date::text                 AS latest_nav_date,
            cache.return_pct::text               AS latest_return_pct,
@@ -384,7 +396,10 @@ export async function GET(req: Request) {
 
     const rows = await query<{
       id: string; beian_hao: string | null; product_name: string; short_name: string | null
-      strategy_l1: string | null; latest_unit_nav: string | null; latest_nav_date: string | Date | null
+      strategy_l1: string | null
+      platform_strategy_l1: string | null
+      company_strategy_l1: string | null
+      latest_unit_nav: string | null; latest_nav_date: string | Date | null
       latest_return_pct: string | null; custody_account_balance: string | null
       net_asset_value: string | null; valuation_date: string | null
       nav_is_team: boolean; sequence_no: number | null
@@ -400,6 +415,8 @@ export async function GET(req: Request) {
            m.product_name,
            ${SHORT_EXPR} AS short_name,
            ${strategyExpr} AS strategy_l1,
+           NULLIF(BTRIM(o.company_strategy_one), '') AS company_strategy_l1,
+           NULLIF(BTRIM(o.platform_strategy_one), '') AS platform_strategy_l1,
            (${navExpr})::text AS latest_unit_nav,
            ${dateExpr} AS latest_nav_date,
            (${pctExpr})::text AS latest_return_pct,

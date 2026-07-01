@@ -219,7 +219,7 @@ export async function refreshManagedProductsListCache(): Promise<number> {
       const risk = computeManagedProductOneYearRiskMetrics(
         managedOverride.beian_hao,
         navDate,
-        navResolver.mergedHistory(identity, sinceRisk),
+        navResolver.mergedHistoryForRiskMetrics(identity, sinceRisk),
       )
       sharpe_1y = risk.sharpe_1y
       calmar_1y = risk.calmar_1y
@@ -232,9 +232,9 @@ export async function refreshManagedProductsListCache(): Promise<number> {
     } else if (navDate) {
       const risk = computeOneYearRiskMetrics(
         navDate,
-        navResolver.mergedHistory(identity, sinceRisk),
+        navResolver.mergedHistoryForRiskMetrics(identity, sinceRisk),
       )
-      sharpe_1y = risk.sharpe_1y
+      sharpe_1y = isPlausibleRiskRatio(risk.sharpe_1y) ? risk.sharpe_1y : null
       calmar_1y = isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null
     }
 

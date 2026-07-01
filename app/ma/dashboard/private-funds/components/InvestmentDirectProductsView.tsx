@@ -24,6 +24,14 @@ import {
   Wand2,
 } from "lucide-react"
 import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
+import {
+  FIELD_CONFIG_STORAGE_KEYS,
+  INV_DIRECT_FIELD_DEFAULT,
+  readProductFieldConfig,
+  writeProductFieldConfig,
+} from "@/lib/ma/product-field-config"
+import { ProductFieldConfigDialog } from "./ProductFieldConfigDialog"
+import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./product-field-config-table"
 
 type DirectFundClass = "private" | "public" | "team"
 type DirectHoldingStatus = "holding" | "cleared"
@@ -574,6 +582,8 @@ export function InvestmentDirectProductsView() {
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [showInterval, setShowInterval] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
+  const [showFieldConfig, setShowFieldConfig] = useState(false)
+  const [fieldConfigSelected, setFieldConfigSelected] = useState<string[]>(() => readProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invDirect, INV_DIRECT_FIELD_DEFAULT))
   const [showAddMetric, setShowAddMetric] = useState(false)
   const [addedCols, setAddedCols] = useState<AddedCol[]>([])
   const [showTemplateMenu, setShowTemplateMenu] = useState(false)
@@ -596,7 +606,7 @@ export function InvestmentDirectProductsView() {
   const isTeam = fundClass === "team"
   const isPrivate = fundClass === "private"
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
-  const privateColSpan = 17 + addedCols.length
+  const privateColSpan = 3 + fieldConfigSelected.length + 7 + addedCols.length + 3
   const publicColSpan = 16 + addedCols.length
   const teamColSpan = 19 + addedCols.length
   const colSpan = isPublic ? publicColSpan : isTeam ? teamColSpan : privateColSpan
@@ -723,11 +733,37 @@ export function InvestmentDirectProductsView() {
     setPage(1)
   }
 
-  function SortIcon({ col }: { col: InvDirectSortKey }) {
+  function SortIcon({ col }: { col: InvDirectSortKey | string }) {
     if (sortKey !== col) return <ChevronsUpDown className="inline h-3 w-3 ml-0.5 opacity-40" />
     return sortDir === "asc"
       ? <ChevronUp className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
       : <ChevronDown className="inline h-3 w-3 ml-0.5 text-zinc-700 dark:text-zinc-300" />
+  }
+
+  function renderDirectFieldHeader(label: string) {
+    return (
+      <ProductFieldConfigHeader
+        key={label}
+        label={label}
+        thSort={thSort}
+        thBase={thBase}
+        sortCol={sortKey}
+        onSort={(col) => handleSort(col as InvDirectSortKey)}
+        SortIcon={SortIcon}
+        rightAlign={label === "最新涨跌幅" || label === "持仓市值(元)"}
+      />
+    )
+  }
+
+  function renderDirectFieldCell(label: string, row: InvDirectFundRow, cell: string) {
+    return (
+      <ProductFieldConfigCell
+        key={label}
+        label={label}
+        row={row}
+        cell={cell}
+      />
+    )
   }
 
   function toggleAll() {
@@ -1135,7 +1171,7 @@ export function InvestmentDirectProductsView() {
                   <button onClick={() => { setShowMoreMenu(false); handleExport() }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                     <Download className="h-3.5 w-3.5 text-zinc-400" /> 导出
                   </button>
-                  <button onClick={() => setShowMoreMenu(false)} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
+                  <button onClick={() => { setShowMoreMenu(false); setShowFieldConfig(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2">
                     <Settings2 className="h-3.5 w-3.5 text-zinc-400" /> 字段配置
                   </button>
                 </div>
@@ -1196,18 +1232,7 @@ export function InvestmentDirectProductsView() {
                 </>
               ) : (
                 <>
-                  <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav_date")}>最新净值日期<SortIcon col="latest_nav_date" /></th>
-                  <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("latest_nav")}>最新单位净值<SortIcon col="latest_nav" /></th>
-                  <th className={`${thSort} min-w-[100px]`} onClick={() => handleSort("cumulative_nav")}>最新累计净值<SortIcon col="cumulative_nav" /></th>
-                  <th className={`${thSort} text-right min-w-[110px]`} onClick={() => handleSort("holding_mv")}>
-                    <span className="inline-flex items-center gap-0.5">
-                      持仓市值(元)
-                      <span title="当净值缺失时，市值显示为0">
-                        <HelpCircle className="h-3 w-3 opacity-40" />
-                      </span>
-                    </span>
-                    <SortIcon col="holding_mv" />
-                  </th>
+                  {fieldConfigSelected.map(renderDirectFieldHeader)}
                 </>
               )}
               <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
@@ -1331,10 +1356,7 @@ export function InvestmentDirectProductsView() {
                     </>
                   ) : (
                     <>
-                      <td className={`${cell} tabular-nums`}>{row.latest_nav_date ?? "—"}</td>
-                      <td className={`${cell} tabular-nums font-medium`}>{fmtNav(row.latest_nav)}</td>
-                      <td className={`${cell} tabular-nums font-medium`}>{fmtNav(row.cumulative_nav)}</td>
-                      <td className={`${cell} text-right tabular-nums`}>{fmtMoney(row.holding_mv)}</td>
+                      {fieldConfigSelected.map((label) => renderDirectFieldCell(label, row, cell))}
                     </>
                   )}
                   {retCell(row.ret_1w, 7)}
@@ -1470,6 +1492,17 @@ export function InvestmentDirectProductsView() {
           onClose={() => setShowAddMetric(false)}
         />
       )}
+
+      <ProductFieldConfigDialog
+        open={showFieldConfig}
+        selected={fieldConfigSelected}
+        onClose={() => setShowFieldConfig(false)}
+        onConfirm={(fields) => {
+          setFieldConfigSelected(fields)
+          writeProductFieldConfig(FIELD_CONFIG_STORAGE_KEYS.invDirect, fields)
+          setShowFieldConfig(false)
+        }}
+      />
 
       <ProductSelectionPanelBound
         data={data}

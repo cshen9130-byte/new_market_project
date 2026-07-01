@@ -4,6 +4,7 @@ import {
   computeOneYearRiskMetrics,
   type NavPoint,
 } from "@/lib/server/list-cache-nav-batch"
+import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 
 export type FundListMetricsRow = {
   beian_hao: string
@@ -32,6 +33,12 @@ function metricText(v: unknown): string | null {
   if (v == null || v === "") return null
   const n = typeof v === "number" ? v : parseFloat(String(v))
   return Number.isFinite(n) ? String(n) : null
+}
+
+function riskRatioText(v: unknown): string | null {
+  if (v == null || v === "") return null
+  const n = typeof v === "number" ? v : parseFloat(String(v))
+  return isPlausibleRiskRatio(n) ? String(n) : null
 }
 
 function pctReturnText(current: number, base: number | null): string | null {
@@ -108,7 +115,7 @@ async function loadNavHistoryBatch(
 }
 
 function rowMissingOneYearMetrics(row: FundListMetricsRow): boolean {
-  return !metricText(row.ret_1y) || !metricText(row.sharpe_1y) || !metricText(row.calmar_1y)
+  return !metricText(row.ret_1y) || !riskRatioText(row.sharpe_1y) || !riskRatioText(row.calmar_1y)
 }
 
 function enrichRowFromNavHistory<T extends FundListMetricsRow>(
@@ -145,8 +152,8 @@ function enrichRowFromNavHistory<T extends FundListMetricsRow>(
         ret_3m: metricText(row.ret_3m),
         ret_6m: metricText(row.ret_6m),
         ret_1y: metricText(row.ret_1y),
-        sharpe_1y: metricText(row.sharpe_1y),
-        calmar_1y: metricText(row.calmar_1y),
+        sharpe_1y: riskRatioText(row.sharpe_1y),
+        calmar_1y: riskRatioText(row.calmar_1y),
       }
 
   if (!Number.isFinite(currentNav) || currentNav <= 0 || history.length === 0) {

@@ -320,10 +320,12 @@ export function FofWeeklyReportDialog({
   open,
   onClose,
   onBack,
+  embedded = false,
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
+  embedded?: boolean
 }) {
   const [productName, setProductName] = useState("")
   const [beianHao, setBeianHao] = useState<string | null>(null)
@@ -521,10 +523,8 @@ export function FofWeeklyReportDialog({
     }
   }
 
-  return (
-    <>
-    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose() }}>
-      <DialogContent className="flex max-h-[90vh] w-[920px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[920px]" showCloseButton>
+  const dialogBody = (
+    <DialogContent className="flex max-h-[90vh] w-[920px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[920px]" showCloseButton>
         <DialogHeader className="border-b px-6 py-4 text-left">
           <div className="flex items-center gap-3">
             <button
@@ -746,12 +746,22 @@ export function FofWeeklyReportDialog({
           )}
         </div>
       </DialogContent>
-    </Dialog>
-    <SavePresetDialog
-      open={showSavePresetModal}
-      onOpenChange={setShowSavePresetModal}
-      onSave={handleSavePreset}
-    />
+  )
+
+  return (
+    <>
+      {embedded ? (
+        dialogBody
+      ) : (
+        <Dialog open={open} onOpenChange={(next) => { if (!next) onClose() }}>
+          {dialogBody}
+        </Dialog>
+      )}
+      <SavePresetDialog
+        open={showSavePresetModal}
+        onOpenChange={setShowSavePresetModal}
+        onSave={handleSavePreset}
+      />
     </>
   )
 }

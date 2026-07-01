@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { sanitizeRiskMetricText } from "@/lib/fund-nav-metrics"
 import {
   buildEmailNavLatestExprs,
   buildEmailNavLatestJoins,
@@ -8,6 +9,7 @@ import {
   ensureTrackingFundsListCachePopulated,
   useTrackingFundsListCache,
 } from "@/lib/server/tracking-funds-list-cache-pg"
+import { enrichTrackFundMetricsRows } from "@/lib/server/list-cache-nav-batch"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -203,6 +205,12 @@ interface TrackRow {
   short_name: string | null
   strategy_l1: string | null
   strategy_l2: string | null
+  platform_strategy_l1: string | null
+  platform_strategy_l2: string | null
+  platform_strategy_l3: string | null
+  company_strategy_l1: string | null
+  company_strategy_l2: string | null
+  company_strategy_l3: string | null
   manager: string | null
   inception_date: string | null
   latest_nav: string | null
@@ -215,6 +223,14 @@ interface TrackRow {
   ret_1y: string | null
   sharpe_1y: string | null
   calmar_1y: string | null
+}
+
+function sanitizeTrackRows(rows: TrackRow[]): TrackRow[] {
+  return rows.map((row) => ({
+    ...row,
+    sharpe_1y: sanitizeRiskMetricText(row.sharpe_1y),
+    calmar_1y: sanitizeRiskMetricText(row.calmar_1y),
+  }))
 }
 
 type StrategySource = "company" | "platform"
@@ -340,6 +356,70 @@ function cachedStrategyExprs(
   }
 }
 
+function cachedIndependentStrategyExprs(): {
+  platform_l1: string
+  platform_l2: string
+  platform_l3: string
+  company_l1: string
+  company_l2: string
+  company_l3: string
+} {
+  const json = "cache.raw_strategy_json"
+  return {
+    platform_l1: `NULLIF(BTRIM(COALESCE(cache.platform_strategy_l1, ${json}->'platform'->>'strategy_one', '')), '')`,
+    platform_l2: `NULLIF(BTRIM(COALESCE(cache.platform_strategy_l2, ${json}->'platform'->>'strategy_two', '')), '')`,
+    platform_l3: `NULLIF(BTRIM(COALESCE(cache.platform_strategy_l3, ${json}->'platform'->>'strategy_three', '')), '')`,
+    company_l1: `NULLIF(BTRIM(COALESCE(cache.company_strategy_l1, ${json}->'company'->>'strategy_one', '')), '')`,
+    company_l2: `NULLIF(BTRIM(COALESCE(cache.company_strategy_l2, ${json}->'company'->>'strategy_two', '')), '')`,
+    company_l3: `NULLIF(BTRIM(COALESCE(cache.company_strategy_l3, ${json}->'company'->>'strategy_three', '')), '')`,
+  }
+}
+
+function sourceIndependentStrategyExprs(
+  alias: string,
+  pool: string,
+  isExternalPool: boolean,
+): {
+  platform_l1: string
+  platform_l2: string
+  platform_l3: string
+  company_l1: string
+  company_l2: string
+  company_l3: string
+} {
+  const json = rawStrategyJsonExpr(alias)
+  if (pool === "bfl") {
+    return {
+      platform_l1: `NULLIF(BTRIM(COALESCE((${json})->'platform'->>'strategy_one', '')), '')`,
+      platform_l2: `NULLIF(BTRIM(COALESCE((${json})->'platform'->>'strategy_two', '')), '')`,
+      platform_l3: `NULLIF(BTRIM(COALESCE((${json})->'platform'->>'strategy_three', '')), '')`,
+      company_l1: `NULLIF(BTRIM(COALESCE((${json})->'company'->>'strategy_one', '')), '')`,
+      company_l2: `NULLIF(BTRIM(COALESCE((${json})->'company'->>'strategy_two', '')), '')`,
+      company_l3: `NULLIF(BTRIM(COALESCE((${json})->'company'->>'strategy_three', '')), '')`,
+    }
+  }
+  const col = (side: "platform" | "company", level: "one" | "two" | "three", key: string) =>
+    `NULLIF(BTRIM(COALESCE(${alias}.${side}_strategy_${level}, (${json})->'${side}'->>'${key}', '')), '')`
+  if (pool === "all" || isExternalPool) {
+    return {
+      platform_l1: col("platform", "one", "strategy_one"),
+      platform_l2: col("platform", "two", "strategy_two"),
+      platform_l3: col("platform", "three", "strategy_three"),
+      company_l1: col("company", "one", "strategy_one"),
+      company_l2: col("company", "two", "strategy_two"),
+      company_l3: col("company", "three", "strategy_three"),
+    }
+  }
+  return {
+    platform_l1: `NULLIF(BTRIM(COALESCE((${json})->'platform'->>'strategy_one', '')), '')`,
+    platform_l2: `NULLIF(BTRIM(COALESCE((${json})->'platform'->>'strategy_two', '')), '')`,
+    platform_l3: `NULLIF(BTRIM(COALESCE((${json})->'platform'->>'strategy_three', '')), '')`,
+    company_l1: `NULLIF(BTRIM(COALESCE((${json})->'company'->>'strategy_one', '')), '')`,
+    company_l2: `NULLIF(BTRIM(COALESCE((${json})->'company'->>'strategy_two', '')), '')`,
+    company_l3: `NULLIF(BTRIM(COALESCE((${json})->'company'->>'strategy_three', '')), '')`,
+  }
+}
+
 function buildCachedFromClause(
   pool: string,
   isCustomPool: boolean,
@@ -421,18 +501,20 @@ async function handleCachedTrackingList(opts: {
   personalTagMode: string
   personalTags: string[]
   personalUserKey: string
+  asOfDate: string
 }): Promise<NextResponse> {
   const {
     page, pageSize, offset, sortKey, sortDir, pool, requestedPool,
     isCustomPool, isMineAllPool, keyword, strategyL1, strategyL2, strategyL3,
     strategySource, orgSize, teamTagMode, teamTags,
-    personalTagMode, personalTags, personalUserKey,
+    personalTagMode, personalTags, personalUserKey, asOfDate,
   } = opts
 
   await ensureTrackingFundsListCachePopulated()
 
   const { l1: strategyL1Expr, l2: strategyL2Expr, l3: strategyL3Expr } =
     cachedStrategyExprs(pool, strategySource)
+  const indepStrategy = cachedIndependentStrategyExprs()
   const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
 
   const filterParams: unknown[] =
@@ -520,6 +602,12 @@ async function handleCachedTrackingList(opts: {
            cache.short_name,
            ${strategyL1Expr} AS strategy_l1,
            ${strategyL2Expr} AS strategy_l2,
+           ${indepStrategy.platform_l1} AS platform_strategy_l1,
+           ${indepStrategy.platform_l2} AS platform_strategy_l2,
+           ${indepStrategy.platform_l3} AS platform_strategy_l3,
+           ${indepStrategy.company_l1} AS company_strategy_l1,
+           ${indepStrategy.company_l2} AS company_strategy_l2,
+           ${indepStrategy.company_l3} AS company_strategy_l3,
            NULL::text AS manager,
            NULL::text AS inception_date,
            cache.unit_nav::text AS latest_nav,
@@ -545,12 +633,13 @@ async function handleCachedTrackingList(opts: {
     ])
 
     const total = parseInt(countRow[0]?.total ?? "0")
+    const enrichedRows = await enrichTrackFundMetricsRows(rows, asOfDate)
     return NextResponse.json({
       page,
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: rows,
+      data: sanitizeTrackRows(enrichedRows),
     })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
@@ -649,6 +738,12 @@ async function handleBflOpsList(opts: {
            i.short_name,
            ${strategyL1Expr} AS strategy_l1,
            ${strategyL2Expr} AS strategy_l2,
+           NULLIF(BTRIM(i.platform_strategy_one), '') AS platform_strategy_l1,
+           NULLIF(BTRIM(i.platform_strategy_two), '') AS platform_strategy_l2,
+           NULLIF(BTRIM(i.platform_strategy_three), '') AS platform_strategy_l3,
+           NULLIF(BTRIM(i.company_strategy_one), '') AS company_strategy_l1,
+           NULLIF(BTRIM(i.company_strategy_two), '') AS company_strategy_l2,
+           NULLIF(BTRIM(i.company_strategy_three), '') AS company_strategy_l3,
            NULL::text AS manager,
            NULL::text AS inception_date,
            ${bflOpsNavExpr()}::text AS latest_nav,
@@ -684,7 +779,7 @@ async function handleBflOpsList(opts: {
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: rows,
+      data: sanitizeTrackRows(rows),
     })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
@@ -729,6 +824,9 @@ export async function GET(req: Request) {
   const strategyPrefix = strategySource === "platform" ? "platform" : "company"
 
   if (useTrackingFundsListCache(cutoffRaw)) {
+    const asOfDate = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
+      ? cutoffRaw
+      : new Date().toISOString().slice(0, 10)
     return handleCachedTrackingList({
       page,
       pageSize,
@@ -750,6 +848,7 @@ export async function GET(req: Request) {
       personalTagMode,
       personalTags,
       personalUserKey,
+      asOfDate,
     })
   }
 
@@ -793,6 +892,8 @@ export async function GET(req: Request) {
     : isExternalPool
     ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_three, '')), '')`
     : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_three'), '')), '')`
+
+  const indepStrategy = sourceIndependentStrategyExprs("i", pool, isExternalPool)
 
   const sourceCte = pool === "all"
     ? `WITH all_funds AS (
@@ -1026,6 +1127,12 @@ export async function GET(req: Request) {
            i.short_name,
             ${strategyL1Expr}                             AS strategy_l1,
             ${strategyL2Expr}                             AS strategy_l2,
+           ${indepStrategy.platform_l1}                   AS platform_strategy_l1,
+           ${indepStrategy.platform_l2}                   AS platform_strategy_l2,
+           ${indepStrategy.platform_l3}                   AS platform_strategy_l3,
+           ${indepStrategy.company_l1}                    AS company_strategy_l1,
+           ${indepStrategy.company_l2}                    AS company_strategy_l2,
+           ${indepStrategy.company_l3}                    AS company_strategy_l3,
            NULL::text                                    AS manager,
            NULL::text                                    AS inception_date,
            ${currentNavExpr}::text                         AS latest_nav,
@@ -1066,7 +1173,7 @@ export async function GET(req: Request) {
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: rows,
+      data: sanitizeTrackRows(rows),
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
