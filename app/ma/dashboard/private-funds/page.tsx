@@ -260,19 +260,27 @@ function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
 // Stale-while-revalidate cache for the tracking-fund list. Keyed by the full
 // request params so returning to a pool/page renders instantly from the last
 // response while a fresh copy is fetched in the background. In-memory survives
-// SPA navigation; sessionStorage survives tab reloads.
-type ListCacheEntry = { data: TrackFundRow[]; total: number }
+// SPA navigation; localStorage persists across full page loads / new sessions
+// so simply opening the site renders the last-seen page instantly, then
+// refreshes in the background. Entries carry a timestamp and expire so we never
+// flash very stale data.
+type ListCacheEntry = { data: TrackFundRow[]; total: number; ts?: number }
 const listMemCache = new Map<string, ListCacheEntry>()
 const LIST_CACHE_PREFIX = "tracking_list_cache:"
+const LIST_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 function readListCache(key: string): ListCacheEntry | null {
   const mem = listMemCache.get(key)
   if (mem) return mem
   if (typeof window === "undefined") return null
   try {
-    const raw = sessionStorage.getItem(LIST_CACHE_PREFIX + key)
+    const raw = localStorage.getItem(LIST_CACHE_PREFIX + key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as ListCacheEntry
+    if (parsed.ts && Date.now() - parsed.ts > LIST_CACHE_TTL_MS) {
+      localStorage.removeItem(LIST_CACHE_PREFIX + key)
+      return null
+    }
     listMemCache.set(key, parsed)
     return parsed
   } catch {
@@ -281,17 +289,18 @@ function readListCache(key: string): ListCacheEntry | null {
 }
 
 function writeListCache(key: string, entry: ListCacheEntry): void {
-  listMemCache.set(key, entry)
+  const stamped: ListCacheEntry = { ...entry, ts: Date.now() }
+  listMemCache.set(key, stamped)
   if (typeof window === "undefined") return
   try {
-    sessionStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(entry))
+    localStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
   } catch {
-    // sessionStorage full — drop the oldest cached lists and retry once.
+    // localStorage full — drop cached lists and retry once.
     try {
-      for (const k of Object.keys(sessionStorage)) {
-        if (k.startsWith(LIST_CACHE_PREFIX)) sessionStorage.removeItem(k)
+      for (const k of Object.keys(localStorage)) {
+        if (k.startsWith(LIST_CACHE_PREFIX)) localStorage.removeItem(k)
       }
-      sessionStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(entry))
+      localStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(stamped))
     } catch { /* give up; in-memory cache still works */ }
   }
 }
@@ -2429,7 +2438,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     // Stale-while-revalidate: render cached rows instantly, then refresh in the
     // background so pool switches / revisits feel instant while still picking up
     // server-side changes (new NAV, edits, etc.).
-    const cacheKey = (isMineTab ? "mine\u0000" : "team\u0000") + params.toString()
+    const cacheKey = (isMineTab ? `mine\u0000${currentUserId()}\u0000` : "team\u0000") + params.toString()
     const cached = readListCache(cacheKey)
     if (cached) {
       setData(cached.data)

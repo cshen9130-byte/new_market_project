@@ -400,10 +400,43 @@ export async function patchTrackingFundsCacheNullNav(
   return patched
 }
 
-/** True when the API can serve from the nightly precomputed cache. */
-export function useTrackingFundsListCache(cutoffRaw: string): boolean {
+// Memoized snapshot date of the precomputed cache so the fast-path gate does not
+// issue a query on every request. Short TTL keeps it fresh across nightly ETL.
+let cacheAsOfMemo: { date: string | null; at: number } | null = null
+const CACHE_ASOF_TTL_MS = 5 * 60 * 1000
+
+async function getCacheAsOfDate(): Promise<string | null> {
+  const now = Date.now()
+  if (cacheAsOfMemo && now - cacheAsOfMemo.at < CACHE_ASOF_TTL_MS) {
+    return cacheAsOfMemo.date
+  }
+  try {
+    await ensureTrackingFundsListCacheTable()
+    const rows = await query<{ as_of: string | null }>(
+      `SELECT MAX(as_of_date)::text AS as_of FROM ops_tracking_funds_list_cache`,
+    )
+    const date = rows[0]?.as_of ?? null
+    cacheAsOfMemo = { date, at: now }
+    return date
+  } catch {
+    // On failure keep any previously known value rather than forcing the slow path.
+    return cacheAsOfMemo?.date ?? null
+  }
+}
+
+/**
+ * Async gate used by the list API. Serves the precomputed cache whenever the
+ * request is for the latest data — i.e. no/invalid cutoff, a cutoff on/after
+ * today (any timezone skew), or a cutoff that is not strictly older than the
+ * snapshot the cache was built for. Only genuinely historical cutoffs (before
+ * the cache snapshot) fall through to the slower live computation.
+ */
+export async function shouldUseTrackingFundsListCache(cutoffRaw: string): Promise<boolean> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
-  return cutoffRaw === new Date().toISOString().slice(0, 10)
+  if (cutoffRaw >= new Date().toISOString().slice(0, 10)) return true
+  const asOf = await getCacheAsOfDate()
+  if (asOf && cutoffRaw >= asOf) return true
+  return false
 }
 
 /** Populate cache when empty (e.g. first deploy before nightly ETL has run). */

@@ -7,7 +7,7 @@ import {
 } from "@/lib/server/email-nav-query"
 import {
   ensureTrackingFundsListCachePopulated,
-  useTrackingFundsListCache,
+  shouldUseTrackingFundsListCache,
 } from "@/lib/server/tracking-funds-list-cache-pg"
 import { enrichTrackFundMetricsRows } from "@/lib/server/list-cache-nav-batch"
 
@@ -823,7 +823,7 @@ export async function GET(req: Request) {
   const cutoffExpr = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw) ? `'${cutoffRaw}'::date` : "CURRENT_DATE"
   const strategyPrefix = strategySource === "platform" ? "platform" : "company"
 
-  if (useTrackingFundsListCache(cutoffRaw)) {
+  if (await shouldUseTrackingFundsListCache(cutoffRaw)) {
     const asOfDate = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
       ? cutoffRaw
       : new Date().toISOString().slice(0, 10)
