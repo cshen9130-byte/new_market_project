@@ -1,6 +1,7 @@
 "use client"
 
 import { memo, useEffect, useState } from "react"
+import { amacFundUrl } from "@/lib/amac-urls"
 
 interface ProfileData {
   fund_name: string | null
@@ -45,6 +46,20 @@ function val(v: string | null | undefined) {
   return v
 }
 
+function registerNumberValue(value: string | null | undefined) {
+  if (value == null || value === "") return "—"
+  return (
+    <a
+      href={amacFundUrl(value)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-blue-600 hover:underline"
+    >
+      {value}
+    </a>
+  )
+}
+
 function SectionHeader({ title }: { title: string }) {
   return (
     <div className="flex items-center gap-2 mb-2">
@@ -61,6 +76,7 @@ function ProfileRow({
   v2,
   multiline1,
   multiline2,
+  link1,
 }: {
   l1: string
   v1?: string | null
@@ -68,6 +84,7 @@ function ProfileRow({
   v2?: string | null
   multiline1?: boolean
   multiline2?: boolean
+  link1?: boolean
 }) {
   return (
     <tr className="border-b border-zinc-100 last:border-0">
@@ -80,7 +97,7 @@ function ProfileRow({
           multiline1 ? "whitespace-pre-wrap leading-relaxed" : "",
         ].join(" ")}
       >
-        {val(v1)}
+        {link1 ? registerNumberValue(v1) : val(v1)}
       </td>
       {l2 !== undefined && (
         <>
@@ -115,7 +132,7 @@ function BasicInfoContent({ data }: { data: ProfileData }) {
           <tbody>
             <ProfileRow l1="基金全称" v1={data.fund_name} l2="基金类型" v2={data.fund_type} />
             <ProfileRow l1="投资顾问" v1={data.advisor} l2="基金管理人" v2={data.fund_manager} />
-            <ProfileRow l1="备案编号" v1={data.register_number} l2="成立日期/运作日期" v2={inceptionOp} />
+            <ProfileRow l1="备案编号" v1={data.register_number} l2="成立日期/运作日期" v2={inceptionOp} link1 />
             <ProfileRow l1="托管券商" v1={data.custodian} l2="备案日期" v2={data.puton_date} />
           </tbody>
         </table>

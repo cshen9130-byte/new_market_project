@@ -14,6 +14,7 @@ import {
   Settings2,
   Trash2,
 } from "lucide-react"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 
 type ScopeTab = "team" | "mine"
 
@@ -664,6 +665,14 @@ export function CustomIndicesView() {
           </div>
         </div>
       </div>
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.index_name}
+        showActions={false}
+      />
     </div>
   )
 }

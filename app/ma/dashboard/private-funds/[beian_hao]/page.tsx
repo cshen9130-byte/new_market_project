@@ -40,6 +40,7 @@ import { ScenarioAnalysisPanel } from "./components/ScenarioAnalysisPanel"
 import { NavAttributionPanel } from "./components/NavAttributionPanel"
 import { FundCompanyPanel } from "./components/FundCompanyPanel"
 import { FundProfilePanel } from "./components/FundProfilePanel"
+import { amacFundUrl } from "@/lib/amac-urls"
 
 const menuItems = [
   { key: "market",     label: "市场" },
@@ -1938,7 +1939,18 @@ export default function PrivateFundDetailPage() {
         <div className="shrink-0 grid grid-cols-2 gap-x-[clamp(0.375rem,1.5cqw,2rem)] self-center text-[clamp(0.5rem,1cqw,0.75rem)] text-zinc-500">
           <div className="grid grid-cols-[auto_1fr] gap-x-[clamp(0.25rem,0.8cqw,0.75rem)] gap-y-0.5">
             <span className="whitespace-nowrap">备案编号：</span>
-            <span className="font-medium text-zinc-800">{info.beian_hao}</span>
+            {info.beian_hao ? (
+              <a
+                href={amacFundUrl(info.beian_hao)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-medium text-blue-600 hover:underline"
+              >
+                {info.beian_hao}
+              </a>
+            ) : (
+              <span className="font-medium text-zinc-800">—</span>
+            )}
             <span className="whitespace-nowrap">产品成立时间：</span>
             <span className="font-medium text-zinc-800 whitespace-nowrap">{info.inception_date?.slice(0, 10) ?? "—"}</span>
             <span className="whitespace-nowrap">基金经理：</span>

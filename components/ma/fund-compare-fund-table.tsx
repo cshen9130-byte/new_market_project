@@ -14,6 +14,7 @@ import {
   Trash2,
   X,
 } from "lucide-react"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 import type { SavedFundCompareFund } from "@/lib/ma-fund-compare-storage"
 
 export interface FundCompareMeta {
@@ -472,6 +473,16 @@ export function FundCompareFundTable({
           </div>
         </div>
       )}
+      <ProductSelectionPanelBound
+        data={funds}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.beian_hao}
+        getName={(r) => r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => metaMap.get(r.beian_hao)?.latest_nav_date ?? null}
+        showActions={false}
+      />
     </div>
   )
 }

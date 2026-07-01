@@ -14,6 +14,7 @@ import {
   Settings2,
   Trash2,
 } from "lucide-react"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 import { AddSingleLedgerDialog, BatchUploadLedgerDialog } from "./OperationsLedgerDialogs"
 import {
   LEDGER_FIELD_CONFIG_DEFAULT,
@@ -680,6 +681,16 @@ export function OperationsLedgerView() {
           setFieldConfigSelected(fields)
           setShowFieldConfig(false)
         }}
+      />
+
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => `${r.fof_fund_name} · ${r.underlying_fund_name}`}
+        getBeianHao={(r) => r.underlying_beian_hao}
+        showActions={false}
       />
     </div>
   )

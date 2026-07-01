@@ -23,6 +23,7 @@ import {
   Tag,
   Wand2,
 } from "lucide-react"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 
 type DirectFundClass = "private" | "public" | "team"
 type DirectHoldingStatus = "holding" | "cleared"
@@ -1469,6 +1470,16 @@ export function InvestmentDirectProductsView() {
           onClose={() => setShowAddMetric(false)}
         />
       )}
+
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.beian_hao}
+        getName={(r) => r.short_name || r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }

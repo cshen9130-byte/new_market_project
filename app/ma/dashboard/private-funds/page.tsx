@@ -32,6 +32,7 @@ import {
   filterInvestmentSidebarGroups,
   isAllowedInvestmentSideItem,
 } from "@/lib/permissions"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 
 const menuItems = [
   { key: "market", label: "市场" },
@@ -1473,6 +1474,15 @@ function PrivateFundTable({
           onSaved={refreshTrackedIds}
         />
       )}
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.beian_hao}
+        getName={(r) => r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }
@@ -5416,6 +5426,15 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         />
       )}
 
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.beian_hao}
+        getName={(r) => r.short_name || r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }
@@ -7018,6 +7037,14 @@ function OperationsParseLogsPanel() {
           >›</button>
         </div>
       </div>
+      <ProductSelectionPanelBound
+        data={rows}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.subject}
+        showActions={false}
+      />
     </div>
   )
 }
@@ -10204,7 +10231,7 @@ function TrackingRowMenu({
             <button onClick={() => { onEditTags(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Tag className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑标签</button>
             <button onClick={() => { onEditStrategy(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Layers className="h-3.5 w-3.5 text-muted-foreground shrink-0" />编辑策略</button>
             <button onClick={() => { onNoteManage(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><StickyNote className="h-3.5 w-3.5 text-muted-foreground shrink-0" />备注管理</button>
-            <button onClick={close} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />估值表分析</button>
+            <button onClick={() => { if (beian_hao) openValuationAnalysisPage(beian_hao); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><BarChart2 className="h-3.5 w-3.5 text-muted-foreground shrink-0" />估值表分析</button>
             <button onClick={close} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-foreground"><Star className="h-3.5 w-3.5 text-muted-foreground shrink-0" />收藏</button>
             <div className="border-t my-1" />
             <button onClick={() => { onRemove(); close() }} className="w-full text-left px-3 py-1.5 text-sm hover:bg-muted transition-colors flex items-center gap-2 text-red-500"><MinusCircle className="h-3.5 w-3.5 shrink-0" />取消跟踪</button>
@@ -11324,6 +11351,15 @@ function OperationsDirectView() {
         product_name={directScaleDialog?.product_name ?? ""}
         onClose={() => setDirectScaleDialog(null)}
       />
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.beian_hao}
+        getName={(r) => r.short_name || r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }
@@ -11935,6 +11971,15 @@ function OperationsFofUnderlyingView() {
           setFofNavUploadTarget(null)
           setFofListReloadKey((k) => k + 1)
         }}
+      />
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.short_name || r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
       />
     </div>
   )
@@ -15106,6 +15151,15 @@ function OperationsTeamDataView() {
           </div>
         </div>
       )}
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.short_name || r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }
@@ -16257,6 +16311,15 @@ function OperationsManagedProductsView() {
           </div>
         </div>
       )}
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.short_name || r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }
@@ -17566,6 +17629,16 @@ function InvestmentManagedProductsView() {
           onConfirm={(cols) => { setInvAddedCols(cols); setInvActiveTemplate(null); setShowInvAddMetric(false) }}
         />
       )}
+
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.short_name || r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }
@@ -18742,7 +18815,7 @@ function InvestmentFofOverviewView() {
                             onEditTags={() => openFofTagDialog(row.beian_hao, row.product_name)}
                             onEditStrategy={() => openFofStrategyDialog(row.beian_hao, row.product_name)}
                             onNoteManage={() => openFofNoteDialog(row.beian_hao, row.product_name)}
-                            onValuationAnalysis={() => window.open("/ma/dashboard/tools/valuation", "_blank")}
+                            onValuationAnalysis={row.beian_hao ? () => openValuationAnalysisPage(row.beian_hao) : undefined}
                             onFavorite={() => toggleFofFavorite(row.id)}
                           />
                         </div>
@@ -19323,6 +19396,23 @@ function InvestmentFofOverviewView() {
           onConfirm={(cols) => { setFofAddedCols(cols); setFofActiveTemplate(null); setShowFofAddMetric(false) }}
         />
       )}
+      <ProductSelectionPanelBound
+        data={viewTab === "detail" ? fofDetailData : data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => ("short_name" in r && r.short_name) ? (r.short_name || r.product_name) : r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => ("latest_nav_date" in r ? r.latest_nav_date : ("nav_date" in r ? r.nav_date : null))}
+      />
+      <ProductSelectionPanelBound
+        data={fofHoldingsRows}
+        selected={fofHoldingsSelected}
+        setSelected={setFofHoldingsSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.fofProductName}
+        showActions={false}
+      />
     </div>
   )
 }
@@ -21708,6 +21798,14 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
           onClose={() => setShowAddMetric(false)}
         />
       )}
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.name}
+        showActions={false}
+      />
     </div>
   )
 }

@@ -20,6 +20,15 @@ import { ensureEmailValuationTable, listEmailValuationRecords, lookupLatestValua
 import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 import { listFundMetricsLatest } from "@/lib/server/email-valuation-metrics-pg"
 import { resolveValuationCustodian, normalizeRegistrationCustodian } from "@/lib/server/email-valuation-custodian"
+import { fetchListedFundNavBatch } from "@/lib/server/listed-fund-eastmoney-nav"
+import { BatchNavResolver, type ProductNavIdentity } from "@/lib/server/list-cache-nav-batch"
+import {
+  extractListedFundCodeFromName,
+  isListedFundCode,
+  listedFundCodeToTickers,
+  lookupFundCodeByProductName,
+  resolveFundHoldingCode,
+} from "@/lib/server/fund-holding-code"
 import { resolveRouteFundId, lookupFundInfoFallback, resolveFundBeianHao } from "@/lib/server/fof-underlying-query"
 import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
@@ -73,7 +82,35 @@ export type OptionRow = {
   unrealizedPnl: number | null
 }
 
-export type ValuationLayoutType = "fof" | "derivative"
+export type ValuationLayoutType = "fof" | "derivative" | "equity"
+
+export type ValuationHoldingDetailRow = {
+  index: number
+  assetName: string
+  valuationCode: string | null
+  category: string | null
+  quantity: number | null
+  price: number | null
+  marketValue: number
+  marketPct: number
+  cost: number | null
+  unrealizedPnl: number | null
+  settlementStatus: string
+}
+
+export type StockRiskExposure = {
+  stockLongMv: number
+  stockLongPct: number
+  stockShortMv: number
+  stockShortPct: number
+  indexLongMv: number
+  indexLongPct: number
+  indexShortMv: number
+  indexShortPct: number
+  etfLongMv: number
+  etfLongPct: number
+  totalExposurePct: number
+}
 
 export type FundHoldingRow = {
   index: number
@@ -85,9 +122,13 @@ export type FundHoldingRow = {
   unitNav: number | null
   cumulativeNav: number | null
   priceChangePct: number | null
+  price: number | null
   marketValue: number
   marketPct: number
   shares: number | null
+  cost: number | null
+  unrealizedPnl: number | null
+  settlementStatus: string
   suspensionInfo: string
   beianHao: string | null
   rowKind: string
@@ -138,6 +179,11 @@ export type FundValuationAllocationResult = {
   layout_type: ValuationLayoutType
   allocation: AllocationRow[]
   fund_holdings: FundHoldingRow[]
+  stock_holdings: ValuationHoldingDetailRow[]
+  bond_holdings: ValuationHoldingDetailRow[]
+  wealth_holdings: ValuationHoldingDetailRow[]
+  equity_other_holdings: ValuationHoldingDetailRow[]
+  stock_risk_exposure: StockRiskExposure | null
   return_curves: ReturnCurveSeries[]
   other_holdings: OtherHoldingRow[]
   derivatives: DerivativeRow[]
@@ -642,6 +688,224 @@ const FOF_ALLOCATION_LABELS: Record<(typeof FOF_ALLOCATION_ORDER)[number], strin
   other: "其他",
 }
 
+const EQUITY_ALLOCATION_ORDER = [
+  "bank_deposit",
+  "margin_deposit",
+  "bond",
+  "stock",
+  "wealth",
+  "other",
+] as const
+
+const EQUITY_ALLOCATION_LABELS: Record<(typeof EQUITY_ALLOCATION_ORDER)[number], string> = {
+  bank_deposit: "托管户现金",
+  margin_deposit: "存出保证金",
+  bond: "债券",
+  stock: "股票",
+  wealth: "理财",
+  other: "其他",
+}
+
+function isWealthHolding(h: HoldingRow): boolean {
+  const kind = h.row_kind ?? "other"
+  if (kind === "repo" || kind === "money_fund") return true
+  const name = String(h.subject_name ?? "")
+  if (/GC\d{3}|R-\d+|回购|理财|国债回购/.test(name)) return true
+  const code = String(h.symbol ?? resolveHoldingValuationCode(h) ?? "")
+  return /^204\d{3}$/.test(code)
+}
+
+function isBondHoldingRow(h: HoldingRow): boolean {
+  const kind = h.row_kind ?? "other"
+  const name = String(h.subject_name ?? "")
+  if (/利息|应计/.test(name)) return false
+  if (kind === "bond") return true
+  return /转债/.test(name)
+}
+
+function isDirectEquityStock(h: HoldingRow): boolean {
+  if (h.include_in_detail === false || !hasEconomicHoldingValue(h)) return false
+  if (/ETF/u.test(String(h.subject_name ?? ""))) return false
+  const kind = h.row_kind ?? "other"
+  if (kind === "stock") return true
+  if (kind === "fund_or_stock") {
+    const code = (resolveHoldingValuationCode(h) ?? "").replace(/\.(SZ|SH|BJ)$/i, "").trim()
+    if (!/^\d{6}$/.test(code)) return false
+    if (/基金|私募|ETF/.test(String(h.subject_name ?? ""))) return false
+    const subj = String(h.subject_code ?? "").replace(/\s/g, "")
+    return subj.startsWith("1102") || subj.startsWith("1001")
+  }
+  return false
+}
+
+function isUnderlyingFundInvestment(h: HoldingRow): boolean {
+  if (!isFundHoldingRow(h) || isDirectEquityStock(h)) return false
+  const kind = h.row_kind ?? "other"
+  if (["private_fund", "fund", "money_fund"].includes(kind)) return true
+  if (/私募/.test(String(h.subject_name ?? ""))) return true
+  const code = String(h.subject_code ?? "").replace(/\s/g, "")
+  if (code.startsWith("1109") || code.startsWith("1108")) return true
+  if (extractListedFundCodeFromName(String(h.subject_name ?? ""))) return true
+  return kind === "fund_or_stock"
+}
+
+function sumHoldingMarketValue(holdings: HoldingRow[], pred: (h: HoldingRow) => boolean): number {
+  return holdings
+    .filter((h) => h.include_in_detail !== false && pred(h))
+    .reduce((s, h) => s + Math.abs(rowMarketValue(h)), 0)
+}
+
+function mapHoldingToDetailRow(h: HoldingRow, netAssetValue: number): Omit<ValuationHoldingDetailRow, "index"> {
+  const signedMv = parseNum(h.signed_market_value) || parseNum(h.market_value)
+  const signedCost = parseNum(h.signed_cost) || parseNum(h.cost)
+  const price = parseNum(h.price) || null
+  const extra = h.extra ?? {}
+  return {
+    assetName: String(h.subject_name ?? h.symbol ?? "").trim(),
+    valuationCode: resolveHoldingValuationCode(h),
+    category: labelForRowKind(h.row_kind ?? "other"),
+    quantity: (() => {
+      const qty = parseNum(h.quantity)
+      return qty > 0 ? qty : null
+    })(),
+    price,
+    marketValue: signedMv,
+    marketPct: normalizeMarketWeightPct(parseNum(h.market_weight), signedMv, netAssetValue),
+    cost: signedCost !== 0 ? signedCost : null,
+    unrealizedPnl: parseNum(h.unrealized_pnl) || null,
+    settlementStatus: extractSettlementStatus(extra, price != null && price > 0),
+  }
+}
+
+function buildEquityDetailHoldings(
+  holdings: HoldingRow[],
+  netAssetValue: number,
+  filter: (h: HoldingRow) => boolean,
+): ValuationHoldingDetailRow[] {
+  return holdings
+    .filter((h) => h.include_in_detail !== false && filter(h))
+    .filter((h) => Math.abs(rowMarketValue(h)) > 0)
+    .map((h) => mapHoldingToDetailRow(h, netAssetValue))
+    .filter((r) => r.assetName)
+    .sort((a, b) => Math.abs(b.marketValue) - Math.abs(a.marketValue))
+    .map((row, i) => ({ index: i + 1, ...row }))
+}
+
+function buildStockRiskExposure(holdings: HoldingRow[], netAssetValue: number): StockRiskExposure {
+  const nav = netAssetValue > 0 ? netAssetValue : 1
+  let stockLong = 0
+  let stockShort = 0
+  let indexLong = 0
+  let indexShort = 0
+  let etfLong = 0
+
+  for (const h of holdings) {
+    if (h.include_in_detail === false) continue
+    const mv = parseNum(h.signed_market_value) || parseNum(h.market_value)
+    if (Math.abs(mv) <= 0) continue
+    const kind = h.row_kind ?? "other"
+    const name = String(h.subject_name ?? "")
+    const symbol = String(h.symbol ?? "")
+
+    if (isDirectEquityStock(h)) {
+      if (mv >= 0) stockLong += mv
+      else stockShort += Math.abs(mv)
+      continue
+    }
+    if (/ETF/u.test(name) || (kind === "fund" && /ETF/.test(name))) {
+      if (mv >= 0) etfLong += mv
+      continue
+    }
+    if (kind === "derivative" && /^(IF|IH|IC|IM)/.test(symbol)) {
+      if (mv >= 0) indexLong += Math.abs(mv)
+      else indexShort += Math.abs(mv)
+    }
+  }
+
+  const pct = (v: number) => (v / nav) * 100
+  return {
+    stockLongMv: stockLong,
+    stockLongPct: pct(stockLong),
+    stockShortMv: stockShort,
+    stockShortPct: pct(stockShort),
+    indexLongMv: indexLong,
+    indexLongPct: pct(indexLong),
+    indexShortMv: indexShort,
+    indexShortPct: pct(indexShort),
+    etfLongMv: etfLong,
+    etfLongPct: pct(etfLong),
+    totalExposurePct: pct(stockLong - stockShort + etfLong),
+  }
+}
+
+function aggregateEquityAllocation(
+  holdings: HoldingRow[],
+  netAssetValue: number,
+  custodyBalance: number,
+): AllocationRow[] {
+  const sums = new Map<string, number>()
+
+  if (custodyBalance > 0) {
+    sums.set("bank_deposit", custodyBalance)
+  } else {
+    const cash = aggregateMajorKind(holdings, "bank_deposit")
+    if (cash > 0) sums.set("bank_deposit", cash)
+  }
+
+  const settlement = aggregateMajorKind(holdings, "settlement_reserve")
+  if (settlement > 0) {
+    sums.set("bank_deposit", (sums.get("bank_deposit") ?? 0) + settlement)
+  }
+
+  const margin = aggregateMajorKind(holdings, "margin_deposit")
+  if (margin > 0) sums.set("margin_deposit", margin)
+
+  for (const h of holdings) {
+    if (h.include_in_detail === false) continue
+    const mv = rowMarketValue(h)
+    if (mv <= 0) continue
+    const kind = h.row_kind ?? "other"
+    if (CASH_ROW_KINDS.has(kind)) continue
+
+    if (isDirectEquityStock(h)) {
+      sums.set("stock", (sums.get("stock") ?? 0) + mv)
+    } else if (isBondHoldingRow(h)) {
+      sums.set("bond", (sums.get("bond") ?? 0) + mv)
+    } else if (isWealthHolding(h)) {
+      sums.set("wealth", (sums.get("wealth") ?? 0) + mv)
+    } else if (isUnderlyingFundInvestment(h) || kind === "derivative" || kind === "option") {
+      continue
+    } else {
+      sums.set("other", (sums.get("other") ?? 0) + mv)
+    }
+  }
+
+  const entries = EQUITY_ALLOCATION_ORDER
+    .map((key) => [key, sums.get(key) ?? 0] as const)
+    .filter(([, value]) => value > 0)
+
+  const navBase = netAssetValue > 0
+    ? netAssetValue
+    : entries.reduce((s, [, v]) => s + v, 0)
+
+  return entries.map(([key, value], i) => ({
+    index: i + 1,
+    category: EQUITY_ALLOCATION_LABELS[key],
+    rowKind: key,
+    value,
+    pct: navBase > 0 ? (value / navBase) * 100 : 0,
+  }))
+}
+
+function isEquityOtherHolding(h: HoldingRow): boolean {
+  const kind = h.row_kind ?? "other"
+  if (CASH_ROW_KINDS.has(kind)) return false
+  if (isDirectEquityStock(h) || isBondHoldingRow(h) || isWealthHolding(h)) return false
+  if (isUnderlyingFundInvestment(h)) return false
+  if (kind === "derivative" || kind === "option") return false
+  return Math.abs(rowMarketValue(h)) > 0
+}
+
 function hasEconomicHoldingValue(h: HoldingRow): boolean {
   const qty = Math.abs(parseNum(h.quantity))
   const mv = parseNum(h.signed_market_value) || parseNum(h.market_value)
@@ -655,7 +919,7 @@ function isFundHoldingRow(h: HoldingRow): boolean {
   if (!hasEconomicHoldingValue(h)) return false
 
   const kind = h.row_kind ?? "other"
-  if (["private_fund", "fund_or_stock", "fund", "money_fund"].includes(kind)) return true
+  if (["private_fund", "fund_or_stock", "fund", "money_fund", "stock"].includes(kind)) return true
 
   const code = String(h.subject_code ?? "").replace(/\s/g, "")
   if (code.startsWith("1109") || code.startsWith("1108")) return true
@@ -664,8 +928,19 @@ function isFundHoldingRow(h: HoldingRow): boolean {
   return false
 }
 
+function resolveHoldingValuationCode(h: HoldingRow): string | null {
+  const name = String(h.subject_name ?? "")
+  return resolveFundHoldingCode(
+    String(h.subject_code ?? ""),
+    name,
+    h.symbol,
+    h.original_subject_code,
+  ) ?? extractListedFundCodeFromName(name)
+}
+
 function fundHoldingIdentityKey(h: HoldingRow): string | null {
-  const code = String(h.symbol ?? "").trim().toUpperCase()
+  const code = resolveHoldingValuationCode(h)
+    ?? String(h.symbol ?? "").trim().toUpperCase()
   if (code) return `code:${code}`
   const name = String(h.subject_name ?? "").trim()
   if (!name) return null
@@ -713,7 +988,20 @@ function classifyFundHoldingKind(h: HoldingRow): "private_fund" | "public_fund" 
 }
 
 export function detectValuationLayoutType(holdings: HoldingRow[]): ValuationLayoutType {
-  return holdings.some(isFundHoldingRow) ? "fof" : "derivative"
+  const fundMv = sumHoldingMarketValue(holdings, isUnderlyingFundInvestment)
+  const stockMv = sumHoldingMarketValue(holdings, isDirectEquityStock)
+  const derivMv = sumHoldingMarketValue(
+    holdings,
+    (h) => (h.row_kind === "derivative" || isOptionHolding(h)),
+  )
+
+  if (fundMv > 0 && fundMv >= stockMv * 0.25) return "fof"
+  if (derivMv > Math.max(stockMv, fundMv) && derivMv > 0) return "derivative"
+  if (stockMv > 0 && fundMv < stockMv * 0.25) return "equity"
+  if (fundMv > 0) return "fof"
+  if (derivMv > 0) return "derivative"
+  if (stockMv > 0) return "equity"
+  return "derivative"
 }
 
 function aggregateFofAllocation(
@@ -784,6 +1072,14 @@ function parsePlausibleNav(value: unknown): number | null {
   return null
 }
 
+const MAX_DAILY_RETURN = 0.5
+
+function calcPriceChangePct(decimal: number | null): number | null {
+  if (decimal == null || !Number.isFinite(decimal)) return null
+  if (Math.abs(decimal) > MAX_DAILY_RETURN) return null
+  return decimal * 100
+}
+
 function formatFundStrategy(l1: string | null | undefined, l2: string | null | undefined): string | null {
   const s1 = l1?.trim() || null
   const s2 = l2?.trim() || null
@@ -795,6 +1091,20 @@ function extractSuspensionInfo(extra: Record<string, unknown>, hasOfficialNav: b
   const raw = String(extra.suspension_info ?? extra.停牌信息 ?? "").trim()
   if (raw) return raw.startsWith("【") ? raw : `【${raw}】`
   return hasOfficialNav ? "【正常交易_手工维护】" : "【无行情】"
+}
+
+function extractSettlementStatus(extra: Record<string, unknown>, hasPrice: boolean): string {
+  const raw = String(
+    extra.settlement_status
+    ?? extra.结算状态
+    ?? extra.rights_info
+    ?? extra.权益信息
+    ?? extra.suspension_info
+    ?? extra.停牌信息
+    ?? "",
+  ).trim()
+  if (raw) return raw.startsWith("【") ? raw : `【${raw}】`
+  return hasPrice ? "【正常交易】" : "【无行情】"
 }
 
 type CompanyStrategyRow = { key: string; l1: string | null; l2: string | null }
@@ -846,7 +1156,100 @@ async function loadCompanyStrategyBatch(
   return out
 }
 
-type EmailNavDetail = { unitNav: number | null; cumulativeNav: number | null; navDate: string }
+type EmailNavDetail = {
+  unitNav: number | null
+  cumulativeNav: number | null
+  navDate: string
+  priceChangePct?: number | null
+}
+
+async function loadListedFundMarketNavBatch(
+  codes: string[],
+  asOfDate: string,
+): Promise<Map<string, EmailNavDetail>> {
+  const out = new Map<string, EmailNavDetail>()
+  const listedCodes = [...new Set(codes.filter(isListedFundCode))]
+  if (listedCodes.length === 0) return out
+
+  const tickerToCode = new Map<string, string>()
+  const tickers: string[] = []
+  for (const code of listedCodes) {
+    for (const ticker of listedFundCodeToTickers(code)) {
+      if (!tickerToCode.has(ticker)) {
+        tickerToCode.set(ticker, code)
+        tickers.push(ticker)
+      }
+    }
+  }
+  if (tickers.length === 0) return out
+
+  const rows = await query<{ ticker: string; trade_date: string; value: string; field: string; rn: string }>(
+    `WITH ranked AS (
+       SELECT
+         ticker,
+         trade_date::text AS trade_date,
+         value::text AS value,
+         field,
+         ROW_NUMBER() OVER (PARTITION BY ticker, field ORDER BY trade_date DESC) AS rn
+       FROM raw_etf_daily
+       WHERE ticker = ANY($1::text[])
+         AND field IN ('ORIGINALUNIT', 'ACCUMULATEDUNIT', 'ACCUNIT')
+         AND trade_date <= $2::date
+         AND value IS NOT NULL
+         AND value > 0
+     )
+     SELECT ticker, trade_date, value, field, rn::text AS rn
+     FROM ranked
+     WHERE rn <= 2`,
+    [tickers, asOfDate],
+  )
+
+  const unitPointsByCode = new Map<string, Array<{ navDate: string; unitNav: number }>>()
+  const cumByCode = new Map<string, number>()
+
+  for (const row of rows) {
+    const code = tickerToCode.get(row.ticker)
+    if (!code) continue
+    const value = parsePlausibleNav(row.value)
+    if (value == null) continue
+    const field = row.field.toUpperCase()
+    if (field === "ORIGINALUNIT") {
+      const list = unitPointsByCode.get(code) ?? []
+      list.push({ navDate: row.trade_date.slice(0, 10), unitNav: value })
+      unitPointsByCode.set(code, list)
+    } else if ((field === "ACCUMULATEDUNIT" || field === "ACCUNIT") && !cumByCode.has(code)) {
+      cumByCode.set(code, value)
+    }
+  }
+
+  for (const code of listedCodes) {
+    const points = (unitPointsByCode.get(code) ?? [])
+      .sort((a, b) => b.navDate.localeCompare(a.navDate))
+    const latest = points[0]
+    if (!latest) continue
+    const prev = points[1]
+    let priceChangePct: number | null = null
+    if (prev && prev.unitNav > 0) {
+      priceChangePct = calcPriceChangePct(latest.unitNav / prev.unitNav - 1)
+    }
+    out.set(code, {
+      unitNav: latest.unitNav,
+      cumulativeNav: cumByCode.get(code) ?? latest.unitNav,
+      navDate: latest.navDate,
+      priceChangePct,
+    })
+  }
+
+  const missing = listedCodes.filter((code) => !out.has(code))
+  if (missing.length > 0) {
+    const fetched = await fetchListedFundNavBatch(missing, asOfDate)
+    for (const [code, detail] of fetched) {
+      out.set(code, detail)
+    }
+  }
+
+  return out
+}
 
 async function loadEmailNavDetailsBatch(
   beianCodes: string[],
@@ -912,10 +1315,24 @@ async function loadEmailNavDetailsBatch(
 }
 
 function normalizeMarketWeightPct(weightRaw: number, signedMv: number, netAssetValue: number): number {
-  if (weightRaw !== 0) {
-    return (Math.abs(weightRaw) <= 1 ? weightRaw * 100 : weightRaw) * (signedMv < 0 ? -1 : 1)
+  const sign = signedMv < 0 ? -1 : 1
+  const computed = netAssetValue > 0 && Math.abs(signedMv) > 0
+    ? (signedMv / netAssetValue) * 100
+    : 0
+
+  if (weightRaw === 0 || netAssetValue <= 0 || Math.abs(signedMv) <= 0) {
+    return computed
   }
-  return netAssetValue > 0 ? (signedMv / netAssetValue) * 100 : 0
+
+  const fromWeight = (Math.abs(weightRaw) <= 1 ? weightRaw * 100 : weightRaw) * sign
+  const absFrom = Math.abs(fromWeight)
+  const absComputed = Math.abs(computed)
+  if (absComputed > 0) {
+    const ratio = absFrom / absComputed
+    // Guard against cost_weight mis-map or stale 估值表 pct columns (e.g. ETF rows).
+    if (ratio > 3 || ratio < 1 / 3) return computed
+  }
+  return fromWeight
 }
 
 async function buildFundHoldings(
@@ -929,18 +1346,24 @@ async function buildFundHoldings(
       const qty = parseNum(h.quantity)
       const derivedNav = deriveNavFromShares(h.quantity, signedMv)
       const virtualUnitNav = parsePlausibleNav(h.price) ?? derivedNav
+      const valuationCode = resolveHoldingValuationCode(h)
+      const signedCost = parseNum(h.signed_cost) || parseNum(h.cost)
+      const price = parseNum(h.price) || null
       return {
         fundName: String(h.subject_name ?? h.symbol ?? "").trim(),
-        valuationCode: h.symbol ? String(h.symbol).toUpperCase() : null,
+        valuationCode,
         navDate: valuationDate?.slice(0, 10) ?? null,
         virtualUnitNav,
         unitNav: null as number | null,
         cumulativeNav: null as number | null,
         priceChangePct: null as number | null,
+        price,
         marketValue: signedMv,
         marketPct: normalizeMarketWeightPct(parseNum(h.market_weight), signedMv, netAssetValue),
         shares: qty > 0 ? qty : null,
-        beianHao: h.symbol ? String(h.symbol).trim().toUpperCase() : null,
+        cost: signedCost !== 0 ? signedCost : null,
+        unrealizedPnl: parseNum(h.unrealized_pnl) || null,
+        beianHao: valuationCode,
         rowKind: h.row_kind ?? "other",
         extra: h.extra ?? {},
       }
@@ -950,56 +1373,114 @@ async function buildFundHoldings(
 
   if (fundRows.length === 0) return []
 
+  const nameCache = new Map<string, string | null>()
+  await Promise.all(
+    fundRows.map(async (row) => {
+      if (row.valuationCode) return
+      const listed = extractListedFundCodeFromName(row.fundName)
+      if (listed) {
+        row.valuationCode = listed
+        row.beianHao = listed
+        return
+      }
+      const cacheKey = row.fundName
+      if (!nameCache.has(cacheKey)) {
+        nameCache.set(cacheKey, await lookupFundCodeByProductName(cacheKey))
+      }
+      const lookedUp = nameCache.get(cacheKey)
+      if (lookedUp) {
+        row.valuationCode = lookedUp
+        row.beianHao = lookedUp
+      }
+    }),
+  )
+
   const asOfDate = valuationDate?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
   const beianCodes = fundRows.map((r) => r.beianHao).filter(Boolean) as string[]
   const productNames = fundRows.map((r) => r.fundName)
 
-  const [strategyMap, emailNavMap, resolvedBeians] = await Promise.all([
+  const [strategyMap, emailNavMap, marketNavMap, resolvedBeians] = await Promise.all([
     loadCompanyStrategyBatch(beianCodes, productNames),
     loadEmailNavDetailsBatch(beianCodes, productNames, asOfDate),
-    Promise.all(fundRows.map((row) =>
-      row.beianHao ? Promise.resolve(row.beianHao) : resolveFundBeianHao(row.fundName),
-    )),
+    loadListedFundMarketNavBatch(beianCodes, asOfDate),
+    Promise.all(fundRows.map((row) => {
+      if (row.beianHao) return Promise.resolve(row.beianHao)
+      const listed = extractListedFundCodeFromName(row.fundName)
+      if (listed) return Promise.resolve(listed)
+      return resolveFundBeianHao(row.fundName)
+    })),
   ])
 
+  const navIdentities: ProductNavIdentity[] = fundRows.map((row, i) => ({
+    beian_hao: resolvedBeians[i] ?? row.beianHao ?? row.valuationCode,
+    product_name: row.fundName,
+    short_name: null,
+  }))
+  const navResolver = await BatchNavResolver.create(navIdentities, asOfDate)
+
   return fundRows.map((row, i) => {
-    const emailNav = (row.beianHao ? emailNavMap.get(row.beianHao) : null)
+    const beianHao = resolvedBeians[i] ?? row.beianHao
+    const valuationCode = row.valuationCode ?? (isListedFundCode(beianHao) ? beianHao : null)
+    const navKey = valuationCode ?? beianHao
+    const emailNav = (navKey ? emailNavMap.get(navKey) : null)
       ?? emailNavMap.get(row.fundName)
+    const marketNav = navKey ? marketNavMap.get(navKey) : null
+    const officialNav = emailNav ?? marketNav
 
     let unitNav: number | null = null
     let cumulativeNav: number | null = null
     let navDate = row.navDate
 
-    if (emailNav?.unitNav != null) {
-      unitNav = emailNav.unitNav
-      cumulativeNav = emailNav.cumulativeNav
-      navDate = emailNav.navDate
+    if (officialNav?.unitNav != null) {
+      unitNav = officialNav.unitNav
+      cumulativeNav = officialNav.cumulativeNav
+      navDate = officialNav.navDate
     } else if (row.virtualUnitNav != null) {
       unitNav = row.virtualUnitNav
     }
 
-    const strategyRow = (row.beianHao ? strategyMap.get(row.beianHao) : null)
+    const strategyRow = (navKey ? strategyMap.get(navKey) : null)
       ?? strategyMap.get(row.fundName)
     const fundStrategy = formatFundStrategy(strategyRow?.l1, strategyRow?.l2)
 
-    const hasOfficialNav = unitNav != null && unitNav !== row.virtualUnitNav
+    const hasOfficialNav = officialNav?.unitNav != null
+      || (unitNav != null && unitNav !== row.virtualUnitNav)
     const suspensionInfo = extractSuspensionInfo(row.extra, hasOfficialNav)
+
+    let priceChangePct: number | null = null
+    if (unitNav != null && navDate) {
+      priceChangePct = calcPriceChangePct(
+        navResolver.calcDailyReturnPct(navIdentities[i], unitNav, navDate, null),
+      )
+    }
+    if (priceChangePct == null && marketNav?.priceChangePct != null) {
+      priceChangePct = marketNav.priceChangePct
+    }
+    if (priceChangePct == null && officialNav && "priceChangePct" in officialNav && officialNav.priceChangePct != null) {
+      priceChangePct = officialNav.priceChangePct
+    }
+
+    const hasMarketPrice = row.price != null && row.price > 0
 
     return {
       index: i + 1,
       fundName: row.fundName,
-      valuationCode: row.valuationCode,
+      valuationCode,
       fundStrategy,
       navDate,
       virtualUnitNav: row.virtualUnitNav,
       unitNav,
       cumulativeNav,
-      priceChangePct: null,
+      priceChangePct,
+      price: row.price,
       marketValue: row.marketValue,
       marketPct: row.marketPct,
       shares: row.shares,
+      cost: row.cost,
+      unrealizedPnl: row.unrealizedPnl,
+      settlementStatus: extractSettlementStatus(row.extra, hasMarketPrice),
       suspensionInfo,
-      beianHao: resolvedBeians[i] ?? row.beianHao,
+      beianHao,
       rowKind: row.rowKind,
     }
   })
@@ -1321,7 +1802,9 @@ export async function getFundValuationAllocation(
   const layout_type = detectValuationLayoutType(holdings)
   const allocation = layout_type === "fof"
     ? aggregateFofAllocation(holdings, net_asset_value, custody_balance)
-    : buildAllocation(sums, net_asset_value)
+    : layout_type === "equity"
+      ? aggregateEquityAllocation(holdings, net_asset_value, custody_balance)
+      : buildAllocation(sums, net_asset_value)
 
   const derivatives = layout_type === "derivative"
     ? buildDerivatives(holdings, net_asset_value)
@@ -1336,6 +1819,21 @@ export async function getFundValuationAllocation(
   const fund_holdings = layout_type === "fof"
     ? await buildFundHoldings(holdings, net_asset_value, valuation_date)
     : []
+  const stock_holdings = layout_type === "equity"
+    ? buildEquityDetailHoldings(holdings, net_asset_value, isDirectEquityStock)
+    : []
+  const bond_holdings = layout_type === "equity"
+    ? buildEquityDetailHoldings(holdings, net_asset_value, isBondHoldingRow)
+    : []
+  const wealth_holdings = layout_type === "equity"
+    ? buildEquityDetailHoldings(holdings, net_asset_value, isWealthHolding)
+    : []
+  const equity_other_holdings = layout_type === "equity"
+    ? buildEquityDetailHoldings(holdings, net_asset_value, isEquityOtherHolding)
+    : []
+  const stock_risk_exposure = layout_type === "equity"
+    ? buildStockRiskExposure(holdings, net_asset_value)
+    : null
   const other_holdings = layout_type === "fof"
     ? buildOtherHoldings(holdings, net_asset_value)
     : []
@@ -1451,6 +1949,11 @@ export async function getFundValuationAllocation(
     layout_type,
     allocation,
     fund_holdings,
+    stock_holdings,
+    bond_holdings,
+    wealth_holdings,
+    equity_other_holdings,
+    stock_risk_exposure,
     return_curves,
     other_holdings,
     derivatives,
@@ -1458,7 +1961,10 @@ export async function getFundValuationAllocation(
     options: derivativeOptions,
     greek_letters,
     term_analysis,
-    has_data: allocation.length > 0 || fund_holdings.length > 0 || derivatives.length > 0,
+    has_data: allocation.length > 0
+      || fund_holdings.length > 0
+      || stock_holdings.length > 0
+      || derivatives.length > 0,
     match_method,
   }
 }
@@ -1634,7 +2140,9 @@ function computeSnapshotAllocation(
   const layout_type = detectValuationLayoutType(holdings)
   return layout_type === "fof"
     ? aggregateFofAllocation(holdings, nav, custodyBalance)
-    : buildAllocation(sums, nav)
+    : layout_type === "equity"
+      ? aggregateEquityAllocation(holdings, nav, custodyBalance)
+      : buildAllocation(sums, nav)
 }
 
 function sectorWeightPctByMode(

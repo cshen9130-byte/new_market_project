@@ -4,6 +4,7 @@
 
 import { query } from "@/lib/db"
 import type { ValuationRow } from "@/lib/server/valuation-analyzer"
+import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
 
 const KNOWN_HOLDING_FIELDS = new Set([
@@ -223,7 +224,12 @@ export function mapValuationRowsToHoldings(
       subjectCode: String(row.code ?? ""),
       originalSubjectCode: strOrNull(row.original_code),
       subjectName: String(row.name ?? ""),
-      symbol: strOrNull(row.symbol),
+      symbol: resolveFundHoldingCode(
+        String(row.code ?? ""),
+        String(row.name ?? ""),
+        strOrNull(row.symbol),
+        strOrNull(row.original_code),
+      ),
       rowKind: strOrNull(row.row_kind),
       direction: strOrNull(row.direction),
       exchange: strOrNull(row.exchange),

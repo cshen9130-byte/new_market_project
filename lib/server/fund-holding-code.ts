@@ -7,7 +7,21 @@ import { query } from "@/lib/db"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 
 function compactSubjectCode(code: string): string {
-  return String(code ?? "").replace(/\s+/g, "").replace(/\./g, "")
+  return String(code ?? "")
+    .replace(/\s+/g, "")
+    .replace(/\./g, "")
+    .replace(/(SH|SZ|BJ|OTC)$/i, "")
+}
+
+function extractCodeFromDottedSubject(original: string): string | null {
+  const text = String(original ?? "").trim()
+  if (!text) return null
+  const parts = text.split(/[.\s]+/).filter(Boolean)
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const token = parts[i].replace(/(SH|SZ|BJ|OTC)$/i, "").trim()
+    if (/^\d{6}$/.test(token)) return formatFundHoldingCode(token)
+  }
+  return null
 }
 
 /**
@@ -21,6 +35,40 @@ const FUND_NAME_CODE_OVERRIDES: Record<string, string> = {
   "磐松红利指数增强1号":                "SAGF05",
   "棕榈滩泰来":                         "AVF39",
   "棕榈滩泰来三号":                     "BVC41",
+}
+
+/** Known A-share ETF name patterns → 6-digit ticker code. */
+const ETF_NAME_PATTERNS: Array<{ test: RegExp; code: string }> = [
+  { test: /华宝.*证券.*ETF/u, code: "512000" },
+  { test: /嘉实.*科创板.*芯片.*ETF/u, code: "588200" },
+  { test: /广发.*恒生.*港股通.*科技.*ETF/u, code: "159262" },
+]
+
+export function isListedFundCode(code: string | null | undefined): boolean {
+  return /^\d{6}$/.test(String(code ?? "").trim())
+}
+
+/** Resolve 6-digit exchange-traded fund code from product name. */
+export function extractListedFundCodeFromName(name: string): string | null {
+  const trimmed = String(name ?? "").trim()
+  if (!trimmed) return null
+
+  for (const { test, code } of ETF_NAME_PATTERNS) {
+    if (test.test(trimmed)) return formatFundHoldingCode(code)
+  }
+
+  if (!/ETF/u.test(trimmed)) return null
+
+  const embedded = trimmed.match(/\b(5[012]\d{4}|159\d{3}|588\d{3}|16[0-3]\d{3})\b/)
+  return embedded ? formatFundHoldingCode(embedded[1]) : null
+}
+
+/** Map 6-digit fund code to likely EmQuant / DB tickers (SH first). */
+export function listedFundCodeToTickers(code: string): string[] {
+  const c = String(code ?? "").trim()
+  if (!/^\d{6}$/.test(c)) return []
+  if (c.startsWith("159") || c.startsWith("16")) return [`${c}.SZ`, `${c}.SH`]
+  return [`${c}.SH`, `${c}.SZ`]
 }
 
 function normalizeFundNameForLookup(name: string): string {
@@ -76,15 +124,19 @@ export function extractFundHoldingCode(subjectCode: string, subjectName: string)
     }
   }
 
-  // 1105 open-end / money market: 11050201004373 → 004373
+  // 1105 open-end / ETF on exchange: 11050201512000SH → 512000, 1105.02.01.512000 SH
   if (compact.startsWith("1105")) {
+    const listed = compact.match(
+      /1105(?:\d{2})*?(5[012]\d{4}|588\d{3}|159\d{3}|16[0-3]\d{3})(?:SH|SZ|BJ)?$/i,
+    )
+    if (listed) return formatFundHoldingCode(listed[1])
     const tail = compact.match(/(\d{6})$/)
     if (tail) return formatFundHoldingCode(tail[1])
   }
 
-  // 1102 ETF / exchange-traded fund: ...512000, ...159262
+  // 1102 ETF / exchange-traded fund: ...512000, ...159262, ...588200
   if (compact.startsWith("1102")) {
-    const etf = compact.match(/(1[59]\d{5}|5[12]\d{4,5})$/i)
+    const etf = compact.match(/(588\d{3}|1[59]\d{5}|5[12]\d{4,5})$/i)
     if (etf) return formatFundHoldingCode(etf[1])
     const six = compact.match(/(\d{6})$/)
     if (six) return formatFundHoldingCode(six[1])
@@ -117,9 +169,13 @@ export function resolveFundHoldingCode(
   subjectCode: string,
   subjectName: string,
   existingSymbol?: string | null,
+  originalSubjectCode?: string | null,
 ): string | null {
   const override = overrideCodeFromName(subjectName)
   if (override) return override
+
+  const fromOriginal = extractCodeFromDottedSubject(String(originalSubjectCode ?? ""))
+  if (fromOriginal) return fromOriginal
 
   const fromSubject = extractFundHoldingCode(subjectCode, subjectName)
   if (fromSubject) return fromSubject
@@ -129,13 +185,19 @@ export function resolveFundHoldingCode(
     return null
   }
 
-  return normalizeFundHoldingCode(existingSymbol, subjectName)
+  const normalized = normalizeFundHoldingCode(existingSymbol, subjectName)
+  if (normalized) return normalized
+
+  return extractListedFundCodeFromName(subjectName)
 }
 
 /** Resolve beian / product code from fund name across reference tables. */
 export async function lookupFundCodeByProductName(productName: string): Promise<string | null> {
   const name = String(productName ?? "").trim()
   if (!name) return null
+
+  const listed = extractListedFundCodeFromName(name)
+  if (listed) return listed
 
   const rows = await query<{ code: string | null }>(
     `SELECT COALESCE(

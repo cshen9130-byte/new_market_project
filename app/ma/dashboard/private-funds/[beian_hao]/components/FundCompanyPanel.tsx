@@ -3,6 +3,7 @@
 import { memo, useEffect, useState } from "react"
 import Link from "next/link"
 import { ExternalLink } from "lucide-react"
+import { amacManagerUrl } from "@/lib/amac-urls"
 import { FundCompanyProductList } from "./FundCompanyProductList"
 
 interface CompanyData {
@@ -29,10 +30,6 @@ function fmtCell(value: string | number | null | undefined) {
     return <span className="text-zinc-400">—</span>
   }
   return value
-}
-
-function amacManagerUrl(registrationNo: string) {
-  return `https://gs.amac.org.cn/amac-infodisc/res/pof/manager/managerList.html?keyword=${encodeURIComponent(registrationNo)}`
 }
 
 export const FundCompanyPanel = memo(function FundCompanyPanel({

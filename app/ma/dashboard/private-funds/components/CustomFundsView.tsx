@@ -23,6 +23,7 @@ import {
   Trash2,
   TrendingUp,
 } from "lucide-react"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 import { authService } from "@/lib/auth"
 import { CustomFundCreateDialog } from "./CustomFundCreateDialog"
 import { customFundDetailHref } from "@/components/ma/custom-fund-detail-view"
@@ -1385,6 +1386,16 @@ export function CustomFundsView() {
         </div>,
         document.body,
       )}
+
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.id}
+        getName={(r) => r.product_name}
+        getBeianHao={(r) => r.product_code}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 }

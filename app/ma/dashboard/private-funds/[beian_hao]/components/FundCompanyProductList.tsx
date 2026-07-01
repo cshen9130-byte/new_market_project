@@ -15,6 +15,7 @@ import {
   PlusCircle,
   Search,
 } from "lucide-react"
+import { ProductSelectionPanelBound } from "@/components/ma/product-selection-panel"
 
 interface ProductRow {
   beian_hao: string
@@ -517,6 +518,15 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
           </div>
         </div>
       </div>
+      <ProductSelectionPanelBound
+        data={data}
+        selected={selected}
+        setSelected={setSelected}
+        getId={(r) => r.beian_hao}
+        getName={(r) => r.product_name}
+        getBeianHao={(r) => r.beian_hao}
+        getLatestNavDate={(r) => r.latest_nav_date}
+      />
     </div>
   )
 })

@@ -17,6 +17,7 @@ import { FofReturnCurvePanel, type ReturnCurveSeries } from "./FofReturnCurvePan
 import { FofReturnAnalysisPanel } from "./FofReturnAnalysisPanel"
 import { ValuationEmptyAnalysis } from "./ValuationEmptyAnalysis"
 import { OtherHoldingsPanel, type OtherHoldingRow } from "./OtherHoldingsPanel"
+import { EquityValuationPanel, type ValuationHoldingDetailRow, type StockRiskExposure } from "./EquityValuationPanel"
 import {
   AllocationTrendPanel,
   type AllocationTrendSeries,
@@ -76,9 +77,14 @@ type ValuationData = {
   manager: string | null
   custodian: string | null
   inception_date: string | null
-  layout_type: "fof" | "derivative"
+  layout_type: "fof" | "derivative" | "equity"
   allocation: AllocationRow[]
   fund_holdings: FundHoldingRow[]
+  stock_holdings: ValuationHoldingDetailRow[]
+  bond_holdings: ValuationHoldingDetailRow[]
+  wealth_holdings: ValuationHoldingDetailRow[]
+  equity_other_holdings: ValuationHoldingDetailRow[]
+  stock_risk_exposure: StockRiskExposure | null
   return_curves: ReturnCurveSeries[]
   other_holdings: OtherHoldingRow[]
   derivatives: DerivativeRow[]
@@ -118,6 +124,9 @@ const ALLOCATION_COLORS: Record<string, string> = {
   托管户现金: "#1e3a5f",
   清算备付金: "#5b9bd5",
   存出保证金: "#ed7d31",
+  债券: "#548235",
+  股票: "#2e75b6",
+  理财: "#bf9000",
   私募基金: "#4472c4",
   公募基金: "#70ad47",
   其他: "#a5a5a5",
@@ -468,6 +477,7 @@ export default function FundValuationAnalysisPage() {
   const displayName = data?.product_name ?? data?.fund_name ?? beian_hao
   const navDateLabel = data?.unit_nav_date ?? data?.valuation_date?.slice(0, 10) ?? "—"
   const isFofLayout = data?.layout_type === "fof" || Boolean(trendData?.fof_trend)
+  const isEquityLayout = data?.layout_type === "equity"
   const hasFundHoldings = (data?.fund_holdings?.length ?? 0) > 0
   const showReturnAnalysis = isFofLayout && hasFundHoldings
   const appliedBenchKey = benchmarkKeyFromLabel(filterBench)
@@ -1159,7 +1169,17 @@ export default function FundValuationAnalysisPage() {
           </div>
         </div>
 
-        {isFofLayout ? (
+        {isEquityLayout ? (
+          <EquityValuationPanel
+            stockHoldings={data.stock_holdings ?? []}
+            bondHoldings={data.bond_holdings ?? []}
+            wealthHoldings={data.wealth_holdings ?? []}
+            otherHoldings={data.equity_other_holdings ?? []}
+            stockRiskExposure={data.stock_risk_exposure ?? null}
+            valuationDate={data.valuation_date}
+            displayName={displayName}
+          />
+        ) : isFofLayout ? (
           <>
             <FofFundsPanel
               rows={data.fund_holdings ?? []}

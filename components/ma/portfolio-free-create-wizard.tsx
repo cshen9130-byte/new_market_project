@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import {
   Briefcase,
   CalendarDays,
@@ -28,6 +28,7 @@ import {
   savePortfolio,
   type SavedPortfolioFund,
 } from "@/lib/ma-portfolio-storage"
+import { consumePortfolioPrefill } from "@/lib/ma-product-selection-actions"
 
 const WIZARD_STEPS = ["配置方案", "确定方案", "模拟回测"] as const
 
@@ -375,6 +376,13 @@ export function PortfolioFreeCreateWizard() {
   const [maxAnnualRisk, setMaxAnnualRisk] = useState("")
   const [maxDrawdown, setMaxDrawdown] = useState("")
   const addDateInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const prefill = consumePortfolioPrefill()
+    if (prefill.length > 0) {
+      setFunds(prefill.map(createFundRow))
+    }
+  }, [])
 
   const isEqualWeightModel = model === "equal"
   const isMeanVarianceModel = model === "mean-variance"

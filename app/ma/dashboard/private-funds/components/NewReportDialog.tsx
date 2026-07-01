@@ -9,6 +9,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { FofWeeklyReportDialog } from "./FofWeeklyReportDialog"
+import { ProductMonthlyReportDialog } from "./ProductMonthlyReportDialog"
 import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
 
 type TemplateCategory = "weekly" | "monthly" | "other"
@@ -19,6 +20,7 @@ interface ReportTemplate {
   description: string
   badgeLabel: string
   exampleUrl?: string
+  exampleKind?: "image" | "pdf"
 }
 
 const TEMPLATE_CATEGORIES: { key: TemplateCategory; label: string }[] = [
@@ -67,6 +69,8 @@ const TEMPLATES_BY_CATEGORY: Record<TemplateCategory, ReportTemplate[]> = {
       title: "私募基金月报-官方",
       description: "适用组合策略基金",
       badgeLabel: "月报",
+      exampleUrl: "/ma/api/reports/product-monthly/example",
+      exampleKind: "pdf",
     },
   ],
   other: [],
@@ -139,12 +143,14 @@ export function NewReportDialog({
 }) {
   const [category, setCategory] = useState<TemplateCategory>("weekly")
   const [fofWeeklyOpen, setFofWeeklyOpen] = useState(false)
+  const [productMonthlyOpen, setProductMonthlyOpen] = useState(false)
   const [exampleTemplate, setExampleTemplate] = useState<ReportTemplate | null>(null)
 
   useEffect(() => {
     if (open) {
       setCategory("weekly")
       setFofWeeklyOpen(false)
+      setProductMonthlyOpen(false)
       setExampleTemplate(null)
     }
   }, [open])
@@ -154,6 +160,9 @@ export function NewReportDialog({
   function handleUseTemplate(template: ReportTemplate) {
     if (template.id === "weekly-track-curve") {
       setFofWeeklyOpen(true)
+    }
+    if (template.id === "monthly-pe-official") {
+      setProductMonthlyOpen(true)
     }
   }
 
@@ -170,6 +179,27 @@ export function NewReportDialog({
             open
             title={exampleTemplate.title}
             exampleUrl={exampleTemplate.exampleUrl}
+            onClose={() => setExampleTemplate(null)}
+          />
+        )}
+      </>
+    )
+  }
+
+  if (productMonthlyOpen) {
+    return (
+      <>
+        <ProductMonthlyReportDialog
+          open={open}
+          onClose={onClose}
+          onBack={() => setProductMonthlyOpen(false)}
+        />
+        {exampleTemplate?.exampleUrl && (
+          <ReportTemplateExampleDialog
+            open
+            title={exampleTemplate.title}
+            exampleUrl={exampleTemplate.exampleUrl}
+            exampleKind={exampleTemplate.exampleKind}
             onClose={() => setExampleTemplate(null)}
           />
         )}
@@ -236,6 +266,7 @@ export function NewReportDialog({
         open
         title={exampleTemplate.title}
         exampleUrl={exampleTemplate.exampleUrl}
+        exampleKind={exampleTemplate.exampleKind}
         onClose={() => setExampleTemplate(null)}
       />
     )}
