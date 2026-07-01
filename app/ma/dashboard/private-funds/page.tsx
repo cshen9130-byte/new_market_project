@@ -249,6 +249,53 @@ function writePoolsCache(cacheKey: string, pools: PoolDef[]): void {
   try { localStorage.setItem(cacheKey, JSON.stringify(pools)) } catch { /* ignore quota */ }
 }
 
+function poolsEqual(a: PoolDef[], b: PoolDef[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].key !== b[i].key || a[i].label !== b[i].label) return false
+  }
+  return true
+}
+
+// Stale-while-revalidate cache for the tracking-fund list. Keyed by the full
+// request params so returning to a pool/page renders instantly from the last
+// response while a fresh copy is fetched in the background. In-memory survives
+// SPA navigation; sessionStorage survives tab reloads.
+type ListCacheEntry = { data: TrackFundRow[]; total: number }
+const listMemCache = new Map<string, ListCacheEntry>()
+const LIST_CACHE_PREFIX = "tracking_list_cache:"
+
+function readListCache(key: string): ListCacheEntry | null {
+  const mem = listMemCache.get(key)
+  if (mem) return mem
+  if (typeof window === "undefined") return null
+  try {
+    const raw = sessionStorage.getItem(LIST_CACHE_PREFIX + key)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as ListCacheEntry
+    listMemCache.set(key, parsed)
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function writeListCache(key: string, entry: ListCacheEntry): void {
+  listMemCache.set(key, entry)
+  if (typeof window === "undefined") return
+  try {
+    sessionStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(entry))
+  } catch {
+    // sessionStorage full — drop the oldest cached lists and retry once.
+    try {
+      for (const k of Object.keys(sessionStorage)) {
+        if (k.startsWith(LIST_CACHE_PREFIX)) sessionStorage.removeItem(k)
+      }
+      sessionStorage.setItem(LIST_CACHE_PREFIX + key, JSON.stringify(entry))
+    } catch { /* give up; in-memory cache still works */ }
+  }
+}
+
 const STRATEGIES = ["不限", "期货策略", "股票对冲", "股票多头", "套利策略", "期权策略", "多资产策略", "债券策略", "组合策略", "其他"] as const
 const MORE_INFO_TABS = ["基金类型", "基金成立日期", "净值日期", "净值频率", "净值完整度", "是否代表产品", "基金规模提示", "基金信披情况", "基金策略确认", "投资区域", "运作状态", "机构管理规模", "机构办公地址"] as const
 const FUND_TYPES = ["不限", "私募证券基金", "券商资管", "期货资管", "信托产品", "公募专户", "保险资管", "私募资产配置基金"] as const
@@ -2037,6 +2084,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           const local = prev.find((x) => x.key === pk)
           if (local) result.push(local)
         }
+        // Bail out when nothing changed so the (very large) component doesn't
+        // re-render on every 30 s poll and we don't churn localStorage.
+        if (poolsEqual(prev, result)) return prev
         writePoolsCache(cacheKey, result)
         return result
       })
@@ -2357,7 +2407,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       setTotal(0)
       return
     }
-    setLoading(true)
     const params = new URLSearchParams({
       page: String(page), sort: sortCol, dir: sortDir,
       pool: listPool,
@@ -2376,21 +2425,42 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       params.set("personal_tag_mode", myPersonalTagMode)
       myPersonalTags.forEach((tag) => params.append("personal_tag", tag))
     }
+
+    // Stale-while-revalidate: render cached rows instantly, then refresh in the
+    // background so pool switches / revisits feel instant while still picking up
+    // server-side changes (new NAV, edits, etc.).
+    const cacheKey = (isMineTab ? "mine\u0000" : "team\u0000") + params.toString()
+    const cached = readListCache(cacheKey)
+    if (cached) {
+      setData(cached.data)
+      setTotal(cached.total)
+      setLoading(false)
+    } else {
+      setData([])
+      setTotal(0)
+      setLoading(true)
+    }
+
+    let cancelled = false
     fetch(`/ma/api/tracking-funds/list?${params}`, {
       headers: isMineTab ? userFetchHeaders() : {},
     })
       .then((r) => r.json())
       .then((d) => {
+        if (cancelled) return
         if (d?.error) {
-          setData([])
-          setTotal(0)
+          if (!cached) { setData([]); setTotal(0) }
           return
         }
-        setData(d.data ?? [])
-        setTotal(d.total ?? 0)
+        const entry: ListCacheEntry = { data: d.data ?? [], total: d.total ?? 0 }
+        writeListCache(cacheKey, entry)
+        setData(entry.data)
+        setTotal(entry.total)
       })
-      .catch(() => { setData([]); setTotal(0) })
-      .finally(() => setLoading(false))
+      .catch(() => { if (!cancelled && !cached) { setData([]); setTotal(0) } })
+      .finally(() => { if (!cancelled) setLoading(false) })
+
+    return () => { cancelled = true }
   }, [listPool, listPoolSupported, isMineTab, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
 
   useEffect(() => {
@@ -3124,14 +3194,14 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           <div className="overflow-auto rounded-lg border flex-1 min-h-0">
             <table className="text-sm border-collapse w-full" style={{ minWidth: 1400 }}>
               <thead className="sticky top-0 z-20">
-                <tr className="bg-muted/40 dark:bg-muted/20 backdrop-blur-sm border-b">
-                  <th className={`${thBase} w-8 px-2 sticky left-0 z-30 bg-muted/40 dark:bg-muted/20`}>
+                <tr className="bg-muted dark:bg-zinc-900 border-b">
+                  <th className={`${thBase} w-8 px-2 sticky left-0 z-30 bg-muted dark:bg-zinc-900`}>
                     <input type="checkbox" className="rounded h-3 w-3"
                       checked={selected.size === data.length && data.length > 0}
                       onChange={toggleAll} />
                   </th>
-                  <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted/40 dark:bg-muted/20`}>序号</th>
-                  <th className={`${thSort} min-w-[200px] sticky left-[72px] z-30 bg-muted/40 dark:bg-muted/20 border-r border-zinc-200 dark:border-zinc-700`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
+                  <th className={`${thBase} w-10 sticky left-8 z-30 bg-muted dark:bg-zinc-900`}>序号</th>
+                  <th className={`${thSort} min-w-[200px] sticky left-[72px] z-30 bg-muted dark:bg-zinc-900 border-r border-zinc-200 dark:border-zinc-700`} onClick={() => handleSort("product_name")}>产品名称<SortIco col="product_name" /></th>
                   {fieldConfigSelected.map(renderFieldConfigHeader)}
                   <th className={`${thSort} text-right min-w-[88px]`} onClick={() => handleSort("ret_1w")}>
                     <div>近一周收益<SortIco col="ret_1w" /></div>
@@ -3153,11 +3223,11 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <div>近一年收益<SortIco col="ret_1y" /></div>
                     {showInterval && <div className="text-[10px] font-normal text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 365)}</div>}
                   </th>
-                  <th className={`${thSort} text-right min-w-[98px]`} onClick={() => handleSort("sharpe_1y")}>近一年夏普比率<SortIco col="sharpe_1y" /></th>
-                  <th className={`${thSort} text-right min-w-[98px]`} onClick={() => handleSort("calmar_1y")}>近一年卡玛比率<SortIco col="calmar_1y" /></th>
-                  <th className={`${thBase} text-center w-16 sticky right-32 z-30 bg-muted/40 dark:bg-muted/20 border-l border-zinc-200 dark:border-zinc-700`}>走势</th>
-                  <th className={`${thBase} text-center w-16 sticky right-16 z-30 bg-muted/40 dark:bg-muted/20`}>资料</th>
-                  <th className={`${thBase} text-center w-16 sticky right-0 z-30 bg-muted/40 dark:bg-muted/20`}>操作</th>
+                  <th className={`${thSort} text-center min-w-[98px]`} onClick={() => handleSort("sharpe_1y")}>近一年夏普比率<SortIco col="sharpe_1y" /></th>
+                  <th className={`${thSort} text-center min-w-[98px]`} onClick={() => handleSort("calmar_1y")}>近一年卡玛比率<SortIco col="calmar_1y" /></th>
+                  <th className={`${thBase} text-center w-16 sticky right-32 z-30 bg-muted dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-700`}>走势</th>
+                  <th className={`${thBase} text-center w-16 sticky right-16 z-30 bg-muted dark:bg-zinc-900`}>资料</th>
+                  <th className={`${thBase} text-center w-16 sticky right-0 z-30 bg-muted dark:bg-zinc-900`}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -3220,8 +3290,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                         <TrackPctCell value={row.ret_1y} />
                         {showInterval && <div className="text-[10px] text-zinc-400 mt-0.5">{calcInterval(teamCutoffDate, 365)}</div>}
                       </td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackRatioCell value={row.sharpe_1y} /></td>
-                      <td className={`${cell} text-right tabular-nums`}><TrackRatioCell value={row.calmar_1y} /></td>
+                      <td className={`${cell} text-center tabular-nums`}><TrackRatioCell value={row.sharpe_1y} /></td>
+                      <td className={`${cell} text-center tabular-nums`}><TrackRatioCell value={row.calmar_1y} /></td>
                       <td className={`${stickyCell} text-center sticky right-32 border-l border-zinc-200 dark:border-zinc-700`}>
                         <div className="flex items-center justify-center"
                           onMouseEnter={(e) => {

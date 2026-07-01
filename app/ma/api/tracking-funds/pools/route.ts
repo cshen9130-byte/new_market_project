@@ -60,16 +60,22 @@ async function ensureTable() {
   ensured = true
 }
 
+// Per-process guards so the (idempotent) seeding does not issue extra queries
+// on every poll once it has already run.
+let teamSeeded = false
+const seededMineUsers = new Set<string>()
+
 /**
  * Seed the built-in team pools exactly once. Uses a hidden marker row so that
  * deleting a default pool afterwards does not cause it to reappear.
  */
 async function seedTeamDefaults(): Promise<void> {
+  if (teamSeeded) return
   const marker = await query<{ ok: number }>(
     `SELECT 1 AS ok FROM tracking_custom_pools WHERE pool_key = $1 LIMIT 1`,
     [TEAM_SEED_MARKER],
   )
-  if (marker.length > 0) return
+  if (marker.length > 0) { teamSeeded = true; return }
 
   for (let i = 0; i < DEFAULT_TEAM_POOLS.length; i++) {
     const p = DEFAULT_TEAM_POOLS[i]
@@ -86,6 +92,7 @@ async function seedTeamDefaults(): Promise<void> {
      ON CONFLICT (pool_key) DO NOTHING`,
     [TEAM_SEED_MARKER],
   )
+  teamSeeded = true
 }
 
 /**
@@ -93,6 +100,7 @@ async function seedTeamDefaults(): Promise<void> {
  * but not deleted, so seeding it when missing is always safe.
  */
 async function seedMineDefault(userKey: string): Promise<void> {
+  if (seededMineUsers.has(userKey)) return
   await query(
     `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
      SELECT $1::text, $2::text, 'mine', $3::text, 0, NOW()
@@ -102,6 +110,7 @@ async function seedMineDefault(userKey: string): Promise<void> {
      )`,
     [DEFAULT_MINE_POOL.pool_key, DEFAULT_MINE_POOL.label, userKey],
   )
+  seededMineUsers.add(userKey)
 }
 
 function normalizeScope(raw: string | null | undefined): "team" | "mine" {

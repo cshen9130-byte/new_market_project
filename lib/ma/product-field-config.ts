@@ -84,6 +84,7 @@ export function getProductFieldTextValue(row: Record<string, unknown>, label: st
     "最新净值日期": pick("latest_nav_date"),
     "最新单位净值": pick("latest_nav"),
     "最新累计净值": pick("cumulative_nav"),
+    "最新涨跌幅": pick("latest_price_change"),
     "备案编码": pick("beian_hao"),
     "基金全称": pick("product_name"),
     "成立日期": pick("inception_date"),
