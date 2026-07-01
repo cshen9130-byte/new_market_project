@@ -253,6 +253,28 @@ function normalizeSubjectCode(code: string): string {
   return code.replace(/\s+/g, "").replace(/\./g, "")
 }
 
+function extractStockTicker(code: string): string {
+  const compactCode = normalizeSubjectCode(code)
+  // 板块段（第 5-6 位）可能包含字母，如科创板 C1、北交所 J3，故用 [0-9A-Za-z]{2}
+  const match = compactCode.match(/^1102[0-9A-Za-z]{2}01(\d{6})$/)
+  return match?.[1] ?? ""
+}
+
+function isStockValuationAdjustmentCode(code: string): boolean {
+  const compactCode = normalizeSubjectCode(code)
+  // 99 为股票估值增值（浮盈调整）科目，需排除以避免与成本行重复计算
+  return /^1102[0-9A-Za-z]{2}99(?:\d{6})?$/.test(compactCode)
+}
+
+function inferStockExchange(code: string, ticker: string): string {
+  const compactCode = normalizeSubjectCode(code)
+  if (compactCode.startsWith("110201") || compactCode.startsWith("1102C1") || /^6/.test(ticker)) return "上交所"
+  if (compactCode.startsWith("110231") || /^(0|2|3)/.test(ticker)) return "深交所"
+  // 北交所：老代码 8 开头、新代码 9(920) 开头；4 为新三板精选层历史代码
+  if (compactCode.startsWith("1102J3") || /^(4|8|9)/.test(ticker)) return "北交所"
+  return "股票"
+}
+
 function extractContractSymbol(code: string, name: string): string {
   const matches = `${code} ${name}`.match(/[A-Za-z]{1,4}\d{2,5}/g) || []
   return (
@@ -300,6 +322,8 @@ function inferRowKind(code: string, name: string): string {
   if (compactCode.startsWith("1021")) return "settlement_reserve"
   if (compactCode.startsWith("1031")) return "margin_deposit"
   if (compactCode.startsWith("1101")) return "bond"
+  if (compactCode.startsWith("1103")) return "bond"
+  if (extractStockTicker(compactCode)) return "stock"
   if (compactCode.startsWith("1102")) return "fund_or_stock"
   if (compactCode.startsWith("1105")) return /货币/.test(name) ? "money_fund" : "fund"
   if (compactCode.startsWith("1108")) return "private_fund"
@@ -320,12 +344,13 @@ function hasEconomicValue(row: ValuationRow): boolean {
 }
 
 function isOffsetOrSummaryRow(code: string, name: string): boolean {
-  const compactCode = code.replace(/\s+/g, "")
+  const compactCode = normalizeSubjectCode(code)
   const normalizedName = normalizeText(name)
   const hasContractInName = /[A-Za-z]{1,4}\d{2,5}/.test(name)
 
   if (!code || !name) return true
   if (!/^\d/.test(compactCode)) return true
+  if (isStockValuationAdjustmentCode(compactCode)) return true
   if (/合计|小计|总计|净值|单位净值|打印日期|声明/.test(normalizedName)) return true
   if (/增长率|已实现收益|可分配利润|累计派现|现金类占净值比/.test(normalizedName)) return true
   if (/冲销|冲抵|估值增值|应计利息/.test(normalizedName)) return true
@@ -412,10 +437,19 @@ function rowsToObjects(rows: unknown[][], headerRowIndex: number, headerRowCount
       continue
     }
 
-    const symbol = extractContractSymbol(obj.code, obj.name)
+    const compactCode = normalizeSubjectCode(obj.code)
+    const stockTicker = extractStockTicker(compactCode)
+    const symbol = stockTicker || extractContractSymbol(obj.code, obj.name)
     if (symbol) obj.symbol = symbol
 
-    if (normalizeSubjectCode(obj.code).startsWith("3102")) {
+    if (stockTicker) {
+      obj.security_code = stockTicker
+      obj.asset_class = "股票"
+      obj.exchange = inferStockExchange(compactCode, stockTicker)
+      obj.direction = "long"
+    }
+
+    if (compactCode.startsWith("3102")) {
       obj.direction = Number(obj.signed_market_value ?? obj.signed_cost ?? 0) < 0 ? "short" : "long"
       obj.exchange = inferExchange(obj.original_code as string, symbol)
       obj.asset_class = inferAssetClass(symbol, obj.name)

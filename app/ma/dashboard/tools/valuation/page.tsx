@@ -12,6 +12,7 @@ interface ValuationPosition {
   exchange: string;         // 交易所：'CFFEX', 'SHFE', 'DCE', 'CZCE', 'INE', 'GFEX'
   direction: 'long' | 'short'; // 多空方向
   asset_class?: string;     // 资产类别，优先使用后端返回的分类
+  security_code?: string;   // 股票代码，来自估值表科目代码末 6 位
   // 持仓规模
   volume: number;           // 手数
   unit_cost: number;        // 开仓均价
@@ -62,6 +63,7 @@ interface AnalysisResult {
     name: string;
     notional_value: number;
     weight: number;
+    items?: ValuationPosition[];
   }>; // 前十大持仓
   
   // ✅ 新增风险指标
@@ -72,7 +74,20 @@ interface AnalysisResult {
   option_ratio: number; // 期权占比（%）
   bond_future_ratio: number; // 国债期货占比（%）
   strategy_tags: string[]; // 策略标签
-  
+
+  // ✅ 股票分析维度（与期货分析并存，纯股票/含股持仓时展示）
+  stock_analysis: {
+    stock_count: number;            // 持股只数
+    stock_market_value: number;     // 股票市值合计
+    stock_position_ratio: number;   // 股票仓位（股票市值/净值，%）
+    stock_unrealized_pnl: number;   // 股票浮动盈亏（估值增值合计）
+    win_count: number;              // 盈利只数
+    loss_count: number;             // 亏损只数
+    board_distribution: { [key: string]: number };    // 交易板块分布（沪主板/深主板/创业板/科创板/北交所）
+    industry_distribution: { [key: string]: number }; // 股票行业分布（仅股票）
+    top_stocks: Array<{ name: string; ticker: string; market_value: number; weight: number; pnl: number }>; // 前十大重仓股
+  };
+
   strategy_analysis: {
     core_strategy: string;
     risk_appetite: string;
@@ -199,6 +214,9 @@ const SECTOR_TO_CATEGORY_MAP: Record<string, string> = {
   '机械设备': '股票',
   '上海A股': '股票',
   '深圳A股': '股票',
+  '科创板': '股票',
+  '创业板': '股票',
+  '北交所A股': '股票',
   
   // 其他大类
   '债券': '债券',
@@ -335,6 +353,34 @@ const getShortChineseName = (symbol: string, name: string): string => {
   return name || symbol;
 };
 
+const extractStockTickerFromSubjectCode = (code: string): string => {
+  const compactCode = (code || '').toString().trim().replace(/\s+/g, '').replace(/\./g, '');
+  // 板块段（第 5-6 位）可能含字母：科创板 C1、北交所 J3，故用 [0-9A-Za-z]{2}
+  const subjectMatch = compactCode.match(/^1102[0-9A-Za-z]{2}01(\d{6})$/);
+  if (subjectMatch) return subjectMatch[1];
+  return /^\d{6}$/.test(compactCode) ? compactCode : '';
+};
+
+// 根据股票代码判断交易板块（细于交易所：区分主板/创业板/科创板/北交所）
+const getStockBoard = (ticker: string): string => {
+  const t = (ticker || '').toString().trim();
+  if (/^(688|689)/.test(t)) return '科创板';
+  if (/^(300|301|302)/.test(t)) return '创业板';
+  if (/^(43|83|87|88|92)/.test(t)) return '北交所';
+  if (/^60/.test(t)) return '沪市主板';
+  if (/^(000|001|002|003)/.test(t)) return '深市主板';
+  return '其他';
+};
+
+const inferStockExchangeFromCode = (code: string, ticker: string): string => {
+  const compactCode = (code || '').toString().trim().replace(/\s+/g, '').replace(/\./g, '');
+  if (compactCode.startsWith('110201') || compactCode.startsWith('1102C1') || /^6/.test(ticker)) return '上交所';
+  if (compactCode.startsWith('110231') || /^(0|2|3)/.test(ticker)) return '深交所';
+  // 北交所：老代码 8 开头、新代码 9(920) 开头
+  if (compactCode.startsWith('1102J3') || /^(4|8|9)/.test(ticker)) return '北交所';
+  return '股票';
+};
+
 export default function ValuationTool() {
   const [file, setFile] = useState<File | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -352,13 +398,15 @@ export default function ValuationTool() {
   const exchangeChartRef = useRef<HTMLDivElement>(null);
   const topHoldingsChartRef = useRef<HTMLDivElement>(null);
   const longShortChartRef = useRef<HTMLDivElement>(null);
-  
+  const stockBoardChartRef = useRef<HTMLDivElement>(null);
+
   const charts = useRef<{ [key: string]: echarts.ECharts | null }>({
     assetClass: null,
     sector: null,
     exchange: null,
     topHoldings: null,
-    longShort: null
+    longShort: null,
+    stockBoard: null
   });
 
   /** 将数字部分加粗变色，返回JSX */
@@ -458,9 +506,11 @@ export default function ValuationTool() {
     }
     
     // 股票 - 尝试通过名称关键字匹配行业
-    if (/^60[0123]\d{3}$/.test(code) || /^68[89]\d{3}$/.test(code) || 
-        /^00[0123]\d{3}$/.test(code) || /^30\d{4}$/.test(code)) {
-      
+    // 沪主板 60x / 科创板 688 / 深主板 00x / 创业板 30x / 北交所 43x·83x·87x·88x·920
+    const isBeijingStock = /^(43|83|87|88|92)\d{4}$/.test(code);
+    if (/^60[0123]\d{3}$/.test(code) || /^68[89]\d{3}$/.test(code) ||
+        /^00[0123]\d{3}$/.test(code) || /^30\d{4}$/.test(code) || isBeijingStock) {
+
       if (/银行/.test(nameUpper)) return '银行';
       if (/医药|医疗/.test(nameUpper)) return '医药生物';
       if (/芯片|半导体|电子/.test(nameUpper)) return '电子';
@@ -477,6 +527,9 @@ export default function ValuationTool() {
       if (/家电/.test(nameUpper)) return '家用电器';
       if (/汽车/.test(nameUpper)) return '汽车';
       
+      if (isBeijingStock) return '北交所A股';
+      if (/^68/.test(code)) return '科创板';
+      if (/^30/.test(code)) return '创业板';
       return /^60/.test(code) ? '上海A股' : '深圳A股';
     }
     
@@ -542,7 +595,7 @@ export default function ValuationTool() {
           assetClass = '商品期货';
         } else if ((item.name || '').includes('期权') || (item.code || '').includes('DD') || (item.code || '').includes('DE') || (item.code || '').includes('DF') || (item.code || '').includes('DG')) {
           assetClass = '期权';
-        } else if (item.code.startsWith('1105')) {
+        } else if ((item.code || '').startsWith('1105')) {
           assetClass = '货币基金';
         } else {
           assetClass = '其他';
@@ -572,7 +625,7 @@ export default function ValuationTool() {
       industryDistribution[industry] = (industryDistribution[industry] || 0) + value;
       
       // 大类分布（总分结构）
-      const category = SECTOR_TO_CATEGORY_MAP[industry] || '其他';
+      const category = assetClass === '股票' ? '股票' : (SECTOR_TO_CATEGORY_MAP[industry] || '其他');
       categoryDistribution[category] = (categoryDistribution[category] || 0) + value;
     });
 
@@ -595,9 +648,11 @@ export default function ValuationTool() {
       const name = item.name || '';
       // 必须包含合约代码（字母+数字模式，如 IC2512、AL2601）
       const hasContractCode = /[A-Za-z]{2,}\d{2,}/.test(symbol) || /[A-Za-z]{2,}\d{2,}/.test(name);
+      const stockTicker = item.security_code || extractStockTickerFromSubjectCode(symbol) || extractStockTickerFromSubjectCode(item.code || '');
+      const isStockPosition = item.asset_class === '股票' || item.row_kind === 'stock' || /^\d{6}$/.test(stockTicker);
       // 排除包含"初始合约价值"等汇总关键词的行
       const isSummaryRow = /初始合约价值|汇总|合计|总计|冲销|冲抵|估值增值/.test(name);
-      return hasContractCode && !isSummaryRow;
+      return (hasContractCode || isStockPosition) && !isSummaryRow;
     });
     
     // console.log('过滤汇总行后有效持仓数:', validPositions.length);
@@ -607,8 +662,12 @@ export default function ValuationTool() {
     
     validPositions.forEach(item => {
       // 提取品种代码（去掉合约月份）
-      const rawSymbol = item.symbol || '';
-      const productCode = rawSymbol.replace(/\d+$/, '').toUpperCase() || '未知';
+      const rawSymbol = item.symbol || item.security_code || '';
+      const stockTicker = item.security_code || extractStockTickerFromSubjectCode(rawSymbol) || extractStockTickerFromSubjectCode(item.code || '');
+      const isStockPosition = item.asset_class === '股票' || item.row_kind === 'stock' || /^\d{6}$/.test(stockTicker);
+      const productCode = isStockPosition
+        ? (stockTicker || rawSymbol)
+        : rawSymbol.replace(/\d+$/, '').toUpperCase() || '未知';
       
       if (!holdingsByProduct[productCode]) {
         holdingsByProduct[productCode] = { totalValue: 0, items: [] };
@@ -623,7 +682,9 @@ export default function ValuationTool() {
         const weight = nav > 0 ? (data.totalValue / nav) * 100 : 0;
         // 获取品种中文名
         let displayName = productCode;
-        if (PRODUCT_NAME_MAP[productCode]) {
+        if (data.items[0]?.asset_class === '股票' || data.items[0]?.row_kind === 'stock') {
+          displayName = data.items[0]?.name || productCode;
+        } else if (PRODUCT_NAME_MAP[productCode]) {
           displayName = PRODUCT_NAME_MAP[productCode];
         } else if (data.items.length > 0) {
           displayName = getShortChineseName(data.items[0].symbol, data.items[0].name);
@@ -819,7 +880,69 @@ export default function ValuationTool() {
     
     const strategyAnalysis = analyzeStrategy();
 
+    // ✅ 股票分析维度（不影响期货逻辑，仅在含股持仓时有意义）
+    const analyzeStocks = () => {
+      const stockItems = data.filter(item =>
+        item.asset_class === '股票' ||
+        item.row_kind === 'stock' ||
+        /^\d{6}$/.test(item.security_code || '')
+      );
+
+      let stockMarketValue = 0;
+      let stockUnrealizedPnl = 0;
+      let winCount = 0;
+      let lossCount = 0;
+      const boardDistribution: { [key: string]: number } = {};
+      const stockIndustryDistribution: { [key: string]: number } = {};
+
+      stockItems.forEach(item => {
+        const value = item.notional_value || 0;
+        const pnl = item.unrealized_pnl || 0;
+        const ticker = item.security_code || extractStockTickerFromSubjectCode(item.symbol) || extractStockTickerFromSubjectCode(item.code || '');
+
+        stockMarketValue += value;
+        stockUnrealizedPnl += pnl;
+        if (pnl > 0) winCount += 1;
+        else if (pnl < 0) lossCount += 1;
+
+        const board = getStockBoard(ticker);
+        boardDistribution[board] = (boardDistribution[board] || 0) + value;
+
+        const industry = getIndustry(ticker || item.symbol || '', item.name || '');
+        stockIndustryDistribution[industry] = (stockIndustryDistribution[industry] || 0) + value;
+      });
+
+      const topStocks = stockItems
+        .map(item => {
+          const ticker = item.security_code || extractStockTickerFromSubjectCode(item.symbol) || extractStockTickerFromSubjectCode(item.code || '');
+          return {
+            name: (item.name || ticker || '').replace(/^\d{6}\s*/, '') || ticker,
+            ticker,
+            market_value: item.notional_value || 0,
+            weight: nav > 0 ? ((item.notional_value || 0) / nav) * 100 : 0,
+            pnl: item.unrealized_pnl || 0,
+          };
+        })
+        .sort((a, b) => b.market_value - a.market_value)
+        .slice(0, 10);
+
+      return {
+        stock_count: stockItems.length,
+        stock_market_value: stockMarketValue,
+        stock_position_ratio: nav > 0 ? (stockMarketValue / nav) * 100 : 0,
+        stock_unrealized_pnl: stockUnrealizedPnl,
+        win_count: winCount,
+        loss_count: lossCount,
+        board_distribution: boardDistribution,
+        industry_distribution: stockIndustryDistribution,
+        top_stocks: topStocks,
+      };
+    };
+
+    const stockAnalysis = analyzeStocks();
+
     return {
+      stock_analysis: stockAnalysis,
       total_value: totalValue,
       netting_value: Math.abs(signedNettingValue),
       total_margin: totalMargin,
@@ -1361,7 +1484,54 @@ export default function ValuationTool() {
         console.error('多空分布图表初始化失败:', error);
       }
     }
-    
+
+    // 股票交易板块分布饼图（沪主板/深主板/创业板/科创板/北交所）
+    if (stockBoardChartRef.current) {
+      try {
+        if (charts.current.stockBoard) charts.current.stockBoard.dispose();
+        charts.current.stockBoard = echarts.init(stockBoardChartRef.current);
+
+        const boardData = Object.entries(analysis.stock_analysis?.board_distribution || {})
+          .map(([name, value]) => ({ name, value }))
+          .filter(item => item.value > 0)
+          .sort((a, b) => b.value - a.value);
+
+        const boardColors: Record<string, string> = {
+          '沪市主板': '#e53935',
+          '深市主板': '#1e88e5',
+          '创业板': '#43a047',
+          '科创板': '#fb8c00',
+          '北交所': '#8e24aa',
+          '其他': '#757575'
+        };
+
+        const boardOption = {
+          title: { text: '股票交易板块分布', left: 'center', textStyle: { fontSize: 16, fontWeight: 600 } },
+          tooltip: {
+            trigger: 'item',
+            formatter: (params: any) =>
+              `<div style="font-weight:600;">${params.name}</div>
+               <div style="color:#3b82f6;font-weight:600;">市值: ${(params.value / 10000).toFixed(2)} 万</div>
+               <div style="color:#6b7280;">占比: ${params.percent.toFixed(1)}%</div>`
+          },
+          legend: { orient: 'horizontal', bottom: 0, itemWidth: 12, itemHeight: 12, textStyle: { fontSize: 11 } },
+          series: [{
+            name: '交易板块',
+            type: 'pie',
+            radius: ['40%', '70%'],
+            center: ['50%', '45%'],
+            avoidLabelOverlap: true,
+            itemStyle: { borderRadius: 8, borderColor: '#fff', borderWidth: 2 },
+            label: { show: true, formatter: (p: any) => `${p.name}\n${p.percent.toFixed(1)}%`, fontSize: 10 },
+            data: boardData.map(item => ({ value: item.value, name: item.name, itemStyle: { color: boardColors[item.name] || '#757575' } }))
+          }]
+        };
+        charts.current.stockBoard.setOption(boardOption);
+      } catch (error) {
+        console.error('股票交易板块分布图表初始化失败:', error);
+      }
+    }
+
     // console.log('图表初始化完成');
   };
 
@@ -1735,7 +1905,7 @@ export default function ValuationTool() {
         }
 
         // 只处理交易性风险持仓；现金、保证金、清算款等只进入明细，不进入概览分析
-        if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1102') && !code.startsWith('1108') && !code.startsWith('3102')) {
+        if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1103') && !code.startsWith('1102') && !code.startsWith('1108') && !code.startsWith('3102')) {
           // console.log(`排除：非风险资产科目 - code=${code}, name=${name}`);
           return false;
         }
@@ -1841,7 +2011,7 @@ export default function ValuationTool() {
           if (!code || code.length < 4) return false;
           
           // 只处理交易性风险持仓
-          if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1102') && !code.startsWith('1108') && !code.startsWith('3102')) {
+          if (!code.startsWith('1001') && !code.startsWith('1101') && !code.startsWith('1103') && !code.startsWith('1102') && !code.startsWith('1108') && !code.startsWith('3102')) {
             return false;
           }
           
@@ -2044,7 +2214,8 @@ export default function ValuationTool() {
             if (name.includes('QDII')) return 'QDII基金';
             return '基金';
           }
-          if (code.startsWith('1101')) return '债券';
+          if (code.startsWith('1101') || code.startsWith('1103')) return '债券';
+          if (extractStockTickerFromSubjectCode(code)) return '股票';
           if (code.startsWith('1105')) return '货币基金';
           if (code.startsWith('3102')) {
             // 期权代码：3102DD/DF 买方，3102DE/DG 卖方
@@ -2075,9 +2246,9 @@ export default function ValuationTool() {
         const name = item.name || '';
 
         // 提取合约代码：仅衍生品行提取，避免现金/保证金账户号被误识别为合约
-        let symbol = '';
+        let symbol = (item.symbol || item.security_code || '').toString().trim();
         
-        if (code.startsWith('3102')) {
+        if (code.startsWith('3102') && !symbol) {
           const codeMatch = code.match(/[A-Za-z]{1,4}\d{2,5}/);
           if (codeMatch) {
             symbol = codeMatch[0];
@@ -2097,8 +2268,8 @@ export default function ValuationTool() {
               }
             }
           }
-        } else {
-          symbol = code;
+        } else if (!symbol) {
+          symbol = extractStockTickerFromSubjectCode(code) || code;
         }
         
         // 最终兜底：如果还是没有提取到合约代码，使用简短名称
@@ -2135,11 +2306,18 @@ export default function ValuationTool() {
           assetClass = '应收款项';
           direction = 'long';
           exchange = '应收';
-        } else if (code.startsWith('1101')) {
+        } else if (code.startsWith('1101') || code.startsWith('1103')) {
           assetClass = '债券';
           direction = 'long';
         } else if (code.startsWith('1102')) {
-          assetClass = '股票/基金';
+          const stockTicker = extractStockTickerFromSubjectCode(code);
+          if (stockTicker) {
+            symbol = stockTicker;
+            assetClass = '股票';
+            exchange = inferStockExchangeFromCode(code, stockTicker);
+          } else {
+            assetClass = '股票/基金';
+          }
           direction = 'long';
         } else if (code.startsWith('1108')) {
           assetClass = '私募基金';
@@ -2290,6 +2468,7 @@ export default function ValuationTool() {
         return {
           code: code,
           symbol: symbol,
+          security_code: item.security_code || extractStockTickerFromSubjectCode(symbol) || extractStockTickerFromSubjectCode(code),
           name: displayName,
           exchange: exchange,
           asset_class: assetClass,
@@ -2649,6 +2828,75 @@ ${rowsText}`;
             </details>
           </div>
 
+          {/* 股票持仓分析（含股持仓时展示，不影响期货分析） */}
+          {analysisResult.stock_analysis && analysisResult.stock_analysis.stock_count > 0 && (
+            <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+              <h2 className="text-2xl font-semibold text-gray-900 mb-4">股票持仓分析</h2>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                <div className="border rounded-lg p-4">
+                  <div className="text-sm text-gray-500">股票市值</div>
+                  <div className="text-xl font-bold sm:text-2xl">{(analysisResult.stock_analysis.stock_market_value / 10000).toFixed(2)} 万</div>
+                </div>
+                <div className="border rounded-lg p-4">
+                  <div className="text-sm text-gray-500">股票仓位（占净值）</div>
+                  <div className="text-xl font-bold sm:text-2xl">{analysisResult.stock_analysis.stock_position_ratio.toFixed(2)}%</div>
+                </div>
+                <div className="border rounded-lg p-4">
+                  <div className="text-sm text-gray-500">持股只数</div>
+                  <div className="text-xl font-bold sm:text-2xl">{analysisResult.stock_analysis.stock_count}</div>
+                </div>
+                <div className="border rounded-lg p-4">
+                  <div className="text-sm text-gray-500">股票浮动盈亏</div>
+                  <div className={`text-xl font-bold sm:text-2xl ${analysisResult.stock_analysis.stock_unrealized_pnl >= 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {(analysisResult.stock_analysis.stock_unrealized_pnl / 10000).toFixed(2)} 万
+                  </div>
+                </div>
+                <div className="border rounded-lg p-4">
+                  <div className="text-sm text-gray-500">盈利 / 亏损家数</div>
+                  <div className="text-xl font-bold sm:text-2xl">
+                    <span className="text-red-600">{analysisResult.stock_analysis.win_count}</span>
+                    <span className="text-gray-400"> / </span>
+                    <span className="text-green-600">{analysisResult.stock_analysis.loss_count}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div>
+                  <h3 className="text-lg font-medium text-gray-900 mb-3">交易板块分布</h3>
+                  <div ref={stockBoardChartRef} style={{ height: '360px' }}></div>
+                </div>
+                <div>
+                  <h3 className="text-lg font-medium text-gray-900 mb-3">前十大重仓股</h3>
+                  <div className="overflow-hidden rounded-lg border border-gray-100">
+                    <table className="min-w-full divide-y divide-gray-200 text-sm">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="px-3 py-2 text-left font-medium text-gray-600">股票</th>
+                          <th className="px-3 py-2 text-left font-medium text-gray-600">代码</th>
+                          <th className="px-3 py-2 text-right font-medium text-gray-600">市值(万)</th>
+                          <th className="px-3 py-2 text-right font-medium text-gray-600">占净值</th>
+                          <th className="px-3 py-2 text-right font-medium text-gray-600">浮动盈亏</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100">
+                        {analysisResult.stock_analysis.top_stocks.map((s, i) => (
+                          <tr key={`${s.ticker}-${i}`}>
+                            <td className="px-3 py-2 text-gray-800">{s.name}</td>
+                            <td className="px-3 py-2 font-mono text-gray-500">{s.ticker}</td>
+                            <td className="px-3 py-2 text-right text-gray-700">{(s.market_value / 10000).toFixed(2)}</td>
+                            <td className="px-3 py-2 text-right text-gray-700">{s.weight.toFixed(2)}%</td>
+                            <td className={`px-3 py-2 text-right ${s.pnl >= 0 ? 'text-red-600' : 'text-green-600'}`}>{s.pnl.toFixed(0)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 策略分析研究 */}
           <div className="bg-white rounded-lg shadow-md p-6 mb-8">
             <h2 className="text-2xl font-semibold text-gray-900 mb-4">策略分析研究</h2>
@@ -2846,7 +3094,7 @@ ${rowsText}`;
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.current_price.toFixed(2)}</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{(item.notional_value / 10000).toFixed(2)} 万</td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                              <span className={item.unrealized_pnl >= 0 ? 'text-green-600' : 'text-red-600'}>
+                              <span className={item.unrealized_pnl >= 0 ? 'text-red-600' : 'text-green-600'}>
                                 {item.unrealized_pnl.toFixed(2)}
                               </span>
                             </td>
