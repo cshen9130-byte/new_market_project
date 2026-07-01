@@ -311,7 +311,13 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
     22,
   )
 
-  logProgress(`done — ${funds.length} rows`)
+  // Some funds stopped reporting years ago; their latest NAV falls outside the
+  // default history window and lands as null above. Backfill them from the
+  // wider (stale) history now so the request path never has to resolve NAV live
+  // (which otherwise costs ~0.5s per null row on every list load).
+  logProgress("backfilling null-NAV rows from wider history…")
+  const patched = await patchTrackingFundsCacheNullNav(asOfDate)
+  logProgress(`done — ${funds.length} rows (backfilled ${patched} null-NAV rows)`)
   return funds.length
 }
 
@@ -324,6 +330,10 @@ export async function patchTrackingFundsCacheNullNav(
   const effectiveAsOf = asOfDate ?? new Date().toISOString().slice(0, 10)
 
   let patched = 0
+  // Keyset cursor on beian_hao so we always move forward. Rows that stay null
+  // (genuinely unresolvable NAV) are skipped instead of being re-selected
+  // forever, which the previous LIMIT-only loop could do (infinite loop).
+  let cursor = ""
   for (;;) {
     const staleRows = await query<{
       beian_hao: string
@@ -332,11 +342,13 @@ export async function patchTrackingFundsCacheNullNav(
     }>(
       `SELECT beian_hao, product_name, short_name
        FROM ops_tracking_funds_list_cache
-       WHERE unit_nav IS NULL
-       LIMIT $1`,
-      [batchSize],
+       WHERE unit_nav IS NULL AND beian_hao > $1
+       ORDER BY beian_hao
+       LIMIT $2`,
+      [cursor, batchSize],
     )
     if (staleRows.length === 0) break
+    cursor = staleRows[staleRows.length - 1].beian_hao
 
     logProgress(`patching null NAV cache batch (${staleRows.length} rows)…`)
     const identities: ProductNavIdentity[] = staleRows.map((row) => ({
