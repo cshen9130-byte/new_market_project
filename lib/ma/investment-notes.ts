@@ -241,26 +241,30 @@ function normalizeNote(raw: unknown): InvestmentNote {
   }
 }
 
+function trySetLocalStorage(key: string, value: string): void {
+  try { localStorage.setItem(key, value) } catch { /* ignore quota / security errors */ }
+}
+
 function ensureSeedNotes(): InvestmentNote[] {
   if (typeof window === "undefined") return SAMPLE_NOTES.map(normalizeNote)
-  const version = localStorage.getItem(VERSION_KEY)
-  if (version !== String(SEED_VERSION)) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(SAMPLE_NOTES))
-    localStorage.setItem(VERSION_KEY, String(SEED_VERSION))
-    return SAMPLE_NOTES.map(normalizeNote)
-  }
   try {
+    const version = localStorage.getItem(VERSION_KEY)
+    if (version !== String(SEED_VERSION)) {
+      trySetLocalStorage(STORAGE_KEY, JSON.stringify(SAMPLE_NOTES))
+      trySetLocalStorage(VERSION_KEY, String(SEED_VERSION))
+      return SAMPLE_NOTES.map(normalizeNote)
+    }
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(SAMPLE_NOTES))
+      trySetLocalStorage(STORAGE_KEY, JSON.stringify(SAMPLE_NOTES))
       return SAMPLE_NOTES.map(normalizeNote)
     }
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed) || parsed.length === 0) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(SAMPLE_NOTES))
+      trySetLocalStorage(STORAGE_KEY, JSON.stringify(SAMPLE_NOTES))
       return SAMPLE_NOTES.map(normalizeNote)
     }
-    return parsed.map((note: InvestmentNote) => normalizeNote(note))
+    return parsed.map((note: unknown) => normalizeNote(note))
   } catch {
     return SAMPLE_NOTES.map(normalizeNote)
   }
@@ -272,7 +276,7 @@ export function loadInvestmentNotes(): InvestmentNote[] {
 
 export function saveInvestmentNotes(notes: InvestmentNote[]): void {
   if (typeof window === "undefined") return
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(notes))
+  trySetLocalStorage(STORAGE_KEY, JSON.stringify(notes))
 }
 
 export function listInvestmentNotes(scope: "team" | "mine"): InvestmentNote[] {
