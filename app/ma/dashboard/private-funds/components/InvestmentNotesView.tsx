@@ -206,27 +206,38 @@ export function InvestmentNotesView() {
   const [renameTitleDraft, setRenameTitleDraft] = useState("")
   const [associationOpen, setAssociationOpen] = useState(false)
   const [draftAttachments, setDraftAttachments] = useState<InvestmentNoteAttachment[]>([])
+  const [loading, setLoading] = useState(true)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const reloadNotes = useCallback(() => {
-    const items = listInvestmentNotes(activeTab)
-    setNotes(items)
-    setSelectedId((prev) => {
-      if (prev && items.some((n) => n.id === prev)) return prev
-      return items[0]?.id ?? null
-    })
+  const reloadNotes = useCallback(async () => {
+    try {
+      const items = await listInvestmentNotes(activeTab)
+      setNotes(items)
+      setSelectedId((prev) => {
+        if (prev && items.some((n) => n.id === prev)) return prev
+        return items[0]?.id ?? null
+      })
+    } catch {
+      setNotes([])
+      setSelectedId(null)
+    } finally {
+      setLoading(false)
+    }
   }, [activeTab])
 
   useEffect(() => {
-    reloadNotes()
-    function onStorage(e: StorageEvent) {
-      if (e.key === "dd_investment_notes") reloadNotes()
+    setLoading(true)
+    void reloadNotes()
+    function onRefresh() {
+      void reloadNotes()
     }
-    window.addEventListener("storage", onStorage)
-    window.addEventListener("focus", reloadNotes)
+    window.addEventListener("focus", onRefresh)
+    document.addEventListener("visibilitychange", onRefresh)
+    const timer = window.setInterval(onRefresh, 30_000)
     return () => {
-      window.removeEventListener("storage", onStorage)
-      window.removeEventListener("focus", reloadNotes)
+      window.removeEventListener("focus", onRefresh)
+      document.removeEventListener("visibilitychange", onRefresh)
+      window.clearInterval(timer)
     }
   }, [reloadNotes])
 
@@ -259,22 +270,22 @@ export function InvestmentNotesView() {
     fileInputRef.current?.click()
   }
 
-  function handleUploadFiles(files: FileList) {
+  async function handleUploadFiles(files: FileList) {
     const items = filesToAttachments(files)
     const next = [...activeAttachments, ...items]
     setDraftAttachments(next)
     if (selectedNote && !editing) {
-      updateInvestmentNote(selectedNote.id, { attachments: next })
-      reloadNotes()
+      await updateInvestmentNote(selectedNote.id, { attachments: next })
+      await reloadNotes()
     }
   }
 
-  function handleRemoveAttachment(id: string) {
+  async function handleRemoveAttachment(id: string) {
     const next = activeAttachments.filter((item) => item.id !== id)
     setDraftAttachments(next)
     if (selectedNote && !editing) {
-      updateInvestmentNote(selectedNote.id, { attachments: next })
-      reloadNotes()
+      await updateInvestmentNote(selectedNote.id, { attachments: next })
+      await reloadNotes()
     }
   }
 
@@ -286,14 +297,13 @@ export function InvestmentNotesView() {
     setDraftAttachments(note.attachments)
   }
 
-  function handleWriteNote() {
-    const note = createInvestmentNote({
+  async function handleWriteNote() {
+    const note = await createInvestmentNote({
       title: "无标题",
       content: "",
       teamShared: activeTab === "team",
     })
-    const items = listInvestmentNotes(activeTab)
-    setNotes(items)
+    await reloadNotes()
     setSelectedId(note.id)
     setDraftTitle("无标题")
     setDraftContent("")
@@ -309,27 +319,27 @@ export function InvestmentNotesView() {
     setEditing(true)
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!selectedNote) return
-    updateInvestmentNote(selectedNote.id, {
+    await updateInvestmentNote(selectedNote.id, {
       title: draftTitle.trim() || "无标题",
       content: draftContent,
       attachments: draftAttachments,
     })
     setEditing(false)
-    setNotes(listInvestmentNotes(activeTab))
+    await reloadNotes()
   }
 
   function handleDelete() {
     if (!selectedNote) return
-    handleDeleteNote(selectedNote)
+    void handleDeleteNote(selectedNote)
   }
 
-  function handleDeleteNote(note: InvestmentNote) {
-    deleteInvestmentNote(note.id)
+  async function handleDeleteNote(note: InvestmentNote) {
+    await deleteInvestmentNote(note.id)
     setEditing(false)
     if (selectedId === note.id) setSelectedId(null)
-    reloadNotes()
+    await reloadNotes()
   }
 
   function openRenameDialog(note: InvestmentNote) {
@@ -338,9 +348,9 @@ export function InvestmentNotesView() {
     setRenameOpen(true)
   }
 
-  function confirmRename() {
+  async function confirmRename() {
     if (!renameNote) return
-    updateInvestmentNote(renameNote.id, {
+    await updateInvestmentNote(renameNote.id, {
       title: renameTitleDraft.trim() || "无标题",
     })
     if (selectedId === renameNote.id) {
@@ -348,7 +358,7 @@ export function InvestmentNotesView() {
     }
     setRenameOpen(false)
     setRenameNote(null)
-    reloadNotes()
+    await reloadNotes()
   }
 
   function openShareDialog() {
@@ -357,11 +367,11 @@ export function InvestmentNotesView() {
     setShareOpen(true)
   }
 
-  function confirmShare() {
+  async function confirmShare() {
     if (!selectedNote) return
-    setInvestmentNoteTeamShared(selectedNote.id, teamSharedDraft)
+    await setInvestmentNoteTeamShared(selectedNote.id, teamSharedDraft)
     setShareOpen(false)
-    reloadNotes()
+    await reloadNotes()
   }
 
   function openTagsDialog() {
@@ -370,15 +380,15 @@ export function InvestmentNotesView() {
     setTagsOpen(true)
   }
 
-  function confirmTags() {
+  async function confirmTags() {
     if (!selectedNote) return
     const tags = tagsDraft
       .split(/[,，]/)
       .map((t) => t.trim())
       .filter(Boolean)
-    setInvestmentNoteTags(selectedNote.id, tags)
+    await setInvestmentNoteTags(selectedNote.id, tags)
     setTagsOpen(false)
-    reloadNotes()
+    await reloadNotes()
   }
 
   function openAssociationDialog() {
@@ -386,11 +396,11 @@ export function InvestmentNotesView() {
     setAssociationOpen(true)
   }
 
-  function confirmAssociations(associations: InvestmentNote["associations"]) {
+  async function confirmAssociations(associations: InvestmentNote["associations"]) {
     if (!selectedNote) return
-    setInvestmentNoteAssociations(selectedNote.id, associations)
+    await setInvestmentNoteAssociations(selectedNote.id, associations)
     setAssociationOpen(false)
-    reloadNotes()
+    await reloadNotes()
   }
 
   return (
@@ -456,7 +466,9 @@ export function InvestmentNotesView() {
             </div>
           </div>
           <div className="flex-1 overflow-auto">
-            {filteredNotes.length === 0 ? (
+            {loading ? (
+              <div className="px-4 py-10 text-center text-sm text-zinc-400">加载中...</div>
+            ) : filteredNotes.length === 0 ? (
               <div className="px-4 py-10 text-center text-sm text-zinc-400">暂无笔记</div>
             ) : (
               filteredNotes.map((note) => {

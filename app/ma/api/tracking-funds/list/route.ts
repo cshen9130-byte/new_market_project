@@ -481,6 +481,7 @@ function buildCachedFromClause(
     : pool === "core" ? "core_pool"
     : pool === "hy" ? "hy_tracking_pool"
     : pool === "fof" ? "fof_mom_tracking"
+    : pool === "jy" || pool === "tracking" ? "tracking_pool"
     : "tracking_pool"
   return `FROM (
     SELECT p.register_number AS beian_hao, p.product_name
@@ -810,13 +811,14 @@ export async function GET(req: Request) {
   const page     = Math.max(1, parseInt(searchParams.get("page") || "1"))
   const requestedPool = searchParams.get("pool")
   const isMineAllPool = requestedPool === "mine_all"
-  const isCustomPool = requestedPool ? (requestedPool.startsWith("custom_") || requestedPool.startsWith("mine_custom_") || requestedPool === "mine_default" || isMineAllPool) : false
-  const KNOWN_POOLS = new Set(["bfl_ops", "bfl", "tracking", "selected", "core", "hy", "fof", "all"])
+  const isCustomPool = requestedPool ? (requestedPool.startsWith("custom_") || requestedPool.startsWith("mine_custom_") || requestedPool === "mine_default" || requestedPool === "jy_ops" || isMineAllPool) : false
+  const KNOWN_POOLS = new Set(["bfl_ops", "bfl", "jy_ops", "jy", "tracking", "selected", "core", "hy", "fof", "all"])
   if (requestedPool && !KNOWN_POOLS.has(requestedPool) && !isCustomPool) {
     return NextResponse.json({ page, pageSize: 50, total: 0, totalPages: 0, data: [] })
   }
   const pool: string =
-    (requestedPool === "bfl_ops" || requestedPool === "tracking" || requestedPool === "selected"
+    (requestedPool === "bfl_ops" || requestedPool === "jy_ops" || requestedPool === "jy"
+      || requestedPool === "tracking" || requestedPool === "selected"
       || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof"
       || requestedPool === "all" || isCustomPool) && requestedPool
       ? requestedPool
@@ -893,7 +895,7 @@ export async function GET(req: Request) {
   const orderCol = navConfig.allowedSort[sortKey] ?? "i.product_name"
 
   const sourceJsonExpr = rawStrategyJsonExpr("i")
-  const isExternalPool = pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || isCustomPool
+  const isExternalPool = pool === "jy" || pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || isCustomPool
   const sourceTable = pool === "selected" ? "selected_pool" : pool === "core" ? "core_pool" : pool === "hy" ? "hy_tracking_pool" : pool === "fof" ? "fof_mom_tracking" : isCustomPool ? "user_custom_pool" : "tracking_pool"
   const strategyL1Expr = pool === "all"
     ? `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_one, (${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`

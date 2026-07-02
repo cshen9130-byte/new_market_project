@@ -11,29 +11,27 @@ export const dynamic = "force-dynamic"
  * lists added by a teammate. "Mine" pools (scope = 'mine') are scoped per user via
  * the x-market-user-id header.
  *
- * The built-in default pools (跟踪池 / 精选池 / …) are seeded into this table on
- * first access so that renaming, deleting and reordering them persists across page
- * reloads — the DB, not the hardcoded client list, is the source of truth.
+ * The built-in default pools are seeded into this table on first access so that
+ * renaming, deleting and reordering them persists across page reloads — the DB,
+ * not the hardcoded client list, is the source of truth.
  */
 
-// Built-in team pools, seeded once. The "全部" (all) pool is a client-only pseudo
-// tab and is intentionally not stored here.
+// Built-in team pools. The "全部" (all) pool is a client-only pseudo tab.
 const DEFAULT_TEAM_POOLS: { pool_key: string; label: string }[] = [
   { pool_key: "bfl_ops", label: "bfl 运维池" },
   { pool_key: "bfl", label: "bfl跟踪池" },
-  { pool_key: "tracking", label: "跟踪池" },
-  { pool_key: "selected", label: "精选池" },
-  { pool_key: "core", label: "核心池" },
-  { pool_key: "hy", label: "hy跟踪池" },
-  { pool_key: "fof", label: "FOF&MOM跟踪" },
+  { pool_key: "jy_ops", label: "JY运维池" },
+  { pool_key: "jy", label: "JY跟踪池" },
 ]
+
+const CANONICAL_TEAM_KEYS = DEFAULT_TEAM_POOLS.map((p) => p.pool_key)
 
 // Built-in "mine" pool. "mine_all" (全部) is a client-only pseudo tab.
 const DEFAULT_MINE_POOL = { pool_key: "mine_default", label: "默认我的跟踪" }
 
-// Marker row so team defaults are only ever seeded once — this lets a user delete
-// a default pool for good without it reappearing on the next load.
-const TEAM_SEED_MARKER = "__team_defaults_seeded__"
+// Bump when the canonical team pool set changes so existing DB rows resync once.
+const TEAM_SEED_MARKER = "__team_defaults_v4_seeded__"
+const LEGACY_TEAM_SEED_MARKER = "__team_defaults_seeded__"
 
 let ensured = false
 async function ensureTable() {
@@ -52,22 +50,36 @@ async function ensureTable() {
       )
     `)
   } catch {
-    // On PG 15+ the DB user may lack CREATE privilege on the public schema even
-    // when the table already exists (created via schema.sql by a superuser).
-    // Verify the table is reachable; if so, it's safe to proceed.
     await query(`SELECT 1 FROM tracking_custom_pools LIMIT 0`)
   }
   ensured = true
 }
 
-// Per-process guards so the (idempotent) seeding does not issue extra queries
-// on every poll once it has already run.
 let teamSeeded = false
 const seededMineUsers = new Set<string>()
 
+async function queryTeamPools(): Promise<PoolRow[]> {
+  return query<PoolRow>(
+    `SELECT pool_key, label, scope, user_key
+     FROM tracking_custom_pools
+     WHERE scope = 'team' AND pool_key NOT LIKE '\\_\\_%'
+     ORDER BY sort_order ASC, id ASC`,
+  )
+}
+
+async function queryMinePools(userKey: string): Promise<PoolRow[]> {
+  return query<PoolRow>(
+    `SELECT pool_key, label, scope, user_key
+     FROM tracking_custom_pools
+     WHERE scope = 'mine' AND user_key = $1 AND pool_key NOT LIKE '\\_\\_%'
+     ORDER BY sort_order ASC, id ASC`,
+    [userKey],
+  )
+}
+
 /**
- * Seed the built-in team pools exactly once. Uses a hidden marker row so that
- * deleting a default pool afterwards does not cause it to reappear.
+ * Seed / resync the canonical four team pools. Runs once per marker version so
+ * legacy defaults (跟踪池 / 精选池 / …) and ad-hoc custom tabs are removed.
  */
 async function seedTeamDefaults(): Promise<void> {
   if (teamSeeded) return
@@ -77,15 +89,32 @@ async function seedTeamDefaults(): Promise<void> {
   )
   if (marker.length > 0) { teamSeeded = true; return }
 
+  // Preserve renamed labels when migrating legacy keys.
+  await query(
+    `UPDATE tracking_custom_pools SET pool_key = 'jy'
+     WHERE pool_key = 'tracking' AND scope = 'team'`,
+  )
+
+  await query(
+    `DELETE FROM tracking_custom_pools
+     WHERE scope = 'team'
+       AND pool_key NOT LIKE '\\_\\_%'
+       AND NOT (pool_key = ANY($1::text[]))`,
+    [CANONICAL_TEAM_KEYS],
+  )
+
   for (let i = 0; i < DEFAULT_TEAM_POOLS.length; i++) {
     const p = DEFAULT_TEAM_POOLS[i]
     await query(
       `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
        VALUES ($1, $2, 'team', '', $3, NOW())
-       ON CONFLICT (pool_key) DO NOTHING`,
+       ON CONFLICT (pool_key)
+       DO UPDATE SET label = EXCLUDED.label, sort_order = EXCLUDED.sort_order, updated_at = NOW()`,
       [p.pool_key, p.label, i + 1],
     )
   }
+
+  await query(`DELETE FROM tracking_custom_pools WHERE pool_key = $1`, [LEGACY_TEAM_SEED_MARKER])
   await query(
     `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
      VALUES ($1, '', 'team', '', -1, NOW())
@@ -95,10 +124,6 @@ async function seedTeamDefaults(): Promise<void> {
   teamSeeded = true
 }
 
-/**
- * Ensure the current user has the built-in "默认我的跟踪" pool. It can be renamed
- * but not deleted, so seeding it when missing is always safe.
- */
 async function seedMineDefault(userKey: string): Promise<void> {
   if (seededMineUsers.has(userKey)) return
   await query(
@@ -113,8 +138,10 @@ async function seedMineDefault(userKey: string): Promise<void> {
   seededMineUsers.add(userKey)
 }
 
-function normalizeScope(raw: string | null | undefined): "team" | "mine" {
-  return raw === "mine" ? "mine" : "team"
+function normalizeScope(raw: string | null | undefined): "team" | "mine" | "both" {
+  if (raw === "mine") return "mine"
+  if (raw === "both") return "both"
+  return "team"
 }
 
 interface PoolRow {
@@ -131,25 +158,24 @@ export async function GET(req: Request) {
 
   try {
     await ensureTable()
-    let rows: PoolRow[]
+    if (scope === "both") {
+      await seedTeamDefaults()
+      await seedMineDefault(userKey)
+      const [team, mine] = await Promise.all([
+        queryTeamPools(),
+        queryMinePools(userKey),
+      ])
+      return NextResponse.json({ data: { team, mine } })
+    }
+
     if (scope === "mine") {
       await seedMineDefault(userKey)
-      rows = await query<PoolRow>(
-        `SELECT pool_key, label, scope, user_key
-         FROM tracking_custom_pools
-         WHERE scope = 'mine' AND user_key = $1 AND pool_key NOT LIKE '\\_\\_%'
-         ORDER BY sort_order ASC, id ASC`,
-        [userKey],
-      )
-    } else {
-      await seedTeamDefaults()
-      rows = await query<PoolRow>(
-        `SELECT pool_key, label, scope, user_key
-         FROM tracking_custom_pools
-         WHERE scope = 'team' AND pool_key NOT LIKE '\\_\\_%'
-         ORDER BY sort_order ASC, id ASC`,
-      )
+      const rows = await queryMinePools(userKey)
+      return NextResponse.json({ data: rows })
     }
+
+    await seedTeamDefaults()
+    const rows = await queryTeamPools()
     return NextResponse.json({ data: rows })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -163,7 +189,7 @@ export async function POST(req: Request) {
   try { body = await req.json() } catch { return NextResponse.json({ error: "bad_request" }, { status: 400 }) }
 
   const { pool_key, label, scope: rawScope } = body as Record<string, string>
-  const scope = normalizeScope(rawScope)
+  const scope = rawScope === "mine" ? "mine" : "team"
   const userKey = String(req.headers.get("x-market-user-id") || "").trim()
   const cleanLabel = (label || "").trim()
   if (!pool_key || !cleanLabel) {
@@ -218,7 +244,7 @@ export async function PUT(req: Request) {
   try { body = await req.json() } catch { return NextResponse.json({ error: "bad_request" }, { status: 400 }) }
 
   const { scope: rawScope, keys } = body as { scope?: string; keys?: unknown }
-  const scope = normalizeScope(rawScope)
+  const scope = rawScope === "mine" ? "mine" : "team"
   const userKey = String(req.headers.get("x-market-user-id") || "").trim()
   if (!Array.isArray(keys) || keys.some((k) => typeof k !== "string")) {
     return NextResponse.json({ error: "missing_fields" }, { status: 400 })

@@ -7,11 +7,8 @@ import { createPortal } from "react-dom"
 const DEFAULT_TEAM_POOLS = [
   { key: "bfl_ops", label: "bfl 运维池" },
   { key: "bfl", label: "bfl跟踪池" },
-  { key: "tracking", label: "跟踪池" },
-  { key: "selected", label: "精选池" },
-  { key: "core", label: "核心池" },
-  { key: "hy", label: "hy跟踪池" },
-  { key: "fof", label: "FOF&MOM跟踪" },
+  { key: "jy_ops", label: "JY运维池" },
+  { key: "jy", label: "JY跟踪池" },
 ]
 
 const DEFAULT_MINE_POOLS = [

@@ -43,10 +43,13 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const strategySource = normalizeStrategySource(searchParams.get("strategy_source"))
   const requestedPool = searchParams.get("pool")
-  const pool = requestedPool === "bfl_ops" || requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core" || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all" ? requestedPool : "bfl"
+  const pool = requestedPool === "bfl_ops" || requestedPool === "jy_ops" || requestedPool === "jy"
+    || requestedPool === "tracking" || requestedPool === "selected" || requestedPool === "core"
+    || requestedPool === "hy" || requestedPool === "fof" || requestedPool === "all"
+    ? requestedPool : "bfl"
   const sourceJsonExpr = rawStrategyJsonExpr("p")
   const trackingPrefix = strategySource === "platform" ? "platform" : "company"
-  const isExternalPool = pool === "bfl_ops" || pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || pool === "all"
+  const isExternalPool = pool === "bfl_ops" || pool === "jy" || pool === "tracking" || pool === "selected" || pool === "core" || pool === "hy" || pool === "fof" || pool === "all"
   const strategyL1Expr = isExternalPool
     ? `NULLIF(BTRIM(COALESCE(p.${trackingPrefix}_strategy_one, '')), '')`
     : `NULLIF(BTRIM(COALESCE((${sourceJsonExpr}->'${strategySource}'->>'strategy_one'), '')), '')`

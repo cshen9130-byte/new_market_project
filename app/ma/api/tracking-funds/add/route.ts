@@ -8,6 +8,7 @@ export const dynamic = "force-dynamic"
 
 const POOL_TABLE: Record<string, string> = {
   tracking: "tracking_pool",
+  jy:       "tracking_pool",
   selected: "selected_pool",
   core:     "core_pool",
   hy:       "hy_tracking_pool",
@@ -15,7 +16,7 @@ const POOL_TABLE: Record<string, string> = {
 }
 
 function isCustomPool(pool: string) {
-  return pool.startsWith("custom_") || pool.startsWith("mine_custom_") || pool === "mine_default"
+  return pool.startsWith("custom_") || pool.startsWith("mine_custom_") || pool === "mine_default" || pool === "jy_ops"
 }
 
 export async function POST(req: Request) {

@@ -1,24 +1,31 @@
 import { execFile } from "child_process"
 import { createHash, randomUUID } from "crypto"
-import { existsSync, statSync } from "fs"
+import { existsSync, readFileSync, statSync } from "fs"
 import { mkdir, readFile, readdir, writeFile } from "fs/promises"
 import path from "path"
 import { promisify } from "util"
 import { query } from "@/lib/db"
 import { findCustomFundByName, getCustomFundByCode } from "@/lib/server/custom-funds"
 import { listCustomFundNavRows } from "@/lib/server/custom-fund-nav"
+import type { LegacyNavRow } from "@/lib/server/email-nav-query"
 import {
   loadBenchmarkForNavDates,
   resolveFofWeeklyBenchmark,
   type FofWeeklyBenchmarkKey,
 } from "@/lib/server/fof-weekly-benchmark"
 import { loadFundNavRange, loadMergedFundNavRows, resolveFundNames } from "@/lib/server/fund-nav-series"
+import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 
 const execFileAsync = promisify(execFile)
 const REPORT_TMP_ROOT = path.join(process.cwd(), ".tmp", "fof-weekly-reports")
 const SCRIPT_DIR = path.join(process.cwd(), "haitai_week_report")
 const SCRIPT_PATH = path.join(SCRIPT_DIR, "generate_fof_weekly_report.py")
 const BUNDLED_CN_FONT = path.join(SCRIPT_DIR, "fonts", "NotoSansSC-Regular.otf")
+const BUNDLED_FOF_NAV_BY_BEIAN: Record<string, string> = {
+  SBPU97: "低波稳健FOF 1号合并净值.xlsx",
+}
+const MANAGED_NAV_SEED_DIR = path.join(process.cwd(), "data", "managed-product-nav")
 
 function isLikelyValidFontFile(filePath: string): boolean {
   try {
@@ -204,6 +211,72 @@ export async function resolveProductBeianHao(product_name: string, beian_hao?: s
   throw new Error(`未找到产品「${product_name}」的备案号`)
 }
 
+function resolveBundledFofWeeklyNavPath(beian_hao: string, product_name: string): string | null {
+  const override = lookupManagedProductOverride(beian_hao) ?? lookupManagedProductOverride(product_name)
+  const codes = new Set<string>()
+  const normalized = beian_hao.trim().toUpperCase()
+  if (normalized) codes.add(normalized)
+  if (override?.beian_hao) codes.add(override.beian_hao.toUpperCase())
+
+  for (const code of codes) {
+    const filename = BUNDLED_FOF_NAV_BY_BEIAN[code]
+    if (!filename) continue
+    const candidate = path.join(SCRIPT_DIR, filename)
+    if (existsSync(candidate)) return candidate
+  }
+
+  if (/低波稳健FOF\s*1号/u.test(product_name.trim())) {
+    const candidate = path.join(SCRIPT_DIR, "低波稳健FOF 1号合并净值.xlsx")
+    if (existsSync(candidate)) return candidate
+  }
+
+  return null
+}
+
+function loadFullManagedSeedRows(beian_hao: string): LegacyNavRow[] | null {
+  const key = (beian_hao ?? "").trim().toUpperCase()
+  if (!key) return null
+
+  const seedPath = path.join(MANAGED_NAV_SEED_DIR, `${key}.json`)
+  if (!existsSync(seedPath)) return null
+
+  try {
+    const raw = JSON.parse(readFileSync(seedPath, "utf8")) as { before_date?: string | null }
+    if (raw.before_date != null) return null
+  } catch {
+    return null
+  }
+
+  const rows = loadManagedProductNavSeed(key)
+  return rows.length > 0 ? rows : null
+}
+
+function legacyRowsToNavCsvInput(rows: LegacyNavRow[]): Array<{
+  date: string
+  unit: string
+  cum: string
+  adj: string
+  pct: string | null | undefined
+}> {
+  return rows.map((row) => ({
+    date: row.price_date.slice(0, 10),
+    unit: row.nav,
+    cum: row.cum_nav_withdrawal || row.cumulative_nav || row.nav,
+    adj: row.cumulative_nav || row.cum_nav_withdrawal || row.nav,
+    pct: row.price_change,
+  }))
+}
+
+function resolveNavDateRangeFromRows(rows: Array<{ date: string }>): {
+  earliestNavDate: string
+  latestNavDate: string
+} | null {
+  const earliestNavDate = rows[0]?.date
+  const latestNavDate = rows.at(-1)?.date
+  if (!earliestNavDate || !latestNavDate) return null
+  return { earliestNavDate, latestNavDate }
+}
+
 function formatPct(value: string | null | undefined): string {
   const raw = (value ?? "").trim()
   if (!raw || raw === "--") return ""
@@ -293,17 +366,13 @@ export async function buildFofWeeklyNavCsv(
     )
   }
 
+  const seedRows = loadFullManagedSeedRows(beian_hao)
+  if (seedRows) {
+    return buildNavRowsWithBenchmark(legacyRowsToNavCsvInput(seedRows), benchmarkKey)
+  }
+
   const legacyRows = await loadMergedFundNavRows(beian_hao, product_name, short_name)
-  return buildNavRowsWithBenchmark(
-    legacyRows.map((row) => ({
-      date: row.price_date.slice(0, 10),
-      unit: row.nav,
-      cum: row.cum_nav_withdrawal || row.cumulative_nav || row.nav,
-      adj: row.cumulative_nav || row.cum_nav_withdrawal || row.nav,
-      pct: row.price_change,
-    })),
-    benchmarkKey,
-  )
+  return buildNavRowsWithBenchmark(legacyRowsToNavCsvInput(legacyRows), benchmarkKey)
 }
 
 export async function resolveFofWeeklyProductNavRange(
@@ -328,6 +397,16 @@ export async function resolveFofWeeklyProductNavRange(
   }
 
   const names = await resolveFundNames(resolvedBeian, product_name)
+  const seedRows = loadFullManagedSeedRows(resolvedBeian)
+  if (seedRows) {
+    return {
+      beian_hao: resolvedBeian,
+      product_name: names.product_name,
+      nav_start_date: seedRows[0].price_date.slice(0, 10),
+      latest_nav_date: seedRows.at(-1)!.price_date.slice(0, 10),
+    }
+  }
+
   const range = await loadFundNavRange(resolvedBeian, names.product_name, names.short_name)
   return {
     beian_hao: resolvedBeian,
@@ -359,17 +438,42 @@ export async function generateFofWeeklyReport(
   const names = customFund
     ? { product_name: customFund.product_name, short_name: "" }
     : await resolveFundNames(beian_hao, product_name)
-  const { csv: navCsv, benchLabel } = await buildFofWeeklyNavCsv(
-    beian_hao,
-    names.product_name,
-    names.short_name,
-    benchmark.key,
-  )
+  const bundledNavPath = resolveBundledFofWeeklyNavPath(beian_hao, names.product_name)
+  let navFile: string
+  let benchLabel: string
+  let earliestNavDate: string
+  let latestNavDate: string
+  let navCsv = ""
 
-  const navRows = navCsv.split("\n").slice(1).map((line) => line.split(",")[0]).filter(Boolean)
-  const latestNavDate = navRows.at(-1)
-  const earliestNavDate = navRows[0]
-  if (!latestNavDate || !earliestNavDate) throw new Error("净值数据为空")
+  if (bundledNavPath) {
+    navFile = bundledNavPath
+    benchLabel = benchmark.label
+    const seedRows = loadFullManagedSeedRows(beian_hao)
+    const range = resolveNavDateRangeFromRows(
+      seedRows ? legacyRowsToNavCsvInput(seedRows) : [],
+    )
+    if (!range) {
+      throw new Error("无法读取 bundled 净值文件的日期范围")
+    }
+    earliestNavDate = range.earliestNavDate
+    latestNavDate = range.latestNavDate
+  } else {
+    const built = await buildFofWeeklyNavCsv(
+      beian_hao,
+      names.product_name,
+      names.short_name,
+      benchmark.key,
+    )
+    navCsv = built.csv
+    benchLabel = built.benchLabel
+
+    const navRows = navCsv.split("\n").slice(1).map((line) => line.split(",")[0]).filter(Boolean)
+    latestNavDate = navRows.at(-1) ?? ""
+    earliestNavDate = navRows[0] ?? ""
+    if (!latestNavDate || !earliestNavDate) throw new Error("净值数据为空")
+    navFile = ""
+  }
+
   if (week_end < earliestNavDate || week_end > latestNavDate) {
     throw new Error(`报告周日期需在 ${earliestNavDate} ~ ${latestNavDate} 之间`)
   }
@@ -382,8 +486,10 @@ export async function generateFofWeeklyReport(
   const outDir = reportDir(reportId)
   await mkdir(outDir, { recursive: true })
 
-  const navFile = path.join(outDir, "nav.csv")
-  await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
+  if (!bundledNavPath) {
+    navFile = path.join(outDir, "nav.csv")
+    await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
+  }
 
   const reportTitle = (input.report_title || names.product_name).trim()
   const productTagline = (input.product_tagline || "低波动 · 稳健运作 · 强势股策略").trim()

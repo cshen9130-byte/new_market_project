@@ -34,6 +34,8 @@ interface PoolRow {
 const POOL_LABELS: Record<string, string> = {
   bfl_ops:  "bfl 运维池",
   bfl:      "bfl跟踪池",
+  jy_ops:   "JY运维池",
+  jy:       "JY跟踪池",
   tracking: "跟踪池",
   selected: "精选池",
   core:     "核心池",

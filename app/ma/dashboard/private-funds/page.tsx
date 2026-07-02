@@ -216,11 +216,8 @@ const DEFAULT_POOLS = [
   TEAM_ALL_POOL,
   { key: "bfl_ops", label: "bfl 运维池" },
   { key: "bfl", label: "bfl跟踪池" },
-  { key: "tracking", label: "跟踪池" },
-  { key: "selected", label: "精选池" },
-  { key: "core", label: "核心池" },
-  { key: "hy", label: "hy跟踪池" },
-  { key: "fof", label: "FOF&MOM跟踪" },
+  { key: "jy_ops", label: "JY运维池" },
+  { key: "jy", label: "JY跟踪池" },
 ]
 const MINE_ALL_POOL = { key: "mine_all", label: "全部" }
 const DEFAULT_MINE_POOLS = [
@@ -230,7 +227,7 @@ const DEFAULT_MINE_POOLS = [
 
 // localStorage keys used to render the last-known pool tabs instantly on load
 // (keeps the fast-loading feel) before the authoritative server list arrives.
-const POOLS_CACHE_KEY = "tracking_team_pools_cache"
+const POOLS_CACHE_KEY = "tracking_team_pools_cache_v4"
 const MINE_POOLS_CACHE_KEY = "tracking_mine_pools_cache"
 
 type PoolDef = { key: string; label: string }
@@ -13986,11 +13983,7 @@ function OperationsTeamDataView() {
   const selectedBeianHaos = selectedRows.map((r) => r.beian_hao).filter((bh): bh is string => !!bh)
   const teamDataBatchTrackingPools = [
     { key: "bfl", label: "bfl跟踪池" },
-    { key: "tracking", label: "跟踪池" },
-    { key: "selected", label: "精选池" },
-    { key: "core", label: "核心池" },
-    { key: "hy", label: "hy跟踪池" },
-    { key: "fof", label: "FOF&MOM跟踪" },
+    { key: "jy", label: "JY跟踪池" },
   ]
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
