@@ -221,13 +221,23 @@ function normalizeAssociations(value: unknown): InvestmentNoteAssociation[] {
   })
 }
 
-function normalizeNote(note: InvestmentNote & { associations?: unknown }): InvestmentNote {
+function normalizeNote(raw: unknown): InvestmentNote {
+  const note = (raw ?? {}) as Partial<InvestmentNote> & { associations?: unknown }
+  const now = new Date().toISOString().slice(0, 10).replace(/-/g, "/")
   return {
-    ...note,
+    id: typeof note.id === "string" && note.id ? note.id : `recovered-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    title: typeof note.title === "string" ? note.title : "",
+    content: typeof note.content === "string" ? note.content : "",
+    preview: typeof note.preview === "string" ? note.preview : "",
     contentVariant: note.contentVariant ?? "plain",
+    teamShared: typeof note.teamShared === "boolean" ? note.teamShared : false,
+    tags: Array.isArray(note.tags) ? note.tags.filter((t): t is string => typeof t === "string") : [],
     associations: normalizeAssociations(note.associations),
-    tags: note.tags ?? [],
-    attachments: note.attachments ?? [],
+    attachments: Array.isArray(note.attachments) ? note.attachments : [],
+    creator: typeof note.creator === "string" ? note.creator : "",
+    lastModifiedBy: typeof note.lastModifiedBy === "string" ? note.lastModifiedBy : "",
+    modifiedDate: typeof note.modifiedDate === "string" ? note.modifiedDate : now,
+    createdDate: typeof note.createdDate === "string" ? note.createdDate : now,
   }
 }
 

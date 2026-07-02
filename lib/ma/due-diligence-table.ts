@@ -93,7 +93,12 @@ export function loadCellFormats(): TableCellFormats {
   if (typeof window === "undefined") return {}
   try {
     const raw = localStorage.getItem(FORMATS_STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as TableCellFormats) ?? {} : {}
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as TableCellFormats
+    }
+    return {}
   } catch { return {} }
 }
 
@@ -233,7 +238,9 @@ export function loadDueDiligenceTableRows(): DueDiligenceTableRow[] {
 
 export function saveDueDiligenceTableRows(rows: DueDiligenceTableRow[]): void {
   if (typeof window === "undefined") return
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
+  } catch { /* ignore quota / security errors — in-memory state is still valid */ }
 }
 
 export function createDueDiligenceTableRow(

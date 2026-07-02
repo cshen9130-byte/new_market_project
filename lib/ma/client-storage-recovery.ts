@@ -11,6 +11,7 @@ export function clearMaClientCaches(options?: { keepLogin?: boolean }): void {
       key.startsWith("inv_") ||
       key.startsWith("ops_") ||
       key.startsWith("dd_diligence_") ||
+      key.startsWith("dd_investment_") ||
       key.startsWith("ma_fund_compares") ||
       key.startsWith("portfolio_metric_templates") ||
       key.startsWith("private_fund_mgr_favorites") ||
