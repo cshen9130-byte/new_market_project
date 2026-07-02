@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { createHash } from "crypto"
+import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -46,6 +47,7 @@ export async function POST(req: Request) {
       if (rows.length === 0) {
         return NextResponse.json({ error: "already_exists" }, { status: 409 })
       }
+      invalidateListResponseCache(pool)
       return NextResponse.json({ ok: true, id: rows[0].id })
     }
 
@@ -69,6 +71,7 @@ export async function POST(req: Request) {
     if (rows.length === 0) {
       return NextResponse.json({ error: "already_exists" }, { status: 409 })
     }
+    invalidateListResponseCache(pool)
     return NextResponse.json({ ok: true, id: rows[0].id })
   } catch (err) {
     console.error("[tracking-funds/add]", err)
@@ -94,6 +97,7 @@ export async function DELETE(req: Request) {
       if (!table) return NextResponse.json({ error: "unknown_pool" }, { status: 400 })
       await query(`DELETE FROM ${table} WHERE register_number = $1`, [beian_hao])
     }
+    invalidateListResponseCache(pool)
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[tracking-funds/add DELETE]", err)

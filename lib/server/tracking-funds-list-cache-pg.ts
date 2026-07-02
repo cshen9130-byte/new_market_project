@@ -100,6 +100,21 @@ let tableEnsured = false
 export async function ensureTrackingFundsListCacheTable(): Promise<void> {
   if (tableEnsured) return
   await query(CREATE_TABLE_SQL)
+  // Index for the DISTINCT ON dedup query on type6_ops_team_full (bfl_ops pool).
+  // Fires as a non-blocking background DDL so it never delays the first request;
+  // once built it makes the DISTINCT ON query go from O(N log N) full sort to
+  // O(distinct) index scan.
+  query(
+    `CREATE INDEX IF NOT EXISTS idx_type6_ops_team_full_dedup
+       ON type6_ops_team_full (register_number, updated_at DESC NULLS LAST, id DESC)
+      WHERE register_number IS NOT NULL`,
+  ).catch(() => {})
+  // Simple single-column index used by the EXISTS probe in the bfl_ops query.
+  query(
+    `CREATE INDEX IF NOT EXISTS idx_type6_ops_team_full_register
+       ON type6_ops_team_full (register_number)
+      WHERE register_number IS NOT NULL`,
+  ).catch(() => {})
   tableEnsured = true
 }
 
@@ -452,7 +467,10 @@ export async function shouldUseTrackingFundsListCache(cutoffRaw: string): Promis
 }
 
 /** Populate cache when empty (e.g. first deploy before nightly ETL has run). */
+// Use global so the one-time guard survives Next.js hot-module reloads.
+declare global { var _ensurePopulatedDone: boolean | undefined }
 export async function ensureTrackingFundsListCachePopulated(): Promise<void> {
+  if (global._ensurePopulatedDone) return
   await ensureTrackingFundsListCacheTable()
   const rows = await query<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM ops_tracking_funds_list_cache`,
@@ -460,4 +478,5 @@ export async function ensureTrackingFundsListCachePopulated(): Promise<void> {
   if (parseInt(rows[0]?.n ?? "0", 10) === 0) {
     await refreshTrackingFundsListCache()
   }
+  global._ensurePopulatedDone = true
 }

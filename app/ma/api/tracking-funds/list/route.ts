@@ -10,6 +10,10 @@ import {
   shouldUseTrackingFundsListCache,
 } from "@/lib/server/tracking-funds-list-cache-pg"
 import { enrichTrackFundMetricsRows } from "@/lib/server/list-cache-nav-batch"
+import {
+  buildListResponseCacheKey,
+  withListResponseCache,
+} from "@/lib/server/list-response-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -441,15 +445,21 @@ function buildCachedFromClause(
     INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (pool === "bfl_ops") {
+    // Instead of DISTINCT ON over the entire type6_ops_team_full table (which
+    // requires a full sort of a large historical table), start from the much
+    // smaller ops_tracking_funds_list_cache and filter to rows that have at
+    // least one entry in type6_ops_team_full.  The EXISTS uses the
+    // idx_type6_ops_team_full_dedup index (leading column = register_number),
+    // turning each lookup into O(log N) instead of a full O(N log N) sort.
     return `FROM (
-      SELECT DISTINCT ON (register_number)
-        register_number AS beian_hao,
-        COALESCE(fund_short_name, fund_name) AS product_name
-      FROM type6_ops_team_full
-      WHERE register_number IS NOT NULL
-      ORDER BY register_number, updated_at DESC NULLS LAST, id DESC
+      SELECT i.beian_hao, i.product_name
+      FROM ops_tracking_funds_list_cache i
+      WHERE EXISTS (
+        SELECT 1 FROM type6_ops_team_full t
+        WHERE t.register_number = i.beian_hao
+      )
     ) i
-    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (pool === "bfl") {
     return `FROM private_fund_info_bfl i
@@ -510,137 +520,145 @@ async function handleCachedTrackingList(opts: {
     personalTagMode, personalTags, personalUserKey, asOfDate,
   } = opts
 
-  await ensureTrackingFundsListCachePopulated()
-
-  const { l1: strategyL1Expr, l2: strategyL2Expr, l3: strategyL3Expr } =
-    cachedStrategyExprs(pool, strategySource)
-  const indepStrategy = cachedIndependentStrategyExprs()
-  const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
-
-  const filterParams: unknown[] =
-    isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
-  const where: string[] = []
-
-  if (strategyL1) {
-    filterParams.push(strategyL1)
-    where.push(`${strategyL1Expr} = $${filterParams.length}`)
-  }
-  if (strategyL2) {
-    filterParams.push(strategyL2)
-    where.push(`${strategyL2Expr} = $${filterParams.length}`)
-  }
-  if (strategyL3) {
-    filterParams.push(`%${strategyL3}%`)
-    where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
-  }
-  if (keyword) {
-    filterParams.push(`%${keyword}%`)
-    where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
-  }
-  if (teamTags.length > 0) {
-    filterParams.push(teamTags)
-    if (teamTagMode === "or") {
-      where.push(
-        `EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = ANY($${filterParams.length}::text[]))`,
-      )
-    } else {
-      where.push(
-        `NOT EXISTS (SELECT 1 FROM unnest($${filterParams.length}::text[]) req(tag) WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = req.tag))`,
-      )
-    }
-  }
-  if (personalTags.length > 0 && personalUserKey) {
-    filterParams.push(personalUserKey)
-    const userKeyParam = filterParams.length
-    const clauses = personalTags.map((tag) => {
-      filterParams.push(tag)
-      return `EXISTS (
-        SELECT 1 FROM ops_personal_fund_tags pt
-        WHERE pt.beian_hao = i.beian_hao
-          AND pt.user_key = $${userKeyParam}
-          AND pt.tag_name = $${filterParams.length}
-      )`
-    })
-    where.push(personalTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
-  }
-  const scaleValue = ORG_SIZE_SCALE[orgSize]
-  if (scaleValue) {
-    filterParams.push(scaleValue)
-    where.push(`EXISTS (
-      SELECT 1 FROM basicinfo_bfl_track b
-      WHERE b.scale = $${filterParams.length}
-        AND (b.record_key = i.beian_hao OR b.register_number = i.beian_hao)
-    )`)
-  }
-
-  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
-  const pLimit = filterParams.length + 1
-  const pOffset = filterParams.length + 2
-  const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.product_name"
-  const orderSql = `${orderCol} ${sortDir} NULLS LAST`
-  const baseFrom = buildCachedFromClause(pool, isCustomPool, isMineAllPool)
-
-  if (personalTags.length > 0) {
-    await query(`
-      CREATE TABLE IF NOT EXISTS ops_personal_fund_tags (
-        id         SERIAL PRIMARY KEY,
-        beian_hao  VARCHAR(64) NOT NULL,
-        tag_name   VARCHAR(255) NOT NULL,
-        user_key   VARCHAR(255) NOT NULL DEFAULT '',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        UNIQUE (beian_hao, tag_name, user_key)
-      )
-    `)
-  }
+  // Check server-side response cache first, with concurrent request deduplication
+  // so that multiple simultaneous requests for the same pool never race to run
+  // the same expensive query in parallel (only one fires; others await it).
+  const serverCacheKey = buildListResponseCacheKey(opts)
 
   try {
-    const [rows, countRow] = await Promise.all([
-      query<TrackRow>(
-        `SELECT
-           i.beian_hao,
-           i.product_name,
-           cache.short_name,
-           ${strategyL1Expr} AS strategy_l1,
-           ${strategyL2Expr} AS strategy_l2,
-           ${indepStrategy.platform_l1} AS platform_strategy_l1,
-           ${indepStrategy.platform_l2} AS platform_strategy_l2,
-           ${indepStrategy.platform_l3} AS platform_strategy_l3,
-           ${indepStrategy.company_l1} AS company_strategy_l1,
-           ${indepStrategy.company_l2} AS company_strategy_l2,
-           ${indepStrategy.company_l3} AS company_strategy_l3,
-           NULL::text AS manager,
-           NULL::text AS inception_date,
-           cache.unit_nav::text AS latest_nav,
-           cache.nav_date::text AS latest_nav_date,
-           cache.return_pct::text AS latest_price_change,
-           cache.ret_1w::text,
-           cache.ret_1m::text,
-           cache.ret_3m::text,
-           cache.ret_6m::text,
-           cache.ret_1y::text,
-           cache.sharpe_1y::text,
-           cache.calmar_1y::text
-         ${baseFrom}
-         ${whereClause}
-         ORDER BY ${orderSql}
-         LIMIT $${pLimit} OFFSET $${pOffset}`,
-        [...filterParams, pageSize, offset],
-      ),
-      query<{ total: string }>(
-        `SELECT COUNT(*) AS total ${baseFrom} ${whereClause}`,
-        filterParams,
-      ),
-    ])
+    const responseBody = await withListResponseCache(serverCacheKey, async () => {
+      await ensureTrackingFundsListCachePopulated()
 
-    const total = parseInt(countRow[0]?.total ?? "0")
-    const enrichedRows = await enrichTrackFundMetricsRows(rows, asOfDate)
-    return NextResponse.json({
-      page,
-      pageSize,
-      total,
-      totalPages: Math.ceil(total / pageSize),
-      data: sanitizeTrackRows(enrichedRows),
+      const { l1: strategyL1Expr, l2: strategyL2Expr, l3: strategyL3Expr } =
+        cachedStrategyExprs(pool, strategySource)
+      const indepStrategy = cachedIndependentStrategyExprs()
+      const tagsCol = "COALESCE(cache.team_tags, '[]'::jsonb)"
+
+      const filterParams: unknown[] =
+        isCustomPool && requestedPool && !isMineAllPool ? [requestedPool] : []
+      const where: string[] = []
+
+      if (strategyL1) {
+        filterParams.push(strategyL1)
+        where.push(`${strategyL1Expr} = $${filterParams.length}`)
+      }
+      if (strategyL2) {
+        filterParams.push(strategyL2)
+        where.push(`${strategyL2Expr} = $${filterParams.length}`)
+      }
+      if (strategyL3) {
+        filterParams.push(`%${strategyL3}%`)
+        where.push(`COALESCE(${strategyL3Expr}, '') ILIKE $${filterParams.length}`)
+      }
+      if (keyword) {
+        filterParams.push(`%${keyword}%`)
+        where.push(`(i.product_name ILIKE $${filterParams.length} OR i.beian_hao ILIKE $${filterParams.length})`)
+      }
+      if (teamTags.length > 0) {
+        filterParams.push(teamTags)
+        if (teamTagMode === "or") {
+          where.push(
+            `EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = ANY($${filterParams.length}::text[]))`,
+          )
+        } else {
+          where.push(
+            `NOT EXISTS (SELECT 1 FROM unnest($${filterParams.length}::text[]) req(tag) WHERE NOT EXISTS (SELECT 1 FROM jsonb_array_elements_text(${tagsCol}) t WHERE BTRIM(t) = req.tag))`,
+          )
+        }
+      }
+      if (personalTags.length > 0 && personalUserKey) {
+        filterParams.push(personalUserKey)
+        const userKeyParam = filterParams.length
+        const clauses = personalTags.map((tag) => {
+          filterParams.push(tag)
+          return `EXISTS (
+            SELECT 1 FROM ops_personal_fund_tags pt
+            WHERE pt.beian_hao = i.beian_hao
+              AND pt.user_key = $${userKeyParam}
+              AND pt.tag_name = $${filterParams.length}
+          )`
+        })
+        where.push(personalTagMode === "or" ? `(${clauses.join(" OR ")})` : clauses.join(" AND "))
+      }
+      const scaleValue = ORG_SIZE_SCALE[orgSize]
+      if (scaleValue) {
+        filterParams.push(scaleValue)
+        where.push(`EXISTS (
+          SELECT 1 FROM basicinfo_bfl_track b
+          WHERE b.scale = $${filterParams.length}
+            AND (b.record_key = i.beian_hao OR b.register_number = i.beian_hao)
+        )`)
+      }
+
+      const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : ""
+      const pLimit = filterParams.length + 1
+      const pOffset = filterParams.length + 2
+      const orderCol = CACHE_ALLOWED_SORT[sortKey] ?? "i.product_name"
+      const orderSql = `${orderCol} ${sortDir} NULLS LAST`
+      const baseFrom = buildCachedFromClause(pool, isCustomPool, isMineAllPool)
+
+      if (personalTags.length > 0) {
+        await query(`
+          CREATE TABLE IF NOT EXISTS ops_personal_fund_tags (
+            id         SERIAL PRIMARY KEY,
+            beian_hao  VARCHAR(64) NOT NULL,
+            tag_name   VARCHAR(255) NOT NULL,
+            user_key   VARCHAR(255) NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (beian_hao, tag_name, user_key)
+          )
+        `)
+      }
+
+      const [rows, countRow] = await Promise.all([
+        query<TrackRow>(
+          `SELECT
+             i.beian_hao,
+             i.product_name,
+             cache.short_name,
+             ${strategyL1Expr} AS strategy_l1,
+             ${strategyL2Expr} AS strategy_l2,
+             ${indepStrategy.platform_l1} AS platform_strategy_l1,
+             ${indepStrategy.platform_l2} AS platform_strategy_l2,
+             ${indepStrategy.platform_l3} AS platform_strategy_l3,
+             ${indepStrategy.company_l1} AS company_strategy_l1,
+             ${indepStrategy.company_l2} AS company_strategy_l2,
+             ${indepStrategy.company_l3} AS company_strategy_l3,
+             NULL::text AS manager,
+             NULL::text AS inception_date,
+             cache.unit_nav::text AS latest_nav,
+             cache.nav_date::text AS latest_nav_date,
+             cache.return_pct::text AS latest_price_change,
+             cache.ret_1w::text,
+             cache.ret_1m::text,
+             cache.ret_3m::text,
+             cache.ret_6m::text,
+             cache.ret_1y::text,
+             cache.sharpe_1y::text,
+             cache.calmar_1y::text
+           ${baseFrom}
+           ${whereClause}
+           ORDER BY ${orderSql}
+           LIMIT $${pLimit} OFFSET $${pOffset}`,
+          [...filterParams, pageSize, offset],
+        ),
+        query<{ total: string }>(
+          `SELECT COUNT(*) AS total ${baseFrom} ${whereClause}`,
+          filterParams,
+        ),
+      ])
+
+      const total = parseInt(countRow[0]?.total ?? "0")
+      const enrichedRows = await enrichTrackFundMetricsRows(rows, asOfDate)
+      return {
+        page,
+        pageSize,
+        total,
+        totalPages: Math.ceil(total / pageSize),
+        data: sanitizeTrackRows(enrichedRows),
+      }
     })
+    return NextResponse.json(responseBody)
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
     return NextResponse.json({ error: message }, { status: 500 })
@@ -1178,4 +1196,27 @@ export async function GET(req: Request) {
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
   }
+}
+
+// ---------------------------------------------------------------------------
+// Startup warm-up for bfl_ops: proactively populate the server response cache
+// once per process lifetime (global flag survives Next.js hot-module reloads).
+// ---------------------------------------------------------------------------
+declare global { var _bflOpsWarmScheduled: boolean | undefined }
+if (!global._bflOpsWarmScheduled) {
+  global._bflOpsWarmScheduled = true
+  setTimeout(async () => {
+    try {
+      const asOfDate = new Date().toISOString().slice(0, 10)
+      await handleCachedTrackingList({
+        page: 1, pageSize: 50, offset: 0,
+        sortKey: "product_name", sortDir: "DESC",
+        pool: "bfl_ops", requestedPool: "bfl_ops",
+        isCustomPool: false, isMineAllPool: false,
+        keyword: "", strategyL1: "", strategyL2: "", strategyL3: "",
+        strategySource: "company" as const, orgSize: "不限", teamTagMode: "and", teamTags: [],
+        personalTagMode: "and", personalTags: [], personalUserKey: "", asOfDate,
+      })
+    } catch { /* ignore — warm-up is best-effort */ }
+  }, 1_000)
 }

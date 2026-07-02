@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { createHash } from "crypto"
 import { query } from "@/lib/db"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
+import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -131,6 +132,7 @@ export async function POST(req: Request) {
           }
           await syncFundTeamTagsToSource(bh)
         }
+        invalidateListResponseCache()
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -138,6 +140,7 @@ export async function POST(req: Request) {
         await ensureFundTagsTable()
         const ph = ids.map((_, i) => `$${i + 1}`).join(", ")
         await query(`DELETE FROM ops_fund_tags WHERE beian_hao IN (${ph})`, ids)
+        invalidateListResponseCache()
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -152,6 +155,7 @@ export async function POST(req: Request) {
            WHERE register_number IN (${ph})`,
           [...ids, strategy_l1 ?? null, strategy_l2 ?? null, strategy_l3 ?? null]
         )
+        invalidateListResponseCache()
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -165,6 +169,7 @@ export async function POST(req: Request) {
            WHERE register_number IN (${ph})`,
           ids
         )
+        invalidateListResponseCache()
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -182,6 +187,8 @@ export async function POST(req: Request) {
             await removeFromPool(pool as string, bh)
           }
         }
+        invalidateListResponseCache(pool as string)
+        invalidateListResponseCache(target_pool as string)
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -191,6 +198,7 @@ export async function POST(req: Request) {
         for (const bh of ids) {
           await removeFromPool(pool as string, bh)
         }
+        invalidateListResponseCache(pool as string)
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
