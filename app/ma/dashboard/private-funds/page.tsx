@@ -22,6 +22,7 @@ import { InvestmentDirectPortfoliosView } from "./components/InvestmentDirectPor
 import { CustomFundsView } from "./components/CustomFundsView"
 import { CustomIndicesView } from "./components/CustomIndicesView"
 import { OperationsLedgerView } from "./components/OperationsLedgerView"
+import { OperationsElementExtractView } from "./components/OperationsElementExtractView"
 import { StrategyObservationView } from "./components/StrategyObservationView"
 import { PeIndexView } from "./components/PeIndexView"
 import { PeIndustryView } from "./components/PeIndustryView"
@@ -140,6 +141,7 @@ const operationsSidebarGroups: SidebarGroup[] = [
       { key: "ops-ledger", label: "台账管理" },
       { key: "ops-team-data", label: "团队数据" },
       { key: "ops-strategy-tags", label: "策略标签" },
+      { key: "ops-element-extract", label: "要素提取" },
     ],
   },
 ]
@@ -9049,6 +9051,23 @@ function OpsEditElementsDialog({
     if (!beian_hao) return
     setSaving(true)
     try {
+      let isTemporaryOpen: string | null = null
+      if (tempOpenMode === "no") {
+        isTemporaryOpen = "不可临开"
+      } else if (tempOpenRedeem && !tempOpenPurchase) {
+        isTemporaryOpen = "可临开回"
+      } else if (tempOpenMode === "yes") {
+        isTemporaryOpen = "可"
+      }
+
+      let precautiousLine: string | null = null
+      if (warningLineMode === "set") precautiousLine = warningLine || null
+      else precautiousLine = "不设置预警线"
+
+      let stopLineValue: string | null = null
+      if (stopLineMode === "set") stopLineValue = stopLine || null
+      else stopLineValue = "不设置平仓线"
+
       await fetch("/ma/api/ops/fund-elements", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -9060,6 +9079,19 @@ function OpsEditElementsDialog({
           inception_date: inceptionDate || null,
           puton_date: filingDate || null,
           custodian: custodian || null,
+          open_day: openDay || null,
+          is_temporary_open: isTemporaryOpen,
+          fee_purchase: feePurchase || null,
+          add_amount: addAmount || null,
+          fee_redeem: feeRedeem || null,
+          precautious_line: precautiousLine,
+          closed_period: closedPeriod || null,
+          stop_line: stopLineValue,
+          fee_manage_rate: feeManageRate || null,
+          fee_trust: feeTrust || null,
+          fee_manage: feeManageDesc || null,
+          fee_admin_service: feeAdminService || null,
+          fee_pay: feePayDesc || null,
         }),
       })
       await fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/strategy`, {
@@ -23269,7 +23301,8 @@ export default function PrivateFundsPage() {
           {activeTab === "operations" && activeSideItem === "ops-email-sync" && <OperationsEmailSyncView />}
           {activeTab === "operations" && activeSideItem === "ops-team-data" && <OperationsTeamDataView />}
           {activeTab === "operations" && activeSideItem === "ops-ledger" && <OperationsLedgerView />}
-          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-ledger" && (
+          {activeTab === "operations" && activeSideItem === "ops-element-extract" && <OperationsElementExtractView />}
+          {activeTab === "operations" && activeSideItem !== "ops-strategy-tags" && activeSideItem !== "ops-tracking" && activeSideItem !== "ops-direct" && activeSideItem !== "ops-fof" && activeSideItem !== "ops-active-funds" && activeSideItem !== "ops-email-sync" && activeSideItem !== "ops-team-data" && activeSideItem !== "ops-ledger" && activeSideItem !== "ops-element-extract" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

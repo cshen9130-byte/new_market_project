@@ -17,6 +17,7 @@ import {
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import {
+  shareClassProductCodesMatch,
   sqlEmailNavShareClassGuard,
   sqlFundNameMatch,
 } from "@/lib/server/fund-name-match"
@@ -189,6 +190,18 @@ function filterEmailBatchRow(
     beian,
     aliases,
   )
+}
+
+function expandBeiansWithParentCodes(codes: string[]): string[] {
+  const out = new Set<string>()
+  for (const raw of codes) {
+    const code = raw.trim().toUpperCase()
+    if (!code) continue
+    out.add(code)
+    const parent = code.replace(/[ABC]$/u, "")
+    if (parent !== code) out.add(parent)
+  }
+  return [...out]
 }
 
 async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<Map<string, NavPoint[]>> {
@@ -679,14 +692,10 @@ export class BatchNavResolver {
       ),
     ]
     const emailCodes = await loadEmailProductCodesForNames(names)
-    const beians = [
-      ...new Set(
-        [
-          ...products.map((p) => (p.beian_hao ?? "").trim()).filter(Boolean),
-          ...emailCodes,
-        ],
-      ),
-    ]
+    const beians = expandBeiansWithParentCodes([
+      ...products.map((p) => (p.beian_hao ?? "").trim()).filter(Boolean),
+      ...emailCodes,
+    ])
 
     const hints = await loadLatestNavDateHints(beians, names)
     const defaultSince = addDays(asOfDate, NAV_HISTORY_LOOKBACK_DAYS)
@@ -779,7 +788,13 @@ export class BatchNavResolver {
     const emailName =
       resolveEmailNavAt(this.emailByName.get(identity.product_name), beforeDate) ??
       (short ? resolveEmailNavAt(this.emailByName.get(short), beforeDate) : null)
-    const emailBeian = beian ? resolveEmailNavAt(this.emailByBeian.get(beian), beforeDate) : null
+    const emailBeianDirect = beian ? resolveEmailNavAt(this.emailByBeian.get(beian), beforeDate) : null
+    const parentBeian = beian.replace(/[ABC]$/u, "")
+    const emailBeianParent =
+      beian && parentBeian !== beian
+        ? resolveEmailNavAt(this.emailByBeian.get(parentBeian), beforeDate)
+        : null
+    const emailBeian = emailBeianDirect ?? emailBeianParent
     let emailPoint = emailName ?? emailBeian
     if (
       emailName
@@ -889,6 +904,10 @@ export class BatchNavResolver {
     }
     const emailLayers = () => {
       apply(this.emailByBeian.get(beian), { email: true })
+      if (beian) {
+        const parentBeian = beian.replace(/[ABC]$/u, "")
+        if (parentBeian !== beian) apply(this.emailByBeian.get(parentBeian), { email: true })
+      }
       apply(this.emailByName.get(identity.product_name), { email: true })
       if (short) apply(this.emailByName.get(short), { email: true })
     }

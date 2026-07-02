@@ -136,17 +136,87 @@ function normalizeDate(value: unknown): string | null {
   return s.slice(0, 10)
 }
 
+function normalizeOptionalString(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value == null) return null
+  const s = String(value).trim()
+  return s || null
+}
+
+function encodeTemporaryOpen(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s) return null
+  if (s.includes("不可")) return 2
+  if (s.includes("回")) return 3
+  if (s.includes("可")) return 1
+  return null
+}
+
+function encodeManageRate(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s) return null
+  const m = s.match(/([\d.]+)\s*%/)
+  if (m) {
+    const pct = parseFloat(m[1])
+    if (Number.isFinite(pct)) return String(pct / 100)
+  }
+  const num = parseFloat(s)
+  if (Number.isFinite(num)) {
+    return num > 1 ? String(num / 100) : String(num)
+  }
+  return null
+}
+
 export async function PATCH(req: Request) {
   const body = await req.json().catch(() => null)
   const beian_hao = String(body?.beian_hao ?? "").trim()
   if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
 
-  const fund_name = body.fund_name != null ? String(body.fund_name).trim() || null : undefined
-  const advisor = body.advisor != null ? String(body.advisor).trim() || null : undefined
-  const fund_manager = body.fund_manager != null ? String(body.fund_manager).trim() || null : undefined
-  const inception_date = body.inception_date !== undefined ? normalizeDate(body.inception_date) : undefined
-  const puton_date = body.puton_date !== undefined ? normalizeDate(body.puton_date) : undefined
-  const custodian = body.custodian != null ? String(body.custodian).trim() || null : undefined
+  const fieldValues: Record<string, unknown> = {
+    fund_name: normalizeOptionalString(body.fund_name),
+    advisor: normalizeOptionalString(body.advisor),
+    inception_date: body.inception_date !== undefined ? normalizeDate(body.inception_date) : undefined,
+    puton_date: body.puton_date !== undefined ? normalizeDate(body.puton_date) : undefined,
+    mandator_name: normalizeOptionalString(body.custodian),
+    open_day: normalizeOptionalString(body.open_day),
+    is_temporary_open: encodeTemporaryOpen(body.is_temporary_open),
+    fee_purchase: normalizeOptionalString(body.fee_purchase),
+    add_amount: normalizeOptionalString(body.add_amount),
+    fee_redeem: normalizeOptionalString(body.fee_redeem),
+    precautious_line: normalizeOptionalString(body.precautious_line),
+    closed_period: normalizeOptionalString(body.closed_period),
+    stop_line: normalizeOptionalString(body.stop_line),
+    fee_manage_rate: encodeManageRate(body.fee_manage_rate),
+    fee_trust: normalizeOptionalString(body.fee_trust),
+    fee_manage: normalizeOptionalString(body.fee_manage),
+    fee_admin_service: normalizeOptionalString(body.fee_admin_service),
+    fee_pay: normalizeOptionalString(body.fee_pay),
+  }
+
+  const fund_manager = normalizeOptionalString(body.fund_manager)
+  const advisor = normalizeOptionalString(body.advisor)
+  const custodian = normalizeOptionalString(body.custodian)
+
+  const setClauses: string[] = []
+  const values: unknown[] = []
+  let paramIndex = 1
+
+  for (const [column, value] of Object.entries(fieldValues)) {
+    if (value === undefined) continue
+    if (column === "inception_date" || column === "puton_date") {
+      setClauses.push(`${column} = $${paramIndex}::date`)
+    } else if (column === "fee_manage_rate") {
+      setClauses.push(`${column} = $${paramIndex}::numeric`)
+    } else {
+      setClauses.push(`${column} = $${paramIndex}`)
+    }
+    values.push(value)
+    paramIndex++
+  }
 
   try {
     const existing = await query<{ id: number }>(
@@ -158,37 +228,37 @@ export async function PATCH(req: Request) {
     )
 
     if (existing[0]) {
+      if (setClauses.length > 0) {
+        setClauses.push("updated_at = NOW()")
+        values.push(existing[0].id)
+        await query(
+          `UPDATE basicinfo_bfl_track SET ${setClauses.join(", ")} WHERE id = $${paramIndex}`,
+          values,
+        )
+      }
+    } else if (setClauses.length > 0) {
+      const insertColumns = ["register_number", "record_key"]
+      const insertValues: unknown[] = [beian_hao, beian_hao]
+      const insertPlaceholders: string[] = ["$1", "$2"]
+      let insertIndex = 3
+      for (const [column, value] of Object.entries(fieldValues)) {
+        if (value === undefined) continue
+        insertColumns.push(column)
+        if (column === "inception_date" || column === "puton_date") {
+          insertPlaceholders.push(`$${insertIndex}::date`)
+        } else if (column === "fee_manage_rate") {
+          insertPlaceholders.push(`$${insertIndex}::numeric`)
+        } else {
+          insertPlaceholders.push(`$${insertIndex}`)
+        }
+        insertValues.push(value)
+        insertIndex++
+      }
+      insertColumns.push("updated_at")
+      insertPlaceholders.push("NOW()")
       await query(
-        `UPDATE basicinfo_bfl_track
-         SET fund_name = $2,
-             advisor = $3,
-             inception_date = $4::date,
-             puton_date = $5::date,
-             mandator_name = $6,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [
-          existing[0].id,
-          fund_name ?? null,
-          advisor ?? null,
-          inception_date ?? null,
-          puton_date ?? null,
-          custodian ?? null,
-        ]
-      )
-    } else {
-      await query(
-        `INSERT INTO basicinfo_bfl_track
-           (register_number, record_key, fund_name, advisor, inception_date, puton_date, mandator_name, updated_at)
-         VALUES ($1, $1, $2, $3, $4::date, $5::date, $6, NOW())`,
-        [
-          beian_hao,
-          fund_name ?? null,
-          advisor ?? null,
-          inception_date ?? null,
-          puton_date ?? null,
-          custodian ?? null,
-        ]
+        `INSERT INTO basicinfo_bfl_track (${insertColumns.join(", ")}) VALUES (${insertPlaceholders.join(", ")})`,
+        insertValues,
       )
     }
 
@@ -199,7 +269,7 @@ export async function PATCH(req: Request) {
       ).catch(() => undefined)
     }
 
-    if (advisor !== undefined || custodian !== undefined) {
+    if (body.advisor !== undefined || body.custodian !== undefined) {
       await query(
         `UPDATE private_fund_info_bfl
          SET investment_advisor = $2,

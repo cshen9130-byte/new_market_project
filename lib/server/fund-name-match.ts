@@ -87,19 +87,55 @@ export function sqlShareClassCodeGuard(codeCol: string, productNameExpr: string)
   )`
 }
 
+/** Strip trailing A/B/C share-class suffix from a product / beian code. */
+export function stripShareClassFromProductCode(code: string): string {
+  return String(code ?? "").trim().toUpperCase().replace(/[ABC]$/u, "")
+}
+
+/** True when email product_code matches beian, including parent codes without share-class suffix. */
+export function shareClassProductCodesMatch(emailCode: string, beian: string): boolean {
+  const ec = stripShareClassFromProductCode(emailCode)
+  const bc = stripShareClassFromProductCode(beian)
+  if (!ec || !bc) {
+    return String(emailCode ?? "").trim().toUpperCase() === String(beian ?? "").trim().toUpperCase()
+  }
+  if (ec === bc) return true
+  if (`S${ec}` === bc || ec === `S${bc}`) return true
+  return false
+}
+
+/** SQL: email product_code equals beian base code (parent code without A/B/C suffix). */
+export function sqlShareClassParentCodeMatch(codeCol: string, beianCol: string): string {
+  return `regexp_replace(UPPER(BTRIM(${beianCol})), '[ABC]$', '') = UPPER(BTRIM(${codeCol}))`
+}
+
+/** Email row is not explicitly tagged as a different share class (B/C when target is A, etc.). */
+function sqlEmailNavUnclassifiedShareClassGuard(fundNameCol: string, productCodeCol: string): string {
+  return `(
+    COALESCE(${productCodeCol}, '') !~ '[ABC]$'
+    AND COALESCE(${fundNameCol}, '') NOT ILIKE '%A类%'
+    AND COALESCE(${fundNameCol}, '') NOT ILIKE '%B类%'
+    AND COALESCE(${fundNameCol}, '') NOT ILIKE '%C类%'
+  )`
+}
+
 /** Share-class guard for email NAV rows when resolving beian from fund_name. */
 export function sqlEmailNavShareClassGuard(fundNameCol: string, productNameExpr: string, productCodeCol: string): string {
+  const unclassified = sqlEmailNavUnclassifiedShareClassGuard(fundNameCol, productCodeCol)
   return `(
     CASE
       WHEN ${productNameExpr} ILIKE '%A类%'
         THEN COALESCE(${fundNameCol}, '') ILIKE '%A类%'
           OR COALESCE(${productCodeCol}, '') ~ 'A$'
+          OR ${unclassified}
       WHEN ${productNameExpr} ILIKE '%B类%'
         THEN COALESCE(${fundNameCol}, '') ILIKE '%B类%'
           OR COALESCE(${productCodeCol}, '') ~ 'B$'
+          OR ${unclassified}
       WHEN ${productNameExpr} ILIKE '%C类%'
         THEN COALESCE(${fundNameCol}, '') ILIKE '%C类%'
           OR COALESCE(${productCodeCol}, '') ~ 'C$'
+          OR ${unclassified}
       ELSE (
         COALESCE(${fundNameCol}, '') NOT ILIKE '%A类%'
         AND COALESCE(${fundNameCol}, '') NOT ILIKE '%B类%'

@@ -6,7 +6,7 @@
 import { query } from "@/lib/db"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 
-function compactSubjectCode(code: string): string {
+function compactSubjectCode(code: string | null | undefined): string {
   return String(code ?? "")
     .replace(/\s+/g, "")
     .replace(/\./g, "")
@@ -47,6 +47,144 @@ const ETF_NAME_PATTERNS: Array<{ test: RegExp; code: string }> = [
 export function isListedFundCode(code: string | null | undefined): boolean {
   return /^\d{6}$/.test(String(code ?? "").trim())
 }
+
+const EXCHANGE_ETF_TICKER_RE =
+  /^(50[0-9]{4}|51[0-9]{4}|52[0-9]{4}|53[0-9]{4}|56[0-9]{4}|588[0-9]{3}|159[0-9]{3}|16[0-3][0-9]{3})$/
+
+const ASHARE_STOCK_TICKER_RE =
+  /^(000|001|002|003|300|301|600|601|603|605|688|689)[0-9]{3}$/
+
+/** Whether a 6-digit code is an exchange-listed ETF ticker (not open-end fund). */
+export function isExchangeEtfTicker(code: string | null | undefined): boolean {
+  const c = String(code ?? "").trim()
+  return EXCHANGE_ETF_TICKER_RE.test(c)
+}
+
+/** Whether a 6-digit code looks like an A-share stock ticker. */
+export function isAshareStockTicker(code: string | null | undefined): boolean {
+  const c = String(code ?? "").trim()
+  if (!/^\d{6}$/.test(c) || isExchangeEtfTicker(c)) return false
+  return ASHARE_STOCK_TICKER_RE.test(c)
+}
+
+function resolveHoldingTicker(
+  subjectCode: string | null | undefined,
+  subjectName: string | null | undefined,
+  symbol: string | null | undefined,
+): string {
+  const resolved =
+    resolveFundHoldingCode(String(subjectCode ?? ""), String(subjectName ?? ""), symbol)
+    ?? String(symbol ?? "").trim().toUpperCase()
+  return resolved.replace(/\.(SH|SZ|BJ)$/i, "")
+}
+
+/** Direct A-share stock or exchange ETF — not an FOF underlying fund holding. */
+export function isDirectEquityOrListedEtfHolding(input: {
+  subjectCode?: string | null
+  subjectName?: string | null
+  symbol?: string | null
+  rowKind?: string | null
+}): boolean {
+  const name = String(input.subjectName ?? "")
+  const kind = String(input.rowKind ?? "")
+  const compactSubj = compactSubjectCode(input.subjectCode)
+
+  if (/ETF/u.test(name)) return true
+  if (kind === "stock") return true
+
+  const ticker = resolveHoldingTicker(input.subjectCode, name, input.symbol)
+  if (/^\d{6}$/.test(ticker) && isExchangeEtfTicker(ticker)) return true
+
+  if (/基金|私募/u.test(name)) return false
+
+  if (
+    /^\d{6}$/.test(ticker)
+    && isAshareStockTicker(ticker)
+    && (kind === "fund_or_stock" || compactSubj.startsWith("1102") || compactSubj.startsWith("1001"))
+  ) {
+    return true
+  }
+
+  if (kind === "fund" && compactSubj.startsWith("1105") && /^\d{6}$/.test(ticker) && isExchangeEtfTicker(ticker)) {
+    return true
+  }
+
+  return false
+}
+
+/** For fof_underlying_summary rows (product name + optional beian/code). */
+export function isDirectEquityOrListedEtfProduct(
+  productName: string,
+  beianHao?: string | null,
+): boolean {
+  const name = String(productName ?? "")
+  if (/ETF/u.test(name)) return true
+  if (/基金|私募/u.test(name)) return false
+
+  const code = String(beianHao ?? "").trim().toUpperCase() || extractListedFundCodeFromName(name) || ""
+  const ticker = code.replace(/\.(SH|SZ|BJ)$/i, "")
+  if (!/^\d{6}$/.test(ticker)) return false
+
+  return isExchangeEtfTicker(ticker) || isAshareStockTicker(ticker)
+}
+
+/** SQL fragment: true when a summary-row product should be excluded from FOF底层 tables. */
+export function sqlExcludeFofUnderlyingProduct(productNameExpr: string, beianExpr: string): string {
+  const beian = `COALESCE(NULLIF(BTRIM(${beianExpr}), ''), '')`
+  return `NOT (
+    ${productNameExpr} ~* 'ETF'
+    OR (
+      ${productNameExpr} !~* '基金|私募|ETF'
+      AND ${beian} ~ '^(50[0-9]{4}|51[0-9]{4}|52[0-9]{4}|53[0-9]{4}|56[0-9]{4}|588[0-9]{3}|159[0-9]{3}|16[0-3][0-9]{3})$'
+    )
+    OR (
+      ${productNameExpr} !~* '基金|私募|ETF'
+      AND ${beian} ~ '^(000|001|002|003|300|301|600|601|603|605|688|689)[0-9]{3}$'
+    )
+  )`
+}
+
+/** SQL fragment: true when valuation holding alias should be excluded from FOF底层 extraction. */
+export const SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF = `(
+  h.subject_name ~* 'ETF'
+  OR h.row_kind = 'stock'
+  OR (
+    h.row_kind = 'fund_or_stock'
+    AND h.subject_name !~* '基金|私募|ETF'
+    AND NULLIF(BTRIM(h.symbol), '') ~ '^\\d{6}$'
+    AND (
+      REPLACE(REPLACE(h.subject_code, ' ', ''), '.', '') LIKE '1102%'
+      OR REPLACE(REPLACE(h.subject_code, ' ', ''), '.', '') LIKE '1001%'
+    )
+    AND NULLIF(BTRIM(h.symbol), '') ~ '^(000|001|002|003|300|301|600|601|603|605|688|689)[0-9]{3}$'
+  )
+  OR (
+    h.row_kind IN ('fund', 'fund_or_stock')
+    AND h.subject_name !~* '基金|私募'
+    AND NULLIF(BTRIM(h.symbol), '') ~ '^(50[0-9]{4}|51[0-9]{4}|52[0-9]{4}|53[0-9]{4}|56[0-9]{4}|588[0-9]{3}|159[0-9]{3}|16[0-3][0-9]{3})$'
+  )
+)`
+
+/** Same as above for ops_managed_fof_underlying (alias m). */
+export const SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF = `(
+  m.underlying_name ~* 'ETF'
+  OR m.row_kind = 'stock'
+  OR (
+    m.row_kind = 'fund_or_stock'
+    AND m.underlying_name !~* '基金|私募|ETF'
+    AND NULLIF(BTRIM(m.underlying_product_code), '') ~ '^\\d{6}$'
+    AND (
+      REPLACE(REPLACE(m.subject_code, ' ', ''), '.', '') LIKE '1102%'
+      OR REPLACE(REPLACE(m.subject_code, ' ', ''), '.', '') LIKE '1001%'
+    )
+    AND NULLIF(BTRIM(m.underlying_product_code), '') ~ '^(000|001|002|003|300|301|600|601|603|605|688|689)[0-9]{3}$'
+  )
+  OR (
+    m.row_kind IN ('fund', 'fund_or_stock')
+    AND m.underlying_name !~* '基金|私募'
+    AND NULLIF(BTRIM(m.underlying_product_code), '') ~ '^(50[0-9]{4}|51[0-9]{4}|52[0-9]{4}|53[0-9]{4}|56[0-9]{4}|588[0-9]{3}|159[0-9]{3}|16[0-3][0-9]{3})$'
+  )
+)`
 
 /** Resolve 6-digit exchange-traded fund code from product name. */
 export function extractListedFundCodeFromName(name: string): string | null {

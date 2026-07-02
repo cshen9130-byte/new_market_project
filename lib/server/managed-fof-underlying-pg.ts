@@ -17,7 +17,7 @@ import {
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
 import { sqlFundNameMatch, sqlEmailNavShareClassGuard, sqlShareClassCodeGuard } from "@/lib/server/fund-name-match"
-import { backfillFundHoldingSymbols } from "@/lib/server/fund-holding-code"
+import { backfillFundHoldingSymbols, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF } from "@/lib/server/fund-holding-code"
 
 /** Managed products excluded from FOF underlying extraction (non-FOF). */
 export const MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN = "%恒盈2号%"
@@ -169,6 +169,7 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
          )
          AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
          AND BTRIM(h.symbol) ~ '^[A-Za-z0-9]+$'
+         AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
          AND (
            h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
            OR h.subject_code LIKE '1109%'
@@ -537,6 +538,7 @@ export async function listUnderlyingHoldings(options: {
        SUM(m.market_weight)::text AS market_weight
      FROM ops_managed_fof_underlying m
      WHERE COALESCE(m.market_value, 0) > 0
+       AND NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}
        AND ${matchSql}
      GROUP BY m.managed_product_id, m.fof_product_name, m.valuation_date
      ORDER BY SUM(m.market_value) DESC NULLS LAST, m.fof_product_name ASC`,
@@ -854,7 +856,7 @@ export async function listManagedFofUnderlyingDetail(options: {
   const sortKey = DETAIL_SORT_COLS[sortParam] ? sortParam : "seq_no"
   const sortAsc = options.sortDir !== "desc"
 
-  const conditions: string[] = ["COALESCE(m.market_value, 0) > 0"]
+  const conditions: string[] = ["COALESCE(m.market_value, 0) > 0", `NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}`]
   const params: unknown[] = []
   let pi = 1
 

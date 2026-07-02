@@ -4,7 +4,11 @@
 
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
-import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
+import {
+  shareClassProductCodesMatch,
+  sqlFundNameMatch,
+  sqlShareClassParentCodeMatch,
+} from "@/lib/server/fund-name-match"
 
 export type EmailNavPoint = {
   price_date: string
@@ -129,13 +133,33 @@ function isVirtualAccrualNavTableRow(row: EmailNavRawRow): boolean {
 
 function productCodeMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
   if (!beian) return false
-  return (row.product_code ?? "").trim().toUpperCase() === beian.trim().toUpperCase()
+  const productCode = (row.product_code ?? "").trim().toUpperCase()
+  return productCode === beian.trim().toUpperCase() || shareClassProductCodesMatch(productCode, beian)
+}
+
+function embeddedCodeMatchesBeian(code: string, beian: string): boolean {
+  return code === beian || shareClassProductCodesMatch(code, beian)
 }
 
 export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
   const currentTier = sourceTier(current.source, current.subject)
   const candidateTier = sourceTier(candidate.source, candidate.subject)
   if (currentTier !== candidateTier) {
+    // When a virtual email (tier -1, e.g. "虚拟业绩报酬" from a FOF manager) would
+    // override an attachment_nav_table row (tier 0) that already carries the correct
+    // post-dividend structure (cum distinctly above unit), trust the attachment instead.
+    // This prevents FOF-manager performance-fee emails — whose cumulative field tracks
+    // a different accrual baseline, not the fund's actual 累计净值 — from overwriting
+    // verified attachment NAV tables that already reflect the dividend offset.
+    // (SNF018-style funds where attachment stores cum-as-unit are unaffected:
+    //  their attachment has nav ≈ cum → no distinct cumulative → virtual still wins.)
+    if (candidateTier < currentTier && candidateTier === -1 && currentTier === 0) {
+      const currNav = parseOptionalNav(current.nav)
+      const currCum = parseOptionalNav(current.cumulative_nav)
+      if (currNav != null && currCum != null && hasDistinctCumulative(currNav, currCum)) {
+        return current
+      }
+    }
     return candidateTier < currentTier ? candidate : current
   }
 
@@ -150,6 +174,20 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   if (currentPlausible !== candidatePlausible) {
     return candidatePlausible ? candidate : current
   }
+
+  // Within the same source tier, prefer the row that carries a distinct cumulative
+  // (unit ≠ cum, signalling a post-dividend or correction row) over one that does not.
+  // This causes correction emails ("返账更正重发：净值更新") that supply the correct
+  // ex-dividend unit + cum to win over earlier same-tier rows where nav == cum
+  // (the original, pre-correction attachment data).
+  const currNav = parseOptionalNav(current.nav)
+  const currCumField = parseOptionalNav(current.cumulative_nav)
+  const candNav = parseOptionalNav(candidate.nav)
+  const candCumField = parseOptionalNav(candidate.cumulative_nav)
+  const currentDistinct = currNav != null && currCumField != null && hasDistinctCumulative(currNav, currCumField)
+  const candidateDistinct = candNav != null && candCumField != null && hasDistinctCumulative(candNav, candCumField)
+  if (candidateDistinct && !currentDistinct) return candidate
+  if (currentDistinct && !candidateDistinct) return current
 
   if (beian) {
     const candCode = productCodeMatchesBeian(candidate, beian)
@@ -208,7 +246,10 @@ function extractEmbeddedProductCodes(...parts: Array<string | null | undefined>)
 function nameMatchesAlias(fundName: string | null, aliases: string[]): boolean {
   const name = (fundName ?? "").trim()
   if (!name) return false
-  return aliases.some((alias) => name === alias || name.startsWith(alias))
+  return aliases.some((alias) => {
+    const a = alias.trim()
+    return name === a || name.startsWith(a) || a.startsWith(name)
+  })
 }
 
 /** FOF multi-level 估值表 names the queried fund as an underlying holding, not the portfolio. */
@@ -264,17 +305,19 @@ export function emailRowMatchesFund(
   if (isFofUnderlyingValuationEmailRow(row, beianHao)) return false
 
   const productCode = (row.product_code ?? "").trim().toUpperCase()
-  if (beian && productCode && productCode !== beian) return false
+  if (beian && productCode && !embeddedCodeMatchesBeian(productCode, beian)) return false
 
   const embedded = extractEmbeddedProductCodes(row.fund_name, row.attachment_filename, row.subject)
   const meta = `${row.attachment_filename ?? ""} ${row.subject ?? ""} ${row.fund_name ?? ""}`
 
-  if (beian && embedded.length > 0 && !embedded.includes(beian)) return false
+  if (beian && embedded.length > 0 && !embedded.some((code) => embeddedCodeMatchesBeian(code, beian))) {
+    return false
+  }
 
   if (beian && meta.toUpperCase().includes(beian)) return true
 
   if (nameMatchesAlias(row.fund_name, aliases)) {
-    return embedded.length === 0 || embedded.includes(beian)
+    return embedded.length === 0 || embedded.some((code) => embeddedCodeMatchesBeian(code, beian))
   }
 
   return false
@@ -430,6 +473,7 @@ export function buildEmailNavMatchCondition(
     AND (
       (${beianHaoExpr} IS NOT NULL AND BTRIM(${beianHaoExpr}) <> '' AND (
         ${e}.product_code = BTRIM(${beianHaoExpr})
+        OR ${sqlShareClassParentCodeMatch(`${e}.product_code`, beianHaoExpr)}
         OR COALESCE(${e}.attachment_filename, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
         OR COALESCE(${e}.subject, '') ILIKE '%' || BTRIM(${beianHaoExpr}) || '%'
       ))
@@ -467,7 +511,13 @@ export function buildEmailNavLatestJoins(
     CASE
       WHEN ${shortNameExpr} IS NOT NULL AND (${shortNameExpr} ILIKE '%A类%' OR ${productNameExpr} ILIKE '%A类%')
         OR ${beianHaoExpr} ~ 'A$'
-        THEN COALESCE(e.fund_name, '') ILIKE '%A类%' OR COALESCE(e.attachment_filename, '') ILIKE '%A类%'
+        THEN COALESCE(e.fund_name, '') ILIKE '%A类%'
+          OR COALESCE(e.attachment_filename, '') ILIKE '%A类%'
+          OR (
+            COALESCE(e.fund_name, '') NOT ILIKE '%B类%'
+            AND COALESCE(e.fund_name, '') NOT ILIKE '%C类%'
+            AND NOT (COALESCE(e.product_code, '') ~ '[BC]$')
+          )
       ELSE COALESCE(e.fund_name, '') NOT ILIKE '%A类%' AND COALESCE(e.attachment_filename, '') NOT ILIKE '%A类%'
     END
   )`
@@ -1259,7 +1309,10 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
       continue
     }
 
-    const rechained = rechainDerivedFromPrev(prev, unit)
+    // Pass cum_nav_withdrawal as currCum so that on ex-dividend dates (unit dropped while
+    // cumulative correctly stayed flat) isLikelyDividendExDate detects the event and preserves
+    // the cumulative NAV instead of overwriting it with the dropped unit NAV.
+    const rechained = rechainDerivedFromPrev(prev, unit, cum ?? undefined)
     if (rechained) {
       curr.cum_nav_withdrawal = rechained.cum
       curr.cumulative_nav = rechained.adj

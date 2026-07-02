@@ -5,7 +5,7 @@
 
 import type { ValuationAnalysis, ValuationRow, ValuationSummary } from "@/lib/server/valuation-analyzer"
 import { pickRowCost, pickRowMarketValue } from "@/lib/server/valuation-analyzer"
-import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
+import { isDirectEquityOrListedEtfHolding, resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
 
 export type EnrichedValuationSummary = ValuationSummary & {
   unit_nav: number
@@ -53,6 +53,15 @@ export function isFofUnderlyingHolding(row: {
   name?: string | null
   symbol?: string | null
 }): boolean {
+  if (isDirectEquityOrListedEtfHolding({
+    subjectCode: row.code,
+    subjectName: row.name,
+    symbol: row.symbol,
+    rowKind: row.row_kind,
+  })) {
+    return false
+  }
+
   const rowKind = String(row.row_kind ?? "")
   if (NON_UNDERLYING_ROW_KINDS.has(rowKind)) return false
   if (UNDERLYING_ROW_KINDS.has(rowKind)) return true

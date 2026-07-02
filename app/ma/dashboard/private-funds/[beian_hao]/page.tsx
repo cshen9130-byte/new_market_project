@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo, useCallback, useRef, memo, Fragment } from "react"
 import type React from "react"
-import { useParams } from "next/navigation"
+import { useParams, useSearchParams } from "next/navigation"
 import {
   Area,
   Line,
@@ -40,6 +40,7 @@ import { ScenarioAnalysisPanel } from "./components/ScenarioAnalysisPanel"
 import { NavAttributionPanel } from "./components/NavAttributionPanel"
 import { FundCompanyPanel } from "./components/FundCompanyPanel"
 import { FundProfilePanel } from "./components/FundProfilePanel"
+import { FundMaterialsPanel } from "./components/FundMaterialsPanel"
 import { amacFundUrl } from "@/lib/amac-urls"
 
 const menuItems = [
@@ -815,6 +816,7 @@ function NavPerformanceChart({
 
 export default function PrivateFundDetailPage() {
   const params = useParams()
+  const searchParams = useSearchParams()
   const router = useRouter()
   const beian_hao = typeof params.beian_hao === "string" ? params.beian_hao : ""
 
@@ -1033,6 +1035,11 @@ export default function PrivateFundDetailPage() {
 
   const [chartMode, setChartMode] = useState<"nav" | "return">("return")
   const [detailTab, setDetailTab] = useState<FundDetailTab>("performance")
+
+  useEffect(() => {
+    const tab = searchParams.get("tab")
+    if (tab === "materials") setDetailTab("materials")
+  }, [searchParams])
   const navChartCaptureRef = useRef<HTMLDivElement>(null)
   const navChartLightboxRef = useRef<HTMLDivElement>(null)
   const [navChartLightboxOpen, setNavChartLightboxOpen] = useState(false)
@@ -2627,7 +2634,11 @@ export default function PrivateFundDetailPage() {
         />
       )}
 
-      {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && detailTab !== "company" && detailTab !== "profile" && (
+      {detailTab === "materials" && (
+        <FundMaterialsPanel beian_hao={beian_hao} />
+      )}
+
+      {detailTab !== "performance" && detailTab !== "product" && detailTab !== "rating" && detailTab !== "scenario" && detailTab !== "attribution" && detailTab !== "company" && detailTab !== "profile" && detailTab !== "materials" && (
         <div className="min-h-[320px]" />
       )}
     </div>

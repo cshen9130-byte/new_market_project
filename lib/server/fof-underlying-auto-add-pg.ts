@@ -11,6 +11,7 @@
 
 import { query } from "@/lib/db"
 import { ensureManagedFofUnderlyingTable } from "@/lib/server/managed-fof-underlying-pg"
+import { SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF } from "@/lib/server/fund-holding-code"
 
 export type FofUnderlyingAutoAddResult = {
   /** Rows added to fof_underlying_summary (新增到运维/投资 FOF底层汇总表) */
@@ -62,8 +63,9 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
        SELECT DISTINCT ON (COALESCE(NULLIF(TRIM(UPPER(underlying_product_code)), ''), ${normUnderlyingCol}))
          underlying_name,
          NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code
-       FROM ops_managed_fof_underlying
-       WHERE NULLIF(TRIM(underlying_name), '') IS NOT NULL
+       FROM ops_managed_fof_underlying m
+       WHERE NULLIF(TRIM(m.underlying_name), '') IS NOT NULL
+         AND NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}
        ORDER BY COALESCE(NULLIF(TRIM(UPPER(underlying_product_code)), ''), ${normUnderlyingCol}), valuation_date DESC
      ),
      max_seq AS (
@@ -104,9 +106,10 @@ export async function autoAddFofUnderlyingToTables(): Promise<FofUnderlyingAutoA
          fof_product_name                             AS fof_fund_name,
          underlying_name                              AS product_name,
          NULLIF(TRIM(underlying_product_code), '')    AS beian_hao
-       FROM ops_managed_fof_underlying
-       WHERE NULLIF(TRIM(underlying_name), '') IS NOT NULL
-         AND NULLIF(TRIM(fof_product_name), '') IS NOT NULL
+       FROM ops_managed_fof_underlying m
+       WHERE NULLIF(TRIM(m.underlying_name), '') IS NOT NULL
+         AND NOT ${SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF}
+         AND NULLIF(TRIM(m.fof_product_name), '') IS NOT NULL
        ORDER BY ${normFofEmail}, ${normUnderlyingCol}
      ),
      inserted AS (

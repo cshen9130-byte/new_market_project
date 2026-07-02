@@ -15,6 +15,7 @@ import {
   useFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { autoAddFofUnderlyingToTables } from "@/lib/server/fof-underlying-auto-add-pg"
+import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -203,7 +204,10 @@ export async function GET(req: Request) {
           ? marketValueExpr
           : ALLOWED_SORT[sortKey]
 
-      const conditions: string[] = ["f.product_name <> '合计'"]
+      const conditions: string[] = [
+        "f.product_name <> '合计'",
+        sqlExcludeFofUnderlyingProduct("f.product_name", "cache.beian_hao"),
+      ]
       const params: unknown[] = []
       let pi = 1
 
@@ -338,7 +342,10 @@ export async function GET(req: Request) {
     const sortKey = ALLOWED_SORT_SLOW[sortParam] ? sortParam : "sequence_no"
     const sortCol = sortKey === "sequence_no" ? "sequence_no" : ALLOWED_SORT_SLOW[sortKey]
 
-    const conditions: string[] = ["f.product_name <> '合计'"]
+    const conditions: string[] = [
+      "f.product_name <> '合计'",
+      sqlExcludeFofUnderlyingProduct("f.product_name", BEIAN_EXPR),
+    ]
     const params: unknown[] = []
     let pi = 1
 

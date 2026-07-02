@@ -520,3 +520,78 @@ The `adj pct ~ -2%` assertion checked `adj_0622 / adj_0618 ≈ −2.02%`. That e
 
 - No change to any protected NAV function (`syncExDivAdjustedNav`, `rechainDerivedFromPrev`, `propagateMissingAdjRows`, `repairAdjBelowCumRows`, `mergeNavSeriesWithEmail`, etc.) — `lib/server/email-nav-query.ts` and `managed-product-nav-seed.ts` are byte-identical to before.
 - All regression checks pass afterward: `scripts/test-nav-rechain.mjs` (40+ assertions), `scripts/ma/check_fof_nav_invariant.ts` (all 44 funds `adj ≥ cum ≥ unit`), `scripts/ma/_diag_bah99a_route.ts` (routing).
+
+---
+
+## What Was Fixed (六妙星九紫一号 — SBPC20, 2026-07-02 — historical cum/adj losing dividend offset)
+
+### The Problem
+
+The fund detail page for 六妙星九紫一号 showed `累计净值: 1.3936` and `复权净值: 1.3936` on 2026-07-01 (correct), but all historical rows displayed `单位净值 = 累计净值 = 复权净值` (e.g. 1.1603 for 2026-06-30), hiding the dividend offset entirely. Additionally, 2026-07-01 incorrectly showed `-20.11%` daily change.
+
+**What the email DB actually contained (correct data all along):**
+
+| Date | nav (unit) | cumulative_nav | Source |
+|---|---|---|---|
+| 2026-06-11 | **1.000000** | 1.213100 | attachment_nav_table (CORRECTION email) |
+| 2026-06-12 | 1.016000 | 1.229100 | attachment_nav_table |
+| 2026-06-30 | 1.160300 | 1.373400 | attachment_nav_table |
+| 2026-07-01 | 1.180500 | 1.393600 | attachment_nav_table |
+
+### Root Causes (Two Interacting Bugs in `preferEmailNavRow`)
+
+**Bug 1 — CORRECTION email lost on 2026-06-11 (ex-dividend date)**
+
+The fund sent a correction email `【返账更正重发：净值更新】` with the correct ex-dividend unit NAV (1.000000). The original email had nav=1.213100 (wrong, unit=cum).
+
+Both are `attachment_nav_table` (same tier). The correction arrived with a higher DB id. In `preferEmailNavRow`, within the same tier, the first row (wrong original) was kept. The correction was discarded.
+
+Result: `selectEmailNavSeriesRows` returned nav=1.213100, cum=1.213100 for 2026-06-11 — no dividend offset detected.
+
+**Bug 2 — FOF-manager "虚拟业绩报酬" body emails overrode correct attachment rows (2026-06-12 to 2026-06-30)**
+
+Every day in this window had multiple row types:
+- `attachment_nav_table`: nav=1.157100, cum=1.370200 ← **correct post-dividend structure**
+- `body_table` (subject `虚拟业绩报酬_衡颐海泰1号…_SBPC20_…`): nav=1.157100, cum=1.095400 ← **FOF manager fee calculation accrual, wrong cum**
+
+The `虚拟业绩报酬_` subject pattern sets `emailNavSourceTier = -1` (highest priority, added for SNF018). So the body_table row had tier **−1** and the attachment had tier **0**. The body_table row **won every date**, replacing correct cum 1.3702 with wrong cum 1.0954.
+
+Result: All 2026-06-12 to 2026-06-30 dates used incorrect cumulative → `findFirstDividendRowIndex` could not find a pre-2026-07-01 dividend row → `alignPreDividendNavRows` swept everything to unit=cum=adj → 2026-07-01 appeared as the "first dividend" with a -20.11% change.
+
+**Why SNF018 was not broken:** for SNF018, the attachment stores **cumulative in the unit field** (nav ≈ cum → no distinct cumulative). The new guard only protects attachment rows that already have a distinct cumulative, so SNF018 virtual rows still correctly win.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Attachment wins over virtual when it carries the dividend offset | `lib/server/email-nav-query.ts` `preferEmailNavRow` | When a virtual email (tier -1) would override an attachment_nav_table row (tier 0): check if the attachment has a distinct cumulative (cum ≠ unit). If yes, keep the attachment. SNF018 attachments have nav ≈ cum (no distinct), so virtual still wins there. |
+| Correction emails win over original same-tier rows | `lib/server/email-nav-query.ts` `preferEmailNavRow` | Within the same source tier, if the candidate has a distinct cumulative (ex-dividend structure: unit dropped, cum stayed up) and the current does not (unit = cum), prefer the candidate. This causes "返账更正重发" correction emails to replace the original wrong attachment. |
+
+Note: the earlier `refreshStaleDerivedFields` change (passing `currCum`) is also retained — it is a correct defensive fix for funds where the platform DB stores the correct cumulative but a stale adj might be overwritten without the currCum parameter.
+
+### What This Fix Does NOT Change
+
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev`, `propagateMissingAdjRows`, `repairAdjBelowCumRows` — all unchanged.
+- SBAH99 dividend formulas — unchanged (managed product seed path).
+- SNF018 virtual-first FOF email priority — **unchanged**. SNF018 attachments store cum-as-unit (nav ≈ cum → no distinct cumulative), so the new guard does not trigger and virtual emails still win.
+- SSG947 managed-product seed + email merge — unchanged.
+- BAH99A routing — unchanged.
+- `emailNavSourceTier` itself — unchanged; tier -1 for virtual emails is preserved.
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 | 涨跌幅 |
+|---|---|---|---|---|
+| 2026-06-11 | 1.0000 | 1.2131 | 1.2131 | −19.48% (unit ratio; cum also dipped) |
+| 2026-06-25 | 1.1571 | 1.3702 | 1.3702 | +2.10% |
+| 2026-06-30 | 1.1603 | 1.3734 | 1.3734 | +0.35% |
+| 2026-07-01 | 1.1805 | 1.3936 | 1.3936 | **+1.74%** (was −20.11%) |
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
+All 43 test assertions pass. All 52 FOF底层 funds satisfy `adj >= cum >= unit`.
