@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, useCallback, useMemo, type CSSProperties, type MouseEvent, type ReactNode } from "react"
+import { useEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info } from "lucide-react"
@@ -285,9 +285,26 @@ function readListCache(key: string): ListCacheEntry | null {
       localStorage.removeItem(LIST_CACHE_PREFIX + key)
       return null
     }
-    listMemCache.set(key, parsed)
-    return parsed
+    if (!Array.isArray(parsed.data)) {
+      localStorage.removeItem(LIST_CACHE_PREFIX + key)
+      return null
+    }
+    const data = parsed.data.filter(
+      (row): row is TrackFundRow =>
+        !!row &&
+        typeof row === "object" &&
+        typeof (row as TrackFundRow).beian_hao === "string" &&
+        typeof (row as TrackFundRow).product_name === "string",
+    )
+    const entry: ListCacheEntry = {
+      data,
+      total: typeof parsed.total === "number" ? parsed.total : data.length,
+      ts: parsed.ts,
+    }
+    listMemCache.set(key, entry)
+    return entry
   } catch {
+    try { localStorage.removeItem(LIST_CACHE_PREFIX + key) } catch { /* ignore */ }
     return null
   }
 }
@@ -1691,18 +1708,20 @@ function TrendHoverChart({ beian_hao, productName }: { beian_hao: string; produc
     <div className="w-[340px] h-[160px] flex items-center justify-center text-xs text-muted-foreground">加载中…</div>
   )
   const { fund, bench, name } = data
-  if (fund.length < 2) return (
+  const fundSeries = Array.isArray(fund) ? fund : []
+  const benchSeries = Array.isArray(bench) ? bench : []
+  if (fundSeries.length < 2) return (
     <div className="w-[340px] h-[160px] flex items-center justify-center text-xs text-muted-foreground">暂无净值数据</div>
   )
 
   // Combine for axis range
-  const allVals = [...fund.map(p => p.v), ...bench.map(p => p.v)]
+  const allVals = [...fundSeries.map(p => p.v), ...benchSeries.map(p => p.v)]
   const minV = Math.min(...allVals), maxV = Math.max(...allVals)
   const pad = (maxV - minV) * 0.12 || 1
   const lo = minV - pad, hi = maxV + pad
 
   // All dates union (sorted)
-  const allDates = Array.from(new Set([...fund.map(p => p.d), ...bench.map(p => p.d)])).sort()
+  const allDates = Array.from(new Set([...fundSeries.map(p => p.d), ...benchSeries.map(p => p.d)])).sort()
   const xScale = (d: string) => PAD.l + (allDates.indexOf(d) / Math.max(allDates.length - 1, 1)) * cW
   const yScale = (v: number) => PAD.t + (1 - (v - lo) / (hi - lo)) * cH
 
@@ -1744,9 +1763,9 @@ function TrendHoverChart({ beian_hao, productName }: { beian_hao: string; produc
         {/* Zero line */}
         <line x1={PAD.l} y1={yScale(0)} x2={PAD.l + cW} y2={yScale(0)} stroke="currentColor" strokeOpacity={0.2} strokeWidth={1} strokeDasharray="3,3" />
         {/* Bench line */}
-        {bench.length >= 2 && <path d={toPath(bench)} fill="none" stroke={benchColor} strokeWidth={1.5} strokeLinejoin="round" />}
+        {benchSeries.length >= 2 && <path d={toPath(benchSeries)} fill="none" stroke={benchColor} strokeWidth={1.5} strokeLinejoin="round" />}
         {/* Fund line */}
-        <path d={toPath(fund)} fill="none" stroke={fundColor} strokeWidth={2} strokeLinejoin="round" />
+        <path d={toPath(fundSeries)} fill="none" stroke={fundColor} strokeWidth={2} strokeLinejoin="round" />
         {/* X axis labels */}
         {xTickIndices.map((i) => (
           <text key={i} x={xScale(allDates[i])} y={H - 6} textAnchor="middle" fontSize={9} fill="currentColor" opacity={0.5}>
@@ -2109,20 +2128,15 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     }
 
     function loadPools() {
-      fetch("/ma/api/tracking-funds/pools?scope=team")
+      fetch("/ma/api/tracking-funds/pools?scope=both", { headers: { ...userFetchHeaders() } })
         .then((r) => r.json())
         .then((d) => {
-          if (Array.isArray(d?.data)) reconcilePools(setPools, POOLS_CACHE_KEY, TEAM_ALL_POOL, d.data)
-          else if (d?.error) console.error("[loadPools team]", d.error, d.detail)
+          if (d?.data?.team && d?.data?.mine) {
+            reconcilePools(setPools, POOLS_CACHE_KEY, TEAM_ALL_POOL, d.data.team)
+            reconcilePools(setMyPools, MINE_POOLS_CACHE_KEY, MINE_ALL_POOL, d.data.mine)
+          } else if (d?.error) console.error("[loadPools]", d.error, d.detail)
         })
-        .catch((e) => console.error("[loadPools team fetch]", e))
-      fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: { ...userFetchHeaders() } })
-        .then((r) => r.json())
-        .then((d) => {
-          if (Array.isArray(d?.data)) reconcilePools(setMyPools, MINE_POOLS_CACHE_KEY, MINE_ALL_POOL, d.data)
-          else if (d?.error) console.error("[loadPools mine]", d.error, d.detail)
-        })
-        .catch((e) => console.error("[loadPools mine fetch]", e))
+        .catch((e) => console.error("[loadPools fetch]", e))
     }
 
     loadPools()
@@ -22924,6 +22938,20 @@ function PrivateFundManagersPersonalView() {
 
 
 export default function PrivateFundsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+          加载中…
+        </div>
+      }
+    >
+      <PrivateFundsPageContent />
+    </Suspense>
+  )
+}
+
+function PrivateFundsPageContent() {
   const searchParams = useSearchParams()
   const [currentUser, setCurrentUser] = useState<User | null>(() => authService.getCurrentUser())
 

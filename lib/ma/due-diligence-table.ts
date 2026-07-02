@@ -184,6 +184,24 @@ function seedDueDiligenceTableRows(): DueDiligenceTableRow[] {
   })
 }
 
+function sanitizeDueDiligenceTableRow(row: unknown): DueDiligenceTableRow | null {
+  if (!row || typeof row !== "object") return null
+  const r = row as Partial<DueDiligenceTableRow> & Record<string, unknown>
+  if (typeof r.id !== "string" || !r.id.trim()) return null
+  const data = defaultDueDiligenceTableRowData()
+  for (const col of DD_TABLE_COLUMNS) {
+    data[col.key] = String(r[col.key] ?? "").trim()
+  }
+  const now = new Date().toISOString()
+  return {
+    ...data,
+    id: r.id,
+    createdAt: typeof r.createdAt === "string" ? r.createdAt : now,
+    updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : now,
+    fundId: typeof r.fundId === "string" ? r.fundId : undefined,
+  }
+}
+
 export function loadDueDiligenceTableRows(): DueDiligenceTableRow[] {
   if (typeof window === "undefined") return []
   try {
@@ -191,7 +209,16 @@ export function loadDueDiligenceTableRows(): DueDiligenceTableRow[] {
     if (raw) {
       const parsed = JSON.parse(raw)
       // Only use stored data if it has actual rows
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const sanitized = parsed
+          .map(sanitizeDueDiligenceTableRow)
+          .filter((row): row is DueDiligenceTableRow => row !== null)
+        if (sanitized.length > 0) {
+          if (sanitized.length !== parsed.length) saveDueDiligenceTableRows(sanitized)
+          return sanitized
+        }
+        localStorage.removeItem(STORAGE_KEY)
+      }
     }
     // Nothing in storage (or empty array) → seed from the Excel import
     const seeded = seedDueDiligenceTableRows()
@@ -236,7 +263,9 @@ export function updateDueDiligenceTableRow(
 export function rowMatchesKeyword(row: DueDiligenceTableRow, keyword: string): boolean {
   const q = keyword.trim().toLowerCase()
   if (!q) return true
-  return DD_TABLE_COLUMNS.some((col) => row[col.key].toLowerCase().includes(q))
+  return DD_TABLE_COLUMNS.some((col) =>
+    String(row[col.key] ?? "").toLowerCase().includes(q),
+  )
 }
 
 export function resetDueDiligenceTableFromSeed(): DueDiligenceTableRow[] {

@@ -124,9 +124,14 @@ export const authService = {
     }
   },
 
-  isAdmin: (): boolean => {    const current = JSON.parse(localStorage.getItem("currentUser") || "null")
-    if (!current) return false
-    return current.role === "admin"
+  isAdmin: (): boolean => {
+    try {
+      const current = JSON.parse(localStorage.getItem("currentUser") || "null")
+      if (!current) return false
+      return current.role === "admin"
+    } catch {
+      return false
+    }
   },
 
   login: async (identifier: string, password: string): Promise<User | null> => {
@@ -147,8 +152,19 @@ export const authService = {
   },
 
   getCurrentUser: (): User | null => {
-    const user = localStorage.getItem("currentUser")
-    return user ? JSON.parse(user) : null
+    try {
+      const user = localStorage.getItem("currentUser")
+      if (!user) return null
+      const parsed = JSON.parse(user) as User
+      if (!parsed?.id) {
+        localStorage.removeItem("currentUser")
+        return null
+      }
+      return parsed
+    } catch {
+      localStorage.removeItem("currentUser")
+      return null
+    }
   },
 
   refreshCurrentUser: async (): Promise<User | null> => {
