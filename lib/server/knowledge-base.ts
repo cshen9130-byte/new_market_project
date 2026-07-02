@@ -1159,6 +1159,16 @@ export async function readKnowledgeBasePreviewContent(relativePath: string) {
   }
 }
 
+function shouldSkipKnowledgeBaseChatPath(relativePath: string, entryName: string, isDirectory: boolean): boolean {
+  const normalized = relativePath.replace(/\\/g, "/")
+  if (isDirectory) {
+    return entryName === "_images" || normalized.endsWith("/_images")
+  }
+  if (entryName === "_notes_meta.json") return true
+  if (normalized.includes("/_images/")) return true
+  return false
+}
+
 async function collectChatDocumentsInDirectory(
   absoluteDir: string,
   relativeDir: string,
@@ -1172,11 +1182,18 @@ async function collectChatDocumentsInDirectory(
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
 
     if (entry.isDirectory()) {
+      if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, true)) {
+        continue
+      }
       await collectChatDocumentsInDirectory(absolutePath, relativePath, documents, onScan)
       continue
     }
 
     if (!entry.isFile()) {
+      continue
+    }
+
+    if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, false)) {
       continue
     }
 

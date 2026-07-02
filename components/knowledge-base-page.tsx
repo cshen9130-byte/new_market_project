@@ -62,6 +62,7 @@ import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
+import { KnowledgeBaseSharedNoteEditor } from "@/components/knowledge-base-shared-note-editor"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
@@ -182,6 +183,13 @@ type KnowledgeBasePageProps = {
   variant?: "cyber" | "traditional"
 }
 
+type PrivateNoteMeta = {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+}
+
 type SharedNoteMeta = {
   relativePath: string
   title: string
@@ -260,6 +268,10 @@ function formatDateTime(value: string | null) {
   }
 
   return date.toLocaleString()
+}
+
+function sortNotesByUpdatedAtDesc<T extends { updatedAt: string }>(notes: T[]): T[] {
+  return [...notes].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 }
 
 function formatDocumentType(extension: string) {
@@ -632,8 +644,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [noteSaveError, setNoteSaveError] = useState<string | null>(null)
   const [noteUpdatedAt, setNoteUpdatedAt] = useState<string | null>(null)
   const [noteDirty, setNoteDirty] = useState(false)
-  const noteSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const noteSaveSeqRef = useRef(0)
+  const [privateNotesList, setPrivateNotesList] = useState<PrivateNoteMeta[]>([])
+  const [privateNotesListLoading, setPrivateNotesListLoading] = useState(false)
+  const [privateNotesView, setPrivateNotesView] = useState<"list" | "edit">("list")
+  const [privateNoteEditId, setPrivateNoteEditId] = useState<string | null>(null)
+  const [privateNoteTitle, setPrivateNoteTitle] = useState("")
   // ── Shared (online) notes state ──────────────────────────────────────────────
   const [notesTab, setNotesTab] = useState<"private" | "shared">("private")
   const [sharedNotesList, setSharedNotesList] = useState<SharedNoteMeta[]>([])
@@ -643,6 +658,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [sharedNoteContent, setSharedNoteContent] = useState("")
   const [sharedNoteLoading, setSharedNoteLoading] = useState(false)
   const [sharedNoteSaving, setSharedNoteSaving] = useState(false)
+  const [sharedNoteImageUploading, setSharedNoteImageUploading] = useState(false)
   const [sharedNoteError, setSharedNoteError] = useState<string | null>(null)
   const [sharedNoteEditPath, setSharedNoteEditPath] = useState<string | null>(null)
   const [publishTitle, setPublishTitle] = useState("")
@@ -771,18 +787,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     setCurrentUser(currentUser)
     setAuthorized(true)
     void refreshTree(true, currentUser)
-    void refreshNote(currentUser)
+    void loadPrivateNotesList(currentUser)
     void loadSharedNotesList(currentUser)
   }, [router])
-
-  useEffect(() => {
-    return () => {
-      if (noteSaveTimerRef.current) {
-        clearTimeout(noteSaveTimerRef.current)
-        noteSaveTimerRef.current = null
-      }
-    }
-  }, [])
 
   useEffect(() => {
     if (variant !== "traditional" || userScrolledRef.current) {
@@ -1023,11 +1030,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
-  async function refreshNote(user: User | null = currentUser) {
+  async function loadPrivateNotesList(user: User | null = currentUser) {
     try {
+      setPrivateNotesListLoading(true)
       setNoteSaveError(null)
-      setNoteLoading(true)
-      const res = await fetch("/api/knowledge-base/notes", {
+      const res = await fetch("/api/knowledge-base/notes?list=1", {
         cache: "no-store",
         headers: getKnowledgeBaseAuthHeaders(user),
       })
@@ -1035,7 +1042,30 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || res.statusText)
       }
+      setPrivateNotesList(sortNotesByUpdatedAtDesc((data.notes as PrivateNoteMeta[]) ?? []))
+    } catch (requestError: any) {
+      setNoteSaveError(requestError?.message || String(requestError))
+    } finally {
+      setPrivateNotesListLoading(false)
+    }
+  }
 
+  async function openPrivateNote(meta: PrivateNoteMeta) {
+    try {
+      setPrivateNoteTitle(meta.title)
+      setPrivateNoteEditId(meta.id)
+      setNoteContent("")
+      setNoteLoading(true)
+      setNoteSaveError(null)
+      setPrivateNotesView("edit")
+      const res = await fetch(`/api/knowledge-base/notes?id=${encodeURIComponent(meta.id)}`, {
+        cache: "no-store",
+        headers: getKnowledgeBaseAuthHeaders(),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
+      }
       setNoteContent(String(data?.note?.content || ""))
       setNoteUpdatedAt(data?.note?.updatedAt || null)
       setNoteDirty(false)
@@ -1046,82 +1076,68 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
   }
 
-  async function saveNote(content: string, user: User | null = currentUser) {
-    const requestSeq = noteSaveSeqRef.current + 1
-    noteSaveSeqRef.current = requestSeq
+  async function savePrivateNote() {
+    if (!privateNoteTitle.trim()) {
+      setNoteSaveError("请先填写笔记标题")
+      return
+    }
 
     try {
       setNoteSaveError(null)
       setNoteSaving(true)
-
-      const normalizedContent = String(content ?? "").replace(/\r\n/g, "\n")
       const res = await fetch("/api/knowledge-base/notes", {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          ...(getKnowledgeBaseAuthHeaders(user) ?? {}),
+          ...(getKnowledgeBaseAuthHeaders() ?? {}),
         },
-        body: JSON.stringify({ content: normalizedContent }),
+        body: JSON.stringify({
+          id: privateNoteEditId,
+          title: privateNoteTitle.trim(),
+          content: noteContent,
+        }),
       })
       const data = await res.json()
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || res.statusText)
       }
 
-      if (requestSeq !== noteSaveSeqRef.current) {
-        return
-      }
-
-      setNoteContent(String(data?.note?.content ?? normalizedContent))
-      setNoteUpdatedAt(data?.note?.updatedAt || null)
+      setPrivateNoteEditId(data.note.id)
+      setPrivateNoteTitle(String(data.note.title || privateNoteTitle.trim()))
+      setNoteContent(String(data.note.content ?? noteContent))
+      setNoteUpdatedAt(data.note.updatedAt || null)
       setNoteDirty(false)
+      await loadPrivateNotesList()
     } catch (requestError: any) {
-      if (requestSeq === noteSaveSeqRef.current) {
-        setNoteSaveError(requestError?.message || String(requestError))
-      }
+      setNoteSaveError(requestError?.message || String(requestError))
     } finally {
-      if (requestSeq === noteSaveSeqRef.current) {
-        setNoteSaving(false)
+      setNoteSaving(false)
+    }
+  }
+
+  async function deletePrivateNote(noteId: string) {
+    if (!window.confirm("确定删除此私人草稿？此操作不可撤销。")) return
+    try {
+      setNoteSaveError(null)
+      const res = await fetch(`/api/knowledge-base/notes?id=${encodeURIComponent(noteId)}`, {
+        method: "DELETE",
+        headers: getKnowledgeBaseAuthHeaders(),
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.error || res.statusText)
       }
+      setPrivateNotesList((prev) => prev.filter((note) => note.id !== noteId))
+      if (privateNoteEditId === noteId) {
+        setPrivateNotesView("list")
+        setPrivateNoteEditId(null)
+        setPrivateNoteTitle("")
+        setNoteContent("")
+        setNoteDirty(false)
+      }
+    } catch (requestError: any) {
+      setNoteSaveError(requestError?.message || String(requestError))
     }
-  }
-
-  function queueNoteSave(nextContent: string) {
-    setNoteContent(nextContent)
-    setNoteDirty(true)
-    setNoteSaveError(null)
-
-    if (noteSaveTimerRef.current) {
-      clearTimeout(noteSaveTimerRef.current)
-      noteSaveTimerRef.current = null
-    }
-
-    noteSaveTimerRef.current = setTimeout(() => {
-      noteSaveTimerRef.current = null
-      void saveNote(nextContent)
-    }, 700)
-  }
-
-  function flushNoteSave() {
-    if (noteSaveTimerRef.current) {
-      clearTimeout(noteSaveTimerRef.current)
-      noteSaveTimerRef.current = null
-    }
-    if (!noteDirty) {
-      return
-    }
-    void saveNote(noteContent)
-  }
-
-  function clearNote() {
-    if (noteSaveTimerRef.current) {
-      clearTimeout(noteSaveTimerRef.current)
-      noteSaveTimerRef.current = null
-    }
-    setNoteContent("")
-    setNoteDirty(true)
-    setNoteSaveError(null)
-    void saveNote("")
   }
 
   async function loadSharedNotesList(user: typeof currentUser = currentUser) {
@@ -1134,7 +1150,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       })
       const data = await res.json()
       if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
-      setSharedNotesList((data.notes as SharedNoteMeta[]) ?? [])
+      setSharedNotesList(sortNotesByUpdatedAtDesc((data.notes as SharedNoteMeta[]) ?? []))
     } catch (e: any) {
       setSharedNoteError(e?.message || String(e))
     } finally {
@@ -1161,6 +1177,31 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       setSharedNoteError(e?.message || String(e))
     } finally {
       setSharedNoteLoading(false)
+    }
+  }
+
+  async function uploadSharedNoteImageForInsert(file: File): Promise<string> {
+    try {
+      setSharedNoteImageUploading(true)
+      setSharedNoteError(null)
+      const form = new FormData()
+      form.append("file", file)
+      if (sharedNoteTitle.trim()) form.append("noteTitle", sharedNoteTitle.trim())
+      if (sharedNoteEditPath) form.append("relativePath", sharedNoteEditPath)
+
+      const res = await fetch("/api/knowledge-base/shared-note/image", {
+        method: "POST",
+        headers: getKnowledgeBaseAuthHeaders() ?? {},
+        body: form,
+      })
+      const data = await res.json()
+      if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+      return String(data.markdown)
+    } catch (e: any) {
+      setSharedNoteError(e?.message || String(e))
+      throw e
+    } finally {
+      setSharedNoteImageUploading(false)
     }
   }
 
@@ -3848,12 +3889,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
       },
     ]
 
+    const notesExpanded = traditionalPanel === "notes"
+
     return (
       <div className="min-h-[calc(100vh-8rem)] overflow-x-auto">
         {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">{error}</div>}
 
-        <ResizablePanelGroup direction="horizontal" className="min-h-[calc(100vh-8rem)] min-w-[640px] items-start gap-0">
-          <ResizablePanel defaultSize={42} minSize={25} className="min-w-[260px]">
+        <ResizablePanelGroup
+          key={notesExpanded ? "notes-layout" : "default-layout"}
+          direction="horizontal"
+          className="min-h-[calc(100vh-8rem)] min-w-[640px] items-start gap-0"
+        >
+          <ResizablePanel defaultSize={notesExpanded ? 32 : 42} minSize={22} className="min-w-[260px]">
             <section className="flex h-[calc(100vh-8rem)] min-h-0 flex-col overflow-hidden pr-4 lg:pr-6">
             <div ref={traditionalOperationsScrollRef} className="min-h-0 flex-1 overflow-y-auto pr-3">
               <div className="space-y-6 pb-4">
@@ -4320,11 +4367,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
                 {traditionalPanel === "notes" && (
                   <div className="space-y-3">
-                    {/* Tab switcher */}
                     <div className="flex rounded-md border text-xs overflow-hidden">
                       <button
                         className={cn("flex-1 px-3 py-1.5 transition-colors", notesTab === "private" ? "bg-primary text-primary-foreground" : "hover:bg-muted")}
-                        onClick={() => setNotesTab("private")}
+                        onClick={() => { setNotesTab("private"); void loadPrivateNotesList() }}
                       >
                         私人草稿
                       </button>
@@ -4336,189 +4382,119 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       </button>
                     </div>
 
-                    {/* ── Private notes tab ── */}
                     {notesTab === "private" && (
-                      <div className="space-y-4">
-                        <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                          可直接复制微信文章或研究资料到下方文本框。支持自由编辑，离开输入框后自动保存。
-                        </div>
-                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <div className="text-muted-foreground">笔记仅对当前账号可见</div>
-                          <div className={cn("font-medium", noteSaveError ? "text-destructive" : "text-muted-foreground")}>
-                            {noteLoading
-                              ? "正在加载笔记..."
-                              : noteSaving
-                                ? "正在保存..."
-                                : noteDirty
-                                  ? "有未保存修改"
-                                  : noteUpdatedAt
-                                    ? `上次保存：${formatDateTime(noteUpdatedAt)}`
-                                    : "尚未保存"}
-                          </div>
-                        </div>
-                        <Textarea
-                          value={noteContent}
-                          onChange={(event) => queueNoteSave(event.target.value)}
-                          onBlur={() => flushNoteSave()}
-                          placeholder="例如：把公众号文章原文粘贴在这里，补充你的摘要、观点和待验证结论。"
-                          className="min-h-[calc(100vh-30rem)] text-sm leading-6"
-                          disabled={noteLoading}
-                        />
-                        <div className="flex items-center gap-2">
-                          <Button size="sm" onClick={() => flushNoteSave()} disabled={noteLoading || noteSaving || !noteDirty}>
-                            保存笔记
-                          </Button>
-                          <Button size="sm" variant="outline" onClick={() => clearNote()} disabled={noteLoading || noteSaving || (!noteContent && !noteDirty)}>
-                            清空内容
-                          </Button>
-                        </div>
-                        {noteSaveError && (
-                          <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                            {noteSaveError}
-                          </div>
-                        )}
-                        {/* Publish section */}
-                        <div className="rounded-md border border-dashed px-3 py-3 space-y-2">
-                          <div className="text-xs font-medium text-muted-foreground">发布到在线笔记</div>
-                          <div className="flex gap-2">
-                            <Input
-                              value={publishTitle}
-                              onChange={(e) => { setPublishTitle(e.target.value); setPublishError(null); setPublishSuccess(null) }}
-                              placeholder="笔记标题（必填）"
-                              className="text-sm h-8"
-                            />
+                      <div className={cn("space-y-3", notesExpanded && "flex h-[calc(100vh-22rem)] min-h-0 flex-col")}>
+                        <div className="flex items-center justify-between shrink-0">
+                          <span className="text-xs text-muted-foreground">
+                            {privateNotesListLoading ? "加载中…" : `共 ${privateNotesList.length} 篇`}
+                          </span>
+                          <div className="flex gap-1">
                             <Button
                               size="sm"
-                              onClick={() => void publishToSharedNotes()}
-                              disabled={publishSaving || !noteContent.trim() || !publishTitle.trim()}
+                              variant="outline"
+                              onClick={() => void loadPrivateNotesList()}
+                              disabled={privateNotesListLoading}
+                              className="h-7 text-xs"
                             >
-                              {publishSaving ? "发布中..." : "发布"}
+                              刷新
+                            </Button>
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                setPrivateNoteTitle("")
+                                setNoteContent("")
+                                setPrivateNoteEditId(null)
+                                setNoteSaveError(null)
+                                setNoteDirty(false)
+                                setPrivateNotesView("edit")
+                              }}
+                              className="h-7 text-xs"
+                            >
+                              + 新建
                             </Button>
                           </div>
-                          {publishError && (
-                            <div className="text-xs text-destructive">{publishError}</div>
+                        </div>
+                        <div className={cn(
+                          "space-y-1 pr-0.5",
+                          notesExpanded ? "min-h-0 flex-1 overflow-y-auto" : "max-h-[calc(100vh-24rem)] overflow-y-auto",
+                        )}>
+                          {privateNotesList.length === 0 && !privateNotesListLoading && (
+                            <div className="py-8 text-center text-sm text-muted-foreground">暂无私人草稿</div>
                           )}
-                          {publishSuccess && (
-                            <div className="text-xs text-green-600">{publishSuccess}</div>
-                          )}
+                          {privateNotesList.map((note) => (
+                            <button
+                              key={note.id}
+                              onClick={() => void openPrivateNote(note)}
+                              className={cn(
+                                "w-full rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/60",
+                                notesExpanded && privateNoteEditId === note.id && "border-primary bg-primary/5",
+                              )}
+                            >
+                              <div className="truncate text-sm font-medium">{note.title}</div>
+                              <div className="mt-0.5 text-xs text-muted-foreground">
+                                更新 · {formatDateTime(note.updatedAt)}
+                              </div>
+                            </button>
+                          ))}
                         </div>
                       </div>
                     )}
 
-                    {/* ── Shared notes tab ── */}
                     {notesTab === "shared" && (
-                      sharedNotesView === "list" ? (
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-muted-foreground">
-                              {sharedNotesListLoading ? "加载中…" : `共 ${sharedNotesList.length} 篇`}
-                            </span>
-                            <div className="flex gap-1">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => void loadSharedNotesList()}
-                                disabled={sharedNotesListLoading}
-                                className="h-7 text-xs"
-                              >
-                                刷新
-                              </Button>
-                              <Button
-                                size="sm"
-                                onClick={() => {
-                                  setSharedNoteTitle("")
-                                  setSharedNoteContent("")
-                                  setSharedNoteEditPath(null)
-                                  setSharedNoteError(null)
-                                  setSharedNotesView("edit")
-                                }}
-                                className="h-7 text-xs"
-                              >
-                                + 新建
-                              </Button>
-                            </div>
-                          </div>
-                          <div className="space-y-1 max-h-[calc(100vh-24rem)] overflow-y-auto pr-0.5">
-                            {sharedNotesList.length === 0 && !sharedNotesListLoading && (
-                              <div className="text-center text-sm text-muted-foreground py-8">暂无在线笔记</div>
-                            )}
-                            {sharedNotesList.map((note) => (
-                              <button
-                                key={note.relativePath}
-                                onClick={() => void openSharedNote(note)}
-                                className="w-full text-left px-3 py-2 rounded-md border hover:bg-muted/60 transition-colors"
-                              >
-                                <div className="text-sm font-medium truncate">{note.title}</div>
-                                <div className="text-xs text-muted-foreground mt-0.5">
-                                  {note.updatedByName} 编辑 · {formatDateTime(note.updatedAt)}
-                                </div>
-                              </button>
-                            ))}
-                          </div>
-                          {sharedNoteError && (
-                            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                              {sharedNoteError}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="space-y-3">
-                          <div className="flex items-center gap-2">
+                      <div className={cn("space-y-3", notesExpanded && "flex h-[calc(100vh-22rem)] min-h-0 flex-col")}>
+                        <div className="flex items-center justify-between shrink-0">
+                          <span className="text-xs text-muted-foreground">
+                            {sharedNotesListLoading ? "加载中…" : `共 ${sharedNotesList.length} 篇`}
+                          </span>
+                          <div className="flex gap-1">
                             <Button
                               size="sm"
-                              variant="ghost"
-                              onClick={() => { setSharedNotesView("list"); setSharedNoteError(null) }}
-                              className="h-7 text-xs px-2"
+                              variant="outline"
+                              onClick={() => void loadSharedNotesList()}
+                              disabled={sharedNotesListLoading}
+                              className="h-7 text-xs"
                             >
-                              ← 返回列表
+                              刷新
                             </Button>
-                            <span className="text-xs text-muted-foreground">
-                              {sharedNoteEditPath ? "编辑在线笔记" : "新建在线笔记"}
-                            </span>
-                          </div>
-                          <Input
-                            value={sharedNoteTitle}
-                            onChange={(e) => setSharedNoteTitle(e.target.value)}
-                            placeholder="笔记标题（必填）"
-                            className="text-sm"
-                            disabled={sharedNoteLoading}
-                          />
-                          <Textarea
-                            value={sharedNoteContent}
-                            onChange={(e) => setSharedNoteContent(e.target.value)}
-                            placeholder="笔记内容，支持 Markdown 格式…"
-                            className="min-h-[calc(100vh-30rem)] text-sm leading-6"
-                            disabled={sharedNoteLoading}
-                          />
-                          {sharedNoteError && (
-                            <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-                              {sharedNoteError}
-                            </div>
-                          )}
-                          <div className="flex items-center gap-2">
                             <Button
                               size="sm"
-                              onClick={() => void saveSharedNote()}
-                              disabled={sharedNoteSaving || sharedNoteLoading || !sharedNoteTitle.trim()}
+                              onClick={() => {
+                                setSharedNoteTitle("")
+                                setSharedNoteContent("")
+                                setSharedNoteEditPath(null)
+                                setSharedNoteError(null)
+                                setSharedNotesView("edit")
+                              }}
+                              className="h-7 text-xs"
                             >
-                              {sharedNoteSaving ? "保存中..." : "保存"}
+                              + 新建
                             </Button>
-                            {sharedNoteEditPath && (
-                              sharedNotesList.find((n) => n.relativePath === sharedNoteEditPath)?.createdBy === currentUser?.id ||
-                              currentUser?.role === "admin"
-                            ) && (
-                              <Button
-                                size="sm"
-                                variant="destructive"
-                                onClick={() => sharedNoteEditPath && void deleteSharedNote(sharedNoteEditPath)}
-                                disabled={sharedNoteSaving || sharedNoteLoading}
-                              >
-                                删除
-                              </Button>
-                            )}
                           </div>
                         </div>
-                      )
+                        <div className={cn(
+                          "space-y-1 pr-0.5",
+                          notesExpanded ? "min-h-0 flex-1 overflow-y-auto" : "max-h-[calc(100vh-24rem)] overflow-y-auto",
+                        )}>
+                          {sharedNotesList.length === 0 && !sharedNotesListLoading && (
+                            <div className="py-8 text-center text-sm text-muted-foreground">暂无在线笔记</div>
+                          )}
+                          {sharedNotesList.map((note) => (
+                            <button
+                              key={note.relativePath}
+                              onClick={() => void openSharedNote(note)}
+                              className={cn(
+                                "w-full rounded-md border px-3 py-2 text-left transition-colors hover:bg-muted/60",
+                                notesExpanded && sharedNoteEditPath === note.relativePath && "border-primary bg-primary/5",
+                              )}
+                            >
+                              <div className="truncate text-sm font-medium">{note.title}</div>
+                              <div className="mt-0.5 text-xs text-muted-foreground">
+                                {note.updatedByName} 编辑 · {formatDateTime(note.updatedAt)}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
@@ -5123,8 +5099,185 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
           <ResizableHandle withHandle className="mx-1" />
 
-          <ResizablePanel defaultSize={58} minSize={25}>
+          <ResizablePanel defaultSize={notesExpanded ? 68 : 58} minSize={25}>
             <section className="sticky top-0 flex h-[calc(100vh-8rem)] flex-col overflow-hidden pl-4 lg:pl-6">
+            {notesExpanded ? (
+              notesTab === "private" ? (
+                <div className="flex min-h-0 flex-1 flex-col gap-4">
+                  <div className="flex shrink-0 items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-xl font-semibold">私人草稿</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {privateNotesView === "edit"
+                          ? (privateNoteEditId ? "编辑私人笔记，仅当前账号可见" : "创建新草稿，仅当前账号可见")
+                          : "从左侧选择草稿，或点击「+ 新建」开始编辑"}
+                      </p>
+                    </div>
+                    {noteUpdatedAt && privateNotesView === "edit" && (
+                      <div className="text-right text-xs text-muted-foreground">
+                        {noteSaving ? "正在保存..." : noteDirty ? "有未保存修改" : `上次保存：${formatDateTime(noteUpdatedAt)}`}
+                      </div>
+                    )}
+                  </div>
+
+                  {privateNotesView === "edit" ? (
+                    <div className="flex min-h-0 flex-1 flex-col gap-3">
+                      <Input
+                        value={privateNoteTitle}
+                        onChange={(e) => { setPrivateNoteTitle(e.target.value); setNoteDirty(true) }}
+                        placeholder="笔记标题（必填）"
+                        className="shrink-0 text-sm"
+                        disabled={noteLoading}
+                      />
+                      {noteLoading ? (
+                        <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
+                          <LoaderCircle className="mr-2 h-5 w-5 animate-spin" />
+                          正在加载笔记...
+                        </div>
+                      ) : (
+                        <Textarea
+                          value={noteContent}
+                          onChange={(event) => { setNoteContent(event.target.value); setNoteDirty(true); setNoteSaveError(null) }}
+                          placeholder="例如：把公众号文章原文粘贴在这里，补充你的摘要、观点和待验证结论。"
+                          className="min-h-0 flex-1 resize-none text-sm leading-6"
+                          disabled={noteLoading}
+                        />
+                      )}
+                      {noteSaveError && (
+                        <div className="shrink-0 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                          {noteSaveError}
+                        </div>
+                      )}
+                      <div className="rounded-md border border-dashed px-3 py-3 space-y-2 shrink-0">
+                        <div className="text-xs font-medium text-muted-foreground">发布到在线笔记</div>
+                        <div className="flex gap-2">
+                          <Input
+                            value={publishTitle}
+                            onChange={(e) => { setPublishTitle(e.target.value); setPublishError(null); setPublishSuccess(null) }}
+                            placeholder="在线笔记标题（必填）"
+                            className="h-8 text-sm"
+                          />
+                          <Button
+                            size="sm"
+                            onClick={() => void publishToSharedNotes()}
+                            disabled={publishSaving || !noteContent.trim() || !publishTitle.trim()}
+                          >
+                            {publishSaving ? "发布中..." : "发布"}
+                          </Button>
+                        </div>
+                        {publishError && <div className="text-xs text-destructive">{publishError}</div>}
+                        {publishSuccess && <div className="text-xs text-green-600">{publishSuccess}</div>}
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                          onClick={() => void savePrivateNote()}
+                          disabled={noteSaving || noteLoading || !privateNoteTitle.trim()}
+                        >
+                          {noteSaving ? "保存中..." : "保存"}
+                        </Button>
+                        {privateNoteEditId && (
+                          <Button
+                            variant="destructive"
+                            onClick={() => void deletePrivateNote(privateNoteEditId)}
+                            disabled={noteSaving || noteLoading}
+                          >
+                            删除
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          onClick={() => { setPrivateNotesView("list"); setNoteSaveError(null) }}
+                          disabled={noteSaving || noteLoading}
+                        >
+                          取消
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-6 text-center text-sm text-muted-foreground">
+                      选择左侧列表中的草稿进行编辑，或点击「+ 新建」创建私人笔记。
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="flex min-h-0 flex-1 flex-col gap-4">
+                  <div className="flex shrink-0 items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-xl font-semibold">在线笔记</h2>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {sharedNotesView === "edit"
+                          ? (sharedNoteEditPath ? "编辑笔记内容，支持 Markdown 与插入图片" : "创建新笔记，支持 Markdown 与插入图片")
+                          : "从左侧选择笔记，或点击「+ 新建」开始编辑"}
+                      </p>
+                    </div>
+                  </div>
+
+                  {sharedNotesView === "edit" ? (
+                    <div className="flex min-h-0 flex-1 flex-col gap-3">
+                      <Input
+                        value={sharedNoteTitle}
+                        onChange={(e) => setSharedNoteTitle(e.target.value)}
+                        placeholder="笔记标题（必填）"
+                        className="shrink-0 text-sm"
+                        disabled={sharedNoteLoading}
+                      />
+                      {sharedNoteLoading ? (
+                        <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-muted-foreground">
+                          <LoaderCircle className="mr-2 h-5 w-5 animate-spin" />
+                          正在加载笔记...
+                        </div>
+                      ) : (
+                        <KnowledgeBaseSharedNoteEditor
+                          content={sharedNoteContent}
+                          onContentChange={setSharedNoteContent}
+                          onUploadImage={uploadSharedNoteImageForInsert}
+                          disabled={sharedNoteLoading}
+                          loading={sharedNoteLoading}
+                          uploadingImage={sharedNoteImageUploading}
+                        />
+                      )}
+                      {sharedNoteError && (
+                        <div className="shrink-0 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                          {sharedNoteError}
+                        </div>
+                      )}
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Button
+                          onClick={() => void saveSharedNote()}
+                          disabled={sharedNoteSaving || sharedNoteLoading || !sharedNoteTitle.trim()}
+                        >
+                          {sharedNoteSaving ? "保存中..." : "保存"}
+                        </Button>
+                        {sharedNoteEditPath && (
+                          sharedNotesList.find((n) => n.relativePath === sharedNoteEditPath)?.createdBy === currentUser?.id ||
+                          currentUser?.role === "admin"
+                        ) && (
+                          <Button
+                            variant="destructive"
+                            onClick={() => sharedNoteEditPath && void deleteSharedNote(sharedNoteEditPath)}
+                            disabled={sharedNoteSaving || sharedNoteLoading}
+                          >
+                            删除
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          onClick={() => { setSharedNotesView("list"); setSharedNoteError(null) }}
+                          disabled={sharedNoteSaving || sharedNoteLoading}
+                        >
+                          取消
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex min-h-0 flex-1 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-6 text-center text-sm text-muted-foreground">
+                      选择左侧列表中的笔记进行编辑，或点击「+ 新建」创建团队共享笔记。
+                    </div>
+                  )}
+                </div>
+              )
+            ) : (
+            <>
             {/* Chat panel header */}
             <div className="space-y-2 pb-4">
               <div className="flex items-center justify-between">
@@ -5605,6 +5758,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               </div>
               )}
             </div>
+            </>
+            )}
             </section>
           </ResizablePanel>
         </ResizablePanelGroup>

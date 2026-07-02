@@ -68,6 +68,7 @@ export async function GET(req: Request) {
     if (searchParams.get("list") === "1") {
       const notesDir = await getNotesDir()
       const meta = await readMeta(notesDir)
+      meta.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       return NextResponse.json({ ok: true, notes: meta })
     }
 
