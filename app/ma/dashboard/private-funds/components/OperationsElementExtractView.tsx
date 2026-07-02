@@ -104,7 +104,21 @@ const FIELD_LABELS: Record<ElementKey, string> = {
   fee_pay: "业绩报酬说明",
 }
 
-const ACCEPTED_EXTENSIONS = [".pdf", ".doc", ".docx"]
+const ACCEPTED_EXTENSIONS = [
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+]
+const SUPPORTED_FORMATS_TEXT =
+  "PDF、Word (.doc/.docx)、Excel (.xls/.xlsx)、图片 (.png/.jpg/.jpeg/.gif/.webp/.bmp)"
 const MAX_FILES = 20
 const EXTRACT_CONCURRENCY = 2
 
@@ -269,7 +283,7 @@ export function OperationsElementExtractView() {
     const accepted = incoming.filter(isAcceptedContractFile)
     const rejected = incoming.length - accepted.length
     if (rejected > 0) {
-      setExtractError(`${rejected} 个文件格式不支持，仅支持 PDF、Word (.doc/.docx)`)
+      setExtractError(`${rejected} 个文件格式不支持，仅支持 ${SUPPORTED_FORMATS_TEXT}`)
     } else {
       setExtractError(null)
     }
@@ -585,12 +599,12 @@ export function OperationsElementExtractView() {
               将文件拖到此处，或点击上传（可多选）
             </span>
             <span className="text-xs text-muted-foreground">
-              支持 PDF、Word (.doc/.docx)，单文件不超过 5MB，最多 {MAX_FILES} 份
+              支持 {SUPPORTED_FORMATS_TEXT}，单文件不超过 5MB，最多 {MAX_FILES} 份
             </span>
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,.doc,.docx"
+              accept=".pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.gif,.webp,.bmp"
               multiple
               className="sr-only"
               onChange={(e) => {

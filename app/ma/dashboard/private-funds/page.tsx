@@ -13,6 +13,7 @@ import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-bu
 import { CopyableInlineText, CopyableProductName, CopyableProductText, FundProductNameLink } from "@/components/ma/copyable-inline-text"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { DueDiligenceCalendarView } from "./components/DueDiligenceCalendarView"
+import { DueDiligenceTableView } from "./components/DueDiligenceTableView"
 import { DueDiligenceReportView } from "./components/DueDiligenceReportView"
 import { InvestmentNotesView } from "./components/InvestmentNotesView"
 import { InvestmentOverviewView } from "./components/InvestmentOverviewView"
@@ -93,6 +94,7 @@ const investmentSidebarGroups: SidebarGroup[] = [
   {
     label: "尽调池",
     items: [
+      { key: "inv-dd-table", label: "尽调表格" },
       { key: "inv-dd-calendar", label: "尽调日历" },
       { key: "inv-dd-report", label: "尽调报告" },
       { key: "inv-dd-notes", label: "投资笔记" },
@@ -2444,6 +2446,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     const beian_haos = Array.from(selected)
     if (beian_haos.length === 0) return
     setBatchSubmitting(true)
+    let opOk = false
     try {
       const res = await fetch("/ma/api/tracking-funds/batch", {
         method: "POST",
@@ -2451,14 +2454,19 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         body: JSON.stringify({ action, beian_haos, pool: batchContextPool, ...extra }),
       })
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
+        const err = await res.json().catch(() => ({})) as Record<string, unknown>
         console.error("[batch op]", err)
+        const msg = (err.error as string) || "操作失败，请重试"
+        alert(`批量操作失败：${msg}`)
+      } else {
+        opOk = true
       }
     } catch (err) {
       console.error("[batch op]", err)
+      alert("批量操作失败：网络错误，请重试")
     } finally {
       setBatchSubmitting(false)
-      setSelected(new Set())
+      if (opOk) setSelected(new Set())
       setDataReloadKey((k) => k + 1)
     }
   }
@@ -4101,7 +4109,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                       batchMoveTargetPool ? "text-zinc-700 dark:text-zinc-200 border-border" : "text-muted-foreground border-red-300",
                     ].join(" ")}>
                     <option value="">请选择目标池</option>
-                    {pools.filter((p) => p.key !== "all" && p.key !== sourcePool).map((p) => (
+                    {pools.filter((p) => p.key !== "all" && p.key !== "bfl" && p.key !== "bfl_ops" && p.key !== batchContextPool).map((p) => (
                       <option key={p.key} value={p.key}>{p.label}</option>
                     ))}
                   </select>
@@ -23280,6 +23288,7 @@ export default function PrivateFundsPage() {
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-compare") && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct") && activeSideItem === "inv-direct" && <InvestmentDirectProductsView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct-portfolio") && activeSideItem === "inv-direct-portfolio" && <InvestmentDirectPortfoliosView />}
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-table") && activeSideItem === "inv-dd-table" && <DueDiligenceTableView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-calendar") && activeSideItem === "inv-dd-calendar" && <DueDiligenceCalendarView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-report") && activeSideItem === "inv-dd-report" && <DueDiligenceReportView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-dd-notes") && activeSideItem === "inv-dd-notes" && <InvestmentNotesView />}
@@ -23288,7 +23297,7 @@ export default function PrivateFundsPage() {
               无权限访问该页面
             </div>
           )}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && activeSideItem !== "inv-dd-calendar" && activeSideItem !== "inv-dd-report" && activeSideItem !== "inv-dd-notes" && (
+          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, activeSideItem) && activeSideItem !== "inv-tracking" && activeSideItem !== "inv-tracking-mgr" && activeSideItem !== "inv-overview" && activeSideItem !== "inv-active" && activeSideItem !== "inv-fof" && activeSideItem !== "inv-compare" && activeSideItem !== "inv-direct" && activeSideItem !== "inv-direct-portfolio" && activeSideItem !== "inv-dd-table" && activeSideItem !== "inv-dd-calendar" && activeSideItem !== "inv-dd-report" && activeSideItem !== "inv-dd-notes" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

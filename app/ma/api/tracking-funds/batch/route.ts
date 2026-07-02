@@ -49,17 +49,17 @@ async function getProductName(pool: string, bh: string): Promise<string> {
       if (rows[0]?.product_name) return rows[0].product_name
     }
   }
-  // Fallback: look up from the master fund table
-  const fallback = await query<{ product_name: string }>(
-    `SELECT product_name FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
+  // Fallback: look up from the master fund table (uses fund_name, not product_name)
+  const fallback = await query<{ fund_name: string }>(
+    `SELECT fund_name FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
     [bh]
   )
-  return fallback[0]?.product_name ?? bh
+  return fallback[0]?.fund_name ?? bh
 }
 
 async function addToPool(targetPool: string, bh: string, productName: string) {
-  const rowHash = createHash("sha256").update(`${targetPool}::${bh}::${productName}`).digest("hex")
   if (isCustomPool(targetPool)) {
+    const rowHash = createHash("sha256").update(`${targetPool}::${bh}::${productName}`).digest("hex")
     await query(
       `INSERT INTO user_custom_pool
          (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
@@ -70,13 +70,15 @@ async function addToPool(targetPool: string, bh: string, productName: string) {
       [targetPool, bh, productName, rowHash]
     )
   } else {
-    const table = POOL_TABLE[targetPool] ?? "tracking_pool"
+    const table = POOL_TABLE[targetPool]
+    if (!table) throw new Error(`target_pool "${targetPool}" is not a writable pool`)
+    // Insert using only the two columns that all standard pool tables are guaranteed
+    // to have. Deduplication is via WHERE NOT EXISTS on register_number.
     await query(
-      `WITH next_seq AS (SELECT COALESCE(MAX(source_row_number), 0) + 1 AS n FROM ${table})
-       INSERT INTO ${table} (source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
-       SELECT ns.n, $2, $1, $3, 'batch_op', NOW(), NOW() FROM next_seq ns
+      `INSERT INTO ${table} (product_name, register_number)
+       SELECT $2, $1
        WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE register_number = $1)`,
-      [bh, productName, rowHash]
+      [bh, productName]
     )
   }
 }
@@ -178,9 +180,16 @@ export async function POST(req: Request) {
       case "copy": {
         if (!target_pool) return NextResponse.json({ error: "missing_target_pool" }, { status: 400 })
         if (!pool) return NextResponse.json({ error: "missing_pool" }, { status: 400 })
+        const tp = target_pool as string
+        if (!isCustomPool(tp) && !POOL_TABLE[tp]) {
+          return NextResponse.json(
+            { error: `"${tp}" 不是可写入的产品池，请选择跟踪池、精选池、核心池等` },
+            { status: 400 }
+          )
+        }
         for (const bh of ids) {
           const productName = await getProductName(pool as string, bh)
-          await addToPool(target_pool as string, bh, productName)
+          await addToPool(tp, bh, productName)
         }
         if (action === "move") {
           for (const bh of ids) {
@@ -188,7 +197,7 @@ export async function POST(req: Request) {
           }
         }
         invalidateListResponseCache(pool as string)
-        invalidateListResponseCache(target_pool as string)
+        invalidateListResponseCache(tp)
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -207,6 +216,7 @@ export async function POST(req: Request) {
     }
   } catch (err) {
     console.error("[tracking-funds/batch]", err)
-    return NextResponse.json({ error: "db_error" }, { status: 500 })
+    const msg = err instanceof Error ? err.message : String(err)
+    return NextResponse.json({ error: msg }, { status: 500 })
   }
 }

@@ -5,7 +5,19 @@ import { query } from "@/lib/db"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024
-const ALLOWED_EXTENSIONS = new Set([".pdf", ".doc", ".docx"])
+const ALLOWED_EXTENSIONS = new Set([
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+])
 
 export type FundContractMaterialRow = {
   id: number
@@ -26,6 +38,13 @@ function mimeTypeForFilename(fileName: string) {
   if (ext === ".pdf") return "application/pdf"
   if (ext === ".doc") return "application/msword"
   if (ext === ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  if (ext === ".xls") return "application/vnd.ms-excel"
+  if (ext === ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  if (ext === ".png") return "image/png"
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg"
+  if (ext === ".gif") return "image/gif"
+  if (ext === ".webp") return "image/webp"
+  if (ext === ".bmp") return "image/bmp"
   return "application/octet-stream"
 }
 
@@ -74,7 +93,9 @@ export async function saveFundContractMaterial(input: {
   const originalFilename = sanitizeFilename(input.file.name || "contract.pdf")
   const ext = getExtension(originalFilename)
   if (!ALLOWED_EXTENSIONS.has(ext)) {
-    throw new Error("仅支持 PDF、Word (.doc/.docx) 格式的基金合同")
+    throw new Error(
+      "仅支持 PDF、Word (.doc/.docx)、Excel (.xls/.xlsx)、图片 (.png/.jpg/.jpeg/.gif/.webp/.bmp) 格式的基金合同",
+    )
   }
   if (input.file.size > MAX_FILE_BYTES) {
     throw new Error("文件大小不能超过 5MB")

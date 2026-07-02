@@ -10,7 +10,22 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024
 const MAX_TEXT_CHARS = 120_000
 const LLM_TEXT_CHARS = 24_000
 
-const ALLOWED_EXTENSIONS = new Set([".pdf", ".doc", ".docx"])
+const ALLOWED_EXTENSIONS = new Set([
+  ".pdf",
+  ".doc",
+  ".docx",
+  ".xls",
+  ".xlsx",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".bmp",
+])
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
+const SUPPORTED_FORMATS_MESSAGE =
+  "仅支持 PDF、Word (.doc/.docx)、Excel (.xls/.xlsx)、图片 (.png/.jpg/.jpeg/.gif/.webp/.bmp) 格式的基金合同"
 
 export type ExtractedFundElements = {
   fund_name: string | null
@@ -80,6 +95,69 @@ function getDashScopeApiKey() {
 
 function getDashScopeBaseUrl() {
   return process.env.DASHSCOPE_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1"
+}
+
+function getVisionModel() {
+  return process.env.DASHSCOPE_VISION_MODEL || "qwen-vl-plus"
+}
+
+function mimeTypeForExtension(ext: string) {
+  const map: Record<string, string> = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+  }
+  return map[ext] || "application/octet-stream"
+}
+
+async function extractTextFromImage(buffer: Buffer, ext: string): Promise<string> {
+  const mimeType = mimeTypeForExtension(ext)
+  const dataUrl = `data:${mimeType};base64,${buffer.toString("base64")}`
+  const res = await fetch(`${getDashScopeBaseUrl()}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${getDashScopeApiKey()}`,
+    },
+    body: JSON.stringify({
+      model: getVisionModel(),
+      temperature: 0,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image_url", image_url: { url: dataUrl } },
+            {
+              type: "text",
+              text: "请识别并完整输出图片中的全部文字内容，保持段落与表格结构，不要添加任何解释或说明。",
+            },
+          ],
+        },
+      ],
+    }),
+  })
+
+  if (!res.ok) {
+    let message = `图片识别失败 (${res.status})`
+    try {
+      const parsed = await res.json()
+      message = parsed?.error?.message || parsed?.message || message
+    } catch {
+      // ignore parse errors
+    }
+    throw new Error(message)
+  }
+
+  const parsed = await res.json()
+  const content = parsed?.choices?.[0]?.message?.content
+  const text = stringifyModelContent(content).trim()
+  if (!text) {
+    throw new Error("未能从图片中识别文字，请确认图片清晰且包含可读内容")
+  }
+  return text.replace(/\s+/g, " ").trim()
 }
 
 function stringifyModelContent(content: unknown) {
@@ -191,10 +269,15 @@ async function extractElementsWithLlm(text: string): Promise<ExtractedFundElemen
 export async function readFundContractText(buffer: Buffer, fileName: string): Promise<string> {
   const ext = getExtension(fileName)
   if (!ALLOWED_EXTENSIONS.has(ext)) {
-    throw new Error("仅支持 PDF、Word (.doc/.docx) 格式的基金合同")
+    throw new Error(SUPPORTED_FORMATS_MESSAGE)
   }
   if (buffer.byteLength > MAX_FILE_BYTES) {
     throw new Error("文件大小不能超过 5MB")
+  }
+
+  if (IMAGE_EXTENSIONS.has(ext)) {
+    const text = await extractTextFromImage(buffer, ext)
+    return text.slice(0, MAX_TEXT_CHARS)
   }
 
   const tempDir = getServerStoragePath("fund-elements", "tmp")

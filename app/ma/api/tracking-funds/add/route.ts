@@ -27,11 +27,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "missing_fields" }, { status: 400 })
   }
 
-  const row_hash = createHash("sha256").update(`${pool}::${beian_hao}::${product_name}`).digest("hex")
-
   try {
     if (isCustomPool(pool)) {
       // Custom / mine pools → user_custom_pool with pool_key discriminator
+      const row_hash = createHash("sha256").update(`${pool}::${beian_hao}::${product_name}`).digest("hex")
       const rows = await query<{ id: number }>(
         `INSERT INTO user_custom_pool
            (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
@@ -51,22 +50,14 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, id: rows[0].id })
     }
 
-    // Standard pool tables
+    // Standard pool tables — use only the two columns present in all of them.
     const table = POOL_TABLE[pool] ?? "tracking_pool"
     const rows = await query<{ id: number }>(
-      `WITH already AS (
-         SELECT 1 FROM ${table} WHERE register_number = $1 LIMIT 1
-       ),
-       next_seq AS (
-         SELECT COALESCE(MAX(source_row_number), 0) + 1 AS n FROM ${table}
-       )
-       INSERT INTO ${table}
-         (source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
-       SELECT ns.n, $2, $1, $3, 'manual_add', NOW(), NOW()
-       FROM next_seq ns
-       WHERE NOT EXISTS (SELECT 1 FROM already)
+      `INSERT INTO ${table} (product_name, register_number)
+       SELECT $2, $1
+       WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE register_number = $1)
        RETURNING id`,
-      [beian_hao, product_name, row_hash]
+      [beian_hao, product_name]
     )
     if (rows.length === 0) {
       return NextResponse.json({ error: "already_exists" }, { status: 409 })

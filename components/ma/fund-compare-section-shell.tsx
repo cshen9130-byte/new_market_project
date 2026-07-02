@@ -16,6 +16,7 @@ const investmentSidebarGroups = [
   {
     label: "尽调池",
     items: [
+      { key: "inv-dd-table", label: "尽调表格", href: "/ma/dashboard/private-funds?tab=investment&side=inv-dd-table" },
       { key: "inv-dd-calendar", label: "尽调日历", href: "/ma/dashboard/private-funds?tab=investment&side=inv-dd-calendar" },
       { key: "inv-dd-report", label: "尽调报告", href: "/ma/dashboard/private-funds?tab=investment&side=inv-dd-report" },
       { key: "inv-dd-notes", label: "投资笔记", href: "/ma/dashboard/private-funds?tab=investment&side=inv-dd-notes" },
