@@ -13,7 +13,9 @@ export async function syncFundTeamTagsToSource(beian_hao: string): Promise<void>
      SET tag = jsonb_set(COALESCE(tag, '{}'::jsonb), '{company}', $2::jsonb)
      WHERE register_number = $1`,
     [beian_hao, tagsJson],
-  )
+  ).catch(() => {
+    // market_user may lack UPDATE on type6_ops_team_full; ops_fund_tags remains source of truth.
+  })
 
   await query(
     `UPDATE ops_tracking_funds_list_cache

@@ -70,6 +70,7 @@ const MIGRATE_NAV_COLUMNS = [
   `ALTER TABLE ops_managed_fof_underlying ADD COLUMN IF NOT EXISTS unit_nav NUMERIC(16,6)`,
   `ALTER TABLE ops_managed_fof_underlying ADD COLUMN IF NOT EXISTS nav_date DATE`,
   `ALTER TABLE ops_managed_fof_underlying ADD COLUMN IF NOT EXISTS price_change NUMERIC(10,4)`,
+  `ALTER TABLE ops_managed_fof_underlying ADD COLUMN IF NOT EXISTS price NUMERIC(16,6)`,
   `CREATE INDEX IF NOT EXISTS idx_managed_fof_underlying_fof_name
      ON ops_managed_fof_underlying (fof_product_name)`,
 ]
@@ -158,7 +159,8 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
          h.market_value,
          h.quantity,
          h.cost,
-         h.market_weight
+         h.market_weight,
+         h.price
        FROM latest_valuation lv
        INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = lv.valuation_record_id
        WHERE h.include_in_detail = TRUE
@@ -185,13 +187,13 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
          managed_product_id, fof_product_name, fof_product_code,
          valuation_date, valuation_record_id,
          underlying_product_code, underlying_name, subject_code, row_kind,
-         market_value, quantity, cost, market_weight
+         market_value, quantity, cost, market_weight, price
        )
        SELECT
          managed_product_id, fof_product_name, fof_product_code,
          valuation_date, valuation_record_id,
          underlying_product_code, underlying_name, subject_code, row_kind,
-         market_value, quantity, cost, market_weight
+         market_value, quantity, cost, market_weight, price
        FROM underlying_rows
        ON CONFLICT (managed_product_id, valuation_date, underlying_product_code, underlying_name, subject_code)
        DO UPDATE SET
@@ -199,6 +201,7 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
          quantity      = EXCLUDED.quantity,
          cost          = EXCLUDED.cost,
          market_weight = EXCLUDED.market_weight,
+         price         = EXCLUDED.price,
          refreshed_at  = NOW()
        RETURNING 1
      )
@@ -228,7 +231,8 @@ export async function backfillManagedFofUnderlyingNavFields(): Promise<number> {
        m.valuation_date,
        m.quantity AS investment_shares,
        m.market_value,
-       m.market_weight
+       m.market_weight,
+       m.price
      FROM ops_managed_fof_underlying m
      WHERE COALESCE(m.market_value, 0) > 0`,
   )
@@ -372,6 +376,27 @@ export type UnderlyingMarketAggregate = {
   market_value: number | null
 }
 
+export type UnderlyingValuationNav = {
+  unit_nav: number | null
+  nav_date: string | null
+}
+
+/** 市价 column from 估值表 — same plausibility band as buildFundHoldings. */
+export function parseValuationTablePrice(value: unknown): number | null {
+  const n = parseFloat(String(value ?? ""))
+  if (Number.isFinite(n) && n > 0.05 && n < 500) return n
+  return null
+}
+
+/** Unit NAV from 估值表 holding row: 市价 first, else 市值/份额. */
+export function resolveNavFromValuationTable(
+  price: unknown,
+  quantity: unknown,
+  marketValue: unknown,
+): number | null {
+  return parseValuationTablePrice(price) ?? deriveNavFromValuation(quantity, marketValue)
+}
+
 /** Sum of 在管产品 FOF holdings per underlying fund (by备案号 or name). */
 export async function loadManagedUnderlyingMarketLookup(): Promise<{
   byProductCode: Map<string, UnderlyingMarketAggregate>
@@ -424,6 +449,76 @@ export async function loadManagedUnderlyingMarketLookup(): Promise<{
   }
 
   return { byProductCode, byName }
+}
+
+/** Latest 估值表-derived NAV per underlying (by备案号 or name). */
+export async function loadManagedUnderlyingValuationNavLookup(): Promise<{
+  byProductCode: Map<string, UnderlyingValuationNav>
+  byName: Map<string, UnderlyingValuationNav>
+}> {
+  await ensureManagedFofUnderlyingTable()
+
+  const rows = await query<{
+    underlying_product_code: string | null
+    underlying_name: string
+    valuation_date: string | Date
+    price: string | null
+    quantity: string | null
+    market_value: string | null
+  }>(
+    `WITH ranked AS (
+       SELECT
+         NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code,
+         TRIM(underlying_name) AS underlying_name,
+         valuation_date,
+         price,
+         quantity,
+         market_value,
+         ROW_NUMBER() OVER (
+           PARTITION BY COALESCE(NULLIF(TRIM(UPPER(underlying_product_code)), ''), TRIM(underlying_name))
+           ORDER BY valuation_date DESC, market_value DESC NULLS LAST
+         ) AS rn
+       FROM ops_managed_fof_underlying
+       WHERE COALESCE(market_value, 0) > 0
+     )
+     SELECT underlying_product_code, underlying_name, valuation_date, price, quantity, market_value
+     FROM ranked
+     WHERE rn = 1`,
+  )
+
+  const byProductCode = new Map<string, UnderlyingValuationNav>()
+  const byName = new Map<string, UnderlyingValuationNav>()
+
+  for (const row of rows) {
+    const nav = resolveNavFromValuationTable(row.price, row.quantity, row.market_value)
+    const navDate = fmtIso(row.valuation_date)
+    const entry: UnderlyingValuationNav = {
+      unit_nav: nav,
+      nav_date: nav != null ? navDate : null,
+    }
+    const code = row.underlying_product_code?.trim().toUpperCase()
+    if (code) byProductCode.set(code, entry)
+    byName.set(row.underlying_name, entry)
+    byName.set(normalizeUnderlyingName(row.underlying_name), entry)
+  }
+
+  return { byProductCode, byName }
+}
+
+export function resolveManagedUnderlyingValuationNav(
+  productName: string,
+  beianHao: string | null,
+  lookup: Awaited<ReturnType<typeof loadManagedUnderlyingValuationNavLookup>>,
+): UnderlyingValuationNav {
+  const beian = beianHao?.trim().toUpperCase()
+  if (beian && lookup.byProductCode.has(beian)) {
+    return lookup.byProductCode.get(beian)!
+  }
+  const exact = lookup.byName.get(productName.trim())
+  if (exact) return exact
+  const normalized = lookup.byName.get(normalizeUnderlyingName(productName))
+  if (normalized) return normalized
+  return { unit_nav: null, nav_date: null }
 }
 
 export function resolveManagedUnderlyingMarket(
@@ -718,6 +813,7 @@ type DetailRawRow = {
   investment_shares: string | number | null
   market_value: string | number | null
   market_weight: string | number | null
+  price?: string | number | null
   unit_nav?: string | number | null
   nav_date?: string | Date | null
   price_change?: string | number | null
@@ -735,7 +831,7 @@ function mapDetailRowFromDb(r: DetailRawRow, seqNo: number | null): DetailEnrich
     if (isPlausibleUnitNav(stored)) unitNav = stored
   }
   if (unitNav == null) {
-    unitNav = deriveNavFromValuation(r.investment_shares, r.market_value)
+    unitNav = resolveNavFromValuationTable(r.price, r.investment_shares, r.market_value)
   }
 
   const navDate = r.nav_date ? fmtIso(r.nav_date) : valuationDate
@@ -777,7 +873,7 @@ function enrichDetailRows(
       short_name: null,
     }
 
-    const derivedNav = deriveNavFromValuation(r.investment_shares, r.market_value)
+    const derivedNav = resolveNavFromValuationTable(r.price, r.investment_shares, r.market_value)
     let unitNav: number | null = derivedNav
     let navDate: string | null = valuationDate
 

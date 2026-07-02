@@ -26,6 +26,16 @@ export type DueDiligenceTableRow = DueDiligenceTableRowData & {
   updatedAt: string
   /** Reserved for future link to fund database records */
   fundId?: string
+  /** Linked private fund beian_hao for 代表产品 column */
+  representativeProductBeianHao?: string
+}
+
+export type DueDiligenceTableRowPatch = Partial<DueDiligenceTableRowData> & {
+  representativeProductBeianHao?: string | null
+}
+
+export function privateFundProductHref(beianHao: string): string {
+  return `/ma/dashboard/private-funds/${encodeURIComponent(beianHao)}`
 }
 
 export type DueDiligenceTableColumn = {
@@ -204,6 +214,10 @@ function sanitizeDueDiligenceTableRow(row: unknown): DueDiligenceTableRow | null
     createdAt: typeof r.createdAt === "string" ? r.createdAt : now,
     updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : now,
     fundId: typeof r.fundId === "string" ? r.fundId : undefined,
+    representativeProductBeianHao:
+      typeof r.representativeProductBeianHao === "string" && r.representativeProductBeianHao.trim()
+        ? r.representativeProductBeianHao.trim()
+        : undefined,
   }
 }
 
@@ -259,12 +273,20 @@ export function createDueDiligenceTableRow(
 export function updateDueDiligenceTableRow(
   rows: DueDiligenceTableRow[],
   id: string,
-  patch: Partial<DueDiligenceTableRowData>,
+  patch: DueDiligenceTableRowPatch,
 ): DueDiligenceTableRow[] {
   const now = new Date().toISOString()
-  return rows.map((row) =>
-    row.id === id ? { ...row, ...patch, updatedAt: now } : row,
-  )
+  return rows.map((row) => {
+    if (row.id !== id) return row
+    const { representativeProductBeianHao, ...dataPatch } = patch
+    const next: DueDiligenceTableRow = { ...row, ...dataPatch, updatedAt: now }
+    if (representativeProductBeianHao === null || representativeProductBeianHao === "") {
+      delete next.representativeProductBeianHao
+    } else if (typeof representativeProductBeianHao === "string") {
+      next.representativeProductBeianHao = representativeProductBeianHao
+    }
+    return next
+  })
 }
 
 export function rowMatchesKeyword(row: DueDiligenceTableRow, keyword: string): boolean {

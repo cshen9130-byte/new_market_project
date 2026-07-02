@@ -439,6 +439,8 @@ function buildCachedFromClause(
         UNION ALL SELECT register_number, product_name, 4 FROM core_pool WHERE register_number IS NOT NULL
         UNION ALL SELECT register_number, product_name, 5 FROM hy_tracking_pool WHERE register_number IS NOT NULL
         UNION ALL SELECT register_number, product_name, 6 FROM fof_mom_tracking WHERE register_number IS NOT NULL
+        UNION ALL SELECT register_number, product_name, 7 FROM user_custom_pool
+          WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
       ) f
       ORDER BY beian_hao, priority ASC
     ) i
@@ -928,6 +930,9 @@ export async function GET(req: Request) {
         SELECT register_number AS beian_hao, product_name, 5 AS priority FROM hy_tracking_pool WHERE register_number IS NOT NULL
         UNION ALL
         SELECT register_number AS beian_hao, product_name, 6 AS priority FROM fof_mom_tracking WHERE register_number IS NOT NULL
+        UNION ALL
+        SELECT register_number AS beian_hao, product_name, 7 AS priority FROM user_custom_pool
+          WHERE register_number IS NOT NULL AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')
       ),
       deduped AS (
         SELECT DISTINCT ON (beian_hao) beian_hao, product_name

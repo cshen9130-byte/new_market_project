@@ -11,7 +11,7 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
-import { loadManagedUnderlyingMarketValueMap } from "@/lib/server/managed-fof-underlying-pg"
+import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingValuationNavLookup, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   addDays,
@@ -119,6 +119,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   logProgress(`found ${products.length} products — preloading NAV history…`)
 
   const managedMarketById = await loadManagedUnderlyingMarketValueMap()
+  const valuationNavLookup = await loadManagedUnderlyingValuationNavLookup()
 
   const identities = products.map((p) => ({
     beian_hao: p.beian_hao,
@@ -155,9 +156,27 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     const fallbackReturnPct =
       row.fallback_return_pct != null ? parseFloat(row.fallback_return_pct) / 100 : null
 
-    const latest = navResolver.resolveAt(identity, asOfDate, fallbackNav, fallbackDate)
-    const unitNav = latest?.nav ?? fallbackNav
-    const navDate = latest?.nav_date ?? fallbackDate
+    const latest = navResolver.resolveAt(identity, asOfDate)
+    let unitNav = latest?.nav ?? null
+    let navDate = latest?.nav_date ?? null
+
+    // When email / type6 / legacy NAV is missing, fall back to 估值表 市价 or 市值/份额.
+    if (unitNav == null) {
+      const valNav = resolveManagedUnderlyingValuationNav(
+        row.product_name,
+        row.beian_hao,
+        valuationNavLookup,
+      )
+      if (valNav.unit_nav != null) {
+        unitNav = valNav.unit_nav
+        navDate = valNav.nav_date
+      }
+    }
+
+    if (unitNav == null) {
+      unitNav = fallbackNav
+      navDate = fallbackDate
+    }
 
     const returnPct =
       unitNav != null && navDate

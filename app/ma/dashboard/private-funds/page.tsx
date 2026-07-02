@@ -2262,6 +2262,15 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }, [sourcePool, dataReloadKey])
 
   useEffect(() => {
+    const handler = () => {
+      listMemCache.clear()
+      setDataReloadKey((k) => k + 1)
+    }
+    window.addEventListener("tracking-funds-pool-changed", handler)
+    return () => window.removeEventListener("tracking-funds-pool-changed", handler)
+  }, [])
+
+  useEffect(() => {
     return subscribeTeamTagsChanged((detail) => {
       fetchFundTeamTagOptions().then((tags) => {
         setTeamTagOptions(tags)
@@ -5688,7 +5697,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             })
             if (!res.ok) {
               const json = await res.json().catch(() => ({}))
-              throw new Error(json.error || "upload_failed")
+              throw new Error(teamNavUploadErrorMessage(json.error))
             }
             setTrackingNavUploadTarget(null)
             setDataReloadKey((k) => k + 1)
@@ -12273,7 +12282,7 @@ function OperationsFofUnderlyingView() {
           })
           if (!res.ok) {
             const json = await res.json().catch(() => ({}))
-            throw new Error(json.error || "upload_failed")
+            throw new Error(teamNavUploadErrorMessage(json.error))
           }
           setFofNavUploadTarget(null)
           setFofListReloadKey((k) => k + 1)
@@ -12313,7 +12322,7 @@ function parseTeamNavCsvPreview(text: string): OpsTeamNavUploadPreviewRow[] {
     if (cols.length >= 2 && cols[0] && cols[1]) {
       rows.push({
         seq: rows.length + 1,
-        date: cols[0],
+        date: formatTeamNavUploadDate(cols[0]),
         unit_nav: cols[1],
         cumulative_nav: cols[2] ?? cols[1],
       })
@@ -12328,7 +12337,15 @@ function formatTeamNavUploadDate(value: unknown): string {
   }
   const text = String(value ?? "").trim()
   if (/^\d{4}-\d{2}-\d{2}/.test(text)) return text.slice(0, 10)
+  const m = text.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})/)
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`
   return text
+}
+
+function teamNavUploadErrorMessage(error: string | undefined): string {
+  if (error === "invalid_rows") return "净值格式不正确，请检查日期和净值数据"
+  if (error === "missing_fields") return "请填写必填项"
+  return error || "上传失败"
 }
 
 function parseTeamNavSheetPreview(rows: unknown[][]): OpsTeamNavUploadPreviewRow[] {
@@ -12376,7 +12393,7 @@ function parseTeamNavPastePreview(text: string): OpsTeamNavUploadPreviewRow[] {
     if (cols.length >= 2) {
       rows.push({
         seq: rows.length + 1,
-        date: cols[0],
+        date: formatTeamNavUploadDate(cols[0]),
         unit_nav: cols[1],
         cumulative_nav: cols[2] ?? cols[1],
       })
@@ -13629,7 +13646,7 @@ function OperationsTeamNavManageView({
           })
           if (!res.ok) {
             const json = await res.json().catch(() => ({}))
-            throw new Error(json.error || "upload_failed")
+            throw new Error(teamNavUploadErrorMessage(json.error))
           }
           setReloadKey((k) => k + 1)
         }}

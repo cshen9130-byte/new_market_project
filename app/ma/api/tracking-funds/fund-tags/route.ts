@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
-import { authService } from "@/lib/auth"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+
+function usernameFromRequest(req: Request): string {
+  return String(req.headers.get("x-market-user-name") || req.headers.get("x-market-user-id") || "").trim()
+}
 
 async function ensureTable() {
   await query(`
@@ -34,38 +37,37 @@ export async function GET(req: Request) {
 
 // PUT /ma/api/tracking-funds/fund-tags  { beian_hao, tags: string[] }
 export async function PUT(req: Request) {
-  const body = await req.json().catch(() => null)
-  if (!body || !body.beian_hao) return NextResponse.json({ error: "invalid body" }, { status: 400 })
-  const beian_hao: string = body.beian_hao
-  const tags: string[] = Array.isArray(body.tags) ? body.tags.map((t: string) => String(t).trim()).filter(Boolean) : []
-
-  let username = ""
   try {
-    const session = await authService.getSession(req as never)
-    username = session?.user?.name ?? session?.user?.email ?? ""
-  } catch { /* ignore */ }
+    const body = await req.json().catch(() => null)
+    if (!body || !body.beian_hao) return NextResponse.json({ error: "invalid body" }, { status: 400 })
+    const beian_hao: string = body.beian_hao
+    const tags: string[] = Array.isArray(body.tags) ? body.tags.map((t: string) => String(t).trim()).filter(Boolean) : []
+    const username = usernameFromRequest(req)
 
-  await ensureTable()
+    await ensureTable()
 
-  // Delete removed tags
-  await query(
-    tags.length > 0
-      ? `DELETE FROM ops_fund_tags WHERE beian_hao = $1 AND tag_name <> ALL($2::text[])`
-      : `DELETE FROM ops_fund_tags WHERE beian_hao = $1`,
-    tags.length > 0 ? [beian_hao, tags] : [beian_hao]
-  )
-
-  // Insert new tags
-  for (const tag of tags) {
     await query(
-      `INSERT INTO ops_fund_tags (beian_hao, tag_name, created_by)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (beian_hao, tag_name) DO NOTHING`,
-      [beian_hao, tag, username]
+      tags.length > 0
+        ? `DELETE FROM ops_fund_tags WHERE beian_hao = $1 AND tag_name <> ALL($2::text[])`
+        : `DELETE FROM ops_fund_tags WHERE beian_hao = $1`,
+      tags.length > 0 ? [beian_hao, tags] : [beian_hao]
     )
+
+    for (const tag of tags) {
+      await query(
+        `INSERT INTO ops_fund_tags (beian_hao, tag_name, created_by)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (beian_hao, tag_name) DO NOTHING`,
+        [beian_hao, tag, username]
+      )
+    }
+
+    await syncFundTeamTagsToSource(beian_hao)
+
+    return NextResponse.json({ ok: true })
+  } catch (err) {
+    console.error("[tracking-funds/fund-tags PUT]", err)
+    const message = err instanceof Error ? err.message : String(err)
+    return NextResponse.json({ error: message }, { status: 500 })
   }
-
-  await syncFundTeamTagsToSource(beian_hao)
-
-  return NextResponse.json({ ok: true })
 }

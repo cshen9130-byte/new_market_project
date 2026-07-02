@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { ChevronDown } from "lucide-react"
+import { invalidateTrackingListCache } from "@/lib/client/tracking-list-cache"
 
 const DEFAULT_TEAM_POOLS = [
   { key: "bfl_ops", label: "bfl 运维池" },
@@ -140,24 +141,40 @@ export function AddToTeamTrackingDialog({
       const poolsToAdd = [...teamPoolsSelected]
       if (minePool) poolsToAdd.push(minePool)
 
-      await Promise.all(
-        poolsToAdd.map((pool) =>
-          fetch("/ma/api/tracking-funds/add", {
+      const addResults = await Promise.all(
+        poolsToAdd.map(async (pool) => {
+          const res = await fetch("/ma/api/tracking-funds/add", {
             method: "POST",
             headers: { "Content-Type": "application/json", ...userFetchHeaders() },
             body: JSON.stringify({ pool, beian_hao, product_name }),
-          }).then((r) => r.json()),
-        ),
+          })
+          const body = await res.json().catch(() => ({}))
+          return { pool, ok: res.ok || body?.error === "already_exists", body, status: res.status }
+        }),
       )
 
-      if (teamTagsSelected.length > 0) {
-        await fetch("/ma/api/tracking-funds/fund-tags", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ beian_hao, tags: teamTagsSelected }),
-        })
+      const failed = addResults.filter((r) => !r.ok)
+      if (failed.length > 0) {
+        const detail = failed.map((r) => r.body?.error ?? `HTTP ${r.status}`).join(", ")
+        setError(`添加失败: ${detail}`)
+        return
       }
 
+      if (teamTagsSelected.length > 0) {
+        const tagRes = await fetch("/ma/api/tracking-funds/fund-tags", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+          body: JSON.stringify({ beian_hao, tags: teamTagsSelected }),
+        })
+        if (!tagRes.ok) {
+          setError("产品已加入产品池，但标签保存失败，请稍后在团队跟踪中重试")
+          invalidateTrackingListCache(poolsToAdd)
+          onSaved?.()
+          return
+        }
+      }
+
+      invalidateTrackingListCache(poolsToAdd)
       onSaved?.()
       onClose()
     } catch {

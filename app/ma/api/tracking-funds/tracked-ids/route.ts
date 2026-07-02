@@ -31,7 +31,7 @@ export async function GET() {
          UNION
          SELECT register_number FROM user_custom_pool
            WHERE register_number IS NOT NULL
-             AND (pool_key LIKE 'custom_%')`,
+             AND (pool_key = 'jy_ops' OR pool_key LIKE 'custom_%')`,
       ),
     ])
 

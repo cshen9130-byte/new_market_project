@@ -20,6 +20,8 @@ export type DueDiligenceSchedule = DueDiligenceScheduleForm & {
   id: string
   createdAt: string
   updatedAt: string
+  /** Links back to a 尽调表格 row when extracted from the table */
+  sourceTableRowId?: string
 }
 
 const STORAGE_KEY = "dd_calendar_schedules"

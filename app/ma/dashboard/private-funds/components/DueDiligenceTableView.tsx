@@ -8,12 +8,14 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react"
 import {
   AlignCenter,
   AlignLeft,
   AlignRight,
   Bold,
+  CalendarDays,
   Download,
   Expand,
   Italic,
@@ -53,6 +55,11 @@ import {
   saveDueDiligenceTableRows,
   updateDueDiligenceTableRow,
 } from "@/lib/ma/due-diligence-table"
+import {
+  countExtractableRows,
+  extractTableRowsToCalendar,
+} from "@/lib/ma/due-diligence-table-to-calendar"
+import { RepresentativeProductCell } from "./RepresentativeProductCell"
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -67,6 +74,95 @@ const PALETTE_COLORS = [
   "#92d050", "#00b050", "#00b0f0", "#0070c0", "#7030a0", "#ff00ff",
   "#ffc7ce", "#ffd966", "#e2efda", "#b4d9f0", "#dce6f1", "#f4ccf4",
 ]
+
+// ── Selection helpers ──────────────────────────────────────────────────────
+
+type CellCoord = { rowId: string; colKey: DueDiligenceTableColumn["key"] }
+
+type SelectionState =
+  | { kind: "none" }
+  | { kind: "range"; anchor: CellCoord; focus: CellCoord }
+  | { kind: "rows"; rowIds: string[] }
+  | { kind: "columns"; colKeys: DueDiligenceTableColumn["key"][] }
+
+function resolveRangeCells(
+  anchor: CellCoord,
+  focus: CellCoord,
+  tableRows: DueDiligenceTableRow[],
+): CellCoord[] {
+  const rowIds = tableRows.map((r) => r.id)
+  const colKeys = DD_TABLE_COLUMNS.map((c) => c.key)
+  const r0 = rowIds.indexOf(anchor.rowId)
+  const r1 = rowIds.indexOf(focus.rowId)
+  const c0 = colKeys.indexOf(anchor.colKey)
+  const c1 = colKeys.indexOf(focus.colKey)
+  if (r0 < 0 || r1 < 0 || c0 < 0 || c1 < 0) return []
+  const rMin = Math.min(r0, r1)
+  const rMax = Math.max(r0, r1)
+  const cMin = Math.min(c0, c1)
+  const cMax = Math.max(c0, c1)
+  const result: CellCoord[] = []
+  for (let r = rMin; r <= rMax; r++) {
+    for (let c = cMin; c <= cMax; c++) {
+      result.push({ rowId: rowIds[r], colKey: colKeys[c] })
+    }
+  }
+  return result
+}
+
+function getSelectionCells(
+  selection: SelectionState,
+  tableRows: DueDiligenceTableRow[],
+): CellCoord[] {
+  if (selection.kind === "none") return []
+  if (selection.kind === "rows") {
+    const coords: CellCoord[] = []
+    for (const rowId of selection.rowIds) {
+      for (const col of DD_TABLE_COLUMNS) {
+        coords.push({ rowId, colKey: col.key })
+      }
+    }
+    return coords
+  }
+  if (selection.kind === "columns") {
+    const coords: CellCoord[] = []
+    for (const row of tableRows) {
+      for (const colKey of selection.colKeys) {
+        coords.push({ rowId: row.id, colKey })
+      }
+    }
+    return coords
+  }
+  return resolveRangeCells(selection.anchor, selection.focus, tableRows)
+}
+
+function selectionCellKey(rowId: string, colKey: string): string {
+  return `${rowId}::${colKey}`
+}
+
+function buildSelectionCellSet(
+  selection: SelectionState,
+  tableRows: DueDiligenceTableRow[],
+): Set<string> {
+  const set = new Set<string>()
+  for (const { rowId, colKey } of getSelectionCells(selection, tableRows)) {
+    set.add(selectionCellKey(rowId, colKey))
+  }
+  return set
+}
+
+function hasSelection(selection: SelectionState): boolean {
+  return selection.kind !== "none"
+}
+
+function selectionSummary(selection: SelectionState, tableRows: DueDiligenceTableRow[]): string {
+  const cells = getSelectionCells(selection, tableRows)
+  if (cells.length === 0) return ""
+  if (selection.kind === "rows") return `已选 ${selection.rowIds.length} 行`
+  if (selection.kind === "columns") return `已选 ${selection.colKeys.length} 列`
+  if (cells.length === 1) return "已选 1 个单元格"
+  return `已选 ${cells.length} 个单元格`
+}
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -101,10 +197,12 @@ function ColorPalette({
   current,
   onSelect,
   onClose,
+  showNoFill,
 }: {
   current?: string
   onSelect: (hex: string) => void
   onClose: () => void
+  showNoFill?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -142,6 +240,19 @@ function ColorPalette({
         ))}
       </div>
       <div className="mt-2 flex items-center gap-2 border-t border-zinc-100 pt-2">
+        {showNoFill && (
+          <button
+            type="button"
+            onMouseDown={(e) => {
+              e.preventDefault()
+              onSelect("")
+              onClose()
+            }}
+            className="rounded border border-zinc-200 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-50"
+          >
+            无填充
+          </button>
+        )}
         <span className="text-xs text-zinc-500">自定义：</span>
         <input
           type="color"
@@ -159,6 +270,7 @@ function ColorPalette({
 function FormattingToolbar({
   format,
   disabled,
+  selectionHint,
   canUndo,
   canRedo,
   onUndo,
@@ -168,6 +280,7 @@ function FormattingToolbar({
 }: {
   format: CellFormat
   disabled: boolean
+  selectionHint?: string
   canUndo: boolean
   canRedo: boolean
   onUndo: () => void
@@ -300,7 +413,8 @@ function FormattingToolbar({
         {openPicker === "bg" && (
           <ColorPalette
             current={format.bgColor}
-            onSelect={(c) => onFormat({ bgColor: c })}
+            showNoFill
+            onSelect={(c) => onFormat({ bgColor: c || "" })}
             onClose={() => setOpenPicker(null)}
           />
         )}
@@ -330,8 +444,11 @@ function FormattingToolbar({
         清除格式
       </button>
 
-      {!disabled && (
-        <span className="ml-auto text-xs text-zinc-400">点击单元格后即可设置格式</span>
+      {!disabled && selectionHint && (
+        <span className="ml-auto text-xs text-zinc-400">{selectionHint}</span>
+      )}
+      {disabled && (
+        <span className="ml-auto text-xs text-zinc-400">点击行号、列头或拖拽选择单元格后设置格式</span>
       )}
     </div>
   )
@@ -340,19 +457,23 @@ function FormattingToolbar({
 // ── Editable cell ──────────────────────────────────────────────────────────
 
 function EditableCell({
+  cellId,
   value,
   width,
   multiline,
   format,
   isActive,
+  isSelected,
   onChange,
   onActivate,
 }: {
+  cellId: string
   value: string
   width: number
   multiline?: boolean
   format: CellFormat
   isActive: boolean
+  isSelected: boolean
   onChange: (next: string) => void
   onActivate: () => void
 }) {
@@ -365,19 +486,21 @@ function EditableCell({
     "block rounded border bg-transparent px-1 text-xs text-zinc-800 outline-none transition-colors",
     "hover:border-zinc-200 hover:bg-white/80",
     isActive
-      ? "border-blue-400 bg-blue-50/40 ring-1 ring-blue-200"
-      : "border-transparent",
+      ? "border-blue-500 bg-blue-50/40 ring-1 ring-blue-300"
+      : isSelected
+        ? "border-blue-300/60"
+        : "border-transparent",
   ].join(" ")
 
   if (multiline) {
     return (
       <textarea
+        data-cell={cellId}
         value={value}
         rows={2}
         style={style}
         onChange={(e) => onChange(e.target.value)}
         onFocus={onActivate}
-        onClick={onActivate}
         className={`${baseClass} resize-y leading-snug py-0.5 min-h-[2.25rem]`}
       />
     )
@@ -385,11 +508,11 @@ function EditableCell({
   return (
     <input
       type="text"
+      data-cell={cellId}
       value={value}
       style={style}
       onChange={(e) => onChange(e.target.value)}
       onFocus={onActivate}
-      onClick={onActivate}
       className={`${baseClass} h-7 py-0`}
     />
   )
@@ -422,12 +545,15 @@ export function DueDiligenceTableView() {
   const [hydrated, setHydrated] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const [activeCell, setActiveCell] = useState<{ rowId: string; colKey: string } | null>(null)
+  const [selection, setSelection] = useState<SelectionState>({ kind: "none" })
+  const [focusCell, setFocusCell] = useState<CellCoord | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
   const [undoStack, setUndoStack] = useState<Snapshot[]>([])
   const [redoStack, setRedoStack] = useState<Snapshot[]>([])
 
   const rootRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const dragRef = useRef<{ anchor: CellCoord; dragging: boolean } | null>(null)
 
   // ── Snapshot / undo-redo ──
 
@@ -535,24 +661,160 @@ export function DueDiligenceTableView() {
     [rows, keyword],
   )
 
-  // ── Active cell format ──
+  const selectedCellSet = useMemo(
+    () => buildSelectionCellSet(selection, filteredRows),
+    [selection, filteredRows],
+  )
+
+  const selectedRowSet = useMemo(() => {
+    if (selection.kind !== "rows") return new Set<string>()
+    return new Set(selection.rowIds)
+  }, [selection])
+
+  const selectedColSet = useMemo(() => {
+    if (selection.kind !== "columns") return new Set<string>()
+    return new Set(selection.colKeys)
+  }, [selection])
+
+  const formatReferenceCell = useMemo<CellCoord | null>(() => {
+    if (focusCell) return focusCell
+    const cells = getSelectionCells(selection, filteredRows)
+    return cells[0] ?? null
+  }, [focusCell, selection, filteredRows])
 
   const activeFmt = useMemo<CellFormat>(() => {
-    if (!activeCell) return {}
-    return getCellFormat(formats, activeCell.rowId, activeCell.colKey)
-  }, [formats, activeCell])
+    if (!formatReferenceCell) return {}
+    return getCellFormat(formats, formatReferenceCell.rowId, formatReferenceCell.colKey)
+  }, [formats, formatReferenceCell])
+
+  const selectionHint = useMemo(
+    () => selectionSummary(selection, filteredRows),
+    [selection, filteredRows],
+  )
+
+  function focusCellInput(rowId: string, colKey: DueDiligenceTableColumn["key"]) {
+    const el = containerRef.current?.querySelector(
+      `[data-cell="${selectionCellKey(rowId, colKey)}"]`,
+    ) as HTMLElement | null
+    el?.focus()
+    setFocusCell({ rowId, colKey })
+  }
+
+  function handleCellMouseDown(
+    rowId: string,
+    colKey: DueDiligenceTableColumn["key"],
+    e: ReactMouseEvent,
+  ) {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const coord = { rowId, colKey }
+    dragRef.current = { anchor: coord, dragging: false }
+    setIsDragging(true)
+    if (e.shiftKey && selection.kind === "range") {
+      setSelection({ kind: "range", anchor: selection.anchor, focus: coord })
+    } else {
+      setSelection({ kind: "range", anchor: coord, focus: coord })
+    }
+  }
+
+  function handleCellMouseEnter(
+    rowId: string,
+    colKey: DueDiligenceTableColumn["key"],
+  ) {
+    if (!dragRef.current) return
+    dragRef.current.dragging = true
+    setSelection({
+      kind: "range",
+      anchor: dragRef.current.anchor,
+      focus: { rowId, colKey },
+    })
+  }
+
+  function handleSelectRow(rowId: string, e: ReactMouseEvent) {
+    e.stopPropagation()
+    setFocusCell(null)
+    if (e.shiftKey && selection.kind === "rows") {
+      const lastId = selection.rowIds[selection.rowIds.length - 1]
+      const rowIds = filteredRows.map((r) => r.id)
+      const i0 = rowIds.indexOf(lastId)
+      const i1 = rowIds.indexOf(rowId)
+      if (i0 >= 0 && i1 >= 0) {
+        const start = Math.min(i0, i1)
+        const end = Math.max(i0, i1)
+        setSelection({ kind: "rows", rowIds: rowIds.slice(start, end + 1) })
+        return
+      }
+    }
+    setSelection({ kind: "rows", rowIds: [rowId] })
+  }
+
+  function handleSelectColumn(
+    colKey: DueDiligenceTableColumn["key"],
+    e: ReactMouseEvent,
+  ) {
+    e.stopPropagation()
+    setFocusCell(null)
+    if (e.shiftKey && selection.kind === "columns") {
+      const lastKey = selection.colKeys[selection.colKeys.length - 1]
+      const colKeys = DD_TABLE_COLUMNS.map((c) => c.key)
+      const i0 = colKeys.indexOf(lastKey)
+      const i1 = colKeys.indexOf(colKey)
+      if (i0 >= 0 && i1 >= 0) {
+        const start = Math.min(i0, i1)
+        const end = Math.max(i0, i1)
+        setSelection({ kind: "columns", colKeys: colKeys.slice(start, end + 1) })
+        return
+      }
+    }
+    setSelection({ kind: "columns", colKeys: [colKey] })
+  }
+
+  useEffect(() => {
+    function onMouseUp() {
+      const drag = dragRef.current
+      if (!drag) return
+      dragRef.current = null
+      setIsDragging(false)
+      setFocusCell({ rowId: drag.anchor.rowId, colKey: drag.anchor.colKey })
+      if (!drag.dragging) {
+        requestAnimationFrame(() => focusCellInput(drag.anchor.rowId, drag.anchor.colKey))
+      }
+    }
+    window.addEventListener("mouseup", onMouseUp)
+    return () => window.removeEventListener("mouseup", onMouseUp)
+  }, [])
 
   // ── Format handlers ──
 
-  function applyFormat(patch: Partial<CellFormat>) {
-    if (!activeCell) return
-    const next = patchCellFormat(formats, activeCell.rowId, activeCell.colKey, patch)
+  function applyFormatToSelection(patch: Partial<CellFormat> & { bgColor?: string }) {
+    const cells = getSelectionCells(selection, filteredRows)
+    if (cells.length === 0) return
+    let next = formats
+    const clearBg = patch.bgColor === ""
+    const effectivePatch = clearBg ? {} : patch
+    for (const { rowId, colKey } of cells) {
+      if (clearBg) {
+        const key = cellFormatKey(rowId, colKey)
+        const existing = next[key]
+        if (!existing?.bgColor) continue
+        const { bgColor: _, ...rest } = existing
+        next = { ...next }
+        if (Object.keys(rest).length === 0) delete next[key]
+        else next[key] = rest
+        continue
+      }
+      next = patchCellFormat(next, rowId, colKey, effectivePatch)
+    }
     persistFormats(rows, formats, next)
   }
 
-  function clearActiveCellFormat() {
-    if (!activeCell) return
-    const next = clearCellFormat(formats, activeCell.rowId, activeCell.colKey)
+  function clearSelectionFormat() {
+    const cells = getSelectionCells(selection, filteredRows)
+    if (cells.length === 0) return
+    let next = formats
+    for (const { rowId, colKey } of cells) {
+      next = clearCellFormat(next, rowId, colKey)
+    }
     persistFormats(rows, formats, next)
   }
 
@@ -560,6 +822,23 @@ export function DueDiligenceTableView() {
 
   function handleCellChange(rowId: string, key: DueDiligenceTableColumn["key"], value: string) {
     const next = updateDueDiligenceTableRow(rows, rowId, { [key]: value })
+    persistRows(rows, next, formats)
+  }
+
+  function handleRepresentativeProductChange(
+    rowId: string,
+    value: string,
+    link?: { beianHao: string } | null,
+  ) {
+    const patch: Parameters<typeof updateDueDiligenceTableRow>[2] = {
+      representativeProduct: value,
+    }
+    if (link === null) {
+      patch.representativeProductBeianHao = null
+    } else if (link) {
+      patch.representativeProductBeianHao = link.beianHao
+    }
+    const next = updateDueDiligenceTableRow(rows, rowId, patch)
     persistRows(rows, next, formats)
   }
 
@@ -580,16 +859,35 @@ export function DueDiligenceTableView() {
     persistRows(rows, next, formats)
   }
 
+  function handleExtractToCalendar() {
+    const { withDate, alreadySynced } = countExtractableRows(rows)
+    if (withDate === 0) {
+      alert("没有可提取的尽调记录（需填写尽调日期）。")
+      return
+    }
+    const toAdd = withDate - alreadySynced
+    if (toAdd <= 0) {
+      alert("所有含日期的尽调记录已同步到尽调日历。")
+      return
+    }
+    const msg = alreadySynced > 0
+      ? `将 ${toAdd} 条尽调记录提取到尽调日历（${alreadySynced} 条已同步将跳过），是否继续？`
+      : `将 ${toAdd} 条尽调记录提取到尽调日历，是否继续？`
+    if (!window.confirm(msg)) return
+    const result = extractTableRowsToCalendar(rows)
+    alert(`提取完成：新增 ${result.added} 条${result.skipped > 0 ? `，跳过 ${result.skipped} 条（已同步）` : ""}。`)
+  }
+
   // ── Keyboard shortcuts ──
 
   function handleKeyDown(e: KeyboardEvent<HTMLDivElement>) {
-    if (!activeCell) return
+    if (!hasSelection(selection)) return
     const ctrl = e.ctrlKey || e.metaKey
     if (!ctrl) return
     switch (e.key.toLowerCase()) {
-      case "b": e.preventDefault(); applyFormat({ bold: !activeFmt.bold }); break
-      case "i": e.preventDefault(); applyFormat({ italic: !activeFmt.italic }); break
-      case "u": e.preventDefault(); applyFormat({ underline: !activeFmt.underline }); break
+      case "b": e.preventDefault(); applyFormatToSelection({ bold: !activeFmt.bold }); break
+      case "i": e.preventDefault(); applyFormatToSelection({ italic: !activeFmt.italic }); break
+      case "u": e.preventDefault(); applyFormatToSelection({ underline: !activeFmt.underline }); break
       case "z": e.preventDefault(); e.shiftKey ? redo() : undo(); break
       case "y": e.preventDefault(); redo(); break
     }
@@ -630,6 +928,10 @@ export function DueDiligenceTableView() {
             <button type="button" onClick={() => exportRowsToXlsx(filteredRows)}
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
               <Download className="h-3.5 w-3.5" />导出 Excel
+            </button>
+            <button type="button" onClick={handleExtractToCalendar}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
+              <CalendarDays className="h-3.5 w-3.5" />提取到尽调日历
             </button>
             <button type="button" onClick={handleResetSeed}
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
@@ -680,17 +982,21 @@ export function DueDiligenceTableView() {
       {/* ── Formatting toolbar (Excel-like) ── */}
       <FormattingToolbar
         format={activeFmt}
-        disabled={!activeCell}
+        disabled={!hasSelection(selection)}
+        selectionHint={selectionHint}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
         onUndo={undo}
         onRedo={redo}
-        onFormat={applyFormat}
-        onClearFormat={clearActiveCellFormat}
+        onFormat={applyFormatToSelection}
+        onClearFormat={clearSelectionFormat}
       />
 
       {/* ── Table ── */}
-      <div ref={containerRef} className="min-h-0 flex-1 overflow-auto">
+      <div
+        ref={containerRef}
+        className={["min-h-0 flex-1 overflow-auto", isDragging ? "select-none" : ""].join(" ")}
+      >
         {!hydrated ? (
           <div className="flex h-40 items-center justify-center text-sm text-zinc-500">加载中…</div>
         ) : filteredRows.length === 0 ? (
@@ -732,45 +1038,114 @@ export function DueDiligenceTableView() {
                   <th className="sticky left-0 z-30 border-b border-zinc-200 bg-zinc-50/95 py-2 text-center text-xs font-semibold text-zinc-600 shadow-[1px_0_0_0_#e4e4e7]">
                     序号
                   </th>
-                  {DD_TABLE_COLUMNS.map((col) => (
-                    <th
-                      key={col.key}
-                      className="overflow-hidden border-b border-zinc-200 bg-zinc-50/95 py-2 text-left text-xs font-semibold text-zinc-600"
-                      style={{ paddingLeft: 4, paddingRight: 2 }}
-                    >
-                      {col.label}
-                    </th>
-                  ))}
+                  {DD_TABLE_COLUMNS.map((col) => {
+                    const colSelected = selectedColSet.has(col.key)
+                    return (
+                      <th
+                        key={col.key}
+                        title="点击选择整列，Shift+点击扩展"
+                        onMouseDown={(e) => handleSelectColumn(col.key, e)}
+                        className={[
+                          "overflow-hidden border-b border-zinc-200 py-2 text-left text-xs font-semibold text-zinc-600 cursor-pointer select-none transition-colors",
+                          colSelected ? "bg-blue-100 text-blue-800" : "bg-zinc-50/95 hover:bg-zinc-100",
+                        ].join(" ")}
+                        style={{ paddingLeft: 4, paddingRight: 2 }}
+                      >
+                        {col.label}
+                      </th>
+                    )
+                  })}
                   <th className="border-b border-zinc-200 bg-zinc-50/95 py-2 text-center text-xs font-semibold text-zinc-600">
                     操作
                   </th>
                 </tr>
               </thead>
               <tbody>
-                {filteredRows.map((row, index) => (
-                  <tr key={row.id} className="group hover:bg-red-50/30">
-                    <td className="sticky left-0 z-10 border-b border-zinc-100 bg-white py-0.5 text-center text-xs font-medium text-zinc-500 shadow-[1px_0_0_0_#f4f4f5] group-hover:bg-red-50/30">
+                {filteredRows.map((row, index) => {
+                  const rowSelected = selectedRowSet.has(row.id)
+                  return (
+                    <tr key={row.id} className="group hover:bg-red-50/30">
+                    <td
+                      title="点击选择整行，Shift+点击扩展"
+                      onMouseDown={(e) => handleSelectRow(row.id, e)}
+                      className={[
+                        "sticky left-0 z-10 border-b border-zinc-100 py-0.5 text-center text-xs font-medium shadow-[1px_0_0_0_#f4f4f5] cursor-pointer select-none transition-colors",
+                        rowSelected
+                          ? "bg-blue-100 text-blue-800"
+                          : "bg-white text-zinc-500 group-hover:bg-red-50/30",
+                      ].join(" ")}
+                    >
                       {index + 1}
                     </td>
                     {DD_TABLE_COLUMNS.map((col) => {
+                      const cellId = selectionCellKey(row.id, col.key)
+                      const isSelected = selectedCellSet.has(cellId)
                       const isActive =
-                        activeCell?.rowId === row.id && activeCell?.colKey === col.key
+                        focusCell?.rowId === row.id && focusCell?.colKey === col.key
                       const fmt = getCellFormat(formats, row.id, col.key)
                       return (
                         <td
                           key={col.key}
-                          className="overflow-hidden border-b border-zinc-100 py-0.5 align-top"
+                          onMouseDown={(e) => handleCellMouseDown(row.id, col.key, e)}
+                          onMouseEnter={() => handleCellMouseEnter(row.id, col.key)}
+                          onDoubleClick={() => {
+                            if (col.key !== "representativeProduct") return
+                            setFocusCell({ rowId: row.id, colKey: col.key })
+                            setSelection({
+                              kind: "range",
+                              anchor: { rowId: row.id, colKey: col.key },
+                              focus: { rowId: row.id, colKey: col.key },
+                            })
+                            requestAnimationFrame(() => focusCellInput(row.id, col.key))
+                          }}
+                          className={[
+                            "border-b border-zinc-100 py-0.5 align-top transition-colors",
+                            col.key === "representativeProduct" ? "overflow-visible" : "overflow-hidden",
+                            isSelected && !isActive ? "bg-blue-50/50 ring-1 ring-inset ring-blue-300/70" : "",
+                          ].join(" ")}
                           style={{ paddingLeft: 2, paddingRight: 2 }}
                         >
-                          <EditableCell
-                            value={row[col.key]}
-                            width={col.width}
-                            multiline={col.multiline}
-                            format={fmt}
-                            isActive={isActive}
-                            onActivate={() => setActiveCell({ rowId: row.id, colKey: col.key })}
-                            onChange={(value) => handleCellChange(row.id, col.key, value)}
-                          />
+                          {col.key === "representativeProduct" ? (
+                            <RepresentativeProductCell
+                              cellId={cellId}
+                              value={row.representativeProduct}
+                              linkedBeianHao={row.representativeProductBeianHao}
+                              width={col.width}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value, link) =>
+                                handleRepresentativeProductChange(row.id, value, link)
+                              }
+                            />
+                          ) : (
+                            <EditableCell
+                              cellId={cellId}
+                              value={row[col.key]}
+                              width={col.width}
+                              multiline={col.multiline}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleCellChange(row.id, col.key, value)}
+                            />
+                          )}
                         </td>
                       )
                     })}
@@ -784,8 +1159,9 @@ export function DueDiligenceTableView() {
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
                     </td>
-                  </tr>
-                ))}
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>

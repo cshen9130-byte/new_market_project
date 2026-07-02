@@ -159,8 +159,16 @@ function fmtPct(v: string | null | undefined): string | null {
   return `${n.toFixed(2)}%`
 }
 
+function normalizeNavDate(value: string): string | null {
+  const trimmed = value.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed
+  const m = trimmed.match(/^(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})/)
+  if (!m) return null
+  return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`
+}
+
 function isValidNavDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value.trim())
+  return normalizeNavDate(value) !== null
 }
 
 function isValidNavNumber(value: string): boolean {
@@ -178,10 +186,10 @@ export async function uploadTeamNavRows(params: {
 
   const cleaned: TeamNavUploadRow[] = []
   for (const row of params.rows) {
-    const nav_date = row.nav_date.trim()
+    const nav_date = normalizeNavDate(row.nav_date)
     const unit_nav = row.unit_nav.trim()
     const cumulative_nav = (row.cumulative_nav ?? row.unit_nav).trim()
-    if (!isValidNavDate(nav_date) || !isValidNavNumber(unit_nav)) {
+    if (!nav_date || !isValidNavNumber(unit_nav)) {
       return { error: "invalid_rows" }
     }
     cleaned.push({ nav_date, unit_nav, cumulative_nav })
