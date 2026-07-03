@@ -1537,8 +1537,40 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   return sorted
 }
 
+/**
+ * Legacy platform rows sometimes store 累计净值 and 复权净值 in swapped DB columns
+ * (cum_nav_withdrawal > cumulative_nav while both sit above unit). Restores adj >= cum >= unit.
+ */
+function repairSwappedCumAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  return rows.map((row) => {
+    const unit = parseOptionalNav(row.nav)
+    const cum = parseOptionalNav(row.cum_nav_withdrawal)
+    const adj = parseOptionalNav(row.cumulative_nav)
+    if (unit == null || cum == null || adj == null) return row
+    if (!isReasonableNav(unit) || !isReasonableNav(cum) || !isReasonableNav(adj)) return row
+    if (cum <= adj) return row
+    if (!hasDistinctCumulative(unit, cum) || !hasDistinctCumulative(unit, adj)) return row
+
+    // Small cum > adj gaps are stale-ratio drift — repairAdjBelowCumRows handles those.
+    // Large gaps mean the two column values were stored in swapped fields (SQX078 pattern).
+    if ((cum - adj) / unit < 0.15) return row
+
+    const swappedCum = adj
+    const swappedAdj = cum
+    if (swappedAdj >= swappedCum && swappedCum >= unit) {
+      return {
+        ...row,
+        cum_nav_withdrawal: String(+swappedCum.toFixed(6)),
+        cumulative_nav: String(+swappedAdj.toFixed(6)),
+      }
+    }
+    return row
+  })
+}
+
 function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string> = new Set()): LegacyNavRow[] {
   let out = sanitizeMisassignedUnitNavRows(rows)
+  out = repairSwappedCumAdjRows(out)
   out = sanitizeVShapeNavOutliers(out)
   out = repairCorruptUnitNavRows(out)
   out = syncExDivAdjustedNav(out)

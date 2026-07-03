@@ -103,6 +103,22 @@ const sla063Merged1011 = sla063Merged.find((r) => r.price_date === "2022-10-11")
 assert("SLA063 merged ex-div cum flat", Math.abs(parseFloat(sla063Merged1011.cum_nav_withdrawal) - 1.265) < 0.001)
 assert("SLA063 merged ex-div adj near prev", parseFloat(sla063Merged1011.cumulative_nav) > 1.27)
 
+// SQX078 特夫郁金香全量化: legacy rows with 累计/复权 columns swapped (cum > adj)
+const sqx078Legacy = [
+  { price_date: "2026-05-15", nav: "1.088000", cumulative_nav: "2.790240", cum_nav_withdrawal: "2.251700", price_change: "" },
+  { price_date: "2026-05-18", nav: "1.088900", cumulative_nav: "2.252600", cum_nav_withdrawal: "2.792500", price_change: "" },
+  { price_date: "2026-05-25", nav: "1.105600", cumulative_nav: "2.269300", cum_nav_withdrawal: "2.835400", price_change: "" },
+  { price_date: "2026-05-29", nav: "1.098400", cumulative_nav: "2.816912", cum_nav_withdrawal: "2.262100", price_change: "" },
+]
+const sqx078Out = mergeNavSeriesWithEmail(sqx078Legacy, [])
+for (const d of ["2026-05-18", "2026-05-25"]) {
+  const r = sqx078Out.find((x) => x.price_date === d)
+  assert(`SQX078 ${d} adj >= cum`, parseFloat(r.cumulative_nav) >= parseFloat(r.cum_nav_withdrawal) - 0.001)
+}
+const sqx0518 = sqx078Out.find((r) => r.price_date === "2026-05-18")
+assert("SQX078 swapped cum restored", Math.abs(parseFloat(sqx0518.cum_nav_withdrawal) - 2.2526) < 0.001)
+assert("SQX078 swapped adj restored", Math.abs(parseFloat(sqx0518.cumulative_nav) - 2.7925) < 0.001)
+
 // Full series: 涨跌幅 matches Excel (prev row in series, incl. post-holiday)
 const fullDec = [
   { price_date: "2025-12-25", nav: "1.1717", cumulative_nav: "1.1717", cum_nav_withdrawal: "1.1717", price_change: "" },

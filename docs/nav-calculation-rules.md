@@ -352,6 +352,7 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
 | `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
 | `preferEmailNavRow` / `isPlausibleEmailUnitNav` | Reject 虚拟计提 share-count rows; prefer `product_code`-matched 净值表 — reverting to id-only tie-break breaks BAH99A FOF list |
+| `repairSwappedCumAdjRows` | Fixes legacy rows where 累计 and 复权 DB columns are swapped (`cum > adj`) — disabling leaves SQX078-style corrupt 平台数据 |
 | `sanitizeVShapeNavOutliers` | Removes single-day V-shaped legacy outliers (~7–15% dip/spike with flat neighbors) — disabling lets corrupt platform rows distort max-drawdown and period returns |
 | `preferLegacyNavRow` / `dedupeLegacyNavRowsByDate` | When group + per-fund tables disagree on ex-div dates, prefer the row whose 累计 stayed near the prior level (SLA063) — reverting to pri-only tie-break keeps wrong group cum |
 | `resolveFundBeianHao` | Direct beian DB lookup must run before managed-product override — otherwise BAH99A routes to SBAH99 |
@@ -767,4 +768,54 @@ Regression checks:
 ```bash
 npx tsx scripts/test-nav-rechain.mjs
 npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
+---
+
+## What Was Fixed (特夫郁金香全量化 — SQX078, 2026-07-03)
+
+### The Problem
+
+Fund detail page **平台数据** table for 特夫郁金香全量化 showed corrupt 累计净值 / 复权净值 on several recent dates (e.g. **2026-05-18**, **2026-05-22**, **2026-05-25**):
+
+| Date | Shown (wrong) | Expected |
+|---|---|---|
+| 2026-05-18 | unit 1.0889, cum **2.7925**, adj **2.2526** | unit 1.0889, cum **2.2526**, adj **2.7925** |
+| 2026-05-25 | unit 1.1056, cum **2.8354**, adj **2.2693** | unit 1.1056, cum **2.2693**, adj **2.8354** |
+
+Symptoms: **adj < cum** (violates `adj >= cum >= unit`), 涨跌幅 on 复权净值 chart/table inconsistent with unit moves, and 复权净值 line distorted on affected dates.
+
+Correct reference row (2026-05-15 and 2026-05-29 were already fine):
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-05-29 | 1.0984 | 2.2621 | 2.8169 |
+
+### Root Cause
+
+Some legacy platform ingest rows stored **累计净值 in `cum_nav_withdrawal`** and **复权净值 in `cumulative_nav`** with the two values reversed. `repairAdjBelowCumRows` cannot fix this — it rechains adj upward from prior rows but does not swap mis-mapped columns.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Column swap repair | `repairSwappedCumAdjRows` | When `cum > adj` and both are materially above unit, swap the two fields so `adj >= cum >= unit` |
+| Pipeline order | `finalizeNavSeries` | Runs `repairSwappedCumAdjRows` immediately after `sanitizeMisassignedUnitNavRows`, before V-shape / dividend logic |
+
+### What This Fix Does NOT Change
+
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev`, `propagateMissingAdjRows` — unchanged.
+- SBAH99 dividend formulas — unchanged.
+- SNF018 virtual-first FOF email priority — unchanged.
+- SSG947 managed-product seed + email merge — unchanged.
+- BAH99A routing / plausible-nav guards — unchanged.
+- SBPC20 attachment-wins-over-virtual — unchanged.
+- SLA063 `preferLegacyNavRow` ex-div tie-break — unchanged.
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+npx tsx scripts/ma/_diag_sqx078_nav.ts
 ```
