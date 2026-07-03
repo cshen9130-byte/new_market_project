@@ -352,7 +352,8 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
 | `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
 | `preferEmailNavRow` / `isPlausibleEmailUnitNav` | Reject 虚拟计提 share-count rows; prefer `product_code`-matched 净值表 — reverting to id-only tie-break breaks BAH99A FOF list |
-| `sanitizeVShapeNavOutliers` | Removes single-day V-shaped legacy outliers (~7–15% dip/spike with flat neighbors) — disabling lets corrupt platform rows distort max-drawdown and period returns (SLA033) |
+| `sanitizeVShapeNavOutliers` | Removes single-day V-shaped legacy outliers (~7–15% dip/spike with flat neighbors) — disabling lets corrupt platform rows distort max-drawdown and period returns |
+| `preferLegacyNavRow` / `dedupeLegacyNavRowsByDate` | When group + per-fund tables disagree on ex-div dates, prefer the row whose 累计 stayed near the prior level (SLA063) — reverting to pri-only tie-break keeps wrong group cum |
 | `resolveFundBeianHao` | Direct beian DB lookup must run before managed-product override — otherwise BAH99A routes to SBAH99 |
 | `remapManagedProductBeianCode` | Do not remap A/B/C share-class codes (e.g. BAH99A) to parent 在管产品 beian |
 | `lookupManagedProductOverride` | Must use share-class-aware name match — loose `includes` maps A类 names to parent managed product |
@@ -661,7 +662,7 @@ npx tsx scripts/ma/check_fof_nav_invariant.ts
 
 ---
 
-## What Was Fixed (杉阳云杉混合1号 — SLA033, 2026-07-03)
+## What Was Fixed (杉阳云杉混合1号 — SLA063, 2026-07-03)
 
 ### The Problem
 
@@ -678,16 +679,23 @@ Correct reference (platform 净值): smooth 复权 curve, max drawdown ~3%, late
 
 ### Root Cause
 
-`private_fund_nav` (legacy platform DB) contained a **single-day V-shaped outlier** on 2022-10-11 — unit/cum/adj all dipped ~12% then immediately recovered on the next row. Existing spike repair in `refreshStaleDerivedFields` only triggers at **±30%** day-over-day moves, so this ~11% corrupt row passed through and poisoned max-drawdown and 6-month return (base NAV picked up the spike level).
+备案号 is **SLA063** (not SLA033). On **2022-10-11** (real dividend ex-date, unit 1.127 → 1.000) two legacy tables disagree:
 
-This is **legacy data corruption**, not a dividend event — neighbors on 2022-10-04 and 2022-10-18 agree within ~1%.
+| Source | unit | 累计 | 复权 |
+|---|---|---|---|
+| `private_fund_nav_group` (wrong) | 1.000 | **1.139** | **1.139** |
+| `private_fund_nav` (correct) | 1.000 | **1.265** | **1.283** |
+
+`loadPrivateFundLegacyNavRows` used `DISTINCT ON (price_date) … ORDER BY pri ASC`, so the **group** row (lower pri) always won — collapsing cum/adj to the post-div unit level and creating the chart V-dip (−11.43% max drawdown / stale 近六个月收益).
 
 ### The Correct Fix Applied
 
 | Area | File / function | What changed |
 |---|---|---|
-| V-shape outlier removal | `lib/server/email-nav-query.ts` `sanitizeVShapeNavOutliers` | Detect single-day dip/spike ≥7% vs both neighbors while neighbors agree within 6%; restore unit from prev (flat bridge) and rechain cum/adj via `rechainDerivedFromPrev`. Skips real ex-div dates (`isLikelyDividendExDate`). |
-| Pipeline call order | `finalizeNavSeries` | Runs after `sanitizeMisassignedUnitNavRows`, before `repairCorruptUnitNavRows`. |
+| Legacy source tie-break | `preferLegacyNavRow`, `dedupeLegacyNavRowsByDate` | On ex-div unit drops, prefer the row whose 累计 stayed near the prior level (or keeps dividend offset). |
+| Legacy loader | `loadPrivateFundLegacyNavRows` | Fetch all pri rows, dedupe in JS instead of SQL `DISTINCT ON pri`. |
+| Detail API | `app/ma/api/private-funds/[beian_hao]/route.ts` | Uses `loadPrivateFundLegacyNavRows` (same dedupe path). |
+| V-shape outlier removal | `sanitizeVShapeNavOutliers` | Still handles non-ex-div single-day corrupt rows (separate pattern). |
 
 ### What This Fix Does NOT Change
 
@@ -697,10 +705,61 @@ This is **legacy data corruption**, not a dividend event — neighbors on 2022-1
 
 ### After deployment
 
-Refresh tracking list cache so `ret_6m` picks up corrected history:
+| List cache period returns | `BatchNavResolver.calcPeriodReturns`, `loadLegacyNavBatch` | Use **复权净值** (`return_nav`) for ret_1w/1m/3m/6m/1y when legacy adj is available; legacy batch uses same `dedupeLegacyNavRowsByDate` as detail page. |
 
 ```bash
 npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+```
+
+Regression checks:
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
+---
+
+## What Was Fixed (奇盾抱朴专享1号 — SSGD35, custody-only 估值表)
+
+### The Problem
+
+Funds like **奇盾抱朴专享1号** (SSGD35) receive custody **估值表** emails but no dedicated **净值表**. The FOF底层 list showed latest unit NAV (e.g. **1.0878** on 2026-06-30) but **最新涨跌幅** and period returns (近一周/一月/三月) were empty.
+
+### Root Causes
+
+1. **Zip 估值表 skipped NAV ingest** — In `email-parse-fetch.ts`, unit NAV was only copied from 估值表 attachments when `!isValuationZipFilename(att.filename)`. Valuation zips saved full holdings to `ops_email_valuation_records` but never wrote NAV rows to `ops_email_nav_records`.
+
+2. **Historical gap** — Even non-zip 估值表 rows with `unit_nav` in `ops_email_valuation_records` were not backfilled into `ops_email_nav_records`. `BatchNavResolver` / `loadEmailNavBatch` only read the NAV table, so period returns had ≤ 1 data point.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Zip + non-zip 估值表 NAV ingest | `email-parse-fetch.ts` | When an email has no 净值表 attachment, copy unit NAV from **every** 估值表 payload (including zip inner files) into `ops_email_nav_records` with `source = attachment_valuation_table` |
+| Historical backfill | `email-valuation-nav-backfill.ts` `backfillCustodyValuationNavFromRecords` | Idempotent upsert of all plausible custody 估值表 `unit_nav` rows into `ops_email_nav_records`; skips FOF multi-level sheets via `isFofUnderlyingValuationEmailRow` |
+| ETL hook | `email-parse-fetch.ts`, `email_nav_etl.ts` | Run backfill after valuation upsert (parse) and in `--refresh-only` before list-cache rebuild |
+
+### What This Fix Does NOT Change
+
+- `preferEmailNavRow`, `EMAIL_NAV_PRIMARY_SOURCE_FILTER`, virtual-first priority (SNF018) — 净值表 / TA virtual still beat 估值表 at read time
+- SSG947 custody ratio learning, seed merge, SBPC20 attachment-wins-over-virtual — unchanged
+- SBAH99 dividend formulas — unchanged
+- FOF multi-level 估值表 rejection — unchanged; backfill uses the same guard
+
+### After deployment
+
+Backfill existing valuation history and rebuild FOF cache:
+
+```bash
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+```
+
+Or full re-parse:
+
+```bash
+npx tsx scripts/ma/email_nav_etl.ts --days=400
+npx tsx scripts/ma/_refresh_fof_cache.ts
 ```
 
 Regression checks:

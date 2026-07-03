@@ -56,6 +56,18 @@ async function main() {
       )
       console.error("[email_nav_etl] refresh-only: backfilling valuation metrics from stored records…")
       try {
+        const { backfillCustodyValuationNavFromRecords } = await import(
+          "@/lib/server/email-valuation-nav-backfill"
+        )
+        const navBackfill = await backfillCustodyValuationNavFromRecords()
+        console.error(
+          `[email_nav_etl] custody 估值表 NAV backfill done (rows=${navBackfill.navBackfilled})`,
+        )
+      } catch (err) {
+        console.warn("[email_nav_etl] custody 估值表 NAV backfill skipped:", err)
+      }
+
+      try {
         const { backfillValuationMetricsFromRecords } = await import(
           "@/lib/server/email-valuation-metrics-backfill"
         )

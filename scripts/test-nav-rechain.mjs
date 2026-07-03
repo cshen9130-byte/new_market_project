@@ -1,4 +1,4 @@
-import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows } from "../lib/server/email-nav-query.ts"
+import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate } from "../lib/server/email-nav-query.ts"
 import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio, loadManagedProductNavSeed, mergeManagedProductDetailNav } from "../lib/server/managed-product-nav-seed.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
 import fs from "fs"
@@ -87,6 +87,21 @@ const sla033SpikeLegacy = [
 const sla033SpikeOut = mergeNavSeriesWithEmail(sla033SpikeLegacy, [])
 const slaSpike1011 = sla033SpikeOut.find((r) => r.price_date === "2022-10-11")
 assert("SLA033 unit spike restored", Math.abs(parseFloat(slaSpike1011.nav) - 1.05) < 0.001)
+
+// SLA063 ex-div 2022-10-11: group table collapsed cum to unit; per-fund nav row is correct
+const sla063ExDiv = dedupeLegacyNavRowsByDate([
+  { price_date: "2022-10-10", nav: "1.127000", cumulative_nav: "1.283653", cum_nav_withdrawal: "1.266000", price_change: "", pri: 3 },
+  { price_date: "2022-10-11", nav: "1.000000", cumulative_nav: "1.139000", cum_nav_withdrawal: "1.139000", price_change: "", pri: 3 },
+  { price_date: "2022-10-11", nav: "1.000000", cumulative_nav: "1.282514", cum_nav_withdrawal: "1.265000", price_change: "", pri: 9 },
+  { price_date: "2022-10-12", nav: "1.003000", cumulative_nav: "1.285931", cum_nav_withdrawal: "1.268000", price_change: "", pri: 3 },
+])
+const sla0631011 = sla063ExDiv.find((r) => r.price_date === "2022-10-11")
+assert("SLA063 ex-div picks per-fund cum", Math.abs(parseFloat(sla0631011.cum_nav_withdrawal) - 1.265) < 0.001)
+assert("SLA063 ex-div adj >= cum", parseFloat(sla0631011.cumulative_nav) >= parseFloat(sla0631011.cum_nav_withdrawal) - 0.001)
+const sla063Merged = mergeNavSeriesWithEmail(sla063ExDiv, [])
+const sla063Merged1011 = sla063Merged.find((r) => r.price_date === "2022-10-11")
+assert("SLA063 merged ex-div cum flat", Math.abs(parseFloat(sla063Merged1011.cum_nav_withdrawal) - 1.265) < 0.001)
+assert("SLA063 merged ex-div adj near prev", parseFloat(sla063Merged1011.cumulative_nav) > 1.27)
 
 // Full series: 涨跌幅 matches Excel (prev row in series, incl. post-holiday)
 const fullDec = [

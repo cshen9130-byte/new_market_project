@@ -815,6 +815,98 @@ const TYPE6_LEGACY_NAV_UNIONS = `
          UNION ALL
 `
 
+export type LegacyNavRowWithPri = LegacyNavRow & { pri: number }
+
+/**
+ * When group + per-fund tables disagree on the same date, prefer the row whose
+ * 累计净值 stayed near the prior level through an ex-dividend unit drop (SLA063 pattern).
+ */
+export function preferLegacyNavRow(
+  current: LegacyNavRow,
+  candidate: LegacyNavRow,
+  prev: LegacyNavRow | null,
+  currentPri: number,
+  candidatePri: number,
+): LegacyNavRow {
+  const currUnit = parseOptionalNav(current.nav)
+  const candUnit = parseOptionalNav(candidate.nav)
+  const currCum = parseOptionalNav(current.cum_nav_withdrawal) ?? parseOptionalNav(current.cumulative_nav)
+  const candCum = parseOptionalNav(candidate.cum_nav_withdrawal) ?? parseOptionalNav(candidate.cumulative_nav)
+
+  if (prev) {
+    const prevUnit = parseOptionalNav(prev.nav)
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+    if (
+      prevUnit != null && prevUnit > 0 && prevCum != null && prevCum > 0 &&
+      currUnit != null && candUnit != null
+    ) {
+      const unitDrop = Math.max(
+        currUnit < prevUnit ? (prevUnit - currUnit) / prevUnit : 0,
+        candUnit < prevUnit ? (prevUnit - candUnit) / prevUnit : 0,
+      )
+      if (unitDrop > 0.015 && currCum != null && candCum != null) {
+        const currGap = Math.abs(currCum - prevCum) / prevCum
+        const candGap = Math.abs(candCum - prevCum) / prevCum
+        if (candGap + 0.005 < currGap) return candidate
+        if (currGap + 0.005 < candGap) return current
+      }
+
+      if (unitDrop > 0.015 && currCum != null && candCum != null && currUnit != null && candUnit != null) {
+        const prevOffset = prevCum - prevUnit
+        const currOffset = currCum - currUnit
+        const candOffset = candCum - candUnit
+        if (Math.abs(candOffset - prevOffset) + 0.02 < Math.abs(currOffset - prevOffset)) return candidate
+        if (Math.abs(currOffset - prevOffset) + 0.02 < Math.abs(candOffset - prevOffset)) return current
+      }
+    }
+
+    if (
+      currUnit != null && candUnit != null && currCum != null && candCum != null &&
+      prevUnit != null && prevCum != null && hasDividendOffset(prevUnit, prevCum)
+    ) {
+      const currDistinct = hasDistinctCumulative(currUnit, currCum)
+      const candDistinct = hasDistinctCumulative(candUnit, candCum)
+      if (candDistinct && !currDistinct) return candidate
+      if (currDistinct && !candDistinct) return current
+    }
+  }
+
+  return candidatePri < currentPri ? candidate : current
+}
+
+export function dedupeLegacyNavRowsByDate(rows: LegacyNavRowWithPri[]): LegacyNavRow[] {
+  if (rows.length === 0) return []
+  const sorted = [...rows].sort((a, b) => {
+    const byDate = a.price_date.localeCompare(b.price_date)
+    return byDate !== 0 ? byDate : a.pri - b.pri
+  })
+  const out: LegacyNavRow[] = []
+  let i = 0
+  while (i < sorted.length) {
+    const date = sorted[i].price_date
+    const group: LegacyNavRowWithPri[] = []
+    while (i < sorted.length && sorted[i].price_date === date) {
+      group.push(sorted[i])
+      i += 1
+    }
+    let bestIdx = 0
+    const prev = out[out.length - 1] ?? null
+    for (let j = 1; j < group.length; j += 1) {
+      const picked = preferLegacyNavRow(
+        group[bestIdx],
+        group[j],
+        prev,
+        group[bestIdx].pri,
+        group[j].pri,
+      )
+      if (picked === group[j]) bestIdx = j
+    }
+    const { pri: _pri, ...row } = group[bestIdx]
+    out.push(row)
+  }
+  return out
+}
+
 /** Legacy NAV tables (group / hy / per-fund). Optionally skip type6 — sparse for some 在管产品. */
 export async function loadPrivateFundLegacyNavRows(
   beianHao: string,
@@ -825,13 +917,14 @@ export async function loadPrivateFundLegacyNavRows(
   const excludeType6 = options?.excludeType6 ?? false
   const type6Block = excludeType6 ? "" : TYPE6_LEGACY_NAV_UNIONS
   try {
-    return await query<LegacyNavRow>(
-      `SELECT DISTINCT ON (price_date)
+    const raw = await query<LegacyNavRowWithPri>(
+      `SELECT
           price_date::text AS price_date,
           nav::text,
           cumulative_nav::text,
           cum_nav_withdrawal::text,
-          price_change::text
+          price_change::text,
+          pri
        FROM (
          ${type6Block}
          SELECT price_date, nav, cumulative_nav, cum_nav_withdrawal, price_change, 3 AS pri
@@ -889,6 +982,7 @@ export async function loadPrivateFundLegacyNavRows(
        ORDER BY price_date ASC, pri ASC`,
       [beianHao, productName, shortName],
     )
+    return dedupeLegacyNavRowsByDate(raw)
   } catch (err) {
     console.error("[loadPrivateFundLegacyNavRows]", err)
     return []

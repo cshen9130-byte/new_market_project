@@ -46,11 +46,16 @@ function pctReturnText(current: number, base: number | null): string | null {
   return String(Math.round((current / base - 1) * 10000) / 100)
 }
 
+function navForReturn(point: NavPoint): number {
+  const v = point.return_nav ?? point.nav
+  return Number.isFinite(v) && v > 0 ? v : point.nav
+}
+
 function navAtOrBefore(history: NavPoint[], beforeDate: string): number | null {
   let result: number | null = null
   for (const point of history) {
     if (point.nav_date > beforeDate) break
-    result = point.nav
+    result = navForReturn(point)
   }
   return result
 }
@@ -89,10 +94,11 @@ async function loadNavHistoryBatch(
 ): Promise<Map<string, NavPoint[]>> {
   if (beianHaos.length === 0) return new Map()
 
-  const rows = await query<{ beian_hao: string; nav_date: string; nav: string }>(
+  const rows = await query<{ beian_hao: string; nav_date: string; nav: string; cumulative_nav: string | null }>(
     `SELECT beian_hao,
             price_date::text AS nav_date,
-            nav::text AS nav
+            nav::text AS nav,
+            cumulative_nav::text AS cumulative_nav
      FROM private_fund_nav
      WHERE beian_hao = ANY($1::text[])
        AND price_date >= $2::date
@@ -106,7 +112,9 @@ async function loadNavHistoryBatch(
   for (const row of rows) {
     const nav = parseFloat(row.nav)
     if (!Number.isFinite(nav) || nav <= 0) continue
-    const point: NavPoint = { nav_date: row.nav_date.slice(0, 10), nav }
+    const adj = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : NaN
+    const return_nav = Number.isFinite(adj) && adj > 0 ? adj : nav
+    const point: NavPoint = { nav_date: row.nav_date.slice(0, 10), nav, return_nav }
     const list = out.get(row.beian_hao)
     if (list) list.push(point)
     else out.set(row.beian_hao, [point])
@@ -131,6 +139,8 @@ function enrichRowFromNavHistory<T extends FundListMetricsRow>(
   const latest_nav = opts.historical ? (opts.latest_nav ?? null) : row.latest_nav
   const latest_nav_date = opts.historical ? (opts.latest_nav_date ?? null) : row.latest_nav_date
   const currentNav = latest_nav != null ? parseFloat(latest_nav) : NaN
+  const latestPoint = history.length > 0 ? history[history.length - 1] : null
+  const currentReturnNav = latestPoint ? navForReturn(latestPoint) : currentNav
 
   const next: T = opts.historical
     ? {
@@ -156,14 +166,14 @@ function enrichRowFromNavHistory<T extends FundListMetricsRow>(
         calmar_1y: riskRatioText(row.calmar_1y),
       }
 
-  if (!Number.isFinite(currentNav) || currentNav <= 0 || history.length === 0) {
+  if (!Number.isFinite(currentReturnNav) || currentReturnNav <= 0 || history.length === 0) {
     return next
   }
 
   for (const { key, days } of RETURN_WINDOWS) {
     if (!opts.historical && key !== "ret_1y" && next[key] != null) continue
     const baseNav = navAtOrBefore(history, addDays(asOfDate, days))
-    const computed = pctReturnText(currentNav, baseNav)
+    const computed = pctReturnText(currentReturnNav, baseNav)
     if (computed != null) next[key] = computed
   }
 

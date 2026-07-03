@@ -367,7 +367,6 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
     loadOpsFullStrategy(beianHaos),
   ])
 
-  await query(`DELETE FROM ops_tracking_funds_list_cache`)
   if (funds.length === 0) return 0
 
   const values: unknown[] = []
@@ -457,6 +456,7 @@ export async function refreshTrackingFundsListCache(): Promise<number> {
   }
 
   logProgress("writing cache table…")
+  await query(`DELETE FROM ops_tracking_funds_list_cache`)
   await chunkedInsert(
     `INSERT INTO ops_tracking_funds_list_cache (
        beian_hao, product_name, short_name,

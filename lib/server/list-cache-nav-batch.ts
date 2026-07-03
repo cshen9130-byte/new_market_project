@@ -7,12 +7,15 @@ import { query } from "@/lib/db"
 import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   collectFundNameAliases,
+  dedupeLegacyNavRowsByDate,
   emailNavSourceTier,
   emailRowMatchesFund,
   inferEmailUnitNav,
   isPostInvestmentVirtualNavEmail,
   preferEmailNavRow,
   isPlausibleEmailUnitNav,
+  type LegacyNavRow,
+  type LegacyNavRowWithPri,
 } from "@/lib/server/email-nav-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
@@ -25,8 +28,38 @@ import {
 export type NavPoint = {
   nav: number
   nav_date: string
+  /** 复权净值 for period-return / risk metrics; defaults to unit nav when absent. */
+  return_nav?: number
   source?: string | null
   subject?: string | null
+}
+
+function navForReturn(p: NavPoint | null | undefined, fallback?: number): number | null {
+  if (!p) return fallback ?? null
+  const v = p.return_nav ?? p.nav
+  return Number.isFinite(v) && v > 0 ? v : (fallback ?? null)
+}
+
+function legacyRowToNavPoint(row: LegacyNavRow): NavPoint | null {
+  const nav = parseNav(row.nav)
+  if (nav == null) return null
+  const adj = parseNav(row.cumulative_nav)
+  return {
+    nav_date: row.price_date.slice(0, 10),
+    nav,
+    return_nav: adj ?? nav,
+  }
+}
+
+function dedupeLegacyBatchRows(rows: LegacyNavRowWithPri[]): NavPoint[] {
+  const deduped = dedupeLegacyNavRowsByDate(rows)
+  const points: NavPoint[] = []
+  for (const row of deduped) {
+    const p = legacyRowToNavPoint(row)
+    if (p) points.push(p)
+  }
+  points.sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+  return points
 }
 
 function isPrimaryEmailNavPoint(p: NavPoint): boolean {
@@ -326,12 +359,33 @@ async function loadEmailNavByNameBatch(
   return out
 }
 
-type LegacyRow = {
+type LegacyBatchRow = {
   beian_hao: string | null
   product_name: string | null
   price_date: string
   nav: string
+  cumulative_nav: string | null
+  cum_nav_withdrawal: string | null
   pri: number
+}
+
+function pushLegacyBatchRow(
+  map: Map<string, LegacyNavRowWithPri[]>,
+  key: string,
+  row: LegacyBatchRow,
+): void {
+  if (!key) return
+  const list = map.get(key)
+  const entry: LegacyNavRowWithPri = {
+    price_date: row.price_date.slice(0, 10),
+    nav: row.nav,
+    cumulative_nav: row.cumulative_nav ?? "",
+    cum_nav_withdrawal: row.cum_nav_withdrawal ?? "",
+    price_change: "",
+    pri: row.pri,
+  }
+  if (list) list.push(entry)
+  else map.set(key, [entry])
 }
 
 async function loadLegacyNavBatch(
@@ -343,16 +397,20 @@ async function loadLegacyNavBatch(
   const byProduct = new Map<string, NavPoint[]>()
   if (beians.length === 0 && names.length === 0) return { byBeian, byProduct }
 
-  const rows = await query<LegacyRow>(
-    `SELECT beian_hao, product_name, price_date::text AS price_date, nav::text AS nav, pri
+  const rows = await query<LegacyBatchRow>(
+    `SELECT beian_hao, product_name, price_date::text AS price_date, nav::text AS nav,
+            cumulative_nav::text, cum_nav_withdrawal::text, pri
      FROM (
-       SELECT beian_hao, product_name, price_date, nav, 0 AS pri FROM private_fund_nav_group
+       SELECT beian_hao, product_name, price_date, nav, cumulative_nav, cum_nav_withdrawal, 0 AS pri
+       FROM private_fund_nav_group
        WHERE price_date >= $3::date
        UNION ALL
-       SELECT beian_hao, product_name, price_date, nav, 1 AS pri FROM private_fund_nav_group_hy
+       SELECT beian_hao, product_name, price_date, nav, cumulative_nav, cum_nav_withdrawal, 1 AS pri
+       FROM private_fund_nav_group_hy
        WHERE price_date >= $3::date
        UNION ALL
-       SELECT beian_hao, product_name, price_date, nav, 2 AS pri FROM private_fund_nav
+       SELECT beian_hao, product_name, price_date, nav, cumulative_nav, cum_nav_withdrawal, 2 AS pri
+       FROM private_fund_nav
        WHERE price_date >= $3::date
      ) nav_union
      WHERE nav IS NOT NULL AND nav > 0
@@ -360,55 +418,34 @@ async function loadLegacyNavBatch(
          (beian_hao IS NOT NULL AND NULLIF(BTRIM(beian_hao), '') = ANY($1::text[]))
          OR product_name = ANY($2::text[])
        )
-     ORDER BY price_date DESC, pri ASC`,
+     ORDER BY price_date ASC, pri ASC`,
     [beians, names, sinceDate],
   )
 
-  const beianBest = new Map<string, Map<string, { nav: number; pri: number }>>()
-  const productBest = new Map<string, Map<string, { nav: number; pri: number }>>()
+  const beianGroups = new Map<string, LegacyNavRowWithPri[]>()
+  const productGroups = new Map<string, LegacyNavRowWithPri[]>()
 
   for (const row of rows) {
-    const nav = parseNav(row.nav)
-    if (nav == null) continue
-    const date = row.price_date.slice(0, 10)
-
-    const beian = (row.beian_hao ?? "").trim()
-    if (beian) {
-      let dates = beianBest.get(beian)
-      if (!dates) {
-        dates = new Map()
-        beianBest.set(beian, dates)
-      }
-      const prev = dates.get(date)
-      if (!prev || row.pri < prev.pri) dates.set(date, { nav, pri: row.pri })
-    }
-
-    const product = (row.product_name ?? "").trim()
-    if (product) {
-      let dates = productBest.get(product)
-      if (!dates) {
-        dates = new Map()
-        productBest.set(product, dates)
-      }
-      const prev = dates.get(date)
-      if (!prev || row.pri < prev.pri) dates.set(date, { nav, pri: row.pri })
-    }
+    if (parseNav(row.nav) == null) continue
+    pushLegacyBatchRow(beianGroups, (row.beian_hao ?? "").trim(), row)
+    pushLegacyBatchRow(productGroups, (row.product_name ?? "").trim(), row)
   }
 
-  for (const [beian, dates] of beianBest) {
-    const points = [...dates.entries()]
-      .sort(([a], [b]) => b.localeCompare(a))
-      .map(([nav_date, v]) => ({ nav_date, nav: v.nav }))
-    byBeian.set(beian, points)
+  for (const [beian, groupRows] of beianGroups) {
+    byBeian.set(beian, dedupeLegacyBatchRows(groupRows))
   }
-  for (const [product, dates] of productBest) {
-    const points = [...dates.entries()]
-      .sort(([a], [b]) => b.localeCompare(a))
-      .map(([nav_date, v]) => ({ nav_date, nav: v.nav }))
-    byProduct.set(product, points)
+  for (const [product, groupRows] of productGroups) {
+    byProduct.set(product, dedupeLegacyBatchRows(groupRows))
   }
 
   return { byBeian, byProduct }
+}
+
+type Type6BatchRow = {
+  beian_hao: string | null
+  product_name: string | null
+  price_date: string
+  nav: string
 }
 
 async function loadType6NavBatch(
@@ -420,7 +457,7 @@ async function loadType6NavBatch(
   const byProduct = new Map<string, NavPoint[]>()
   if (beians.length === 0 && names.length === 0) return { byBeian, byProduct }
 
-  const rows = await query<LegacyRow>(
+  const rows = await query<Type6BatchRow>(
     `SELECT beian_hao, product_name, price_date::text AS price_date, nav::text AS nav, 0 AS pri
      FROM private_fund_nav_group_type6
      WHERE price_date >= $3::date
@@ -636,9 +673,10 @@ export function computeOneYearRiskMetrics(
   const values: number[] = []
   for (const row of history) {
     const ts = new Date(row.nav_date).getTime()
-    if (ts >= cutoffTs && ts <= refDate.getTime() && Number.isFinite(row.nav) && row.nav > 0) {
+    const v = navForReturn(row)
+    if (ts >= cutoffTs && ts <= refDate.getTime() && v != null) {
       dates.push(row.nav_date)
-      values.push(row.nav)
+      values.push(v)
     }
   }
 
@@ -772,6 +810,28 @@ export class BatchNavResolver {
     this.valuationNavByName = byName
   }
 
+  private legacyPointOnDate(identity: ProductNavIdentity, navDate: string): NavPoint | null {
+    const beian = (identity.beian_hao ?? "").trim()
+    const short = (identity.short_name ?? "").trim()
+    const layers = [
+      beian ? this.legacyByBeian.get(beian) : undefined,
+      this.legacyByProduct.get(identity.product_name),
+      short ? this.legacyByProduct.get(short) : undefined,
+    ]
+    for (const points of layers) {
+      const hit = points?.find((p) => p.nav_date === navDate)
+      if (hit?.return_nav != null && hit.return_nav !== hit.nav) return hit
+    }
+    return null
+  }
+
+  private withLegacyReturnNav(identity: ProductNavIdentity, point: NavPoint): NavPoint {
+    if (point.return_nav != null && point.return_nav !== point.nav) return point
+    const legacy = this.legacyPointOnDate(identity, point.nav_date)
+    if (legacy?.return_nav != null) return { ...point, return_nav: legacy.return_nav }
+    return point
+  }
+
   private seedPointFor(identity: ProductNavIdentity, beforeDate: string): NavPoint | null {
     const beian = (identity.beian_hao ?? "").trim()
     const override =
@@ -824,13 +884,13 @@ export class BatchNavResolver {
     if (seedPoint && seedLatest && beforeDate <= seedLatest) {
       return seedPoint
     }
-    if (emailPoint) return emailPoint
+    if (emailPoint) return this.withLegacyReturnNav(identity, emailPoint)
 
     const type6 =
       (beian ? navAtOrBefore(this.type6ByBeian.get(beian), beforeDate) : null) ??
       navAtOrBefore(this.type6ByProduct.get(identity.product_name), beforeDate) ??
       (short ? navAtOrBefore(this.type6ByProduct.get(short), beforeDate) : null)
-    if (type6) return type6
+    if (type6) return this.withLegacyReturnNav(identity, type6)
 
     const legacy =
       (beian ? navAtOrBefore(this.legacyByBeian.get(beian), beforeDate) : null) ??
@@ -875,10 +935,12 @@ export class BatchNavResolver {
     unitNav: number,
     navDate: string,
   ): Record<(typeof RETURN_OFFSETS)[number]["key"], number | null> {
+    const latestPoint = this.resolveAt(identity, navDate)
+    const latestReturnNav = navForReturn(latestPoint, unitNav)
     const out = {} as Record<(typeof RETURN_OFFSETS)[number]["key"], number | null>
     for (const { key, days } of RETURN_OFFSETS) {
       const base = this.resolveAt(identity, addDays(navDate, days))
-      out[key] = calcReturn(unitNav, base?.nav)
+      out[key] = calcReturn(latestReturnNav, navForReturn(base))
     }
     return out
   }

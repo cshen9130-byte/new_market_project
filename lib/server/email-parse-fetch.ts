@@ -44,6 +44,8 @@ export type EmailParseFetchResult = {
   navSaved: number
   valuationSaved: number
   valuationHoldingsSaved: number
+  /** 估值表 unit NAV copied into ops_email_nav_records */
+  custodyValuationNavBackfilled: number
   valuationLatestHoldingsRefreshed: number
   valuationMetricsRefreshed: number
   underlyingMarketRefreshed: number
@@ -392,7 +394,8 @@ async function fetchMailbox(
                 )
               }
 
-              if (navDatesFromAttachments.size === 0 && !isValuationZipFilename(att.filename)) {
+              // When no 净值表 in this email, copy unit NAV from each 估值表 (including zip inner files).
+              if (navDatesFromAttachments.size === 0) {
                 const navRow =
                   extracted?.unitNav != null
                     ? {
@@ -561,12 +564,23 @@ export async function fetchEmailParseRecords(options?: {
   let managedFofUnderlyingRefreshed = 0
   let opsFofUnderlyingAdded = 0
   let detailFofUnderlyingAdded = 0
+  let custodyValuationNavBackfilled = 0
   try {
     const valuationResult = await upsertEmailValuationRecords(allValuationRecords)
     valuationSaved = valuationResult.recordsSaved
     valuationHoldingsSaved = valuationResult.holdingsSaved
   } catch (e) {
     errors.push(`保存估值表数据失败: ${e instanceof Error ? e.message : String(e)}`)
+  }
+
+  try {
+    const { backfillCustodyValuationNavFromRecords } = await import(
+      "@/lib/server/email-valuation-nav-backfill"
+    )
+    const backfill = await backfillCustodyValuationNavFromRecords()
+    custodyValuationNavBackfilled = backfill.navBackfilled
+  } catch (e) {
+    errors.push(`估值表净值回填失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
   try {
@@ -635,6 +649,7 @@ export async function fetchEmailParseRecords(options?: {
     navSaved,
     valuationSaved,
     valuationHoldingsSaved,
+    custodyValuationNavBackfilled,
     valuationLatestHoldingsRefreshed,
     valuationMetricsRefreshed,
     underlyingMarketRefreshed,

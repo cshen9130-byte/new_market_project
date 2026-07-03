@@ -120,12 +120,27 @@ def get_conn():
 
 # ── metric computation ────────────────────────────────────────────────────────
 
-def _base_nav(gdf: "pd.DataFrame", cutoff: date) -> float | None:
+def _base_nav(gdf: "pd.DataFrame", cutoff: date, col: str = "return_nav") -> float | None:
     """Return the last NAV on or before *cutoff*, or None."""
     sub = gdf.loc[gdf["price_date"].dt.date <= cutoff]
     if sub.empty:
         return None
-    return float(sub.iloc[-1]["nav"])
+    return float(sub.iloc[-1][col])
+
+
+def _return_nav_series(gdf: "pd.DataFrame") -> "pd.Series":
+    """Use 复权净值 for returns when the fund has a dividend offset (adj ≠ unit)."""
+    unit = gdf["nav"]
+    if "cumulative_nav" not in gdf.columns:
+        return unit
+    adj = gdf["cumulative_nav"]
+    has_adj = adj.notna() & (adj > 0)
+    if not has_adj.any():
+        return unit
+    offset = (adj - unit).abs() / unit.replace(0, np.nan)
+    if float(offset.max(skipna=True) or 0) <= 0.001:
+        return unit
+    return adj.where(has_adj, unit)
 
 
 def _pct_return(latest: float, base: float | None) -> float | None:
@@ -138,13 +153,15 @@ def compute_fund_metrics(
     gdf: "pd.DataFrame",
 ) -> tuple:
     """Return (ret_1w, ret_1m, ret_3m, ret_6m, ret_1y, sharpe_1y, calmar_1y, latest_nav, latest_nav_date)."""
-    gdf = gdf.sort_values("price_date")
+    gdf = gdf.sort_values("price_date").copy()
+    gdf["return_nav"] = _return_nav_series(gdf)
 
     # Use the fund's own latest NAV date as reference so that
     # returns are measured up to the most-recent available data point,
     # not today's calendar date (which may be days after the last NAV).
     latest_row  = gdf.iloc[-1]
     latest_nav  = float(latest_row["nav"])
+    latest_return_nav = float(latest_row["return_nav"])
     ref_date    = latest_row["price_date"].date()
 
     cutoff_1w   = ref_date - timedelta(days=7)
@@ -153,20 +170,20 @@ def compute_fund_metrics(
     cutoff_6m   = ref_date - timedelta(days=182)
     cutoff_1y   = ref_date - timedelta(days=365)
 
-    ret_1w  = _pct_return(latest_nav, _base_nav(gdf, cutoff_1w))
-    ret_1m  = _pct_return(latest_nav, _base_nav(gdf, cutoff_1m))
-    ret_3m  = _pct_return(latest_nav, _base_nav(gdf, cutoff_3m))
-    ret_6m  = _pct_return(latest_nav, _base_nav(gdf, cutoff_6m))
+    ret_1w  = _pct_return(latest_return_nav, _base_nav(gdf, cutoff_1w))
+    ret_1m  = _pct_return(latest_return_nav, _base_nav(gdf, cutoff_1m))
+    ret_3m  = _pct_return(latest_return_nav, _base_nav(gdf, cutoff_3m))
+    ret_6m  = _pct_return(latest_return_nav, _base_nav(gdf, cutoff_6m))
 
     base_1y = _base_nav(gdf, cutoff_1y)
-    ret_1y  = _pct_return(latest_nav, base_1y)
+    ret_1y  = _pct_return(latest_return_nav, base_1y)
 
     sharpe_1y: float | None = None
     calmar_1y: float | None = None
 
     sub_1y = gdf.loc[gdf["price_date"].dt.date >= cutoff_1y]
     if len(sub_1y) >= MIN_POINTS and ret_1y is not None:
-        nav_arr    = sub_1y["nav"].to_numpy(dtype=float)
+        nav_arr    = sub_1y["return_nav"].to_numpy(dtype=float)
         daily_rets = np.diff(nav_arr) / nav_arr[:-1]
 
         if len(daily_rets) >= MIN_POINTS - 1:
@@ -214,7 +231,7 @@ def run(conn, *, dry_run: bool = False) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT beian_hao, price_date, nav
+            SELECT beian_hao, price_date, nav, cumulative_nav
             FROM private_fund_nav
             WHERE price_date >= %s
               AND nav IS NOT NULL
@@ -229,9 +246,10 @@ def run(conn, *, dry_run: bool = False) -> int:
         log.warning("No NAV data found — aborting.")
         return 0
 
-    df = pd.DataFrame(rows, columns=["beian_hao", "price_date", "nav"])
+    df = pd.DataFrame(rows, columns=["beian_hao", "price_date", "nav", "cumulative_nav"])
     df["price_date"] = pd.to_datetime(df["price_date"])
     df["nav"]        = df["nav"].astype(float)
+    df["cumulative_nav"] = pd.to_numeric(df["cumulative_nav"], errors="coerce")
 
     n_funds = df["beian_hao"].nunique()
     log.info("Loaded %d NAV rows for %d funds.", len(df), n_funds)
