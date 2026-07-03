@@ -1,22 +1,43 @@
 #!/bin/bash
-# Run on production server as root (Aliyun 远程连接):
+# Run on production server as root:
 #   bash /home/george/deploy_nav_fix.sh
-set -euo pipefail
+#
+# Uses credentials already in /root/new_market_project/.env from prior deploys.
+# Same build path as setup-choice-emquant.sh (--debug-build, auto memory tuning).
+set -eu
 APP=/root/new_market_project
 cd "$APP"
 
 echo "==> git pull"
 git pull origin main
 
-echo "==> install + build"
-pnpm install --frozen-lockfile
-pnpm run build:lowmem
+if [[ ! -f .env ]]; then
+  echo "ERROR: $APP/.env not found. Run setup-choice-emquant.sh once with full credentials first."
+  exit 1
+fi
 
-echo "==> pm2 restart"
-pm2 restart new_market_project --update-env
-pm2 save
+set -a
+# shellcheck disable=SC1091
+source .env
+set +a
 
-echo "==> SLA063 cache"
+: "${EMQ_USERNAME:?EMQ_USERNAME missing in .env}"
+: "${EMQ_PASSWORD:?EMQ_PASSWORD missing in .env}"
+
+bash scripts/deploy/setup-choice-emquant.sh \
+  --project-root "$APP" \
+  --emq-username "$EMQ_USERNAME" \
+  --emq-password "$EMQ_PASSWORD" \
+  --tushare-token "${TUSHARE_TOKEN:-}" \
+  --dashscope-api-key "${DASHSCOPE_API_KEY:-}" \
+  --deepseek-api-key "${DEEPSEEK_API_KEY:-}" \
+  --database-url "${DATABASE_URL:-}" \
+  --mom-report-url "${NEXT_PUBLIC_MOM_REPORT_URL:-/mom_report/report.html}" \
+  --pm2-app-name new_market_project \
+  --debug-build \
+  --build-debug-interval-sec 30
+
+echo "==> SLA063 cache patch"
 export DB_STATEMENT_TIMEOUT=120000
 npx tsx scripts/ma/_fix_sla063_cache.ts
 
