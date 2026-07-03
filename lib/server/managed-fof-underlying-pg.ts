@@ -705,13 +705,24 @@ export async function loadManagedUnderlyingValuationNavLookup(): Promise<{
  * 1. FOF holding rows across ALL managed-FOF 估值表 dates (not just latest snapshot)
  * 2. Direct custody 估值表 unit_nav from ops_email_valuation_records
  */
-export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promise<{
+export async function loadManagedUnderlyingNavHistory(
+  sinceDate: string,
+  options?: {
+    /** Skip scanning 97k holdings to patch symbol — safe when symbols already populated. */
+    skipSymbolBackfill?: boolean
+    /** Reuse summary rows from caller to avoid repeating beian lateral joins. */
+    targets?: UnderlyingNavTarget[]
+  },
+): Promise<{
   byCode: Map<string, NavPoint[]>
   byName: Map<string, NavPoint[]>
 }> {
   await ensureManagedFofUnderlyingTable()
   await ensureEmailValuationHoldingsTables()
-  await backfillFundHoldingSymbols()
+  if (!options?.skipSymbolBackfill) {
+    console.error("[managed-fof-underlying] backfilling fund holding symbols…")
+    await backfillFundHoldingSymbols()
+  }
 
   const byCode = new Map<string, NavPoint[]>()
   const byName = new Map<string, NavPoint[]>()
@@ -719,11 +730,13 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
   const productExpr = "f.product_name"
   const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
 
-  const targets = await query<UnderlyingNavTarget>(
-    `SELECT f.product_name, ${beianExpr} AS beian_hao
-     ${buildFofUnderlyingSummaryFrom(productExpr)}
-     WHERE f.product_name <> '合计'`,
-  )
+  const targets = options?.targets?.length
+    ? options.targets
+    : await query<UnderlyingNavTarget>(
+      `SELECT f.product_name, ${beianExpr} AS beian_hao
+       ${buildFofUnderlyingSummaryFrom(productExpr)}
+       WHERE f.product_name <> '合计'`,
+    )
   const targetIndexByCode = buildUnderlyingTargetCodeIndex(targets)
   const subjectCodeHints = await loadUnderlyingSubjectCodeHints(targets)
   const knownSubjectCodes = [...new Set(

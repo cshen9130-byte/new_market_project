@@ -81,8 +81,9 @@ export async function ensureFofOverviewListCacheTable(): Promise<void> {
   tableEnsured = true
 }
 
-function logProgress(msg: string): void {
-  console.error(`[fof-overview-cache] ${new Date().toISOString()} ${msg}`)
+function logProgress(msg: string, startedAt?: number): void {
+  const elapsed = startedAt != null ? ` (+${((Date.now() - startedAt) / 1000).toFixed(1)}s)` : ""
+  console.error(`[fof-overview-cache] ${new Date().toISOString()} ${msg}${elapsed}`)
 }
 
 type BaseProductRow = {
@@ -97,11 +98,12 @@ type BaseProductRow = {
 
 /** Rebuild precomputed list cache for all FOF概览 rows (as of CURRENT_DATE). */
 export async function refreshFofOverviewListCache(): Promise<number> {
+  const t0 = Date.now()
   await ensureEmailNavTable()
   await ensureFofOverviewListCacheTable()
 
   const asOfDate = new Date().toISOString().slice(0, 10)
-  logProgress("resolving product identities (may take 1–3 min)…")
+  logProgress("resolving product identities (SQL with beian joins — often 2–5 min)…", t0)
 
   const products = await query<BaseProductRow>(
     `SELECT
@@ -116,38 +118,46 @@ export async function refreshFofOverviewListCache(): Promise<number> {
      WHERE f.product_name <> '合计'`,
   )
 
-  logProgress(`found ${products.length} products — preloading NAV history…`)
+  logProgress(`found ${products.length} products`, t0)
 
+  logProgress("loading managed 市值 map…", t0)
   const managedMarketById = await loadManagedUnderlyingMarketValueMap()
+  logProgress(`managed 市值 map loaded (${managedMarketById.size} ids)`, t0)
+
+  logProgress("loading latest 估值表 NAV lookup…", t0)
   const valuationNavLookup = await loadManagedUnderlyingValuationNavLookup()
+  logProgress("latest 估值表 NAV lookup loaded", t0)
 
   const identities = products.map((p) => ({
     beian_hao: p.beian_hao,
     product_name: p.product_name,
     short_name: p.short_name,
   }))
+  logProgress("creating BatchNavResolver (email/type6/legacy NAV)…", t0)
   const navResolver = await BatchNavResolver.create(identities, asOfDate)
+  logProgress("BatchNavResolver ready", t0)
 
-  // Inject historical FOF holding NAV from ops_managed_fof_underlying so that
-  // funds like ATL22A (only present as a FOF holding, never as a direct email
-  // recipient) can have their period-return columns computed once 2+ monthly
-  // 估值表 attachments have been parsed.
   const valuationNavSince = addDays(asOfDate, 400)
-  logProgress(`loading 估值表 NAV history since ${valuationNavSince}…`)
-  const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince)
+  logProgress(`loading 估值表 NAV history since ${valuationNavSince}…`, t0)
+  const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince, {
+    skipSymbolBackfill: true,
+    targets: products.map((p) => ({ product_name: p.product_name, beian_hao: p.beian_hao })),
+  })
   logProgress(
     `估值表 NAV history loaded (codes=${valuationNavHistory.byCode.size}, names=${valuationNavHistory.byName.size})`,
+    t0,
   )
   navResolver.setValuationNavHistory(valuationNavHistory.byCode, valuationNavHistory.byName)
 
   const beianHaos = products.map((p) => p.beian_hao).filter(Boolean) as string[]
-  logProgress("loading strategy & risk metadata…")
+  logProgress("loading strategy & risk metadata…", t0)
   const [riskFromInfo, opsStrategyMap, bflStrategyMap] = await Promise.all([
     loadPrivateFundRiskMetrics(beianHaos),
     loadOpsStrategyAndTags(beianHaos),
     loadBflStrategies(beianHaos),
   ])
 
+  logProgress("strategy & risk metadata loaded", t0)
   await query(`DELETE FROM ops_fof_overview_list_cache`)
   if (products.length === 0) return 0
 
@@ -159,7 +169,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   for (let i = 0; i < products.length; i++) {
     const row = products[i]
     if (i === 0 || (i + 1) % 50 === 0 || i + 1 === products.length) {
-      logProgress(`computing metrics [${i + 1}/${products.length}]`)
+      logProgress(`computing metrics [${i + 1}/${products.length}]`, t0)
     }
 
     const identity = identities[i]
@@ -253,7 +263,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     pi += 19
   }
 
-  logProgress("writing cache table…")
+  logProgress("writing cache table…", t0)
   await chunkedInsert(
     `INSERT INTO ops_fof_overview_list_cache (
        fof_underlying_id, product_name, beian_hao, short_name,
@@ -270,7 +280,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     19,
   )
 
-  logProgress(`done — ${products.length} rows`)
+  logProgress(`done — ${products.length} rows`, t0)
   return products.length
 }
 
