@@ -61,6 +61,7 @@ __pycache__/
 # Large data files
 nav_csv/
 20260515以来更新净值的私募证券基金（10800只）.xlsx
+fetch_amac_data/amac_private_funds.csv
 
 # Server-only vendor assets
 EMQuantAPI_Python/
