@@ -18,7 +18,13 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
-import { sqlFundNameMatch, sqlEmailNavShareClassGuard, sqlShareClassCodeGuard } from "@/lib/server/fund-name-match"
+import {
+  fundDisplayNamesMatch,
+  sqlFundNameMatch,
+  sqlShareClassCodeGuard,
+  sqlShareClassProductNameGuard,
+  shareClassCodeMatchesProduct,
+} from "@/lib/server/fund-name-match"
 import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode, isDirectEquityOrEtfValuationHolding } from "@/lib/server/fund-holding-code"
 import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 
@@ -327,20 +333,36 @@ function normalizeUnderlyingName(name: string): string {
     .trim()
 }
 
-/** Match managed holding rows to a summary row; share class (A/B/C) must agree when present. */
+/** Match managed holding rows to a summary row; A/B/C share class must agree. */
 export function managedUnderlyingMatchSql(
   beianExpr: string,
   productNameExpr: string,
   alias = "m",
 ): string {
-  const beianMatch = `NULLIF(BTRIM(UPPER(${beianExpr})), '') IS NOT NULL AND TRIM(UPPER(${alias}.underlying_product_code)) = TRIM(UPPER(${beianExpr})) AND ${sqlShareClassCodeGuard(`${alias}.underlying_product_code`, productNameExpr)}`
-  const nameMatch = sqlFundNameMatch(`${alias}.underlying_name`, productNameExpr)
-  const shareGuard = sqlEmailNavShareClassGuard(
-    `${alias}.underlying_name`,
-    productNameExpr,
-    `${alias}.underlying_product_code`,
-  )
-  return `(${beianMatch} OR (${nameMatch} AND ${shareGuard}))`
+  const codeCol = `${alias}.underlying_product_code`
+  const nameCol = `${alias}.underlying_name`
+  const codePresent = `NULLIF(BTRIM(${codeCol}), '') IS NOT NULL`
+  const beianMatch = `NULLIF(BTRIM(UPPER(${beianExpr})), '') IS NOT NULL AND ${codePresent} AND TRIM(UPPER(${codeCol})) = TRIM(UPPER(${beianExpr})) AND ${sqlShareClassCodeGuard(codeCol, productNameExpr)}`
+  const nameMatch = sqlFundNameMatch(nameCol, productNameExpr)
+  const shareGuard = sqlShareClassProductNameGuard(nameCol, productNameExpr)
+  const codeShareGuard = `(NOT ${codePresent} OR ${sqlShareClassCodeGuard(codeCol, productNameExpr)})`
+  return `(${beianMatch} OR (${nameMatch} AND ${shareGuard} AND ${codeShareGuard}))`
+}
+
+/** Match ops_email_valuation_holdings rows (subject_name / symbol columns). */
+export function valuationHoldingMatchSql(
+  beianExpr: string,
+  productNameExpr: string,
+  alias = "h",
+): string {
+  const codeCol = `${alias}.symbol`
+  const nameCol = `${alias}.subject_name`
+  const codePresent = `NULLIF(BTRIM(${codeCol}), '') IS NOT NULL`
+  const beianMatch = `NULLIF(BTRIM(UPPER(${beianExpr})), '') IS NOT NULL AND ${codePresent} AND TRIM(UPPER(${codeCol})) = TRIM(UPPER(${beianExpr})) AND ${sqlShareClassCodeGuard(codeCol, productNameExpr)}`
+  const nameMatch = sqlFundNameMatch(nameCol, productNameExpr)
+  const shareGuard = sqlShareClassProductNameGuard(nameCol, productNameExpr)
+  const codeShareGuard = `(NOT ${codePresent} OR ${sqlShareClassCodeGuard(codeCol, productNameExpr)})`
+  return `(${beianMatch} OR (${nameMatch} AND ${shareGuard} AND ${codeShareGuard}))`
 }
 
 /** Parameterized variant for prepared queries ($1 = beian, $2 = product name). */
@@ -349,14 +371,14 @@ export function managedUnderlyingMatchParamsSql(
   nameParam: string,
   alias = "m",
 ): string {
-  const beianMatch = `(${beianParam} <> '' AND NULLIF(BTRIM(UPPER(${alias}.underlying_product_code)), '') = TRIM(UPPER(${beianParam})) AND ${sqlShareClassCodeGuard(`${alias}.underlying_product_code`, nameParam)})`
-  const nameMatch = sqlFundNameMatch(`${alias}.underlying_name`, nameParam)
-  const shareGuard = sqlEmailNavShareClassGuard(
-    `${alias}.underlying_name`,
-    nameParam,
-    `${alias}.underlying_product_code`,
-  )
-  return `(${beianMatch} OR (${nameMatch} AND ${shareGuard}))`
+  const codeCol = `${alias}.underlying_product_code`
+  const nameCol = `${alias}.underlying_name`
+  const codePresent = `NULLIF(BTRIM(${codeCol}), '') IS NOT NULL`
+  const beianMatch = `(${beianParam} <> '' AND ${codePresent} AND TRIM(UPPER(${codeCol})) = TRIM(UPPER(${beianParam})) AND ${sqlShareClassCodeGuard(codeCol, nameParam)})`
+  const nameMatch = sqlFundNameMatch(nameCol, nameParam)
+  const shareGuard = sqlShareClassProductNameGuard(nameCol, nameParam)
+  const codeShareGuard = `(NOT ${codePresent} OR ${sqlShareClassCodeGuard(codeCol, nameParam)})`
+  return `(${beianMatch} OR (${nameMatch} AND ${shareGuard} AND ${codeShareGuard}))`
 }
 
 /** Per-summary-row managed 市值 from email 估值表 holdings (same match as 持仓 modal). */
@@ -528,7 +550,13 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
   const byCode = new Map<string, NavPoint[]>()
   const byName = new Map<string, NavPoint[]>()
 
+  const productExpr = "f.product_name"
+  const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
+  const holdingMatch = valuationHoldingMatchSql(beianExpr, productExpr, "h")
+
   const holdingRows = await query<{
+    product_name: string
+    beian_hao: string | null
     underlying_name: string
     subject_code: string
     symbol: string | null
@@ -537,13 +565,18 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
     quantity: string | null
     market_value: string | null
   }>(
-    `SELECT TRIM(h.subject_name) AS underlying_name,
-            h.subject_code,
-            h.symbol,
-            h.valuation_date::text AS valuation_date,
-            h.price, h.quantity, h.market_value
-     FROM ops_email_valuation_holdings h
-     WHERE h.valuation_date >= $1::date
+    `SELECT DISTINCT ON (f.id, h.valuation_date)
+       f.product_name,
+       ${beianExpr} AS beian_hao,
+       TRIM(h.subject_name) AS underlying_name,
+       h.subject_code,
+       h.symbol,
+       h.valuation_date::text AS valuation_date,
+       h.price, h.quantity, h.market_value
+     ${buildFofUnderlyingSummaryFrom(productExpr)}
+     INNER JOIN ops_email_valuation_holdings h ON (${holdingMatch})
+     WHERE f.product_name <> '合计'
+       AND h.valuation_date >= $1::date
        AND h.include_in_detail = TRUE
        AND COALESCE(h.market_value, h.cost, 0) > 0
        AND h.row_kind NOT IN (
@@ -559,8 +592,12 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
          OR h.subject_name ~ '私募基金'
          OR h.row_kind = 'other'
        )
-     ORDER BY h.valuation_date DESC, h.market_value DESC NULLS LAST`,
+     ORDER BY f.id, h.valuation_date, h.market_value DESC NULLS LAST`,
     [sinceDate],
+  )
+
+  console.error(
+    `[managed-fof-underlying] matched ${holdingRows.length} FOF underlying holding rows since ${sinceDate}`,
   )
 
   const seenHoldings = new Set<string>()
@@ -599,16 +636,19 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
     if (nav == null || nav <= 0) continue
 
     const navDate = row.valuation_date.slice(0, 10)
-    const dedupe = `${code ?? name}\0${navDate}`
+    const dedupe = `${row.product_name}\0${navDate}`
     if (seenHoldings.has(dedupe)) continue
     seenHoldings.add(dedupe)
 
-    indexPoint(name, code, { nav, nav_date: navDate })
+    indexPoint(row.product_name, row.beian_hao ?? code, { nav, nav_date: navDate })
   }
 
-  await appendHistoryFromValuationJsonb(sinceDate, seenHoldings, (name, code, point) => {
+  const jsonbPoints = await appendHistoryFromValuationJsonb(sinceDate, seenHoldings, (name, code, point) => {
     indexPoint(name, code, point)
   })
+  if (jsonbPoints > 0) {
+    console.error(`[managed-fof-underlying] JSONB 估值表 NAV history: ${jsonbPoints} points`)
+  }
 
   const { loadCustodyValuationNavHistory } = await import("@/lib/server/email-valuation-nav-backfill")
   const custody = await loadCustodyValuationNavHistory(sinceDate)
@@ -674,6 +714,13 @@ async function appendHistoryFromValuationJsonb(
   const { ensureEmailValuationTable } = await import("@/lib/server/email-valuation-pg")
   await ensureEmailValuationTable()
 
+  const productExpr = "f.product_name"
+  const targets = await query<{ product_name: string; beian_hao: string | null }>(
+    `SELECT f.product_name, ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao
+     ${buildFofUnderlyingSummaryFrom(productExpr)}
+     WHERE f.product_name <> '合计'`,
+  )
+
   const records = await query<{ valuation_date: string; holdings: ValuationRow[] }>(
     `SELECT valuation_date::text, holdings
      FROM ops_email_valuation_records
@@ -684,19 +731,23 @@ async function appendHistoryFromValuationJsonb(
   )
 
   let saved = 0
-  for (const record of records) {
+  for (let ri = 0; ri < records.length; ri++) {
+    const record = records[ri]
+    if (ri > 0 && ri % 200 === 0) {
+      console.error(`[managed-fof-underlying] JSONB scan ${ri}/${records.length} valuation records…`)
+    }
     const navDate = record.valuation_date.slice(0, 10)
     const rows = Array.isArray(record.holdings) ? record.holdings : []
     for (const row of rows) {
       if (!isPrivateFundUnderlyingValuationRow(row)) continue
 
-      const name = String(row.name ?? "").trim()
+      const subjectName = String(row.name ?? "").trim()
       const subjectCode = String(row.code ?? "")
       const symbol = row.symbol != null ? String(row.symbol) : null
       const code = formatFundHoldingCode(
-        resolveFundHoldingCode(subjectCode, name, symbol) ?? symbol,
+        resolveFundHoldingCode(subjectCode, subjectName, symbol) ?? symbol,
       )
-      if (!code && !/私募/u.test(name)) continue
+      if (!code && !/私募/u.test(subjectName)) continue
 
       const nav = resolveNavFromValuationTable(
         row.price ?? row.current_price,
@@ -705,11 +756,24 @@ async function appendHistoryFromValuationJsonb(
       )
       if (nav == null || nav <= 0) continue
 
-      const dedupe = `${code ?? name}\0${navDate}`
-      if (seenHoldings.has(dedupe)) continue
-      seenHoldings.add(dedupe)
-      indexPoint(name, code, { nav, nav_date: navDate })
-      saved++
+      for (const target of targets) {
+        const beian = target.beian_hao?.trim().toUpperCase() ?? null
+        const codeMatch = Boolean(
+          beian
+          && code?.toUpperCase() === beian
+          && shareClassCodeMatchesProduct(code, target.product_name),
+        )
+        const nameMatch = fundDisplayNamesMatch(subjectName, target.product_name)
+        if (!codeMatch && !nameMatch) continue
+        if (code && !shareClassCodeMatchesProduct(code, target.product_name)) continue
+
+        const dedupe = `${target.product_name}\0${navDate}`
+        if (seenHoldings.has(dedupe)) continue
+        seenHoldings.add(dedupe)
+        indexPoint(target.product_name, beian ?? code, { nav, nav_date: navDate })
+        saved++
+        break
+      }
     }
   }
   return saved
@@ -763,11 +827,7 @@ export function managedUnderlyingBeianExpr(cacheBeianCol: string, productNameExp
 /** Fallback 备案号 from managed holdings when cache has not been built yet. */
 export function managedUnderlyingBeianFallbackExpr(productNameExpr: string): string {
   const nameMatch = sqlFundNameMatch("mf.underlying_name", productNameExpr)
-  const shareGuard = sqlEmailNavShareClassGuard(
-    "mf.underlying_name",
-    productNameExpr,
-    "mf.underlying_product_code",
-  )
+  const shareGuard = sqlShareClassProductNameGuard("mf.underlying_name", productNameExpr)
   const codeGuard = sqlShareClassCodeGuard("mf.underlying_product_code", productNameExpr)
   return `(
     SELECT NULLIF(TRIM(mf.underlying_product_code), '')

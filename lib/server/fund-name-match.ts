@@ -119,6 +119,63 @@ function sqlEmailNavUnclassifiedShareClassGuard(fundNameCol: string, productCode
   )`
 }
 
+/** JS: share class in display names must agree (A/B/C class is a distinct product). */
+export function shareClassProductNamesMatch(columnName: string, targetName: string): boolean {
+  const col = String(columnName ?? "").trim()
+  const tgt = String(targetName ?? "").trim()
+  const hasClass = (s: string, letter: string) => s.includes(`${letter}类`)
+  if (hasClass(tgt, "A")) return hasClass(col, "A")
+  if (hasClass(tgt, "B")) return hasClass(col, "B")
+  if (hasClass(tgt, "C")) return hasClass(col, "C")
+  return !hasClass(col, "A") && !hasClass(col, "B") && !hasClass(col, "C")
+}
+
+/** JS equivalent of sqlShareClassCodeGuard. Empty code is treated as neutral. */
+export function shareClassCodeMatchesProduct(code: string, productName: string): boolean {
+  const c = String(code ?? "").trim().toUpperCase()
+  const name = String(productName ?? "").trim()
+  if (!c) return true
+  if (name.includes("A类")) return /A$/.test(c)
+  if (name.includes("B类")) return /B$/.test(c)
+  if (name.includes("C类")) return /C$/.test(c)
+  return !/[ABC]$/.test(c)
+}
+
+function jsFundNameBase(name: string): string {
+  return name
+    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+    .replace(/[ABC]类$/u, "")
+    .trim()
+}
+
+function jsFundSerialSuffix(name: string): string {
+  const m = jsFundNameBase(name).match(/[一二三四五六七八九十百千0-9]+号$/u)
+  return m?.[0] ?? ""
+}
+
+function jsFundSerialMatch(a: string, b: string): boolean {
+  return jsFundSerialSuffix(a) === jsFundSerialSuffix(b)
+}
+
+/** JS equivalent of sqlFundNameMatch with strict A/B/C share-class guard. */
+export function fundDisplayNamesMatch(columnName: string, targetName: string): boolean {
+  const a = String(columnName ?? "").trim()
+  const b = String(targetName ?? "").trim()
+  if (!a || !b) return false
+  if (!shareClassProductNamesMatch(a, b)) return false
+
+  const na = jsFundNameBase(a)
+  const nb = jsFundNameBase(b)
+  const serialOk = jsFundSerialMatch(a, b)
+
+  return (
+    a === b
+    || (serialOk && (a.startsWith(b) || b.startsWith(a)))
+    || (serialOk && na === nb)
+    || (serialOk && (a.startsWith(nb) || b.startsWith(na)))
+  )
+}
+
 /** Share-class guard for email NAV rows when resolving beian from fund_name. */
 export function sqlEmailNavShareClassGuard(fundNameCol: string, productNameExpr: string, productCodeCol: string): string {
   const unclassified = sqlEmailNavUnclassifiedShareClassGuard(fundNameCol, productCodeCol)

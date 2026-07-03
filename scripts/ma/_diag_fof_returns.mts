@@ -1,4 +1,9 @@
 import { loadProjectEnvFiles, configureEtlDbTimeout } from "../../lib/server/load-project-env.ts"
+import {
+  buildFofUnderlyingSummaryFrom,
+  FOF_UNDERLYING_BEIAN_EXPR,
+} from "../../lib/server/fof-underlying-query.ts"
+import { valuationHoldingMatchSql } from "../../lib/server/managed-fof-underlying-pg.ts"
 
 loadProjectEnvFiles()
 configureEtlDbTimeout()
@@ -6,7 +11,7 @@ configureEtlDbTimeout()
 const samples = [
   { name: "金和和善对冲1号", beian: "STA933" },
   { name: "乾上泉对冲一号B类", beian: "ALF51B" },
-  { name: "奇盾抱朴专享1号", beian: "SSGD35" },
+  { name: "奇盾抱朴专享1号", beian: "SBGD35" },
   { name: "木莲安澜1号A类", beian: "ATL22A" },
 ]
 
@@ -43,22 +48,21 @@ async function main() {
   console.log("\n=== ops_managed_fof_underlying (latest snapshot) ===")
   for (const row of managedRows) console.log(" ", row)
 
-  console.log("\n=== valuation holdings sample (normalized table) ===")
+  console.log("\n=== valuation holdings matched to fof_underlying_summary ===")
+  const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
+  const holdingMatch = valuationHoldingMatchSql(beianExpr, "f.product_name", "h")
   for (const s of samples) {
     const rows = await query(
-      `SELECT h.valuation_date::text, h.symbol, h.subject_code, h.subject_name, h.price, h.market_value
-       FROM ops_email_valuation_holdings h
-       WHERE h.valuation_date >= $1::date
-         AND (
-           UPPER(h.symbol) = $2
-           OR h.subject_name ILIKE $3
-           OR h.subject_name ILIKE $4
-         )
+      `SELECT h.valuation_date::text, h.symbol, h.subject_name, h.price, h.market_value
+       ${buildFofUnderlyingSummaryFrom("f.product_name")}
+       INNER JOIN ops_email_valuation_holdings h ON (${holdingMatch})
+       WHERE f.product_name = $1
+         AND h.valuation_date >= $2::date
        ORDER BY h.valuation_date DESC
-       LIMIT 5`,
-      [since, s.beian, `%${s.name}%`, `%${s.name.slice(0, 4)}%`],
+       LIMIT 8`,
+      [s.name, since],
     )
-    console.log(`\n${s.name} (${s.beian}): ${rows.length} normalized holding rows`)
+    console.log(`\n${s.name}: ${rows.length} matched holding rows`)
     for (const r of rows) console.log(" ", r)
   }
 
