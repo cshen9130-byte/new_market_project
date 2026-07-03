@@ -17,6 +17,7 @@ import {
 import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Send, Siren, X } from "lucide-react"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
+import { invalidateTrackingListCache } from "@/lib/client/tracking-list-cache"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
   DropdownMenu,
@@ -892,12 +893,7 @@ export default function PrivateFundDetailPage() {
   }
 
   // ─── 编辑产品池 modal ──────────────────────────────────────────────────────
-  const ALL_POOLS = [
-    { key: "bfl_ops",  label: "bfl 运维池" },
-    { key: "bfl",      label: "bfl跟踪池" },
-    { key: "jy_ops",   label: "JY运维池" },
-    { key: "jy",       label: "JY跟踪池" },
-  ]
+  const [availTeamPools, setAvailTeamPools] = useState<{ key: string; label: string }[]>([])
   const [showPoolModal, setShowPoolModal] = useState(false)
   const [editPools, setEditPools] = useState<{ pool_key: string; pool_label: string }[]>([])
   const [savingPools, setSavingPools] = useState(false)
@@ -905,6 +901,17 @@ export default function PrivateFundDetailPage() {
   function openPoolModal() {
     setEditPools([...fundPools])
     setShowPoolModal(true)
+    fetch("/ma/api/tracking-funds/pools?scope=team", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!Array.isArray(d?.data)) return
+        setAvailTeamPools(
+          d.data
+            .filter((p: { pool_key?: string }) => p?.pool_key && !String(p.pool_key).startsWith("__"))
+            .map((p: { pool_key: string; label: string }) => ({ key: p.pool_key, label: p.label })),
+        )
+      })
+      .catch(() => {})
   }
 
   function toggleEditPool(key: string, label: string) {
@@ -934,6 +941,10 @@ export default function PrivateFundDetailPage() {
             method: "DELETE",
           })
         ),
+      ])
+      invalidateTrackingListCache([
+        ...toAdd.map((p) => p.pool_key),
+        ...toRemove.map((p) => p.pool_key),
       ])
       setFundPools(editPools)
       setShowPoolModal(false)
@@ -2743,7 +2754,7 @@ export default function PrivateFundDetailPage() {
             <div className="flex items-start gap-3">
               <label className="text-sm text-zinc-600 w-20 flex-shrink-0 text-right pt-1">团队产品池：</label>
               <div className="flex-1 flex flex-wrap gap-1.5">
-                {ALL_POOLS.map(p => {
+                {availTeamPools.map(p => {
                   const active = editPools.some(q => q.pool_key === p.key)
                   return (
                     <button

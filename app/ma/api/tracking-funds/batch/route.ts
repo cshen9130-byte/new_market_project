@@ -1,25 +1,20 @@
 import { NextResponse } from "next/server"
-import { createHash } from "crypto"
 import { query } from "@/lib/db"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
-import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
+import {
+  addFundToTrackingPool,
+  invalidateTrackingPoolListCaches,
+  isCustomTrackingPool,
+  isWritableTrackingPool,
+  REGISTER_POOL_TABLE,
+  removeFundFromTrackingPool,
+} from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
-const POOL_TABLE: Record<string, string> = {
-  tracking: "tracking_pool",
-  jy:       "tracking_pool",
-  selected: "selected_pool",
-  core:     "core_pool",
-  hy:       "hy_tracking_pool",
-  fof:      "fof_mom_tracking",
-}
-
-function isCustomPool(pool: string) {
-  return pool.startsWith("custom_") || pool.startsWith("mine_custom_") || pool === "mine_default" || pool === "jy_ops"
-}
+const POOL_TABLE = REGISTER_POOL_TABLE
 
 async function ensureFundTagsTable() {
   await query(`
@@ -35,10 +30,16 @@ async function ensureFundTagsTable() {
 }
 
 async function getProductName(pool: string, bh: string): Promise<string> {
-  if (isCustomPool(pool)) {
+  if (isCustomTrackingPool(pool)) {
     const rows = await query<{ product_name: string }>(
       `SELECT product_name FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2 LIMIT 1`,
       [pool, bh]
+    )
+    if (rows[0]?.product_name) return rows[0].product_name
+  } else if (pool === "bfl") {
+    const rows = await query<{ product_name: string }>(
+      `SELECT product_name FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
+      [bh]
     )
     if (rows[0]?.product_name) return rows[0].product_name
   } else {
@@ -57,43 +58,6 @@ async function getProductName(pool: string, bh: string): Promise<string> {
     [bh]
   )
   return fallback[0]?.fund_name ?? bh
-}
-
-async function addToPool(targetPool: string, bh: string, productName: string) {
-  if (isCustomPool(targetPool)) {
-    const rowHash = createHash("sha256").update(`${targetPool}::${bh}::${productName}`).digest("hex")
-    await query(
-      `INSERT INTO user_custom_pool
-         (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
-       SELECT $1,
-              COALESCE((SELECT MAX(source_row_number) FROM user_custom_pool WHERE pool_key = $1), 0) + 1,
-              $3, $2, $4, 'batch_op', NOW(), NOW()
-       WHERE NOT EXISTS (SELECT 1 FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2)`,
-      [targetPool, bh, productName, rowHash]
-    )
-  } else {
-    const table = POOL_TABLE[targetPool]
-    if (!table) throw new Error(`target_pool "${targetPool}" is not a writable pool`)
-    const rowHash = createHash("sha256").update(`${targetPool}::${bh}::${productName}`).digest("hex")
-    await query(
-      `WITH next_seq AS (SELECT COALESCE(MAX(source_row_number), 0) + 1 AS n FROM ${table})
-       INSERT INTO ${table} (source_row_number, product_name, register_number, row_hash)
-       SELECT ns.n, $2, $1, $3 FROM next_seq ns
-       WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE register_number = $1)`,
-      [bh, productName, rowHash]
-    )
-  }
-}
-
-async function removeFromPool(pool: string, bh: string) {
-  if (isCustomPool(pool)) {
-    await query(`DELETE FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2`, [pool, bh])
-  } else {
-    const table = POOL_TABLE[pool]
-    if (table) {
-      await query(`DELETE FROM ${table} WHERE register_number = $1`, [bh])
-    }
-  }
 }
 
 export async function POST(req: Request) {
@@ -136,7 +100,7 @@ export async function POST(req: Request) {
           }
           await syncFundTeamTagsToSource(bh)
         }
-        invalidateListResponseCache()
+        invalidateTrackingPoolListCaches([])
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -144,7 +108,7 @@ export async function POST(req: Request) {
         await ensureFundTagsTable()
         const ph = ids.map((_, i) => `$${i + 1}`).join(", ")
         await query(`DELETE FROM ops_fund_tags WHERE beian_hao IN (${ph})`, ids)
-        invalidateListResponseCache()
+        invalidateTrackingPoolListCaches([])
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -159,7 +123,7 @@ export async function POST(req: Request) {
            WHERE register_number IN (${ph})`,
           [...ids, strategy_l1 ?? null, strategy_l2 ?? null, strategy_l3 ?? null]
         )
-        invalidateListResponseCache()
+        invalidateTrackingPoolListCaches([])
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -173,7 +137,7 @@ export async function POST(req: Request) {
            WHERE register_number IN (${ph})`,
           ids
         )
-        invalidateListResponseCache()
+        invalidateTrackingPoolListCaches([])
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -183,7 +147,7 @@ export async function POST(req: Request) {
         if (!target_pool) return NextResponse.json({ error: "missing_target_pool" }, { status: 400 })
         if (!pool) return NextResponse.json({ error: "missing_pool" }, { status: 400 })
         const tp = target_pool as string
-        if (!isCustomPool(tp) && !POOL_TABLE[tp]) {
+        if (!isWritableTrackingPool(tp)) {
           return NextResponse.json(
             { error: `"${tp}" 不是可写入的产品池，请选择跟踪池、精选池、核心池等` },
             { status: 400 }
@@ -191,7 +155,7 @@ export async function POST(req: Request) {
         }
         for (const bh of ids) {
           const productName = await getProductName(pool as string, bh)
-          await addToPool(tp, bh, productName)
+          await addFundToTrackingPool(tp, bh, productName)
           try {
             await upsertTrackingFundListCacheEntry(bh, productName)
           } catch (err) {
@@ -200,11 +164,10 @@ export async function POST(req: Request) {
         }
         if (action === "move") {
           for (const bh of ids) {
-            await removeFromPool(pool as string, bh)
+            await removeFundFromTrackingPool(pool as string, bh)
           }
         }
-        invalidateListResponseCache(pool as string)
-        invalidateListResponseCache(tp)
+        invalidateTrackingPoolListCaches([pool as string, tp])
         return NextResponse.json({ ok: true, count: ids.length })
       }
 
@@ -212,9 +175,9 @@ export async function POST(req: Request) {
       case "remove": {
         if (!pool) return NextResponse.json({ error: "missing_pool" }, { status: 400 })
         for (const bh of ids) {
-          await removeFromPool(pool as string, bh)
+          await removeFundFromTrackingPool(pool as string, bh)
         }
-        invalidateListResponseCache(pool as string)
+        invalidateTrackingPoolListCaches([pool as string])
         return NextResponse.json({ ok: true, count: ids.length })
       }
 

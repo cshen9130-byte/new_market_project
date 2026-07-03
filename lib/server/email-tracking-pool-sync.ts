@@ -8,7 +8,7 @@
 
 import { createHash } from "crypto"
 import { query } from "@/lib/db"
-import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
+import { invalidateTrackingPoolListCaches } from "@/lib/server/tracking-pool-membership"
 import { listTeamData } from "@/lib/server/team-data-query-pg"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 
@@ -151,7 +151,7 @@ export async function syncEmailTrackingPool(): Promise<EmailTrackingPoolSyncResu
     [EMAIL_OPS_POOL_KEY],
   )
 
-  invalidateListResponseCache(EMAIL_OPS_POOL_KEY)
+  invalidateTrackingPoolListCaches([EMAIL_OPS_POOL_KEY])
 
   return {
     poolKey: EMAIL_OPS_POOL_KEY,

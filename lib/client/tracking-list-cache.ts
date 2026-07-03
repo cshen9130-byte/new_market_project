@@ -5,10 +5,14 @@ const LIST_CACHE_PREFIX = "tracking_list_cache:"
 export function invalidateTrackingListCache(poolKeys?: string[]): void {
   if (typeof window === "undefined") return
 
+  const poolsToCheck = poolKeys && poolKeys.length > 0
+    ? [...new Set([...poolKeys, "all"])]
+    : null
+
   const shouldClear = (cacheKey: string): boolean => {
-    if (!poolKeys || poolKeys.length === 0) return true
+    if (!poolsToCheck) return true
     const params = cacheKey.includes("\u0000") ? cacheKey.split("\u0000").pop() ?? cacheKey : cacheKey
-    return poolKeys.some((pool) => params.includes(`pool=${encodeURIComponent(pool)}`))
+    return poolsToCheck.some((pool) => params.includes(`pool=${encodeURIComponent(pool)}`))
   }
 
   try {

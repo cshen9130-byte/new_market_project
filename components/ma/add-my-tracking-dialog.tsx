@@ -3,13 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { ChevronDown } from "lucide-react"
 import { createPortal } from "react-dom"
-
-const DEFAULT_TEAM_POOLS = [
-  { key: "bfl_ops", label: "bfl 运维池" },
-  { key: "bfl", label: "bfl跟踪池" },
-  { key: "jy_ops", label: "JY运维池" },
-  { key: "jy", label: "JY跟踪池" },
-]
+import { fetchTeamPoolOptions } from "@/lib/client/tracking-pools"
 
 const DEFAULT_MINE_POOLS = [
   { key: "mine_default", label: "默认我的跟踪" },
@@ -19,12 +13,12 @@ function mergePoolOptions(
   base: { key: string; label: string }[],
   incoming: { pool_key: string; label: string }[],
 ): { key: string; label: string }[] {
-  const merged = [...base]
+  const byKey = new Map(base.map((p) => [p.key, p]))
   for (const p of incoming) {
-    if (!p?.pool_key || merged.some((m) => m.key === p.pool_key)) continue
-    merged.push({ key: p.pool_key, label: p.label })
+    if (!p?.pool_key || String(p.pool_key).startsWith("__")) continue
+    byKey.set(p.pool_key, { key: p.pool_key, label: p.label })
   }
-  return merged
+  return Array.from(byKey.values())
 }
 
 function currentUserId(): string {
@@ -68,7 +62,7 @@ export function AddMyTrackingDialog({
   onSaved?: () => void
 }) {
   const [teamPoolsSelected, setTeamPoolsSelected] = useState<string[]>([])
-  const [teamPoolOptions, setTeamPoolOptions] = useState(DEFAULT_TEAM_POOLS)
+  const [teamPoolOptions, setTeamPoolOptions] = useState<{ key: string; label: string }[]>([])
   const [showPoolPicker, setShowPoolPicker] = useState(false)
   const [poolPickerPos, setPoolPickerPos] = useState<{ top: number; left: number; width: number } | null>(null)
   const poolFieldRef = useRef<HTMLDivElement>(null)
@@ -105,13 +99,7 @@ export function AddMyTrackingDialog({
       .then((d) => Array.isArray(d) ? setTeamTagOptions(d.map((t: { name: string }) => t.name)) : null)
       .catch(() => {})
 
-    fetch("/ma/api/tracking-funds/pools?scope=team", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (!Array.isArray(d?.data)) return
-        setTeamPoolOptions(mergePoolOptions(DEFAULT_TEAM_POOLS, d.data))
-      })
-      .catch(() => {})
+    fetchTeamPoolOptions().then(setTeamPoolOptions).catch(() => {})
 
     const owner = encodeURIComponent(currentUserName())
     fetch(`/ma/api/ops/team-tags?category=fund_personal&owner=${owner}`)

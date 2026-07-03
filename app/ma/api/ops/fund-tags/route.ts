@@ -36,7 +36,7 @@ const POOL_LABELS: Record<string, string> = {
   bfl:      "bfl跟踪池",
   jy_ops:   "JY运维池",
   jy:       "JY跟踪池",
-  tracking: "跟踪池",
+  tracking: "JY跟踪池",
   selected: "精选池",
   core:     "核心池",
   hy:       "hy跟踪池",
@@ -67,7 +67,7 @@ export async function GET(req: Request) {
     const standardPools = [
       { key: "bfl_ops",  table: "type6_ops_team_full",    col: "register_number" },
       { key: "bfl",     table: "private_fund_info_bfl",  col: "beian_hao" },
-      { key: "tracking", table: "tracking_pool",         col: "register_number" },
+      { key: "jy",      table: "tracking_pool",          col: "register_number" },
       { key: "selected", table: "selected_pool",         col: "register_number" },
       { key: "core",     table: "core_pool",             col: "register_number" },
       { key: "hy",       table: "hy_tracking_pool",      col: "register_number" },
@@ -85,15 +85,40 @@ export async function GET(req: Request) {
       } catch { /* table may not exist */ }
     }
 
-    // Check custom pools
+    let labelByKey = new Map(Object.entries(POOL_LABELS))
     try {
-      const customRows = await query<{ pool_key: string }>(
-        `SELECT pool_key FROM user_custom_pool WHERE register_number = $1`,
+      const labelRows = await query<{ pool_key: string; label: string }>(
+        `SELECT pool_key, label FROM tracking_custom_pools
+         WHERE scope = 'team' AND pool_key NOT LIKE '\\_\\_%'`,
+      )
+      for (const row of labelRows) labelByKey.set(row.pool_key, row.label)
+    } catch { /* table may not exist */ }
+
+    for (let i = 0; i < poolResults.length; i++) {
+      const saved = labelByKey.get(poolResults[i].pool_key)
+      if (saved) poolResults[i] = { ...poolResults[i], pool_label: saved }
+    }
+
+    // Check custom pools — prefer persisted labels from tracking_custom_pools
+    try {
+      const customRows = await query<{ pool_key: string; label: string | null }>(
+        `SELECT u.pool_key, COALESCE(p.label, '') AS label
+         FROM user_custom_pool u
+         LEFT JOIN tracking_custom_pools p ON p.pool_key = u.pool_key AND p.scope = 'team'
+         WHERE u.register_number = $1`,
         [beian_hao]
       )
+      const seen = new Set<string>()
       for (const row of customRows) {
-        const label = row.pool_key.replace(/^(custom_|mine_custom_)/, "").replace(/_/g, " ") || row.pool_key
-        poolResults.push({ pool_key: row.pool_key, pool_label: label + "池" })
+        if (seen.has(row.pool_key)) continue
+        seen.add(row.pool_key)
+        const label = row.label?.trim()
+          || row.pool_key.replace(/^(custom_|mine_custom_)/, "").replace(/_/g, " ")
+          || row.pool_key
+        poolResults.push({
+          pool_key: row.pool_key,
+          pool_label: label.endsWith("池") ? label : `${label}池`,
+        })
       }
     } catch { /* table may not exist */ }
 

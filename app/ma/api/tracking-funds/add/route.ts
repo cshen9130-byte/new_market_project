@@ -1,24 +1,14 @@
 import { NextResponse } from "next/server"
-import { query } from "@/lib/db"
-import { createHash } from "crypto"
-import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
+import {
+  addFundToTrackingPool,
+  invalidateTrackingPoolListCaches,
+  isWritableTrackingPool,
+  removeFundFromTrackingPool,
+} from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-
-const POOL_TABLE: Record<string, string> = {
-  tracking: "tracking_pool",
-  jy:       "tracking_pool",
-  selected: "selected_pool",
-  core:     "core_pool",
-  hy:       "hy_tracking_pool",
-  fof:      "fof_mom_tracking",
-}
-
-function isCustomPool(pool: string) {
-  return pool.startsWith("custom_") || pool.startsWith("mine_custom_") || pool === "mine_default" || pool === "jy_ops"
-}
 
 async function ensureFundListCacheEntry(beian_hao: string, product_name: string) {
   try {
@@ -36,52 +26,18 @@ export async function POST(req: Request) {
   if (!beian_hao || !product_name) {
     return NextResponse.json({ error: "missing_fields" }, { status: 400 })
   }
+  if (!pool || !isWritableTrackingPool(pool)) {
+    return NextResponse.json({ error: "unknown_pool" }, { status: 400 })
+  }
 
   try {
-    if (isCustomPool(pool)) {
-      // Custom / mine pools → user_custom_pool with pool_key discriminator
-      const row_hash = createHash("sha256").update(`${pool}::${beian_hao}::${product_name}`).digest("hex")
-      const rows = await query<{ id: number }>(
-        `INSERT INTO user_custom_pool
-           (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
-         SELECT $1,
-                COALESCE((SELECT MAX(source_row_number) FROM user_custom_pool WHERE pool_key = $1), 0) + 1,
-                $3, $2, $4, 'manual_add', NOW(), NOW()
-         WHERE NOT EXISTS (
-           SELECT 1 FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2
-         )
-         RETURNING id`,
-        [pool, beian_hao, product_name, row_hash]
-      )
-      if (rows.length === 0) {
-        await ensureFundListCacheEntry(beian_hao, product_name)
-        invalidateListResponseCache(pool)
-        return NextResponse.json({ error: "already_exists" }, { status: 409 })
-      }
-      await ensureFundListCacheEntry(beian_hao, product_name)
-      invalidateListResponseCache(pool)
-      return NextResponse.json({ ok: true, id: rows[0].id })
-    }
-
-    // Standard pool tables
-    const table = POOL_TABLE[pool] ?? "tracking_pool"
-    const row_hash = createHash("sha256").update(`${pool}::${beian_hao}::${product_name}`).digest("hex")
-    const rows = await query<{ id: number }>(
-      `WITH next_seq AS (SELECT COALESCE(MAX(source_row_number), 0) + 1 AS n FROM ${table})
-       INSERT INTO ${table} (source_row_number, product_name, register_number, row_hash)
-       SELECT ns.n, $2, $1, $3 FROM next_seq ns
-       WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE register_number = $1)
-       RETURNING id`,
-      [beian_hao, product_name, row_hash]
-    )
-    if (rows.length === 0) {
-      await ensureFundListCacheEntry(beian_hao, product_name)
-      invalidateListResponseCache(pool)
+    const { created } = await addFundToTrackingPool(pool, beian_hao, product_name)
+    await ensureFundListCacheEntry(beian_hao, product_name)
+    invalidateTrackingPoolListCaches([pool])
+    if (!created) {
       return NextResponse.json({ error: "already_exists" }, { status: 409 })
     }
-    await ensureFundListCacheEntry(beian_hao, product_name)
-    invalidateListResponseCache(pool)
-    return NextResponse.json({ ok: true, id: rows[0].id })
+    return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[tracking-funds/add]", err)
     return NextResponse.json({ error: "db_error" }, { status: 500 })
@@ -95,22 +51,15 @@ export async function DELETE(req: Request) {
   if (!pool || !beian_hao) {
     return NextResponse.json({ error: "missing_fields" }, { status: 400 })
   }
+  if (!isWritableTrackingPool(pool)) {
+    return NextResponse.json({ error: "unknown_pool" }, { status: 400 })
+  }
   try {
-    if (isCustomPool(pool)) {
-      await query(
-        `DELETE FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2`,
-        [pool, beian_hao]
-      )
-    } else {
-      const table = POOL_TABLE[pool]
-      if (!table) return NextResponse.json({ error: "unknown_pool" }, { status: 400 })
-      await query(`DELETE FROM ${table} WHERE register_number = $1`, [beian_hao])
-    }
-    invalidateListResponseCache(pool)
+    await removeFundFromTrackingPool(pool, beian_hao)
+    invalidateTrackingPoolListCaches([pool])
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[tracking-funds/add DELETE]", err)
     return NextResponse.json({ error: "db_error" }, { status: 500 })
   }
 }
-
