@@ -24,6 +24,7 @@ import {
   sqlEmailNavShareClassGuard,
   sqlFundNameMatch,
 } from "@/lib/server/fund-name-match"
+import { fofUnderlyingNavLookupKeys } from "@/lib/server/fund-holding-code"
 
 export type NavPoint = {
   nav: number
@@ -810,6 +811,30 @@ export class BatchNavResolver {
     this.valuationNavByName = byName
   }
 
+  /** Merge 估值表 history points across all plausible code / name keys for an underlying. */
+  private collectValuationPoints(identity: ProductNavIdentity): NavPoint[] {
+    const keys = fofUnderlyingNavLookupKeys(
+      identity.product_name,
+      identity.beian_hao,
+      identity.short_name,
+    )
+    const byDate = new Map<string, NavPoint>()
+    for (const key of keys) {
+      const codeKey = key.toUpperCase()
+      for (const p of this.valuationNavByCode.get(codeKey) ?? []) {
+        if (isPlausibleEmailUnitNav(p.nav)) byDate.set(p.nav_date, p)
+      }
+      for (const p of this.valuationNavByName.get(key) ?? []) {
+        if (isPlausibleEmailUnitNav(p.nav)) byDate.set(p.nav_date, p)
+      }
+    }
+    return [...byDate.values()].sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+  }
+
+  private valuationAt(identity: ProductNavIdentity, beforeDate: string): NavPoint | null {
+    return navAtOrBefore(this.collectValuationPoints(identity), beforeDate)
+  }
+
   private legacyPointOnDate(identity: ProductNavIdentity, navDate: string): NavPoint | null {
     const beian = (identity.beian_hao ?? "").trim()
     const short = (identity.short_name ?? "").trim()
@@ -898,10 +923,7 @@ export class BatchNavResolver {
       (short ? navAtOrBefore(this.legacyByProduct.get(short), beforeDate) : null)
     if (legacy) return legacy
 
-    const valuation =
-      (beian ? navAtOrBefore(this.valuationNavByCode.get(beian), beforeDate) : null) ??
-      navAtOrBefore(this.valuationNavByName.get(identity.product_name), beforeDate) ??
-      (short ? navAtOrBefore(this.valuationNavByName.get(short), beforeDate) : null)
+    const valuation = this.valuationAt(identity, beforeDate)
     if (valuation) return valuation
 
     if (fallbackNav != null && fallbackDate && fallbackDate <= beforeDate) {
@@ -981,9 +1003,7 @@ export class BatchNavResolver {
       apply(this.legacyByBeian.get(beian))
       apply(this.legacyByProduct.get(identity.product_name))
       if (short) apply(this.legacyByProduct.get(short))
-      apply(this.valuationNavByCode.get(beian))
-      apply(this.valuationNavByName.get(identity.product_name))
-      if (short) apply(this.valuationNavByName.get(short))
+      apply(this.collectValuationPoints(identity))
     }
     const type6Layers = () => {
       apply(this.type6ByBeian.get(beian))

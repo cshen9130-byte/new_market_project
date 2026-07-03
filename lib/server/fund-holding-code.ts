@@ -216,6 +216,40 @@ function normalizeFundNameForLookup(name: string): string {
     .trim()
 }
 
+/** Keys for matching FOF underlying funds to 估值表 NAV history maps. */
+export function fofUnderlyingNavLookupKeys(
+  productName: string,
+  beianHao: string | null,
+  shortName?: string | null,
+): string[] {
+  const keys = new Set<string>()
+  const beian = (beianHao ?? "").trim().toUpperCase()
+  if (beian) {
+    keys.add(beian)
+    const parent = beian.replace(/[ABC]$/u, "")
+    if (parent !== beian) keys.add(parent)
+    if (beian === "ALF51B") keys.add("SALF51")
+  }
+
+  const trimmed = productName.trim()
+  if (trimmed) {
+    keys.add(trimmed)
+    const norm = normalizeFundNameForLookup(trimmed)
+    if (norm) keys.add(norm)
+    const override = FUND_NAME_CODE_OVERRIDES[norm]
+    if (override) keys.add(override.toUpperCase())
+  }
+
+  const short = (shortName ?? "").trim()
+  if (short) {
+    keys.add(short)
+    const shortNorm = normalizeFundNameForLookup(short)
+    if (shortNorm) keys.add(shortNorm)
+  }
+
+  return [...keys].filter(Boolean)
+}
+
 function overrideCodeFromName(subjectName: string): string | null {
   const key = normalizeFundNameForLookup(String(subjectName ?? "").trim())
   const code = FUND_NAME_CODE_OVERRIDES[key]

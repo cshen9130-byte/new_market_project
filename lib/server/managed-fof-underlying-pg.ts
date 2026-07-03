@@ -19,7 +19,7 @@ import {
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
 import { sqlFundNameMatch, sqlEmailNavShareClassGuard, sqlShareClassCodeGuard } from "@/lib/server/fund-name-match"
-import { backfillFundHoldingSymbols, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF } from "@/lib/server/fund-holding-code"
+import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode } from "@/lib/server/fund-holding-code"
 
 /** Managed products excluded from FOF underlying extraction (non-FOF). */
 export const MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN = "%恒盈2号%"
@@ -522,26 +522,25 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
 }> {
   await ensureManagedFofUnderlyingTable()
   await ensureEmailValuationHoldingsTables()
+  await backfillFundHoldingSymbols()
 
   const byCode = new Map<string, NavPoint[]>()
   const byName = new Map<string, NavPoint[]>()
 
-  // Historical FOF-holding NAV: scan normalized holdings directly (indexed by valuation_date).
-  const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
-
   const holdingRows = await query<{
-    underlying_product_code: string | null
     underlying_name: string
+    subject_code: string
+    symbol: string | null
     valuation_date: string
     price: string | null
     quantity: string | null
     market_value: string | null
   }>(
-    `SELECT DISTINCT ON (${underlyingKey}, h.valuation_date)
-       ${underlyingKey} AS underlying_product_code,
-       TRIM(h.subject_name) AS underlying_name,
-       h.valuation_date::text AS valuation_date,
-       h.price, h.quantity, h.market_value
+    `SELECT TRIM(h.subject_name) AS underlying_name,
+            h.subject_code,
+            h.symbol,
+            h.valuation_date::text AS valuation_date,
+            h.price, h.quantity, h.market_value
      FROM ops_email_valuation_holdings h
      WHERE h.valuation_date >= $1::date
        AND h.include_in_detail = TRUE
@@ -550,8 +549,6 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
          'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
          'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
        )
-       AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
-       AND BTRIM(h.symbol) ~ '^[A-Za-z0-9]+$'
        AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
        AND (
          h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
@@ -559,18 +556,17 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
          OR h.subject_code LIKE '1108%'
          OR h.subject_name ~ '私募证券投资基金'
          OR h.subject_name ~ '私募基金'
-         OR (h.row_kind = 'other' AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL)
+         OR h.row_kind = 'other'
        )
-     ORDER BY ${underlyingKey}, h.valuation_date, h.market_value DESC NULLS LAST`,
+     ORDER BY h.valuation_date DESC, h.market_value DESC NULLS LAST`,
     [sinceDate],
   )
 
-  /** Legacy 估值表 codes remapped after ingest (e.g. SALF51 → ALF51B). */
-  const CODE_ALIASES: Record<string, string> = { SALF51: "ALF51B" }
+  const seenHoldings = new Set<string>()
 
-  const appendPoint = (
-    code: string | null,
-    name: string | null,
+  const indexPoint = (
+    productName: string,
+    beian: string | null,
     point: NavPoint,
     replaceExisting = false,
   ) => {
@@ -584,34 +580,38 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
       }
       map.set(key, arr)
     }
-    if (code) {
-      push(byCode, code)
-      const alias = CODE_ALIASES[code]
-      if (alias) push(byCode, alias)
-    }
-    if (name) {
-      push(byName, name)
-      const norm = normalizeUnderlyingName(name)
-      if (norm !== name) push(byName, norm)
+    for (const key of fofUnderlyingNavLookupKeys(productName, beian, null)) {
+      if (/^[A-Z0-9]+$/i.test(key)) push(byCode, key.toUpperCase())
+      else push(byName, key)
     }
   }
 
   for (const row of holdingRows) {
+    const name = row.underlying_name
+    const code =
+      formatFundHoldingCode(
+        resolveFundHoldingCode(row.subject_code, name, row.symbol) ?? row.symbol,
+      )
+    if (!code && !/私募/u.test(name)) continue
+
     const nav = resolveNavFromValuationTable(row.price, row.quantity, row.market_value)
     if (nav == null || nav <= 0) continue
-    appendPoint(row.underlying_product_code, row.underlying_name, {
-      nav,
-      nav_date: row.valuation_date.slice(0, 10),
-    })
+
+    const navDate = row.valuation_date.slice(0, 10)
+    const dedupe = `${code ?? name}\0${navDate}`
+    if (seenHoldings.has(dedupe)) continue
+    seenHoldings.add(dedupe)
+
+    indexPoint(name, code, { nav, nav_date: navDate })
   }
 
   const { loadCustodyValuationNavHistory } = await import("@/lib/server/email-valuation-nav-backfill")
   const custody = await loadCustodyValuationNavHistory(sinceDate)
   for (const [code, points] of custody.byCode) {
-    for (const point of points) appendPoint(code, null, point, true)
+    for (const point of points) indexPoint(code, code, point, true)
   }
   for (const [name, points] of custody.byName) {
-    for (const point of points) appendPoint(null, name, point, true)
+    for (const point of points) indexPoint(name, null, point, true)
   }
 
   for (const map of [byCode, byName]) {
