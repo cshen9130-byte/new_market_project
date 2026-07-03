@@ -36,7 +36,7 @@ async function ensurePoolDefinition(): Promise<void> {
             COALESCE((SELECT MAX(sort_order) FROM tracking_custom_pools WHERE scope = 'team'), 0) + 1,
             NOW()
      ON CONFLICT (pool_key)
-     DO UPDATE SET label = EXCLUDED.label, updated_at = NOW()`,
+     DO UPDATE SET updated_at = NOW()`,
     [EMAIL_OPS_POOL_KEY, EMAIL_OPS_POOL_LABEL],
   )
 }

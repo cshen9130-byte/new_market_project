@@ -95,7 +95,7 @@ export function AddToTeamTrackingDialog({
     setError(null)
     setShowTagPicker(false)
 
-    fetch("/ma/api/tracking-funds/pools?scope=team")
+    fetch("/ma/api/tracking-funds/pools?scope=team", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         if (!Array.isArray(d?.data)) return
@@ -103,7 +103,7 @@ export function AddToTeamTrackingDialog({
       })
       .catch(() => {})
 
-    fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: userFetchHeaders() })
+    fetch("/ma/api/tracking-funds/pools?scope=mine", { cache: "no-store", headers: userFetchHeaders() })
       .then((r) => r.json())
       .then((d) => {
         if (!Array.isArray(d?.data)) return

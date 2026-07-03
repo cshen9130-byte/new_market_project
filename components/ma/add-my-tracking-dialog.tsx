@@ -105,7 +105,7 @@ export function AddMyTrackingDialog({
       .then((d) => Array.isArray(d) ? setTeamTagOptions(d.map((t: { name: string }) => t.name)) : null)
       .catch(() => {})
 
-    fetch("/ma/api/tracking-funds/pools?scope=team")
+    fetch("/ma/api/tracking-funds/pools?scope=team", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => {
         if (!Array.isArray(d?.data)) return
@@ -119,7 +119,7 @@ export function AddMyTrackingDialog({
       .then((d) => Array.isArray(d) ? setPersonalTagOptions(d.map((t: { name: string }) => t.name)) : null)
       .catch(() => {})
 
-    fetch("/ma/api/tracking-funds/pools?scope=mine", { headers: userFetchHeaders() })
+    fetch("/ma/api/tracking-funds/pools?scope=mine", { cache: "no-store", headers: userFetchHeaders() })
       .then((r) => r.json())
       .then((d) => {
         if (!Array.isArray(d?.data)) return

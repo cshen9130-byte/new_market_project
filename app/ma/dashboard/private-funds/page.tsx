@@ -227,7 +227,7 @@ const DEFAULT_MINE_POOLS = [
 
 // localStorage keys used to render the last-known pool tabs instantly on load
 // (keeps the fast-loading feel) before the authoritative server list arrives.
-const POOLS_CACHE_KEY = "tracking_team_pools_cache_v4"
+const POOLS_CACHE_KEY = "tracking_team_pools_cache_v5"
 const MINE_POOLS_CACHE_KEY = "tracking_mine_pools_cache"
 
 type PoolDef = { key: string; label: string }
@@ -2010,6 +2010,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   // Tracks which pool keys have already been background-prefetched so we don't
   // re-fire fetches on every 30 s poll update.
   const prefetchedPoolsRef = useRef<Set<string>>(new Set())
+  const reloadPoolsRef = useRef<(() => void) | null>(null)
 
   function persistPoolCreate(poolKey: string, label: string, scope: "team" | "mine", rollback: () => void) {
     pendingPoolCreatesRef.current.add(poolKey)
@@ -2050,14 +2051,20 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     pendingPoolRenamesRef.current.set(poolKey, label)
     fetch("/ma/api/tracking-funds/pools", {
       method: "PATCH",
+      cache: "no-store",
       headers: { "Content-Type": "application/json", ...userFetchHeaders() },
       body: JSON.stringify({ pool_key: poolKey, label }),
     })
       .then(async (r) => {
+        const body = await r.json().catch(() => ({}))
         if (!r.ok) {
-          const body = await r.json().catch(() => ({}))
           throw new Error(`HTTP ${r.status}${body.detail ? ": " + body.detail : body.error ? ": " + body.error : ""}`)
         }
+        if (body?.pool?.label !== label) {
+          throw new Error("服务器未确认保存，请重试")
+        }
+        pendingPoolRenamesRef.current.delete(poolKey)
+        reloadPoolsRef.current?.()
       })
       .catch((err: unknown) => {
         pendingPoolRenamesRef.current.delete(poolKey)
@@ -2161,7 +2168,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     }
 
     function loadPools() {
-      fetch("/ma/api/tracking-funds/pools?scope=both", { headers: { ...userFetchHeaders() } })
+      fetch("/ma/api/tracking-funds/pools?scope=both", {
+        cache: "no-store",
+        headers: { ...userFetchHeaders() },
+      })
         .then((r) => r.json())
         .then((d) => {
           if (d?.data?.team && d?.data?.mine) {
@@ -2172,8 +2182,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         .catch((e) => console.error("[loadPools fetch]", e))
     }
 
+    reloadPoolsRef.current = loadPools
     loadPools()
-    const interval = setInterval(loadPools, 30_000)
+    const interval = setInterval(loadPools, 10_000)
 
     function onVisibilityChange() {
       if (document.visibilityState === "visible") loadPools()
@@ -2181,6 +2192,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     document.addEventListener("visibilitychange", onVisibilityChange)
 
     return () => {
+      reloadPoolsRef.current = null
       clearInterval(interval)
       document.removeEventListener("visibilitychange", onVisibilityChange)
     }

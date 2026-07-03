@@ -68,11 +68,22 @@ async function _runEnsureTable(): Promise<void> {
         updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
       )
     `)
+    await query(`
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tracking_custom_pools TO market_user
+    `).catch(() => {})
+    await query(`
+      GRANT USAGE, SELECT ON SEQUENCE tracking_custom_pools_id_seq TO market_user
+    `).catch(() => {})
     tableEnsured = true
   } catch {
     await query(`SELECT 1 FROM tracking_custom_pools LIMIT 0`)
     tableEnsured = true
   }
+}
+
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate",
+  Pragma: "no-cache",
 }
 
 let teamSeeded = false
@@ -119,6 +130,7 @@ async function seedTeamDefaults(): Promise<void> {
     `DELETE FROM tracking_custom_pools
      WHERE scope = 'team'
        AND pool_key NOT LIKE '\\_\\_%'
+       AND pool_key NOT LIKE 'custom\\_%'
        AND NOT (pool_key = ANY($1::text[]))`,
     [CANONICAL_TEAM_KEYS],
   )
@@ -199,22 +211,22 @@ export async function GET(req: Request) {
         queryTeamPools(),
         queryMinePools(userKey),
       ])
-      return NextResponse.json({ data: { team, mine } })
+      return NextResponse.json({ data: { team, mine } }, { headers: NO_STORE_HEADERS })
     }
 
     if (scope === "mine") {
       await seedMineDefault(userKey)
       const rows = await queryMinePools(userKey)
-      return NextResponse.json({ data: rows })
+      return NextResponse.json({ data: rows }, { headers: NO_STORE_HEADERS })
     }
 
     await seedTeamDefaults()
     const rows = await queryTeamPools()
-    return NextResponse.json({ data: rows })
+    return NextResponse.json({ data: rows }, { headers: NO_STORE_HEADERS })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error("[tracking-funds/pools GET]", msg)
-    return NextResponse.json({ error: "db_error", detail: msg }, { status: 500 })
+    return NextResponse.json({ error: "db_error", detail: msg }, { status: 500, headers: NO_STORE_HEADERS })
   }
 }
 
@@ -253,40 +265,57 @@ function inferPoolScope(poolKey: string): "team" | "mine" {
   return poolKey.startsWith("mine_") ? "mine" : "team"
 }
 
+async function upsertPoolLabel(
+  poolKey: string,
+  cleanLabel: string,
+  scope: "team" | "mine",
+  userKey: string,
+): Promise<PoolRow | null> {
+  const rows = await query<PoolRow>(
+    `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
+     SELECT $1, $2, $3, $4,
+            COALESCE((SELECT MAX(sort_order) FROM tracking_custom_pools WHERE scope = $3), 0) + 1,
+            NOW()
+     ON CONFLICT (pool_key)
+     DO UPDATE SET label = EXCLUDED.label, updated_at = NOW()
+     RETURNING pool_key, label, scope, user_key`,
+    [poolKey, cleanLabel, scope, scope === "mine" ? userKey : ""],
+  )
+  return rows[0] ?? null
+}
+
 export async function PATCH(req: Request) {
   let body: unknown
-  try { body = await req.json() } catch { return NextResponse.json({ error: "bad_request" }, { status: 400 }) }
+  try { body = await req.json() } catch { return NextResponse.json({ error: "bad_request" }, { status: 400, headers: NO_STORE_HEADERS }) }
 
   const { pool_key, label } = body as Record<string, string>
   const cleanLabel = (label || "").trim()
   if (!pool_key || !cleanLabel) {
-    return NextResponse.json({ error: "missing_fields" }, { status: 400 })
+    return NextResponse.json({ error: "missing_fields" }, { status: 400, headers: NO_STORE_HEADERS })
   }
 
   const scope = inferPoolScope(pool_key)
   const userKey = String(req.headers.get("x-market-user-id") || "").trim()
+  if (scope === "mine" && !userKey) {
+    return NextResponse.json({ error: "missing_user" }, { status: 400, headers: NO_STORE_HEADERS })
+  }
 
   try {
     await ensureTable()
     if (scope === "team") {
       await seedTeamDefaults()
-    } else if (userKey) {
+    } else {
       await seedMineDefault(userKey)
     }
-    // Upsert so renames persist even when a built-in pool row was never seeded yet.
-    await query(
-      `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
-       SELECT $1, $2, $3, $4,
-              COALESCE((SELECT MAX(sort_order) FROM tracking_custom_pools WHERE scope = $3), 0) + 1,
-              NOW()
-       ON CONFLICT (pool_key)
-       DO UPDATE SET label = EXCLUDED.label, updated_at = NOW()`,
-      [pool_key, cleanLabel, scope, scope === "mine" ? userKey : ""],
-    )
-    return NextResponse.json({ ok: true })
+    const saved = await upsertPoolLabel(pool_key, cleanLabel, scope, userKey)
+    if (!saved || saved.label !== cleanLabel) {
+      return NextResponse.json({ error: "save_failed" }, { status: 500, headers: NO_STORE_HEADERS })
+    }
+    return NextResponse.json({ ok: true, pool: saved }, { headers: NO_STORE_HEADERS })
   } catch (err) {
-    console.error("[tracking-funds/pools PATCH]", err)
-    return NextResponse.json({ error: "db_error" }, { status: 500 })
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error("[tracking-funds/pools PATCH]", msg)
+    return NextResponse.json({ error: "db_error", detail: msg }, { status: 500, headers: NO_STORE_HEADERS })
   }
 }
 
