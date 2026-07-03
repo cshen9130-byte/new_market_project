@@ -103,22 +103,68 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   await ensureFofOverviewListCacheTable()
 
   const asOfDate = new Date().toISOString().slice(0, 10)
-  logProgress("resolving product identities (SQL with beian joins — no timeout)…", t0)
 
-  const products = await queryUnbounded<BaseProductRow>(
+  // Fast path: reuse beian codes from yesterday's cache; only run expensive lateral
+  // joins for products not yet in cache. This makes rebuilds after the first run ~5s.
+  logProgress("loading cached beian codes (fast path)…", t0)
+  const cachedBeian = new Map<string, string | null>()
+  const cachedBeianRows = await query<{ product_name: string; beian_hao: string | null }>(
+    `SELECT product_name, beian_hao FROM ops_fof_overview_list_cache`,
+  )
+  for (const r of cachedBeianRows) cachedBeian.set(r.product_name, r.beian_hao)
+  logProgress(`cached beian: ${cachedBeian.size} products`, t0)
+
+  // Get the base product list without lateral joins first (fast).
+  logProgress("loading product list from fof_underlying_summary…", t0)
+  const baseRows = await query<{
+    fof_underlying_id: string
+    product_name: string
+    fallback_nav: string | null
+    fallback_nav_date: string | Date | null
+    fallback_return_pct: string | null
+  }>(
     `SELECT
        f.id::text AS fof_underlying_id,
        f.product_name,
-       ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao,
-       ${fofUnderlyingShortExpr("f.product_name")} AS short_name,
        f.latest_unit_nav::text AS fallback_nav,
        f.latest_nav_date AS fallback_nav_date,
        f.latest_return_pct::text AS fallback_return_pct
-     ${buildFofUnderlyingSummaryFrom("f.product_name")}
+     FROM fof_underlying_summary f
      WHERE f.product_name <> '合计'`,
   )
+  logProgress(`found ${baseRows.length} products`, t0)
 
-  logProgress(`found ${products.length} products`, t0)
+  // Products already in cache get beian without lateral joins.
+  const needBeianJoin = baseRows.filter((r) => !cachedBeian.has(r.product_name))
+  logProgress(
+    `${baseRows.length - needBeianJoin.length} beian from cache, ${needBeianJoin.length} need lateral join…`,
+    t0,
+  )
+
+  let joinedBeian = new Map<string, { beian_hao: string | null; short_name: string | null }>()
+  if (needBeianJoin.length > 0) {
+    logProgress(`running beian lateral joins for ${needBeianJoin.length} products (no timeout)…`, t0)
+    const ids = needBeianJoin.map((r) => parseInt(r.fof_underlying_id, 10))
+    const joinRows = await queryUnbounded<{ fof_underlying_id: string; beian_hao: string | null; short_name: string | null }>(
+      `SELECT
+         f.id::text AS fof_underlying_id,
+         ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao,
+         ${fofUnderlyingShortExpr("f.product_name")} AS short_name
+       ${buildFofUnderlyingSummaryFrom("f.product_name")}
+       WHERE f.id = ANY($1::bigint[])`,
+      [ids],
+    )
+    for (const r of joinRows) joinedBeian.set(r.fof_underlying_id, { beian_hao: r.beian_hao, short_name: r.short_name })
+    logProgress(`lateral joins done`, t0)
+  }
+
+  const products: BaseProductRow[] = baseRows.map((r) => {
+    const fromCache = cachedBeian.has(r.product_name)
+    const fromJoin = joinedBeian.get(r.fof_underlying_id)
+    const beian_hao = fromJoin?.beian_hao ?? (fromCache ? cachedBeian.get(r.product_name)! : null)
+    const short_name = fromJoin?.short_name ?? r.product_name
+    return { ...r, beian_hao, short_name }
+  })
 
   logProgress("loading managed 市值 map…", t0)
   const managedMarketById = await loadManagedUnderlyingMarketValueMap()
