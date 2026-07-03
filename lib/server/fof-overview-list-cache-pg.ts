@@ -132,7 +132,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   // funds like ATL22A (only present as a FOF holding, never as a direct email
   // recipient) can have their period-return columns computed once 2+ monthly
   // 估值表 attachments have been parsed.
-  const valuationNavSince = addDays(asOfDate, -400)
+  const valuationNavSince = addDays(asOfDate, 400)
   logProgress(`loading 估值表 NAV history since ${valuationNavSince}…`)
   const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince)
   logProgress(

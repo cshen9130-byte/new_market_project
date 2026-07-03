@@ -256,7 +256,7 @@ export async function backfillManagedFofUnderlyingNavFields(): Promise<number> {
     short_name: null,
   }))
   const resolver = await BatchNavResolver.create(identities, asOfDate)
-  const valuationNavSince = addDays(asOfDate, -400)
+  const valuationNavSince = addDays(asOfDate, 400)
   const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince)
   resolver.setValuationNavHistory(valuationNavHistory.byCode, valuationNavHistory.byName)
   const enriched = enrichDetailRows(rawRows, resolver)

@@ -123,7 +123,8 @@ export function fmtDate(d: string | Date | null): string | null {
 }
 
 export function addDays(isoDate: string, days: number): string {
-  const dt = new Date(isoDate)
+  // Positive days = lookback (subtract). Callers pass NAV_HISTORY_LOOKBACK_DAYS (400), not -400.
+  const dt = new Date(`${isoDate}T00:00:00Z`)
   dt.setUTCDate(dt.getUTCDate() - days)
   return dt.toISOString().slice(0, 10)
 }

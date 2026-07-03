@@ -22,7 +22,8 @@ async function main() {
   const { sqlFundNameMatch } = await import("../../lib/server/fund-name-match.ts")
 
   const asOf = new Date().toISOString().slice(0, 10)
-  const since = addDays(asOf, -400)
+  const since = addDays(asOf, 400)
+  console.log("asOf:", asOf, "since (lookback):", since)
 
   const [holdingsCount, jsonbCount, managedRows] = await Promise.all([
     query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ops_email_valuation_holdings`),
@@ -88,19 +89,22 @@ async function main() {
   const fofScopedRows = await loadManagedFofValuationHoldingRows(since, managedSubjectCodes)
   console.log(`\n=== FOF 估值表 scoped holdings since ${since}: ${fofScopedRows.length} total rows ===`)
 
-  console.log("\n=== via ops_managed_fof_underlying valuation_record_id ===")
+  console.log("\n=== underlying row on managed snapshot valuation_record_id ===")
   for (const s of samples) {
     const viaRecord = await query(
-      `SELECT h.valuation_date::text, h.symbol, h.subject_name, h.subject_code, h.price::text
+      `SELECT h.valuation_date::text, h.symbol, h.subject_name, h.subject_code,
+              h.price::text, h.market_value::text
        FROM ops_managed_fof_underlying m
-       INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = m.valuation_record_id
+       INNER JOIN ops_email_valuation_holdings h
+         ON h.valuation_record_id = m.valuation_record_id
+        AND h.subject_code = m.subject_code
+        AND TRIM(h.subject_name) = TRIM(m.underlying_name)
        WHERE UPPER(m.underlying_product_code) = $1
-          OR m.underlying_name ILIKE $2
        ORDER BY h.valuation_date DESC
        LIMIT 5`,
-      [s.beian, `%${s.name.slice(0, 4)}%`],
+      [s.beian],
     )
-    console.log(`\n${s.name}: ${viaRecord.length} rows on managed snapshot record(s)`)
+    console.log(`\n${s.name}: ${viaRecord.length} underlying holding row(s)`)
     for (const r of viaRecord) console.log(" ", r)
   }
 
