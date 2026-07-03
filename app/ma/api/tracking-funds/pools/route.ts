@@ -167,13 +167,13 @@ async function seedTeamDefaults(): Promise<void> {
 
 async function seedMineDefault(userKey: string): Promise<void> {
   if (seededMineUsers.has(userKey)) return
+  // ON CONFLICT DO NOTHING: if pool_key 'mine_default' already exists (owned by
+  // another user), silently skip — the unique constraint is on pool_key alone and
+  // we cannot insert a second row.  Team pools are unaffected by this.
   await query(
     `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
-     SELECT $1::text, $2::text, 'mine', $3::text, 0, NOW()
-     WHERE NOT EXISTS (
-       SELECT 1 FROM tracking_custom_pools
-       WHERE pool_key = $1::text AND scope = 'mine' AND user_key = $3::text
-     )`,
+     VALUES ($1::text, $2::text, 'mine', $3::text, 0, NOW())
+     ON CONFLICT (pool_key) DO NOTHING`,
     [DEFAULT_MINE_POOL.pool_key, DEFAULT_MINE_POOL.label, userKey],
   )
   seededMineUsers.add(userKey)
@@ -219,7 +219,9 @@ export async function GET(req: Request) {
       try { await ensureCanonicalTeamRows() } catch (err) {
         console.error("[tracking-funds/pools GET] ensureCanonicalTeamRows failed:", err)
       }
-      await seedMineDefault(userKey)
+      try { await seedMineDefault(userKey) } catch (err) {
+        console.error("[tracking-funds/pools GET] seedMineDefault failed:", err)
+      }
       const [team, mine] = await Promise.all([
         queryTeamPools(),
         queryMinePools(userKey),
@@ -228,7 +230,9 @@ export async function GET(req: Request) {
     }
 
     if (scope === "mine") {
-      await seedMineDefault(userKey)
+      try { await seedMineDefault(userKey) } catch (err) {
+        console.error("[tracking-funds/pools GET] seedMineDefault failed:", err)
+      }
       const rows = await queryMinePools(userKey)
       return NextResponse.json({ data: rows }, { headers: NO_STORE_HEADERS })
     }
@@ -341,7 +345,9 @@ export async function PATCH(req: Request) {
         console.error("[tracking-funds/pools PATCH] ensureCanonicalTeamRows failed:", err)
       }
     } else {
-      await seedMineDefault(userKey)
+      try { await seedMineDefault(userKey) } catch (err) {
+        console.error("[tracking-funds/pools PATCH] seedMineDefault failed:", err)
+      }
     }
     const saved = await upsertPoolLabel(pool_key, cleanLabel, scope, userKey)
     if (!saved || saved.label !== cleanLabel) {
