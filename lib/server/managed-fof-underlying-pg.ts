@@ -6,6 +6,7 @@
 import { fmtIso, query } from "@/lib/db"
 import {
   BatchNavResolver,
+  type NavPoint,
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
@@ -503,6 +504,73 @@ export async function loadManagedUnderlyingValuationNavLookup(): Promise<{
   }
 
   return { byProductCode, byName }
+}
+
+/**
+ * Load ALL historical NAV points from ops_managed_fof_underlying since `sinceDate`.
+ * Returns maps keyed by product code and (normalized) product name, each with
+ * a list of {nav, nav_date} sorted descending. Used by BatchNavResolver so that
+ * once multiple months of 估值表 data are available for a fund (e.g. ATL22A that
+ * only appears as a FOF holding, not as a direct email recipient), the period-return
+ * columns can be computed automatically.
+ */
+export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promise<{
+  byCode: Map<string, NavPoint[]>
+  byName: Map<string, NavPoint[]>
+}> {
+  await ensureManagedFofUnderlyingTable()
+
+  const rows = await query<{
+    underlying_product_code: string | null
+    underlying_name: string
+    valuation_date: string
+    price: string | null
+    quantity: string | null
+    market_value: string | null
+  }>(
+    `SELECT NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code,
+            TRIM(underlying_name) AS underlying_name,
+            valuation_date::text AS valuation_date,
+            price, quantity, market_value
+     FROM ops_managed_fof_underlying
+     WHERE COALESCE(market_value, 0) > 0
+       AND valuation_date >= $1::date
+     ORDER BY valuation_date DESC`,
+    [sinceDate],
+  )
+
+  const byCode = new Map<string, NavPoint[]>()
+  const byName = new Map<string, NavPoint[]>()
+
+  for (const row of rows) {
+    const nav = resolveNavFromValuationTable(row.price, row.quantity, row.market_value)
+    if (nav == null || nav <= 0) continue
+    const navDate = row.valuation_date.slice(0, 10)
+    const point: NavPoint = { nav, nav_date: navDate }
+
+    const code = row.underlying_product_code
+    if (code) {
+      const arr = byCode.get(code) ?? []
+      arr.push(point)
+      byCode.set(code, arr)
+    }
+
+    const name = row.underlying_name
+    if (name) {
+      const nameArr = byName.get(name) ?? []
+      nameArr.push(point)
+      byName.set(name, nameArr)
+
+      const norm = normalizeUnderlyingName(name)
+      if (norm !== name) {
+        const normArr = byName.get(norm) ?? []
+        normArr.push(point)
+        byName.set(norm, normArr)
+      }
+    }
+  }
+
+  return { byCode, byName }
 }
 
 export function resolveManagedUnderlyingValuationNav(

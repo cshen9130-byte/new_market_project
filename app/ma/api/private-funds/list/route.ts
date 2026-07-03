@@ -7,6 +7,7 @@ export const dynamic = "force-dynamic"
 
 const ALLOWED_SORT: Record<string, string> = {
   product_name: "i.product_name",
+  inception_date: "i.inception_date",
   latest_nav: "i.latest_nav",
   ret_1w: "i.ret_1w",
   ret_1m: "i.ret_1m",
@@ -98,8 +99,8 @@ export async function GET(req: Request) {
   const isExport = searchParams.get("export") === "1"
   const pageSize = isExport ? 100000 : 50
   const offset = isExport ? 0 : (page - 1) * pageSize
-  const sortKey = searchParams.get("sort") || "product_name"
-  const sortDir = searchParams.get("dir") === "desc" ? "DESC" : "ASC"
+  const sortKey = searchParams.get("sort") || "inception_date"
+  const sortDir = (searchParams.get("dir") ?? "desc") === "desc" ? "DESC" : "ASC"
   const strategy = searchParams.get("strategy") || ""
   const strategiesRaw = searchParams.get("strategies") || strategy
   const strategies = strategiesRaw ? strategiesRaw.split(",").map((s) => s.trim()).filter(Boolean) : []
@@ -282,7 +283,7 @@ export async function GET(req: Request) {
     const pOffset = listParams.length + 2
     const orderCol = sortKey === "latest_nav" && !storedNav
       ? "fn.nav"
-      : (ALLOWED_SORT[sortKey] ?? "i.product_name")
+      : (ALLOWED_SORT[sortKey] ?? "i.inception_date")
     const orderSql = `${orderCol} ${sortDir} NULLS LAST`
 
     const countPromise = query<{ total: string }>(

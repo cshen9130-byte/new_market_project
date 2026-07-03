@@ -312,21 +312,19 @@ export type DueDiligenceTableServerData = {
   updatedBy: string
 }
 
-function currentUserId(): string {
-  if (typeof window === "undefined") return ""
+function authHeaders(): HeadersInit {
+  if (typeof window === "undefined") return {}
   try {
     const raw = localStorage.getItem("currentUser")
-    if (!raw) return ""
-    const user = JSON.parse(raw) as { id?: string }
-    return user.id?.trim() || ""
+    if (!raw) return {}
+    const user = JSON.parse(raw) as { id?: string; name?: string }
+    const headers: Record<string, string> = {}
+    if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+    if (user.name?.trim()) headers["x-market-user-name"] = user.name.trim()
+    return headers
   } catch {
-    return ""
+    return {}
   }
-}
-
-function authHeaders(): HeadersInit {
-  const uid = currentUserId()
-  return uid ? { "x-market-user-id": uid } : {}
 }
 
 async function apiFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {

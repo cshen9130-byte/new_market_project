@@ -8,6 +8,7 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   荣熙恒盈2号: "SBAH99",
   抱朴聚融祥和一号: "SSG947",
   衡颐海泰1号: "SBPU97",
+  木莲安澜1号A类: "ATL22A",
 }
 
 /** Known 托管券商 for 在管产品 when registration tables are incomplete. */

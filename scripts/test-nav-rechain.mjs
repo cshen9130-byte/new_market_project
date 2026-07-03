@@ -65,6 +65,29 @@ for (const d of ["2026-01-09", "2026-01-12", "2026-01-15"]) {
 }
 assert("no million-scale unit left", janOut.every((r) => parseFloat(r.nav) < 100))
 
+// SLA033-style V-shape: single-day unit/cum/adj dip on 2022-10-11 while neighbors agree
+const sla033Legacy = [
+  { price_date: "2022-10-04", nav: "1.05", cumulative_nav: "1.42", cum_nav_withdrawal: "1.35", price_change: "" },
+  { price_date: "2022-10-11", nav: "0.92", cumulative_nav: "0.92", cum_nav_withdrawal: "0.92", price_change: "" },
+  { price_date: "2022-10-18", nav: "1.05", cumulative_nav: "1.43", cum_nav_withdrawal: "1.36", price_change: "" },
+  { price_date: "2026-05-29", nav: "1.0070", cumulative_nav: "1.5072", cum_nav_withdrawal: "1.4390", price_change: "" },
+]
+const sla033Out = mergeNavSeriesWithEmail(sla033Legacy, [])
+const sla1011 = sla033Out.find((r) => r.price_date === "2022-10-11")
+assert("SLA033 V-shape unit restored", Math.abs(parseFloat(sla1011.nav) - 1.05) < 0.001)
+assert("SLA033 V-shape adj >= cum", parseFloat(sla1011.cumulative_nav) >= parseFloat(sla1011.cum_nav_withdrawal) - 0.001)
+assert("SLA033 2022-10-11 adj near neighbors", Math.abs(parseFloat(sla1011.cumulative_nav) - 1.42) < 0.02)
+
+// SLA033-style unit spike (cum stored as unit) on one date
+const sla033SpikeLegacy = [
+  { price_date: "2022-10-04", nav: "1.05", cumulative_nav: "1.42", cum_nav_withdrawal: "1.35", price_change: "" },
+  { price_date: "2022-10-11", nav: "1.14", cumulative_nav: "1.14", cum_nav_withdrawal: "1.14", price_change: "" },
+  { price_date: "2022-10-18", nav: "1.05", cumulative_nav: "1.43", cum_nav_withdrawal: "1.36", price_change: "" },
+]
+const sla033SpikeOut = mergeNavSeriesWithEmail(sla033SpikeLegacy, [])
+const slaSpike1011 = sla033SpikeOut.find((r) => r.price_date === "2022-10-11")
+assert("SLA033 unit spike restored", Math.abs(parseFloat(slaSpike1011.nav) - 1.05) < 0.001)
+
 // Full series: 涨跌幅 matches Excel (prev row in series, incl. post-holiday)
 const fullDec = [
   { price_date: "2025-12-25", nav: "1.1717", cumulative_nav: "1.1717", cum_nav_withdrawal: "1.1717", price_change: "" },

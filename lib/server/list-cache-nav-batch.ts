@@ -664,6 +664,9 @@ export class BatchNavResolver {
   private legacyByProduct: Map<string, NavPoint[]>
   private seedByBeian: Map<string, NavPoint[]>
   private seedLatestByBeian: Map<string, string>
+  /** Historical NAV points from ops_managed_fof_underlying (FOF holdings). */
+  private valuationNavByCode: Map<string, NavPoint[]>
+  private valuationNavByName: Map<string, NavPoint[]>
 
   private constructor(
     emailByBeian: Map<string, NavPoint[]>,
@@ -674,6 +677,8 @@ export class BatchNavResolver {
     legacyByProduct: Map<string, NavPoint[]>,
     seedByBeian: Map<string, NavPoint[]>,
     seedLatestByBeian: Map<string, string>,
+    valuationNavByCode: Map<string, NavPoint[]> = new Map(),
+    valuationNavByName: Map<string, NavPoint[]> = new Map(),
   ) {
     this.emailByBeian = emailByBeian
     this.emailByName = emailByName
@@ -683,6 +688,8 @@ export class BatchNavResolver {
     this.legacyByProduct = legacyByProduct
     this.seedByBeian = seedByBeian
     this.seedLatestByBeian = seedLatestByBeian
+    this.valuationNavByCode = valuationNavByCode
+    this.valuationNavByName = valuationNavByName
   }
 
   static async create(products: ProductNavIdentity[], asOfDate: string): Promise<BatchNavResolver> {
@@ -756,6 +763,15 @@ export class BatchNavResolver {
     )
   }
 
+  /** Inject historical FOF holding NAV points (from ops_managed_fof_underlying). */
+  setValuationNavHistory(
+    byCode: Map<string, NavPoint[]>,
+    byName: Map<string, NavPoint[]>,
+  ): void {
+    this.valuationNavByCode = byCode
+    this.valuationNavByName = byName
+  }
+
   private seedPointFor(identity: ProductNavIdentity, beforeDate: string): NavPoint | null {
     const beian = (identity.beian_hao ?? "").trim()
     const override =
@@ -822,6 +838,12 @@ export class BatchNavResolver {
       (short ? navAtOrBefore(this.legacyByProduct.get(short), beforeDate) : null)
     if (legacy) return legacy
 
+    const valuation =
+      (beian ? navAtOrBefore(this.valuationNavByCode.get(beian), beforeDate) : null) ??
+      navAtOrBefore(this.valuationNavByName.get(identity.product_name), beforeDate) ??
+      (short ? navAtOrBefore(this.valuationNavByName.get(short), beforeDate) : null)
+    if (valuation) return valuation
+
     if (fallbackNav != null && fallbackDate && fallbackDate <= beforeDate) {
       return { nav: fallbackNav, nav_date: fallbackDate }
     }
@@ -841,10 +863,11 @@ export class BatchNavResolver {
     identity: ProductNavIdentity,
     unitNav: number,
     navDate: string,
-    _fallbackReturnPct: number | null,
+    fallbackReturnPct: number | null,
   ): number | null {
     const prev = this.resolvePreviousNav(identity, navDate)
-    return prev ? calcReturn(unitNav, prev.nav) : null
+    if (prev) return calcReturn(unitNav, prev.nav)
+    return fallbackReturnPct ?? null
   }
 
   calcPeriodReturns(
@@ -896,6 +919,9 @@ export class BatchNavResolver {
       apply(this.legacyByBeian.get(beian))
       apply(this.legacyByProduct.get(identity.product_name))
       if (short) apply(this.legacyByProduct.get(short))
+      apply(this.valuationNavByCode.get(beian))
+      apply(this.valuationNavByName.get(identity.product_name))
+      if (short) apply(this.valuationNavByName.get(short))
     }
     const type6Layers = () => {
       apply(this.type6ByBeian.get(beian))

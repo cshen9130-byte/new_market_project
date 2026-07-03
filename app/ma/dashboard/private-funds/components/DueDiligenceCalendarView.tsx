@@ -8,8 +8,11 @@ import { DueDiligenceScheduleDetailSheet } from "./DueDiligenceScheduleDetailShe
 import type { DueDiligenceSchedule, DueDiligenceScheduleForm } from "@/lib/ma/due-diligence-schedules"
 import {
   createDueDiligenceSchedule,
+  DD_SCHEDULES_UPDATED_EVENT,
   loadDueDiligenceSchedules,
+  loadDueDiligenceSchedulesFromServer,
   saveDueDiligenceSchedules,
+  saveDueDiligenceSchedulesToServer,
   scheduleDisplayTime,
   scheduleDotClass,
   scheduleMatchesDate,
@@ -106,9 +109,36 @@ export function DueDiligenceCalendarView() {
   const [editingSchedule, setEditingSchedule] = useState<DueDiligenceSchedule | null>(null)
   const [selectedSchedule, setSelectedSchedule] = useState<DueDiligenceSchedule | null>(null)
   const [showDetailSheet, setShowDetailSheet] = useState(false)
+  const [hydrated, setHydrated] = useState(false)
+
+  const reloadSchedules = async () => {
+    try {
+      const next = await loadDueDiligenceSchedulesFromServer()
+      setSchedules(next)
+    } catch {
+      setSchedules(loadDueDiligenceSchedules())
+    }
+  }
 
   useEffect(() => {
-    setSchedules(loadDueDiligenceSchedules())
+    let cancelled = false
+    void (async () => {
+      try {
+        const next = await loadDueDiligenceSchedulesFromServer()
+        if (!cancelled) setSchedules(next)
+      } catch {
+        if (!cancelled) setSchedules(loadDueDiligenceSchedules())
+      } finally {
+        if (!cancelled) setHydrated(true)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    function onUpdated() { void reloadSchedules() }
+    window.addEventListener(DD_SCHEDULES_UPDATED_EVENT, onUpdated)
+    return () => window.removeEventListener(DD_SCHEDULES_UPDATED_EVENT, onUpdated)
   }, [])
 
   const today = todayIso()
@@ -143,6 +173,7 @@ export function DueDiligenceCalendarView() {
   function persist(next: DueDiligenceSchedule[]) {
     setSchedules(next)
     saveDueDiligenceSchedules(next)
+    void saveDueDiligenceSchedulesToServer(next).catch(() => {})
   }
 
   function handlePrevMonth() {

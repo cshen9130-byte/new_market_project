@@ -11,7 +11,7 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
-import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingValuationNavLookup, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
+import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingValuationNavLookup, loadManagedUnderlyingNavHistory, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   addDays,
@@ -127,6 +127,14 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     short_name: p.short_name,
   }))
   const navResolver = await BatchNavResolver.create(identities, asOfDate)
+
+  // Inject historical FOF holding NAV from ops_managed_fof_underlying so that
+  // funds like ATL22A (only present as a FOF holding, never as a direct email
+  // recipient) can have their period-return columns computed once 2+ monthly
+  // 估值表 attachments have been parsed.
+  const valuationNavSince = addDays(asOfDate, -400)
+  const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince)
+  navResolver.setValuationNavHistory(valuationNavHistory.byCode, valuationNavHistory.byName)
 
   const beianHaos = products.map((p) => p.beian_hao).filter(Boolean) as string[]
   logProgress("loading strategy & risk metadata…")

@@ -1,6 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs"
-import path from "path"
-import { getServerStoragePath } from "@/lib/server/storage"
+import { query } from "@/lib/db"
 import type { DueDiligenceTableRow, TableCellFormats } from "@/lib/ma/due-diligence-table"
 import {
   DD_TABLE_COLUMNS,
@@ -15,16 +13,30 @@ export type DueDiligenceTableSnapshot = {
   updatedBy: string
 }
 
-function storageDir() {
-  return getServerStoragePath("due-diligence-table")
+const TEAM_ROW_ID = "team"
+
+let initPromise: Promise<void> | null = null
+
+function ensureTable(): Promise<void> {
+  if (!initPromise) {
+    initPromise = _ensureTable().catch((e) => {
+      initPromise = null
+      throw e
+    })
+  }
+  return initPromise
 }
 
-function storageFile() {
-  return path.join(storageDir(), "team-table.json")
-}
-
-function ensureStorageDir() {
-  mkdirSync(storageDir(), { recursive: true })
+async function _ensureTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS due_diligence_team_table (
+      id          TEXT PRIMARY KEY,
+      rows        JSONB NOT NULL DEFAULT '[]',
+      formats     JSONB NOT NULL DEFAULT '{}',
+      updated_by  TEXT NOT NULL DEFAULT '',
+      updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `)
 }
 
 function sanitizeRow(row: unknown): DueDiligenceTableRow | null {
@@ -49,37 +61,14 @@ function sanitizeRow(row: unknown): DueDiligenceTableRow | null {
   }
 }
 
+function sanitizeRows(value: unknown): DueDiligenceTableRow[] {
+  if (!Array.isArray(value)) return []
+  return value.map(sanitizeRow).filter((row): row is DueDiligenceTableRow => row !== null)
+}
+
 function sanitizeFormats(value: unknown): TableCellFormats {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {}
   return value as TableCellFormats
-}
-
-function readSnapshot(): DueDiligenceTableSnapshot | null {
-  ensureStorageDir()
-  const file = storageFile()
-  if (!existsSync(file)) return null
-
-  try {
-    const raw = readFileSync(file, "utf-8")
-    const parsed = JSON.parse(raw) as Partial<DueDiligenceTableSnapshot>
-    const rows = Array.isArray(parsed.rows)
-      ? parsed.rows.map(sanitizeRow).filter((row): row is DueDiligenceTableRow => row !== null)
-      : []
-    if (rows.length === 0) return null
-    return {
-      rows,
-      formats: sanitizeFormats(parsed.formats),
-      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
-      updatedBy: typeof parsed.updatedBy === "string" ? parsed.updatedBy : "",
-    }
-  } catch {
-    return null
-  }
-}
-
-function writeSnapshot(snapshot: DueDiligenceTableSnapshot) {
-  ensureStorageDir()
-  writeFileSync(storageFile(), JSON.stringify(snapshot, null, 2), "utf-8")
 }
 
 function defaultSnapshot(): DueDiligenceTableSnapshot {
@@ -92,20 +81,100 @@ function defaultSnapshot(): DueDiligenceTableSnapshot {
   }
 }
 
-export function getServerDueDiligenceTable(): DueDiligenceTableSnapshot {
-  const existing = readSnapshot()
+async function migrateFromLegacyFile(): Promise<DueDiligenceTableSnapshot | null> {
+  try {
+    const { existsSync, readFileSync } = await import("fs")
+    const path = await import("path")
+    const { getServerStoragePath } = await import("@/lib/server/storage")
+    const file = path.join(getServerStoragePath("due-diligence-table"), "team-table.json")
+    if (!existsSync(file)) return null
+    const parsed = JSON.parse(readFileSync(file, "utf-8")) as Partial<DueDiligenceTableSnapshot>
+    const rows = sanitizeRows(parsed.rows)
+    if (rows.length === 0) return null
+    return {
+      rows,
+      formats: sanitizeFormats(parsed.formats),
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
+      updatedBy: typeof parsed.updatedBy === "string" ? parsed.updatedBy : "migration",
+    }
+  } catch {
+    return null
+  }
+}
+
+async function readSnapshot(): Promise<DueDiligenceTableSnapshot | null> {
+  await ensureTable()
+  const rows = await query<{
+    rows: unknown
+    formats: unknown
+    updated_by: string
+    updated_at: Date | string
+  }>(
+    `SELECT rows, formats, updated_by, updated_at
+       FROM due_diligence_team_table
+      WHERE id = $1
+      LIMIT 1`,
+    [TEAM_ROW_ID],
+  )
+  if (rows.length === 0) return null
+
+  const sanitizedRows = sanitizeRows(rows[0].rows)
+  if (sanitizedRows.length === 0) return null
+
+  const updatedAt = rows[0].updated_at
+  return {
+    rows: sanitizedRows,
+    formats: sanitizeFormats(rows[0].formats),
+    updatedAt:
+      typeof updatedAt === "string"
+        ? new Date(updatedAt).toISOString()
+        : updatedAt.toISOString(),
+    updatedBy: rows[0].updated_by || "",
+  }
+}
+
+async function writeSnapshot(snapshot: DueDiligenceTableSnapshot): Promise<void> {
+  await ensureTable()
+  await query(
+    `INSERT INTO due_diligence_team_table (id, rows, formats, updated_by, updated_at)
+     VALUES ($1, $2::jsonb, $3::jsonb, $4, $5::timestamptz)
+     ON CONFLICT (id)
+     DO UPDATE SET
+       rows = EXCLUDED.rows,
+       formats = EXCLUDED.formats,
+       updated_by = EXCLUDED.updated_by,
+       updated_at = EXCLUDED.updated_at`,
+    [
+      TEAM_ROW_ID,
+      JSON.stringify(snapshot.rows),
+      JSON.stringify(snapshot.formats),
+      snapshot.updatedBy,
+      snapshot.updatedAt,
+    ],
+  )
+}
+
+export async function getServerDueDiligenceTable(): Promise<DueDiligenceTableSnapshot> {
+  const existing = await readSnapshot()
   if (existing) return existing
+
+  const migrated = await migrateFromLegacyFile()
+  if (migrated) {
+    await writeSnapshot(migrated)
+    return migrated
+  }
+
   const seeded = defaultSnapshot()
-  writeSnapshot(seeded)
+  await writeSnapshot(seeded)
   return seeded
 }
 
-export function saveServerDueDiligenceTable(
+export async function saveServerDueDiligenceTable(
   rows: DueDiligenceTableRow[],
   formats: TableCellFormats,
   userName: string,
-): DueDiligenceTableSnapshot {
-  const sanitized = rows.map(sanitizeRow).filter((row): row is DueDiligenceTableRow => row !== null)
+): Promise<DueDiligenceTableSnapshot> {
+  const sanitized = sanitizeRows(rows)
   if (sanitized.length === 0) {
     throw new Error("表格不能为空")
   }
@@ -115,6 +184,6 @@ export function saveServerDueDiligenceTable(
     updatedAt: new Date().toISOString(),
     updatedBy: userName || "unknown",
   }
-  writeSnapshot(snapshot)
+  await writeSnapshot(snapshot)
   return snapshot
 }

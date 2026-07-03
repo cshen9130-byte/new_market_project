@@ -1037,7 +1037,7 @@ interface FundRow {
   latest_nav_date: string | null
 }
 
-type SortKey = "product_name" | "latest_nav" | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y" | "sharpe_1y" | "calmar_1y"
+type SortKey = "product_name" | "inception_date" | "latest_nav" | "ret_1w" | "ret_1m" | "ret_3m" | "ret_6m" | "ret_1y" | "sharpe_1y" | "calmar_1y"
 type SortDir = "asc" | "desc"
 
 function fmtNum(v: string | null, decimals = 4) {
@@ -1099,8 +1099,8 @@ function PrivateFundTable({
   const [totalPages, setTotalPages] = useState(1)
   const [total, setTotal]       = useState(0)
   const [loading, setLoading]   = useState(true)
-  const [sortKey, setSortKey]   = useState<SortKey>("product_name")
-  const [sortDir, setSortDir]   = useState<SortDir>("asc")
+  const [sortKey, setSortKey]   = useState<SortKey>("inception_date")
+  const [sortDir, setSortDir]   = useState<SortDir>("desc")
   const [jumpVal, setJumpVal]   = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
@@ -1375,7 +1375,9 @@ function PrivateFundTable({
               {/* Scrollable cols */}
               <th className={`${thBase} border-b ${pfScrollThBg}`} style={{ minWidth: 88 }}>备案号</th>
               <th className={`${thBase} border-b ${pfScrollThBg}`} style={{ minWidth: 120 }}>管理人</th>
-              <th className={`${thBase} border-b ${pfScrollThBg}`} style={{ minWidth: 96 }}>成立日期</th>
+              <th className={`${thSort} border-b ${pfScrollThBg}`} style={{ minWidth: 96 }} onClick={() => handleSort("inception_date")}>
+                成立日期<SortIcon col="inception_date" sortKey={sortKey} sortDir={sortDir} />
+              </th>
               <th className={`${thSort} border-b ${pfScrollThBg}`} style={{ minWidth: 88 }} onClick={() => handleSort("latest_nav")}>
                 单位净值<SortIcon col="latest_nav" sortKey={sortKey} sortDir={sortDir} />
               </th>

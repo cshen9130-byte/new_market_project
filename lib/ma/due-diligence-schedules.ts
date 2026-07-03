@@ -63,7 +63,77 @@ export function loadDueDiligenceSchedules(): DueDiligenceSchedule[] {
 
 export function saveDueDiligenceSchedules(schedules: DueDiligenceSchedule[]): void {
   if (typeof window === "undefined") return
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(schedules))
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(schedules))
+  } catch {
+    // ignore quota / security errors — server sync is source of truth
+  }
+}
+
+export const DD_SCHEDULES_UPDATED_EVENT = "dd-schedules-updated"
+
+export function notifyDueDiligenceSchedulesUpdated(): void {
+  if (typeof window === "undefined") return
+  window.dispatchEvent(new CustomEvent(DD_SCHEDULES_UPDATED_EVENT))
+}
+
+// ── Server sync (team-shared) ──────────────────────────────────────────────
+
+function authHeaders(): HeadersInit {
+  if (typeof window === "undefined") return {}
+  try {
+    const raw = localStorage.getItem("currentUser")
+    if (!raw) return {}
+    const user = JSON.parse(raw) as { id?: string; name?: string }
+    const headers: Record<string, string> = {}
+    if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+    if (user.name?.trim()) headers["x-market-user-name"] = user.name.trim()
+    return headers
+  } catch {
+    return {}
+  }
+}
+
+async function apiFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+      ...(init?.headers || {}),
+    },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || res.statusText || "请求失败")
+  }
+  return data as T
+}
+
+export async function loadDueDiligenceSchedulesFromServer(): Promise<DueDiligenceSchedule[]> {
+  const data = await apiFetch<{
+    ok: true
+    schedules: DueDiligenceSchedule[]
+  }>("/ma/api/due-diligence-schedules")
+  const schedules = Array.isArray(data.schedules) ? data.schedules : []
+  saveDueDiligenceSchedules(schedules)
+  return schedules
+}
+
+export async function saveDueDiligenceSchedulesToServer(
+  schedules: DueDiligenceSchedule[],
+): Promise<DueDiligenceSchedule[]> {
+  const data = await apiFetch<{
+    ok: true
+    schedules: DueDiligenceSchedule[]
+  }>("/ma/api/due-diligence-schedules", {
+    method: "PUT",
+    body: JSON.stringify({ schedules }),
+  })
+  const next = Array.isArray(data.schedules) ? data.schedules : schedules
+  saveDueDiligenceSchedules(next)
+  notifyDueDiligenceSchedulesUpdated()
+  return next
 }
 
 export function createDueDiligenceSchedule(form: DueDiligenceScheduleForm): DueDiligenceSchedule {

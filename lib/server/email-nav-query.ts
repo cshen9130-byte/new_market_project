@@ -1279,6 +1279,88 @@ export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavR
   return sorted
 }
 
+/**
+ * Remove single-day V-shaped NAV outliers (bad legacy row dips/spikes while neighbors agree).
+ * Catches ~7–15% one-day moves that immediately revert — below the 30% spike threshold in
+ * refreshStaleDerivedFields but enough to distort max-drawdown and period returns.
+ */
+function sanitizeVShapeNavOutliers(rows: LegacyNavRow[]): LegacyNavRow[] {
+  if (rows.length < 3) return rows
+
+  const sorted = rows.map((row) => ({ ...row }))
+  const OUTLIER_THRESHOLD = 0.07
+  const NEIGHBOR_TOLERANCE = 0.06
+
+  for (let i = 1; i < sorted.length - 1; i += 1) {
+    const prev = sorted[i - 1]
+    const curr = sorted[i]
+    const next = sorted[i + 1]
+
+    const prevUnit = parseOptionalNav(prev.nav)
+    const currUnit = parseOptionalNav(curr.nav)
+    const nextUnit = parseOptionalNav(next.nav)
+    if (
+      prevUnit == null || currUnit == null || nextUnit == null ||
+      !isReasonableNav(prevUnit) || !isReasonableNav(currUnit) || !isReasonableNav(nextUnit)
+    ) {
+      continue
+    }
+
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+    const currCum = parseOptionalNav(curr.cum_nav_withdrawal) ?? parseOptionalNav(curr.cumulative_nav)
+    if (
+      prevCum != null && currCum != null &&
+      isLikelyDividendExDate(prevUnit, currUnit, prevCum, currCum)
+    ) {
+      continue
+    }
+
+    const unitBridge = Math.abs(nextUnit / prevUnit - 1)
+    const unitDevPrev = Math.abs(currUnit / prevUnit - 1)
+    const unitDevNext = Math.abs(currUnit / nextUnit - 1)
+    const isUnitVShape =
+      unitDevPrev >= OUTLIER_THRESHOLD &&
+      unitDevNext >= OUTLIER_THRESHOLD &&
+      unitBridge <= NEIGHBOR_TOLERANCE
+
+    const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? prevCum
+    const currAdj = parseOptionalNav(curr.cumulative_nav)
+    const nextAdj = parseOptionalNav(next.cumulative_nav)
+      ?? parseOptionalNav(next.cum_nav_withdrawal)
+    const isAdjVShape =
+      prevAdj != null && currAdj != null && nextAdj != null &&
+      isReasonableNav(prevAdj) && isReasonableNav(currAdj) && isReasonableNav(nextAdj) &&
+      unitBridge <= 0.02 &&
+      Math.abs(currAdj / prevAdj - 1) >= OUTLIER_THRESHOLD &&
+      Math.abs(currAdj / nextAdj - 1) >= OUTLIER_THRESHOLD &&
+      Math.abs(nextAdj / prevAdj - 1) <= NEIGHBOR_TOLERANCE
+
+    if (!isUnitVShape && !isAdjVShape) continue
+
+    if (isUnitVShape) {
+      const fixedUnit = unitBridge <= 0.02
+        ? prevUnit
+        : +((prevUnit + nextUnit) / 2).toFixed(6)
+      curr.nav = String(fixedUnit)
+      const rechained = rechainDerivedFromPrev(prev, fixedUnit, prevCum ?? undefined)
+      if (rechained) {
+        curr.cum_nav_withdrawal = rechained.cum
+        curr.cumulative_nav = rechained.adj
+      }
+      continue
+    }
+
+    const unit = currUnit
+    const rechained = rechainDerivedFromPrev(prev, unit, currCum ?? undefined)
+    if (rechained) {
+      curr.cum_nav_withdrawal = rechained.cum
+      curr.cumulative_nav = rechained.adj
+    }
+  }
+
+  return sorted
+}
+
 /** Fix stale/spike 累计/复权 when unit moved but derived fields did not. */
 function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = rows.map((row) => ({ ...row }))
@@ -1363,6 +1445,7 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
 
 function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string> = new Set()): LegacyNavRow[] {
   let out = sanitizeMisassignedUnitNavRows(rows)
+  out = sanitizeVShapeNavOutliers(out)
   out = repairCorruptUnitNavRows(out)
   out = syncExDivAdjustedNav(out)
   out = propagateMissingAdjRows(out)

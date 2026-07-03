@@ -352,6 +352,7 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
 | `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
 | `preferEmailNavRow` / `isPlausibleEmailUnitNav` | Reject 虚拟计提 share-count rows; prefer `product_code`-matched 净值表 — reverting to id-only tie-break breaks BAH99A FOF list |
+| `sanitizeVShapeNavOutliers` | Removes single-day V-shaped legacy outliers (~7–15% dip/spike with flat neighbors) — disabling lets corrupt platform rows distort max-drawdown and period returns (SLA033) |
 | `resolveFundBeianHao` | Direct beian DB lookup must run before managed-product override — otherwise BAH99A routes to SBAH99 |
 | `remapManagedProductBeianCode` | Do not remap A/B/C share-class codes (e.g. BAH99A) to parent 在管产品 beian |
 | `lookupManagedProductOverride` | Must use share-class-aware name match — loose `includes` maps A类 names to parent managed product |
@@ -595,3 +596,116 @@ npx tsx scripts/ma/check_fof_nav_invariant.ts
 ```
 
 All 43 test assertions pass. All 52 FOF底层 funds satisfy `adj >= cum >= unit`.
+
+---
+
+## What Was Fixed (木莲安澜1号A类 — ATL22A, 2026-07-03)
+
+### Problem 1 — Fund detail page returned HTTP 404
+
+Clicking 木莲安澜1号A类 in the 在管产品 list navigated to `/ma/dashboard/private-funds/ATL22A`. The API returned 404 because `ATL22A` was not in `MANAGED_PRODUCT_BEIAN_OVERRIDES`, and none of the DB lookup tables (`private_fund_info`, `private_fund_info_bfl`, `type6_ops_team_full`) had a row for this code. `lookupFundInfoFallback("ATL22A")` also returned null since the email records used the product name rather than the code.
+
+**Fix:** Added `木莲安澜1号A类: "ATL22A"` to `MANAGED_PRODUCT_BEIAN_OVERRIDES` in `lib/server/managed-product-beian.ts`.
+
+- `lookupManagedProductOverride("ATL22A")` now returns `{ product_name: "木莲安澜1号A类", beian_hao: "ATL22A" }`, which satisfies `lookupFundInfoFallback` and the detail API.
+- The share-class guard in `managedProductOverrideNameMatches` ensures "木莲安澜1号" (no share class) does **not** match this override — the fix is share-class–scoped.
+- Since there is no seed file (`data/managed-product-nav/ATL22A.json`), `resolveManagedProductListNavAt("ATL22A", ...)` returns null and the managed override path in the cache refresh falls through to the email/legacy NAV resolver — no change to the list view values.
+
+### Problem 2 — 最新涨跌幅 and period returns empty (root cause)
+
+Diagnosis confirmed: ATL22A's NAV data never comes from `ops_email_nav_records` (0 rows). The nav 1.1020 shown in the UI comes from `ops_managed_fof_underlying` — the FOF fund's 估值表 attachment that lists ATL22A as a holding. Only **one** such row exists (valuation_date = 2026-06-30). `fof_underlying_summary.latest_return_pct = null` for ATL22A. Legacy tables have historical data but only under `beian_hao = 'SATL22'` / `product_name = '木莲安澜1号'` (the parent fund, with different NAVs from the A-class). `BatchNavResolver` finds no data under `ATL22A` or `木莲安澜1号A类`.
+
+With one data point, `resolvePreviousNav` finds no T-1 nav → `calcDailyReturnPct` returns null. `calcPeriodReturns` also returns all-null.
+
+**Fix 1 — Forward-looking (automatic as more data arrives)**:
+Added `loadManagedUnderlyingNavHistory` in `lib/server/managed-fof-underlying-pg.ts` that loads ALL historical `ops_managed_fof_underlying` entries within the lookback window. `BatchNavResolver` now exposes `setValuationNavHistory(byCode, byName)` so these FOF-holding NAV points are included in `resolveAt` and `buildMergedHistory` as a last-resort fallback (after email / type6 / legacy all miss). `refreshFofOverviewListCache` in `lib/server/fof-overview-list-cache-pg.ts` now calls `loadManagedUnderlyingNavHistory` and injects it into the resolver.
+
+Effect: once the FOF's next monthly 估值表 is parsed (adding e.g. a 2026-07-31 row for ATL22A), the 最新涨跌幅 will be computed automatically. After two months, the 1-month return will also populate.
+
+**Fix 2 — fallbackReturnPct**:
+`calcDailyReturnPct` was also changed to return `fallbackReturnPct` (from `fof_underlying_summary.latest_return_pct`) when no T-1 nav is found. For ATL22A this is currently null too, so no immediate effect — but will work if the field is populated.
+
+**Why returns remain empty now**: only one data point exists (June 30). The system needs ≥ 2 months of FOF 估值表 data for 最新涨跌幅 to compute, ≥ 1 month offset for period returns.
+
+**To populate returns immediately**: create a seed file `data/managed-product-nav/ATL22A.json` with actual A-class historical NAV data, or re-parse older FOF 估值表 emails that include ATL22A as a holding (those would add more rows to `ops_managed_fof_underlying`).
+
+### What This Fix Does NOT Change
+
+- No change to `syncExDivAdjustedNav`, `rechainDerivedFromPrev`, `propagateMissingAdjRows`, `repairAdjBelowCumRows`, `mergeNavSeriesWithEmail`, or `finalizeNavSeries` call order.
+- SBAH99 dividend formulas — unchanged.
+- SNF018 virtual-first FOF email priority — unchanged.
+- SSG947 managed-product seed + email merge — unchanged.
+- BAH99A routing — unchanged.
+- SBPC20 attachment-wins-over-virtual logic — unchanged.
+
+### After deployment
+
+The FOF overview cache was already rebuilt using the new `loadManagedUnderlyingNavHistory` injection. To rebuild the managed products cache too:
+
+```bash
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+```
+
+To rebuild the FOF overview cache:
+
+```bash
+npx tsx scripts/ma/_refresh_fof_cache.ts
+```
+
+Then verify regression:
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
+---
+
+## What Was Fixed (杉阳云杉混合1号 — SLA033, 2026-07-03)
+
+### The Problem
+
+Fund detail page and tracking list showed corrupt NAV on **2022-10-11**:
+
+| Symptom | Wrong value |
+|---|---|
+| 复权净值 chart | Sharp V-shaped dip on 2022-10-11 |
+| 成立以来最大回撤 | **−11.43%** (should be ~3%) |
+| 近六个月收益 (list) | **−11.43%** (should be small positive) |
+| 累计净值 / 复权净值 | Distorted around the bad row |
+
+Correct reference (platform 净值): smooth 复权 curve, max drawdown ~3%, latest cum **1.4390**, adj **~1.5072**.
+
+### Root Cause
+
+`private_fund_nav` (legacy platform DB) contained a **single-day V-shaped outlier** on 2022-10-11 — unit/cum/adj all dipped ~12% then immediately recovered on the next row. Existing spike repair in `refreshStaleDerivedFields` only triggers at **±30%** day-over-day moves, so this ~11% corrupt row passed through and poisoned max-drawdown and 6-month return (base NAV picked up the spike level).
+
+This is **legacy data corruption**, not a dividend event — neighbors on 2022-10-04 and 2022-10-18 agree within ~1%.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| V-shape outlier removal | `lib/server/email-nav-query.ts` `sanitizeVShapeNavOutliers` | Detect single-day dip/spike ≥7% vs both neighbors while neighbors agree within 6%; restore unit from prev (flat bridge) and rechain cum/adj via `rechainDerivedFromPrev`. Skips real ex-div dates (`isLikelyDividendExDate`). |
+| Pipeline call order | `finalizeNavSeries` | Runs after `sanitizeMisassignedUnitNavRows`, before `repairCorruptUnitNavRows`. |
+
+### What This Fix Does NOT Change
+
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev` formulas — unchanged.
+- SBAH99 / SNF018 / SSG947 / BAH99A / SBPC20 fixes — unchanged.
+- `preferEmailNavRow`, `alignPreDividendNavRows` — unchanged.
+
+### After deployment
+
+Refresh tracking list cache so `ret_6m` picks up corrected history:
+
+```bash
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+```
+
+Regression checks:
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```

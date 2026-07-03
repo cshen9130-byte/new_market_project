@@ -61,7 +61,13 @@ import {
 import {
   countExtractableRows,
   extractTableRowsToCalendar,
+  parseTableDate,
 } from "@/lib/ma/due-diligence-table-to-calendar"
+import type { DueDiligenceSchedule } from "@/lib/ma/due-diligence-schedules"
+import {
+  loadDueDiligenceSchedulesFromServer,
+  saveDueDiligenceSchedulesToServer,
+} from "@/lib/ma/due-diligence-schedules"
 import { RepresentativeProductCell } from "./RepresentativeProductCell"
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -556,7 +562,9 @@ export function DueDiligenceTableView() {
   const [isDragging, setIsDragging] = useState(false)
   const [undoStack, setUndoStack] = useState<Snapshot[]>([])
   const [redoStack, setRedoStack] = useState<Snapshot[]>([])
+  const [isExtracting, setIsExtracting] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle")
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null)
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -602,13 +610,16 @@ export function DueDiligenceTableView() {
     if (!pending || isSavingRef.current) return
     isSavingRef.current = true
     setSaveStatus("saving")
+    setSaveError(null)
     try {
       const result = await saveDueDiligenceTableToServer(pending.rows, pending.formats)
       serverUpdatedAtRef.current = result.updatedAt
       setServerUpdatedAt(result.updatedAt)
       pendingSaveRef.current = null
       setSaveStatus("saved")
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "保存失败"
+      setSaveError(message)
       setSaveStatus("error")
     } finally {
       isSavingRef.current = false
@@ -691,9 +702,11 @@ export function DueDiligenceTableView() {
       ) {
         applyServerData(data)
       }
-    } catch {
+    } catch (err) {
       setRows(loadDueDiligenceTableRows())
       setFormats(loadCellFormats())
+      const message = err instanceof Error ? err.message : "加载失败"
+      setSaveError(message)
       setSaveStatus("error")
     }
   }, [applyServerData, scheduleServerSave])
@@ -968,8 +981,17 @@ export function DueDiligenceTableView() {
     persistRows(rows, next, formats)
   }
 
-  function handleExtractToCalendar() {
-    const { withDate, alreadySynced } = countExtractableRows(rows)
+  async function handleExtractToCalendar() {
+    if (isExtracting) return
+    let existingSchedules: DueDiligenceSchedule[] = []
+    try {
+      existingSchedules = await loadDueDiligenceSchedulesFromServer()
+    } catch {
+      const { loadDueDiligenceSchedules } = await import("@/lib/ma/due-diligence-schedules")
+      existingSchedules = loadDueDiligenceSchedules()
+    }
+
+    const { withDate, alreadySynced } = countExtractableRows(rows, existingSchedules)
     if (withDate === 0) {
       alert("没有可提取的尽调记录（需填写尽调日期）。")
       return
@@ -983,8 +1005,31 @@ export function DueDiligenceTableView() {
       ? `将 ${toAdd} 条尽调记录提取到尽调日历（${alreadySynced} 条已同步将跳过），是否继续？`
       : `将 ${toAdd} 条尽调记录提取到尽调日历，是否继续？`
     if (!window.confirm(msg)) return
-    const result = extractTableRowsToCalendar(rows)
-    alert(`提取完成：新增 ${result.added} 条${result.skipped > 0 ? `，跳过 ${result.skipped} 条（已同步）` : ""}。`)
+
+    setIsExtracting(true)
+    try {
+      const result = extractTableRowsToCalendar(rows, existingSchedules)
+      await saveDueDiligenceSchedulesToServer(result.schedules)
+      const syncedBefore = new Set(
+        existingSchedules.map((s) => s.sourceTableRowId).filter((id): id is string => Boolean(id)),
+      )
+      const addedDates = rows
+        .filter((row) => parseTableDate(row.ddDate) && !syncedBefore.has(row.id))
+        .map((row) => parseTableDate(row.ddDate)!)
+        .sort()
+      const monthHint =
+        addedDates.length > 0
+          ? `记录主要在 ${addedDates[0].slice(0, 4)}年${Number(addedDates[0].slice(5, 7))}月，请在日历中切换月份查看。`
+          : "请到左侧「尽调日历」查看。"
+      alert(
+        `提取完成：新增 ${result.added} 条${result.skipped > 0 ? `，跳过 ${result.skipped} 条（已同步）` : ""}。${monthHint}`,
+      )
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "提取失败"
+      alert(`提取失败：${message}`)
+    } finally {
+      setIsExtracting(false)
+    }
   }
 
   // ── Keyboard shortcuts ──
@@ -1031,7 +1076,11 @@ export function DueDiligenceTableView() {
               团队协作收集尽调信息，可直接在单元格中编辑。
               {saveStatus === "saving" && <span className="ml-2 text-amber-600">保存中…</span>}
               {saveStatus === "saved" && <span className="ml-2 text-emerald-600">已保存到团队</span>}
-              {saveStatus === "error" && <span className="ml-2 text-red-600">保存失败，请检查网络</span>}
+              {saveStatus === "error" && (
+                <span className="ml-2 text-red-600">
+                  保存失败{saveError ? `：${saveError}` : "，请检查网络"}
+                </span>
+              )}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -1043,9 +1092,9 @@ export function DueDiligenceTableView() {
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
               <Download className="h-3.5 w-3.5" />导出 Excel
             </button>
-            <button type="button" onClick={handleExtractToCalendar}
-              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
-              <CalendarDays className="h-3.5 w-3.5" />提取到尽调日历
+            <button type="button" onClick={() => void handleExtractToCalendar()} disabled={isExtracting}
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50">
+              <CalendarDays className="h-3.5 w-3.5" />{isExtracting ? "提取中…" : "提取到尽调日历"}
             </button>
             <button type="button" onClick={handleResetSeed}
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">

@@ -93,12 +93,15 @@ export function tableRowToScheduleForm(row: DueDiligenceTableRow): DueDiligenceS
   }
 }
 
-export function countExtractableRows(rows: DueDiligenceTableRow[]): {
+export function countExtractableRows(
+  rows: DueDiligenceTableRow[],
+  existingSchedules: DueDiligenceSchedule[] = loadDueDiligenceSchedules(),
+): {
   withDate: number
   alreadySynced: number
 } {
   const syncedIds = new Set(
-    loadDueDiligenceSchedules()
+    existingSchedules
       .map((s) => s.sourceTableRowId)
       .filter((id): id is string => Boolean(id)),
   )
@@ -112,8 +115,11 @@ export function countExtractableRows(rows: DueDiligenceTableRow[]): {
   return { withDate, alreadySynced }
 }
 
-export function extractTableRowsToCalendar(rows: DueDiligenceTableRow[]): ExtractToCalendarResult {
-  const existing = loadDueDiligenceSchedules()
+export function extractTableRowsToCalendar(
+  rows: DueDiligenceTableRow[],
+  existingSchedules: DueDiligenceSchedule[] = loadDueDiligenceSchedules(),
+): ExtractToCalendarResult & { schedules: DueDiligenceSchedule[] } {
+  const existing = existingSchedules
   const syncedIds = new Set(
     existing.map((s) => s.sourceTableRowId).filter((id): id is string => Boolean(id)),
   )
@@ -141,5 +147,5 @@ export function extractTableRowsToCalendar(rows: DueDiligenceTableRow[]): Extrac
   }
 
   saveDueDiligenceSchedules(next)
-  return { added, skipped, noDate }
+  return { added, skipped, noDate, schedules: next }
 }
