@@ -335,6 +335,75 @@ function normalizeUnderlyingName(name: string): string {
     .trim()
 }
 
+/** Holding rows eligible for FOF underlying NAV extraction (alias h), excluding include_in_detail. */
+const SQL_FOF_VALUATION_HOLDING_CORE_FILTERS = `
+  AND COALESCE(h.market_value, h.cost, 0) > 0
+  AND h.row_kind NOT IN (
+    'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
+    'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
+  )
+  AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
+  AND (
+    h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
+    OR h.subject_code LIKE '1109%'
+    OR h.subject_code LIKE '1108%'
+    OR h.subject_name ~ '私募证券投资基金'
+    OR h.subject_name ~ '私募基金'
+    OR h.row_kind = 'other'
+  )`
+
+/** Holdings inside managed-FOF 估值表 attachments (all dates, not just latest snapshot). */
+export async function loadManagedFofValuationHoldingRows(
+  sinceDate: string,
+  subjectCodes: string[] = [],
+): Promise<{
+  subject_name: string
+  subject_code: string
+  symbol: string | null
+  valuation_date: string
+  price: string | null
+  quantity: string | null
+  market_value: string | null
+}[]> {
+  const managedProductExpr = "m.product_name"
+  const managedBeianExpr = fofUnderlyingBeianExpr(managedProductExpr)
+  const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
+  const detailFilter = subjectCodes.length > 0
+    ? `(h.include_in_detail = TRUE OR h.subject_code = ANY($3::text[]))`
+    : `h.include_in_detail = TRUE`
+
+  return query(
+    `WITH managed_fof AS (
+       SELECT
+         m.id AS managed_product_id,
+         m.product_name,
+         ${managedBeianExpr} AS beian_hao
+       ${buildManagedProductsFrom(managedProductExpr)}
+       WHERE m.product_name <> '合计'
+         AND m.product_name NOT ILIKE $2
+     )
+     SELECT
+       TRIM(h.subject_name) AS subject_name,
+       h.subject_code,
+       h.symbol,
+       r.valuation_date::text AS valuation_date,
+       h.price, h.quantity, h.market_value
+     FROM managed_fof mf
+     INNER JOIN ops_email_valuation_records r ON (
+       (NULLIF(BTRIM(mf.beian_hao), '') IS NOT NULL AND r.product_code = mf.beian_hao)
+       OR ${fundMatch}
+     )
+     INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = r.id
+     WHERE r.valuation_date >= $1::date
+       AND ${detailFilter}
+       ${SQL_FOF_VALUATION_HOLDING_CORE_FILTERS}
+     ORDER BY r.valuation_date ASC`,
+    subjectCodes.length > 0
+      ? [sinceDate, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN, subjectCodes]
+      : [sinceDate, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
+  )
+}
+
 /** Match managed holding rows to a summary row; A/B/C share class must agree. */
 export function managedUnderlyingMatchSql(
   beianExpr: string,
@@ -388,8 +457,10 @@ export function resolveValuationHoldingCode(row: ValuationHoldingMatchRow): stri
 export function matchValuationHoldingToTarget(
   row: ValuationHoldingMatchRow,
   target: UnderlyingNavTarget,
+  opts?: { subject_codes?: Set<string> },
 ): boolean {
   const subjectName = row.subject_name.trim()
+  const subjectCode = row.subject_code.trim()
   const code = resolveValuationHoldingCode(row)
   const beian = target.beian_hao?.trim().toUpperCase() ?? null
   const lookupKeys = new Set(
@@ -398,6 +469,10 @@ export function matchValuationHoldingToTarget(
 
   const codeOk = (c: string | null) =>
     !c || shareClassCodeMatchesProductLenient(c, subjectName, target.product_name)
+
+  if (opts?.subject_codes?.has(subjectCode)) {
+    return shareClassProductNamesMatch(subjectName, target.product_name) && codeOk(code)
+  }
 
   if (code && beian && code.toUpperCase() === beian) {
     return shareClassProductNamesMatch(subjectName, target.product_name) && codeOk(code)
@@ -423,6 +498,37 @@ function buildUnderlyingTargetCodeIndex(
     }
   }
   return index
+}
+
+async function loadUnderlyingSubjectCodeHints(
+  targets: UnderlyingNavTarget[],
+): Promise<Map<string, Set<string>>> {
+  const rows = await query<{
+    underlying_name: string
+    underlying_product_code: string | null
+    subject_code: string
+  }>(
+    `SELECT DISTINCT underlying_name, underlying_product_code, subject_code
+     FROM ops_managed_fof_underlying
+     WHERE NULLIF(BTRIM(subject_code), '') IS NOT NULL`,
+  )
+
+  const hints = new Map<string, Set<string>>()
+  for (const row of rows) {
+    const code = row.subject_code.trim()
+    if (!code) continue
+    for (const target of targets) {
+      const beian = target.beian_hao?.trim().toUpperCase() ?? ""
+      const rowCode = row.underlying_product_code?.trim().toUpperCase() ?? ""
+      const nameOk = fundDisplayNamesMatch(row.underlying_name, target.product_name)
+      const codeOk = Boolean(beian && rowCode && rowCode === beian)
+      if (!nameOk && !codeOk) continue
+      const set = hints.get(target.product_name) ?? new Set<string>()
+      set.add(code)
+      hints.set(target.product_name, set)
+    }
+  }
+  return hints
 }
 
 /** Parameterized variant for prepared queries ($1 = beian, $2 = product name). */
@@ -619,45 +725,15 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
      WHERE f.product_name <> '合计'`,
   )
   const targetIndexByCode = buildUnderlyingTargetCodeIndex(targets)
+  const subjectCodeHints = await loadUnderlyingSubjectCodeHints(targets)
+  const knownSubjectCodes = [...new Set(
+    [...subjectCodeHints.values()].flatMap((codes) => [...codes]),
+  )]
 
-  const holdingCandidates = await query<{
-    subject_name: string
-    subject_code: string
-    symbol: string | null
-    valuation_date: string
-    price: string | null
-    quantity: string | null
-    market_value: string | null
-  }>(
-    `SELECT
-       TRIM(h.subject_name) AS subject_name,
-       h.subject_code,
-       h.symbol,
-       h.valuation_date::text AS valuation_date,
-       h.price, h.quantity, h.market_value
-     FROM ops_email_valuation_holdings h
-     WHERE h.valuation_date >= $1::date
-       AND h.include_in_detail = TRUE
-       AND COALESCE(h.market_value, h.cost, 0) > 0
-       AND h.row_kind NOT IN (
-         'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
-         'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
-       )
-       AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
-       AND (
-         h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
-         OR h.subject_code LIKE '1109%'
-         OR h.subject_code LIKE '1108%'
-         OR h.subject_name ~ '私募证券投资基金'
-         OR h.subject_name ~ '私募基金'
-         OR h.row_kind = 'other'
-       )
-     ORDER BY h.valuation_date ASC`,
-    [sinceDate],
-  )
+  const holdingCandidates = await loadManagedFofValuationHoldingRows(sinceDate, knownSubjectCodes)
 
   console.error(
-    `[managed-fof-underlying] scanning ${holdingCandidates.length} valuation holding rows since ${sinceDate}`,
+    `[managed-fof-underlying] scanning ${holdingCandidates.length} FOF 估值表 holding rows since ${sinceDate}`,
   )
 
   const seenHoldings = new Set<string>()
@@ -699,7 +775,9 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
 
     const attachTarget = (target: UnderlyingNavTarget) => {
       if (matchedTargets.has(target.product_name)) return
-      if (!matchValuationHoldingToTarget(row, target)) return
+      if (!matchValuationHoldingToTarget(row, target, {
+        subject_codes: subjectCodeHints.get(target.product_name),
+      })) return
       matchedTargets.add(target.product_name)
       const dedupe = `${target.product_name}\0${navDate}`
       if (seenHoldings.has(dedupe)) return
@@ -720,9 +798,14 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
     `[managed-fof-underlying] matched ${matchedHoldingRows} FOF underlying holding rows since ${sinceDate}`,
   )
 
-  const jsonbPoints = await appendHistoryFromValuationJsonb(sinceDate, seenHoldings, (name, code, point) => {
-    indexPoint(name, code, point)
-  })
+  const jsonbPoints = await appendHistoryFromValuationJsonb(
+    sinceDate,
+    seenHoldings,
+    (name, code, point) => {
+      indexPoint(name, code, point)
+    },
+    subjectCodeHints,
+  )
   if (jsonbPoints > 0) {
     console.error(`[managed-fof-underlying] JSONB 估值表 NAV history: ${jsonbPoints} points`)
   }
@@ -787,6 +870,7 @@ async function appendHistoryFromValuationJsonb(
   sinceDate: string,
   seenHoldings: Set<string>,
   indexPoint: (productName: string, beian: string | null, point: NavPoint) => void,
+  subjectCodeHints: Map<string, Set<string>>,
 ): Promise<number> {
   const { ensureEmailValuationTable } = await import("@/lib/server/email-valuation-pg")
   await ensureEmailValuationTable()
@@ -800,13 +884,30 @@ async function appendHistoryFromValuationJsonb(
 
   const targetIndexByCode = buildUnderlyingTargetCodeIndex(targets)
 
+  const managedProductExpr = "m.product_name"
+  const managedBeianExpr = fofUnderlyingBeianExpr(managedProductExpr)
+  const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
+
   const records = await query<{ valuation_date: string; holdings: ValuationRow[] }>(
-    `SELECT valuation_date::text, holdings
-     FROM ops_email_valuation_records
-     WHERE valuation_date >= $1::date
-       AND jsonb_array_length(holdings) > 0
-     ORDER BY valuation_date ASC`,
-    [sinceDate],
+    `WITH managed_fof AS (
+       SELECT
+         m.id AS managed_product_id,
+         m.product_name,
+         ${managedBeianExpr} AS beian_hao
+       ${buildManagedProductsFrom(managedProductExpr)}
+       WHERE m.product_name <> '合计'
+         AND m.product_name NOT ILIKE $2
+     )
+     SELECT r.valuation_date::text, r.holdings
+     FROM managed_fof mf
+     INNER JOIN ops_email_valuation_records r ON (
+       (NULLIF(BTRIM(mf.beian_hao), '') IS NOT NULL AND r.product_code = mf.beian_hao)
+       OR ${fundMatch}
+     )
+     WHERE r.valuation_date >= $1::date
+       AND jsonb_array_length(r.holdings) > 0
+     ORDER BY r.valuation_date ASC`,
+    [sinceDate, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
   )
 
   let saved = 0
@@ -839,7 +940,9 @@ async function appendHistoryFromValuationJsonb(
       const matchedTargets = new Set<string>()
       const attachTarget = (target: UnderlyingNavTarget) => {
         if (matchedTargets.has(target.product_name)) return
-        if (!matchValuationHoldingToTarget(holdingRow, target)) return
+        if (!matchValuationHoldingToTarget(holdingRow, target, {
+          subject_codes: subjectCodeHints.get(target.product_name),
+        })) return
         matchedTargets.add(target.product_name)
         const dedupe = `${target.product_name}\0${navDate}`
         if (seenHoldings.has(dedupe)) return

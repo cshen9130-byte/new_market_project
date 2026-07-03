@@ -13,9 +13,8 @@ const samples = [
 async function main() {
   const { query } = await import("../../lib/db.ts")
   const { addDays, BatchNavResolver } = await import("../../lib/server/list-cache-nav-batch.ts")
-  const { loadManagedUnderlyingNavHistory, matchValuationHoldingToTarget } = await import(
-    "../../lib/server/managed-fof-underlying-pg.ts",
-  )
+  const { loadManagedUnderlyingNavHistory, loadManagedFofValuationHoldingRows, matchValuationHoldingToTarget } =
+    await import("../../lib/server/managed-fof-underlying-pg.ts")
   const { fofUnderlyingNavLookupKeys } = await import("../../lib/server/fund-holding-code.ts")
   const { buildFofUnderlyingSummaryFrom, FOF_UNDERLYING_BEIAN_EXPR } = await import(
     "../../lib/server/fof-underlying-query.ts",
@@ -61,7 +60,7 @@ async function main() {
     console.log(s.name, summary)
   }
 
-  console.log("\n=== raw valuation holdings (name/code probe) ===")
+  console.log("\n=== raw valuation holdings (global symbol/name probe) ===")
   for (const s of samples) {
     const raw = await query(
       `SELECT valuation_date::text, symbol, subject_name, price::text, market_value::text
@@ -75,8 +74,34 @@ async function main() {
        LIMIT 5`,
       [since, s.beian, `%${s.name.slice(0, 4)}%`],
     )
-    console.log(`\n${s.name} (${s.beian}): ${raw.length} raw rows`)
+    console.log(`\n${s.name} (${s.beian}): ${raw.length} global raw rows`)
     for (const r of raw) console.log(" ", r)
+  }
+
+  const managedSubjectCodes = (
+    await query<{ subject_code: string }>(
+      `SELECT DISTINCT subject_code FROM ops_managed_fof_underlying
+       WHERE NULLIF(BTRIM(subject_code), '') IS NOT NULL`,
+    )
+  ).map((r) => r.subject_code.trim())
+
+  const fofScopedRows = await loadManagedFofValuationHoldingRows(since, managedSubjectCodes)
+  console.log(`\n=== FOF 估值表 scoped holdings since ${since}: ${fofScopedRows.length} total rows ===`)
+
+  console.log("\n=== via ops_managed_fof_underlying valuation_record_id ===")
+  for (const s of samples) {
+    const viaRecord = await query(
+      `SELECT h.valuation_date::text, h.symbol, h.subject_name, h.subject_code, h.price::text
+       FROM ops_managed_fof_underlying m
+       INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = m.valuation_record_id
+       WHERE UPPER(m.underlying_product_code) = $1
+          OR m.underlying_name ILIKE $2
+       ORDER BY h.valuation_date DESC
+       LIMIT 5`,
+      [s.beian, `%${s.name.slice(0, 4)}%`],
+    )
+    console.log(`\n${s.name}: ${viaRecord.length} rows on managed snapshot record(s)`)
+    for (const r of viaRecord) console.log(" ", r)
   }
 
   console.log("\n=== valuation holdings matched (JS matcher) ===")
@@ -92,26 +117,8 @@ async function main() {
       console.log(`\n${s.name}: no fof_underlying_summary target row`)
       continue
     }
-    const candidates = await query<{
-      subject_name: string
-      subject_code: string
-      symbol: string | null
-      valuation_date: string
-      price: string | null
-      market_value: string | null
-    }>(
-      `SELECT TRIM(subject_name) AS subject_name, subject_code, symbol,
-              valuation_date::text, price, market_value
-       FROM ops_email_valuation_holdings
-       WHERE valuation_date >= $1::date
-         AND include_in_detail = TRUE
-         AND COALESCE(market_value, cost, 0) > 0
-       ORDER BY valuation_date DESC
-       LIMIT 5000`,
-      [since],
-    )
-    const matched = candidates.filter((row) => matchValuationHoldingToTarget(row, target))
-    console.log(`\n${s.name} → target ${target.product_name} (${target.beian_hao ?? "?"}): ${matched.length} matched`)
+    const matched = fofScopedRows.filter((row) => matchValuationHoldingToTarget(row, target))
+    console.log(`\n${s.name} → target ${target.product_name} (${target.beian_hao ?? "?"}): ${matched.length} matched in FOF scope`)
     for (const r of matched.slice(0, 8)) {
       console.log(" ", {
         valuation_date: r.valuation_date,
