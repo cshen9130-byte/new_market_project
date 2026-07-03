@@ -1,9 +1,4 @@
 import { loadProjectEnvFiles, configureEtlDbTimeout } from "../../lib/server/load-project-env.ts"
-import {
-  buildFofUnderlyingSummaryFrom,
-  FOF_UNDERLYING_BEIAN_EXPR,
-} from "../../lib/server/fof-underlying-query.ts"
-import { valuationHoldingMatchSql } from "../../lib/server/managed-fof-underlying-pg.ts"
 
 loadProjectEnvFiles()
 configureEtlDbTimeout()
@@ -18,8 +13,13 @@ const samples = [
 async function main() {
   const { query } = await import("../../lib/db.ts")
   const { addDays, BatchNavResolver } = await import("../../lib/server/list-cache-nav-batch.ts")
-  const { loadManagedUnderlyingNavHistory } = await import("../../lib/server/managed-fof-underlying-pg.ts")
+  const { loadManagedUnderlyingNavHistory, valuationHoldingMatchSql } = await import(
+    "../../lib/server/managed-fof-underlying-pg.ts",
+  )
   const { fofUnderlyingNavLookupKeys } = await import("../../lib/server/fund-holding-code.ts")
+  const { buildFofUnderlyingSummaryFrom, FOF_UNDERLYING_BEIAN_EXPR } = await import(
+    "../../lib/server/fof-underlying-query.ts",
+  )
 
   const asOf = new Date().toISOString().slice(0, 10)
   const since = addDays(asOf, -400)
