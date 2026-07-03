@@ -2056,9 +2056,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       body: JSON.stringify({ pool_key: poolKey, label }),
     })
       .then(async (r) => {
-        const body = await r.json().catch(() => ({}))
+        const text = await r.text()
+        let body: Record<string, unknown> = {}
+        try { body = text ? JSON.parse(text) : {} } catch { body = { detail: text.slice(0, 200) } }
         if (!r.ok) {
-          throw new Error(`HTTP ${r.status}${body.detail ? ": " + body.detail : body.error ? ": " + body.error : ""}`)
+          const detail = typeof body.detail === "string" ? body.detail : ""
+          const errCode = typeof body.error === "string" ? body.error : `HTTP ${r.status}`
+          throw new Error(detail || errCode)
         }
         if (body?.pool?.label !== label) {
           throw new Error("服务器未确认保存，请重试")

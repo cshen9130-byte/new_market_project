@@ -68,16 +68,24 @@ async function _runEnsureTable(): Promise<void> {
         updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
       )
     `)
-    await query(`
-      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE tracking_custom_pools TO market_user
-    `).catch(() => {})
-    await query(`
-      GRANT USAGE, SELECT ON SEQUENCE tracking_custom_pools_id_seq TO market_user
-    `).catch(() => {})
     tableEnsured = true
-  } catch {
-    await query(`SELECT 1 FROM tracking_custom_pools LIMIT 0`)
-    tableEnsured = true
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `tracking_custom_pools 表不可用（${msg}）。请用 postgres 超级用户执行 scripts/db/010_create_tracking_custom_pools.sql`,
+    )
+  }
+}
+
+async function ensureCanonicalTeamRows(): Promise<void> {
+  for (let i = 0; i < DEFAULT_TEAM_POOLS.length; i++) {
+    const p = DEFAULT_TEAM_POOLS[i]
+    await query(
+      `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
+       SELECT $1, $2, 'team', '', $3, NOW()
+       WHERE NOT EXISTS (SELECT 1 FROM tracking_custom_pools WHERE pool_key = $1)`,
+      [p.pool_key, p.label, i + 1],
+    )
   }
 }
 
@@ -205,7 +213,12 @@ export async function GET(req: Request) {
   try {
     await ensureTable()
     if (scope === "both") {
-      await seedTeamDefaults()
+      try { await seedTeamDefaults() } catch (err) {
+        console.error("[tracking-funds/pools GET] seedTeamDefaults failed:", err)
+      }
+      try { await ensureCanonicalTeamRows() } catch (err) {
+        console.error("[tracking-funds/pools GET] ensureCanonicalTeamRows failed:", err)
+      }
       await seedMineDefault(userKey)
       const [team, mine] = await Promise.all([
         queryTeamPools(),
@@ -220,7 +233,12 @@ export async function GET(req: Request) {
       return NextResponse.json({ data: rows }, { headers: NO_STORE_HEADERS })
     }
 
-    await seedTeamDefaults()
+    try { await seedTeamDefaults() } catch (err) {
+      console.error("[tracking-funds/pools GET] seedTeamDefaults failed:", err)
+    }
+    try { await ensureCanonicalTeamRows() } catch (err) {
+      console.error("[tracking-funds/pools GET] ensureCanonicalTeamRows failed:", err)
+    }
     const rows = await queryTeamPools()
     return NextResponse.json({ data: rows }, { headers: NO_STORE_HEADERS })
   } catch (err) {
@@ -271,17 +289,33 @@ async function upsertPoolLabel(
   scope: "team" | "mine",
   userKey: string,
 ): Promise<PoolRow | null> {
-  const rows = await query<PoolRow>(
+  // Prefer UPDATE — renames only need UPDATE permission, not sequence INSERT.
+  const updated = await query<PoolRow>(
+    scope === "mine"
+      ? `UPDATE tracking_custom_pools
+         SET label = $2, updated_at = NOW()
+         WHERE pool_key = $1 AND scope = 'mine' AND user_key = $4
+         RETURNING pool_key, label, scope, user_key`
+      : `UPDATE tracking_custom_pools
+         SET label = $2, updated_at = NOW()
+         WHERE pool_key = $1 AND scope = 'team'
+         RETURNING pool_key, label, scope, user_key`,
+    scope === "mine"
+      ? [poolKey, cleanLabel, scope, userKey]
+      : [poolKey, cleanLabel],
+  )
+  if (updated.length > 0) return updated[0]
+
+  const inserted = await query<PoolRow>(
     `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
      SELECT $1, $2, $3, $4,
             COALESCE((SELECT MAX(sort_order) FROM tracking_custom_pools WHERE scope = $3), 0) + 1,
             NOW()
-     ON CONFLICT (pool_key)
-     DO UPDATE SET label = EXCLUDED.label, updated_at = NOW()
+     WHERE NOT EXISTS (SELECT 1 FROM tracking_custom_pools WHERE pool_key = $1)
      RETURNING pool_key, label, scope, user_key`,
     [poolKey, cleanLabel, scope, scope === "mine" ? userKey : ""],
   )
-  return rows[0] ?? null
+  return inserted[0] ?? null
 }
 
 export async function PATCH(req: Request) {
@@ -303,13 +337,21 @@ export async function PATCH(req: Request) {
   try {
     await ensureTable()
     if (scope === "team") {
-      await seedTeamDefaults()
+      try { await ensureCanonicalTeamRows() } catch (err) {
+        console.error("[tracking-funds/pools PATCH] ensureCanonicalTeamRows failed:", err)
+      }
     } else {
       await seedMineDefault(userKey)
     }
     const saved = await upsertPoolLabel(pool_key, cleanLabel, scope, userKey)
     if (!saved || saved.label !== cleanLabel) {
-      return NextResponse.json({ error: "save_failed" }, { status: 500, headers: NO_STORE_HEADERS })
+      return NextResponse.json(
+        {
+          error: "save_failed",
+          detail: `未找到产品池 ${pool_key}，或数据库无写入权限。请确认已执行 scripts/db/010_create_tracking_custom_pools.sql`,
+        },
+        { status: 500, headers: NO_STORE_HEADERS },
+      )
     }
     return NextResponse.json({ ok: true, pool: saved }, { headers: NO_STORE_HEADERS })
   } catch (err) {
