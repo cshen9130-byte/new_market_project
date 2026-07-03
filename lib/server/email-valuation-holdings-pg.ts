@@ -110,6 +110,8 @@ const CREATE_HOLDINGS_SQL = `
     ON ops_email_valuation_holdings (product_code, valuation_date DESC);
   CREATE INDEX IF NOT EXISTS idx_email_valuation_holdings_fund_date
     ON ops_email_valuation_holdings (fund_name, valuation_date DESC);
+  CREATE INDEX IF NOT EXISTS idx_email_valuation_holdings_valuation_date
+    ON ops_email_valuation_holdings (valuation_date DESC);
 `
 
 const CREATE_LATEST_SQL = `
@@ -154,6 +156,11 @@ const CREATE_LATEST_SQL = `
     ON ops_email_valuation_fund_holdings_latest (valuation_date DESC);
 `
 
+const MIGRATE_INDEXES_SQL = `
+  CREATE INDEX IF NOT EXISTS idx_email_valuation_holdings_valuation_date
+    ON ops_email_valuation_holdings (valuation_date DESC);
+`
+
 const MIGRATE_SQL = `
   DO $$
   BEGIN
@@ -177,10 +184,14 @@ const MIGRATE_SQL = `
 let tablesEnsured = false
 
 export async function ensureEmailValuationHoldingsTables(): Promise<void> {
-  if (tablesEnsured) return
+  if (tablesEnsured) {
+    await query(MIGRATE_INDEXES_SQL)
+    return
+  }
   await query(CREATE_HOLDINGS_SQL)
   await query(CREATE_LATEST_SQL)
   await query(MIGRATE_SQL)
+  await query(MIGRATE_INDEXES_SQL)
   tablesEnsured = true
 }
 

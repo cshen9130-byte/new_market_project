@@ -14,9 +14,10 @@
  * Prints JSON to stdout for nightly_etl.py to consume.
  */
 
-import { loadProjectEnvFiles } from "@/lib/server/load-project-env"
+import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-project-env"
 
 loadProjectEnvFiles()
+configureEtlDbTimeout()
 
 function parseDays(argv: string[]): number {
   const flag = argv.find((a) => a.startsWith("--days="))
@@ -54,7 +55,7 @@ async function main() {
       const { syncEmailValuationToProductTables } = await import(
         "@/lib/server/email-valuation-sync-pg"
       )
-      console.error("[email_nav_etl] refresh-only: backfilling valuation metrics from stored records…")
+      console.error("[email_nav_etl] refresh-only: backfilling custody 估值表 NAV into ops_email_nav_records…")
       try {
         const { backfillCustodyValuationNavFromRecords } = await import(
           "@/lib/server/email-valuation-nav-backfill"
@@ -67,22 +68,33 @@ async function main() {
         console.warn("[email_nav_etl] custody 估值表 NAV backfill skipped:", err)
       }
 
-      try {
-        const { backfillValuationMetricsFromRecords } = await import(
-          "@/lib/server/email-valuation-metrics-backfill"
-        )
-        const { refreshEmailValuationMetricsLatest } = await import(
-          "@/lib/server/email-valuation-metrics-pg"
-        )
-        const metricsBackfill = await backfillValuationMetricsFromRecords()
-        const metricsLatest = await refreshEmailValuationMetricsLatest()
+      if (!fofOnly) {
         console.error(
-          `[email_nav_etl] valuation metrics backfill done (records=${metricsBackfill.recordsUpdated}, latest=${metricsLatest.fundMetricsRefreshed})`,
+          "[email_nav_etl] re-extracting valuation metrics from stored holdings JSONB (may take several minutes, one UPDATE per record)…",
         )
-      } catch (err) {
-        console.warn("[email_nav_etl] valuation metrics backfill skipped:", err)
+        try {
+          const { backfillValuationMetricsFromRecords } = await import(
+            "@/lib/server/email-valuation-metrics-backfill"
+          )
+          const { refreshEmailValuationMetricsLatest } = await import(
+            "@/lib/server/email-valuation-metrics-pg"
+          )
+          const metricsBackfill = await backfillValuationMetricsFromRecords()
+          console.error(
+            `[email_nav_etl] valuation metrics JSONB backfill done (records=${metricsBackfill.recordsUpdated}) — rebuilding latest metrics tables…`,
+          )
+          const metricsLatest = await refreshEmailValuationMetricsLatest()
+          console.error(
+            `[email_nav_etl] valuation metrics latest tables done (fund=${metricsLatest.fundMetricsRefreshed}, fof=${metricsLatest.fofUnderlyingRefreshed})`,
+          )
+        } catch (err) {
+          console.warn("[email_nav_etl] valuation metrics backfill skipped:", err)
+        }
+      } else {
+        console.error("[email_nav_etl] --fof-only: skipping valuation metrics JSONB backfill (use full refresh-only for 在管产品 metrics)")
       }
 
+      console.error("[email_nav_etl] refresh-only: refreshing managed FOF underlying snapshot…")
       try {
         const { refreshManagedFofUnderlying } = await import("@/lib/server/managed-fof-underlying-pg")
         managedFofUnderlyingRefreshed = await refreshManagedFofUnderlying()
@@ -112,16 +124,18 @@ async function main() {
         }
       }
 
-      console.error("[email_nav_etl] refresh-only: syncing valuation metrics to product tables…")
-      try {
-        const sync = await syncEmailValuationToProductTables()
-        managedProductsValuationSynced = sync.managedProductsUpdated
-        fofUnderlyingMarketSynced = sync.fofUnderlyingUpdated
-        console.error(
-          `[email_nav_etl] valuation sync done (managed=${managedProductsValuationSynced}, fof=${fofUnderlyingMarketSynced})`,
-        )
-      } catch (err) {
-        console.warn("[email_nav_etl] valuation sync skipped (will enrich list caches instead):", err)
+      if (!fofOnly) {
+        console.error("[email_nav_etl] refresh-only: syncing valuation metrics to product tables…")
+        try {
+          const sync = await syncEmailValuationToProductTables()
+          managedProductsValuationSynced = sync.managedProductsUpdated
+          fofUnderlyingMarketSynced = sync.fofUnderlyingUpdated
+          console.error(
+            `[email_nav_etl] valuation sync done (managed=${managedProductsValuationSynced}, fof=${fofUnderlyingMarketSynced})`,
+          )
+        } catch (err) {
+          console.warn("[email_nav_etl] valuation sync skipped (will enrich list caches instead):", err)
+        }
       }
 
       if (refreshManaged) {

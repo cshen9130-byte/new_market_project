@@ -94,7 +94,14 @@ export async function backfillValuationMetricsFromRecords(): Promise<{ recordsUp
   )
 
   let recordsUpdated = 0
+  const total = records.length
+  if (total > 0) {
+    console.error(`[valuation-metrics-backfill] processing ${total} valuation records…`)
+  }
   for (const record of records) {
+    if (recordsUpdated > 0 && recordsUpdated % 100 === 0) {
+      console.error(`[valuation-metrics-backfill] ${recordsUpdated}/${total} records updated…`)
+    }
     const holdings = Array.isArray(record.holdings) ? record.holdings : []
     const analysis: ValuationAnalysis = {
       portfolio_data: holdings,
@@ -144,6 +151,10 @@ export async function backfillValuationMetricsFromRecords(): Promise<{ recordsUp
       ],
     )
     recordsUpdated++
+  }
+
+  if (total > 0) {
+    console.error(`[valuation-metrics-backfill] done — ${recordsUpdated}/${total} records updated`)
   }
 
   return { recordsUpdated }

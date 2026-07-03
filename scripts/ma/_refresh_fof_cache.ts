@@ -6,8 +6,9 @@
  * Recomputes ALL funds from BatchNavResolver — does not single out any fund,
  * so already-correct funds stay correct.
  */
-import { loadProjectEnvFiles } from "@/lib/server/load-project-env"
+import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-project-env"
 loadProjectEnvFiles()
+configureEtlDbTimeout()
 
 async function main() {
   const { query } = await import("@/lib/db")

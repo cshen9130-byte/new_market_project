@@ -133,7 +133,11 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   // recipient) can have their period-return columns computed once 2+ monthly
   // 估值表 attachments have been parsed.
   const valuationNavSince = addDays(asOfDate, -400)
+  logProgress(`loading 估值表 NAV history since ${valuationNavSince}…`)
   const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince)
+  logProgress(
+    `估值表 NAV history loaded (codes=${valuationNavHistory.byCode.size}, names=${valuationNavHistory.byName.size})`,
+  )
   navResolver.setValuationNavHistory(valuationNavHistory.byCode, valuationNavHistory.byName)
 
   const beianHaos = products.map((p) => p.beian_hao).filter(Boolean) as string[]

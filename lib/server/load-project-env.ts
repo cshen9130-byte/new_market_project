@@ -33,3 +33,10 @@ export function loadProjectEnvFiles(): void {
     base = path.dirname(base)
   }
 }
+
+/** ETL / cache-rebuild scripts need longer queries than the web app default (60s). */
+export function configureEtlDbTimeout(): void {
+  if (!process.env.DB_STATEMENT_TIMEOUT) {
+    process.env.DB_STATEMENT_TIMEOUT = "600000"
+  }
+}

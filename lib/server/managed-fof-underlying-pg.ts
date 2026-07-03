@@ -526,9 +526,7 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
   const byCode = new Map<string, NavPoint[]>()
   const byName = new Map<string, NavPoint[]>()
 
-  const productExpr = "m.product_name"
-  const beianExpr = fofUnderlyingBeianExpr(productExpr)
-  const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
+  // Historical FOF-holding NAV: scan normalized holdings directly (indexed by valuation_date).
   const underlyingKey = `NULLIF(BTRIM(UPPER(h.symbol)), '')`
 
   const holdingRows = await query<{
@@ -539,58 +537,32 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
     quantity: string | null
     market_value: string | null
   }>(
-    `WITH managed_fof AS (
-       SELECT
-         m.id AS managed_product_id,
-         m.product_name,
-         ${beianExpr} AS beian_hao
-       ${buildManagedProductsFrom(productExpr)}
-       WHERE m.product_name <> '合计'
-         AND m.product_name NOT ILIKE $2
-     ),
-     fof_valuations AS (
-       SELECT
-         mf.managed_product_id,
-         r.id AS valuation_record_id,
-         r.valuation_date
-       FROM managed_fof mf
-       INNER JOIN ops_email_valuation_records r ON (
-         (NULLIF(BTRIM(mf.beian_hao), '') IS NOT NULL AND r.product_code = mf.beian_hao)
-         OR ${fundMatch}
+    `SELECT DISTINCT ON (${underlyingKey}, h.valuation_date)
+       ${underlyingKey} AS underlying_product_code,
+       TRIM(h.subject_name) AS underlying_name,
+       h.valuation_date::text AS valuation_date,
+       h.price, h.quantity, h.market_value
+     FROM ops_email_valuation_holdings h
+     WHERE h.valuation_date >= $1::date
+       AND h.include_in_detail = TRUE
+       AND COALESCE(h.market_value, h.cost, 0) > 0
+       AND h.row_kind NOT IN (
+         'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
+         'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
        )
-       WHERE r.valuation_date >= $1::date
-     ),
-     ranked AS (
-       SELECT DISTINCT ON (${underlyingKey}, h.valuation_date)
-         ${underlyingKey} AS underlying_product_code,
-         TRIM(h.subject_name) AS underlying_name,
-         h.valuation_date::text AS valuation_date,
-         h.price, h.quantity, h.market_value
-       FROM fof_valuations fv
-       INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = fv.valuation_record_id
-       WHERE h.include_in_detail = TRUE
-         AND COALESCE(h.market_value, h.cost, 0) > 0
-         AND h.row_kind NOT IN (
-           'bank_deposit', 'receivable', 'payable', 'settlement_reserve',
-           'margin_deposit', 'clearing', 'derivative', 'stock', 'bond', 'repo'
-         )
-         AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
-         AND BTRIM(h.symbol) ~ '^[A-Za-z0-9]+$'
-         AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
-         AND (
-           h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
-           OR h.subject_code LIKE '1109%'
-           OR h.subject_code LIKE '1108%'
-           OR h.subject_name ~ '私募证券投资基金'
-           OR h.subject_name ~ '私募基金'
-           OR (h.row_kind = 'other' AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL)
-         )
-       ORDER BY ${underlyingKey}, h.valuation_date, h.market_value DESC NULLS LAST
-     )
-     SELECT underlying_product_code, underlying_name, valuation_date, price, quantity, market_value
-     FROM ranked
-     ORDER BY valuation_date DESC`,
-    [sinceDate, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
+       AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL
+       AND BTRIM(h.symbol) ~ '^[A-Za-z0-9]+$'
+       AND NOT ${SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF}
+       AND (
+         h.row_kind IN ('private_fund', 'fund_or_stock', 'fund', 'money_fund')
+         OR h.subject_code LIKE '1109%'
+         OR h.subject_code LIKE '1108%'
+         OR h.subject_name ~ '私募证券投资基金'
+         OR h.subject_name ~ '私募基金'
+         OR (h.row_kind = 'other' AND NULLIF(BTRIM(h.symbol), '') IS NOT NULL)
+       )
+     ORDER BY ${underlyingKey}, h.valuation_date, h.market_value DESC NULLS LAST`,
+    [sinceDate],
   )
 
   /** Legacy 估值表 codes remapped after ingest (e.g. SALF51 → ALF51B). */
