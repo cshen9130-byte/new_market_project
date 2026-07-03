@@ -20,10 +20,12 @@ import {
 } from "@/lib/server/fof-underlying-query"
 import {
   fundDisplayNamesMatch,
+  shareClassCodeMatchesProductLenient,
+  shareClassProductNamesMatch,
   sqlFundNameMatch,
   sqlShareClassCodeGuard,
+  sqlShareClassHoldingCodeGuard,
   sqlShareClassProductNameGuard,
-  shareClassCodeMatchesProduct,
 } from "@/lib/server/fund-name-match"
 import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode, isDirectEquityOrEtfValuationHolding } from "@/lib/server/fund-holding-code"
 import type { ValuationRow } from "@/lib/server/valuation-analyzer"
@@ -361,8 +363,66 @@ export function valuationHoldingMatchSql(
   const beianMatch = `NULLIF(BTRIM(UPPER(${beianExpr})), '') IS NOT NULL AND ${codePresent} AND TRIM(UPPER(${codeCol})) = TRIM(UPPER(${beianExpr})) AND ${sqlShareClassCodeGuard(codeCol, productNameExpr)}`
   const nameMatch = sqlFundNameMatch(nameCol, productNameExpr)
   const shareGuard = sqlShareClassProductNameGuard(nameCol, productNameExpr)
-  const codeShareGuard = `(NOT ${codePresent} OR ${sqlShareClassCodeGuard(codeCol, productNameExpr)})`
+  const codeShareGuard = sqlShareClassHoldingCodeGuard(codeCol, nameCol, productNameExpr)
   return `(${beianMatch} OR (${nameMatch} AND ${shareGuard} AND ${codeShareGuard}))`
+}
+
+export type ValuationHoldingMatchRow = {
+  subject_name: string
+  subject_code: string
+  symbol: string | null
+}
+
+export type UnderlyingNavTarget = {
+  product_name: string
+  beian_hao: string | null
+}
+
+export function resolveValuationHoldingCode(row: ValuationHoldingMatchRow): string | null {
+  return formatFundHoldingCode(
+    resolveFundHoldingCode(row.subject_code, row.subject_name, row.symbol) ?? row.symbol,
+  )
+}
+
+/** Match a normalized valuation holding row to a fof_underlying_summary target. */
+export function matchValuationHoldingToTarget(
+  row: ValuationHoldingMatchRow,
+  target: UnderlyingNavTarget,
+): boolean {
+  const subjectName = row.subject_name.trim()
+  const code = resolveValuationHoldingCode(row)
+  const beian = target.beian_hao?.trim().toUpperCase() ?? null
+  const lookupKeys = new Set(
+    fofUnderlyingNavLookupKeys(target.product_name, target.beian_hao, null).map((k) => k.toUpperCase()),
+  )
+
+  const codeOk = (c: string | null) =>
+    !c || shareClassCodeMatchesProductLenient(c, subjectName, target.product_name)
+
+  if (code && beian && code.toUpperCase() === beian) {
+    return shareClassProductNamesMatch(subjectName, target.product_name) && codeOk(code)
+  }
+  if (code && lookupKeys.has(code.toUpperCase())) {
+    return shareClassProductNamesMatch(subjectName, target.product_name) && codeOk(code)
+  }
+  if (!fundDisplayNamesMatch(subjectName, target.product_name)) return false
+  return codeOk(code)
+}
+
+function buildUnderlyingTargetCodeIndex(
+  targets: UnderlyingNavTarget[],
+): Map<string, UnderlyingNavTarget[]> {
+  const index = new Map<string, UnderlyingNavTarget[]>()
+  for (const target of targets) {
+    for (const key of fofUnderlyingNavLookupKeys(target.product_name, target.beian_hao, null)) {
+      if (!/^[A-Z0-9]+$/i.test(key)) continue
+      const upper = key.toUpperCase()
+      const list = index.get(upper) ?? []
+      if (!list.some((t) => t.product_name === target.product_name)) list.push(target)
+      index.set(upper, list)
+    }
+  }
+  return index
 }
 
 /** Parameterized variant for prepared queries ($1 = beian, $2 = product name). */
@@ -552,12 +612,16 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
 
   const productExpr = "f.product_name"
   const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
-  const holdingMatch = valuationHoldingMatchSql(beianExpr, productExpr, "h")
 
-  const holdingRows = await query<{
-    product_name: string
-    beian_hao: string | null
-    underlying_name: string
+  const targets = await query<UnderlyingNavTarget>(
+    `SELECT f.product_name, ${beianExpr} AS beian_hao
+     ${buildFofUnderlyingSummaryFrom(productExpr)}
+     WHERE f.product_name <> '合计'`,
+  )
+  const targetIndexByCode = buildUnderlyingTargetCodeIndex(targets)
+
+  const holdingCandidates = await query<{
+    subject_name: string
     subject_code: string
     symbol: string | null
     valuation_date: string
@@ -565,18 +629,14 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
     quantity: string | null
     market_value: string | null
   }>(
-    `SELECT DISTINCT ON (f.id, h.valuation_date)
-       f.product_name,
-       ${beianExpr} AS beian_hao,
-       TRIM(h.subject_name) AS underlying_name,
+    `SELECT
+       TRIM(h.subject_name) AS subject_name,
        h.subject_code,
        h.symbol,
        h.valuation_date::text AS valuation_date,
        h.price, h.quantity, h.market_value
-     ${buildFofUnderlyingSummaryFrom(productExpr)}
-     INNER JOIN ops_email_valuation_holdings h ON (${holdingMatch})
-     WHERE f.product_name <> '合计'
-       AND h.valuation_date >= $1::date
+     FROM ops_email_valuation_holdings h
+     WHERE h.valuation_date >= $1::date
        AND h.include_in_detail = TRUE
        AND COALESCE(h.market_value, h.cost, 0) > 0
        AND h.row_kind NOT IN (
@@ -592,12 +652,12 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
          OR h.subject_name ~ '私募基金'
          OR h.row_kind = 'other'
        )
-     ORDER BY f.id, h.valuation_date, h.market_value DESC NULLS LAST`,
+     ORDER BY h.valuation_date ASC`,
     [sinceDate],
   )
 
   console.error(
-    `[managed-fof-underlying] matched ${holdingRows.length} FOF underlying holding rows since ${sinceDate}`,
+    `[managed-fof-underlying] scanning ${holdingCandidates.length} valuation holding rows since ${sinceDate}`,
   )
 
   const seenHoldings = new Set<string>()
@@ -624,24 +684,41 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
     }
   }
 
-  for (const row of holdingRows) {
-    const name = row.underlying_name
-    const code =
-      formatFundHoldingCode(
-        resolveFundHoldingCode(row.subject_code, name, row.symbol) ?? row.symbol,
-      )
+  let matchedHoldingRows = 0
+
+  for (const row of holdingCandidates) {
+    const name = row.subject_name
+    const code = resolveValuationHoldingCode(row)
     if (!code && !/私募/u.test(name)) continue
 
     const nav = resolveNavFromValuationTable(row.price, row.quantity, row.market_value)
     if (nav == null || nav <= 0) continue
 
     const navDate = row.valuation_date.slice(0, 10)
-    const dedupe = `${row.product_name}\0${navDate}`
-    if (seenHoldings.has(dedupe)) continue
-    seenHoldings.add(dedupe)
+    const matchedTargets = new Set<string>()
 
-    indexPoint(row.product_name, row.beian_hao ?? code, { nav, nav_date: navDate })
+    const attachTarget = (target: UnderlyingNavTarget) => {
+      if (matchedTargets.has(target.product_name)) return
+      if (!matchValuationHoldingToTarget(row, target)) return
+      matchedTargets.add(target.product_name)
+      const dedupe = `${target.product_name}\0${navDate}`
+      if (seenHoldings.has(dedupe)) return
+      seenHoldings.add(dedupe)
+      matchedHoldingRows++
+      indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate })
+    }
+
+    if (code) {
+      for (const target of targetIndexByCode.get(code.toUpperCase()) ?? []) attachTarget(target)
+    }
+    if (matchedTargets.size === 0) {
+      for (const target of targets) attachTarget(target)
+    }
   }
+
+  console.error(
+    `[managed-fof-underlying] matched ${matchedHoldingRows} FOF underlying holding rows since ${sinceDate}`,
+  )
 
   const jsonbPoints = await appendHistoryFromValuationJsonb(sinceDate, seenHoldings, (name, code, point) => {
     indexPoint(name, code, point)
@@ -721,6 +798,8 @@ async function appendHistoryFromValuationJsonb(
      WHERE f.product_name <> '合计'`,
   )
 
+  const targetIndexByCode = buildUnderlyingTargetCodeIndex(targets)
+
   const records = await query<{ valuation_date: string; holdings: ValuationRow[] }>(
     `SELECT valuation_date::text, holdings
      FROM ops_email_valuation_records
@@ -747,6 +826,7 @@ async function appendHistoryFromValuationJsonb(
       const code = formatFundHoldingCode(
         resolveFundHoldingCode(subjectCode, subjectName, symbol) ?? symbol,
       )
+      const holdingRow: ValuationHoldingMatchRow = { subject_name: subjectName, subject_code: subjectCode, symbol }
       if (!code && !/私募/u.test(subjectName)) continue
 
       const nav = resolveNavFromValuationTable(
@@ -756,23 +836,23 @@ async function appendHistoryFromValuationJsonb(
       )
       if (nav == null || nav <= 0) continue
 
-      for (const target of targets) {
-        const beian = target.beian_hao?.trim().toUpperCase() ?? null
-        const codeMatch = Boolean(
-          beian
-          && code?.toUpperCase() === beian
-          && shareClassCodeMatchesProduct(code, target.product_name),
-        )
-        const nameMatch = fundDisplayNamesMatch(subjectName, target.product_name)
-        if (!codeMatch && !nameMatch) continue
-        if (code && !shareClassCodeMatchesProduct(code, target.product_name)) continue
-
+      const matchedTargets = new Set<string>()
+      const attachTarget = (target: UnderlyingNavTarget) => {
+        if (matchedTargets.has(target.product_name)) return
+        if (!matchValuationHoldingToTarget(holdingRow, target)) return
+        matchedTargets.add(target.product_name)
         const dedupe = `${target.product_name}\0${navDate}`
-        if (seenHoldings.has(dedupe)) continue
+        if (seenHoldings.has(dedupe)) return
         seenHoldings.add(dedupe)
-        indexPoint(target.product_name, beian ?? code, { nav, nav_date: navDate })
+        indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate })
         saved++
-        break
+      }
+
+      if (code) {
+        for (const target of targetIndexByCode.get(code.toUpperCase()) ?? []) attachTarget(target)
+      }
+      if (matchedTargets.size === 0) {
+        for (const target of targets) attachTarget(target)
       }
     }
   }

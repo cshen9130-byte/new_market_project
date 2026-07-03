@@ -13,13 +13,14 @@ const samples = [
 async function main() {
   const { query } = await import("../../lib/db.ts")
   const { addDays, BatchNavResolver } = await import("../../lib/server/list-cache-nav-batch.ts")
-  const { loadManagedUnderlyingNavHistory, valuationHoldingMatchSql } = await import(
+  const { loadManagedUnderlyingNavHistory, matchValuationHoldingToTarget } = await import(
     "../../lib/server/managed-fof-underlying-pg.ts",
   )
   const { fofUnderlyingNavLookupKeys } = await import("../../lib/server/fund-holding-code.ts")
   const { buildFofUnderlyingSummaryFrom, FOF_UNDERLYING_BEIAN_EXPR } = await import(
     "../../lib/server/fof-underlying-query.ts",
   )
+  const { sqlFundNameMatch } = await import("../../lib/server/fund-name-match.ts")
 
   const asOf = new Date().toISOString().slice(0, 10)
   const since = addDays(asOf, -400)
@@ -48,22 +49,77 @@ async function main() {
   console.log("\n=== ops_managed_fof_underlying (latest snapshot) ===")
   for (const row of managedRows) console.log(" ", row)
 
-  console.log("\n=== valuation holdings matched to fof_underlying_summary ===")
-  const beianExpr = FOF_UNDERLYING_BEIAN_EXPR
-  const holdingMatch = valuationHoldingMatchSql(beianExpr, "f.product_name", "h")
+  console.log("\n=== fof_underlying_summary rows ===")
   for (const s of samples) {
-    const rows = await query(
-      `SELECT h.valuation_date::text, h.symbol, h.subject_name, h.price, h.market_value
+    const summary = await query<{ product_name: string; beian_hao: string | null }>(
+      `SELECT f.product_name, ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao
        ${buildFofUnderlyingSummaryFrom("f.product_name")}
-       INNER JOIN ops_email_valuation_holdings h ON (${holdingMatch})
-       WHERE f.product_name = $1
-         AND h.valuation_date >= $2::date
-       ORDER BY h.valuation_date DESC
-       LIMIT 8`,
-      [s.name, since],
+       WHERE ${sqlFundNameMatch("f.product_name", "$1")}
+       LIMIT 3`,
+      [s.name],
     )
-    console.log(`\n${s.name}: ${rows.length} matched holding rows`)
-    for (const r of rows) console.log(" ", r)
+    console.log(s.name, summary)
+  }
+
+  console.log("\n=== raw valuation holdings (name/code probe) ===")
+  for (const s of samples) {
+    const raw = await query(
+      `SELECT valuation_date::text, symbol, subject_name, price::text, market_value::text
+       FROM ops_email_valuation_holdings
+       WHERE valuation_date >= $1::date
+         AND (
+           UPPER(symbol) = $2
+           OR subject_name ILIKE $3
+         )
+       ORDER BY valuation_date DESC
+       LIMIT 5`,
+      [since, s.beian, `%${s.name.slice(0, 4)}%`],
+    )
+    console.log(`\n${s.name} (${s.beian}): ${raw.length} raw rows`)
+    for (const r of raw) console.log(" ", r)
+  }
+
+  console.log("\n=== valuation holdings matched (JS matcher) ===")
+  const targets = await query<{ product_name: string; beian_hao: string | null }>(
+    `SELECT f.product_name, ${FOF_UNDERLYING_BEIAN_EXPR} AS beian_hao
+     ${buildFofUnderlyingSummaryFrom("f.product_name")}
+     WHERE f.product_name <> '合计'`,
+  )
+  for (const s of samples) {
+    const target = targets.find((t) => t.product_name === s.name)
+      ?? targets.find((t) => t.product_name.includes(s.name.slice(0, 4)))
+    if (!target) {
+      console.log(`\n${s.name}: no fof_underlying_summary target row`)
+      continue
+    }
+    const candidates = await query<{
+      subject_name: string
+      subject_code: string
+      symbol: string | null
+      valuation_date: string
+      price: string | null
+      market_value: string | null
+    }>(
+      `SELECT TRIM(subject_name) AS subject_name, subject_code, symbol,
+              valuation_date::text, price, market_value
+       FROM ops_email_valuation_holdings
+       WHERE valuation_date >= $1::date
+         AND include_in_detail = TRUE
+         AND COALESCE(market_value, cost, 0) > 0
+       ORDER BY valuation_date DESC
+       LIMIT 5000`,
+      [since],
+    )
+    const matched = candidates.filter((row) => matchValuationHoldingToTarget(row, target))
+    console.log(`\n${s.name} → target ${target.product_name} (${target.beian_hao ?? "?"}): ${matched.length} matched`)
+    for (const r of matched.slice(0, 8)) {
+      console.log(" ", {
+        valuation_date: r.valuation_date,
+        symbol: r.symbol,
+        subject_name: r.subject_name,
+        price: r.price,
+      })
+    }
   }
 
   const history = await loadManagedUnderlyingNavHistory(since)

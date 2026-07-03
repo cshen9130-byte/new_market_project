@@ -141,6 +141,34 @@ export function shareClassCodeMatchesProduct(code: string, productName: string):
   return !/[ABC]$/.test(c)
 }
 
+/** Allow parent codes without A/B/C suffix when subject name already confirms share class. */
+export function shareClassCodeMatchesProductLenient(
+  code: string,
+  subjectName: string,
+  productName: string,
+): boolean {
+  if (shareClassCodeMatchesProduct(code, productName)) return true
+  const c = String(code ?? "").trim().toUpperCase()
+  if (!c) return true
+  if (shareClassProductNamesMatch(subjectName, productName) && !/[ABC]$/.test(c)) return true
+  return false
+}
+
+/** SQL: code suffix guard for valuation holdings when name may carry share class. */
+export function sqlShareClassHoldingCodeGuard(
+  codeCol: string,
+  nameCol: string,
+  productNameExpr: string,
+): string {
+  const codePresent = `NULLIF(BTRIM(${codeCol}), '') IS NOT NULL`
+  const strict = sqlShareClassCodeGuard(codeCol, productNameExpr)
+  const parentOk = `(
+    ${sqlShareClassProductNameGuard(nameCol, productNameExpr)}
+    AND NOT (TRIM(UPPER(${codeCol})) ~ '[ABC]$')
+  )`
+  return `(NOT ${codePresent} OR ${strict} OR ${parentOk})`
+}
+
 function jsFundNameBase(name: string): string {
   return name
     .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
