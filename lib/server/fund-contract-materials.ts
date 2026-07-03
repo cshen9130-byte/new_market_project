@@ -1,10 +1,15 @@
 import { createHash } from "crypto"
 import { promises as fs } from "fs"
 import path from "path"
+import mammoth from "mammoth"
+import * as XLSX from "xlsx"
 import { query } from "@/lib/db"
+import { readFileDocumentText } from "@/lib/server/knowledge-base"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024
+const HTML_PREVIEW_EXTENSIONS = new Set([".doc", ".docx", ".xls", ".xlsx"])
+
 const ALLOWED_EXTENSIONS = new Set([
   ".pdf",
   ".doc",
@@ -50,6 +55,76 @@ function mimeTypeForFilename(fileName: string) {
 
 function sanitizeFilename(name: string) {
   return name.replace(/[^\w\u4e00-\u9fff.\-()+（）\s]/g, "_").replace(/\s+/g, " ").trim() || "contract.pdf"
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+function buildPreviewHtml(title: string, body: string) {
+  return `<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 24px;
+        background: #ffffff;
+        color: #111827;
+        line-height: 1.6;
+        word-break: break-word;
+      }
+      h1, h2, h3, h4, h5, h6 {
+        margin: 0 0 12px;
+        line-height: 1.35;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 16px 0;
+        font-size: 14px;
+      }
+      th, td {
+        border: 1px solid #d1d5db;
+        padding: 8px 10px;
+        vertical-align: top;
+      }
+      th {
+        background: #f3f4f6;
+        font-weight: 600;
+      }
+      section {
+        margin-bottom: 24px;
+      }
+      img {
+        max-width: 100%;
+        height: auto;
+      }
+      pre {
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>${body}</body>
+</html>`
+}
+
+export function needsHtmlPreview(filename: string) {
+  return HTML_PREVIEW_EXTENSIONS.has(getExtension(filename))
 }
 
 async function ensureTable() {
@@ -164,6 +239,70 @@ export async function readFundContractMaterialFile(id: number) {
   } catch {
     return null
   }
+}
+
+export async function readFundContractMaterialPreview(id: number) {
+  const row = await getFundContractMaterialById(id)
+  if (!row) return null
+
+  const ext = getExtension(row.original_filename)
+  if (!HTML_PREVIEW_EXTENSIONS.has(ext)) return null
+
+  const absolutePath = getServerStoragePath("fund-contracts", row.beian_hao, row.storage_filename)
+
+  if (ext === ".docx") {
+    try {
+      const buffer = await fs.readFile(absolutePath)
+      const parsed = await mammoth.convertToHtml({ buffer })
+      if (parsed.value) {
+        return {
+          content: buildPreviewHtml(row.original_filename, parsed.value),
+          contentType: "text/html; charset=utf-8",
+        }
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  if (ext === ".xlsx" || ext === ".xls") {
+    try {
+      const workbook = XLSX.read(await fs.readFile(absolutePath), { type: "buffer" })
+      const sections = workbook.SheetNames.map((sheetName) => {
+        const worksheet = workbook.Sheets[sheetName]
+        const sheetHtml = XLSX.utils.sheet_to_html(worksheet)
+        return `<section><h2>${escapeHtml(sheetName)}</h2>${sheetHtml}</section>`
+      }).join("")
+      if (sections) {
+        return {
+          content: buildPreviewHtml(row.original_filename, sections),
+          contentType: "text/html; charset=utf-8",
+        }
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  const text = await readFileDocumentText(absolutePath, ext)
+  const body = ext === ".doc" || ext === ".docx"
+    ? text.split(/\n+/).filter((p: string) => p.trim()).map((p: string) => `<p>${escapeHtml(p.trim())}</p>`).join("\n")
+    : `<pre>${escapeHtml(text)}</pre>`
+  return {
+    content: buildPreviewHtml(row.original_filename, body),
+    contentType: "text/html; charset=utf-8",
+  }
+}
+
+export async function deleteFundContractMaterial(id: number): Promise<boolean> {
+  const row = await getFundContractMaterialById(id)
+  if (!row) return false
+
+  await query(`DELETE FROM ops_fund_contract_materials WHERE id = $1`, [id])
+
+  const absolutePath = getServerStoragePath("fund-contracts", row.beian_hao, row.storage_filename)
+  await fs.unlink(absolutePath).catch(() => undefined)
+  return true
 }
 
 export { mimeTypeForFilename }

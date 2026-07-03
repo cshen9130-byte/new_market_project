@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server"
-import { readFundContractMaterialFile } from "@/lib/server/fund-contract-materials"
+import {
+  readFundContractMaterialFile,
+  readFundContractMaterialPreview,
+} from "@/lib/server/fund-contract-materials"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -22,6 +25,20 @@ export async function GET(
 
     const { searchParams } = new URL(req.url)
     const download = searchParams.get("download") === "1"
+    const preview = searchParams.get("preview") === "1"
+
+    if (preview) {
+      const previewContent = await readFundContractMaterialPreview(recordId)
+      if (previewContent) {
+        return new NextResponse(previewContent.content, {
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": previewContent.contentType,
+          },
+        })
+      }
+    }
+
     const encoded = encodeURIComponent(file.filename)
     const disposition = download
       ? `attachment; filename*=UTF-8''${encoded}`
