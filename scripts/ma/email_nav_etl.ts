@@ -94,6 +94,21 @@ async function main() {
         console.error("[email_nav_etl] --fof-only: skipping valuation metrics JSONB backfill (use full refresh-only for 在管产品 metrics)")
       }
 
+      if (refreshFof) {
+        console.error("[email_nav_etl] refresh-only: backfilling normalized valuation holdings from JSONB…")
+        try {
+          const { backfillValuationHoldingsFromRecords } = await import(
+            "@/lib/server/email-valuation-holdings-pg"
+          )
+          const hb = await backfillValuationHoldingsFromRecords()
+          console.error(
+            `[email_nav_etl] valuation holdings backfill done (records=${hb.recordsProcessed}, rows=${hb.holdingsSaved})`,
+          )
+        } catch (err) {
+          console.warn("[email_nav_etl] valuation holdings backfill skipped:", err)
+        }
+      }
+
       console.error("[email_nav_etl] refresh-only: refreshing managed FOF underlying snapshot…")
       try {
         const { refreshManagedFofUnderlying } = await import("@/lib/server/managed-fof-underlying-pg")

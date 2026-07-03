@@ -19,19 +19,47 @@ async function main() {
   const asOf = new Date().toISOString().slice(0, 10)
   const since = addDays(asOf, -400)
 
-  console.log("=== valuation holdings sample ===")
+  const [holdingsCount, jsonbCount, managedRows] = await Promise.all([
+    query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ops_email_valuation_holdings`),
+    query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM ops_email_valuation_records WHERE jsonb_array_length(holdings) > 0`,
+    ),
+    query<{ underlying_name: string; underlying_product_code: string | null; valuation_date: string; price: string | null }>(
+      `SELECT underlying_name, underlying_product_code, valuation_date::text, price::text
+       FROM ops_managed_fof_underlying
+       WHERE underlying_name ILIKE ANY($1::text[])
+          OR UPPER(underlying_product_code) = ANY($2::text[])
+       ORDER BY valuation_date DESC`,
+      [
+        samples.map((s) => `%${s.name.slice(0, 4)}%`),
+        samples.map((s) => s.beian),
+      ],
+    ),
+  ])
+  console.log("table counts:", {
+    ops_email_valuation_holdings: holdingsCount[0]?.n,
+    ops_email_valuation_records_with_jsonb: jsonbCount[0]?.n,
+  })
+  console.log("\n=== ops_managed_fof_underlying (latest snapshot) ===")
+  for (const row of managedRows) console.log(" ", row)
+
+  console.log("\n=== valuation holdings sample (normalized table) ===")
   for (const s of samples) {
     const rows = await query(
-      `SELECT h.valuation_date::text, h.symbol, h.subject_code, h.price, h.quantity, h.market_value
+      `SELECT h.valuation_date::text, h.symbol, h.subject_code, h.subject_name, h.price, h.market_value
        FROM ops_email_valuation_holdings h
        WHERE h.valuation_date >= $1::date
-         AND (UPPER(h.symbol) = $2 OR h.subject_name ILIKE $3)
+         AND (
+           UPPER(h.symbol) = $2
+           OR h.subject_name ILIKE $3
+           OR h.subject_name ILIKE $4
+         )
        ORDER BY h.valuation_date DESC
-       LIMIT 8`,
-      [since, s.beian, `%${s.name.slice(0, 4)}%`],
+       LIMIT 5`,
+      [since, s.beian, `%${s.name}%`, `%${s.name.slice(0, 4)}%`],
     )
-    console.log(`\n${s.name} (${s.beian}): ${rows.length} holding rows`)
-    for (const r of rows.slice(0, 5)) console.log(" ", r)
+    console.log(`\n${s.name} (${s.beian}): ${rows.length} normalized holding rows`)
+    for (const r of rows) console.log(" ", r)
   }
 
   const history = await loadManagedUnderlyingNavHistory(since)
@@ -45,7 +73,14 @@ async function main() {
       if (codePts.length) points.set(`code:${k}`, codePts.length)
       if (namePts.length) points.set(`name:${k}`, namePts.length)
     }
-    console.log(s.name, Object.fromEntries(points))
+    const samplePts = (() => {
+      for (const k of keys) {
+        const arr = history.byCode.get(k.toUpperCase()) ?? history.byName.get(k)
+        if (arr?.length) return arr.slice(0, 3)
+      }
+      return []
+    })()
+    console.log(s.name, { keys: Object.fromEntries(points), samplePts })
   }
 
   const resolver = await BatchNavResolver.create(
@@ -69,12 +104,7 @@ async function main() {
        WHERE f.product_name = $1`,
       [s.name],
     )
-    console.log(s.name, {
-      latest,
-      daily,
-      periods,
-      cache: cache[0] ?? null,
-    })
+    console.log(s.name, { latest, daily, periods, cache: cache[0] ?? null })
   }
 
   process.exit(0)

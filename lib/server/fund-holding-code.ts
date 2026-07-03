@@ -144,6 +144,39 @@ export function sqlExcludeFofUnderlyingProduct(productNameExpr: string, beianExp
   )`
 }
 
+/** JS equivalent of SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF for JSONB row parsing. */
+export function isDirectEquityOrEtfValuationHolding(
+  subjectName: string,
+  subjectCode: string,
+  symbol: string | null | undefined,
+  rowKind: string | null | undefined,
+): boolean {
+  const name = String(subjectName ?? "")
+  const kind = String(rowKind ?? "")
+  const sym = String(symbol ?? "").trim()
+  const compactCode = String(subjectCode ?? "").replace(/\s/g, "").replace(/\./g, "")
+
+  if (/ETF/i.test(name)) return true
+  if (kind === "stock") return true
+  if (
+    kind === "fund_or_stock"
+    && !/基金|私募|ETF/i.test(name)
+    && /^\d{6}$/.test(sym)
+    && (compactCode.startsWith("1102") || compactCode.startsWith("1001"))
+    && isAshareStockTicker(sym)
+  ) {
+    return true
+  }
+  if (
+    (kind === "fund" || kind === "fund_or_stock")
+    && !/基金|私募/i.test(name)
+    && isExchangeEtfTicker(sym)
+  ) {
+    return true
+  }
+  return false
+}
+
 /** SQL fragment: true when valuation holding alias should be excluded from FOF底层 extraction. */
 export const SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF = `(
   h.subject_name ~* 'ETF'

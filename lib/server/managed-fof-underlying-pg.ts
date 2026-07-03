@@ -19,7 +19,8 @@ import {
   fofUnderlyingBeianExpr,
 } from "@/lib/server/fof-underlying-query"
 import { sqlFundNameMatch, sqlEmailNavShareClassGuard, sqlShareClassCodeGuard } from "@/lib/server/fund-name-match"
-import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode } from "@/lib/server/fund-holding-code"
+import { backfillFundHoldingSymbols, fofUnderlyingNavLookupKeys, resolveFundHoldingCode, SQL_MANAGED_FOF_UNDERLYING_IS_DIRECT_EQUITY_OR_ETF, SQL_VALUATION_HOLDING_IS_DIRECT_EQUITY_OR_ETF, formatFundHoldingCode, isDirectEquityOrEtfValuationHolding } from "@/lib/server/fund-holding-code"
+import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 
 /** Managed products excluded from FOF underlying extraction (non-FOF). */
 export const MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN = "%恒盈2号%"
@@ -605,6 +606,10 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
     indexPoint(name, code, { nav, nav_date: navDate })
   }
 
+  await appendHistoryFromValuationJsonb(sinceDate, seenHoldings, (name, code, point) => {
+    indexPoint(name, code, point)
+  })
+
   const { loadCustodyValuationNavHistory } = await import("@/lib/server/email-valuation-nav-backfill")
   const custody = await loadCustodyValuationNavHistory(sinceDate)
   for (const [code, points] of custody.byCode) {
@@ -622,6 +627,92 @@ export async function loadManagedUnderlyingNavHistory(sinceDate: string): Promis
   }
 
   return { byCode, byName }
+}
+
+const EXCLUDED_ROW_KINDS = new Set([
+  "bank_deposit", "receivable", "payable", "settlement_reserve",
+  "margin_deposit", "clearing", "derivative", "stock", "bond", "repo",
+])
+
+function parseHoldingAmount(value: unknown): number {
+  const n = parseFloat(String(value ?? ""))
+  return Number.isFinite(n) ? n : 0
+}
+
+function isPrivateFundUnderlyingValuationRow(row: ValuationRow): boolean {
+  if (row.include_in_detail === false) return false
+  const marketValue = parseHoldingAmount(row.market_value ?? row.signed_market_value ?? row.notional_value)
+  const cost = parseHoldingAmount(row.cost ?? row.signed_cost)
+  if (marketValue <= 0 && cost <= 0) return false
+
+  const subjectCode = String(row.code ?? "")
+  const subjectName = String(row.name ?? "")
+  const rowKind = String(row.row_kind ?? "")
+  const symbol = row.symbol != null ? String(row.symbol) : null
+
+  if (EXCLUDED_ROW_KINDS.has(rowKind)) return false
+  if (isDirectEquityOrEtfValuationHolding(subjectName, subjectCode, symbol, rowKind)) return false
+
+  return (
+    rowKind === "private_fund"
+    || rowKind === "fund_or_stock"
+    || rowKind === "fund"
+    || rowKind === "money_fund"
+    || subjectCode.startsWith("1109")
+    || subjectCode.startsWith("1108")
+    || /私募证券投资基金|私募基金/u.test(subjectName)
+    || rowKind === "other"
+  )
+}
+
+/** Parse FOF underlying NAV points from stored 估值表 JSONB (when normalized holdings table is empty). */
+async function appendHistoryFromValuationJsonb(
+  sinceDate: string,
+  seenHoldings: Set<string>,
+  indexPoint: (productName: string, beian: string | null, point: NavPoint) => void,
+): Promise<number> {
+  const { ensureEmailValuationTable } = await import("@/lib/server/email-valuation-pg")
+  await ensureEmailValuationTable()
+
+  const records = await query<{ valuation_date: string; holdings: ValuationRow[] }>(
+    `SELECT valuation_date::text, holdings
+     FROM ops_email_valuation_records
+     WHERE valuation_date >= $1::date
+       AND jsonb_array_length(holdings) > 0
+     ORDER BY valuation_date ASC`,
+    [sinceDate],
+  )
+
+  let saved = 0
+  for (const record of records) {
+    const navDate = record.valuation_date.slice(0, 10)
+    const rows = Array.isArray(record.holdings) ? record.holdings : []
+    for (const row of rows) {
+      if (!isPrivateFundUnderlyingValuationRow(row)) continue
+
+      const name = String(row.name ?? "").trim()
+      const subjectCode = String(row.code ?? "")
+      const symbol = row.symbol != null ? String(row.symbol) : null
+      const code = formatFundHoldingCode(
+        resolveFundHoldingCode(subjectCode, name, symbol) ?? symbol,
+      )
+      if (!code && !/私募/u.test(name)) continue
+
+      const nav = resolveNavFromValuationTable(
+        row.price ?? row.current_price,
+        row.quantity ?? row.position ?? row.volume,
+        row.market_value ?? row.signed_market_value,
+      )
+      if (nav == null || nav <= 0) continue
+
+      const dedupe = `${code ?? name}\0${navDate}`
+      if (seenHoldings.has(dedupe)) continue
+      seenHoldings.add(dedupe)
+      indexPoint(name, code, { nav, nav_date: navDate })
+      saved++
+    }
+  }
+  return saved
 }
 
 export function resolveManagedUnderlyingValuationNav(
