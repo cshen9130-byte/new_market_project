@@ -9,6 +9,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react"
 import {
   AlignCenter,
@@ -292,7 +293,7 @@ function FormattingToolbar({
 }) {
   const [openPicker, setOpenPicker] = useState<"text" | "bg" | null>(null)
 
-  function iconBtn(active: boolean, title: string, onClick: () => void, children: JSX.Element) {
+  function iconBtn(active: boolean, title: string, onClick: () => void, children: ReactNode) {
     return (
       <button
         type="button"
