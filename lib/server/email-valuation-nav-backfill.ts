@@ -12,6 +12,7 @@ import {
   isFofUnderlyingValuationEmailRow,
   isPlausibleEmailUnitNav,
 } from "@/lib/server/email-nav-query"
+import type { NavPoint } from "@/lib/server/list-cache-nav-batch"
 import { query } from "@/lib/db"
 
 type ValuationNavRow = {
@@ -105,4 +106,89 @@ export async function backfillCustodyValuationNavFromRecords(options?: {
 
   const navBackfilled = await upsertEmailNavRecords(inserts)
   return { navBackfilled }
+}
+
+function appendNavPoint(
+  map: Map<string, NavPoint[]>,
+  key: string,
+  point: NavPoint,
+  replaceExisting = false,
+): void {
+  const arr = map.get(key) ?? []
+  const idx = arr.findIndex((p) => p.nav_date === point.nav_date)
+  if (idx >= 0) {
+    if (replaceExisting) arr[idx] = point
+  } else {
+    arr.push(point)
+  }
+  map.set(key, arr)
+}
+
+/** Historical custody 估值表 unit NAV — fallback when 净值表 has no series. */
+export async function loadCustodyValuationNavHistory(sinceDate: string): Promise<{
+  byCode: Map<string, NavPoint[]>
+  byName: Map<string, NavPoint[]>
+}> {
+  await ensureEmailValuationTable()
+
+  const rows = await query<ValuationNavRow>(
+    `SELECT crawl_email_account, email_uid, sent_at::text, subject, sender_email,
+            attachment_filename, product_code, fund_name,
+            valuation_date::text, unit_nav::text, cumulative_nav::text, source
+     FROM ops_email_valuation_records
+     WHERE valuation_date >= $1::date
+       AND unit_nav IS NOT NULL
+     ORDER BY valuation_date ASC, id ASC`,
+    [sinceDate],
+  )
+
+  const byCode = new Map<string, NavPoint[]>()
+  const byName = new Map<string, NavPoint[]>()
+
+  for (const row of rows) {
+    const unitNav = parseOptionalNav(row.unit_nav)
+    const cumNav = parseOptionalNav(row.cumulative_nav)
+    if (unitNav == null || !isPlausibleEmailUnitNav(unitNav, cumNav)) continue
+
+    const code = (row.product_code ?? "").trim().toUpperCase()
+    if (
+      code
+      && isFofUnderlyingValuationEmailRow(
+        {
+          nav_date: row.valuation_date,
+          nav: row.unit_nav,
+          cumulative_nav: row.cumulative_nav,
+          adjusted_nav: null,
+          product_code: row.product_code,
+          fund_name: row.fund_name,
+          attachment_filename: row.attachment_filename,
+          subject: row.subject,
+          source: row.source ?? "attachment_valuation_table",
+        },
+        code,
+      )
+    ) {
+      continue
+    }
+
+    const point: NavPoint = {
+      nav: unitNav,
+      nav_date: row.valuation_date.slice(0, 10),
+      source: "attachment_valuation_table",
+      subject: row.subject,
+    }
+
+    if (code) appendNavPoint(byCode, code, point, true)
+    const name = (row.fund_name ?? "").trim()
+    if (name) appendNavPoint(byName, name, point, true)
+  }
+
+  for (const map of [byCode, byName]) {
+    for (const [key, arr] of map) {
+      arr.sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+      map.set(key, arr)
+    }
+  }
+
+  return { byCode, byName }
 }
