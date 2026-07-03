@@ -227,7 +227,7 @@ const DEFAULT_MINE_POOLS = [
 
 // localStorage keys used to render the last-known pool tabs instantly on load
 // (keeps the fast-loading feel) before the authoritative server list arrives.
-const POOLS_CACHE_KEY = "tracking_team_pools_cache_v5"
+const POOLS_CACHE_KEY = "tracking_team_pools_cache_v6"
 const MINE_POOLS_CACHE_KEY = "tracking_mine_pools_cache"
 
 type PoolDef = { key: string; label: string }
@@ -2011,6 +2011,8 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   // re-fire fetches on every 30 s poll update.
   const prefetchedPoolsRef = useRef<Set<string>>(new Set())
   const reloadPoolsRef = useRef<(() => void) | null>(null)
+  const poolRenameCommittedRef = useRef<string | null>(null)
+  const [savingPoolKey, setSavingPoolKey] = useState<string | null>(null)
 
   function persistPoolCreate(poolKey: string, label: string, scope: "team" | "mine", rollback: () => void) {
     pendingPoolCreatesRef.current.add(poolKey)
@@ -2047,13 +2049,21 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     })
   }
 
-  function persistPoolRename(poolKey: string, label: string) {
-    pendingPoolRenamesRef.current.set(poolKey, label)
+  function commitPoolRename(
+    scope: "team" | "mine",
+    poolKey: string,
+    nextLabel: string,
+    previousLabel: string,
+  ) {
+    if (nextLabel === previousLabel) return
+    if (savingPoolKey === poolKey) return
+    setSavingPoolKey(poolKey)
+    pendingPoolRenamesRef.current.set(poolKey, nextLabel)
     fetch("/ma/api/tracking-funds/pools", {
       method: "PATCH",
       cache: "no-store",
       headers: { "Content-Type": "application/json", ...userFetchHeaders() },
-      body: JSON.stringify({ pool_key: poolKey, label }),
+      body: JSON.stringify({ pool_key: poolKey, label: nextLabel }),
     })
       .then(async (r) => {
         const text = await r.text()
@@ -2064,17 +2074,21 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           const errCode = typeof body.error === "string" ? body.error : `HTTP ${r.status}`
           throw new Error(detail || errCode)
         }
-        if (body?.pool?.label !== label) {
+        if (body?.pool?.label !== nextLabel) {
           throw new Error("服务器未确认保存，请重试")
         }
+        applyPoolsUpdate(scope, (prev) => prev.map((x) => x.key === poolKey ? { ...x, label: nextLabel } : x))
         pendingPoolRenamesRef.current.delete(poolKey)
         reloadPoolsRef.current?.()
       })
       .catch((err: unknown) => {
         pendingPoolRenamesRef.current.delete(poolKey)
         const msg = err instanceof Error ? err.message : "网络错误"
-        console.error("[persistPoolRename]", msg)
+        console.error("[commitPoolRename]", msg)
         alert(`保存产品池名称失败: ${msg}`)
+      })
+      .finally(() => {
+        setSavingPoolKey((cur) => (cur === poolKey ? null : cur))
       })
   }
 
@@ -2146,16 +2160,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
       setter((prev) => {
         const result: PoolDef[] = [specialPool]
+        // Server is source of truth for shared pool labels. Only override with a
+        // pending rename while a PATCH is in flight.
         for (const p of incoming) {
           if (!p?.pool_key || p.pool_key === specialPool.key) continue
           if (poolTombstonesRef.current.has(p.pool_key)) continue
           const pendingLabel = pendingPoolRenamesRef.current.get(p.pool_key)
-          let label = p.label
-          if (pendingLabel) {
-            if (p.label === pendingLabel) pendingPoolRenamesRef.current.delete(p.pool_key)
-            else label = pendingLabel
-          }
-          result.push({ key: p.pool_key, label })
+          result.push({ key: p.pool_key, label: pendingLabel ?? p.label })
         }
         // Keep optimistic creates that the server hasn't acknowledged yet.
         for (const pk of pendingPoolCreatesRef.current) {
@@ -5162,17 +5173,22 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                           onChange={(e) => setMineEditingPoolLabel(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" && mineEditingPoolLabel.trim()) {
+                              e.preventDefault()
+                              poolRenameCommittedRef.current = p.key
                               const nextLabel = mineEditingPoolLabel.trim()
-                              applyPoolsUpdate("mine", (prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
-                              persistPoolRename(p.key, nextLabel)
+                              commitPoolRename("mine", p.key, nextLabel, p.label)
                               setMineEditingPoolKey(null)
                             } else if (e.key === "Escape") setMineEditingPoolKey(null)
                           }}
                           onBlur={() => {
+                            if (poolRenameCommittedRef.current === p.key) {
+                              poolRenameCommittedRef.current = null
+                              setMineEditingPoolKey(null)
+                              return
+                            }
                             if (mineEditingPoolLabel.trim()) {
                               const nextLabel = mineEditingPoolLabel.trim()
-                              applyPoolsUpdate("mine", (prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
-                              persistPoolRename(p.key, nextLabel)
+                              commitPoolRename("mine", p.key, nextLabel, p.label)
                             }
                             setMineEditingPoolKey(null)
                           }}
@@ -5385,19 +5401,24 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                             onChange={(e) => setEditingPoolLabel(e.target.value)}
                             onKeyDown={(e) => {
                               if (e.key === "Enter" && editingPoolLabel.trim()) {
+                                e.preventDefault()
+                                poolRenameCommittedRef.current = p.key
                                 const nextLabel = editingPoolLabel.trim()
-                                applyPoolsUpdate("team", (prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
-                                persistPoolRename(p.key, nextLabel)
+                                commitPoolRename("team", p.key, nextLabel, p.label)
                                 setEditingPoolKey(null)
                               } else if (e.key === "Escape") {
                                 setEditingPoolKey(null)
                               }
                             }}
                             onBlur={() => {
+                              if (poolRenameCommittedRef.current === p.key) {
+                                poolRenameCommittedRef.current = null
+                                setEditingPoolKey(null)
+                                return
+                              }
                               if (editingPoolLabel.trim()) {
                                 const nextLabel = editingPoolLabel.trim()
-                                applyPoolsUpdate("team", (prev) => prev.map((x) => x.key === p.key ? { ...x, label: nextLabel } : x))
-                                persistPoolRename(p.key, nextLabel)
+                                commitPoolRename("team", p.key, nextLabel, p.label)
                               }
                               setEditingPoolKey(null)
                             }}
