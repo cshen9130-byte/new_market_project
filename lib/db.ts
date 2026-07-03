@@ -15,6 +15,7 @@ function makePool(): Pool {
   // statement_timeout prevents hung queries from blocking the app indefinitely.
   // connectionTimeoutMillis limits how long we wait to acquire a pool connection.
   const sharedOpts = {
+    max:                      parseInt(process.env.DB_POOL_MAX || "20", 10),
     statement_timeout:        60_000,   // 60 s per query
     connectionTimeoutMillis:  10_000,   // 10 s to get a connection from the pool
     idleTimeoutMillis:        30_000,

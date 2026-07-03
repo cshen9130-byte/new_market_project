@@ -188,7 +188,7 @@ function rowFromSeed(seed: Record<string, string>): DueDiligenceTableRow {
   }
 }
 
-function seedDueDiligenceTableRows(): DueDiligenceTableRow[] {
+export function seedDueDiligenceTableRows(): DueDiligenceTableRow[] {
   const base = Date.now()
   return (seedRows as Record<string, string>[]).map((seed, index) => {
     const row = rowFromSeed(seed)
@@ -301,4 +301,84 @@ export function resetDueDiligenceTableFromSeed(): DueDiligenceTableRow[] {
   const seeded = seedDueDiligenceTableRows()
   saveDueDiligenceTableRows(seeded)
   return seeded
+}
+
+// ── Server sync (team-shared) ──────────────────────────────────────────────
+
+export type DueDiligenceTableServerData = {
+  rows: DueDiligenceTableRow[]
+  formats: TableCellFormats
+  updatedAt: string
+  updatedBy: string
+}
+
+function currentUserId(): string {
+  if (typeof window === "undefined") return ""
+  try {
+    const raw = localStorage.getItem("currentUser")
+    if (!raw) return ""
+    const user = JSON.parse(raw) as { id?: string }
+    return user.id?.trim() || ""
+  } catch {
+    return ""
+  }
+}
+
+function authHeaders(): HeadersInit {
+  const uid = currentUserId()
+  return uid ? { "x-market-user-id": uid } : {}
+}
+
+async function apiFetch<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const res = await fetch(input, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+      ...(init?.headers || {}),
+    },
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.error || res.statusText || "请求失败")
+  }
+  return data as T
+}
+
+export async function loadDueDiligenceTableFromServer(): Promise<DueDiligenceTableServerData> {
+  const data = await apiFetch<{
+    ok: true
+    rows: DueDiligenceTableRow[]
+    formats: TableCellFormats
+    updatedAt: string
+    updatedBy: string
+  }>("/ma/api/due-diligence-table")
+  return {
+    rows: data.rows,
+    formats: data.formats ?? {},
+    updatedAt: data.updatedAt,
+    updatedBy: data.updatedBy,
+  }
+}
+
+export async function saveDueDiligenceTableToServer(
+  rows: DueDiligenceTableRow[],
+  formats: TableCellFormats,
+): Promise<DueDiligenceTableServerData> {
+  const data = await apiFetch<{
+    ok: true
+    rows: DueDiligenceTableRow[]
+    formats: TableCellFormats
+    updatedAt: string
+    updatedBy: string
+  }>("/ma/api/due-diligence-table", {
+    method: "PUT",
+    body: JSON.stringify({ rows, formats }),
+  })
+  return {
+    rows: data.rows,
+    formats: data.formats ?? {},
+    updatedAt: data.updatedAt,
+    updatedBy: data.updatedBy,
+  }
 }

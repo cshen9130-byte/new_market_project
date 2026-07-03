@@ -73,13 +73,13 @@ async function addToPool(targetPool: string, bh: string, productName: string) {
   } else {
     const table = POOL_TABLE[targetPool]
     if (!table) throw new Error(`target_pool "${targetPool}" is not a writable pool`)
-    // Insert using only the two columns that all standard pool tables are guaranteed
-    // to have. Deduplication is via WHERE NOT EXISTS on register_number.
+    const rowHash = createHash("sha256").update(`${targetPool}::${bh}::${productName}`).digest("hex")
     await query(
-      `INSERT INTO ${table} (product_name, register_number)
-       SELECT $2, $1
+      `WITH next_seq AS (SELECT COALESCE(MAX(source_row_number), 0) + 1 AS n FROM ${table})
+       INSERT INTO ${table} (source_row_number, product_name, register_number, row_hash)
+       SELECT ns.n, $2, $1, $3 FROM next_seq ns
        WHERE NOT EXISTS (SELECT 1 FROM ${table} WHERE register_number = $1)`,
-      [bh, productName]
+      [bh, productName, rowHash]
     )
   }
 }

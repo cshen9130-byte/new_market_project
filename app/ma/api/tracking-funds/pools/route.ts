@@ -33,9 +33,28 @@ const DEFAULT_MINE_POOL = { pool_key: "mine_default", label: "默认我的跟踪
 const TEAM_SEED_MARKER = "__team_defaults_v4_seeded__"
 const LEGACY_TEAM_SEED_MARKER = "__team_defaults_seeded__"
 
-let ensured = false
-async function ensureTable() {
-  if (ensured) return
+let tableEnsured = false
+let ensureInFlight: Promise<void> | null = null
+
+async function ensureTable(): Promise<void> {
+  if (tableEnsured) return
+  if (ensureInFlight) return ensureInFlight
+  ensureInFlight = _runEnsureTable().finally(() => { ensureInFlight = null })
+  return ensureInFlight
+}
+
+async function _runEnsureTable(): Promise<void> {
+  // Fast path: skip DDL when the table already exists (normal production case).
+  const exists = await query<{ ok: number }>(
+    `SELECT 1 AS ok FROM information_schema.tables
+     WHERE table_schema = current_schema() AND table_name = 'tracking_custom_pools'
+     LIMIT 1`,
+  ).catch(() => [] as { ok: number }[])
+  if (exists.length > 0) {
+    tableEnsured = true
+    return
+  }
+
   try {
     await query(`
       CREATE TABLE IF NOT EXISTS tracking_custom_pools (
@@ -49,10 +68,11 @@ async function ensureTable() {
         updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
       )
     `)
+    tableEnsured = true
   } catch {
     await query(`SELECT 1 FROM tracking_custom_pools LIMIT 0`)
+    tableEnsured = true
   }
-  ensured = true
 }
 
 let teamSeeded = false
@@ -151,9 +171,22 @@ interface PoolRow {
   user_key: string
 }
 
+const TEAM_POOLS_SQL = `
+  SELECT pool_key, label, scope, user_key
+  FROM tracking_custom_pools
+  WHERE scope = 'team' AND pool_key NOT LIKE '\\_\\_%'
+  ORDER BY sort_order ASC, id ASC`
+
+const MINE_POOLS_SQL = `
+  SELECT pool_key, label, scope, user_key
+  FROM tracking_custom_pools
+  WHERE scope = 'mine' AND user_key = $1 AND pool_key NOT LIKE '\\_\\_%'
+  ORDER BY sort_order ASC, id ASC`
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
-  const scope = normalizeScope(searchParams.get("scope"))
+  const scopeRaw = searchParams.get("scope")
+  const scope = normalizeScope(scopeRaw)
   const userKey = String(req.headers.get("x-market-user-id") || "").trim()
 
   try {

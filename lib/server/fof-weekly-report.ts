@@ -211,7 +211,10 @@ export async function resolveProductBeianHao(product_name: string, beian_hao?: s
   throw new Error(`未找到产品「${product_name}」的备案号`)
 }
 
-function resolveBundledFofWeeklyNavPath(beian_hao: string, product_name: string): string | null {
+function resolveBundledFofWeeklyNavPath(
+  beian_hao: string,
+  product_name: string,
+): { navPath: string; seedCode: string } | null {
   const override = lookupManagedProductOverride(beian_hao) ?? lookupManagedProductOverride(product_name)
   const codes = new Set<string>()
   const normalized = beian_hao.trim().toUpperCase()
@@ -222,12 +225,17 @@ function resolveBundledFofWeeklyNavPath(beian_hao: string, product_name: string)
     const filename = BUNDLED_FOF_NAV_BY_BEIAN[code]
     if (!filename) continue
     const candidate = path.join(SCRIPT_DIR, filename)
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) return { navPath: candidate, seedCode: code }
   }
 
   if (/低波稳健FOF\s*1号/u.test(product_name.trim())) {
     const candidate = path.join(SCRIPT_DIR, "低波稳健FOF 1号合并净值.xlsx")
-    if (existsSync(candidate)) return candidate
+    if (existsSync(candidate)) {
+      const canonicalCode = Object.entries(BUNDLED_FOF_NAV_BY_BEIAN).find(
+        ([, fname]) => fname === "低波稳健FOF 1号合并净值.xlsx",
+      )?.[0] ?? normalized
+      return { navPath: candidate, seedCode: canonicalCode }
+    }
   }
 
   return null
@@ -438,17 +446,17 @@ export async function generateFofWeeklyReport(
   const names = customFund
     ? { product_name: customFund.product_name, short_name: "" }
     : await resolveFundNames(beian_hao, product_name)
-  const bundledNavPath = resolveBundledFofWeeklyNavPath(beian_hao, names.product_name)
+  const bundledResult = resolveBundledFofWeeklyNavPath(beian_hao, names.product_name)
   let navFile: string
   let benchLabel: string
   let earliestNavDate: string
   let latestNavDate: string
   let navCsv = ""
 
-  if (bundledNavPath) {
-    navFile = bundledNavPath
+  if (bundledResult) {
+    navFile = bundledResult.navPath
     benchLabel = benchmark.label
-    const seedRows = loadFullManagedSeedRows(beian_hao)
+    const seedRows = loadFullManagedSeedRows(bundledResult.seedCode)
     const range = resolveNavDateRangeFromRows(
       seedRows ? legacyRowsToNavCsvInput(seedRows) : [],
     )
@@ -486,7 +494,7 @@ export async function generateFofWeeklyReport(
   const outDir = reportDir(reportId)
   await mkdir(outDir, { recursive: true })
 
-  if (!bundledNavPath) {
+  if (!bundledResult) {
     navFile = path.join(outDir, "nav.csv")
     await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
   }

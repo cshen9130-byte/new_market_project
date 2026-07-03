@@ -47,12 +47,14 @@ import {
   getCellFormat,
   getDueDiligenceTableNaturalWidth,
   loadCellFormats,
+  loadDueDiligenceTableFromServer,
   loadDueDiligenceTableRows,
   patchCellFormat,
   resetDueDiligenceTableFromSeed,
   rowMatchesKeyword,
   saveCellFormats,
   saveDueDiligenceTableRows,
+  saveDueDiligenceTableToServer,
   updateDueDiligenceTableRow,
 } from "@/lib/ma/due-diligence-table"
 import {
@@ -535,6 +537,9 @@ function exportRowsToXlsx(rows: DueDiligenceTableRow[]) {
 
 type Snapshot = { rows: DueDiligenceTableRow[]; formats: TableCellFormats }
 const MAX_HISTORY = 50
+const SERVER_SAVE_DEBOUNCE_MS = 500
+
+type SaveStatus = "idle" | "saving" | "saved" | "error"
 
 // ── Main view ──────────────────────────────────────────────────────────────
 
@@ -550,10 +555,16 @@ export function DueDiligenceTableView() {
   const [isDragging, setIsDragging] = useState(false)
   const [undoStack, setUndoStack] = useState<Snapshot[]>([])
   const [redoStack, setRedoStack] = useState<Snapshot[]>([])
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle")
+  const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null)
 
   const rootRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ anchor: CellCoord; dragging: boolean } | null>(null)
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingSaveRef = useRef<{ rows: DueDiligenceTableRow[]; formats: TableCellFormats } | null>(null)
+  const serverUpdatedAtRef = useRef<string | null>(null)
+  const isSavingRef = useRef(false)
 
   // ── Snapshot / undo-redo ──
 
@@ -570,8 +581,9 @@ export function DueDiligenceTableView() {
       snapshot(prevRows, prevFormats)
       setRows(next)
       saveDueDiligenceTableRows(next)
+      scheduleServerSave(next, formats)
     },
-    [snapshot],
+    [snapshot, formats],
   )
 
   const persistFormats = useCallback(
@@ -579,8 +591,38 @@ export function DueDiligenceTableView() {
       snapshot(prevRows, prevFormats)
       setFormats(next)
       saveCellFormats(next)
+      scheduleServerSave(rows, next)
     },
-    [snapshot],
+    [snapshot, rows],
+  )
+
+  const flushServerSave = useCallback(async () => {
+    const pending = pendingSaveRef.current
+    if (!pending || isSavingRef.current) return
+    isSavingRef.current = true
+    setSaveStatus("saving")
+    try {
+      const result = await saveDueDiligenceTableToServer(pending.rows, pending.formats)
+      serverUpdatedAtRef.current = result.updatedAt
+      setServerUpdatedAt(result.updatedAt)
+      pendingSaveRef.current = null
+      setSaveStatus("saved")
+    } catch {
+      setSaveStatus("error")
+    } finally {
+      isSavingRef.current = false
+    }
+  }, [])
+
+  const scheduleServerSave = useCallback(
+    (nextRows: DueDiligenceTableRow[], nextFormats: TableCellFormats) => {
+      pendingSaveRef.current = { rows: nextRows, formats: nextFormats }
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      saveTimerRef.current = setTimeout(() => {
+        void flushServerSave()
+      }, SERVER_SAVE_DEBOUNCE_MS)
+    },
+    [flushServerSave],
   )
 
   function undo() {
@@ -592,6 +634,7 @@ export function DueDiligenceTableView() {
       setFormats(prev.formats)
       saveDueDiligenceTableRows(prev.rows)
       saveCellFormats(prev.formats)
+      scheduleServerSave(prev.rows, prev.formats)
       return stack.slice(0, -1)
     })
   }
@@ -605,31 +648,96 @@ export function DueDiligenceTableView() {
       setFormats(next.formats)
       saveDueDiligenceTableRows(next.rows)
       saveCellFormats(next.formats)
+      scheduleServerSave(next.rows, next.formats)
       return stack.slice(1)
     })
   }
 
-  // ── Load / storage sync ──
+  // ── Load / server sync ──
 
-  const reload = useCallback(() => {
-    setRows(loadDueDiligenceTableRows())
-    setFormats(loadCellFormats())
-  }, [])
+  const applyServerData = useCallback(
+    (data: { rows: DueDiligenceTableRow[]; formats: TableCellFormats; updatedAt: string }) => {
+      setRows(data.rows)
+      setFormats(data.formats)
+      saveDueDiligenceTableRows(data.rows)
+      saveCellFormats(data.formats)
+      serverUpdatedAtRef.current = data.updatedAt
+      setServerUpdatedAt(data.updatedAt)
+    },
+    [],
+  )
 
-  useEffect(() => { reload(); setHydrated(true) }, [reload])
+  const reload = useCallback(async (opts?: { force?: boolean }) => {
+    try {
+      const data = await loadDueDiligenceTableFromServer()
+      const localRows = loadDueDiligenceTableRows()
+      const localFormats = loadCellFormats()
+      const serverIsFresh = data.updatedBy === "system"
+      const localDiffers =
+        JSON.stringify(localRows) !== JSON.stringify(data.rows) ||
+        JSON.stringify(localFormats) !== JSON.stringify(data.formats)
+
+      if (serverIsFresh && localDiffers && localRows.length > 0) {
+        applyServerData({ rows: localRows, formats: localFormats, updatedAt: data.updatedAt })
+        scheduleServerSave(localRows, localFormats)
+        return
+      }
+
+      if (
+        opts?.force ||
+        !serverUpdatedAtRef.current ||
+        data.updatedAt !== serverUpdatedAtRef.current
+      ) {
+        applyServerData(data)
+      }
+    } catch {
+      setRows(loadDueDiligenceTableRows())
+      setFormats(loadCellFormats())
+      setSaveStatus("error")
+    }
+  }, [applyServerData, scheduleServerSave])
 
   useEffect(() => {
-    function onStorage(e: StorageEvent) {
-      if (e.key === "dd_diligence_table_rows" || e.key === "dd_diligence_table_formats") reload()
+    let cancelled = false
+    void (async () => {
+      await reload()
+      if (!cancelled) setHydrated(true)
+    })()
+    return () => { cancelled = true }
+  }, [reload])
+
+  useEffect(() => {
+    function onVisibilityChange() {
+      if (document.visibilityState !== "visible") return
+      if (focusCell || isDragging) return
+      void reload()
     }
-    function onFocus() { reload() }
-    window.addEventListener("storage", onStorage)
+    function onFocus() {
+      if (focusCell || isDragging) return
+      void reload()
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange)
     window.addEventListener("focus", onFocus)
     return () => {
-      window.removeEventListener("storage", onStorage)
+      document.removeEventListener("visibilitychange", onVisibilityChange)
       window.removeEventListener("focus", onFocus)
     }
-  }, [reload])
+  }, [reload, focusCell, isDragging])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      if (focusCell || isDragging || isSavingRef.current) return
+      void reload()
+    }, 30_000)
+    return () => window.clearInterval(interval)
+  }, [reload, focusCell, isDragging])
+
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      void flushServerSave()
+    }
+  }, [flushServerSave])
 
   useEffect(() => {
     function onFsChange() { setIsFullscreen(document.fullscreenElement === rootRef.current) }
@@ -918,7 +1026,12 @@ export function DueDiligenceTableView() {
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
             <h1 className="text-base font-semibold text-foreground">尽调表格</h1>
-            <p className="mt-0.5 text-xs text-zinc-500">团队协作收集尽调信息，可直接在单元格中编辑。</p>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              团队协作收集尽调信息，可直接在单元格中编辑。
+              {saveStatus === "saving" && <span className="ml-2 text-amber-600">保存中…</span>}
+              {saveStatus === "saved" && <span className="ml-2 text-emerald-600">已保存到团队</span>}
+              {saveStatus === "error" && <span className="ml-2 text-red-600">保存失败，请检查网络</span>}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={toggleFullscreen}
