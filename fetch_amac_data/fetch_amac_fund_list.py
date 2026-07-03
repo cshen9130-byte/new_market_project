@@ -7,6 +7,9 @@ and save to a CSV file.
 Source: https://gs.amac.org.cn/amac-infodisc/res/pof/fund/index.html
 
 Supports resume: progress is saved after each page; re-run to continue.
+
+For server nightly sync directly into PostgreSQL, use:
+    python scripts/db/amac_private_funds_etl.py
 """
 
 from __future__ import annotations
@@ -16,44 +19,20 @@ import csv
 import json
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-
-AMAC_API = "https://gs.amac.org.cn/amac-infodisc/api/pof/fund"
-FUND_DETAIL_BASE = "https://gs.amac.org.cn/amac-infodisc/res/pof/fund/"
-HEADERS = {
-    "Accept": "application/json",
-    "Content-Type": "application/json;charset=UTF-8",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://gs.amac.org.cn/amac-infodisc/res/pof/fund/index.html",
-    "Origin": "https://gs.amac.org.cn",
-}
-
-CSV_COLUMNS = [
-    "fund_name",
-    "fund_no",
-    "manager_name",
-    "manager_type",
-    "working_state",
-    "mandator_name",
-    "establish_date",
-    "put_on_record_date",
-    "detail_url",
-]
+from amac_client import (
+    CSV_COLUMNS,
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_REQUEST_DELAY,
+    fetch_page_with_retry,
+    fund_to_row,
+    iter_fund_pages,
+)
 
 DEFAULT_OUTPUT = Path(__file__).parent / "amac_private_funds.csv"
 PROGRESS_SUFFIX = ".progress.json"
-
-REQUEST_DELAY = 0.3
-MAX_RETRIES = 5
-RETRY_BACKOFF = 2.0
-PAGE_SIZE = 100
 
 
 class FetchProgress:
@@ -75,7 +54,6 @@ class FetchProgress:
         self.current_page = page + 1
         self.fetched = fetched
         page_ratio = self.current_page / self.total_pages if self.total_pages else 0
-        fund_ratio = self.fetched / self.total_elements if self.total_elements else 0
         line = (
             f"\r[{self._bar(page_ratio)}] "
             f"{page_ratio * 100:5.1f}% "
@@ -89,52 +67,6 @@ class FetchProgress:
 
     def finish(self, text: str) -> None:
         print(f"\n{text}")
-
-
-def ms_to_date(ms: int | None) -> str:
-    if ms:
-        return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
-    return ""
-
-
-def fetch_page(page: int, size: int) -> dict:
-    url = f"{AMAC_API}?page={page}&size={size}"
-    req = urllib.request.Request(url, data=b"{}", headers=HEADERS, method="POST")
-    with urllib.request.urlopen(req, timeout=90) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def fetch_page_with_retry(page: int, size: int, progress: FetchProgress | None = None) -> dict:
-    last_error: Exception | None = None
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            return fetch_page(page, size)
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
-            last_error = exc
-            wait = RETRY_BACKOFF * attempt
-            msg = f"  [RETRY {attempt}/{MAX_RETRIES}] page={page}: {exc}; wait {wait:.1f}s"
-            if progress:
-                progress.message(msg)
-            else:
-                print(msg)
-            time.sleep(wait)
-    raise RuntimeError(f"Failed to fetch page {page} after {MAX_RETRIES} attempts") from last_error
-
-
-def fund_to_row(fund: dict) -> dict:
-    detail_path = fund.get("url", "")
-    detail_url = FUND_DETAIL_BASE + detail_path if detail_path else ""
-    return {
-        "fund_name": fund.get("fundName", ""),
-        "fund_no": fund.get("fundNo", ""),
-        "manager_name": fund.get("managerName", ""),
-        "manager_type": fund.get("managerType", ""),
-        "working_state": fund.get("workingState", ""),
-        "mandator_name": fund.get("mandatorName", ""),
-        "establish_date": ms_to_date(fund.get("establishDate")),
-        "put_on_record_date": ms_to_date(fund.get("putOnRecordDate")),
-        "detail_url": detail_url,
-    }
 
 
 def load_progress(progress_path: Path) -> dict | None:
@@ -174,14 +106,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--page-size",
         type=int,
-        default=PAGE_SIZE,
-        help=f"Records per API page (default: {PAGE_SIZE})",
+        default=DEFAULT_PAGE_SIZE,
+        help=f"Records per API page (default: {DEFAULT_PAGE_SIZE})",
     )
     parser.add_argument(
         "--delay",
         type=float,
-        default=REQUEST_DELAY,
-        help=f"Delay between requests in seconds (default: {REQUEST_DELAY})",
+        default=DEFAULT_REQUEST_DELAY,
+        help=f"Delay between requests in seconds (default: {DEFAULT_REQUEST_DELAY})",
     )
     parser.add_argument(
         "--max-pages",
@@ -246,9 +178,12 @@ def main() -> int:
             start_page = 1
             time.sleep(args.delay)
 
-        for page in range(start_page, end_page):
-            data = fetch_page_with_retry(page, args.page_size, progress)
-            rows = [fund_to_row(f) for f in data.get("content", [])]
+        for page, rows, _meta in iter_fund_pages(
+            page_size=args.page_size,
+            start_page=start_page,
+            end_page=end_page,
+            request_delay=args.delay,
+        ):
             if not rows:
                 progress.message(f"Page {page + 1}/{total_pages}: empty response, stopping.")
                 break
@@ -256,7 +191,6 @@ def main() -> int:
             fetched += len(rows)
             save_progress(progress_path, page, total_pages, total_elements, fetched)
             progress.update(page, fetched)
-            time.sleep(args.delay)
 
     if fetched >= total_elements or end_page >= total_pages:
         if progress_path.exists():

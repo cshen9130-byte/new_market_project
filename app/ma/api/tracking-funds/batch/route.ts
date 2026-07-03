@@ -3,6 +3,7 @@ import { createHash } from "crypto"
 import { query } from "@/lib/db"
 import { syncFundTeamTagsToSource } from "@/lib/server/sync-fund-team-tags"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
+import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -191,6 +192,11 @@ export async function POST(req: Request) {
         for (const bh of ids) {
           const productName = await getProductName(pool as string, bh)
           await addToPool(tp, bh, productName)
+          try {
+            await upsertTrackingFundListCacheEntry(bh, productName)
+          } catch (err) {
+            console.error("[tracking-funds/batch] cache upsert failed", bh, err)
+          }
         }
         if (action === "move") {
           for (const bh of ids) {

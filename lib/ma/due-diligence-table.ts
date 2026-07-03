@@ -96,25 +96,42 @@ export type CellFormat = {
 
 export type TableCellFormats = Record<string, CellFormat>
 
-const STORAGE_KEY = "dd_diligence_table_rows"
-const FORMATS_STORAGE_KEY = "dd_diligence_table_formats"
-
-export function loadCellFormats(): TableCellFormats {
-  if (typeof window === "undefined") return {}
-  try {
-    const raw = localStorage.getItem(FORMATS_STORAGE_KEY)
-    if (!raw) return {}
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as TableCellFormats
-    }
-    return {}
-  } catch { return {} }
+export function isEmptyCellFormat(fmt: CellFormat | undefined): boolean {
+  if (!fmt) return true
+  return (
+    !fmt.bold &&
+    !fmt.italic &&
+    !fmt.underline &&
+    !fmt.strikethrough &&
+    !fmt.color &&
+    !fmt.bgColor &&
+    !fmt.align &&
+    !fmt.fontSize
+  )
 }
 
-export function saveCellFormats(formats: TableCellFormats): void {
-  if (typeof window === "undefined") return
-  localStorage.setItem(FORMATS_STORAGE_KEY, JSON.stringify(formats))
+/** Drop empty entries and optionally remove formats for deleted rows. */
+export function compactCellFormats(
+  formats: TableCellFormats,
+  validRowIds?: Set<string>,
+): TableCellFormats {
+  const out: TableCellFormats = {}
+  for (const [key, fmt] of Object.entries(formats)) {
+    if (isEmptyCellFormat(fmt)) continue
+    if (validRowIds) {
+      const rowId = key.split("::")[0]
+      if (!validRowIds.has(rowId)) continue
+    }
+    out[key] = fmt
+  }
+  return out
+}
+
+export function pruneCellFormatsForRows(
+  formats: TableCellFormats,
+  rows: Pick<DueDiligenceTableRow, "id">[],
+): TableCellFormats {
+  return compactCellFormats(formats, new Set(rows.map((row) => row.id)))
 }
 
 export function cellFormatKey(rowId: string, colKey: string): string {
@@ -199,64 +216,6 @@ export function seedDueDiligenceTableRows(): DueDiligenceTableRow[] {
   })
 }
 
-function sanitizeDueDiligenceTableRow(row: unknown): DueDiligenceTableRow | null {
-  if (!row || typeof row !== "object") return null
-  const r = row as Partial<DueDiligenceTableRow> & Record<string, unknown>
-  if (typeof r.id !== "string" || !r.id.trim()) return null
-  const data = defaultDueDiligenceTableRowData()
-  for (const col of DD_TABLE_COLUMNS) {
-    data[col.key] = String(r[col.key] ?? "").trim()
-  }
-  const now = new Date().toISOString()
-  return {
-    ...data,
-    id: r.id,
-    createdAt: typeof r.createdAt === "string" ? r.createdAt : now,
-    updatedAt: typeof r.updatedAt === "string" ? r.updatedAt : now,
-    fundId: typeof r.fundId === "string" ? r.fundId : undefined,
-    representativeProductBeianHao:
-      typeof r.representativeProductBeianHao === "string" && r.representativeProductBeianHao.trim()
-        ? r.representativeProductBeianHao.trim()
-        : undefined,
-  }
-}
-
-export function loadDueDiligenceTableRows(): DueDiligenceTableRow[] {
-  if (typeof window === "undefined") return []
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      // Only use stored data if it has actual rows
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const sanitized = parsed
-          .map(sanitizeDueDiligenceTableRow)
-          .filter((row): row is DueDiligenceTableRow => row !== null)
-        if (sanitized.length > 0) {
-          if (sanitized.length !== parsed.length) saveDueDiligenceTableRows(sanitized)
-          return sanitized
-        }
-        localStorage.removeItem(STORAGE_KEY)
-      }
-    }
-    // Nothing in storage (or empty array) → seed from the Excel import
-    const seeded = seedDueDiligenceTableRows()
-    saveDueDiligenceTableRows(seeded)
-    return seeded
-  } catch {
-    const seeded = seedDueDiligenceTableRows()
-    saveDueDiligenceTableRows(seeded)
-    return seeded
-  }
-}
-
-export function saveDueDiligenceTableRows(rows: DueDiligenceTableRow[]): void {
-  if (typeof window === "undefined") return
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(rows))
-  } catch { /* ignore quota / security errors — in-memory state is still valid */ }
-}
-
 export function createDueDiligenceTableRow(
   data: Partial<DueDiligenceTableRowData> = {},
 ): DueDiligenceTableRow {
@@ -298,12 +257,10 @@ export function rowMatchesKeyword(row: DueDiligenceTableRow, keyword: string): b
 }
 
 export function resetDueDiligenceTableFromSeed(): DueDiligenceTableRow[] {
-  const seeded = seedDueDiligenceTableRows()
-  saveDueDiligenceTableRows(seeded)
-  return seeded
+  return seedDueDiligenceTableRows()
 }
 
-// ── Server sync (team-shared) ──────────────────────────────────────────────
+// ── Server persistence (PostgreSQL) ────────────────────────────────────────
 
 export type DueDiligenceTableServerData = {
   rows: DueDiligenceTableRow[]
@@ -363,6 +320,7 @@ export async function saveDueDiligenceTableToServer(
   rows: DueDiligenceTableRow[],
   formats: TableCellFormats,
 ): Promise<DueDiligenceTableServerData> {
+  const compactFormats = compactCellFormats(formats, new Set(rows.map((row) => row.id)))
   const data = await apiFetch<{
     ok: true
     rows: DueDiligenceTableRow[]
@@ -371,7 +329,7 @@ export async function saveDueDiligenceTableToServer(
     updatedBy: string
   }>("/ma/api/due-diligence-table", {
     method: "PUT",
-    body: JSON.stringify({ rows, formats }),
+    body: JSON.stringify({ rows, formats: compactFormats }),
   })
   return {
     rows: data.rows,

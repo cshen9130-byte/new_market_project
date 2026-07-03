@@ -2,6 +2,7 @@ import { query } from "@/lib/db"
 import type { DueDiligenceTableRow, TableCellFormats } from "@/lib/ma/due-diligence-table"
 import {
   DD_TABLE_COLUMNS,
+  compactCellFormats,
   defaultDueDiligenceTableRowData,
   seedDueDiligenceTableRows,
 } from "@/lib/ma/due-diligence-table"
@@ -66,9 +67,9 @@ function sanitizeRows(value: unknown): DueDiligenceTableRow[] {
   return value.map(sanitizeRow).filter((row): row is DueDiligenceTableRow => row !== null)
 }
 
-function sanitizeFormats(value: unknown): TableCellFormats {
+function sanitizeFormats(value: unknown, rowIds?: Set<string>): TableCellFormats {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-  return value as TableCellFormats
+  return compactCellFormats(value as TableCellFormats, rowIds)
 }
 
 function defaultSnapshot(): DueDiligenceTableSnapshot {
@@ -93,7 +94,7 @@ async function migrateFromLegacyFile(): Promise<DueDiligenceTableSnapshot | null
     if (rows.length === 0) return null
     return {
       rows,
-      formats: sanitizeFormats(parsed.formats),
+      formats: sanitizeFormats(parsed.formats, new Set(rows.map((row) => row.id))),
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
       updatedBy: typeof parsed.updatedBy === "string" ? parsed.updatedBy : "migration",
     }
@@ -121,10 +122,11 @@ async function readSnapshot(): Promise<DueDiligenceTableSnapshot | null> {
   const sanitizedRows = sanitizeRows(rows[0].rows)
   if (sanitizedRows.length === 0) return null
 
+  const rowIds = new Set(sanitizedRows.map((row) => row.id))
   const updatedAt = rows[0].updated_at
   return {
     rows: sanitizedRows,
-    formats: sanitizeFormats(rows[0].formats),
+    formats: sanitizeFormats(rows[0].formats, rowIds),
     updatedAt:
       typeof updatedAt === "string"
         ? new Date(updatedAt).toISOString()
@@ -180,7 +182,7 @@ export async function saveServerDueDiligenceTable(
   }
   const snapshot: DueDiligenceTableSnapshot = {
     rows: sanitized,
-    formats: sanitizeFormats(formats),
+    formats: sanitizeFormats(formats, new Set(sanitized.map((row) => row.id))),
     updatedAt: new Date().toISOString(),
     updatedBy: userName || "unknown",
   }

@@ -10,12 +10,16 @@ Usage
   python scripts/ma/nightly_etl.py               # normal nightly run
   python scripts/ma/nightly_etl.py --step nhci   # run single step only
   python scripts/ma/nightly_etl.py --step email_nav_parse
+  python scripts/ma/nightly_etl.py --step amac_private_funds
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
   EMAIL_NAV_ETL_DAYS                    — email lookback window for nightly sync (default 400;
                                           set to 45 after initial backfill for faster runs)
+  AMAC_ETL_INCREMENTAL_MAX_PAGES        — AMAC nightly incremental page cap (default 50)
+  AMAC_ETL_INCREMENTAL_MIN_PAGES        — minimum AMAC pages refreshed nightly (default 10)
+  AMAC_ETL_FULL_SYNC_DOW                — weekday for weekly full AMAC sync, 0=Mon..6=Sun (default 6)
 
 Required env vars (loaded automatically from .env / .env.local):
   DATABASE_URL                          — e.g. postgresql://user:pass@localhost/market_data
@@ -2368,6 +2372,73 @@ def step_email_nav_parse(days: int | None = None) -> int:
     return nav_saved + valuation_saved
 
 
+def step_amac_private_funds(force_full: bool = False) -> int:
+    """Fetch AMAC private fund list and upsert amac_private_funds (+ new private_fund_info rows)."""
+    project_root = SCRIPT_DIR.parent.parent
+    script_path = project_root / "scripts" / "db" / "amac_private_funds_etl.py"
+    python_exe = os.environ.get("PYTHON_EXE") or (
+        "py" if sys.platform == "win32" else "python3"
+    )
+    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
+    cmd = prefix + [str(script_path)]
+    if force_full:
+        cmd.append("--full")
+
+    try:
+        full_sync_dow = int(os.environ.get("AMAC_ETL_FULL_SYNC_DOW", "6"))
+    except ValueError:
+        full_sync_dow = 6
+    weekly_full = datetime.now().weekday() == full_sync_dow
+    timeout = 14400 if force_full or weekly_full else 3600
+
+    log.info(
+        "amac_private_funds: running amac_private_funds_etl.py (timeout=%ds%s) …",
+        timeout,
+        ", full sync" if force_full or weekly_full else ", incremental",
+    )
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env={**os.environ},
+        cwd=str(project_root),
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout:
+        for line in stdout.splitlines():
+            log.info(line)
+    if stderr:
+        for line in stderr.splitlines():
+            log.info(line)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"amac_private_funds_etl.py failed (exit {result.returncode}): "
+            f"{stderr or stdout or 'no output'}"
+        )
+
+    summary = None
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                summary = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+
+    if summary and summary.get("ok"):
+        return int(summary.get("rows_upserted") or 0)
+
+    match = re.search(r"upserted=([\d,]+)", stdout)
+    if match:
+        return int(match.group(1).replace(",", ""))
+    return 0
+
+
 def step_warm_mom_cache() -> int:
     """Call the /ma/api/mom-analysis/warm-cache endpoint to pre-compute all chart data."""
     import urllib.request
@@ -2414,6 +2485,7 @@ ORDERED_STEPS = [
     "shibor_3m",                     # monthly SHIBOR 3M data
     "money_credit",                  # money+credit cycle calculation
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
+    "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)
@@ -2529,6 +2601,7 @@ def main():
         "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),
         "money_credit":                    lambda: step_money_credit(conn),
         "email_nav_parse":                 lambda: step_email_nav_parse(),
+        "amac_private_funds":              lambda: step_amac_private_funds(force_full=force),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),

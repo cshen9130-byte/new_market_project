@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { createHash } from "crypto"
 import { invalidateListResponseCache } from "@/lib/server/list-response-cache"
+import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -17,6 +18,14 @@ const POOL_TABLE: Record<string, string> = {
 
 function isCustomPool(pool: string) {
   return pool.startsWith("custom_") || pool.startsWith("mine_custom_") || pool === "mine_default" || pool === "jy_ops"
+}
+
+async function ensureFundListCacheEntry(beian_hao: string, product_name: string) {
+  try {
+    await upsertTrackingFundListCacheEntry(beian_hao, product_name)
+  } catch (err) {
+    console.error("[tracking-funds/add] cache upsert failed", beian_hao, err)
+  }
 }
 
 export async function POST(req: Request) {
@@ -45,8 +54,11 @@ export async function POST(req: Request) {
         [pool, beian_hao, product_name, row_hash]
       )
       if (rows.length === 0) {
+        await ensureFundListCacheEntry(beian_hao, product_name)
+        invalidateListResponseCache(pool)
         return NextResponse.json({ error: "already_exists" }, { status: 409 })
       }
+      await ensureFundListCacheEntry(beian_hao, product_name)
       invalidateListResponseCache(pool)
       return NextResponse.json({ ok: true, id: rows[0].id })
     }
@@ -63,8 +75,11 @@ export async function POST(req: Request) {
       [beian_hao, product_name, row_hash]
     )
     if (rows.length === 0) {
+      await ensureFundListCacheEntry(beian_hao, product_name)
+      invalidateListResponseCache(pool)
       return NextResponse.json({ error: "already_exists" }, { status: 409 })
     }
+    await ensureFundListCacheEntry(beian_hao, product_name)
     invalidateListResponseCache(pool)
     return NextResponse.json({ ok: true, id: rows[0].id })
   } catch (err) {

@@ -4,6 +4,10 @@ migrate_amac_private_funds.py
 =============================
 Creates amac_private_funds table and loads data from fetch_amac_data/amac_private_funds.csv.
 
+For ongoing server updates, use the nightly ETL step instead:
+    python scripts/db/amac_private_funds_etl.py
+    python scripts/ma/nightly_etl.py --step amac_private_funds
+
 Safe to re-run: CREATE TABLE uses IF NOT EXISTS; rows upsert on fund_no.
 
 Usage:

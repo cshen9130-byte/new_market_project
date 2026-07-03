@@ -47,14 +47,11 @@ import {
   createDueDiligenceTableRow,
   getCellFormat,
   getDueDiligenceTableNaturalWidth,
-  loadCellFormats,
   loadDueDiligenceTableFromServer,
-  loadDueDiligenceTableRows,
   patchCellFormat,
+  pruneCellFormatsForRows,
   resetDueDiligenceTableFromSeed,
   rowMatchesKeyword,
-  saveCellFormats,
-  saveDueDiligenceTableRows,
   saveDueDiligenceTableToServer,
   updateDueDiligenceTableRow,
 } from "@/lib/ma/due-diligence-table"
@@ -589,7 +586,6 @@ export function DueDiligenceTableView() {
     (prevRows: DueDiligenceTableRow[], next: DueDiligenceTableRow[], prevFormats: TableCellFormats) => {
       snapshot(prevRows, prevFormats)
       setRows(next)
-      saveDueDiligenceTableRows(next)
       scheduleServerSave(next, formats)
     },
     [snapshot, formats],
@@ -598,9 +594,9 @@ export function DueDiligenceTableView() {
   const persistFormats = useCallback(
     (prevRows: DueDiligenceTableRow[], prevFormats: TableCellFormats, next: TableCellFormats) => {
       snapshot(prevRows, prevFormats)
-      setFormats(next)
-      saveCellFormats(next)
-      scheduleServerSave(rows, next)
+      const pruned = pruneCellFormatsForRows(next, rows)
+      setFormats(pruned)
+      scheduleServerSave(rows, pruned)
     },
     [snapshot, rows],
   )
@@ -644,8 +640,6 @@ export function DueDiligenceTableView() {
       setRedoStack((r) => [{ rows, formats }, ...r.slice(0, MAX_HISTORY - 1)])
       setRows(prev.rows)
       setFormats(prev.formats)
-      saveDueDiligenceTableRows(prev.rows)
-      saveCellFormats(prev.formats)
       scheduleServerSave(prev.rows, prev.formats)
       return stack.slice(0, -1)
     })
@@ -658,8 +652,6 @@ export function DueDiligenceTableView() {
       setUndoStack((u) => [...u.slice(-MAX_HISTORY + 1), { rows, formats }])
       setRows(next.rows)
       setFormats(next.formats)
-      saveDueDiligenceTableRows(next.rows)
-      saveCellFormats(next.formats)
       scheduleServerSave(next.rows, next.formats)
       return stack.slice(1)
     })
@@ -669,10 +661,9 @@ export function DueDiligenceTableView() {
 
   const applyServerData = useCallback(
     (data: { rows: DueDiligenceTableRow[]; formats: TableCellFormats; updatedAt: string }) => {
+      const prunedFormats = pruneCellFormatsForRows(data.formats, data.rows)
       setRows(data.rows)
-      setFormats(data.formats)
-      saveDueDiligenceTableRows(data.rows)
-      saveCellFormats(data.formats)
+      setFormats(prunedFormats)
       serverUpdatedAtRef.current = data.updatedAt
       setServerUpdatedAt(data.updatedAt)
     },
@@ -682,19 +673,6 @@ export function DueDiligenceTableView() {
   const reload = useCallback(async (opts?: { force?: boolean }) => {
     try {
       const data = await loadDueDiligenceTableFromServer()
-      const localRows = loadDueDiligenceTableRows()
-      const localFormats = loadCellFormats()
-      const serverIsFresh = data.updatedBy === "system"
-      const localDiffers =
-        JSON.stringify(localRows) !== JSON.stringify(data.rows) ||
-        JSON.stringify(localFormats) !== JSON.stringify(data.formats)
-
-      if (serverIsFresh && localDiffers && localRows.length > 0) {
-        applyServerData({ rows: localRows, formats: localFormats, updatedAt: data.updatedAt })
-        scheduleServerSave(localRows, localFormats)
-        return
-      }
-
       if (
         opts?.force ||
         !serverUpdatedAtRef.current ||
@@ -703,13 +681,11 @@ export function DueDiligenceTableView() {
         applyServerData(data)
       }
     } catch (err) {
-      setRows(loadDueDiligenceTableRows())
-      setFormats(loadCellFormats())
       const message = err instanceof Error ? err.message : "加载失败"
       setSaveError(message)
       setSaveStatus("error")
     }
-  }, [applyServerData, scheduleServerSave])
+  }, [applyServerData])
 
   useEffect(() => {
     let cancelled = false
@@ -971,14 +947,21 @@ export function DueDiligenceTableView() {
 
   function handleDeleteRow(id: string) {
     if (!window.confirm("确定删除这条尽调记录吗？")) return
-    const next = rows.filter((r) => r.id !== id)
-    persistRows(rows, next, formats)
+    const nextRows = rows.filter((r) => r.id !== id)
+    const nextFormats = pruneCellFormatsForRows(formats, nextRows)
+    snapshot(rows, formats)
+    setRows(nextRows)
+    setFormats(nextFormats)
+    scheduleServerSave(nextRows, nextFormats)
   }
 
   function handleResetSeed() {
     if (!window.confirm("将用初始 Excel 数据覆盖当前表格，是否继续？")) return
     const next = resetDueDiligenceTableFromSeed()
-    persistRows(rows, next, formats)
+    snapshot(rows, formats)
+    setRows(next)
+    setFormats({})
+    scheduleServerSave(next, {})
   }
 
   async function handleExtractToCalendar() {
@@ -1169,7 +1152,7 @@ export function DueDiligenceTableView() {
                 <p className="text-sm text-zinc-500">暂无记录，数据未能加载</p>
                 <button
                   type="button"
-                  onClick={() => { const next = resetDueDiligenceTableFromSeed(); setRows(next) }}
+                  onClick={() => handleResetSeed()}
                   className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 transition-colors"
                 >
                   <RotateCcw className="h-4 w-4" />

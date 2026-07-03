@@ -194,6 +194,154 @@ async function loadOpsFullStrategy(
   return out
 }
 
+/** Upsert one fund into the list cache so manual pool adds show up immediately. */
+export async function upsertTrackingFundListCacheEntry(
+  beian_hao: string,
+  product_name: string,
+): Promise<void> {
+  await ensureEmailNavTable()
+  await ensureTrackingFundsListCacheTable()
+
+  const asOfDate = new Date().toISOString().slice(0, 10)
+  const bflRows = await query<{ short_name: string | null; raw_strategy: string | null }>(
+    `SELECT short_name, raw_strategy
+     FROM private_fund_info_bfl
+     WHERE beian_hao = $1
+     LIMIT 1`,
+    [beian_hao],
+  )
+  const row: BaseFundRow = {
+    beian_hao,
+    product_name,
+    short_name: bflRows[0]?.short_name ?? null,
+    raw_strategy: bflRows[0]?.raw_strategy ?? null,
+  }
+
+  const identity = {
+    beian_hao: row.beian_hao,
+    product_name: row.product_name,
+    short_name: row.short_name,
+  }
+  const navResolver = await BatchNavResolver.create([identity], asOfDate)
+  const [riskFromInfo, opsStrategyMap] = await Promise.all([
+    loadPrivateFundRiskMetrics([beian_hao]),
+    loadOpsFullStrategy([beian_hao]),
+  ])
+
+  const latest = navResolver.resolveAt(identity, asOfDate)
+  const unitNav = latest?.nav ?? null
+  const navDate = latest?.nav_date ?? null
+  const returnPct =
+    unitNav != null && navDate
+      ? navResolver.calcDailyReturnPct(identity, unitNav, navDate, null)
+      : null
+  const returns =
+    unitNav != null && navDate
+      ? navResolver.calcPeriodReturns(identity, unitNav, navDate)
+      : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
+
+  let sharpe_1y: number | null = null
+  let calmar_1y: number | null = null
+  const fromInfo = riskFromInfo.get(beian_hao)
+  if (
+    isPlausibleRiskRatio(fromInfo?.sharpe_1y)
+    && isPlausibleRiskRatio(fromInfo?.calmar_1y)
+  ) {
+    sharpe_1y = fromInfo!.sharpe_1y
+    calmar_1y = fromInfo!.calmar_1y
+  } else if (navDate) {
+    const risk = computeOneYearRiskMetrics(
+      navDate,
+      navResolver.mergedHistoryForRiskMetrics(
+        identity,
+        addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS),
+      ),
+    )
+    sharpe_1y = isPlausibleRiskRatio(risk.sharpe_1y) ? risk.sharpe_1y : null
+    calmar_1y = isPlausibleRiskRatio(risk.calmar_1y) ? risk.calmar_1y : null
+  }
+
+  const ops = opsStrategyMap.get(beian_hao)
+  const rawStrategyJson = parseRawStrategyJson(row.raw_strategy)
+  const teamTags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
+  const companyL1 = ops?.company_strategy_l1 ?? strategyFromRawJson(rawStrategyJson, "company", "one")
+  const companyL2 = ops?.company_strategy_l2 ?? strategyFromRawJson(rawStrategyJson, "company", "two")
+  const companyL3 = ops?.company_strategy_l3 ?? strategyFromRawJson(rawStrategyJson, "company", "three")
+  const platformL1 = ops?.platform_strategy_l1 ?? strategyFromRawJson(rawStrategyJson, "platform", "one")
+  const platformL2 = ops?.platform_strategy_l2 ?? strategyFromRawJson(rawStrategyJson, "platform", "two")
+  const platformL3 = ops?.platform_strategy_l3 ?? strategyFromRawJson(rawStrategyJson, "platform", "three")
+
+  await query(
+    `INSERT INTO ops_tracking_funds_list_cache (
+       beian_hao, product_name, short_name,
+       unit_nav, nav_date, return_pct,
+       ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
+       sharpe_1y, calmar_1y,
+       company_strategy_l1, company_strategy_l2, company_strategy_l3,
+       platform_strategy_l1, platform_strategy_l2, platform_strategy_l3,
+       raw_strategy_json, team_tags,
+       as_of_date, refreshed_at
+     ) VALUES (
+       $1, $2, $3,
+       $4, $5::date, $6,
+       $7, $8, $9, $10, $11,
+       $12, $13,
+       $14, $15, $16,
+       $17, $18, $19,
+       $20::jsonb, $21::jsonb,
+       $22::date, NOW()
+     )
+     ON CONFLICT (beian_hao) DO UPDATE SET
+       product_name = EXCLUDED.product_name,
+       short_name = EXCLUDED.short_name,
+       unit_nav = EXCLUDED.unit_nav,
+       nav_date = EXCLUDED.nav_date,
+       return_pct = EXCLUDED.return_pct,
+       ret_1w = EXCLUDED.ret_1w,
+       ret_1m = EXCLUDED.ret_1m,
+       ret_3m = EXCLUDED.ret_3m,
+       ret_6m = EXCLUDED.ret_6m,
+       ret_1y = EXCLUDED.ret_1y,
+       sharpe_1y = EXCLUDED.sharpe_1y,
+       calmar_1y = EXCLUDED.calmar_1y,
+       company_strategy_l1 = EXCLUDED.company_strategy_l1,
+       company_strategy_l2 = EXCLUDED.company_strategy_l2,
+       company_strategy_l3 = EXCLUDED.company_strategy_l3,
+       platform_strategy_l1 = EXCLUDED.platform_strategy_l1,
+       platform_strategy_l2 = EXCLUDED.platform_strategy_l2,
+       platform_strategy_l3 = EXCLUDED.platform_strategy_l3,
+       raw_strategy_json = EXCLUDED.raw_strategy_json,
+       team_tags = EXCLUDED.team_tags,
+       as_of_date = EXCLUDED.as_of_date,
+       refreshed_at = NOW()`,
+    [
+      row.beian_hao,
+      row.product_name,
+      row.short_name,
+      clampPgNumeric(unitNav, 16, 6),
+      navDate,
+      clampPgNumeric(returnPct, 16, 8),
+      clampPgNumeric(returns.ret_1w, 16, 8),
+      clampPgNumeric(returns.ret_1m, 16, 8),
+      clampPgNumeric(returns.ret_3m, 16, 8),
+      clampPgNumeric(returns.ret_6m, 16, 8),
+      clampPgNumeric(returns.ret_1y, 16, 8),
+      clampPgNumeric(sharpe_1y, 16, 6),
+      clampPgNumeric(calmar_1y, 16, 6),
+      companyL1,
+      companyL2,
+      companyL3,
+      platformL1,
+      platformL2,
+      platformL3,
+      rawStrategyJson != null ? JSON.stringify(rawStrategyJson) : null,
+      teamTags,
+      asOfDate,
+    ],
+  )
+  cacheAsOfMemo = null
+}
+
 /** Rebuild precomputed list cache for all tracked funds (as of CURRENT_DATE). */
 export async function refreshTrackingFundsListCache(): Promise<number> {
   await ensureEmailNavTable()
