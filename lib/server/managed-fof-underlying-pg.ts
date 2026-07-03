@@ -3,7 +3,7 @@
  * All managed products are treated as FOF except 荣熙恒盈2号.
  */
 
-import { fmtIso, query } from "@/lib/db"
+import { fmtIso, query, queryUnbounded } from "@/lib/db"
 import {
   BatchNavResolver,
   addDays,
@@ -372,7 +372,7 @@ export async function loadManagedFofValuationHoldingRows(
     ? `(h.include_in_detail = TRUE OR h.subject_code = ANY($3::text[]))`
     : `h.include_in_detail = TRUE`
 
-  return query(
+  return queryUnbounded(
     `WITH managed_fof AS (
        SELECT
          m.id AS managed_product_id,
@@ -901,7 +901,7 @@ async function appendHistoryFromValuationJsonb(
   const managedBeianExpr = fofUnderlyingBeianExpr(managedProductExpr)
   const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
 
-  const records = await query<{ valuation_date: string; holdings: ValuationRow[] }>(
+  const records = await queryUnbounded<{ valuation_date: string; holdings: ValuationRow[] }>(
     `WITH managed_fof AS (
        SELECT
          m.id AS managed_product_id,

@@ -50,6 +50,24 @@ export async function rawQuery(
   return pool.query(sql, params)
 }
 
+/**
+ * Run a query with no statement timeout (bypasses the pool-level statement_timeout).
+ * Use only for known long-running ETL queries that should not be bounded.
+ */
+export async function queryUnbounded<T = Record<string, unknown>>(
+  sql: string,
+  params?: unknown[],
+): Promise<T[]> {
+  const client = await pool.connect()
+  try {
+    await client.query("SET statement_timeout = 0")
+    const res = await client.query(sql, params)
+    return res.rows as T[]
+  } finally {
+    client.release()
+  }
+}
+
 /** Format a pg DATE value (string "YYYY-MM-DD" or JS Date) to "YYYY-MM-DD" */
 export function fmtIso(d: Date | string): string {
   if (typeof d === "string") return d.slice(0, 10)

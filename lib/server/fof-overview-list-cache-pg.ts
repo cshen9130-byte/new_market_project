@@ -4,7 +4,7 @@
  * multi-table NAV fallback scans.
  */
 
-import { query } from "@/lib/db"
+import { query, queryUnbounded } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   buildFofUnderlyingSummaryFrom,
@@ -103,9 +103,9 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   await ensureFofOverviewListCacheTable()
 
   const asOfDate = new Date().toISOString().slice(0, 10)
-  logProgress("resolving product identities (SQL with beian joins — often 2–5 min)…", t0)
+  logProgress("resolving product identities (SQL with beian joins — no timeout)…", t0)
 
-  const products = await query<BaseProductRow>(
+  const products = await queryUnbounded<BaseProductRow>(
     `SELECT
        f.id::text AS fof_underlying_id,
        f.product_name,
