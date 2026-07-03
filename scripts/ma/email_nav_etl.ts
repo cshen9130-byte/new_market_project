@@ -203,12 +203,25 @@ async function main() {
       console.warn("[email_nav_etl] holdings backfill skipped:", err)
     }
 
+    let emailPoolSync: Record<string, unknown> | null = null
+    try {
+      const { syncEmailTrackingPool } = await import("@/lib/server/email-tracking-pool-sync")
+      const poolSync = await syncEmailTrackingPool()
+      emailPoolSync = poolSync
+      console.error(
+        `[email_nav_etl] email ops pool synced (inserted=${poolSync.inserted}, removed=${poolSync.removed}, total=${poolSync.total})`,
+      )
+    } catch (err) {
+      console.warn("[email_nav_etl] email ops pool sync skipped:", err)
+    }
+
     console.log(
       JSON.stringify({
         ok: true,
         skipped: false,
         parseOnly,
         days,
+        emailPoolSync,
         ...result,
       }),
     )

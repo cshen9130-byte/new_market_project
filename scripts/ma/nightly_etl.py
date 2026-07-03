@@ -2358,6 +2358,7 @@ def step_email_nav_parse(days: int | None = None) -> int:
     emails_scanned = int(result.get("emailsScanned") or 0)
     records_found = int(result.get("recordsFound") or 0)
     errors = result.get("errors") or []
+    pool_sync = result.get("emailPoolSync") or {}
 
     log.info(
         "email_nav_parse: emails=%d records=%d nav_saved=%d valuation_saved=%d errors=%d",
@@ -2367,6 +2368,13 @@ def step_email_nav_parse(days: int | None = None) -> int:
         valuation_saved,
         len(errors),
     )
+    if pool_sync:
+        log.info(
+            "email_nav_parse: email_ops_pool inserted=%s removed=%s total=%s",
+            pool_sync.get("inserted", 0),
+            pool_sync.get("removed", 0),
+            pool_sync.get("total", 0),
+        )
     for err in errors[:8]:
         log.warning("  email_nav_parse: %s", err)
     return nav_saved + valuation_saved

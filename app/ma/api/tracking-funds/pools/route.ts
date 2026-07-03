@@ -125,11 +125,12 @@ async function seedTeamDefaults(): Promise<void> {
 
   for (let i = 0; i < DEFAULT_TEAM_POOLS.length; i++) {
     const p = DEFAULT_TEAM_POOLS[i]
+    // Preserve user-renamed labels on conflict; only ensure row exists and sort_order.
     await query(
       `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
        VALUES ($1, $2, 'team', '', $3, NOW())
        ON CONFLICT (pool_key)
-       DO UPDATE SET label = EXCLUDED.label, sort_order = EXCLUDED.sort_order, updated_at = NOW()`,
+       DO UPDATE SET sort_order = EXCLUDED.sort_order, updated_at = NOW()`,
       [p.pool_key, p.label, i + 1],
     )
   }
@@ -248,6 +249,10 @@ export async function POST(req: Request) {
   }
 }
 
+function inferPoolScope(poolKey: string): "team" | "mine" {
+  return poolKey.startsWith("mine_") ? "mine" : "team"
+}
+
 export async function PATCH(req: Request) {
   let body: unknown
   try { body = await req.json() } catch { return NextResponse.json({ error: "bad_request" }, { status: 400 }) }
@@ -258,11 +263,25 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: "missing_fields" }, { status: 400 })
   }
 
+  const scope = inferPoolScope(pool_key)
+  const userKey = String(req.headers.get("x-market-user-id") || "").trim()
+
   try {
     await ensureTable()
+    if (scope === "team") {
+      await seedTeamDefaults()
+    } else if (userKey) {
+      await seedMineDefault(userKey)
+    }
+    // Upsert so renames persist even when a built-in pool row was never seeded yet.
     await query(
-      `UPDATE tracking_custom_pools SET label = $2, updated_at = NOW() WHERE pool_key = $1`,
-      [pool_key, cleanLabel],
+      `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
+       SELECT $1, $2, $3, $4,
+              COALESCE((SELECT MAX(sort_order) FROM tracking_custom_pools WHERE scope = $3), 0) + 1,
+              NOW()
+       ON CONFLICT (pool_key)
+       DO UPDATE SET label = EXCLUDED.label, updated_at = NOW()`,
+      [pool_key, cleanLabel, scope, scope === "mine" ? userKey : ""],
     )
     return NextResponse.json({ ok: true })
   } catch (err) {
