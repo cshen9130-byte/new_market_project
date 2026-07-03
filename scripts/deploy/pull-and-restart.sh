@@ -1,8 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Run on the production server as root (Aliyun 远程连接):
 #   bash /root/new_market_project/scripts/deploy/pull-and-restart.sh
-set -euo pipefail
-
+set -eu
 PROJECT_ROOT="${1:-/root/new_market_project}"
 cd "$PROJECT_ROOT"
 

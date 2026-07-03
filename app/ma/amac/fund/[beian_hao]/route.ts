@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { query } from "@/lib/db"
 import { amacFundSearchUrl } from "@/lib/amac-urls"
 
 export const runtime = "nodejs"
@@ -15,6 +16,20 @@ type AmacFundResponse = {
 function resolveAmacFundPageUrl(path: string): string {
   if (path.startsWith("http://") || path.startsWith("https://")) return path
   return `https://gs.amac.org.cn${path.startsWith("/") ? path : `/${path}`}`
+}
+
+async function lookupDetailUrlFromDb(registerNumber: string): Promise<string | null> {
+  const rows = await query<{ detail_url: string }>(
+    `SELECT detail_url
+     FROM amac_private_funds
+     WHERE UPPER(fund_no) = UPPER($1)
+       AND detail_url IS NOT NULL
+       AND BTRIM(detail_url) <> ''
+     LIMIT 1`,
+    [registerNumber],
+  )
+  const url = rows[0]?.detail_url?.trim()
+  return url || null
 }
 
 async function lookupAmacFundUrl(registerNumber: string): Promise<string | null> {
@@ -51,6 +66,11 @@ export async function GET(
   }
 
   try {
+    const dbUrl = await lookupDetailUrlFromDb(beian_hao)
+    if (dbUrl) {
+      return NextResponse.redirect(dbUrl, 302)
+    }
+
     const directUrl = await lookupAmacFundUrl(beian_hao)
     if (directUrl) {
       return NextResponse.redirect(directUrl, 302)

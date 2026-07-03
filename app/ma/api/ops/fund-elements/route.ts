@@ -1,5 +1,8 @@
+import { createHash } from "crypto"
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+
+const ELEMENTS_SOURCE = "ops/fund-elements"
 
 export const dynamic = "force-dynamic"
 
@@ -171,6 +174,52 @@ function encodeManageRate(value: unknown): string | null | undefined {
   return null
 }
 
+function buildElementRowHash(beian_hao: string): string {
+  return createHash("sha256").update(`${ELEMENTS_SOURCE}::${beian_hao}`).digest("hex")
+}
+
+function buildElementPayload(
+  beian_hao: string,
+  fieldValues: Record<string, unknown>,
+): Record<string, unknown> {
+  const fundsBase: Record<string, unknown> = {}
+  for (const key of [
+    "open_day",
+    "fee_trust",
+    "stop_line",
+    "add_amount",
+    "fee_manage",
+    "fee_redeem",
+    "fee_purchase",
+    "closed_period",
+    "fee_manage_rate",
+    "precautious_line",
+    "fee_admin_service",
+    "is_temporary_open",
+  ] as const) {
+    if (fieldValues[key] !== undefined) fundsBase[key] = fieldValues[key]
+  }
+
+  return {
+    tag: { company: [] },
+    advisor: fieldValues.advisor ?? "",
+    advisor2: "",
+    managers: [],
+    strategy: {
+      company: { strategy_one: "", strategy_two: "", strategy_three: "" },
+      platform: { strategy_one: "", strategy_two: "", strategy_three: "" },
+    },
+    FundsBase: fundsBase,
+    fund_name: fieldValues.fund_name ?? null,
+    fund_type: 2,
+    puton_date: fieldValues.puton_date ?? null,
+    mandator_name: fieldValues.mandator_name ?? null,
+    inception_date: fieldValues.inception_date ?? null,
+    fund_short_name: fieldValues.fund_name ?? null,
+    register_number: beian_hao,
+  }
+}
+
 export async function PATCH(req: Request) {
   const body = await req.json().catch(() => null)
   const beian_hao = String(body?.beian_hao ?? "").trim()
@@ -237,10 +286,12 @@ export async function PATCH(req: Request) {
         )
       }
     } else if (setClauses.length > 0) {
-      const insertColumns = ["register_number", "record_key"]
-      const insertValues: unknown[] = [beian_hao, beian_hao]
-      const insertPlaceholders: string[] = ["$1", "$2"]
-      let insertIndex = 3
+      const payload = buildElementPayload(beian_hao, fieldValues)
+      const rowHash = buildElementRowHash(beian_hao)
+      const insertColumns = ["record_key", "payload", "row_hash", "source", "register_number"]
+      const insertValues: unknown[] = [beian_hao, payload, rowHash, ELEMENTS_SOURCE, beian_hao]
+      const insertPlaceholders: string[] = ["$1", "$2::jsonb", "$3", "$4", "$5"]
+      let insertIndex = 6
       for (const [column, value] of Object.entries(fieldValues)) {
         if (value === undefined) continue
         insertColumns.push(column)
