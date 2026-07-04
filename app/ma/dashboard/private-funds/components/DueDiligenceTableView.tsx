@@ -65,7 +65,22 @@ import {
   loadDueDiligenceSchedulesFromServer,
   saveDueDiligenceSchedulesToServer,
 } from "@/lib/ma/due-diligence-schedules"
+import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
+import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
+import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
+import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { RepresentativeProductCell } from "./RepresentativeProductCell"
+import { StrategySelectCell } from "./StrategySelectCell"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import { splitFundPoolMemberships } from "@/lib/client/tracking-pools"
+import {
+  loadTeamStrategyTree,
+  migrateRowTeamStrategies,
+  teamStrategyL1Options,
+  teamStrategyL2Options,
+  teamStrategyL3Options,
+  type TeamStrategyNode,
+} from "@/lib/ma/team-strategy-tree"
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -460,6 +475,45 @@ function FormattingToolbar({
   )
 }
 
+type FundPoolMembership = { pool_key: string; pool_label: string }
+
+async function fetchFundPoolMemberships(beian_hao: string): Promise<FundPoolMembership[]> {
+  try {
+    const res = await fetch(`/ma/api/ops/fund-tags?beian_hao=${encodeURIComponent(beian_hao)}`)
+    const json = await res.json()
+    return Array.isArray(json?.pools) ? (json.pools as FundPoolMembership[]) : []
+  } catch {
+    return []
+  }
+}
+
+function TrackingPoolsCell({
+  pools,
+  loading,
+  width,
+}: {
+  pools: FundPoolMembership[]
+  loading?: boolean
+  width: number
+}) {
+  const text = pools.map((p) => p.pool_label).join("、")
+  return (
+    <div
+      className="min-h-[1.75rem] px-1 text-xs leading-snug text-zinc-700"
+      style={{ width: width - 4 }}
+      title={text || undefined}
+    >
+      {loading ? (
+        <span className="text-zinc-400">…</span>
+      ) : text ? (
+        <span className="line-clamp-2">{text}</span>
+      ) : (
+        <span className="text-zinc-400">—</span>
+      )}
+    </div>
+  )
+}
+
 // ── Editable cell ──────────────────────────────────────────────────────────
 
 function EditableCell({
@@ -472,6 +526,7 @@ function EditableCell({
   isSelected,
   onChange,
   onActivate,
+  showHoverPreview = false,
 }: {
   cellId: string
   value: string
@@ -482,6 +537,7 @@ function EditableCell({
   isSelected: boolean
   onChange: (next: string) => void
   onActivate: () => void
+  showHoverPreview?: boolean
 }) {
   const style: CSSProperties = {
     width: width - 4,
@@ -499,7 +555,7 @@ function EditableCell({
   ].join(" ")
 
   if (multiline) {
-    return (
+    const textarea = (
       <textarea
         data-cell={cellId}
         value={value}
@@ -510,6 +566,26 @@ function EditableCell({
         className={`${baseClass} resize-y leading-snug py-0.5 min-h-[2.25rem]`}
       />
     )
+
+    if (showHoverPreview && value.trim() && !isActive) {
+      return (
+        <HoverCard openDelay={200} closeDelay={100}>
+          <HoverCardTrigger asChild>
+            <div className="w-full cursor-default">{textarea}</div>
+          </HoverCardTrigger>
+          <HoverCardContent
+            side="left"
+            align="start"
+            sideOffset={8}
+            className="pointer-events-none w-auto max-w-md max-h-80 overflow-y-auto border border-zinc-200 bg-white p-3 text-xs leading-relaxed text-zinc-800 shadow-lg whitespace-pre-wrap"
+          >
+            {value}
+          </HoverCardContent>
+        </HoverCard>
+      )
+    }
+
+    return textarea
   }
   return (
     <input
@@ -563,6 +639,14 @@ export function DueDiligenceTableView() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle")
   const [saveError, setSaveError] = useState<string | null>(null)
   const [serverUpdatedAt, setServerUpdatedAt] = useState<string | null>(null)
+  const [teamStrategyTree, setTeamStrategyTree] = useState<TeamStrategyNode[]>([])
+  const [poolMemberships, setPoolMemberships] = useState<Record<string, FundPoolMembership[]>>({})
+  const [poolsLoading, setPoolsLoading] = useState(false)
+  const [trackedMine, setTrackedMine] = useState<Set<string>>(new Set())
+  const [trackedTeam, setTrackedTeam] = useState<Set<string>>(new Set())
+  const [trackingDialogFund, setTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [teamTrackingDialogFund, setTeamTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const strategyMigrationRef = useRef(false)
 
   const rootRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -697,6 +781,96 @@ export function DueDiligenceTableView() {
   }, [reload])
 
   useEffect(() => {
+    let cancelled = false
+    void loadTeamStrategyTree().then((tree) => {
+      if (!cancelled) setTeamStrategyTree(tree)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const linkedBeianHaos = useMemo(() => {
+    const set = new Set<string>()
+    for (const row of rows) {
+      if (row.representativeProductBeianHao) set.add(row.representativeProductBeianHao)
+    }
+    return [...set]
+  }, [rows])
+
+  const refreshTrackedIds = useCallback(() => {
+    fetch("/ma/api/tracking-funds/tracked-ids")
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d?.mine)) setTrackedMine(new Set(d.mine))
+        if (Array.isArray(d?.team)) setTrackedTeam(new Set(d.team))
+      })
+      .catch(() => {})
+  }, [])
+
+  const refreshPoolMemberships = useCallback(async (beians: string[]) => {
+    if (beians.length === 0) {
+      setPoolMemberships({})
+      return
+    }
+    setPoolsLoading(true)
+    try {
+      const results = await Promise.all(
+        beians.map(async (beian) => {
+          const pools = await fetchFundPoolMemberships(beian)
+          return [beian, pools] as const
+        }),
+      )
+      setPoolMemberships(Object.fromEntries(results))
+    } finally {
+      setPoolsLoading(false)
+    }
+  }, [])
+
+  const refreshTrackingData = useCallback(() => {
+    refreshTrackedIds()
+    void refreshPoolMemberships(linkedBeianHaos)
+  }, [refreshTrackedIds, refreshPoolMemberships, linkedBeianHaos])
+
+  useEffect(() => {
+    refreshTrackedIds()
+  }, [refreshTrackedIds])
+
+  useEffect(() => {
+    void refreshPoolMemberships(linkedBeianHaos)
+  }, [linkedBeianHaos, refreshPoolMemberships])
+
+  useEffect(() => {
+    function onPoolChanged() {
+      refreshTrackingData()
+    }
+    window.addEventListener("tracking-funds-pool-changed", onPoolChanged)
+    return () => window.removeEventListener("tracking-funds-pool-changed", onPoolChanged)
+  }, [refreshTrackingData])
+
+  useEffect(() => {
+    if (!hydrated || !teamStrategyTree.length || strategyMigrationRef.current || rows.length === 0) return
+
+    let changed = false
+    const migrated = rows.map((row) => {
+      const next = migrateRowTeamStrategies(row, teamStrategyTree)
+      if (
+        next.strategyLevel1 !== row.strategyLevel1
+        || next.strategyLevel2 !== row.strategyLevel2
+        || next.strategyLevel3 !== row.strategyLevel3
+      ) {
+        changed = true
+        return { ...row, ...next }
+      }
+      return row
+    })
+
+    strategyMigrationRef.current = true
+    if (changed) {
+      setRows(migrated)
+      scheduleServerSave(migrated, formats)
+    }
+  }, [hydrated, teamStrategyTree, rows, formats, scheduleServerSave])
+
+  useEffect(() => {
     function onVisibilityChange() {
       if (document.visibilityState !== "visible") return
       if (focusCell || isDragging) return
@@ -804,7 +978,13 @@ export function DueDiligenceTableView() {
     e: ReactMouseEvent,
   ) {
     if (e.button !== 0) return
-    e.preventDefault()
+    const isStrategyCol =
+      colKey === "strategyLevel1" ||
+      colKey === "strategyLevel2" ||
+      colKey === "strategyLevel3"
+    if (!isStrategyCol) {
+      e.preventDefault()
+    }
     const coord = { rowId, colKey }
     dragRef.current = { anchor: coord, dragging: false }
     setIsDragging(true)
@@ -874,7 +1054,12 @@ export function DueDiligenceTableView() {
       dragRef.current = null
       setIsDragging(false)
       setFocusCell({ rowId: drag.anchor.rowId, colKey: drag.anchor.colKey })
-      if (!drag.dragging) {
+      const colKey = drag.anchor.colKey
+      const isStrategyCol =
+        colKey === "strategyLevel1" ||
+        colKey === "strategyLevel2" ||
+        colKey === "strategyLevel3"
+      if (!drag.dragging && !isStrategyCol) {
         requestAnimationFrame(() => focusCellInput(drag.anchor.rowId, drag.anchor.colKey))
       }
     }
@@ -923,6 +1108,36 @@ export function DueDiligenceTableView() {
     persistRows(rows, next, formats)
   }
 
+  function handleStrategyChange(
+    rowId: string,
+    level: 1 | 2 | 3,
+    value: string,
+  ) {
+    if (level === 1) {
+      const next = updateDueDiligenceTableRow(rows, rowId, {
+        strategyLevel1: value,
+        strategyLevel2: "",
+        strategyLevel3: "",
+      })
+      persistRows(rows, next, formats)
+      return
+    }
+    if (level === 2) {
+      const next = updateDueDiligenceTableRow(rows, rowId, {
+        strategyLevel2: value,
+        strategyLevel3: "",
+      })
+      persistRows(rows, next, formats)
+      return
+    }
+    handleCellChange(rowId, "strategyLevel3", value)
+  }
+
+  const teamL1Options = useMemo(
+    () => teamStrategyL1Options(teamStrategyTree),
+    [teamStrategyTree],
+  )
+
   function handleRepresentativeProductChange(
     rowId: string,
     value: string,
@@ -943,16 +1158,6 @@ export function DueDiligenceTableView() {
   function handleAddRow() {
     const newRow = createDueDiligenceTableRow()
     persistRows(rows, [newRow, ...rows], formats)
-  }
-
-  function handleDeleteRow(id: string) {
-    if (!window.confirm("确定删除这条尽调记录吗？")) return
-    const nextRows = rows.filter((r) => r.id !== id)
-    const nextFormats = pruneCellFormatsForRows(formats, nextRows)
-    snapshot(rows, formats)
-    setRows(nextRows)
-    setFormats(nextFormats)
-    scheduleServerSave(nextRows, nextFormats)
   }
 
   function handleResetSeed() {
@@ -1272,6 +1477,96 @@ export function DueDiligenceTableView() {
                                 handleRepresentativeProductChange(row.id, value, link)
                               }
                             />
+                          ) : col.key === "strategyLevel1" ? (
+                            <StrategySelectCell
+                              cellId={cellId}
+                              value={row.strategyLevel1}
+                              width={col.width}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              options={teamL1Options}
+                              placeholder="一级策略"
+                              disabled={teamL1Options.length === 0}
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleStrategyChange(row.id, 1, value)}
+                            />
+                          ) : col.key === "strategyLevel2" ? (
+                            <StrategySelectCell
+                              cellId={cellId}
+                              value={row.strategyLevel2}
+                              width={col.width}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              options={teamStrategyL2Options(teamStrategyTree, row.strategyLevel1)}
+                              placeholder={row.strategyLevel1 ? "二级策略" : "先选一级"}
+                              disabled={!row.strategyLevel1}
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleStrategyChange(row.id, 2, value)}
+                            />
+                          ) : col.key === "strategyLevel3" ? (
+                            <StrategySelectCell
+                              cellId={cellId}
+                              value={row.strategyLevel3}
+                              width={col.width}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              options={teamStrategyL3Options(
+                                teamStrategyTree,
+                                row.strategyLevel1,
+                                row.strategyLevel2,
+                              )}
+                              placeholder={
+                                !row.strategyLevel1
+                                  ? "先选一级"
+                                  : !row.strategyLevel2
+                                    ? "先选二级"
+                                    : "三级策略"
+                              }
+                              disabled={!row.strategyLevel1 || !row.strategyLevel2}
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleStrategyChange(row.id, 3, value)}
+                            />
+                          ) : col.key === "inTrackingPool" ? (
+                            (() => {
+                              const beian = row.representativeProductBeianHao
+                              const allPools = beian ? (poolMemberships[beian] ?? []) : []
+                              const { teamPools } = splitFundPoolMemberships(allPools)
+                              return (
+                                <TrackingPoolsCell
+                                  pools={teamPools}
+                                  loading={
+                                    Boolean(beian)
+                                    && poolsLoading
+                                    && !(beian in poolMemberships)
+                                  }
+                                  width={col.width}
+                                />
+                              )
+                            })()
                           ) : (
                             <EditableCell
                               cellId={cellId}
@@ -1281,6 +1576,7 @@ export function DueDiligenceTableView() {
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
+                              showHoverPreview={col.key === "ddConclusion"}
                               onActivate={() => {
                                 setFocusCell({ rowId: row.id, colKey: col.key })
                                 setSelection({
@@ -1295,15 +1591,44 @@ export function DueDiligenceTableView() {
                         </td>
                       )
                     })}
-                    <td className="border-b border-zinc-100 py-0.5 text-center align-top">
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteRow(row.id)}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded text-zinc-300 hover:bg-red-50 hover:text-red-500 transition-colors"
-                        aria-label="删除"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                    <td
+                      className="border-b border-zinc-100 py-0.5 text-center align-top"
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      {(() => {
+                        const beian = row.representativeProductBeianHao
+                        const productName = row.representativeProduct.trim() || beian || ""
+                        const canTrack = Boolean(beian && productName)
+                        const allPools = beian ? (poolMemberships[beian] ?? []) : []
+                        const poolsReady = Boolean(beian && beian in poolMemberships)
+                        const { inMine, inTeam } = splitFundPoolMemberships(allPools)
+                        const heartTracked = poolsReady ? inMine : (beian ? trackedMine.has(beian) : false)
+                        const teamTracked = poolsReady ? inTeam : (beian ? trackedTeam.has(beian) : false)
+                        return (
+                          <div
+                            className={[
+                              "flex items-center justify-center gap-0.5",
+                              canTrack ? "" : "opacity-40 pointer-events-none",
+                            ].join(" ")}
+                            title={canTrack ? undefined : "请先关联代表产品"}
+                          >
+                            <AddToTrackingButton
+                              isTracked={heartTracked}
+                              onClick={() => {
+                                if (!beian) return
+                                setTrackingDialogFund({ beian_hao: beian, product_name: productName })
+                              }}
+                            />
+                            <AddToTeamTrackingButton
+                              isTracked={teamTracked}
+                              onClick={() => {
+                                if (!beian) return
+                                setTeamTrackingDialogFund({ beian_hao: beian, product_name: productName })
+                              }}
+                            />
+                          </div>
+                        )
+                      })()}
                     </td>
                     </tr>
                   )
@@ -1313,6 +1638,24 @@ export function DueDiligenceTableView() {
           </div>
         )}
       </div>
+      {trackingDialogFund && (
+        <AddMyTrackingDialog
+          open
+          beian_hao={trackingDialogFund.beian_hao}
+          product_name={trackingDialogFund.product_name}
+          onClose={() => setTrackingDialogFund(null)}
+          onSaved={refreshTrackingData}
+        />
+      )}
+      {teamTrackingDialogFund && (
+        <AddToTeamTrackingDialog
+          open
+          beian_hao={teamTrackingDialogFund.beian_hao}
+          product_name={teamTrackingDialogFund.product_name}
+          onClose={() => setTeamTrackingDialogFund(null)}
+          onSaved={refreshTrackingData}
+        />
+      )}
     </div>
   )
 }

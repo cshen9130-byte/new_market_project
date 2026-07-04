@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 
 type Point = {
   date: string
@@ -35,25 +36,24 @@ export default function CurrentMarketPredictionChart({ freq, onFreqChange }: Pro
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      setError(null)
-      try {
-        const res = await fetch(`/ma/api/macro/current-market-prediction?freq=${freq}`, { cache: "no-store" })
-        const json = await res.json()
-        if (!res.ok || !json.data) throw new Error(json.error || "failed")
-        if (!cancelled) setRows(json.data)
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message || "数据不可用")
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
+  const load = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/ma/api/macro/current-market-prediction?freq=${freq}&ts=${Date.now()}`, {
+        cache: "no-store",
+      })
+      const json = await res.json()
+      if (!res.ok || !json.data) throw new Error(json.error || "failed")
+      setRows(json.data)
+    } catch (e: any) {
+      setError(e?.message || "数据不可用")
+    } finally {
+      if (showLoading) setLoading(false)
     }
-    load()
-    return () => { cancelled = true }
   }, [freq])
+
+  useChartAutoRefresh(load, [freq])
 
   const latest = useMemo(() => rows[rows.length - 1], [rows])
 

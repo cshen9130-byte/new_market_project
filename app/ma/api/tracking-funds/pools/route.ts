@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { invalidateTrackingPoolListCaches, purgeOrphanedCustomPoolMemberships } from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -212,6 +213,7 @@ export async function GET(req: Request) {
 
   try {
     await ensureTable()
+    await purgeOrphanedCustomPoolMemberships()
     if (scope === "both") {
       try { await seedTeamDefaults() } catch (err) {
         console.error("[tracking-funds/pools GET] seedTeamDefaults failed:", err)
@@ -416,7 +418,9 @@ export async function DELETE(req: Request) {
 
   try {
     await ensureTable()
+    await query(`DELETE FROM user_custom_pool WHERE pool_key = $1`, [poolKey])
     await query(`DELETE FROM tracking_custom_pools WHERE pool_key = $1`, [poolKey])
+    invalidateTrackingPoolListCaches([poolKey])
     return NextResponse.json({ ok: true })
   } catch (err) {
     console.error("[tracking-funds/pools DELETE]", err)

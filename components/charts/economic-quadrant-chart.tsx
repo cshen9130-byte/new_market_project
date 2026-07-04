@@ -1,8 +1,9 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import { FREQ_LABELS } from "@/components/charts/current-market-prediction-chart"
 import type { Freq } from "@/components/charts/current-market-prediction-chart"
 
@@ -64,19 +65,22 @@ export default function EconomicQuadrantChart({ freq, onFreqChange }: Props) {
   const [latest, setLatest] = useState<Latest | null>(null)
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
-    fetch(`/ma/api/macro/current-market-prediction?freq=${freq}`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((json) => {
-        if (!cancelled && json.latest) setLatest(json.latest)
-        else if (!cancelled) setLatest(null)
+  const load = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setLoading(true)
+    try {
+      const res = await fetch(`/ma/api/macro/current-market-prediction?freq=${freq}&ts=${Date.now()}`, {
+        cache: "no-store",
       })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
+      const json = await res.json()
+      setLatest(json.latest ?? null)
+    } catch {
+      /* keep previous data */
+    } finally {
+      if (showLoading) setLoading(false)
+    }
   }, [freq])
+
+  useChartAutoRefresh(load, [freq])
 
   const activeCluster = latest?.cluster ?? null
 

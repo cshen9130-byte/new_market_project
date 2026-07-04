@@ -1,10 +1,11 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import type { Freq } from "./current-market-prediction-chart"
 import { FREQ_LABELS } from "./current-market-prediction-chart"
 
@@ -41,12 +42,17 @@ export default function PredictionTimeseriesChart({ freq, onFreqChange }: Props)
   const [maxDate, setMaxDate] = useState<string>("")
   const [startDate, setStartDate] = useState<string>("")
   const [endDate, setEndDate] = useState<string>("")
+  const appliedRangeRef = useRef<{ start: string; end: string } | null>(null)
 
-  async function load(range?: { start: string; end: string }) {
-    setLoading(true)
+  useEffect(() => {
+    appliedRangeRef.current = null
+  }, [freq])
+
+  const load = useCallback(async (showLoading: boolean, range?: { start: string; end: string }) => {
+    if (showLoading) setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ freq })
+      const params = new URLSearchParams({ freq, ts: String(Date.now()) })
       if (range?.start && range?.end) {
         params.set("start", range.start)
         params.set("end", range.end)
@@ -61,18 +67,24 @@ export default function PredictionTimeseriesChart({ freq, onFreqChange }: Props)
       setRows(json.data)
       setMinDate(json.min_date ?? "")
       setMaxDate(json.max_date ?? "")
-      setStartDate(range?.start ?? json.start_date ?? "")
-      setEndDate(range?.end ?? json.end_date ?? "")
+      if (range?.start && range?.end) {
+        setStartDate(range.start)
+        setEndDate(range.end)
+      } else {
+        setStartDate(json.start_date ?? "")
+        setEndDate(json.end_date ?? "")
+      }
     } catch (e: any) {
       setError(e?.message || "数据不可用")
     } finally {
-      setLoading(false)
+      if (showLoading) setLoading(false)
     }
-  }
-
-  useEffect(() => {
-    void load()
   }, [freq])
+
+  useChartAutoRefresh(
+    (showLoading) => load(showLoading, appliedRangeRef.current ?? undefined),
+    [load],
+  )
 
   const latest = useMemo(() => rows[rows.length - 1] ?? null, [rows])
 
@@ -279,11 +291,13 @@ export default function PredictionTimeseriesChart({ freq, onFreqChange }: Props)
       setError("开始日期不能晚于结束日期")
       return
     }
-    void load({ start: startDate, end: endDate })
+    void load(true, { start: startDate, end: endDate })
+    appliedRangeRef.current = { start: startDate, end: endDate }
   }
 
   function onResetLastYear() {
-    void load()
+    appliedRangeRef.current = null
+    void load(true)
   }
 
   return (

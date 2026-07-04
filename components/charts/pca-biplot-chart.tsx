@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import type { Freq } from "./current-market-prediction-chart"
 import { FREQ_LABELS } from "./current-market-prediction-chart"
 
@@ -63,23 +64,22 @@ export default function PcaBiplotChart({ freq, onFreqChange }: Props) {
       .catch(() => {/* leave empty */})
   }, [])
 
-  // Scores change with freq
-  useEffect(() => {
-    let cancelled = false
-    setLoadingData(true)
-    fetch(`/ma/api/macro/current-market-prediction?freq=${freq}`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (!cancelled) {
-          setScores(d.data ?? [])
-          setLoadingData(false)
-        }
+  const loadScores = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setLoadingData(true)
+    try {
+      const res = await fetch(`/ma/api/macro/current-market-prediction?freq=${freq}&ts=${Date.now()}`, {
+        cache: "no-store",
       })
-      .catch(() => {
-        if (!cancelled) setLoadingData(false)
-      })
-    return () => { cancelled = true }
+      const d = await res.json()
+      setScores(d.data ?? [])
+    } catch {
+      /* keep previous data */
+    } finally {
+      if (showLoading) setLoadingData(false)
+    }
   }, [freq])
+
+  useChartAutoRefresh(loadScores, [freq])
 
   const option = useMemo(() => {
     if (!scores.length || !loadings.length) return {}

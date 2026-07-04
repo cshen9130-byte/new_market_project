@@ -155,6 +155,23 @@ export function scheduleDisplayTime(schedule: DueDiligenceSchedule): string {
   return schedule.startTime.slice(0, 5)
 }
 
+/** Calendar cell label: 基金公司 + 尽调对象 (no trailing 尽调). */
+export function scheduleDisplayLabel(schedule: DueDiligenceSchedule): string {
+  let institution = schedule.institution.trim()
+  const target = schedule.target.trim()
+
+  if (!institution) {
+    const title = schedule.title.trim().replace(/\s*尽调\s*$/, "")
+    if (title) institution = title
+  }
+
+  if (institution && target) {
+    if (institution === target) return institution
+    return `${institution} ${target}`
+  }
+  return institution || target
+}
+
 export function formatScheduleDateHeader(date: string): string {
   const d = new Date(`${date}T12:00:00`)
   if (Number.isNaN(d.getTime())) return date

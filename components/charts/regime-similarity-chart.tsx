@@ -1,11 +1,12 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type ZScores = {
@@ -116,33 +117,7 @@ export default function RegimeSimilarityChart() {
     }
   }, [])
 
-  useEffect(() => {
-    void loadData(true)
-  }, [loadData])
-
-  useEffect(() => {
-    const handleFocus = () => { void loadData(false) }
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") {
-        void loadData(false)
-      }
-    }
-
-    window.addEventListener("focus", handleFocus)
-    document.addEventListener("visibilitychange", handleVisibility)
-
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        void loadData(false)
-      }
-    }, 60_000)
-
-    return () => {
-      window.removeEventListener("focus", handleFocus)
-      document.removeEventListener("visibilitychange", handleVisibility)
-      window.clearInterval(timer)
-    }
-  }, [loadData])
+  useChartAutoRefresh(loadData, [])
 
   // ── Chart 1: Top-20 similarity (horizontal bar) ──────────────────────────
   const similarityOption = useMemo(() => {

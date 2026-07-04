@@ -127,7 +127,9 @@ export function RepresentativeProductCell({
     searchRef.current = setTimeout(async () => {
       setLoading(true)
       try {
-        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(query)}`)
+        const res = await fetch(
+          `/ma/api/private-funds/products/search?q=${encodeURIComponent(query)}&format=picker`,
+        )
         const json = await res.json()
         if (Array.isArray(json)) {
           setResults(json)

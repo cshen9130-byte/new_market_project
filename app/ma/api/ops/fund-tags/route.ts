@@ -1,5 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import {
+  isKnownCustomPoolKey,
+  purgeOrphanedCustomPoolMemberships,
+} from "@/lib/server/tracking-pool-membership"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -42,11 +46,22 @@ const POOL_LABELS: Record<string, string> = {
   hy:       "hy跟踪池",
   fof:      "FOF&MOM跟踪",
   all:      "全部",
+  mine_default: "默认我的跟踪",
+}
+
+function formatPoolLabel(poolKey: string, savedLabel: string | null | undefined): string {
+  const trimmed = savedLabel?.trim()
+  if (trimmed) return trimmed
+  if (POOL_LABELS[poolKey]) return POOL_LABELS[poolKey]
+  const stripped = poolKey.replace(/^(custom_|mine_custom_)/, "").replace(/_/g, " ").trim()
+  if (!stripped || /^\d+$/.test(stripped)) return poolKey
+  return stripped.endsWith("池") ? stripped : `${stripped}池`
 }
 
 export async function GET(req: Request) {
   try {
     await ensureTable()
+    await purgeOrphanedCustomPoolMemberships()
     const { searchParams } = new URL(req.url)
     const beian_hao = searchParams.get("beian_hao")
     if (!beian_hao) return NextResponse.json({ tags: [], pools: [] })
@@ -89,10 +104,11 @@ export async function GET(req: Request) {
     try {
       const labelRows = await query<{ pool_key: string; label: string }>(
         `SELECT pool_key, label FROM tracking_custom_pools
-         WHERE scope = 'team' AND pool_key NOT LIKE '\\_\\_%'`,
+         WHERE pool_key NOT LIKE '\\_\\_%'`,
       )
       for (const row of labelRows) labelByKey.set(row.pool_key, row.label)
     } catch { /* table may not exist */ }
+    const definedPoolKeys = new Set(labelByKey.keys())
 
     for (let i = 0; i < poolResults.length; i++) {
       const saved = labelByKey.get(poolResults[i].pool_key)
@@ -104,25 +120,30 @@ export async function GET(req: Request) {
       const customRows = await query<{ pool_key: string; label: string | null }>(
         `SELECT u.pool_key, COALESCE(p.label, '') AS label
          FROM user_custom_pool u
-         LEFT JOIN tracking_custom_pools p ON p.pool_key = u.pool_key AND p.scope = 'team'
+         LEFT JOIN tracking_custom_pools p ON p.pool_key = u.pool_key
          WHERE u.register_number = $1`,
         [beian_hao]
       )
       const seen = new Set<string>()
+      const existingKeys = new Set(poolResults.map((p) => p.pool_key))
       for (const row of customRows) {
-        if (seen.has(row.pool_key)) continue
+        if (seen.has(row.pool_key) || existingKeys.has(row.pool_key)) continue
+        if (!isKnownCustomPoolKey(row.pool_key, definedPoolKeys)) continue
         seen.add(row.pool_key)
-        const label = row.label?.trim()
-          || row.pool_key.replace(/^(custom_|mine_custom_)/, "").replace(/_/g, " ")
-          || row.pool_key
+        existingKeys.add(row.pool_key)
         poolResults.push({
           pool_key: row.pool_key,
-          pool_label: label.endsWith("池") ? label : `${label}池`,
+          pool_label: formatPoolLabel(row.pool_key, row.label || labelByKey.get(row.pool_key)),
         })
       }
     } catch { /* table may not exist */ }
 
-    return NextResponse.json({ tags: tags.map((t) => t.tag_name), pools: poolResults })
+    const deduped = new Map<string, { pool_key: string; pool_label: string }>()
+    for (const pool of poolResults) {
+      if (!deduped.has(pool.pool_key)) deduped.set(pool.pool_key, pool)
+    }
+
+    return NextResponse.json({ tags: tags.map((t) => t.tag_name), pools: [...deduped.values()] })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })
   }

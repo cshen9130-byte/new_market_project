@@ -60,14 +60,14 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
   { key: "strategyLevel1",     label: "一级策略",      width: 68 },
   { key: "strategyLevel2",     label: "二级策略",      width: 68 },
   { key: "strategyLevel3",     label: "三级策略",      width: 90 },
-  { key: "inTrackingPool",     label: "是否加入跟踪池", width: 94 },
+  { key: "inTrackingPool",     label: "已加入跟踪池", width: 130 },
   { key: "ddMaterials",        label: "尽调材料",      width: 68 },
   { key: "otherInfo",          label: "其他补充信息",  width: 150, multiline: true },
   { key: "ddConclusion",       label: "尽调结论",      width: 200, multiline: true },
 ]
 
 export const TABLE_INDEX_WIDTH = 36
-export const TABLE_ACTION_WIDTH = 36
+export const TABLE_ACTION_WIDTH = 64
 
 /** Total natural width of all columns at 1× zoom. */
 export function getDueDiligenceTableNaturalWidth(): number {

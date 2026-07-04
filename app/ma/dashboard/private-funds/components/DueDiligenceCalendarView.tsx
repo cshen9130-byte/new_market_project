@@ -13,6 +13,7 @@ import {
   loadDueDiligenceSchedulesFromServer,
   saveDueDiligenceSchedules,
   saveDueDiligenceSchedulesToServer,
+  scheduleDisplayLabel,
   scheduleDisplayTime,
   scheduleDotClass,
   scheduleMatchesDate,
@@ -90,7 +91,7 @@ function ScheduleEventChip({
     >
       <span className={["h-2 w-2 shrink-0 rounded-full", scheduleDotClass(schedule.method)].join(" ")} />
       <span className="truncate">
-        {scheduleDisplayTime(schedule)} {schedule.title}
+        {scheduleDisplayTime(schedule)} {scheduleDisplayLabel(schedule)}
       </span>
     </button>
   )

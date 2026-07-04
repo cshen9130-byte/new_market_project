@@ -128,3 +128,31 @@ export function invalidateTrackingPoolListCaches(poolKeys: string[]): void {
     invalidateListResponseCache(key)
   }
 }
+
+/** Remove fund memberships for custom pools that no longer exist in tracking_custom_pools. */
+export async function purgeOrphanedCustomPoolMemberships(): Promise<number> {
+  try {
+    const rows = await query<{ count: string }>(
+      `WITH deleted AS (
+         DELETE FROM user_custom_pool u
+         WHERE (u.pool_key LIKE 'custom\_%' OR u.pool_key LIKE 'mine_custom\_%')
+           AND NOT EXISTS (
+             SELECT 1 FROM tracking_custom_pools p WHERE p.pool_key = u.pool_key
+           )
+         RETURNING 1
+       )
+       SELECT COUNT(*)::text AS count FROM deleted`,
+    )
+    return Number(rows[0]?.count ?? 0)
+  } catch {
+    return 0
+  }
+}
+
+export function isKnownCustomPoolKey(poolKey: string, definedPoolKeys: ReadonlySet<string>): boolean {
+  if (poolKey === "mine_default" || poolKey === "jy_ops") return true
+  if (poolKey.startsWith("custom_") || poolKey.startsWith("mine_custom_")) {
+    return definedPoolKeys.has(poolKey)
+  }
+  return true
+}

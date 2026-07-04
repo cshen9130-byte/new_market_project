@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import type { Freq } from "./current-market-prediction-chart"
 
 // ── types ─────────────────────────────────────────────────────────────────────
@@ -56,20 +57,24 @@ export default function AssetReturnsChart({ freq }: Props) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    setLoading(true)
+  const load = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setLoading(true)
     setError(null)
-    fetch(`/ma/api/macro/asset-returns?days=${range}&freq=${freq}`, { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d: ApiResponse) => {
-        if (!cancelled) { setData(d); setLoading(false) }
-      })
-      .catch((e) => {
-        if (!cancelled) { setError(e?.message || "数据不可用"); setLoading(false) }
-      })
-    return () => { cancelled = true }
+    try {
+      const res = await fetch(
+        `/ma/api/macro/asset-returns?days=${range}&freq=${freq}&ts=${Date.now()}`,
+        { cache: "no-store" },
+      )
+      const d: ApiResponse = await res.json()
+      setData(d)
+    } catch (e: any) {
+      setError(e?.message || "数据不可用")
+    } finally {
+      if (showLoading) setLoading(false)
+    }
   }, [freq, range])
+
+  useChartAutoRefresh(load, [freq, range])
 
   const cumulativeOption = useMemo(() => {
     if (!data?.assets?.length) return {}

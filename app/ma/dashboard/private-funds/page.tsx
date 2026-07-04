@@ -1905,7 +1905,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [showBatchConfirmDialog, setShowBatchConfirmDialog] = useState(false)
   const [batchConfirmTitle, setBatchConfirmTitle] = useState("")
   const [batchConfirmMessage, setBatchConfirmMessage] = useState("")
-  const [batchConfirmAction, setBatchConfirmAction] = useState<"remove_strategy" | "remove_tags" | "remove" | "">("")
+  const [batchConfirmAction, setBatchConfirmAction] = useState<"remove_strategy" | "remove_tags" | "remove" | "move" | "">("")
   const [batchContextPool, setBatchContextPool] = useState("")
   const [batchSubmitting, setBatchSubmitting] = useState(false)
   const [showAddMetricDialog, setShowAddMetricDialog] = useState(false)
@@ -2554,6 +2554,29 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     }
   }
 
+  function openBatchPoolChangeDialog(closeMenu: () => void) {
+    closeMenu()
+    setBatchMoveTargetPool("")
+    setBatchMoveMode("move")
+    setShowBatchMoveDialog(true)
+  }
+
+  async function submitBatchPoolChange() {
+    if (!batchMoveTargetPool) return
+    if (batchMoveMode === "copy") {
+      await handleBatchOp("copy", { target_pool: batchMoveTargetPool })
+      setShowBatchMoveDialog(false)
+      return
+    }
+    const targetLabel = pools.find((p) => p.key === batchMoveTargetPool)?.label ?? batchMoveTargetPool
+    const sourceLabel = pools.find((p) => p.key === batchContextPool)?.label ?? "当前产品池"
+    setShowBatchMoveDialog(false)
+    setBatchConfirmTitle("确认移动")
+    setBatchConfirmMessage(`确定将已选 ${selected.size} 只产品从「${sourceLabel}」移动到「${targetLabel}」？移动后它们将从当前产品池中移除。`)
+    setBatchConfirmAction("move")
+    setShowBatchConfirmDialog(true)
+  }
+
   function pageButtons(): (number | string)[] {
     if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1)
     const btns: (number | string)[] = [1]
@@ -3083,8 +3106,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <div className="absolute right-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("move"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量移动到</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("copy"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量复制到</button>
+                      <button onClick={() => openBatchPoolChangeDialog(() => setShowTeamBatchMenu(false))} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">变更产品池</button>
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
@@ -3206,8 +3228,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("move"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量移动到</button>
-                      <button onClick={() => { setShowTeamBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("copy"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量复制到</button>
+                      <button onClick={() => openBatchPoolChangeDialog(() => setShowTeamBatchMenu(false))} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">变更产品池</button>
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
                       <button onClick={() => { setShowTeamBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
@@ -3788,8 +3809,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <div className="absolute left-0 top-full mt-1 z-40 bg-background border rounded-lg shadow-lg py-1 min-w-[130px]" onClick={(e) => e.stopPropagation()}>
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchTagSelected([]); fetch("/ma/api/ops/team-tags?category=fund").then((r) => r.json()).then((d) => Array.isArray(d) ? setBatchTagTeamTags(d.map((t: { name: string }) => t.name)) : null).catch(() => {}); setShowBatchTagDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加标签</button>
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchStrategyL1(""); setBatchStrategyL2(""); setBatchStrategyL3(""); setShowBatchStrategyDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量添加策略</button>
-                      <button onClick={() => { setShowMineBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("move"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量移动到</button>
-                      <button onClick={() => { setShowMineBatchMenu(false); setBatchMoveTargetPool(""); setBatchMoveMode("copy"); setShowBatchMoveDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">批量复制到</button>
+                      <button onClick={() => openBatchPoolChangeDialog(() => setShowMineBatchMenu(false))} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors">变更产品池</button>
                       <div className="border-t my-1" />
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消策略"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量取消策略吗？`); setBatchConfirmAction("remove_strategy"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消策略</button>
                       <button onClick={() => { setShowMineBatchMenu(false); setBatchConfirmTitle("批量取消标签"); setBatchConfirmMessage(`确定要为已选 ${selected.size} 只产品批量清除所有标签吗？`); setBatchConfirmAction("remove_tags"); setShowBatchConfirmDialog(true) }} className="w-full text-left px-4 py-2 text-sm hover:bg-muted transition-colors text-zinc-500">批量取消标签</button>
@@ -4159,11 +4179,15 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               <button
                 disabled={batchSubmitting}
                 onClick={async () => {
-                  if (batchConfirmAction) await handleBatchOp(batchConfirmAction)
+                  if (batchConfirmAction === "move") {
+                    await handleBatchOp("move", { target_pool: batchMoveTargetPool })
+                  } else if (batchConfirmAction) {
+                    await handleBatchOp(batchConfirmAction)
+                  }
                   setShowBatchConfirmDialog(false)
                 }}
                 className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                {batchSubmitting ? "处理中…" : "确 定"}
+                {batchSubmitting ? "处理中…" : batchConfirmAction === "move" ? "确认移动" : "确 定"}
               </button>
             </div>
           </div>
@@ -4173,12 +4197,43 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       {/* Batch move dialog */}
       {showBatchMoveDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowBatchMoveDialog(false)}>
-          <div className="bg-background rounded-lg shadow-xl w-[420px] flex flex-col" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-background rounded-lg shadow-xl w-[460px] flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-6 py-4 border-b flex-shrink-0">
-              <span className="font-semibold text-base">{batchMoveMode === "copy" ? "复制到产品池" : "移动到产品池"}</span>
+              <span className="font-semibold text-base">变更产品池</span>
               <button onClick={() => setShowBatchMoveDialog(false)} className="text-muted-foreground hover:text-foreground transition-colors text-xl leading-none">×</button>
             </div>
-            <div className="px-6 py-5">
+            <div className="px-6 py-5 space-y-5">
+              <div>
+                <p className="text-sm font-medium mb-2.5">操作方式</p>
+                <div className="space-y-2">
+                  <label className="flex items-start gap-2.5 cursor-pointer rounded-md border px-3 py-2.5 hover:bg-muted/50 transition-colors has-[:checked]:border-red-300 has-[:checked]:bg-red-50/50 dark:has-[:checked]:bg-red-950/20">
+                    <input
+                      type="radio"
+                      name="batchMoveMode"
+                      checked={batchMoveMode === "move"}
+                      onChange={() => setBatchMoveMode("move")}
+                      className="accent-red-500 h-3.5 w-3.5 flex-shrink-0 mt-0.5"
+                    />
+                    <span>
+                      <span className="text-sm font-medium">移动</span>
+                      <span className="block text-xs text-zinc-500 mt-0.5">添加到目标池，并从当前产品池移除</span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2.5 cursor-pointer rounded-md border px-3 py-2.5 hover:bg-muted/50 transition-colors has-[:checked]:border-red-300 has-[:checked]:bg-red-50/50 dark:has-[:checked]:bg-red-950/20">
+                    <input
+                      type="radio"
+                      name="batchMoveMode"
+                      checked={batchMoveMode === "copy"}
+                      onChange={() => setBatchMoveMode("copy")}
+                      className="accent-red-500 h-3.5 w-3.5 flex-shrink-0 mt-0.5"
+                    />
+                    <span>
+                      <span className="text-sm font-medium">复制</span>
+                      <span className="block text-xs text-zinc-500 mt-0.5">添加到目标池，保留在当前产品池</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
               <div className="flex items-center gap-3">
                 <span className="text-sm shrink-0 w-16 text-right">
                   <span className="text-red-500 mr-0.5">*</span>目标池：
@@ -4204,12 +4259,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
               <button onClick={() => setShowBatchMoveDialog(false)} className="px-4 py-1.5 rounded border text-sm hover:bg-muted transition-colors">取 消</button>
               <button
                 disabled={!batchMoveTargetPool || batchSubmitting}
-                onClick={async () => {
-                  await handleBatchOp(batchMoveMode, { target_pool: batchMoveTargetPool })
-                  setShowBatchMoveDialog(false)
-                }}
+                onClick={() => void submitBatchPoolChange()}
                 className="px-4 py-1.5 rounded bg-red-500 hover:bg-red-600 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                {batchSubmitting ? "处理中…" : "确 定"}
+                {batchSubmitting ? "处理中…" : batchMoveMode === "move" ? "下一步" : "确 定"}
               </button>
             </div>
           </div>

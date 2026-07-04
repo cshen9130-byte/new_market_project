@@ -1,9 +1,10 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
+import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type TimeseriesRow = {
@@ -103,20 +104,25 @@ export default function MoneyCreditChart() {
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<Tab>("timeseries")
 
-  useEffect(() => {
-    setLoading(true)
-    fetch("/ma/api/macro/money-credit", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((json: ApiResponse) => {
-        if (!json.timeseries?.length) {
-          setError("暂无计算结果，请先运行 calc_money_credit.py")
-        } else {
-          setData(json)
-        }
-      })
-      .catch((e) => setError(e.message || "加载失败"))
-      .finally(() => setLoading(false))
+  const load = useCallback(async (showLoading: boolean) => {
+    if (showLoading) setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/ma/api/macro/money-credit?ts=${Date.now()}`, { cache: "no-store" })
+      const json: ApiResponse = await res.json()
+      if (!json.timeseries?.length) {
+        setError("暂无计算结果，请先运行 calc_money_credit.py")
+      } else {
+        setData(json)
+      }
+    } catch (e: any) {
+      setError(e.message || "加载失败")
+    } finally {
+      if (showLoading) setLoading(false)
+    }
   }, [])
+
+  useChartAutoRefresh(load, [])
 
   // ── Chart 1: Dual timeseries with quadrant background ─────────────────────
   const timeseriesOption = useMemo(() => {
