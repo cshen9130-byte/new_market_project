@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
-import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail } from "@/lib/server/email-nav-query"
+import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, collectFundNameAliases } from "@/lib/server/email-nav-query"
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed, mergeManagedProductDetailNav } from "@/lib/server/managed-product-nav-seed"
@@ -251,6 +251,18 @@ export async function GET(
     cum_nav_withdrawal: string
     price_change: string
   }[] = []
+  const valuationSinceDate = trackInception ?? addDays(new Date().toISOString().slice(0, 10), 400)
+  const valuationFallbackPromise = loadFundValuationNavFallbackSeries(
+    routeBeianHao,
+    productName,
+    shortName || null,
+    {
+      sinceDate: valuationSinceDate,
+      extraBeianCodes: [...new Set([rawId, beian_hao, routeBeianHao].filter(Boolean))],
+      extraNames: collectFundNameAliases(productName, shortName || null, emailNameAliases),
+    },
+  )
+
   try {
     navRows = await loadPrivateFundLegacyNavRows(routeBeianHao, productName, shortName || "")
   } catch (err) {
@@ -342,17 +354,8 @@ export async function GET(
 
   // Custody-only funds (估值表 but no 净值表) — same fallback as FOF底层 list cache.
   if (nav_series.length === 0) {
-    const sinceDate = trackInception ?? addDays(new Date().toISOString().slice(0, 10), 400)
     try {
-      const fallbackPoints = await loadFundValuationNavFallbackSeries(
-        routeBeianHao,
-        productName,
-        shortName || null,
-        {
-          sinceDate,
-          extraBeianCodes: rawId !== routeBeianHao ? [rawId] : [],
-        },
-      )
+      const fallbackPoints = await valuationFallbackPromise
       if (fallbackPoints.length > 0) {
         nav_series = mergeNavSeriesWithEmail([], fallbackPoints)
       }

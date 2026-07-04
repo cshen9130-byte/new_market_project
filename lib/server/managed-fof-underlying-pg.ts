@@ -1014,9 +1014,31 @@ function collectFundValuationLookupCodes(
   return [...codes]
 }
 
+function collectFundValuationLookupNames(
+  productName: string,
+  shortName: string | null,
+  extraNames: string[],
+): string[] {
+  const names = new Set<string>()
+  for (const raw of [productName, shortName, ...extraNames]) {
+    const name = (raw ?? "").trim()
+    if (name) names.add(name)
+  }
+  return [...names]
+}
+
+function sqlMatchAnyFundName(columnExpr: string, namesParam: string): string {
+  return `EXISTS (
+    SELECT 1 FROM unnest(${namesParam}::text[]) AS alias(name)
+    WHERE alias.name <> ''
+      AND ${sqlFundNameMatch(columnExpr, "alias.name")}
+      AND ${sqlShareClassProductNameGuard(columnExpr, "alias.name")}
+  )`
+}
+
 /**
  * Historical unit NAV from 估值表 when 净值表 / legacy have no series.
- * Used by fund detail pages for custody-only underlyings (e.g. 奇盾抱朴专享1号).
+ * Uses targeted SQL (no full-table scans) so fund detail pages load in seconds.
  */
 export async function loadFundValuationNavFallbackSeries(
   beianHao: string,
@@ -1025,6 +1047,7 @@ export async function loadFundValuationNavFallbackSeries(
   options?: {
     sinceDate?: string
     extraBeianCodes?: string[]
+    extraNames?: string[]
   },
 ): Promise<EmailNavFallbackPoint[]> {
   await ensureManagedFofUnderlyingTable()
@@ -1037,6 +1060,11 @@ export async function loadFundValuationNavFallbackSeries(
     shortName,
     options?.extraBeianCodes ?? [],
   )
+  const lookupNames = collectFundValuationLookupNames(
+    productName,
+    shortName,
+    options?.extraNames ?? [],
+  )
   const byDate = new Map<string, number>()
 
   const addPoint = (navDate: string, nav: number | null) => {
@@ -1045,7 +1073,7 @@ export async function loadFundValuationNavFallbackSeries(
     byDate.set(date, nav)
   }
 
-  const nameGuard = sqlShareClassProductNameGuard("m.underlying_name", "$3")
+  const nameMatchAny = sqlMatchAnyFundName("m.underlying_name", "$3")
   const managedRows = await query<{
     valuation_date: string
     price: string | null
@@ -1058,66 +1086,57 @@ export async function loadFundValuationNavFallbackSeries(
        AND COALESCE(m.market_value, 0) > 0
        AND (
          (cardinality($2::text[]) > 0 AND TRIM(UPPER(COALESCE(m.underlying_product_code, ''))) = ANY($2::text[]))
-         OR (${sqlFundNameMatch("m.underlying_name", "$3")} AND ${nameGuard})
+         OR (cardinality($3::text[]) > 0 AND ${nameMatchAny})
        )
      ORDER BY m.valuation_date ASC`,
-    [sinceDate, lookupCodes, productName],
+    [sinceDate, lookupCodes, lookupNames],
   )
   for (const row of managedRows) {
     addPoint(row.valuation_date, resolveNavFromValuationTable(row.price, row.quantity, row.market_value))
   }
 
-  const beianLit = `'${beianHao.replace(/'/g, "''")}'`
-  const productLit = `'${productName.replace(/'/g, "''")}'`
-  const holdingMatch = valuationHoldingMatchSql(beianLit, productLit, "h")
-  const managedProductExpr = "m.product_name"
-  const managedBeianExpr = fofUnderlyingBeianExpr(managedProductExpr)
-  const fundMatch = sqlFundNameMatch("r.fund_name", "mf.product_name")
+  const holdingNameMatch = sqlMatchAnyFundName("h.subject_name", "$3")
   const holdingRows = await query<{
     valuation_date: string
     price: string | null
     quantity: string | null
     market_value: string | null
   }>(
-    `WITH managed_fof AS (
-       SELECT m.id AS managed_product_id, m.product_name, ${managedBeianExpr} AS beian_hao
-       ${buildManagedProductsFrom(managedProductExpr)}
-       WHERE m.product_name <> '合计'
-         AND m.product_name NOT ILIKE $3
-     )
-     SELECT r.valuation_date::text AS valuation_date, h.price, h.quantity, h.market_value
-     FROM managed_fof mf
-     INNER JOIN ops_email_valuation_records r ON (
-       (NULLIF(BTRIM(mf.beian_hao), '') IS NOT NULL AND r.product_code = mf.beian_hao)
-       OR ${fundMatch}
-     )
-     INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = r.id
+    `SELECT r.valuation_date::text AS valuation_date, h.price, h.quantity, h.market_value
+     FROM ops_email_valuation_holdings h
+     INNER JOIN ops_email_valuation_records r ON r.id = h.valuation_record_id
      WHERE r.valuation_date >= $1::date
-       AND (${holdingMatch} OR (cardinality($2::text[]) > 0 AND TRIM(UPPER(COALESCE(h.symbol, ''))) = ANY($2::text[])))
+       AND (
+         (cardinality($2::text[]) > 0 AND TRIM(UPPER(COALESCE(h.symbol, ''))) = ANY($2::text[]))
+         OR (cardinality($3::text[]) > 0 AND ${holdingNameMatch})
+       )
        ${SQL_FOF_VALUATION_HOLDING_CORE_FILTERS}
      ORDER BY r.valuation_date ASC`,
-    [sinceDate, lookupCodes, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
+    [sinceDate, lookupCodes, lookupNames],
   )
   for (const row of holdingRows) {
     addPoint(row.valuation_date, resolveNavFromValuationTable(row.price, row.quantity, row.market_value))
   }
 
-  const { loadCustodyValuationNavHistory } = await import("@/lib/server/email-valuation-nav-backfill")
-  const custody = await loadCustodyValuationNavHistory(sinceDate)
-  const lookupKeySet = new Set(lookupCodes)
-  const nameKeys = new Set(
-    fofUnderlyingNavLookupKeys(productName, beianHao, shortName).filter((k) => !/^[A-Z0-9]+$/i.test(k)),
+  const custodyNameMatch = sqlMatchAnyFundName("v.fund_name", "$3")
+  const custodyRows = await query<{
+    valuation_date: string
+    unit_nav: string
+  }>(
+    `SELECT v.valuation_date::text AS valuation_date, v.unit_nav::text AS unit_nav
+     FROM ops_email_valuation_records v
+     WHERE v.valuation_date >= $1::date
+       AND v.unit_nav IS NOT NULL
+       AND (
+         (cardinality($2::text[]) > 0 AND TRIM(UPPER(COALESCE(v.product_code, ''))) = ANY($2::text[]))
+         OR (cardinality($3::text[]) > 0 AND ${custodyNameMatch})
+       )
+     ORDER BY v.valuation_date ASC`,
+    [sinceDate, lookupCodes, lookupNames],
   )
-  for (const [key, points] of custody.byCode) {
-    if (!lookupKeySet.has(key.toUpperCase())) continue
-    for (const point of points) addPoint(point.nav_date, point.nav)
-  }
-  for (const [key, points] of custody.byName) {
-    const matches = [...nameKeys].some((nameKey) => fundDisplayNamesMatch(key, nameKey))
-      || fundDisplayNamesMatch(key, productName)
-      || (shortName ? fundDisplayNamesMatch(key, shortName) : false)
-    if (!matches) continue
-    for (const point of points) addPoint(point.nav_date, point.nav)
+  for (const row of custodyRows) {
+    const nav = parseFloat(row.unit_nav)
+    if (Number.isFinite(nav) && nav > 0) addPoint(row.valuation_date, nav)
   }
 
   return [...byDate.entries()]
