@@ -35,6 +35,25 @@ const FUND_NAME_CODE_OVERRIDES: Record<string, string> = {
   "磐松红利指数增强1号":                "SAGF05",
   "棕榈滩泰来":                         "AVF39",
   "棕榈滩泰来三号":                     "BVC41",
+  "乾上泉对冲一号":                     "ALF51",
+}
+
+/** 估值表 subject code (often S-prefix / no share-class suffix) → canonical 备案号. */
+export const FOF_VALUATION_CODE_ALIASES: Readonly<Record<string, string>> = {
+  SALF51: "ALF51B",
+  SVN917: "VN917B",
+  SATL22: "ATL22A",
+  STG733: "TG733C",
+  SNW169: "NW169B",
+  SSJ392: "SJ392B",
+  STA891: "TA891A",
+  SZG868: "ZG868A",
+}
+
+export function resolveFofValuationCodeAlias(code: string | null | undefined): string | null {
+  const c = String(code ?? "").trim().toUpperCase()
+  if (!c) return null
+  return FOF_VALUATION_CODE_ALIASES[c] ?? null
 }
 
 /** Known A-share ETF name patterns → 6-digit ticker code. */

@@ -8,6 +8,8 @@ import {
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import { resolveManagedProductBeian, lookupManagedProductOverride, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
+import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
+import { shareClassProductNamesMatch } from "@/lib/server/fund-name-match"
 
 function decodeFundIdentifier(raw: string): string {
   try {
@@ -284,10 +286,184 @@ async function resolveManagedProductMainBeian(shareClassCode: string): Promise<s
   return null
 }
 
+/** Map 估值表 holding codes (e.g. SALF51) to canonical 备案号 (ALF51B). */
+async function resolveFundBeianViaParentCode(code: string): Promise<string | null> {
+  const c = code.trim().toUpperCase()
+  if (!c) return null
+
+  const aliased = resolveFofValuationCodeAlias(c)
+  if (aliased) return aliased
+
+  if (!/^S[A-Z0-9]+$/i.test(c)) return null
+
+  const rows = await query<{ beian_hao: string; product_name: string }>(
+    `SELECT beian_hao, product_name
+     FROM private_fund_info_bfl
+     WHERE $1 = 'S' || regexp_replace(UPPER(BTRIM(beian_hao)), '[ABC]$', '')
+     ORDER BY beian_hao
+     LIMIT 8`,
+    [c],
+  )
+  if (rows.length === 0) return null
+  if (rows.length === 1) return rows[0].beian_hao
+
+  const holdingRows = await query<{ underlying_name: string }>(
+    `SELECT DISTINCT TRIM(underlying_name) AS underlying_name
+     FROM ops_managed_fof_underlying
+     WHERE UPPER(TRIM(COALESCE(underlying_product_code, ''))) = $1
+     LIMIT 1`,
+    [c],
+  ).catch(() => [] as { underlying_name: string }[])
+
+  const holdingName = holdingRows[0]?.underlying_name
+  if (holdingName) {
+    const matched = rows.find(
+      (row) =>
+        shareClassProductNamesMatch(row.product_name, holdingName)
+        || shareClassProductNamesMatch(holdingName, row.product_name),
+    )
+    if (matched) return matched.beian_hao
+  }
+
+  return rows[0]?.beian_hao ?? null
+}
+
+async function lookupFundInfoByBeianCode(beianHao: string): Promise<FundInfoLookupRow | null> {
+  const code = beianHao.trim()
+  if (!code) return null
+
+  const infoRows = await query<FundInfoLookupRow>(
+    `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, NULL::text AS strategy_l3, manager,
+            inception_date::text AS inception_date, benchmark,
+            ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
+            sharpe_1y::text, calmar_1y::text
+     FROM private_fund_info WHERE beian_hao = $1`,
+    [code],
+  )
+  if (infoRows[0]) return infoRows[0]
+
+  const bflRows = await query<FundInfoLookupRow>(
+    `SELECT beian_hao, product_name, short_name,
+            strategy_one AS strategy_l1,
+            strategy_two AS strategy_l2,
+            strategy_three AS strategy_l3,
+            ''::text AS manager,
+            NULL::text AS inception_date,
+            NULL::text AS benchmark,
+            NULL::text AS ret_1w, NULL::text AS ret_1m, NULL::text AS ret_3m,
+            NULL::text AS ret_6m, NULL::text AS ret_1y,
+            NULL::text AS sharpe_1y, NULL::text AS calmar_1y
+     FROM private_fund_info_bfl
+     WHERE beian_hao = $1`,
+    [code],
+  )
+  return bflRows[0] ?? null
+}
+
+/** Resolve fund metadata from FOF底层 pool when absent from main fund tables. */
+async function lookupFofUnderlyingFundInfo(identifier: string): Promise<FundInfoLookupRow | null> {
+  const id = decodeFundIdentifier(identifier)
+  if (!id) return null
+
+  try {
+    const cacheRows = await query<{
+      beian_hao: string | null
+      product_name: string
+      short_name: string | null
+    }>(
+      `SELECT beian_hao, product_name, short_name
+       FROM ops_fof_overview_list_cache
+       WHERE UPPER(BTRIM(COALESCE(beian_hao, ''))) = UPPER(BTRIM($1))
+          OR ${sqlFundNameMatch("product_name", "$1")}
+          OR (short_name IS NOT NULL AND ${sqlFundNameMatch("short_name", "$1")})
+       ORDER BY CASE WHEN UPPER(BTRIM(COALESCE(beian_hao, ''))) = UPPER(BTRIM($1)) THEN 0 ELSE 1 END
+       LIMIT 1`,
+      [id],
+    )
+    if (cacheRows[0]) {
+      const row = cacheRows[0]
+      const canonical =
+        resolveFofValuationCodeAlias(row.beian_hao)
+        ?? resolveFofValuationCodeAlias(id)
+        ?? (await resolveFundBeianViaParentCode(row.beian_hao ?? id))
+        ?? row.beian_hao?.trim()
+        ?? null
+      if (canonical) {
+        const fromBfl = await lookupFundInfoByBeianCode(canonical)
+        if (fromBfl) return { ...fromBfl, ...EMPTY_FUND_METRICS }
+      }
+      return {
+        beian_hao: canonical ?? row.beian_hao ?? id,
+        product_name: row.product_name,
+        short_name: row.short_name,
+        strategy_l1: null,
+        strategy_l2: null,
+        strategy_l3: null,
+        ...EMPTY_FUND_METRICS,
+      }
+    }
+  } catch {
+    // cache table may not exist yet
+  }
+
+  try {
+    const holdingRows = await query<{ underlying_name: string; underlying_product_code: string | null }>(
+      `SELECT DISTINCT TRIM(underlying_name) AS underlying_name,
+              NULLIF(TRIM(UPPER(underlying_product_code)), '') AS underlying_product_code
+       FROM ops_managed_fof_underlying
+       WHERE COALESCE(market_value, 0) > 0
+         AND UPPER(TRIM(COALESCE(underlying_product_code, ''))) = UPPER(BTRIM($1))
+       LIMIT 1`,
+      [id],
+    )
+    if (holdingRows[0]) {
+      const holdingName = holdingRows[0].underlying_name
+      const canonical =
+        resolveFofValuationCodeAlias(holdingRows[0].underlying_product_code)
+        ?? resolveFofValuationCodeAlias(id)
+        ?? (await resolveFundBeianViaParentCode(id))
+      if (canonical) {
+        const fromBfl = await lookupFundInfoByBeianCode(canonical)
+        if (fromBfl) return { ...fromBfl, ...EMPTY_FUND_METRICS }
+      }
+      const bflByName = await query<FundInfoLookupRow>(
+        `SELECT beian_hao, product_name, short_name,
+                strategy_one AS strategy_l1,
+                strategy_two AS strategy_l2,
+                strategy_three AS strategy_l3,
+                ''::text AS manager,
+                NULL::text AS inception_date,
+                NULL::text AS benchmark,
+                NULL::text AS ret_1w, NULL::text AS ret_1m, NULL::text AS ret_3m,
+                NULL::text AS ret_6m, NULL::text AS ret_1y,
+                NULL::text AS sharpe_1y, NULL::text AS calmar_1y
+         FROM private_fund_info_bfl bfl
+         WHERE (${sqlFundNameMatch("bfl.product_name", "$1")}
+            OR ${sqlFundNameMatch("bfl.short_name", "$1")})
+           AND ${sqlShareClassProductNameGuard("bfl.product_name", "$1")}
+         ORDER BY LEAST(
+           ${sqlFundNameMatchPriority("bfl.product_name", "$1")},
+           ${sqlFundNameMatchPriority("bfl.short_name", "$1")}
+         )
+         LIMIT 1`,
+        [holdingName],
+      )
+      if (bflByName[0]) return { ...bflByName[0], ...EMPTY_FUND_METRICS }
+    }
+  } catch {
+    // managed table may not exist
+  }
+
+  return null
+}
+
 /** Resolve a URL identifier to beian_hao (direct code lookup, then product name). */
 export async function resolveFundBeianHao(identifier: string): Promise<string | null> {
   const id = identifier.trim()
   if (!id) return null
+
+  const aliased = resolveFofValuationCodeAlias(id)
+  if (aliased) return aliased
 
   const directRows = await query<{ code: string }>(
     `SELECT beian_hao AS code FROM private_fund_info WHERE beian_hao = $1
@@ -307,6 +483,9 @@ export async function resolveFundBeianHao(identifier: string): Promise<string | 
 
   const remapped = remapManagedProductBeianCode(id)
   if (remapped) return remapped
+
+  const viaParent = await resolveFundBeianViaParentCode(id)
+  if (viaParent) return viaParent
 
   try {
     const nameRows = await query<{ beian_hao: string | null }>(
@@ -364,6 +543,12 @@ const EMPTY_FUND_METRICS = {
 export async function lookupFundInfoFallback(identifier: string): Promise<FundInfoLookupRow | null> {
   const id = decodeFundIdentifier(identifier)
   if (!id) return null
+
+  const aliased = resolveFofValuationCodeAlias(id)
+  if (aliased && aliased !== id) {
+    const fromAlias = await lookupFundInfoFallback(aliased)
+    if (fromAlias) return fromAlias
+  }
 
   const managedOverride = lookupManagedProductOverride(id)
   if (managedOverride) {
@@ -533,8 +718,15 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
       [id],
     )
     if (emailRows[0]?.product_name) {
+      const beian =
+        resolveFofValuationCodeAlias(emailRows[0].beian_hao)
+        ?? (emailRows[0].beian_hao || emailRows[0].product_name)
+      if (beian !== emailRows[0].beian_hao) {
+        const fromAlias = await lookupFundInfoByBeianCode(beian)
+        if (fromAlias) return { ...fromAlias, ...EMPTY_FUND_METRICS }
+      }
       return {
-        beian_hao: emailRows[0].beian_hao || emailRows[0].product_name,
+        beian_hao: beian,
         product_name: emailRows[0].product_name,
         short_name: null,
         strategy_l1: null,
@@ -546,6 +738,15 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
   } catch (e) {
     console.error("[lookupFundInfoFallback] ops_email_nav_records", e)
   }
+
+  const viaParent = await resolveFundBeianViaParentCode(id)
+  if (viaParent && viaParent !== id) {
+    const fromParent = await lookupFundInfoByBeianCode(viaParent)
+    if (fromParent) return { ...fromParent, ...EMPTY_FUND_METRICS }
+  }
+
+  const fromFof = await lookupFofUnderlyingFundInfo(id)
+  if (fromFof) return fromFof
 
   return null
 }
