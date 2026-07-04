@@ -6,6 +6,8 @@ import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-und
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed, mergeManagedProductDetailNav } from "@/lib/server/managed-product-nav-seed"
 import { loadManagedProductEmailPoints, loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
+import { addDays } from "@/lib/server/list-cache-nav-batch"
+import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 
 export const dynamic = "force-dynamic"
 
@@ -337,6 +339,28 @@ export async function GET(
       nav_series = mergeNavSeriesWithEmail(seedRows, [])
     }
   }
+
+  // Custody-only funds (估值表 but no 净值表) — same fallback as FOF底层 list cache.
+  if (nav_series.length === 0) {
+    const sinceDate = trackInception ?? addDays(new Date().toISOString().slice(0, 10), 400)
+    try {
+      const fallbackPoints = await loadFundValuationNavFallbackSeries(
+        routeBeianHao,
+        productName,
+        shortName || null,
+        {
+          sinceDate,
+          extraBeianCodes: rawId !== routeBeianHao ? [rawId] : [],
+        },
+      )
+      if (fallbackPoints.length > 0) {
+        nav_series = mergeNavSeriesWithEmail([], fallbackPoints)
+      }
+    } catch (err) {
+      console.error("[private-funds/detail] valuation nav fallback failed:", err)
+    }
+  }
+
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]
   const nav_data_source = resolveNavDataSource(latest?.price_date, teamNavDates, usesManagedTeamSeries)
