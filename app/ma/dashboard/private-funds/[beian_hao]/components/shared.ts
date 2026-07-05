@@ -47,6 +47,32 @@ export function getNavFieldValue(row: NavRow, navType: string): number {
   return parseFloat(row.cumulative_nav)
 }
 
+export type NavFrequencyFilter = "全部" | "日频" | "周频" | "月频"
+
+function weekBucketKey(dateStr: string): string {
+  const d = new Date(`${dateStr}T12:00:00`)
+  const day = d.getDay()
+  const mondayOffset = day === 0 ? -6 : 1 - day
+  const monday = new Date(d)
+  monday.setDate(d.getDate() + mondayOffset)
+  return monday.toISOString().slice(0, 10)
+}
+
+/** Keep the last NAV point per bucket for the selected frequency. */
+export function filterNavRowsByFrequency(rows: NavRow[], freq: NavFrequencyFilter): NavRow[] {
+  if (!rows.length || freq === "全部") return rows
+
+  const bucketKey = (row: NavRow): string => {
+    if (freq === "日频") return row.price_date.slice(0, 10)
+    if (freq === "月频") return row.price_date.slice(0, 7)
+    return weekBucketKey(row.price_date)
+  }
+
+  const byBucket = new Map<string, NavRow>()
+  for (const row of rows) byBucket.set(bucketKey(row), row)
+  return [...byBucket.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
+}
+
 /** Daily 涨跌幅 (percentage points) for the selected NAV type vs the prior row in the series. */
 export function computeNavPctChange(rows: NavRow[], navType: string, date: string): number | null {
   const idx = rows.findIndex((row) => row.price_date === date)

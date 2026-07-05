@@ -2110,6 +2110,7 @@ export function DueDiligenceTableView() {
                               cellId={cellId}
                               value={row.representativeProduct}
                               linkedBeianHao={row.representativeProductBeianHao}
+                              ddDate={row.ddDate}
                               width={col.width}
                               format={fmt}
                               isActive={isActive}

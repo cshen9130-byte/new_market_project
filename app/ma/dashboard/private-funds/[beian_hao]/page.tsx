@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
 import { computeFundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
-import { RED, GREEN, getNavFieldValue, computeNavPctChange, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
+import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequency, type NavFrequencyFilter, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
 import { WinRateAnalysisPanel } from "./components/WinRateAnalysisPanel"
@@ -1078,6 +1078,7 @@ export default function PrivateFundDetailPage() {
   // Applied values (only updated on 开始分析)
   const [appliedFrom,    setAppliedFrom]    = useState<string>("")
   const [appliedTo,      setAppliedTo]      = useState<string>("")
+  const [appliedFreq,    setAppliedFreq]    = useState<NavFrequencyFilter>("全部")
   const [appliedBench,   setAppliedBench]   = useState<string>("")
   const [benchmarkData,  setBenchmarkData]  = useState<BenchmarkPoint[]>([])
   const [showDateRange,    setShowDateRange]    = useState(false)
@@ -1146,6 +1147,7 @@ export default function PrivateFundDetailPage() {
   function handleApply() {
     setAppliedFrom(filterFrom)
     setAppliedTo(filterTo)
+    setAppliedFreq(filterFreq as NavFrequencyFilter)
     setAppliedBench(filterBench)
   }
   function handleReset() {
@@ -1160,6 +1162,7 @@ export default function PrivateFundDetailPage() {
     setFilterBench(benchmarkKey)
     setAppliedFrom("")
     setAppliedTo("")
+    setAppliedFreq("全部")
     setAppliedBench(benchmarkKey)
   }
 
@@ -1172,8 +1175,9 @@ export default function PrivateFundDetailPage() {
 
   const filteredNavRows = useMemo(() => {
     if (!data) return []
-    return data.nav_series.filter((row) => (!activeFrom || row.price_date >= activeFrom) && (!activeTo || row.price_date <= activeTo))
-  }, [data, activeFrom, activeTo])
+    const byDate = data.nav_series.filter((row) => (!activeFrom || row.price_date >= activeFrom) && (!activeTo || row.price_date <= activeTo))
+    return filterNavRowsByFrequency(byDate, appliedFreq)
+  }, [data, activeFrom, activeTo, appliedFreq])
 
   const activeChartData = useMemo(() => {
     if (!filteredNavRows.length) return []
@@ -1893,91 +1897,89 @@ export default function PrivateFundDetailPage() {
         </div>
       </div>
 
-      {/* ── Key info band – single row; fluid type/spacing via container width (cqw) ── */}
+      {/* ── Key info band – stacks on narrow containers, single row on wide ── */}
       <div className="@container py-[clamp(0.625rem,1.2cqw,1rem)] mb-4 border-y border-zinc-100">
-        <div className="flex flex-nowrap items-start w-full gap-[clamp(0.25rem,1.2cqw,2rem)]">
+        <div className="flex flex-col gap-4 @[52rem]:flex-row @[52rem]:items-start @[52rem]:gap-x-[clamp(0.5rem,1.5cqw,2rem)]">
 
-        {/* 单位净值 – hero number */}
-        <div className="shrink-0">
-          <div className="text-[clamp(0.875rem,3.8cqw,2rem)] font-bold tabular-nums leading-none" style={{ color: RED }}>
-            {fmt(metrics.latest_nav, 4)}
+        {/* Nav group: unit + cumulative */}
+        <div className="flex items-start gap-[clamp(0.5rem,1.5cqw,2rem)] shrink-0">
+          <div className="shrink-0">
+            <div className="text-[clamp(1.125rem,3cqw,2rem)] font-bold tabular-nums leading-none" style={{ color: RED }}>
+              {fmt(metrics.latest_nav, 4)}
+            </div>
+            <div className="text-[clamp(0.625rem,1.1cqw,0.75rem)] text-zinc-500 mt-0.5 whitespace-nowrap">单位净值（{metrics.latest_nav_date ?? ""}）</div>
           </div>
-          <div className="text-[clamp(0.5rem,1.1cqw,0.75rem)] text-zinc-500 mt-0.5 whitespace-nowrap">单位净值（{metrics.latest_nav_date ?? ""}）</div>
-        </div>
 
-        {/* 累计净值 + 复权净值 */}
-        <div className="shrink-0 flex flex-col gap-0.5 justify-center text-[clamp(0.5rem,1.1cqw,0.75rem)] text-zinc-500">
-          <div className="whitespace-nowrap">
-            累计净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav, 4)}</span>
-          </div>
-          <div className="whitespace-nowrap">
-            复权净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav_reinvested, 4)}</span>
+          <div className="shrink-0 flex flex-col gap-0.5 justify-center text-[clamp(0.625rem,1.1cqw,0.75rem)] text-zinc-500">
+            <div className="whitespace-nowrap">
+              累计净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav, 4)}</span>
+            </div>
+            <div className="whitespace-nowrap">
+              复权净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav_reinvested, 4)}</span>
+            </div>
           </div>
         </div>
 
         <div className="hidden @[52rem]:block w-px self-stretch bg-zinc-100 shrink-0" />
 
-        {/* Performance metrics – flex-1 spreads evenly in remaining space */}
-        <div className="flex flex-1 flex-nowrap items-start justify-between min-w-0 gap-[clamp(0.125rem,0.7cqw,1.25rem)]">
-        {/* 成立以来收益 */}
-        <div className="min-w-0 flex flex-col items-start gap-0.5">
-          <PctSpan
-            value={metrics.ret_since_inception}
-            className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
-          />
-          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来收益</span>
-        </div>
+        {/* Performance metrics – grid wraps columns by container width */}
+        <div className="flex-1 min-w-0">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-3 @[36rem]:grid-cols-3 @[56rem]:grid-cols-5">
+            <div className="min-w-0 flex flex-col items-start gap-0.5">
+              <PctSpan
+                value={metrics.ret_since_inception}
+                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+              />
+              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来收益</span>
+            </div>
 
-        {/* 今年以来收益 */}
-        <div className="min-w-0 flex flex-col items-start gap-0.5">
-          <PctSpan
-            value={metrics.ytd_ret}
-            className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
-          />
-          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">今年以来收益</span>
-        </div>
+            <div className="min-w-0 flex flex-col items-start gap-0.5">
+              <PctSpan
+                value={metrics.ytd_ret}
+                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+              />
+              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">今年以来收益</span>
+            </div>
 
-        {/* 成立以来年化 */}
-        <div className="min-w-0 flex flex-col items-start gap-0.5">
-          <PctSpan
-            value={metrics.ann_ret}
-            className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
-          />
-          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来年化</span>
-        </div>
+            <div className="min-w-0 flex flex-col items-start gap-0.5">
+              <PctSpan
+                value={metrics.ann_ret}
+                className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+              />
+              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来年化</span>
+            </div>
 
-        {/* 最大回撤 */}
-        <div className="min-w-0 flex flex-col items-start gap-0.5">
-          <span className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap" style={{ color: GREEN }}>
-            {metrics.max_drawdown !== null ? "-" + metrics.max_drawdown + "%" : "—"}
-          </span>
-          <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来最大回撤</span>
-        </div>
+            <div className="min-w-0 flex flex-col items-start gap-0.5">
+              <span className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight" style={{ color: GREEN }}>
+                {metrics.max_drawdown !== null ? "-" + metrics.max_drawdown + "%" : "—"}
+              </span>
+              <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来最大回撤</span>
+            </div>
 
-        {/* 夏普比率 – computed since inception */}
-        {metrics.sharpe_since_inception && (
-          <div className="min-w-0 flex flex-col items-start gap-0.5">
-            <span
-              className="text-[clamp(0.6875rem,2.4cqw,1.4rem)] font-bold tabular-nums leading-tight whitespace-nowrap"
-              style={{
-                color: parseFloat(metrics.sharpe_since_inception) > 0
-                  ? RED
-                  : parseFloat(metrics.sharpe_since_inception) < 0
-                    ? GREEN
-                    : "#27272a",
-              }}
-            >
-              {metrics.sharpe_since_inception}
-            </span>
-            <span className="text-[clamp(0.5rem,1.05cqw,0.75rem)] text-zinc-500 whitespace-nowrap">成立以来夏普比率</span>
+            {metrics.sharpe_since_inception && (
+              <div className="min-w-0 flex flex-col items-start gap-0.5">
+                <span
+                  className="text-sm @[40rem]:text-base @[64rem]:text-xl font-bold tabular-nums leading-tight"
+                  style={{
+                    color: parseFloat(metrics.sharpe_since_inception) > 0
+                      ? RED
+                      : parseFloat(metrics.sharpe_since_inception) < 0
+                        ? GREEN
+                        : "#27272a",
+                  }}
+                >
+                  {metrics.sharpe_since_inception}
+                </span>
+                <span className="text-[10px] @[40rem]:text-xs text-zinc-500 leading-snug">成立以来夏普比率</span>
+              </div>
+            )}
           </div>
-        )}
         </div>
 
         <div className="hidden @[52rem]:block w-px self-stretch bg-zinc-100 shrink-0" />
 
         {/* 备案 / 管理人 info block */}
-        <div className="shrink-0 grid grid-cols-2 gap-x-[clamp(0.375rem,1.5cqw,2rem)] self-center text-[clamp(0.5rem,1cqw,0.75rem)] text-zinc-500">
+        <div className="shrink-0 border-t border-zinc-100 pt-3 @[52rem]:border-t-0 @[52rem]:pt-0 grid grid-cols-2 gap-x-[clamp(0.375rem,1.5cqw,2rem)] @[52rem]:self-center text-[clamp(0.625rem,1cqw,0.75rem)] text-zinc-500">
           <div className="grid grid-cols-[auto_1fr] gap-x-[clamp(0.25rem,0.8cqw,0.75rem)] gap-y-0.5">
             <span className="whitespace-nowrap">备案编号：</span>
             {info.beian_hao ? (

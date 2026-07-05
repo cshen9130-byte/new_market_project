@@ -7,6 +7,7 @@ import { TrendHoverChart } from "@/components/ma/trend-hover-chart"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
 import { privateFundProductHref } from "@/lib/ma/due-diligence-table"
+import { parseTableDate } from "@/lib/ma/due-diligence-table-to-calendar"
 
 type FundSearchResult = {
   beian_hao: string
@@ -36,6 +37,7 @@ export function RepresentativeProductCell({
   cellId,
   value,
   linkedBeianHao,
+  ddDate,
   width,
   format,
   isActive,
@@ -46,6 +48,7 @@ export function RepresentativeProductCell({
   cellId: string
   value: string
   linkedBeianHao?: string
+  ddDate?: string
   width: number
   format: CellFormat
   isActive: boolean
@@ -81,6 +84,7 @@ export function RepresentativeProductCell({
 
   const isLinked = Boolean(linkedBeianHao && value.trim())
   const productHref = linkedBeianHao ? privateFundProductHref(linkedBeianHao) : null
+  const markerDate = parseTableDate(ddDate ?? "")
   const query = value.trim()
   const editing = isActive || isEditing
   const shouldShowDropdown = editing && showDropdown && query.length > 0
@@ -312,7 +316,12 @@ export function RepresentativeProductCell({
               <div className="border-b border-zinc-100 px-3 py-2 text-xs font-semibold text-zinc-700">
                 净值走势
               </div>
-              <TrendHoverChart beian_hao={linkedBeianHao!} mode="nav" days={365} />
+              <TrendHoverChart
+                beian_hao={linkedBeianHao!}
+                mode="nav"
+                days={365}
+                markerDate={markerDate}
+              />
             </HoverCardContent>
           </HoverCard>
         ) : (
