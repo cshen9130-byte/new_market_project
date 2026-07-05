@@ -1,5 +1,7 @@
 import { NextRequest } from "next/server"
 import { query } from "@/lib/db"
+import { formatTeamStrategyTreeForPrompt } from "@/lib/ma/team-strategy-tree"
+import { loadMergedTeamStrategyTree } from "@/lib/server/team-strategy-tree"
 
 export const runtime = "nodejs"
 
@@ -78,15 +80,16 @@ const DB_QUERY_TOOL = {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function buildSystemContent() {
+function buildSystemContent(teamStrategyNote?: string) {
   return [
     "你是一个金融市场分析助手，专门帮助市场监控系统（MOM管理系统、期货市场看板）的用户理解数据、解读图表、回答分析问题。",
     "请用简洁专业的中文回答。如果问题超出金融市场范畴，也可以正常回答。",
     "用户的每条消息末尾会附带 [当前页面：...] 标记，以说明用户发送该消息时所在的页面，请据此回答与页面功能相关的问题。",
+    teamStrategyNote,
     SCHEMA_NOTE,
   ]
     .filter(Boolean)
-    .join("\n")
+    .join("\n\n")
 }
 
 function sseResponse(body: ReadableStream) {
@@ -116,7 +119,15 @@ export async function POST(req: NextRequest) {
     return Response.json({ error: "messages must be an array" }, { status: 400 })
   }
 
-  const systemContent = buildSystemContent()
+  let teamStrategyNote = ""
+  try {
+    const teamTree = await loadMergedTeamStrategyTree()
+    teamStrategyNote = formatTeamStrategyTreeForPrompt(teamTree)
+  } catch {
+    // Non-fatal: chat works without strategy taxonomy
+  }
+
+  const systemContent = buildSystemContent(teamStrategyNote)
   const systemMsg = { role: "system", content: systemContent }
 
   // Stamp the page context directly onto the last user message so it stays
@@ -131,6 +142,8 @@ export async function POST(req: NextRequest) {
         content += docText
           ? `\n\n[当前阅读文档：${docName}]\n${docText}`
           : `\n\n[当前阅读文档：${docName}（未能提取文字内容，请结合文件名作答或告知用户）]`
+        content +=
+          "\n\n[提示：用户可能基于该文档询问团队策略分类（如路演材料、尽调笔记对应哪一类基金策略）。请结合文档内容与系统消息中的「团队策略标签体系」作答，输出一级/二级/三级策略。]"
       }
       return { ...m, content }
     }

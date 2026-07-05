@@ -47,7 +47,7 @@ function getPageContext(path: string): string {
   if (path.includes("/options-market"))
     return "当前页面：【期权市场分析】。目前展示：隐含波动率 vs 已实现波动率走势、期权 Put/Call 比率、期权到期持仓分布。（数据部分为示例占位数据，实际功能开发中）"
   if (path.includes("/private-funds"))
-    return "当前页面：【私募基金 / 尽调表格】。功能：管理私募产品尽调记录，包含代表产品、尽调材料（可拖入 AI 助手问答）、策略标签等字段。支持导出 Excel、添加记录。"
+    return "当前页面：【私募基金 / 尽调表格】。功能：管理私募产品尽调记录，包含代表产品、尽调材料（可拖入 AI 助手问答）、策略标签等字段。支持导出 Excel、添加记录。页面 AI 助手已接入团队策略标签体系，可在阅读路演/尽调文档后询问基金应归入哪一类团队策略（一级/二级/三级）。"
   if (path.includes("/ai-knowledge"))
     return "当前页面：【AI 知识库】。整理了与系统相关的市场分析方法论、指标解释、模型说明等知识文档，支持检索与问答。"
   // ── dashboard root / fallback ─────────────────────────────────────────────

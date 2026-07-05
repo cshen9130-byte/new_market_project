@@ -27,6 +27,35 @@ export function teamStrategyL3Options(tree: TeamStrategyNode[], l1: string, l2: 
   return tree.find((n) => n.l1 === l1)?.l2s.find((n) => n.l2 === l2)?.l3s ?? []
 }
 
+/** Serialize team strategy taxonomy for AI assistant system context. */
+export function formatTeamStrategyTreeForPrompt(tree: TeamStrategyNode[]): string {
+  if (!tree.length) return ""
+
+  const lines: string[] = [
+    "【团队策略标签体系】",
+    "以下为我团队内部使用的三级策略分类（一级策略 → 二级策略 → 三级策略）。",
+    "当用户询问路演材料、尽调笔记、基金产品应归入哪个团队策略时，必须优先从下列列表中选择最合适的一项。",
+    "回答格式示例：",
+    "一级策略：xxx",
+    "二级策略：xxx",
+    "三级策略：xxx",
+    "（简要说明分类理由；若三级无合适选项可写「三级策略：无」或留空，但不得自创新类别名称。）",
+    "",
+  ]
+
+  for (const l1 of tree) {
+    lines.push(`■ ${l1.l1}`)
+    for (const l2 of l1.l2s) {
+      lines.push(`  ○ ${l2.l2}`)
+      if (l2.l3s.length > 0) {
+        lines.push(`    三级：${l2.l3s.join("、")}`)
+      }
+    }
+  }
+
+  return lines.join("\n")
+}
+
 function normalizeStrategyText(value: string): string {
   return value.trim().replace(/\s+/g, "").toLowerCase()
 }
