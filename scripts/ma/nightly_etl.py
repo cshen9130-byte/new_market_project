@@ -12,6 +12,7 @@ Usage
   python scripts/ma/nightly_etl.py --step email_nav_parse
   python scripts/ma/nightly_etl.py --step amac_private_funds
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
+  python scripts/ma/nightly_etl.py --step dd_materials_links
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
@@ -2380,6 +2381,39 @@ def step_email_nav_parse(days: int | None = None) -> int:
     return nav_saved + valuation_saved
 
 
+def step_dd_materials_links() -> int:
+    """Auto-link 尽调表格 rows to 「内部尽调资料」 knowledge-base folders."""
+    log.info("dd_materials_links: syncing due diligence material folder links …")
+    result = run_node_script("dd_materials_link_etl.ts", timeout=600)
+    if not result:
+        raise RuntimeError("dd_materials_links: no result from dd_materials_link_etl.ts")
+    if not result.get("ok"):
+        raise RuntimeError(
+            f"dd_materials_links: failed — {result.get('error', 'unknown')}"
+        )
+
+    changed = int(result.get("changedRows") or 0)
+    linked = int(result.get("linkedRows") or 0)
+    cleared = int(result.get("clearedRows") or 0)
+    folders = int(result.get("kbFolderCount") or 0)
+    log.info(
+        "dd_materials_links: folders=%d changed=%d linked=%d cleared=%d",
+        folders,
+        changed,
+        linked,
+        cleared,
+    )
+    for change in (result.get("changes") or [])[:10]:
+        log.info(
+            "  dd_materials_links: %s (%s): %s -> %s",
+            change.get("fundCompany") or change.get("rowId"),
+            change.get("ddDate"),
+            change.get("fromPath") or "(empty)",
+            change.get("toPath") or "(empty)",
+        )
+    return changed
+
+
 def step_amac_private_funds(force_full: bool = False) -> int:
     """Fetch AMAC private fund list and upsert amac_private_funds (+ new private_fund_info rows)."""
     project_root = SCRIPT_DIR.parent.parent
@@ -2496,6 +2530,7 @@ ORDERED_STEPS = [
     "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
+    "dd_materials_links",            # 尽调表格 ↔ 内部尽调资料 knowledge-base folder links
     "valuation_cache",               # pre-compute 估值表分析 page data (snapshot + trend + curves)
     "warm_mom_cache",                # warm MOM dashboard API caches
     "backfill_benchmarks",           # one-time: fill raw_spot_daily / raw_etf_daily / raw_nanhua_indices_daily from 2020
@@ -2612,6 +2647,7 @@ def main():
         "amac_private_funds":              lambda: step_amac_private_funds(force_full=force),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
+        "dd_materials_links":              lambda: step_dd_materials_links(),
         "tracking_fund_metrics":           lambda: step_tracking_fund_metrics(),
         "valuation_cache":                 lambda: step_valuation_cache(),
         "warm_mom_cache":                  lambda: step_warm_mom_cache(),

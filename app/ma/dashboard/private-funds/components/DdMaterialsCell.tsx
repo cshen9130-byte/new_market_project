@@ -163,13 +163,13 @@ export function DdMaterialsCell({
         : "border-transparent",
   ].join(" ")
 
-  const hasMaterials = value.trim() === "已上传" || documents.length > 0
+  const hasMaterials = documents.length > 0 || Boolean(folderPath)
   const displayLabel = useMemo(() => {
     if (materialsLoading) return "…"
     if (documents.length > 0) return `已上传 (${documents.length})`
-    if (value.trim() === "已上传") return "已上传"
+    if (folderPath && value.trim() === "已上传") return "已上传"
     return value
-  }, [documents.length, materialsLoading, value])
+  }, [documents.length, folderPath, materialsLoading, value])
 
   const kbUrl = folderPath ? buildDdMaterialsKbUrl(folderPath) : null
 

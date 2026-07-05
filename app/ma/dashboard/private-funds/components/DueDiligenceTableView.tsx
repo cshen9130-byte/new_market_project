@@ -120,8 +120,9 @@ import {
 import {
   buildDdMaterialsAutoFillPatch,
   buildDdMaterialsFolderIndex,
-  getDdMaterialsDocuments,
+  getDdMaterialsDocumentsForRow,
   resolveDdMaterialsFolderPath,
+  type DdMaterialsDocument,
   type DdMaterialsFolderIndex,
 } from "@/lib/ma/due-diligence-materials"
 
@@ -1031,15 +1032,17 @@ export function DueDiligenceTableView() {
   }, [])
 
   const rowMaterialsMap = useMemo(() => {
-    if (!materialsIndex) return new Map<string, { folderPath: string | null; folderName: string | null; documents: ReturnType<typeof getDdMaterialsDocuments> }>()
-    const map = new Map<string, { folderPath: string | null; folderName: string | null; documents: ReturnType<typeof getDdMaterialsDocuments> }>()
+    if (!materialsIndex) {
+      return new Map<string, { folderPath: string | null; folderName: string | null; documents: DdMaterialsDocument[] }>()
+    }
+    const map = new Map<string, { folderPath: string | null; folderName: string | null; documents: DdMaterialsDocument[] }>()
     for (const row of rows) {
       const folderPath = resolveDdMaterialsFolderPath(row, materialsIndex)
       const folderName = folderPath ? materialsIndex.folders.get(folderPath)?.name ?? null : null
       map.set(row.id, {
         folderPath,
         folderName,
-        documents: getDdMaterialsDocuments(folderPath, materialsIndex),
+        documents: getDdMaterialsDocumentsForRow(row, materialsIndex),
       })
     }
     return map

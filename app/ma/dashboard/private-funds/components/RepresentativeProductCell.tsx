@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react"
 import { createPortal } from "react-dom"
 import { ExternalLink, Link2, Unlink } from "lucide-react"
+import { TrendHoverChart } from "@/components/ma/trend-hover-chart"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
 import { privateFundProductHref } from "@/lib/ma/due-diligence-table"
 
@@ -267,33 +269,52 @@ export function RepresentativeProductCell({
     </div>
   ) : null
 
+  const linkedProductView = (
+    <div
+      className={[
+        "flex h-7 items-center gap-1 px-1",
+        isSelected ? "rounded border border-blue-300/60" : "",
+      ].join(" ")}
+      style={formatToStyle(format)}
+      title="悬停查看净值走势，点击名称打开产品页"
+    >
+      <Link2 className="h-3 w-3 shrink-0 text-blue-500" aria-hidden />
+      <a
+        href={productHref!}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={`打开产品页：${value}`}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        className="min-w-0 flex-1 truncate text-xs text-blue-600 hover:text-blue-700 hover:underline"
+        style={{ color: format.color ?? undefined }}
+      >
+        {value}
+      </a>
+      <ExternalLink className="h-3 w-3 shrink-0 text-blue-400" aria-hidden />
+    </div>
+  )
+
   return (
     <>
       <div ref={rootRef} className="relative">
         {isLinked && !editing && productHref ? (
-          <div
-            className={[
-              "flex h-7 items-center gap-1 px-1",
-              isSelected ? "rounded border border-blue-300/60" : "",
-            ].join(" ")}
-            style={formatToStyle(format)}
-            title="双击编辑，点击名称打开产品页"
-          >
-            <Link2 className="h-3 w-3 shrink-0 text-blue-500" aria-hidden />
-            <a
-              href={productHref}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`打开产品页：${value}`}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-              className="min-w-0 flex-1 truncate text-xs text-blue-600 hover:text-blue-700 hover:underline"
-              style={{ color: format.color ?? undefined }}
+          <HoverCard openDelay={250} closeDelay={120}>
+            <HoverCardTrigger asChild>
+              {linkedProductView}
+            </HoverCardTrigger>
+            <HoverCardContent
+              side="left"
+              align="start"
+              sideOffset={8}
+              className="w-auto border border-zinc-200 bg-white p-0 shadow-xl"
             >
-              {value}
-            </a>
-            <ExternalLink className="h-3 w-3 shrink-0 text-blue-400" aria-hidden />
-          </div>
+              <div className="border-b border-zinc-100 px-3 py-2 text-xs font-semibold text-zinc-700">
+                净值走势
+              </div>
+              <TrendHoverChart beian_hao={linkedBeianHao!} mode="nav" days={365} />
+            </HoverCardContent>
+          </HoverCard>
         ) : (
           <input
             ref={inputRef}

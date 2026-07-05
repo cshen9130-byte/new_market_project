@@ -64,7 +64,7 @@ function extractProductBrand(productName: string): string | null {
 function normalizeLabel(value: string): string {
   return value
     .trim()
-    .replace(/^(上海|北京|深圳|广州|杭州|南京|成都|重庆|天津|苏州|宁波|武汉|厦门|青岛|大连|香港)/, "")
+    .replace(/^(上海|北京|深圳|广州|杭州|南京|成都|重庆|天津|苏州|宁波|武汉|厦门|青岛|大连|香港|海南)/, "")
     .replace(/(科技|资产|投资|私募|基金|管理|有限公司|股份|证券|资管)$/g, "")
     .trim()
 }
@@ -75,10 +75,10 @@ export function extractDdMaterialsLabel(
 ): string {
   const fundCompany = row.fundCompany.trim()
   if (fundCompany) {
-    const brand = extractManagerBrand(fundCompany)
-    if (brand) return brand
     const normalized = normalizeLabel(fundCompany)
     if (normalized.length >= 2) return normalized.slice(0, 4)
+    const brand = extractManagerBrand(fundCompany)
+    if (brand) return brand
   }
 
   const manager = row.investmentManager.trim()
@@ -167,14 +167,27 @@ export function buildDdMaterialsFolderIndex(tree: KbTreeFolder | null): DdMateri
   return { folders }
 }
 
+/** Minimum score to accept a folder match (requires date + label alignment). */
+const DD_MATERIALS_MIN_MATCH_SCORE = 70
+
 function scoreFolderMatch(folderName: string, slug: string, label: string, datePart: string): number {
   const normalizedName = folderName.trim()
   if (normalizedName === slug) return 100
   if (normalizedName.startsWith(`${slug}-`) || normalizedName.startsWith(slug)) return 90
   if (normalizedName.includes(slug)) return 80
   if (normalizedName.startsWith(datePart) && normalizedName.includes(label)) return 70
-  if (normalizedName.startsWith(datePart)) return 40
   return 0
+}
+
+function isPlausibleDdMaterialsFolderMatch(
+  folderName: string,
+  row: Pick<DueDiligenceTableRow, "ddDate" | "fundCompany" | "investmentManager" | "representativeProduct">,
+): boolean {
+  const slug = buildExpectedFolderSlug(row)
+  const datePart = formatKbFolderDate(row.ddDate)
+  const label = extractDdMaterialsLabel(row)
+  if (!slug || !datePart || !label) return false
+  return scoreFolderMatch(folderName, slug, label, datePart) >= DD_MATERIALS_MIN_MATCH_SCORE
 }
 
 export function resolveDdMaterialsFolderPath(
@@ -184,13 +197,17 @@ export function resolveDdMaterialsFolderPath(
   >,
   index: DdMaterialsFolderIndex,
 ): string | null {
-  const explicit = row.ddMaterialsKbPath?.trim()
-  if (explicit && index.folders.has(explicit)) return explicit
-
   const slug = buildExpectedFolderSlug(row)
   const datePart = formatKbFolderDate(row.ddDate)
   const label = extractDdMaterialsLabel(row)
-  if (!slug || !datePart || !label) return explicit || null
+
+  const explicit = row.ddMaterialsKbPath?.trim()
+  if (explicit && index.folders.has(explicit)) {
+    const folder = index.folders.get(explicit)!
+    if (isPlausibleDdMaterialsFolderMatch(folder.name, row)) return explicit
+  }
+
+  if (!slug || !datePart || !label) return null
 
   let bestPath: string | null = null
   let bestScore = 0
@@ -203,7 +220,7 @@ export function resolveDdMaterialsFolderPath(
     }
   }
 
-  return bestScore >= 40 ? bestPath : explicit || null
+  return bestScore >= DD_MATERIALS_MIN_MATCH_SCORE ? bestPath : null
 }
 
 export function getDdMaterialsDocuments(
@@ -212,6 +229,143 @@ export function getDdMaterialsDocuments(
 ): DdMaterialsDocument[] {
   if (!folderPath) return []
   return index.folders.get(folderPath)?.documents ?? []
+}
+
+const DD_MATERIALS_NEUTRAL_FILENAME_TOKENS = new Set([
+  "简报",
+  "要素表",
+  "业绩走势图",
+  "转写结果",
+  "会议纪要",
+  "AI纪要",
+])
+
+const DD_MATERIALS_NON_BRAND_TOKENS = new Set([
+  "权益类",
+  "绩效",
+  "宏观",
+  "策略",
+  "投资",
+  "路演",
+  "转写",
+  "合并",
+  "要素",
+  "业绩",
+  "走势",
+  "交流",
+  "小范围",
+  "主观",
+  "量化",
+  "产品介绍",
+  "会议",
+  "助手",
+  "报告",
+  "纪要",
+  "录音",
+  "材料",
+  "说明",
+  "Disclaimer",
+])
+
+function collectRowDocumentMatchTerms(
+  row: Pick<DueDiligenceTableRow, "fundCompany" | "investmentManager" | "representativeProduct">,
+): string[] {
+  const terms = new Set<string>()
+
+  const add = (raw: string) => {
+    const trimmed = raw.trim()
+    if (!trimmed) return
+    terms.add(trimmed)
+    const normalized = normalizeLabel(trimmed)
+    if (normalized.length >= 2) {
+      terms.add(normalized)
+      if (normalized.length > 2) terms.add(normalized.slice(0, 2))
+    }
+  }
+
+  add(row.fundCompany)
+  const manager = row.investmentManager.trim().split(/[、,，/]/)[0]?.trim() ?? ""
+  add(manager)
+  add(row.representativeProduct)
+
+  const label = extractDdMaterialsLabel(row)
+  if (label) terms.add(label)
+
+  return [...terms].filter((term) => term.length >= 2)
+}
+
+function isNeutralDdMaterialsFilename(name: string): boolean {
+  const base = name.replace(/\.[^.]+$/u, "").trim()
+  if (!base) return true
+  if (/^STJ[A-Z0-9]+/i.test(base)) return false
+  if (/^\d{4}[_-]\d{2}[_-]\d{2}/.test(base)) return true
+  return DD_MATERIALS_NEUTRAL_FILENAME_TOKENS.has(base)
+}
+
+function isLikelyForeignCompanyBrand(token: string): boolean {
+  const normalized = normalizeLabel(token)
+  if (normalized.length < 2) return false
+  if (DD_MATERIALS_NON_BRAND_TOKENS.has(normalized)) return false
+  if ([...DD_MATERIALS_NON_BRAND_TOKENS].some((generic) => normalized.startsWith(generic))) return false
+  return true
+}
+
+function extractFilenameCompanyBrands(name: string): string[] {
+  const base = name.replace(/\.[^.]+$/u, "").trim()
+  const brands = new Set<string>()
+
+  for (const match of base.matchAll(/【([^】]{2,10})】/gu)) {
+    const inner = match[1]?.trim() ?? ""
+    const chinese = inner.match(/[\u4e00-\u9fff]{2,6}/u)?.[0]
+    if (chinese) brands.add(chinese.slice(0, 4))
+  }
+
+  const leading = base.match(/^[\d_\-【\[\]\s]*([\u4e00-\u9fff]{2,6})/u)?.[1]
+  if (leading) brands.add(leading.slice(0, 4))
+
+  const underscored = base.match(/^([\u4e00-\u9fff]{2,6})_/u)?.[1]
+  if (underscored) brands.add(underscored.slice(0, 4))
+
+  for (const match of base.matchAll(/[-－]([\u4e00-\u9fff]{2,6})/gu)) {
+    brands.add(match[1].slice(0, 4))
+  }
+
+  return [...brands].map((brand) => normalizeLabel(brand)).filter((brand) => brand.length >= 2)
+}
+
+function documentTermsCompatible(brand: string, matchTerms: string[]): boolean {
+  return matchTerms.some((term) => brand.includes(term) || term.includes(brand))
+}
+
+/** Drop files in a shared folder that clearly belong to another manager/company. */
+export function filterDdMaterialsDocumentsForRow(
+  row: Pick<DueDiligenceTableRow, "fundCompany" | "investmentManager" | "representativeProduct">,
+  documents: DdMaterialsDocument[],
+): DdMaterialsDocument[] {
+  const matchTerms = collectRowDocumentMatchTerms(row)
+  if (matchTerms.length === 0) return documents
+
+  return documents.filter((doc) => {
+    const name = doc.name
+    if (matchTerms.some((term) => name.includes(term))) return true
+    if (isNeutralDdMaterialsFilename(name)) return true
+
+    const foreignBrands = extractFilenameCompanyBrands(name).filter(isLikelyForeignCompanyBrand)
+    if (foreignBrands.length === 0) return true
+
+    return foreignBrands.every((brand) => documentTermsCompatible(brand, matchTerms))
+  })
+}
+
+export function getDdMaterialsDocumentsForRow(
+  row: Pick<
+    DueDiligenceTableRow,
+    "fundCompany" | "investmentManager" | "representativeProduct" | "ddMaterialsKbPath"
+  >,
+  index: DdMaterialsFolderIndex,
+): DdMaterialsDocument[] {
+  const folderPath = resolveDdMaterialsFolderPath(row, index)
+  return filterDdMaterialsDocumentsForRow(row, getDdMaterialsDocuments(folderPath, index))
 }
 
 export function rowHasDdMaterials(
@@ -229,11 +383,17 @@ export function buildDdMaterialsAutoFillPatch(
   index: DdMaterialsFolderIndex,
 ): Partial<DueDiligenceTableRow> | null {
   const folderPath = resolveDdMaterialsFolderPath(row, index)
-  if (!folderPath) return null
-  const documents = getDdMaterialsDocuments(folderPath, index)
-  if (documents.length === 0) return null
+  const documents = folderPath ? filterDdMaterialsDocumentsForRow(row, getDdMaterialsDocuments(folderPath, index)) : []
+  const storedPath = row.ddMaterialsKbPath?.trim() || null
 
-  if (row.ddMaterials.trim() === "已上传" && row.ddMaterialsKbPath === folderPath) {
+  if (!folderPath || documents.length === 0) {
+    if (storedPath || row.ddMaterials.trim() === "已上传") {
+      return { ddMaterials: "", ddMaterialsKbPath: null }
+    }
+    return null
+  }
+
+  if (row.ddMaterials.trim() === "已上传" && storedPath === folderPath) {
     return null
   }
 
