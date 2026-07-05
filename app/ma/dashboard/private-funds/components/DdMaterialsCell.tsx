@@ -140,6 +140,8 @@ export function DdMaterialsCell({
   const [dialogPos, setDialogPos] = useState({ x: 0, y: 0 })
   const dragRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ px: number; py: number; w: number; h: number; dir: "se" | "e" | "s" } | null>(null)
+  /** Block click-through reopening the cell right after closing the panel. */
+  const suppressOpenUntilRef = useRef(0)
 
   const style: CSSProperties = {
     width: width - 4,
@@ -257,7 +259,18 @@ export function DdMaterialsCell({
     [dialogSize.h, dialogSize.w],
   )
 
+  function closePanel() {
+    suppressOpenUntilRef.current = Date.now() + 400
+    setPreviewDoc(null)
+    setOpen(false)
+  }
+
   function openModal(event: MouseEvent) {
+    if (Date.now() < suppressOpenUntilRef.current) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
     event.preventDefault()
     event.stopPropagation()
     if (!hasMaterials && !folderPath) return
@@ -276,7 +289,9 @@ export function DdMaterialsCell({
 
   function openInPageAi() {
     if (documents.length === 0) return
+    suppressOpenUntilRef.current = Date.now() + 400
     dispatchMaChatOpenDocuments(documents.map(toChatPayload))
+    setPreviewDoc(null)
     setOpen(false)
   }
 
@@ -295,8 +310,9 @@ export function DdMaterialsCell({
             <div
               className="fixed inset-0 bg-black/50"
               style={{ zIndex: PANEL_Z }}
-              onClick={(event) => {
-                if (event.target === event.currentTarget) setOpen(false)
+              onPointerDown={(event) => {
+                event.preventDefault()
+                closePanel()
               }}
             />
             <div
@@ -313,11 +329,11 @@ export function DdMaterialsCell({
               }}
               onMouseDown={(event) => event.stopPropagation()}
             >
-              <div
-                className="flex shrink-0 cursor-grab items-start justify-between gap-4 border-b bg-muted/20 px-5 py-4 active:cursor-grabbing select-none"
-                onPointerDown={onHeaderPointerDown}
-              >
-                <div className="min-w-0 pointer-events-none">
+              <div className="flex shrink-0 items-start justify-between gap-4 border-b bg-muted/20 px-5 py-4">
+                <div
+                  className="min-w-0 flex-1 cursor-grab select-none active:cursor-grabbing"
+                  onPointerDown={onHeaderPointerDown}
+                >
                   <h2 id="dd-materials-title" className="text-sm font-semibold">
                     尽调资料
                   </h2>
@@ -325,14 +341,12 @@ export function DdMaterialsCell({
                     {folderName || folderPath || "未匹配到知识库文件夹"}
                   </p>
                 </div>
-                <div
-                  className="flex items-center gap-2 shrink-0"
-                  onPointerDown={stopPointerBubble}
-                >
+                <div className="flex items-center gap-2 shrink-0">
                   {documents.length > 0 && (
                     <button
                       type="button"
-                      onClick={(event) => {
+                      onPointerDown={(event) => {
+                        event.preventDefault()
                         event.stopPropagation()
                         openInPageAi()
                       }}
@@ -347,7 +361,7 @@ export function DdMaterialsCell({
                       href={kbUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border bg-background text-xs hover:bg-muted transition-colors"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
@@ -356,9 +370,10 @@ export function DdMaterialsCell({
                   )}
                   <button
                     type="button"
-                    onClick={(event) => {
+                    onPointerDown={(event) => {
+                      event.preventDefault()
                       event.stopPropagation()
-                      setOpen(false)
+                      closePanel()
                     }}
                     className="p-1 rounded text-muted-foreground hover:text-foreground"
                     aria-label="关闭"
