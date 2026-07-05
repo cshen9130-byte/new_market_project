@@ -22,6 +22,7 @@ import {
   Italic,
   Maximize2,
   Minimize2,
+  Pencil,
   Plus,
   RotateCcw,
   Search,
@@ -83,6 +84,22 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "@/components/ui/context-menu"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { splitFundPoolMemberships } from "@/lib/client/tracking-pools"
 import {
   loadTeamStrategyTree,
@@ -716,6 +733,77 @@ const SERVER_SAVE_DEBOUNCE_MS = 500
 
 type SaveStatus = "idle" | "saving" | "saved" | "error"
 
+type StrategySyncTarget = {
+  rowId: string
+  beianHao: string
+  productName: string
+  level: 1 | 2 | 3
+  levelLabel: string
+  tableValue: string
+  dbValue: string
+}
+
+function strategyLevelLabel(level: 1 | 2 | 3): string {
+  return level === 1 ? "一级策略" : level === 2 ? "二级策略" : "三级策略"
+}
+
+function StrategyCellContextMenu({
+  row,
+  level,
+  onSyncRequest,
+  children,
+}: {
+  row: DueDiligenceTableRow
+  level: 1 | 2 | 3
+  onSyncRequest: (row: DueDiligenceTableRow, level: 1 | 2 | 3) => void
+  children: ReactNode
+}) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div className="w-full" onContextMenu={(e) => e.stopPropagation()}>
+          {children}
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-44">
+        <ContextMenuItem
+          disabled={!row.representativeProductBeianHao}
+          onClick={() => onSyncRequest(row, level)}
+        >
+          <Upload className="h-3.5 w-3.5" />
+          同步标签到数据库
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
+function DdConclusionCellContextMenu({
+  row,
+  onEditRequest,
+  children,
+}: {
+  row: DueDiligenceTableRow
+  onEditRequest: (row: DueDiligenceTableRow) => void
+  children: ReactNode
+}) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div className="w-full" onContextMenu={(e) => e.stopPropagation()}>
+          {children}
+        </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-36">
+        <ContextMenuItem onClick={() => onEditRequest(row)}>
+          <Pencil className="h-3.5 w-3.5" />
+          编辑
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  )
+}
+
 // ── Main view ──────────────────────────────────────────────────────────────
 
 export function DueDiligenceTableView() {
@@ -746,6 +834,13 @@ export function DueDiligenceTableView() {
   const [savedStrategiesLoading, setSavedStrategiesLoading] = useState(false)
   const [isImportingStrategies, setIsImportingStrategies] = useState(false)
   const [isSyncingStrategies, setIsSyncingStrategies] = useState(false)
+  const [strategySyncTarget, setStrategySyncTarget] = useState<StrategySyncTarget | null>(null)
+  const [isSyncingSingleStrategy, setIsSyncingSingleStrategy] = useState(false)
+  const [ddConclusionEditTarget, setDdConclusionEditTarget] = useState<{
+    rowId: string
+    rowHint: string
+  } | null>(null)
+  const [ddConclusionDraft, setDdConclusionDraft] = useState("")
   const [materialsIndex, setMaterialsIndex] = useState<DdMaterialsFolderIndex | null>(null)
   const [materialsLoading, setMaterialsLoading] = useState(false)
   const materialsAutoFillRef = useRef(false)
@@ -1338,6 +1433,64 @@ export function DueDiligenceTableView() {
     }
   }
 
+  function openStrategySyncConfirm(row: DueDiligenceTableRow, level: 1 | 2 | 3) {
+    const beian = row.representativeProductBeianHao
+    if (!beian) {
+      alert("请先关联代表产品（备案编码）。")
+      return
+    }
+    const tableValue =
+      level === 1 ? row.strategyLevel1 : level === 2 ? row.strategyLevel2 : row.strategyLevel3
+    setStrategySyncTarget({
+      rowId: row.id,
+      beianHao: beian,
+      productName: row.representativeProduct.trim() || beian,
+      level,
+      levelLabel: strategyLevelLabel(level),
+      tableValue: tableValue.trim(),
+      dbValue: (getSavedStrategyValueForCell(row, level) ?? "").trim(),
+    })
+  }
+
+  async function confirmStrategySync() {
+    if (!strategySyncTarget || isSyncingSingleStrategy) return
+    const row = rows.find((item) => item.id === strategySyncTarget.rowId)
+    if (!row) {
+      setStrategySyncTarget(null)
+      return
+    }
+
+    setIsSyncingSingleStrategy(true)
+    try {
+      const saved = getRowSavedStrategy(row)
+      const { level, beianHao, levelLabel } = strategySyncTarget
+      const update = {
+        beian_hao: beianHao,
+        strategy_l1:
+          level === 1
+            ? row.strategyLevel1.trim()
+            : (saved?.strategy_l1 ?? row.strategyLevel1.trim()),
+        strategy_l2:
+          level === 2
+            ? row.strategyLevel2.trim()
+            : (saved?.strategy_l2 ?? row.strategyLevel2.trim()),
+        strategy_l3:
+          level === 3
+            ? row.strategyLevel3.trim()
+            : (saved?.strategy_l3 ?? row.strategyLevel3.trim()),
+      }
+      await syncTeamStrategiesToDatabase([update])
+      await refreshSavedTeamStrategies()
+      setStrategySyncTarget(null)
+      alert(`已同步${levelLabel}到数据库。`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "同步失败"
+      alert(`同步团队策略标签失败：${message}`)
+    } finally {
+      setIsSyncingSingleStrategy(false)
+    }
+  }
+
   function focusCellInput(rowId: string, colKey: DueDiligenceTableColumn["key"]) {
     const el = containerRef.current?.querySelector(
       `[data-cell="${selectionCellKey(rowId, colKey)}"]`,
@@ -1481,6 +1634,29 @@ export function DueDiligenceTableView() {
   function handleCellChange(rowId: string, key: DueDiligenceTableColumn["key"], value: string) {
     const next = updateDueDiligenceTableRow(rows, rowId, { [key]: value })
     persistRows(rows, next, formats)
+  }
+
+  function openDdConclusionEditor(row: DueDiligenceTableRow) {
+    const rowHint =
+      row.ddTarget.trim()
+      || row.representativeProduct.trim()
+      || row.fundCompany.trim()
+      || "该行"
+    setDdConclusionDraft(row.ddConclusion)
+    setDdConclusionEditTarget({ rowId: row.id, rowHint })
+    setFocusCell({ rowId: row.id, colKey: "ddConclusion" })
+    setSelection({
+      kind: "range",
+      anchor: { rowId: row.id, colKey: "ddConclusion" },
+      focus: { rowId: row.id, colKey: "ddConclusion" },
+    })
+  }
+
+  function saveDdConclusionEditor() {
+    if (!ddConclusionEditTarget) return
+    handleCellChange(ddConclusionEditTarget.rowId, "ddConclusion", ddConclusionDraft)
+    setDdConclusionEditTarget(null)
+    setDdConclusionDraft("")
   }
 
   function handleStrategyChange(
@@ -1946,87 +2122,105 @@ export function DueDiligenceTableView() {
                               }
                             />
                           ) : col.key === "strategyLevel1" ? (
-                            <StrategySelectCell
-                              cellId={cellId}
-                              value={row.strategyLevel1}
-                              width={col.width}
-                              format={fmt}
-                              isActive={isActive}
-                              isSelected={isSelected}
-                              options={teamL1Options}
-                              placeholder="一级策略"
-                              disabled={teamL1Options.length === 0}
-                              matchStatus={getStrategyMatchStatusForCell(row, 1)}
-                              dbValue={getSavedStrategyValueForCell(row, 1)}
-                              levelLabel="一级策略"
-                              onActivate={() => {
-                                setFocusCell({ rowId: row.id, colKey: col.key })
-                                setSelection({
-                                  kind: "range",
-                                  anchor: { rowId: row.id, colKey: col.key },
-                                  focus: { rowId: row.id, colKey: col.key },
-                                })
-                              }}
-                              onChange={(value) => handleStrategyChange(row.id, 1, value)}
-                            />
+                            <StrategyCellContextMenu
+                              row={row}
+                              level={1}
+                              onSyncRequest={openStrategySyncConfirm}
+                            >
+                              <StrategySelectCell
+                                cellId={cellId}
+                                value={row.strategyLevel1}
+                                width={col.width}
+                                format={fmt}
+                                isActive={isActive}
+                                isSelected={isSelected}
+                                options={teamL1Options}
+                                placeholder="一级策略"
+                                disabled={teamL1Options.length === 0}
+                                matchStatus={getStrategyMatchStatusForCell(row, 1)}
+                                dbValue={getSavedStrategyValueForCell(row, 1)}
+                                levelLabel="一级策略"
+                                onActivate={() => {
+                                  setFocusCell({ rowId: row.id, colKey: col.key })
+                                  setSelection({
+                                    kind: "range",
+                                    anchor: { rowId: row.id, colKey: col.key },
+                                    focus: { rowId: row.id, colKey: col.key },
+                                  })
+                                }}
+                                onChange={(value) => handleStrategyChange(row.id, 1, value)}
+                              />
+                            </StrategyCellContextMenu>
                           ) : col.key === "strategyLevel2" ? (
-                            <StrategySelectCell
-                              cellId={cellId}
-                              value={row.strategyLevel2}
-                              width={col.width}
-                              format={fmt}
-                              isActive={isActive}
-                              isSelected={isSelected}
-                              options={teamStrategyL2Options(teamStrategyTree, row.strategyLevel1)}
-                              placeholder={row.strategyLevel1 ? "二级策略" : "先选一级"}
-                              disabled={!row.strategyLevel1}
-                              matchStatus={getStrategyMatchStatusForCell(row, 2)}
-                              dbValue={getSavedStrategyValueForCell(row, 2)}
-                              levelLabel="二级策略"
-                              onActivate={() => {
-                                setFocusCell({ rowId: row.id, colKey: col.key })
-                                setSelection({
-                                  kind: "range",
-                                  anchor: { rowId: row.id, colKey: col.key },
-                                  focus: { rowId: row.id, colKey: col.key },
-                                })
-                              }}
-                              onChange={(value) => handleStrategyChange(row.id, 2, value)}
-                            />
+                            <StrategyCellContextMenu
+                              row={row}
+                              level={2}
+                              onSyncRequest={openStrategySyncConfirm}
+                            >
+                              <StrategySelectCell
+                                cellId={cellId}
+                                value={row.strategyLevel2}
+                                width={col.width}
+                                format={fmt}
+                                isActive={isActive}
+                                isSelected={isSelected}
+                                options={teamStrategyL2Options(teamStrategyTree, row.strategyLevel1)}
+                                placeholder={row.strategyLevel1 ? "二级策略" : "先选一级"}
+                                disabled={!row.strategyLevel1}
+                                matchStatus={getStrategyMatchStatusForCell(row, 2)}
+                                dbValue={getSavedStrategyValueForCell(row, 2)}
+                                levelLabel="二级策略"
+                                onActivate={() => {
+                                  setFocusCell({ rowId: row.id, colKey: col.key })
+                                  setSelection({
+                                    kind: "range",
+                                    anchor: { rowId: row.id, colKey: col.key },
+                                    focus: { rowId: row.id, colKey: col.key },
+                                  })
+                                }}
+                                onChange={(value) => handleStrategyChange(row.id, 2, value)}
+                              />
+                            </StrategyCellContextMenu>
                           ) : col.key === "strategyLevel3" ? (
-                            <StrategySelectCell
-                              cellId={cellId}
-                              value={row.strategyLevel3}
-                              width={col.width}
-                              format={fmt}
-                              isActive={isActive}
-                              isSelected={isSelected}
-                              options={teamStrategyL3Options(
-                                teamStrategyTree,
-                                row.strategyLevel1,
-                                row.strategyLevel2,
-                              )}
-                              placeholder={
-                                !row.strategyLevel1
-                                  ? "先选一级"
-                                  : !row.strategyLevel2
-                                    ? "先选二级"
-                                    : "三级策略"
-                              }
-                              disabled={!row.strategyLevel1 || !row.strategyLevel2}
-                              matchStatus={getStrategyMatchStatusForCell(row, 3)}
-                              dbValue={getSavedStrategyValueForCell(row, 3)}
-                              levelLabel="三级策略"
-                              onActivate={() => {
-                                setFocusCell({ rowId: row.id, colKey: col.key })
-                                setSelection({
-                                  kind: "range",
-                                  anchor: { rowId: row.id, colKey: col.key },
-                                  focus: { rowId: row.id, colKey: col.key },
-                                })
-                              }}
-                              onChange={(value) => handleStrategyChange(row.id, 3, value)}
-                            />
+                            <StrategyCellContextMenu
+                              row={row}
+                              level={3}
+                              onSyncRequest={openStrategySyncConfirm}
+                            >
+                              <StrategySelectCell
+                                cellId={cellId}
+                                value={row.strategyLevel3}
+                                width={col.width}
+                                format={fmt}
+                                isActive={isActive}
+                                isSelected={isSelected}
+                                options={teamStrategyL3Options(
+                                  teamStrategyTree,
+                                  row.strategyLevel1,
+                                  row.strategyLevel2,
+                                )}
+                                placeholder={
+                                  !row.strategyLevel1
+                                    ? "先选一级"
+                                    : !row.strategyLevel2
+                                      ? "先选二级"
+                                      : "三级策略"
+                                }
+                                disabled={!row.strategyLevel1 || !row.strategyLevel2}
+                                matchStatus={getStrategyMatchStatusForCell(row, 3)}
+                                dbValue={getSavedStrategyValueForCell(row, 3)}
+                                levelLabel="三级策略"
+                                onActivate={() => {
+                                  setFocusCell({ rowId: row.id, colKey: col.key })
+                                  setSelection({
+                                    kind: "range",
+                                    anchor: { rowId: row.id, colKey: col.key },
+                                    focus: { rowId: row.id, colKey: col.key },
+                                  })
+                                }}
+                                onChange={(value) => handleStrategyChange(row.id, 3, value)}
+                              />
+                            </StrategyCellContextMenu>
                           ) : col.key === "inTrackingPool" ? (
                             (() => {
                               const beian = row.representativeProductBeianHao
@@ -2071,6 +2265,31 @@ export function DueDiligenceTableView() {
                                 />
                               )
                             })()
+                          ) : col.key === "ddConclusion" ? (
+                            <DdConclusionCellContextMenu
+                              row={row}
+                              onEditRequest={openDdConclusionEditor}
+                            >
+                              <EditableCell
+                                cellId={cellId}
+                                value={row.ddConclusion}
+                                width={col.width}
+                                multiline={col.multiline}
+                                format={fmt}
+                                isActive={isActive}
+                                isSelected={isSelected}
+                                showHoverPreview
+                                onActivate={() => {
+                                  setFocusCell({ rowId: row.id, colKey: col.key })
+                                  setSelection({
+                                    kind: "range",
+                                    anchor: { rowId: row.id, colKey: col.key },
+                                    focus: { rowId: row.id, colKey: col.key },
+                                  })
+                                }}
+                                onChange={(value) => handleCellChange(row.id, col.key, value)}
+                              />
+                            </DdConclusionCellContextMenu>
                           ) : (
                             <EditableCell
                               cellId={cellId}
@@ -2080,7 +2299,6 @@ export function DueDiligenceTableView() {
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
-                              showHoverPreview={col.key === "ddConclusion"}
                               onActivate={() => {
                                 setFocusCell({ rowId: row.id, colKey: col.key })
                                 setSelection({
@@ -2182,6 +2400,100 @@ export function DueDiligenceTableView() {
           onSaved={refreshTrackingData}
         />
       )}
+      <AlertDialog
+        open={strategySyncTarget !== null}
+        onOpenChange={(open) => {
+          if (!open && !isSyncingSingleStrategy) setStrategySyncTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>同步标签到数据库</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  此操作将用表格中的值
+                  <span className="font-medium text-foreground">覆盖</span>
+                  数据库中「{strategySyncTarget?.productName}」的
+                  {strategySyncTarget?.levelLabel}。
+                </p>
+                <div className="rounded-md border border-zinc-200 bg-zinc-50/80 px-3 py-2 text-xs leading-relaxed text-zinc-700">
+                  <p>
+                    <span className="text-zinc-500">表格当前值：</span>
+                    {strategySyncTarget?.tableValue || "（空）"}
+                  </p>
+                  <p className="mt-1">
+                    <span className="text-zinc-500">数据库当前值：</span>
+                    {strategySyncTarget?.dbValue || "（空）"}
+                  </p>
+                </div>
+                <p>确认继续？</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isSyncingSingleStrategy}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isSyncingSingleStrategy}
+              onClick={(e) => {
+                e.preventDefault()
+                void confirmStrategySync()
+              }}
+            >
+              {isSyncingSingleStrategy ? "同步中…" : "确认覆盖"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog
+        open={ddConclusionEditTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDdConclusionEditTarget(null)
+            setDdConclusionDraft("")
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl gap-0 p-0" showCloseButton>
+          <DialogHeader className="border-b px-6 py-4 text-left">
+            <DialogTitle className="text-base font-semibold">编辑尽调结论</DialogTitle>
+            {ddConclusionEditTarget && (
+              <p className="mt-1 text-xs text-zinc-500">
+                {ddConclusionEditTarget.rowHint}
+              </p>
+            )}
+          </DialogHeader>
+          <div className="px-6 py-5">
+            <textarea
+              value={ddConclusionDraft}
+              onChange={(e) => setDdConclusionDraft(e.target.value)}
+              rows={12}
+              autoFocus
+              placeholder="请输入尽调结论…"
+              className="min-h-[18rem] w-full resize-y rounded border border-zinc-200 px-3 py-2 text-sm leading-relaxed text-zinc-800 outline-none focus:border-red-300 focus:ring-1 focus:ring-red-200"
+            />
+          </div>
+          <div className="flex justify-end gap-2 border-t px-6 py-4">
+            <button
+              type="button"
+              onClick={() => {
+                setDdConclusionEditTarget(null)
+                setDdConclusionDraft("")
+              }}
+              className="rounded border border-zinc-200 bg-white px-5 py-2 text-sm text-zinc-700 hover:bg-zinc-50"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={saveDdConclusionEditor}
+              className="rounded bg-red-500 px-5 py-2 text-sm text-white hover:bg-red-600"
+            >
+              保存
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
