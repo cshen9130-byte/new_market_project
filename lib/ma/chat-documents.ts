@@ -94,6 +94,9 @@ const PREVIEWABLE_EXTENSIONS = new Set([
   ".xml",
 ])
 
+/** PDF/HTML use inline file URLs; text types use preview=1 extraction. */
+const KB_FRAME_PREVIEW_EXTENSIONS = new Set([".pdf", ".html", ".htm"])
+
 export function getFileExtension(name: string): string {
   const dot = name.lastIndexOf(".")
   return dot >= 0 ? name.slice(dot).toLowerCase() : ""
@@ -105,9 +108,40 @@ export function canPreviewChatDocument(name: string, canPreview?: boolean): bool
 }
 
 export function buildKbDocumentPreviewUrl(relativePath: string, canPreview?: boolean): string {
+  const fileName = relativePath.split("/").pop() ?? relativePath
+  const ext = getFileExtension(fileName)
   const params = new URLSearchParams({ path: relativePath })
-  if (canPreview) params.set("preview", "1")
+  if (canPreview && !KB_FRAME_PREVIEW_EXTENSIONS.has(ext)) {
+    params.set("preview", "1")
+  }
   return `/api/knowledge-base/file?${params.toString()}`
+}
+
+/** Centered layout when opening AI with document panel from 尽调资料. */
+export function computeMaChatOpenLayout() {
+  const margin = 16
+  const listW = CHAT_DOC_LIST_WIDTH
+  const maxH = Math.min(720, Math.round(window.innerHeight * 0.82))
+  const maxTotalW = window.innerWidth - margin * 2
+  let readerW = 520
+  let chatW = 380
+  let totalW = chatW + listW + readerW
+  if (totalW > maxTotalW) {
+    readerW = Math.max(CHAT_DOC_READER_MIN_WIDTH, readerW - (totalW - maxTotalW))
+    totalW = chatW + listW + readerW
+  }
+  if (totalW > maxTotalW) {
+    chatW = Math.max(300, chatW - (totalW - maxTotalW))
+  }
+  totalW = chatW + listW + readerW
+  return {
+    chatSize: { w: chatW, h: maxH },
+    docReaderWidth: readerW,
+    chatPos: {
+      x: Math.max(margin, Math.round((window.innerWidth - totalW) / 2)),
+      y: Math.max(margin, Math.round((window.innerHeight - maxH) / 2)),
+    },
+  }
 }
 
 export function parseMaChatKbDocumentPayload(raw: string): MaChatKbDocumentPayload | null {

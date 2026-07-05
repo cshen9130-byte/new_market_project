@@ -5,7 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation"
 import { BookOpen, Bot, Camera, ChevronDown, Crosshair, FileText, Loader2, PanelLeftClose, PanelLeftOpen, Send, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ChatBotDocPanel } from "@/components/chat-bot-doc-panel"
-import { CHAT_DOC_READER_WIDTH, getChatDocPanelWidth, MA_CHAT_OPEN_DOCUMENTS_EVENT, consumePendingMaChatDocuments, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
+import { CHAT_DOC_READER_WIDTH, computeMaChatOpenLayout, getChatDocPanelWidth, MA_CHAT_OPEN_DOCUMENTS_EVENT, consumePendingMaChatDocuments, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
 import { getActiveDocumentContext, useChatDocuments } from "@/hooks/use-chat-documents"
 import { authService } from "@/lib/auth"
 import {
@@ -173,6 +173,10 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   const loadKbDocumentsIntoPanel = useCallback(
     (payloads: MaChatKbDocumentPayload[]) => {
       if (payloads.length === 0) return
+      const layout = computeMaChatOpenLayout()
+      setChatSize(layout.chatSize)
+      setDocReaderWidth(layout.docReaderWidth)
+      setChatPos(layout.chatPos)
       for (const payload of payloads) addKbDocument(payload)
       setDocsPanelOpen(true)
       setMode("chat")
@@ -263,27 +267,37 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   // ── Chat header drag handlers ────────────────────────────────────────
   const onChatHeaderPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!chatPos) return
+      e.preventDefault()
+      e.stopPropagation()
+      const W = chatSize.w + (docsPanelOpen ? getChatDocPanelWidth(docReaderWidth) : 0)
+      const H = chatSize.h
+      const startPos = chatPos ?? {
+        x: Math.max(8, Math.round((window.innerWidth - W) / 2)),
+        y: Math.max(8, Math.round((window.innerHeight - H) / 2)),
+      }
+      if (!chatPos) setChatPos(startPos)
       e.currentTarget.setPointerCapture(e.pointerId)
-      chatDragStartRef.current = { px: e.clientX, py: e.clientY, bx: chatPos.x, by: chatPos.y }
+      chatDragStartRef.current = { px: e.clientX, py: e.clientY, bx: startPos.x, by: startPos.y }
       chatDragMovedRef.current = false
     },
-    [chatPos],
+    [chatPos, chatSize, docsPanelOpen, docReaderWidth],
   )
 
   const onChatHeaderPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       if (!chatDragStartRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
       const dx = e.clientX - chatDragStartRef.current.px
       const dy = e.clientY - chatDragStartRef.current.py
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) chatDragMovedRef.current = true
-      const W = chatSize.w + (docsPanelOpen ? docPanelWidth : 0)
+      const W = chatSize.w + (docsPanelOpen ? getChatDocPanelWidth(docReaderWidth) : 0)
       const H = chatSize.h
       const newX = Math.max(8, Math.min(window.innerWidth - W - 8, chatDragStartRef.current.bx + dx))
       const newY = Math.max(8, Math.min(window.innerHeight - H - 8, chatDragStartRef.current.by + dy))
       setChatPos({ x: newX, y: newY })
     },
-    [chatSize, docsPanelOpen, docPanelWidth],
+    [chatSize, docsPanelOpen, docReaderWidth],
   )
 
   const onChatHeaderPointerUp = useCallback(() => {

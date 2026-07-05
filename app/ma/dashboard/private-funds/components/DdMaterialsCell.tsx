@@ -1,6 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react"
+import { createPortal } from "react-dom"
 import { Bot, ExternalLink, FileText, GripVertical, Loader2, X } from "lucide-react"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsDocument } from "@/lib/ma/due-diligence-materials"
@@ -10,24 +11,36 @@ import {
   buildDdMaterialsPreviewUrl,
 } from "@/lib/ma/due-diligence-materials"
 import { dispatchMaChatOpenDocuments, MA_CHAT_DOCUMENT_MIME, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog"
 
 const FRAME_PREVIEW_EXTENSIONS = new Set([".pdf", ".html", ".htm"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
 const DIALOG_MIN_W = 640
 const DIALOG_MIN_H = 420
+const PANEL_Z = 10050
 
 function defaultDialogSize() {
-  if (typeof window === "undefined") return { w: 1152, h: 720 }
+  if (typeof window === "undefined") return { w: 1100, h: 680 }
   return {
-    w: Math.min(1200, Math.round(window.innerWidth * 0.92)),
-    h: Math.min(Math.round(window.innerHeight * 0.88), 860),
+    w: Math.min(1100, Math.round(window.innerWidth * 0.88)),
+    h: Math.min(Math.round(window.innerHeight * 0.82), 760),
   }
+}
+
+function clampDialogPosition(size: { w: number; h: number }, pos: { x: number; y: number }) {
+  const margin = 8
+  const maxX = Math.max(margin, window.innerWidth - size.w - margin)
+  const maxY = Math.max(margin, window.innerHeight - size.h - margin)
+  return {
+    x: Math.min(Math.max(margin, pos.x), maxX),
+    y: Math.min(Math.max(margin, pos.y), maxY),
+  }
+}
+
+function defaultDialogPosition(size: { w: number; h: number }) {
+  return clampDialogPosition(size, {
+    x: Math.round((window.innerWidth - size.w) / 2),
+    y: Math.round((window.innerHeight - size.h) / 2),
+  })
 }
 
 function formatFileSize(bytes: number) {
@@ -67,10 +80,7 @@ function formatToStyle(format: CellFormat): CSSProperties {
 
 function previewSrc(document: DdMaterialsDocument): string {
   const ext = document.extension.toLowerCase()
-  if (FRAME_PREVIEW_EXTENSIONS.has(ext)) {
-    return buildDdMaterialsFileUrl(document.relativePath)
-  }
-  if (IMAGE_PREVIEW_EXTENSIONS.has(ext)) {
+  if (FRAME_PREVIEW_EXTENSIONS.has(ext) || IMAGE_PREVIEW_EXTENSIONS.has(ext)) {
     return buildDdMaterialsFileUrl(document.relativePath)
   }
   if (document.canPreview) return buildDdMaterialsPreviewUrl(document.relativePath)
@@ -79,7 +89,7 @@ function previewSrc(document: DdMaterialsDocument): string {
 
 function shouldUseIframePreview(document: DdMaterialsDocument): boolean {
   const ext = document.extension.toLowerCase()
-  return FRAME_PREVIEW_EXTENSIONS.has(ext) || document.canPreview
+  return FRAME_PREVIEW_EXTENSIONS.has(ext) || (document.canPreview && !IMAGE_PREVIEW_EXTENSIONS.has(ext))
 }
 
 function toChatPayload(doc: DdMaterialsDocument): MaChatKbDocumentPayload {
@@ -92,7 +102,7 @@ function toChatPayload(doc: DdMaterialsDocument): MaChatKbDocumentPayload {
   }
 }
 
-function stopDialogButtonEvent(event: MouseEvent) {
+function stopPanelEvent(event: MouseEvent | React.PointerEvent) {
   event.preventDefault()
   event.stopPropagation()
 }
@@ -125,8 +135,11 @@ export function DdMaterialsCell({
   onChange: (next: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [mounted, setMounted] = useState(false)
   const [previewDoc, setPreviewDoc] = useState<DdMaterialsDocument | null>(null)
   const [dialogSize, setDialogSize] = useState(defaultDialogSize)
+  const [dialogPos, setDialogPos] = useState({ x: 0, y: 0 })
+  const dragRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null)
   const resizeRef = useRef<{ px: number; py: number; w: number; h: number; dir: "se" | "e" | "s" } | null>(null)
 
   const style: CSSProperties = {
@@ -155,12 +168,63 @@ export function DdMaterialsCell({
   const kbUrl = folderPath ? buildDdMaterialsKbUrl(folderPath) : null
 
   useEffect(() => {
-    if (open) setDialogSize(defaultDialogSize())
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const size = defaultDialogSize()
+    setDialogSize(size)
+    setDialogPos(defaultDialogPosition(size))
   }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    function onResize() {
+      setDialogSize((size) => {
+        const next = {
+          w: Math.min(size.w, Math.round(window.innerWidth * 0.98)),
+          h: Math.min(size.h, Math.round(window.innerHeight * 0.94)),
+        }
+        setDialogPos((pos) => clampDialogPosition(next, pos))
+        return next
+      })
+    }
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [open])
+
+  const onHeaderPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      stopPanelEvent(event)
+      event.currentTarget.setPointerCapture(event.pointerId)
+      dragRef.current = { px: event.clientX, py: event.clientY, ox: dialogPos.x, oy: dialogPos.y }
+
+      const onMove = (ev: PointerEvent) => {
+        if (!dragRef.current) return
+        const dx = ev.clientX - dragRef.current.px
+        const dy = ev.clientY - dragRef.current.py
+        setDialogPos(
+          clampDialogPosition(dialogSize, {
+            x: dragRef.current.ox + dx,
+            y: dragRef.current.oy + dy,
+          }),
+        )
+      }
+      const onUp = () => {
+        dragRef.current = null
+        window.removeEventListener("pointermove", onMove)
+        window.removeEventListener("pointerup", onUp)
+      }
+      window.addEventListener("pointermove", onMove)
+      window.addEventListener("pointerup", onUp)
+    },
+    [dialogPos.x, dialogPos.y, dialogSize],
+  )
 
   const onResizePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>, dir: "se" | "e" | "s") => {
-      stopDialogButtonEvent(event as unknown as MouseEvent)
+      stopPanelEvent(event)
       event.currentTarget.setPointerCapture(event.pointerId)
       resizeRef.current = { px: event.clientX, py: event.clientY, w: dialogSize.w, h: dialogSize.h, dir }
 
@@ -170,7 +234,7 @@ export function DdMaterialsCell({
         const dy = ev.clientY - resizeRef.current.py
         const maxW = Math.round(window.innerWidth * 0.98)
         const maxH = Math.round(window.innerHeight * 0.94)
-        setDialogSize({
+        const nextSize = {
           w:
             resizeRef.current.dir === "s"
               ? resizeRef.current.w
@@ -179,7 +243,9 @@ export function DdMaterialsCell({
             resizeRef.current.dir === "e"
               ? resizeRef.current.h
               : Math.max(DIALOG_MIN_H, Math.min(maxH, resizeRef.current.h + dy)),
-        })
+        }
+        setDialogSize(nextSize)
+        setDialogPos((pos) => clampDialogPosition(nextSize, pos))
       }
       const onUp = () => {
         resizeRef.current = null
@@ -207,7 +273,7 @@ export function DdMaterialsCell({
   }
 
   function openInPageAi(event: MouseEvent) {
-    stopDialogButtonEvent(event)
+    stopPanelEvent(event)
     if (documents.length === 0) return
     dispatchMaChatOpenDocuments(documents.map(toChatPayload))
     setOpen(false)
@@ -221,17 +287,201 @@ export function DdMaterialsCell({
     event.dataTransfer.effectAllowed = "copy"
   }
 
+  const panel =
+    open && mounted
+      ? createPortal(
+          <>
+            <div
+              className="fixed inset-0 bg-black/50"
+              style={{ zIndex: PANEL_Z }}
+              onMouseDown={(event) => {
+                stopPanelEvent(event)
+                setOpen(false)
+              }}
+            />
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="dd-materials-title"
+              className="fixed flex flex-col overflow-hidden rounded-lg border bg-background shadow-2xl relative"
+              style={{
+                zIndex: PANEL_Z + 1,
+                left: dialogPos.x,
+                top: dialogPos.y,
+                width: dialogSize.w,
+                height: dialogSize.h,
+              }}
+              onMouseDown={(event) => event.stopPropagation()}
+            >
+              <div
+                className="flex shrink-0 cursor-grab items-start justify-between gap-4 border-b bg-muted/20 px-5 py-4 active:cursor-grabbing select-none"
+                onPointerDown={onHeaderPointerDown}
+              >
+                <div className="min-w-0 pointer-events-none">
+                  <h2 id="dd-materials-title" className="text-sm font-semibold">
+                    尽调资料
+                  </h2>
+                  <p className="text-xs text-muted-foreground mt-1 truncate">
+                    {folderName || folderPath || "未匹配到知识库文件夹"}
+                  </p>
+                </div>
+                <div
+                  className="flex items-center gap-2 shrink-0"
+                  onPointerDown={(event) => stopPanelEvent(event)}
+                >
+                  {documents.length > 0 && (
+                    <button
+                      type="button"
+                      onMouseDown={openInPageAi}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border bg-background text-xs hover:bg-muted transition-colors"
+                    >
+                      <Bot className="h-3.5 w-3.5" />
+                      在页面AI打开
+                    </button>
+                  )}
+                  {kbUrl && (
+                    <a
+                      href={kbUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onMouseDown={stopPanelEvent}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border bg-background text-xs hover:bg-muted transition-colors"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      在知识库中打开
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    onMouseDown={(event) => {
+                      stopPanelEvent(event)
+                      setOpen(false)
+                    }}
+                    className="p-1 rounded text-muted-foreground hover:text-foreground"
+                    aria-label="关闭"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex min-h-0 flex-1">
+                <div className="w-[34%] min-w-[220px] max-w-[360px] border-r overflow-y-auto">
+                  {documents.length === 0 ? (
+                    <div className="p-5 text-sm text-muted-foreground">
+                      {folderPath
+                        ? "该文件夹暂无文件，或您暂无访问权限。"
+                        : "未能根据尽调日期和基金公司匹配到知识库文件夹。请确认资料已上传至「内部尽调资料」。"}
+                    </div>
+                  ) : (
+                    <div className="divide-y">
+                      {documents.map((doc) => {
+                        const active = previewDoc?.relativePath === doc.relativePath
+                        return (
+                          <button
+                            key={doc.relativePath}
+                            type="button"
+                            draggable
+                            onDragStart={(event) => onDocumentDragStart(event, doc)}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={() => setPreviewDoc(doc)}
+                            className={[
+                              "w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors cursor-grab active:cursor-grabbing",
+                              active ? "bg-blue-50/70" : "",
+                            ].join(" ")}
+                            title="点击预览，拖入 AI 助手资料区"
+                          >
+                            <div className="flex items-start gap-2 min-w-0">
+                              <GripVertical className="h-4 w-4 text-zinc-300 shrink-0 mt-0.5" />
+                              <FileText className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+                              <div className="min-w-0">
+                                <div className="text-sm font-medium truncate" title={doc.name}>
+                                  {doc.name}
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-1">
+                                  {formatFileSize(doc.size)}
+                                  {doc.updatedAt ? ` · ${formatDate(doc.updatedAt)}` : ""}
+                                </div>
+                              </div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex-1 min-w-0 flex flex-col bg-zinc-50">
+                  {previewDoc ? (
+                    <>
+                      <div className="px-4 py-2 border-b bg-white text-xs text-muted-foreground truncate shrink-0">
+                        {previewDoc.name}
+                      </div>
+                      {shouldUseIframePreview(previewDoc) ? (
+                        <iframe
+                          key={previewDoc.relativePath}
+                          src={previewSrc(previewDoc)}
+                          title={previewDoc.name}
+                          className="flex-1 w-full min-h-0 border-0 bg-white"
+                        />
+                      ) : IMAGE_PREVIEW_EXTENSIONS.has(previewDoc.extension.toLowerCase()) ? (
+                        <div className="flex-1 min-h-0 overflow-auto flex items-center justify-center bg-zinc-100 p-4">
+                          <img
+                            src={previewSrc(previewDoc)}
+                            alt={previewDoc.name}
+                            className="max-h-full max-w-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <iframe
+                          key={previewDoc.relativePath}
+                          src={previewSrc(previewDoc)}
+                          title={previewDoc.name}
+                          className="flex-1 w-full min-h-0 border-0 bg-white"
+                        />
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
+                      {documents.length > 0 ? "点击左侧文件进行预览" : "暂无可预览的资料"}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div
+                className="absolute bottom-0 right-0 z-10 h-4 w-4 cursor-se-resize"
+                onPointerDown={(event) => onResizePointerDown(event, "se")}
+                title="拖拽调整大小"
+              />
+              <div
+                className="absolute right-0 top-14 bottom-4 z-10 w-1.5 cursor-e-resize"
+                onPointerDown={(event) => onResizePointerDown(event, "e")}
+              />
+              <div
+                className="absolute bottom-0 left-4 right-4 z-10 h-1.5 cursor-s-resize"
+                onPointerDown={(event) => onResizePointerDown(event, "s")}
+              />
+            </div>
+          </>,
+          document.body,
+        )
+      : null
+
   if (isActive) {
     return (
-      <input
-        type="text"
-        data-cell={cellId}
-        value={value}
-        style={style}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={onActivate}
-        className={baseClass}
-      />
+      <>
+        <input
+          type="text"
+          data-cell={cellId}
+          value={value}
+          style={style}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={onActivate}
+          className={baseClass}
+        />
+        {panel}
+      </>
     )
   }
 
@@ -253,165 +503,7 @@ export function DdMaterialsCell({
         >
           {displayLabel}
         </button>
-
-        <Dialog
-          open={open}
-          onOpenChange={(next) => {
-            setOpen(next)
-            if (!next) setPreviewDoc(null)
-          }}
-        >
-          <DialogContent
-            showCloseButton={false}
-            className="relative flex flex-col p-0 gap-0 overflow-hidden"
-            style={{ width: dialogSize.w, height: dialogSize.h, maxWidth: "98vw", maxHeight: "94vh" }}
-          >
-            <DialogHeader className="px-5 py-4 border-b shrink-0">
-              <div className="flex items-start justify-between gap-4 pr-2">
-                <div className="min-w-0">
-                  <DialogTitle className="text-sm font-semibold">尽调资料</DialogTitle>
-                  <p className="text-xs text-muted-foreground mt-1 truncate">
-                    {folderName || folderPath || "未匹配到知识库文件夹"}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {documents.length > 0 && (
-                    <button
-                      type="button"
-                      onMouseDown={openInPageAi}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
-                    >
-                      <Bot className="h-3.5 w-3.5" />
-                      在页面AI打开
-                    </button>
-                  )}
-                  {kbUrl && (
-                    <a
-                      href={kbUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onMouseDown={stopDialogButtonEvent}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs hover:bg-muted transition-colors"
-                    >
-                      <ExternalLink className="h-3.5 w-3.5" />
-                      在知识库中打开
-                    </a>
-                  )}
-                  <button
-                    type="button"
-                    onMouseDown={(event) => {
-                      stopDialogButtonEvent(event)
-                      setOpen(false)
-                    }}
-                    className="p-1 rounded text-muted-foreground hover:text-foreground"
-                    aria-label="关闭"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </DialogHeader>
-
-            <div className="flex min-h-0 flex-1">
-              <div className="w-[34%] min-w-[240px] border-r overflow-y-auto">
-                {documents.length === 0 ? (
-                  <div className="p-5 text-sm text-muted-foreground">
-                    {folderPath
-                      ? "该文件夹暂无文件，或您暂无访问权限。"
-                      : "未能根据尽调日期和基金公司匹配到知识库文件夹。请确认资料已上传至「内部尽调资料」。"}
-                  </div>
-                ) : (
-                  <div className="divide-y">
-                    {documents.map((doc) => {
-                      const active = previewDoc?.relativePath === doc.relativePath
-                      return (
-                        <button
-                          key={doc.relativePath}
-                          type="button"
-                          draggable
-                          onDragStart={(event) => onDocumentDragStart(event, doc)}
-                          onMouseDown={(event) => event.stopPropagation()}
-                          onClick={() => setPreviewDoc(doc)}
-                          className={[
-                            "w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors cursor-grab active:cursor-grabbing",
-                            active ? "bg-blue-50/70" : "",
-                          ].join(" ")}
-                          title="点击预览，拖入 AI 助手资料区"
-                        >
-                          <div className="flex items-start gap-2 min-w-0">
-                            <GripVertical className="h-4 w-4 text-zinc-300 shrink-0 mt-0.5" />
-                            <FileText className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium truncate" title={doc.name}>
-                                {doc.name}
-                              </div>
-                              <div className="text-xs text-muted-foreground mt-1">
-                                {formatFileSize(doc.size)}
-                                {doc.updatedAt ? ` · ${formatDate(doc.updatedAt)}` : ""}
-                              </div>
-                            </div>
-                          </div>
-                        </button>
-                      )
-                    })}
-                  </div>
-                )}
-              </div>
-
-              <div className="flex-1 min-w-0 flex flex-col bg-zinc-50">
-                {previewDoc ? (
-                  <>
-                    <div className="px-4 py-2 border-b bg-white text-xs text-muted-foreground truncate shrink-0">
-                      {previewDoc.name}
-                    </div>
-                    {shouldUseIframePreview(previewDoc) ? (
-                      <iframe
-                        key={previewDoc.relativePath}
-                        src={previewSrc(previewDoc)}
-                        title={previewDoc.name}
-                        className="flex-1 w-full border-0 bg-white"
-                      />
-                    ) : IMAGE_PREVIEW_EXTENSIONS.has(previewDoc.extension.toLowerCase()) ? (
-                      <div className="flex-1 overflow-auto flex items-center justify-center bg-zinc-100 p-4">
-                        <img
-                          src={previewSrc(previewDoc)}
-                          alt={previewDoc.name}
-                          className="max-h-full max-w-full object-contain"
-                        />
-                      </div>
-                    ) : (
-                      <iframe
-                        key={previewDoc.relativePath}
-                        src={previewSrc(previewDoc)}
-                        title={previewDoc.name}
-                        className="flex-1 w-full border-0 bg-white"
-                      />
-                    )}
-                  </>
-                ) : (
-                  <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
-                    {documents.length > 0 ? "点击左侧文件进行预览" : "暂无可预览的资料"}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Resize handles */}
-            <div
-              className="absolute bottom-0 right-0 z-10 h-4 w-4 cursor-se-resize"
-              onPointerDown={(event) => onResizePointerDown(event, "se")}
-              title="拖拽调整大小"
-            />
-            <div
-              className="absolute right-0 top-14 bottom-4 z-10 w-1.5 cursor-e-resize"
-              onPointerDown={(event) => onResizePointerDown(event, "e")}
-            />
-            <div
-              className="absolute bottom-0 left-4 right-4 z-10 h-1.5 cursor-s-resize"
-              onPointerDown={(event) => onResizePointerDown(event, "s")}
-            />
-          </DialogContent>
-        </Dialog>
+        {panel}
       </>
     )
   }
@@ -429,14 +521,17 @@ export function DdMaterialsCell({
   }
 
   return (
-    <input
-      type="text"
-      data-cell={cellId}
-      value={value}
-      style={style}
-      onChange={(e) => onChange(e.target.value)}
-      onFocus={onActivate}
-      className={baseClass}
-    />
+    <>
+      <input
+        type="text"
+        data-cell={cellId}
+        value={value}
+        style={style}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={onActivate}
+        className={baseClass}
+      />
+      {panel}
+    </>
   )
 }

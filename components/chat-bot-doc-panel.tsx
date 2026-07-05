@@ -8,6 +8,7 @@ import {
   CHAT_DOC_LIST_WIDTH,
   CHAT_DOC_READER_MAX_WIDTH,
   CHAT_DOC_READER_MIN_WIDTH,
+  getFileExtension,
   type MaChatDocumentItem,
 } from "@/lib/ma/chat-documents"
 import { cn } from "@/lib/utils"
@@ -53,6 +54,10 @@ export function ChatBotDocPanel({
   function shouldUseIframePreview(doc: MaChatDocumentItem): boolean {
     const src = previewSrc(doc)
     if (!src || !canPreviewChatDocument(doc.name, doc.canPreview)) return false
+    if (doc.source === "kb") {
+      const ext = doc.extension.toLowerCase() || getFileExtension(doc.name)
+      if ([".pdf", ".html", ".htm"].includes(ext)) return true
+    }
     if (doc.source === "local") {
       const ext = doc.extension.toLowerCase()
       if ([".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".markdown", ".csv", ".json", ".log"].includes(ext)) {
