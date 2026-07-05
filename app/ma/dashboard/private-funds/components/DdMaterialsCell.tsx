@@ -262,6 +262,9 @@ export function DdMaterialsCell({
     event.preventDefault()
     event.stopPropagation()
     if (!hasMaterials && !folderPath) return
+    const size = defaultDialogSize()
+    setDialogSize(size)
+    setDialogPos(defaultDialogPosition(size))
     setPreviewDoc(documents[0] ?? null)
     setOpen(true)
   }
@@ -294,16 +297,15 @@ export function DdMaterialsCell({
             <div
               className="fixed inset-0 bg-black/50"
               style={{ zIndex: PANEL_Z }}
-              onMouseDown={(event) => {
-                stopPanelEvent(event)
-                setOpen(false)
+              onClick={(event) => {
+                if (event.target === event.currentTarget) setOpen(false)
               }}
             />
             <div
               role="dialog"
               aria-modal="true"
               aria-labelledby="dd-materials-title"
-              className="fixed flex flex-col overflow-hidden rounded-lg border bg-background shadow-2xl relative"
+              className="fixed flex flex-col overflow-hidden rounded-lg border bg-background shadow-2xl"
               style={{
                 zIndex: PANEL_Z + 1,
                 left: dialogPos.x,
