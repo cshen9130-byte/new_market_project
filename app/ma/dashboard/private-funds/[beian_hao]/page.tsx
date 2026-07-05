@@ -835,6 +835,7 @@ export default function PrivateFundDetailPage() {
   const [trackedTeam, setTrackedTeam] = useState(false)
   const [showMyTrackingDialog, setShowMyTrackingDialog] = useState(false)
   const [showTeamTrackingDialog, setShowTeamTrackingDialog] = useState(false)
+  const [managerRegistrationNo, setManagerRegistrationNo] = useState<string | null>(null)
 
   // ─── 编辑要素 modal ─────────────────────────────────────────────────────────
   type StrategyL2 = { l2: string; l3s: string[] }
@@ -1003,6 +1004,16 @@ export default function PrivateFundDetailPage() {
       })
       .catch(() => {})
   }
+
+  useEffect(() => {
+    if (!beian_hao) return
+    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/company`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.registration_no) setManagerRegistrationNo(d.registration_no)
+      })
+      .catch(() => {})
+  }, [beian_hao])
 
   useEffect(() => {
     if (!beian_hao) return
@@ -1628,9 +1639,22 @@ export default function PrivateFundDetailPage() {
   }, [navChartLightboxOpen, chartMode, activeChartData.length])
 
   const navigateToFundsPage = useCallback((tab: string, side?: string) => {
+    if (tab === "funds" && side === "fund-managers-org") {
+      if (managerRegistrationNo) {
+        router.push(`/ma/dashboard/private-funds/managers/${encodeURIComponent(managerRegistrationNo)}`)
+        return
+      }
+      const managerKeyword = data?.info?.manager?.trim()
+      if (managerKeyword) {
+        router.push(
+          `/ma/dashboard/private-funds?tab=funds&side=fund-managers-org&keyword=${encodeURIComponent(managerKeyword)}`,
+        )
+        return
+      }
+    }
     const sideItem = side ?? TAB_DEFAULT_SIDE[tab] ?? "private-funds"
     router.push(`/ma/dashboard/private-funds?tab=${tab}&side=${sideItem}`)
-  }, [router])
+  }, [router, managerRegistrationNo, data?.info?.manager])
 
   const activeSideItem = data?.is_custom_fund ? "custom-funds" : DEFAULT_ACTIVE_SIDE_ITEM
   const backHref = data?.is_custom_fund
@@ -1973,7 +1997,16 @@ export default function PrivateFundDetailPage() {
           </div>
           <div className="grid grid-cols-[auto_1fr] gap-x-[clamp(0.25rem,0.8cqw,0.75rem)] gap-y-0.5">
             <span className="whitespace-nowrap">私募管理人：</span>
-            <span className="font-medium text-zinc-800">{info.manager || "—"}</span>
+            {managerRegistrationNo && info.manager ? (
+              <a
+                href={`/ma/dashboard/private-funds/managers/${encodeURIComponent(managerRegistrationNo)}`}
+                className="font-medium text-blue-600 hover:underline"
+              >
+                {info.manager}
+              </a>
+            ) : (
+              <span className="font-medium text-zinc-800">{info.manager || "—"}</span>
+            )}
             <span className="whitespace-nowrap">公司管理规模：</span>
             <span className="font-medium text-zinc-800 whitespace-nowrap">{info.scale || "—"}</span>
             {info.benchmark && (

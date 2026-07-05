@@ -45,8 +45,10 @@ import {
   cellFormatKey,
   clearCellFormat,
   createDueDiligenceTableRow,
+  deleteDueDiligenceTableRows,
   getCellFormat,
   getDueDiligenceTableNaturalWidth,
+  insertDueDiligenceTableRowsAt,
   loadDueDiligenceTableFromServer,
   patchCellFormat,
   pruneCellFormatsForRows,
@@ -72,6 +74,13 @@ import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { RepresentativeProductCell } from "./RepresentativeProductCell"
 import { StrategySelectCell } from "./StrategySelectCell"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu"
 import { splitFundPoolMemberships } from "@/lib/client/tracking-pools"
 import {
   loadTeamStrategyTree,
@@ -183,6 +192,30 @@ function selectionSummary(selection: SelectionState, tableRows: DueDiligenceTabl
   if (selection.kind === "columns") return `已选 ${selection.colKeys.length} 列`
   if (cells.length === 1) return "已选 1 个单元格"
   return `已选 ${cells.length} 个单元格`
+}
+
+function primaryRowId(rowIds: string[], tableRows: DueDiligenceTableRow[]): string | null {
+  const set = new Set(rowIds)
+  for (const row of tableRows) {
+    if (set.has(row.id)) return row.id
+  }
+  return rowIds[0] ?? null
+}
+
+function selectedRowIdsFromSelection(
+  selection: SelectionState,
+  tableRows: DueDiligenceTableRow[],
+): string[] {
+  if (selection.kind === "rows") return selection.rowIds
+  if (selection.kind === "range") {
+    const anchorIdx = tableRows.findIndex((row) => row.id === selection.anchor.rowId)
+    const focusIdx = tableRows.findIndex((row) => row.id === selection.focus.rowId)
+    if (anchorIdx < 0 || focusIdx < 0) return []
+    const start = Math.min(anchorIdx, focusIdx)
+    const end = Math.max(anchorIdx, focusIdx)
+    return tableRows.slice(start, end + 1).map((row) => row.id)
+  }
+  return []
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -298,6 +331,7 @@ function FormattingToolbar({
   onRedo,
   onFormat,
   onClearFormat,
+  rowActions,
 }: {
   format: CellFormat
   disabled: boolean
@@ -308,6 +342,12 @@ function FormattingToolbar({
   onRedo: () => void
   onFormat: (patch: Partial<CellFormat>) => void
   onClearFormat: () => void
+  rowActions?: {
+    count: number
+    onInsertAbove: () => void
+    onInsertBelow: () => void
+    onDelete: () => void
+  }
 }) {
   const [openPicker, setOpenPicker] = useState<"text" | "bg" | null>(null)
 
@@ -468,8 +508,46 @@ function FormattingToolbar({
       {!disabled && selectionHint && (
         <span className="ml-auto text-xs text-zinc-400">{selectionHint}</span>
       )}
-      {disabled && (
+      {disabled && !rowActions && (
         <span className="ml-auto text-xs text-zinc-400">点击行号、列头或拖拽选择单元格后设置格式</span>
+      )}
+
+      {rowActions && (
+        <>
+          {!disabled && sep}
+          <button
+            type="button"
+            title="在上方插入行"
+            onMouseDown={(e) => { e.preventDefault(); rowActions.onInsertAbove() }}
+            className="flex h-7 items-center gap-1 rounded px-2 text-xs text-zinc-700 transition-colors hover:bg-zinc-200"
+          >
+            <Plus className="h-3 w-3" />
+            在上方插入
+          </button>
+          <button
+            type="button"
+            title="在下方插入行"
+            onMouseDown={(e) => { e.preventDefault(); rowActions.onInsertBelow() }}
+            className="flex h-7 items-center gap-1 rounded px-2 text-xs text-zinc-700 transition-colors hover:bg-zinc-200"
+          >
+            <Plus className="h-3 w-3" />
+            在下方插入
+          </button>
+          <button
+            type="button"
+            title="删除选中行"
+            onMouseDown={(e) => { e.preventDefault(); rowActions.onDelete() }}
+            className="flex h-7 items-center gap-1 rounded px-2 text-xs text-red-600 transition-colors hover:bg-red-50"
+          >
+            <Trash2 className="h-3 w-3" />
+            删除{rowActions.count > 1 ? ` (${rowActions.count} 行)` : "行"}
+          </button>
+          {disabled && (
+            <span className="ml-auto text-xs text-zinc-400">
+              已选 {rowActions.count} 行 · 右键行可插入或删除
+            </span>
+          )}
+        </>
       )}
     </div>
   )
@@ -635,6 +713,7 @@ export function DueDiligenceTableView() {
   const [isDragging, setIsDragging] = useState(false)
   const [undoStack, setUndoStack] = useState<Snapshot[]>([])
   const [redoStack, setRedoStack] = useState<Snapshot[]>([])
+  const [rowMenuDeleteCount, setRowMenuDeleteCount] = useState(1)
   const [isExtracting, setIsExtracting] = useState(false)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle")
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -651,6 +730,10 @@ export function DueDiligenceTableView() {
   const rootRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<{ anchor: CellCoord; dragging: boolean } | null>(null)
+  const rowMenuTargetRef = useRef<{ rowId: string; deleteIds: string[] }>({
+    rowId: "",
+    deleteIds: [],
+  })
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingSaveRef = useRef<{ rows: DueDiligenceTableRow[]; formats: TableCellFormats } | null>(null)
   const serverUpdatedAtRef = useRef<string | null>(null)
@@ -715,6 +798,21 @@ export function DueDiligenceTableView() {
       }, SERVER_SAVE_DEBOUNCE_MS)
     },
     [flushServerSave],
+  )
+
+  const persistRowsChange = useCallback(
+    (
+      prevRows: DueDiligenceTableRow[],
+      next: DueDiligenceTableRow[],
+      prevFormats: TableCellFormats,
+    ) => {
+      snapshot(prevRows, prevFormats)
+      const nextFormats = pruneCellFormatsForRows(prevFormats, next)
+      setRows(next)
+      setFormats(nextFormats)
+      scheduleServerSave(next, nextFormats)
+    },
+    [snapshot, scheduleServerSave],
   )
 
   function undo() {
@@ -964,6 +1062,11 @@ export function DueDiligenceTableView() {
     [selection, filteredRows],
   )
 
+  const selectedRowActionIds = useMemo(
+    () => selectedRowIdsFromSelection(selection, rows),
+    [selection, rows],
+  )
+
   function focusCellInput(rowId: string, colKey: DueDiligenceTableColumn["key"]) {
     const el = containerRef.current?.querySelector(
       `[data-cell="${selectionCellKey(rowId, colKey)}"]`,
@@ -1157,7 +1260,61 @@ export function DueDiligenceTableView() {
 
   function handleAddRow() {
     const newRow = createDueDiligenceTableRow()
-    persistRows(rows, [newRow, ...rows], formats)
+    persistRowsChange(rows, [newRow, ...rows], formats)
+    setSelection({ kind: "rows", rowIds: [newRow.id] })
+  }
+
+  function handleRowContextMenu(rowId: string) {
+    const deleteIds =
+      selection.kind === "rows" && selection.rowIds.includes(rowId)
+        ? selection.rowIds
+        : [rowId]
+    rowMenuTargetRef.current = { rowId, deleteIds }
+    setRowMenuDeleteCount(deleteIds.length)
+    if (!(selection.kind === "rows" && selection.rowIds.includes(rowId))) {
+      setSelection({ kind: "rows", rowIds: [rowId] })
+    }
+  }
+
+  function handleInsertRows(rowId: string, position: "above" | "below", count = 1) {
+    const index = rows.findIndex((row) => row.id === rowId)
+    if (index < 0) return
+    const nextRows = insertDueDiligenceTableRowsAt(rows, rowId, position, count)
+    persistRowsChange(rows, nextRows, formats)
+    const insertIndex = position === "above" ? index : index + 1
+    const newRowIds = nextRows.slice(insertIndex, insertIndex + count).map((row) => row.id)
+    setSelection({ kind: "rows", rowIds: newRowIds })
+  }
+
+  function handleInsertAboveSelected() {
+    const rowIds = selectedRowIdsFromSelection(selection, rows)
+    const anchorId = primaryRowId(rowIds, rows)
+    if (!anchorId) return
+    handleInsertRows(anchorId, "above")
+  }
+
+  function handleInsertBelowSelected() {
+    const rowIds = selectedRowIdsFromSelection(selection, rows)
+    const anchorId = primaryRowId(rowIds, rows)
+    if (!anchorId) return
+    handleInsertRows(anchorId, "below")
+  }
+
+  function handleDeleteRows(rowIds: string[]) {
+    if (rowIds.length === 0) return
+    const msg =
+      rowIds.length === 1
+        ? "确定删除该行？"
+        : `确定删除选中的 ${rowIds.length} 行？`
+    if (!window.confirm(msg)) return
+    const nextRows = deleteDueDiligenceTableRows(rows, rowIds)
+    persistRowsChange(rows, nextRows, formats)
+    setSelection({ kind: "none" })
+    setFocusCell(null)
+  }
+
+  function handleDeleteSelectedRows() {
+    handleDeleteRows(selectedRowIdsFromSelection(selection, rows))
   }
 
   function handleResetSeed() {
@@ -1341,6 +1498,16 @@ export function DueDiligenceTableView() {
         onRedo={redo}
         onFormat={applyFormatToSelection}
         onClearFormat={clearSelectionFormat}
+        rowActions={
+          selectedRowActionIds.length > 0
+            ? {
+                count: selectedRowActionIds.length,
+                onInsertAbove: handleInsertAboveSelected,
+                onInsertBelow: handleInsertBelowSelected,
+                onDelete: handleDeleteSelectedRows,
+              }
+            : undefined
+        }
       />
 
       {/* ── Table ── */}
@@ -1415,7 +1582,12 @@ export function DueDiligenceTableView() {
                 {filteredRows.map((row, index) => {
                   const rowSelected = selectedRowSet.has(row.id)
                   return (
-                    <tr key={row.id} className="group hover:bg-red-50/30">
+                    <ContextMenu key={row.id}>
+                      <ContextMenuTrigger asChild>
+                    <tr
+                      className="group hover:bg-red-50/30"
+                      onContextMenu={() => handleRowContextMenu(row.id)}
+                    >
                     <td
                       title="点击选择整行，Shift+点击扩展"
                       onMouseDown={(e) => handleSelectRow(row.id, e)}
@@ -1631,6 +1803,28 @@ export function DueDiligenceTableView() {
                       })()}
                     </td>
                     </tr>
+                      </ContextMenuTrigger>
+                      <ContextMenuContent className="w-40">
+                        <ContextMenuItem onClick={() => handleInsertRows(row.id, "above")}>
+                          <Plus className="h-3.5 w-3.5" />
+                          在上方插入行
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={() => handleInsertRows(row.id, "below")}>
+                          <Plus className="h-3.5 w-3.5" />
+                          在下方插入行
+                        </ContextMenuItem>
+                        <ContextMenuSeparator />
+                        <ContextMenuItem
+                          variant="destructive"
+                          onClick={() => handleDeleteRows(rowMenuTargetRef.current.deleteIds)}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          {rowMenuDeleteCount > 1
+                            ? `删除 ${rowMenuDeleteCount} 行`
+                            : "删除行"}
+                        </ContextMenuItem>
+                      </ContextMenuContent>
+                    </ContextMenu>
                   )
                 })}
               </tbody>

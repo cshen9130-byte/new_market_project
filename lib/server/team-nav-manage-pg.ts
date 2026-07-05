@@ -76,6 +76,34 @@ export async function loadManualTeamNavBatch(
   return out
 }
 
+/** Team NAV series keyed by beian for managed-product overrides (detail-page stream). */
+export async function loadManagedProductTeamNavBatch(
+  items: Array<{ beian_hao: string; product_name: string; short_name?: string | null }>,
+): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
+  const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  if (items.length === 0) return out
+
+  const entries = await Promise.all(
+    items.map(async (item) => {
+      const series = await loadManagedProductNavSeries({
+        beian_hao: item.beian_hao,
+        product_name: item.product_name,
+        short_name: item.short_name ?? null,
+      })
+      return [
+        item.beian_hao,
+        series.map((row) => ({
+          nav_date: row.price_date.slice(0, 10),
+          unit_nav: row.nav,
+        })),
+      ] as const
+    }),
+  )
+
+  for (const [beian_hao, rows] of entries) out.set(beian_hao, rows)
+  return out
+}
+
 /** Post-seed NAV extensions for managed-product overrides (email + manual team). */
 export async function loadManagedProductPostSeedExtensions(
   beianHaos: string[],

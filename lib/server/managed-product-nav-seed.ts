@@ -77,6 +77,22 @@ export type ManagedListNavPoint = {
   prev_nav: string | null
 }
 
+/** Latest NAV on or before asOfDate from team/email rows (no xlsx seed). */
+export function resolveTeamSeriesListNavAt(
+  rows: Array<{ nav_date: string; unit_nav: string }>,
+  asOfDate: string,
+): ManagedListNavPoint | null {
+  const merged = rows
+    .map((row) => ({ nav_date: row.nav_date.slice(0, 10), nav: row.unit_nav }))
+    .filter((row) => row.nav_date <= asOfDate)
+    .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+
+  if (merged.length === 0) return null
+  const best = merged[merged.length - 1]
+  const prev = merged.length > 1 ? merged[merged.length - 2].nav : null
+  return { nav: best.nav, nav_date: best.nav_date, prev_nav: prev }
+}
+
 /** Latest NAV on or before asOfDate — seed through its last date, then team/manual extensions. */
 export function resolveManagedProductListNavAt(
   beianHao: string,

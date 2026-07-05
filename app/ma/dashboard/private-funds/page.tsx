@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSProperties, type MouseEvent, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
+import Link from "next/link"
 import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
@@ -22661,9 +22662,12 @@ function PrivateFundManagersView() {
               <tr key={row.id} className="border-b hover:bg-muted/30 transition-colors">
                 <td className={tdBase}>{row.seq_no ?? (page - 1) * pageSize + idx + 1}</td>
                 <td className={tdBase}>
-                  <span className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer">
+                  <Link
+                    href={`/ma/dashboard/private-funds/managers/${encodeURIComponent(row.registration_no)}`}
+                    className="text-blue-600 dark:text-blue-400 hover:underline"
+                  >
                     {row.manager_name}
-                  </span>
+                  </Link>
                 </td>
                 <td className={tdBase}><StrategyTags value={row.core_strategy} /></td>
                 <td className={tdBase}>{fmtMgrCell(row.mgmt_scale)}</td>
@@ -22685,9 +22689,13 @@ function PrivateFundManagersView() {
                     >
                       <Heart className={`h-3.5 w-3.5 ${favorites.has(row.id) ? "fill-red-500 text-red-500" : ""}`} />
                     </button>
-                    <button className="text-muted-foreground hover:text-foreground transition-colors opacity-50 cursor-not-allowed" title="查看" disabled>
+                    <Link
+                      href={`/ma/dashboard/private-funds/managers/${encodeURIComponent(row.registration_no)}`}
+                      className="text-muted-foreground hover:text-foreground transition-colors"
+                      title="查看"
+                    >
                       <Eye className="h-3.5 w-3.5" />
-                    </button>
+                    </Link>
                   </div>
                 </td>
               </tr>

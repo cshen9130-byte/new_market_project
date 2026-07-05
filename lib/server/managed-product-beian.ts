@@ -8,6 +8,8 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   荣熙恒盈2号: "SBAH99",
   抱朴聚融祥和一号: "SSG947",
   衡颐海泰1号: "SBPU97",
+  衡颐海宸1号: "SBPC69",
+  衡颐承和FOF1号: "SBTX45",
   木莲安澜1号A类: "ATL22A",
 }
 
@@ -22,6 +24,8 @@ export const MANAGED_PRODUCT_CUSTODIAN_OVERRIDES: Readonly<Record<string, string
 const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   S52247: "SSG947",
   SBP097: "SBPU97",
+  SBFC69: "SBPC69",
+  SBHX45: "SBTX45",
 }
 
 /** Parent managed-product name must not swallow A/B/C share-class variants. */

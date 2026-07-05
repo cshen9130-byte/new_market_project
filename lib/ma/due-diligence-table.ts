@@ -229,6 +229,28 @@ export function createDueDiligenceTableRow(
   }
 }
 
+export function insertDueDiligenceTableRowsAt(
+  rows: DueDiligenceTableRow[],
+  rowId: string,
+  position: "above" | "below",
+  count = 1,
+): DueDiligenceTableRow[] {
+  const index = rows.findIndex((row) => row.id === rowId)
+  if (index < 0) return rows
+  const insertIndex = position === "above" ? index : index + 1
+  const newRows = Array.from({ length: count }, () => createDueDiligenceTableRow())
+  return [...rows.slice(0, insertIndex), ...newRows, ...rows.slice(insertIndex)]
+}
+
+export function deleteDueDiligenceTableRows(
+  rows: DueDiligenceTableRow[],
+  rowIds: string[],
+): DueDiligenceTableRow[] {
+  if (rowIds.length === 0) return rows
+  const deleteSet = new Set(rowIds)
+  return rows.filter((row) => !deleteSet.has(row.id))
+}
+
 export function updateDueDiligenceTableRow(
   rows: DueDiligenceTableRow[],
   id: string,

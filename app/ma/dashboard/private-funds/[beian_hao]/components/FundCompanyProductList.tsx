@@ -106,9 +106,14 @@ function FilterPill({
 
 export const FundCompanyProductList = memo(function FundCompanyProductList({
   beian_hao,
+  registrationNo,
 }: {
-  beian_hao: string
+  beian_hao?: string
+  registrationNo?: string
 }) {
+  const productsApiUrl = registrationNo
+    ? `/ma/api/private-fund-managers/${encodeURIComponent(registrationNo)}/products`
+    : `/ma/api/private-funds/${encodeURIComponent(beian_hao ?? "")}/company/products`
   const [data, setData] = useState<ProductRow[]>([])
   const [total, setTotal] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
@@ -148,7 +153,7 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
     if (keyword) params.set("keyword", keyword)
     if (strategy !== "全部") params.set("strategy", strategy)
 
-    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/company/products?${params}`)
+    fetch(`${productsApiUrl}?${params}`)
       .then(async (res) => {
         if (!res.ok) throw new Error("加载失败")
         return res.json()
@@ -166,7 +171,7 @@ export const FundCompanyProductList = memo(function FundCompanyProductList({
         setTotalPages(1)
       })
       .finally(() => setLoading(false))
-  }, [beian_hao, page, pageSize, sortKey, sortDir, keyword, strategy, cutoffDate])
+  }, [productsApiUrl, page, pageSize, sortKey, sortDir, keyword, strategy, cutoffDate])
 
   useEffect(() => { loadData() }, [loadData])
   useEffect(() => { setPage(1) }, [keyword, strategy, mgmtType, operatingOnly, cutoffDate, pageSize])

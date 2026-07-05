@@ -21,14 +21,15 @@ import {
   loadOpsStrategyAndTags,
   loadPrivateFundRiskMetrics,
 } from "@/lib/server/list-cache-nav-batch"
-import { resolveManagedProductBeian, lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { resolveManagedProductBeian, lookupManagedProductOverride, MANAGED_PRODUCT_BEIAN_OVERRIDES } from "@/lib/server/managed-product-beian"
 import {
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
   resolveManagedProductListNavAt,
+  resolveTeamSeriesListNavAt,
 } from "@/lib/server/managed-product-nav-seed"
 import { managedShortExpr } from "@/lib/server/managed-products-nav-query"
-import { loadManagedProductPostSeedExtensions } from "@/lib/server/team-nav-manage-pg"
+import { loadManagedProductPostSeedExtensions, loadManagedProductTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 import {
   loadEmailFundMetricsLookup,
   resolveEmailFundMetrics,
@@ -131,20 +132,13 @@ export async function refreshManagedProductsListCache(): Promise<number> {
   }))
   const navResolver = await BatchNavResolver.create(identities, asOfDate)
 
-  const overrideBeians = [
-    ...new Set(
-      products
-        .map((p) => {
-          const beian = resolveManagedProductBeian(p.product_name, p.beian_hao)
-          const override =
-            lookupManagedProductOverride(p.product_name)
-            ?? (beian ? lookupManagedProductOverride(beian) : null)
-          return override?.beian_hao ?? null
-        })
-        .filter(Boolean) as string[],
-    ),
-  ]
-  const postSeedByBeian = await loadManagedProductPostSeedExtensions(overrideBeians)
+  const overrideItems = Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES).map(
+    ([product_name, beian_hao]) => ({ product_name, beian_hao }),
+  )
+  const [postSeedByBeian, fullTeamByBeian] = await Promise.all([
+    loadManagedProductPostSeedExtensions(Object.values(MANAGED_PRODUCT_BEIAN_OVERRIDES)),
+    loadManagedProductTeamNavBatch(overrideItems),
+  ])
 
   const beianHaos = products.map((p) => p.beian_hao).filter(Boolean) as string[]
   logProgress("loading strategy & risk metadata…")
@@ -189,11 +183,16 @@ export async function refreshManagedProductsListCache(): Promise<number> {
       ?? (beian ? lookupManagedProductOverride(beian) : null)
 
     if (managedOverride) {
-      const listPoint = resolveManagedProductListNavAt(
-        managedOverride.beian_hao,
-        asOfDate,
-        postSeedByBeian.get(managedOverride.beian_hao) ?? [],
-      )
+      const listPoint =
+        resolveManagedProductListNavAt(
+          managedOverride.beian_hao,
+          asOfDate,
+          postSeedByBeian.get(managedOverride.beian_hao) ?? [],
+        )
+        ?? resolveTeamSeriesListNavAt(
+          fullTeamByBeian.get(managedOverride.beian_hao) ?? [],
+          asOfDate,
+        )
       if (listPoint) {
         unitNav = parseFloat(listPoint.nav)
         navDate = listPoint.nav_date
