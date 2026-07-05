@@ -5,7 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation"
 import { BookOpen, Bot, Camera, ChevronDown, Crosshair, FileText, Loader2, PanelLeftClose, PanelLeftOpen, Send, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ChatBotDocPanel } from "@/components/chat-bot-doc-panel"
-import { CHAT_DOC_READER_WIDTH, getChatDocPanelWidth } from "@/lib/ma/chat-documents"
+import { CHAT_DOC_READER_WIDTH, getChatDocPanelWidth, MA_CHAT_OPEN_DOCUMENTS_EVENT, consumePendingMaChatDocuments, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
 import { getActiveDocumentContext, useChatDocuments } from "@/hooks/use-chat-documents"
 import { authService } from "@/lib/auth"
 import {
@@ -117,6 +117,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     documents,
     activeDocId,
     setActiveDocId,
+    addKbDocument,
     addLocalFile,
     handleDataTransfer,
     removeDocument,
@@ -168,6 +169,31 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     authService.init()
     setCanUseKnowledge(canAccessAiKnowledge(authService.getCurrentUser()))
   }, [])
+
+  const loadKbDocumentsIntoPanel = useCallback(
+    (payloads: MaChatKbDocumentPayload[]) => {
+      if (payloads.length === 0) return
+      for (const payload of payloads) addKbDocument(payload)
+      setDocsPanelOpen(true)
+      setMode("chat")
+    },
+    [addKbDocument],
+  )
+
+  useEffect(() => {
+    function onOpenDocuments(event: Event) {
+      const detail = (event as CustomEvent<{ documents?: MaChatKbDocumentPayload[] }>).detail
+      if (detail?.documents?.length) loadKbDocumentsIntoPanel(detail.documents)
+    }
+    window.addEventListener(MA_CHAT_OPEN_DOCUMENTS_EVENT, onOpenDocuments)
+    return () => window.removeEventListener(MA_CHAT_OPEN_DOCUMENTS_EVENT, onOpenDocuments)
+  }, [loadKbDocumentsIntoPanel])
+
+  useEffect(() => {
+    if (!visible) return
+    const pending = consumePendingMaChatDocuments()
+    if (pending?.length) loadKbDocumentsIntoPanel(pending)
+  }, [visible, loadKbDocumentsIntoPanel])
 
   useEffect(() => {
     kbConversationIdRef.current = null

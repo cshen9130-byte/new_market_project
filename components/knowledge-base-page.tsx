@@ -794,7 +794,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }, [router])
 
   useEffect(() => {
-    const initialFolder = initialFolderFromUrlRef.current
+    const initialFolder = searchParams.get("folder")?.trim() || initialFolderFromUrlRef.current
     if (!tree || !initialFolder) return
     const found = findFolderByPath(tree, initialFolder)
     if (!found) return
@@ -803,7 +803,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     setPreviewMode("empty")
     setPreviewContent("")
     initialFolderFromUrlRef.current = null
-  }, [tree])
+  }, [tree, searchParams])
 
   useEffect(() => {
     if (variant !== "traditional" || userScrolledRef.current) {

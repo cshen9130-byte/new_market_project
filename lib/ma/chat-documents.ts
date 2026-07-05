@@ -1,6 +1,38 @@
 /** MIME type for dragging knowledge-base / 尽调资料 files into the AI assistant. */
 export const MA_CHAT_DOCUMENT_MIME = "application/x-ma-chat-document"
 
+/** Open the page AI assistant and load KB documents. */
+export const MA_CHAT_OPEN_DOCUMENTS_EVENT = "ma-chat-open-documents"
+/** Show the page AI assistant (handled by dashboard layout). */
+export const MA_CHAT_VISIBLE_EVENT = "ma-chat-visible"
+
+export type MaChatOpenDocumentsDetail = {
+  documents: MaChatKbDocumentPayload[]
+}
+
+let pendingOpenDocuments: MaChatKbDocumentPayload[] | null = null
+
+export function dispatchMaChatOpenDocuments(documents: MaChatKbDocumentPayload[]) {
+  if (documents.length === 0) return
+  pendingOpenDocuments = documents
+  window.dispatchEvent(
+    new CustomEvent<MaChatOpenDocumentsDetail>(MA_CHAT_OPEN_DOCUMENTS_EVENT, {
+      detail: { documents },
+    }),
+  )
+  window.dispatchEvent(
+    new CustomEvent<{ visible: boolean }>(MA_CHAT_VISIBLE_EVENT, {
+      detail: { visible: true },
+    }),
+  )
+}
+
+export function consumePendingMaChatDocuments(): MaChatKbDocumentPayload[] | null {
+  const docs = pendingOpenDocuments
+  pendingOpenDocuments = null
+  return docs
+}
+
 export type MaChatKbDocumentPayload = {
   type: "kb-document"
   name: string

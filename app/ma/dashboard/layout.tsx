@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 import { DashboardHeader } from "@/components/dashboard-header"
 import { ChatBotWidget } from "@/components/chat-bot-widget"
 import { authService, type User } from "@/lib/auth"
+import { MA_CHAT_VISIBLE_EVENT } from "@/lib/ma/chat-documents"
 import { canAccessAiKnowledge } from "@/lib/permissions"
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -18,6 +19,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [user, setUser] = useState<User | null>(null)
   const [chatVisible, setChatVisible] = useState(false)
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false)
+
+  useEffect(() => {
+    function onChatVisible(event: Event) {
+      const detail = (event as CustomEvent<{ visible?: boolean }>).detail
+      if (detail?.visible) setChatVisible(true)
+    }
+    window.addEventListener(MA_CHAT_VISIBLE_EVENT, onChatVisible)
+    return () => window.removeEventListener(MA_CHAT_VISIBLE_EVENT, onChatVisible)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
