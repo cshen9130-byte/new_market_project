@@ -54,15 +54,16 @@ export function ChatBotDocPanel({
   function shouldUseIframePreview(doc: MaChatDocumentItem): boolean {
     const src = previewSrc(doc)
     if (!src || !canPreviewChatDocument(doc.name, doc.canPreview)) return false
+    const ext = doc.extension.toLowerCase() || getFileExtension(doc.name)
+    // Office / text docs use extracted text for full-width reading in the panel.
+    if ([".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".markdown", ".csv", ".json", ".log"].includes(ext)) {
+      return false
+    }
     if (doc.source === "kb") {
-      const ext = doc.extension.toLowerCase() || getFileExtension(doc.name)
       if ([".pdf", ".html", ".htm"].includes(ext)) return true
     }
     if (doc.source === "local") {
-      const ext = doc.extension.toLowerCase()
-      if ([".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".markdown", ".csv", ".json", ".log"].includes(ext)) {
-        return false
-      }
+      return true
     }
     return true
   }
@@ -173,11 +174,8 @@ export function ChatBotDocPanel({
         </div>
       </div>
 
-      {/* Full-height reader column */}
-      <div
-        className="relative flex min-w-0 flex-col bg-background"
-        style={{ width: readerWidth }}
-      >
+      {/* Full-height reader column — grows to fill remaining doc panel width */}
+      <div className="relative flex min-w-0 flex-1 flex-col bg-background">
         {activeDoc ? (
           <>
             <div className="flex shrink-0 items-center gap-2 border-b bg-muted/30 px-2 py-1.5">
@@ -221,18 +219,14 @@ export function ChatBotDocPanel({
             </div>
             <div className="relative min-h-0 flex-1">
               {canIframePreview ? (
-                <div className="absolute inset-0 overflow-auto bg-zinc-100">
-                  <div
-                    className="min-h-full min-w-full origin-top-left bg-white"
+                <div className="absolute inset-0 overflow-auto bg-white">
+                  <iframe
+                    key={activeDoc.id}
+                    src={previewSrc(activeDoc)!}
+                    title={activeDoc.name}
+                    className="block h-full min-h-full w-full border-0 bg-white"
                     style={{ zoom: previewZoom / 100 }}
-                  >
-                    <iframe
-                      key={activeDoc.id}
-                      src={previewSrc(activeDoc)!}
-                      title={activeDoc.name}
-                      className="block h-full min-h-[100%] w-full min-w-full border-0 bg-white"
-                    />
-                  </div>
+                  />
                 </div>
               ) : activeDoc.textLoading ? (
                 <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
@@ -240,13 +234,13 @@ export function ChatBotDocPanel({
                   正在读取文档…
                 </div>
               ) : activeDoc.textContent ? (
-                <div className="absolute inset-0 overflow-auto bg-background p-4">
-                  <pre
-                    className="whitespace-pre-wrap text-left leading-relaxed text-foreground origin-top-left"
-                    style={{ fontSize: `${12 * (previewZoom / 100)}px` }}
+                <div className="absolute inset-0 overflow-auto bg-background">
+                  <article
+                    className="w-full max-w-none px-5 py-4 text-left leading-7 text-foreground whitespace-pre-wrap break-words"
+                    style={{ fontSize: `${14 * (previewZoom / 100)}px` }}
                   >
                     {activeDoc.textContent}
-                  </pre>
+                  </article>
                 </div>
               ) : (
                 <div className="flex h-full items-center justify-center px-4 text-center text-xs text-muted-foreground">

@@ -123,8 +123,8 @@ export function computeMaChatOpenLayout() {
   const listW = CHAT_DOC_LIST_WIDTH
   const maxH = Math.min(720, Math.round(window.innerHeight * 0.82))
   const maxTotalW = window.innerWidth - margin * 2
-  let readerW = 520
-  let chatW = 380
+  let readerW = 640
+  let chatW = 340
   let totalW = chatW + listW + readerW
   if (totalW > maxTotalW) {
     readerW = Math.max(CHAT_DOC_READER_MIN_WIDTH, readerW - (totalW - maxTotalW))

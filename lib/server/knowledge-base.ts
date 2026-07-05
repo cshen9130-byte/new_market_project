@@ -946,7 +946,11 @@ async function readChatDocumentText(absolutePath: string, extension: string) {
     const buffer = await fs.readFile(absolutePath)
     try {
       const parsed = await mammoth.extractRawText({ buffer })
-      const text = parsed.value.replace(/\s+/g, " ").trim()
+      const text = parsed.value
+        .replace(/\r\n/g, "\n")
+        .replace(/[ \t\f\v]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim()
       if (text) return text
     } catch {
       // Fall through to word-extractor for misidentified .doc files
@@ -1010,11 +1014,32 @@ function buildKnowledgeBasePreviewHtml(title: string, body: string) {
       }
       body {
         margin: 0;
-        padding: 24px;
+        padding: 16px 20px;
         background: #ffffff;
         color: #111827;
         line-height: 1.6;
         word-break: break-word;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      .doc-preview-root {
+        width: 100%;
+        max-width: none;
+      }
+      .doc-preview-root * {
+        max-width: 100% !important;
+        box-sizing: border-box;
+      }
+      .doc-preview-root p,
+      .doc-preview-root div,
+      .doc-preview-root section,
+      .doc-preview-root li,
+      .doc-preview-root ul,
+      .doc-preview-root ol {
+        width: 100% !important;
+        margin-left: 0 !important;
+        padding-left: 0 !important;
+        text-align: left !important;
       }
       h1, h2, h3, h4, h5, h6 {
         margin: 0 0 12px;
@@ -1050,7 +1075,7 @@ function buildKnowledgeBasePreviewHtml(title: string, body: string) {
       }
     </style>
   </head>
-  <body>${body}</body>
+  <body><div class="doc-preview-root">${body}</div></body>
 </html>`
 }
 
