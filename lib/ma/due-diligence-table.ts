@@ -47,26 +47,28 @@ export type DueDiligenceTableColumn = {
   /** Fixed pixel width for table-layout:fixed */
   width: number
   multiline?: boolean
+  /** Show full cell text in a hover card when truncated */
+  hoverPreview?: boolean
 }
 
 export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
-  { key: "ddPersonnel",        label: "尽调人员",      width: 68 },
+  { key: "ddPersonnel",        label: "尽调人员",      width: 68, hoverPreview: true },
   { key: "ddDate",             label: "尽调日期",      width: 80 },
   { key: "ddTime",             label: "尽调时间",      width: 56 },
   { key: "ddMethod",           label: "尽调形式",      width: 72 },
-  { key: "ddTarget",           label: "尽调对象",      width: 110 },
-  { key: "recommender",        label: "推荐人",        width: 60 },
+  { key: "ddTarget",           label: "尽调对象",      width: 110, hoverPreview: true },
+  { key: "recommender",        label: "推荐人",        width: 60, hoverPreview: true },
   { key: "strategyPreliminary",label: "策略初筛",      width: 68 },
-  { key: "fundCompany",        label: "基金公司",      width: 90 },
-  { key: "investmentManager",  label: "投资经理",      width: 90 },
+  { key: "fundCompany",        label: "基金公司",      width: 90, hoverPreview: true },
+  { key: "investmentManager",  label: "投资经理",      width: 90, hoverPreview: true },
   { key: "representativeProduct", label: "代表产品",   width: 100 },
   { key: "strategyLevel1",     label: "一级策略",      width: 68 },
   { key: "strategyLevel2",     label: "二级策略",      width: 68 },
   { key: "strategyLevel3",     label: "三级策略",      width: 90 },
   { key: "inTrackingPool",     label: "已加入跟踪池", width: 130 },
   { key: "ddMaterials",        label: "尽调材料",      width: 84 },
-  { key: "otherInfo",          label: "其他补充信息",  width: 150, multiline: true },
-  { key: "ddConclusion",       label: "尽调结论",      width: 200, multiline: true },
+  { key: "otherInfo",          label: "其他补充信息",  width: 150, multiline: true, hoverPreview: true },
+  { key: "ddConclusion",       label: "尽调结论",      width: 200, multiline: true, hoverPreview: true },
 ]
 
 export const TABLE_INDEX_WIDTH = 36

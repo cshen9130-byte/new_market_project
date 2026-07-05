@@ -2,15 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react"
 import { createPortal } from "react-dom"
-import { Bot, ExternalLink, FileText, GripVertical, Loader2, X } from "lucide-react"
+import { Bot, ExternalLink, FileText, GripVertical, Loader2, Pencil, X } from "lucide-react"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsDocument } from "@/lib/ma/due-diligence-materials"
 import {
   buildDdMaterialsFileUrl,
   buildDdMaterialsKbUrl,
   buildDdMaterialsPreviewUrl,
+  isDdMaterialsEditable,
 } from "@/lib/ma/due-diligence-materials"
 import { dispatchMaChatOpenDocuments, MA_CHAT_DOCUMENT_MIME, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
+import { DdMaterialsFileEditor } from "./DdMaterialsFileEditor"
 
 const FRAME_PREVIEW_EXTENSIONS = new Set([".pdf", ".html", ".htm"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
@@ -78,13 +80,14 @@ function formatToStyle(format: CellFormat): CSSProperties {
   return style
 }
 
-function previewSrc(document: DdMaterialsDocument): string {
+function previewSrc(document: DdMaterialsDocument, revision = 0): string {
   const ext = document.extension.toLowerCase()
+  const cacheBust = revision > 0 ? `&_=${revision}` : ""
   if (FRAME_PREVIEW_EXTENSIONS.has(ext) || IMAGE_PREVIEW_EXTENSIONS.has(ext)) {
-    return buildDdMaterialsFileUrl(document.relativePath)
+    return `${buildDdMaterialsFileUrl(document.relativePath)}${cacheBust}`
   }
-  if (document.canPreview) return buildDdMaterialsPreviewUrl(document.relativePath)
-  return buildDdMaterialsFileUrl(document.relativePath)
+  if (document.canPreview) return `${buildDdMaterialsPreviewUrl(document.relativePath)}${cacheBust}`
+  return `${buildDdMaterialsFileUrl(document.relativePath)}${cacheBust}`
 }
 
 function shouldUseIframePreview(document: DdMaterialsDocument): boolean {
@@ -136,6 +139,8 @@ export function DdMaterialsCell({
   const [open, setOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
   const [previewDoc, setPreviewDoc] = useState<DdMaterialsDocument | null>(null)
+  const [editingDoc, setEditingDoc] = useState<DdMaterialsDocument | null>(null)
+  const [previewRevision, setPreviewRevision] = useState(0)
   const [dialogSize, setDialogSize] = useState(defaultDialogSize)
   const [dialogPos, setDialogPos] = useState({ x: 0, y: 0 })
   const dragRef = useRef<{ px: number; py: number; ox: number; oy: number } | null>(null)
@@ -262,7 +267,18 @@ export function DdMaterialsCell({
   function closePanel() {
     suppressOpenUntilRef.current = Date.now() + 400
     setPreviewDoc(null)
+    setEditingDoc(null)
     setOpen(false)
+  }
+
+  function selectPreviewDoc(doc: DdMaterialsDocument) {
+    setPreviewDoc(doc)
+    setEditingDoc(null)
+  }
+
+  function startEditing() {
+    if (!previewDoc || !isDdMaterialsEditable(previewDoc)) return
+    setEditingDoc(previewDoc)
   }
 
   function openModal(event: MouseEvent) {
@@ -342,6 +358,20 @@ export function DdMaterialsCell({
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {previewDoc && isDdMaterialsEditable(previewDoc) && !editingDoc && (
+                    <button
+                      type="button"
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        startEditing()
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border bg-background text-xs hover:bg-muted transition-colors"
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                      编辑
+                    </button>
+                  )}
                   {documents.length > 0 && (
                     <button
                       type="button"
@@ -402,7 +432,7 @@ export function DdMaterialsCell({
                             draggable
                             onDragStart={(event) => onDocumentDragStart(event, doc)}
                             onMouseDown={(event) => event.stopPropagation()}
-                            onClick={() => setPreviewDoc(doc)}
+                            onClick={() => selectPreviewDoc(doc)}
                             className={[
                               "w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors cursor-grab active:cursor-grabbing",
                               active ? "bg-blue-50/70" : "",
@@ -430,30 +460,39 @@ export function DdMaterialsCell({
                 </div>
 
                 <div className="flex-1 min-w-0 flex flex-col bg-zinc-50">
-                  {previewDoc ? (
+                  {editingDoc ? (
+                    <DdMaterialsFileEditor
+                      document={editingDoc}
+                      onClose={() => setEditingDoc(null)}
+                      onSaved={() => {
+                        setPreviewRevision((current) => current + 1)
+                        setEditingDoc(null)
+                      }}
+                    />
+                  ) : previewDoc ? (
                     <>
                       <div className="px-4 py-2 border-b bg-white text-xs text-muted-foreground truncate shrink-0">
                         {previewDoc.name}
                       </div>
                       {shouldUseIframePreview(previewDoc) ? (
                         <iframe
-                          key={previewDoc.relativePath}
-                          src={previewSrc(previewDoc)}
+                          key={`${previewDoc.relativePath}-${previewRevision}`}
+                          src={previewSrc(previewDoc, previewRevision)}
                           title={previewDoc.name}
                           className="flex-1 w-full min-h-0 border-0 bg-white"
                         />
                       ) : IMAGE_PREVIEW_EXTENSIONS.has(previewDoc.extension.toLowerCase()) ? (
                         <div className="flex-1 min-h-0 overflow-auto flex items-center justify-center bg-zinc-100 p-4">
                           <img
-                            src={previewSrc(previewDoc)}
+                            src={previewSrc(previewDoc, previewRevision)}
                             alt={previewDoc.name}
                             className="max-h-full max-w-full object-contain"
                           />
                         </div>
                       ) : (
                         <iframe
-                          key={previewDoc.relativePath}
-                          src={previewSrc(previewDoc)}
+                          key={`${previewDoc.relativePath}-${previewRevision}`}
+                          src={previewSrc(previewDoc, previewRevision)}
                           title={previewDoc.name}
                           className="flex-1 w-full min-h-0 border-0 bg-white"
                         />

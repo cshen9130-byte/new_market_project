@@ -666,8 +666,29 @@ function EditableCell({
         : "border-transparent",
   ].join(" ")
 
+  const hoverPreviewActive = showHoverPreview && value.trim() && !isActive
+
+  const wrapHoverPreview = (control: ReactNode) => {
+    if (!hoverPreviewActive) return control
+    return (
+      <HoverCard openDelay={200} closeDelay={100}>
+        <HoverCardTrigger asChild>
+          <div className="w-full cursor-default">{control}</div>
+        </HoverCardTrigger>
+        <HoverCardContent
+          side="left"
+          align="start"
+          sideOffset={8}
+          className="pointer-events-none w-auto max-w-md max-h-80 overflow-y-auto border border-zinc-200 bg-white p-3 text-xs leading-relaxed text-zinc-800 shadow-lg whitespace-pre-wrap"
+        >
+          {value}
+        </HoverCardContent>
+      </HoverCard>
+    )
+  }
+
   if (multiline) {
-    const textarea = (
+    return wrapHoverPreview(
       <textarea
         data-cell={cellId}
         value={value}
@@ -676,30 +697,11 @@ function EditableCell({
         onChange={(e) => onChange(e.target.value)}
         onFocus={onActivate}
         className={`${baseClass} resize-y leading-snug py-0.5 min-h-[2.25rem]`}
-      />
+      />,
     )
-
-    if (showHoverPreview && value.trim() && !isActive) {
-      return (
-        <HoverCard openDelay={200} closeDelay={100}>
-          <HoverCardTrigger asChild>
-            <div className="w-full cursor-default">{textarea}</div>
-          </HoverCardTrigger>
-          <HoverCardContent
-            side="left"
-            align="start"
-            sideOffset={8}
-            className="pointer-events-none w-auto max-w-md max-h-80 overflow-y-auto border border-zinc-200 bg-white p-3 text-xs leading-relaxed text-zinc-800 shadow-lg whitespace-pre-wrap"
-          >
-            {value}
-          </HoverCardContent>
-        </HoverCard>
-      )
-    }
-
-    return textarea
   }
-  return (
+
+  return wrapHoverPreview(
     <input
       type="text"
       data-cell={cellId}
@@ -707,8 +709,8 @@ function EditableCell({
       style={style}
       onChange={(e) => onChange(e.target.value)}
       onFocus={onActivate}
-      className={`${baseClass} h-7 py-0`}
-    />
+      className={`${baseClass} h-7 py-0 ${showHoverPreview ? "truncate" : ""}`}
+    />,
   )
 }
 
@@ -2278,7 +2280,7 @@ export function DueDiligenceTableView() {
                                 format={fmt}
                                 isActive={isActive}
                                 isSelected={isSelected}
-                                showHoverPreview
+                                showHoverPreview={col.hoverPreview}
                                 onActivate={() => {
                                   setFocusCell({ rowId: row.id, colKey: col.key })
                                   setSelection({
@@ -2299,6 +2301,7 @@ export function DueDiligenceTableView() {
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
+                              showHoverPreview={col.hoverPreview}
                               onActivate={() => {
                                 setFocusCell({ rowId: row.id, colKey: col.key })
                                 setSelection({

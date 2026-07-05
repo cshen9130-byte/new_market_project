@@ -6,6 +6,8 @@ import {
   normalizeKnowledgeBasePath,
   renameKnowledgeBaseFile,
   readKnowledgeBasePreviewContent,
+  readKnowledgeBaseEditableText,
+  writeKnowledgeBaseEditableText,
 } from "@/lib/server/knowledge-base"
 import { getUserById } from "@/lib/server/users"
 import { syncVectorStoreForScope, evictMemoryCache } from "@/lib/server/knowledge-chat"
@@ -28,6 +30,17 @@ export async function GET(req: Request) {
 
     const download = searchParams.get("download") === "1"
     const preview = searchParams.get("preview") === "1"
+    const text = searchParams.get("text") === "1"
+
+    if (text) {
+      const editableText = await readKnowledgeBaseEditableText(relativePath)
+      return new NextResponse(editableText, {
+        headers: {
+          "Cache-Control": "no-store",
+          "Content-Type": "text/plain; charset=utf-8",
+        },
+      })
+    }
 
     if (preview) {
       const previewContent = await readKnowledgeBasePreviewContent(relativePath)
@@ -118,6 +131,44 @@ export async function PATCH(req: Request) {
   } catch (error: any) {
     const message = error?.message || String(error)
     const status = message.includes("只有上传者可以重命名") || message.includes("缺少归属信息") ? 403 : 500
+    return NextResponse.json({ ok: false, error: message }, { status })
+  }
+}
+
+export async function PUT(req: Request) {
+  try {
+    const userId = String(req.headers.get("x-market-user-id") || "").trim()
+    const currentUser = userId ? await getUserById(userId) : null
+    if (!currentUser) {
+      return NextResponse.json({ ok: false, error: "请先登录后再编辑文件" }, { status: 401 })
+    }
+
+    const body = await req.json().catch(() => ({}))
+    const relativePath = normalizeKnowledgeBasePath(body?.path)
+    const content = typeof body?.content === "string" ? body.content : null
+
+    if (!relativePath) {
+      return NextResponse.json({ ok: false, error: "缺少文件路径" }, { status: 400 })
+    }
+    if (content === null) {
+      return NextResponse.json({ ok: false, error: "缺少文件内容" }, { status: 400 })
+    }
+
+    const updated = await writeKnowledgeBaseEditableText(
+      relativePath,
+      content,
+      currentUser.id,
+      currentUser.role === "admin",
+    )
+
+    evictMemoryCache(relativePath)
+    const parentFolder = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : ""
+    void Promise.allSettled([syncVectorStoreForScope(""), syncVectorStoreForScope(parentFolder)])
+
+    return NextResponse.json({ ok: true, file: updated })
+  } catch (error: any) {
+    const message = error?.message || String(error)
+    const status = message.includes("只有上传者可以编辑") || message.includes("缺少归属信息") ? 403 : 500
     return NextResponse.json({ ok: false, error: message }, { status })
   }
 }

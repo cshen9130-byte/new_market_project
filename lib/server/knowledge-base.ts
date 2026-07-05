@@ -1,3 +1,4 @@
+import AdmZip from "adm-zip"
 import { execFile } from "child_process"
 import { createHash } from "crypto"
 import { createReadStream, promises as fs } from "fs"
@@ -81,6 +82,7 @@ const OWNERSHIP_STORAGE_DIR = getServerStoragePath("ai-knowledge-base-metadata")
 const OWNERSHIP_FILE = path.join(OWNERSHIP_STORAGE_DIR, "file-owners.json")
 
 const TEXT_PREVIEW_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".doc", ".docx", ".xls", ".xlsx"])
+const EDITABLE_TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".docx"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
 const FRAME_PREVIEW_EXTENSIONS = new Set([".html", ".htm", ".pdf"])
 const CHAT_EXTENSIONS = new Set([...TEXT_PREVIEW_EXTENSIONS, ".html", ".htm", ".pdf"])
@@ -337,6 +339,10 @@ function getExtension(fileName: string) {
 
 export function isKnowledgeBaseTextPreview(extension: string) {
   return TEXT_PREVIEW_EXTENSIONS.has(extension)
+}
+
+export function isKnowledgeBaseEditableText(extension: string) {
+  return EDITABLE_TEXT_EXTENSIONS.has(extension.toLowerCase())
 }
 
 export function isKnowledgeBaseImagePreview(extension: string) {
@@ -1181,6 +1187,135 @@ export async function readKnowledgeBasePreviewContent(relativePath: string) {
   return {
     content: text,
     contentType: "text/plain; charset=utf-8",
+  }
+}
+
+function escapeXml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+function buildDocxBufferFromPlainText(text: string): Buffer {
+  const paragraphs = text.replace(/\r\n/g, "\n").split("\n")
+  const bodyXml = paragraphs
+    .map((paragraph) => {
+      if (!paragraph) return "<w:p/>"
+      return `<w:p><w:r><w:t xml:space="preserve">${escapeXml(paragraph)}</w:t></w:r></w:p>`
+    })
+    .join("")
+
+  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>${bodyXml}</w:body>
+</w:document>`
+
+  const zip = new AdmZip()
+  zip.addFile(
+    "[Content_Types].xml",
+    Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>`),
+  )
+  zip.addFile(
+    "_rels/.rels",
+    Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>`),
+  )
+  zip.addFile(
+    "word/_rels/document.xml.rels",
+    Buffer.from(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>`),
+  )
+  zip.addFile("word/document.xml", Buffer.from(documentXml, "utf8"))
+  return zip.toBuffer()
+}
+
+export async function readKnowledgeBaseEditableText(relativePath: string) {
+  const file = await getKnowledgeBaseFile(relativePath)
+  if (!isKnowledgeBaseEditableText(file.extension)) {
+    throw new Error("该文件暂不支持编辑")
+  }
+
+  if (file.extension === ".docx") {
+    const buffer = await fs.readFile(file.absolutePath)
+    try {
+      const parsed = await mammoth.extractRawText({ buffer })
+      return parsed.value.replace(/\r\n/g, "\n")
+    } catch {
+      const extractor = new WordExtractor()
+      const parsed = await extractor.extract(file.absolutePath)
+      return parsed.getBody()
+    }
+  }
+
+  if (file.extension === ".json") {
+    const raw = await fs.readFile(file.absolutePath, "utf8")
+    try {
+      return JSON.stringify(JSON.parse(raw), null, 2)
+    } catch {
+      return raw
+    }
+  }
+
+  return fs.readFile(file.absolutePath, "utf8")
+}
+
+export async function writeKnowledgeBaseEditableText(
+  relativePath: string,
+  content: string,
+  actorUserId: string,
+  isAdmin = false,
+) {
+  const normalizedPath = normalizeKnowledgeBasePath(relativePath)
+  if (!normalizedPath) {
+    throw new Error("缺少文件路径")
+  }
+  if (!actorUserId) {
+    throw new Error("缺少用户信息")
+  }
+
+  const file = await getKnowledgeBaseFile(normalizedPath)
+  if (!isKnowledgeBaseEditableText(file.extension)) {
+    throw new Error("该文件暂不支持编辑")
+  }
+
+  if (!isAdmin) {
+    const ownershipMap = await getOwnershipMap()
+    const ownership = ownershipMap.get(normalizedPath)
+    if (ownership?.locked === true && ownership.ownerId !== actorUserId) {
+      throw new Error("只有上传者可以编辑该文件")
+    }
+  }
+
+  let buffer: Buffer
+  if (file.extension === ".docx") {
+    buffer = buildDocxBufferFromPlainText(content)
+  } else if (file.extension === ".json") {
+    try {
+      buffer = Buffer.from(JSON.stringify(JSON.parse(content), null, 2), "utf8")
+    } catch {
+      buffer = Buffer.from(content, "utf8")
+    }
+  } else {
+    buffer = Buffer.from(content, "utf8")
+  }
+
+  await fs.writeFile(file.absolutePath, buffer)
+  const stat = await fs.stat(file.absolutePath)
+
+  return {
+    relativePath: normalizedPath,
+    name: file.name,
+    size: stat.size,
+    updatedAt: stat.mtime.toISOString(),
   }
 }
 

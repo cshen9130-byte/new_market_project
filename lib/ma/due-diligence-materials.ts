@@ -122,6 +122,17 @@ export function buildDdMaterialsFileUrl(relativePath: string, download = false):
   return `/api/knowledge-base/file?${params.toString()}`
 }
 
+export function buildDdMaterialsEditableTextUrl(relativePath: string): string {
+  const params = new URLSearchParams({ path: relativePath, text: "1" })
+  return `/api/knowledge-base/file?${params.toString()}`
+}
+
+const DD_MATERIALS_EDITABLE_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".csv", ".log", ".tsv", ".xml", ".docx"])
+
+export function isDdMaterialsEditable(document: Pick<DdMaterialsDocument, "extension">): boolean {
+  return DD_MATERIALS_EDITABLE_EXTENSIONS.has(document.extension.toLowerCase())
+}
+
 function findRootFolder(tree: KbTreeFolder | null, rootPath: string): KbTreeFolder | null {
   if (!tree) return null
   if (!rootPath) return tree
