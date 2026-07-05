@@ -1007,13 +1007,15 @@ export default function PrivateFundDetailPage() {
 
   useEffect(() => {
     if (!beian_hao) return
-    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/company`)
+    const manager = data?.info?.manager?.trim()
+    const qs = manager ? `?manager=${encodeURIComponent(manager)}` : ""
+    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}/company${qs}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (d?.registration_no) setManagerRegistrationNo(d.registration_no)
       })
       .catch(() => {})
-  }, [beian_hao])
+  }, [beian_hao, data?.info?.manager])
 
   useEffect(() => {
     if (!beian_hao) return

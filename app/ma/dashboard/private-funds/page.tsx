@@ -4294,7 +4294,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </div>
                 {/* 一级策略 */}
                 <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-16 text-right">一级策略：</span>
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">一级策略：</span>
                   <div className="relative flex-1">
                     <select
                       value={editStrategyL1}
@@ -4308,7 +4308,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </div>
                 {/* 二级策略 */}
                 <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-16 text-right">二级策略：</span>
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">二级策略：</span>
                   <div className="relative flex-1">
                     <select
                       value={editStrategyL2}
@@ -4323,7 +4323,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </div>
                 {/* 三级策略 */}
                 <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-16 text-right">三级策略：</span>
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
                   <div className="relative flex-1">
                     <select
                       value={editStrategyL3}
@@ -4387,7 +4387,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </div>
                 {/* 一级策略 */}
                 <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-16 text-right">
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">
                     <span className="text-red-500 mr-0.5">*</span>一级策略：
                   </span>
                   <div className="relative flex-1">
@@ -4403,7 +4403,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </div>
                 {/* 二级策略 */}
                 <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-16 text-right">二级策略：</span>
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">二级策略：</span>
                   <div className="relative flex-1">
                     <select
                       value={batchStrategyL2}
@@ -4418,7 +4418,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                 </div>
                 {/* 三级策略 */}
                 <div className="flex items-center gap-3">
-                  <span className="text-sm shrink-0 w-16 text-right">三级策略：</span>
+                  <span className="text-sm shrink-0 w-20 text-right whitespace-nowrap">三级策略：</span>
                   <div className="relative flex-1">
                     <select
                       value={batchStrategyL3}

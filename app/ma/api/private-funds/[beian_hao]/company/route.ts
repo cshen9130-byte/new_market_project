@@ -11,7 +11,7 @@ export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ beian_hao: string }> },
 ) {
   try {
@@ -21,8 +21,9 @@ export async function GET(
       return NextResponse.json({ error: "Missing beian_hao" }, { status: 400 })
     }
 
+    const managerHint = new URL(req.url).searchParams.get("manager")?.trim() || ""
     const { manager, productName } = await resolveManagerAndProduct(beian_hao)
-    const mgr = await lookupManagerList(manager, productName)
+    const mgr = await lookupManagerList(managerHint || manager, productName)
 
     if (!mgr) {
       return NextResponse.json({

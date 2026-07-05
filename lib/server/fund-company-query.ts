@@ -21,6 +21,15 @@ export function extractBrandPrefix(productName: string): string | null {
   return m?.[1] ?? null
 }
 
+/** Up to 4 leading CJK chars from a product name — e.g. 抱朴聚融祥和一号 → 抱朴聚融. */
+export function extractProductBrand(productName: string): string | null {
+  const name = productName.trim()
+  if (!name) return null
+  const m = name.match(/^([\u4e00-\u9fff]{4})/)
+  if (m) return m[1]
+  return extractBrandPrefix(name)
+}
+
 export function extractManagerBrand(managerName: string): string | null {
   const name = managerName.trim()
   if (!name) return null
@@ -67,6 +76,39 @@ export async function resolveManagerAndProduct(beian_hao: string): Promise<{ man
     if (managed) productName = managed.product_name
   }
 
+  if (!manager && productName) {
+    try {
+      const rows = await query<{ manager: string | null }>(
+        `SELECT manager
+         FROM private_fund_info
+         WHERE manager IS NOT NULL AND BTRIM(manager) <> ''
+           AND product_name ILIKE $1
+         ORDER BY CASE WHEN product_name ILIKE $2 THEN 0 ELSE 1 END
+         LIMIT 1`,
+        [`%${productName}%`, `${productName}%`],
+      )
+      manager = rows[0]?.manager?.trim() ?? ""
+    } catch {
+      // optional table
+    }
+  }
+
+  if (!manager && productName) {
+    try {
+      const rows = await query<{ manager: string | null }>(
+        `SELECT COALESCE(NULLIF(BTRIM(advisor), ''), NULLIF(BTRIM(advisor2), ''), '') AS manager
+         FROM basicinfo_bfl_track
+         WHERE fund_name ILIKE $1 OR fund_short_name ILIKE $1
+         ORDER BY updated_at DESC NULLS LAST, id DESC
+         LIMIT 1`,
+        [`%${productName}%`],
+      )
+      manager = rows[0]?.manager?.trim() ?? ""
+    } catch {
+      // optional table/column
+    }
+  }
+
   return { manager, productName }
 }
 
@@ -85,25 +127,30 @@ export async function lookupManagerList(manager: string, productName: string): P
       `SELECT manager_name, inception_date, active_product_count, mgmt_scale, registration_no
        FROM private_fund_managers_list
        WHERE manager_name ILIKE $1
-       ORDER BY LENGTH(manager_name) ASC
+       ORDER BY LENGTH(manager_name) DESC
        LIMIT 1`,
       [`%${manager}%`],
     )
     if (fuzzy[0]) return fuzzy[0]
   }
 
-  const prefix = extractBrandPrefix(productName)
-  if (!prefix) return null
+  const brand = extractProductBrand(productName)
+  if (!brand) return null
 
-  const byPrefix = await query<ManagerListRow>(
-    `SELECT manager_name, inception_date, active_product_count, mgmt_scale, registration_no
-     FROM private_fund_managers_list
-     WHERE manager_name ILIKE $1
-     ORDER BY LENGTH(manager_name) ASC
-     LIMIT 1`,
-    [`%${prefix}%`],
-  )
-  return byPrefix[0] ?? null
+  const prefixCandidates = brand.length > 2 ? [brand, brand.slice(0, 2)] : [brand]
+  for (const prefix of prefixCandidates) {
+    const byPrefix = await query<ManagerListRow>(
+      `SELECT manager_name, inception_date, active_product_count, mgmt_scale, registration_no
+       FROM private_fund_managers_list
+       WHERE manager_name ILIKE $1
+       ORDER BY LENGTH(manager_name) DESC
+       LIMIT 1`,
+      [`%${prefix}%`],
+    )
+    if (byPrefix[0]) return byPrefix[0]
+  }
+
+  return null
 }
 
 export async function resolveCompanyManagerName(beian_hao: string): Promise<string | null> {

@@ -59,6 +59,10 @@ function sanitizeRow(row: unknown): DueDiligenceTableRow | null {
       typeof r.representativeProductBeianHao === "string" && r.representativeProductBeianHao.trim()
         ? r.representativeProductBeianHao.trim()
         : undefined,
+    ddMaterialsKbPath:
+      typeof r.ddMaterialsKbPath === "string" && r.ddMaterialsKbPath.trim()
+        ? r.ddMaterialsKbPath.trim()
+        : undefined,
   }
 }
 

@@ -1,7 +1,7 @@
 ﻿"use client"
 
 import { type ChangeEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
-import { useRouter } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import {
   ChevronDown,
   ChevronLeft,
@@ -579,6 +579,8 @@ function ServerFolderBrowserTree({
 
 export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: KnowledgeBasePageProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const initialFolderFromUrlRef = useRef(searchParams.get("folder")?.trim() || null)
   const traditionalChatScrollRef = useRef<HTMLDivElement | null>(null)
   const traditionalOperationsScrollRef = useRef<HTMLDivElement | null>(null)
   const traditionalPreviewRef = useRef<HTMLDivElement | null>(null)
@@ -790,6 +792,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     void loadPrivateNotesList(currentUser)
     void loadSharedNotesList(currentUser)
   }, [router])
+
+  useEffect(() => {
+    const initialFolder = initialFolderFromUrlRef.current
+    if (!tree || !initialFolder) return
+    const found = findFolderByPath(tree, initialFolder)
+    if (!found) return
+    setSelectedFolder(initialFolder)
+    setSelectedDocument(null)
+    setPreviewMode("empty")
+    setPreviewContent("")
+    initialFolderFromUrlRef.current = null
+  }, [tree])
 
   useEffect(() => {
     if (variant !== "traditional" || userScrolledRef.current) {

@@ -2,6 +2,7 @@
 
 import type { CSSProperties } from "react"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 
 function formatToStyle(fmt: CellFormat): CSSProperties {
   const style: CSSProperties = {}
@@ -28,6 +29,9 @@ export function StrategySelectCell({
   options,
   placeholder,
   disabled = false,
+  matchStatus = "none",
+  dbValue,
+  levelLabel,
   onActivate,
   onChange,
 }: {
@@ -40,6 +44,9 @@ export function StrategySelectCell({
   options: string[]
   placeholder: string
   disabled?: boolean
+  matchStatus?: "match" | "mismatch" | "none"
+  dbValue?: string
+  levelLabel?: string
   onActivate: () => void
   onChange: (value: string) => void
 }) {
@@ -48,6 +55,15 @@ export function StrategySelectCell({
     ...formatToStyle(format),
   }
 
+  const matchClass =
+    !isActive && !isSelected && !format.bgColor
+      ? matchStatus === "match"
+        ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+        : matchStatus === "mismatch"
+          ? "border-amber-300 bg-amber-50 text-amber-900"
+          : ""
+      : ""
+
   const baseClass = [
     "block h-7 w-full rounded border bg-transparent px-1 text-xs outline-none transition-colors",
     "hover:border-zinc-200 hover:bg-white/80",
@@ -55,12 +71,16 @@ export function StrategySelectCell({
       ? "border-blue-500 bg-blue-50/40 ring-1 ring-blue-300"
       : isSelected
         ? "border-blue-300/60"
-        : "border-transparent",
+        : matchClass || "border-transparent",
     disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
-    value ? "text-zinc-800" : "text-zinc-400",
+    !value
+      ? "text-zinc-400"
+      : matchStatus === "none" && !matchClass
+        ? "text-zinc-800"
+        : "",
   ].join(" ")
 
-  return (
+  const select = (
     <select
       data-cell={cellId}
       value={value}
@@ -84,4 +104,40 @@ export function StrategySelectCell({
       ))}
     </select>
   )
+
+  const showDbHover = matchStatus === "mismatch" && dbValue !== undefined && !isActive
+
+  if (showDbHover) {
+    const tableDisplay = value.trim() || "（空）"
+    const dbDisplay = dbValue.trim() || "（空）"
+    return (
+      <HoverCard openDelay={200} closeDelay={100}>
+        <HoverCardTrigger asChild>
+          <div className="w-full">{select}</div>
+        </HoverCardTrigger>
+        <HoverCardContent
+          side="top"
+          align="start"
+          sideOffset={6}
+          className="pointer-events-none w-auto max-w-xs border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-950 shadow-md"
+        >
+          <p className="mb-1 font-medium text-amber-900">
+            {levelLabel ? `${levelLabel} · 与数据库不一致` : "与数据库不一致"}
+          </p>
+          <div className="space-y-1 leading-snug">
+            <p>
+              <span className="text-amber-800/80">表格：</span>
+              {tableDisplay}
+            </p>
+            <p>
+              <span className="text-amber-800/80">数据库：</span>
+              <span className="font-medium">{dbDisplay}</span>
+            </p>
+          </div>
+        </HoverCardContent>
+      </HoverCard>
+    )
+  }
+
+  return select
 }

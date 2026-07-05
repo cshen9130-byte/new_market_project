@@ -28,10 +28,13 @@ export type DueDiligenceTableRow = DueDiligenceTableRowData & {
   fundId?: string
   /** Linked private fund beian_hao for 代表产品 column */
   representativeProductBeianHao?: string
+  /** Linked AI knowledge base folder for 尽调材料, e.g. 内部尽调资料/2026.6.26-标准定律 */
+  ddMaterialsKbPath?: string
 }
 
 export type DueDiligenceTableRowPatch = Partial<DueDiligenceTableRowData> & {
   representativeProductBeianHao?: string | null
+  ddMaterialsKbPath?: string | null
 }
 
 export function privateFundProductHref(beianHao: string): string {
@@ -61,7 +64,7 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
   { key: "strategyLevel2",     label: "二级策略",      width: 68 },
   { key: "strategyLevel3",     label: "三级策略",      width: 90 },
   { key: "inTrackingPool",     label: "已加入跟踪池", width: 130 },
-  { key: "ddMaterials",        label: "尽调材料",      width: 68 },
+  { key: "ddMaterials",        label: "尽调材料",      width: 84 },
   { key: "otherInfo",          label: "其他补充信息",  width: 150, multiline: true },
   { key: "ddConclusion",       label: "尽调结论",      width: 200, multiline: true },
 ]
@@ -259,12 +262,17 @@ export function updateDueDiligenceTableRow(
   const now = new Date().toISOString()
   return rows.map((row) => {
     if (row.id !== id) return row
-    const { representativeProductBeianHao, ...dataPatch } = patch
+    const { representativeProductBeianHao, ddMaterialsKbPath, ...dataPatch } = patch
     const next: DueDiligenceTableRow = { ...row, ...dataPatch, updatedAt: now }
     if (representativeProductBeianHao === null || representativeProductBeianHao === "") {
       delete next.representativeProductBeianHao
     } else if (typeof representativeProductBeianHao === "string") {
       next.representativeProductBeianHao = representativeProductBeianHao
+    }
+    if (ddMaterialsKbPath === null || ddMaterialsKbPath === "") {
+      delete next.ddMaterialsKbPath
+    } else if (typeof ddMaterialsKbPath === "string") {
+      next.ddMaterialsKbPath = ddMaterialsKbPath
     }
     return next
   })

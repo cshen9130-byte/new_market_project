@@ -1,9 +1,20 @@
 "use client"
 
-import { useCallback, useEffect, useRef, useState } from "react"
-import { usePathname } from "next/navigation"
-import { Bot, Camera, ChevronDown, Crosshair, Loader2, Send, Square, X } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { usePathname, useSearchParams } from "next/navigation"
+import { BookOpen, Bot, Camera, ChevronDown, Crosshair, FileText, Loader2, PanelLeftClose, PanelLeftOpen, Send, Square, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { ChatBotDocPanel } from "@/components/chat-bot-doc-panel"
+import { CHAT_DOC_READER_WIDTH, getChatDocPanelWidth } from "@/lib/ma/chat-documents"
+import { getActiveDocumentContext, useChatDocuments } from "@/hooks/use-chat-documents"
+import { authService } from "@/lib/auth"
+import {
+  ensureKnowledgeConversation,
+  formatKnowledgeScopeLabel,
+  resolveKnowledgeChatScope,
+  streamKnowledgeBaseChat,
+} from "@/lib/knowledge-base-chat-client"
+import { canAccessAiKnowledge } from "@/lib/permissions"
 import { cn } from "@/lib/utils"
 
 // ── Page context mapping ──────────────────────────────────────────────────────
@@ -36,7 +47,7 @@ function getPageContext(path: string): string {
   if (path.includes("/options-market"))
     return "当前页面：【期权市场分析】。目前展示：隐含波动率 vs 已实现波动率走势、期权 Put/Call 比率、期权到期持仓分布。（数据部分为示例占位数据，实际功能开发中）"
   if (path.includes("/private-funds"))
-    return "当前页面：【私募基金分析】。目前展示：多只基金累计净值走势对比、基金规模/收益率/夏普比率表格、资产配置饼图。（数据部分为示例占位数据，实际功能开发中）"
+    return "当前页面：【私募基金 / 尽调表格】。功能：管理私募产品尽调记录，包含代表产品、尽调材料（可拖入 AI 助手问答）、策略标签等字段。支持导出 Excel、添加记录。"
   if (path.includes("/ai-knowledge"))
     return "当前页面：【AI 知识库】。整理了与系统相关的市场分析方法论、指标解释、模型说明等知识文档，支持检索与问答。"
   // ── dashboard root / fallback ─────────────────────────────────────────────
@@ -72,7 +83,8 @@ function identifyElementAt(x: number, y: number): { label: string; el: HTMLEleme
   return { label, el: container }
 }
 // ── Types ─────────────────────────────────────────────────────────────────────
-type Message = { role: "user" | "assistant"; content: string }
+type Message = { role: "user" | "assistant"; content: string; sources?: string[] }
+type AiMode = "assistant" | "knowledge"
 type Pos = { x: number; y: number }
 
 interface ChatBotWidgetProps {
@@ -83,17 +95,33 @@ interface ChatBotWidgetProps {
 // ── Component ─────────────────────────────────────────────────────────────────
 export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   const pathname = usePathname()
+  const searchParams = useSearchParams()
   const [mode, setMode] = useState<"ball" | "chat">("ball")
+  const [aiMode, setAiMode] = useState<AiMode>("assistant")
+  const [canUseKnowledge, setCanUseKnowledge] = useState(false)
   const [pos, setPos] = useState<Pos | null>(null)
   const [chatPos, setChatPos] = useState<Pos | null>(null)
   const [chatSize, setChatSize] = useState({ w: 360, h: 500 })
-  const [messages, setMessages] = useState<Message[]>([])
+  const [assistantMessages, setAssistantMessages] = useState<Message[]>([])
+  const [knowledgeMessages, setKnowledgeMessages] = useState<Message[]>([])
   const [input, setInput] = useState("")
   const [streaming, setStreaming] = useState(false)
   const [streamContent, setStreamContent] = useState("")
 
   const [pendingScreenshot, setPendingScreenshot] = useState<string | null>(null)
   const [capturingScreen, setCapturingScreen] = useState(false)
+
+  const [docsPanelOpen, setDocsPanelOpen] = useState(false)
+  const [docReaderWidth, setDocReaderWidth] = useState(CHAT_DOC_READER_WIDTH)
+  const {
+    documents,
+    activeDocId,
+    setActiveDocId,
+    addLocalFile,
+    handleDataTransfer,
+    removeDocument,
+  } = useChatDocuments()
+  const [chatDragOver, setChatDragOver] = useState(false)
 
   // ── Pin-to-chart tool state
   const [pinningMode, setPinningMode] = useState(false)
@@ -110,9 +138,40 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   const chatDragMovedRef = useRef(false)
   const resizeStartRef = useRef<{ px: number; py: number; w: number; h: number } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const kbConversationIdRef = useRef<string | null>(null)
   const userScrolledUpRef = useRef(false)
   const pinBtnRef = useRef<HTMLButtonElement>(null)
   const chatBoxRef = useRef<HTMLDivElement>(null)
+
+  const docPanelWidth = getChatDocPanelWidth(docReaderWidth)
+  const totalChatWidth = chatSize.w + (docsPanelOpen ? docPanelWidth : 0)
+  const messages = aiMode === "knowledge" ? knowledgeMessages : assistantMessages
+  const setMessages = aiMode === "knowledge" ? setKnowledgeMessages : setAssistantMessages
+
+  const kbScope = useMemo(
+    () =>
+      resolveKnowledgeChatScope({
+        pathname,
+        folderFromUrl: searchParams.get("folder"),
+        activeKbRelativePath: activeDocId
+          ? documents.find((d) => d.id === activeDocId && d.source === "kb")?.relativePath
+          : null,
+        activeKbName: activeDocId
+          ? documents.find((d) => d.id === activeDocId && d.source === "kb")?.name
+          : null,
+      }),
+    [pathname, searchParams, activeDocId, documents],
+  )
+  const kbScopeLabel = formatKnowledgeScopeLabel(kbScope)
+
+  useEffect(() => {
+    authService.init()
+    setCanUseKnowledge(canAccessAiKnowledge(authService.getCurrentUser()))
+  }, [])
+
+  useEffect(() => {
+    kbConversationIdRef.current = null
+  }, [kbScope.filePath, kbScope.folderPath])
 
   // Set default ball position on first render (client-only)
   useEffect(() => {
@@ -162,8 +221,8 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
 
   const onPointerUp = useCallback(() => {
     if (!dragMovedRef.current) {
-      // Open chat near ball position, clamped to viewport
-      const W = 360, H = 500
+      const W = chatSize.w + (docsPanelOpen ? docPanelWidth : 0)
+      const H = chatSize.h
       const bx = pos?.x ?? window.innerWidth - 72
       const by = pos?.y ?? window.innerHeight - 96
       const left = Math.max(8, Math.min(window.innerWidth - W - 8, bx - W / 2))
@@ -173,7 +232,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     }
     dragStartRef.current = null
     dragMovedRef.current = false
-  }, [pos])
+  }, [pos, chatSize, docsPanelOpen, docPanelWidth])
 
   // ── Chat header drag handlers ────────────────────────────────────────
   const onChatHeaderPointerDown = useCallback(
@@ -192,12 +251,13 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
       const dx = e.clientX - chatDragStartRef.current.px
       const dy = e.clientY - chatDragStartRef.current.py
       if (Math.abs(dx) > 3 || Math.abs(dy) > 3) chatDragMovedRef.current = true
-      const W = 360, H = 500
+      const W = chatSize.w + (docsPanelOpen ? docPanelWidth : 0)
+      const H = chatSize.h
       const newX = Math.max(8, Math.min(window.innerWidth - W - 8, chatDragStartRef.current.bx + dx))
       const newY = Math.max(8, Math.min(window.innerHeight - H - 8, chatDragStartRef.current.by + dy))
       setChatPos({ x: newX, y: newY })
     },
-    [],
+    [chatSize, docsPanelOpen, docPanelWidth],
   )
 
   const onChatHeaderPointerUp = useCallback(() => {
@@ -283,17 +343,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     const text = input.trim()
     if (!text || streaming) return
 
-    // Reset scroll-up flag so new response auto-scrolls
     userScrolledUpRef.current = false
-
-    const screenshot = pendingScreenshot ?? pinnedTarget?.screenshot ?? null
-    setPendingScreenshot(null)
-    const pinLabel = pinnedTarget?.label ?? null
-    setPinnedTarget(null)
-
-    const pageCtx = pinLabel
-      ? `${getPageContext(pathname)}。用户正在指向页面中的【${pinLabel}】`
-      : getPageContext(pathname)
 
     const userMsg: Message = { role: "user", content: text }
     const nextMessages = [...messages, userMsg]
@@ -306,6 +356,64 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     abortRef.current = abort
     let accumulated = ""
 
+    if (aiMode === "knowledge") {
+      try {
+        if (!canUseKnowledge) {
+          throw new Error("您暂无 AI 知识库访问权限")
+        }
+
+        let convId = kbConversationIdRef.current
+        if (!convId) {
+          convId = await ensureKnowledgeConversation(kbScope)
+          kbConversationIdRef.current = convId
+        }
+
+        const result = await streamKnowledgeBaseChat({
+          question: text,
+          scope: kbScope,
+          conversationId: convId,
+          signal: abort.signal,
+          onDelta: (content) => {
+            accumulated = content
+            setStreamContent(content)
+          },
+        })
+
+        kbConversationIdRef.current = result.conversationId ?? convId
+        setMessages([
+          ...nextMessages,
+          { role: "assistant", content: result.content, sources: result.sources },
+        ])
+        setStreamContent("")
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") {
+          if (accumulated) {
+            setMessages([...nextMessages, { role: "assistant", content: accumulated + " \u25a0" }])
+          }
+          setStreamContent("")
+          setStreaming(false)
+          return
+        }
+        const msg = err instanceof Error ? err.message : "未知错误"
+        setMessages([...nextMessages, { role: "assistant", content: `⚠️ ${msg}` }])
+        setStreamContent("")
+      } finally {
+        setStreaming(false)
+      }
+      return
+    }
+
+    const screenshot = pendingScreenshot ?? pinnedTarget?.screenshot ?? null
+    setPendingScreenshot(null)
+    const pinLabel = pinnedTarget?.label ?? null
+    setPinnedTarget(null)
+
+    const pageCtx = pinLabel
+      ? `${getPageContext(pathname)}。用户正在指向页面中的【${pinLabel}】`
+      : getPageContext(pathname)
+
+    const documentContext = getActiveDocumentContext(documents, activeDocId)
+
     try {
       const res = await fetch("/ma/api/chat", {
         method: "POST",
@@ -314,6 +422,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
           messages: nextMessages,
           pageContext: pageCtx,
           screenshot: screenshot ?? undefined,
+          documentContext: documentContext ?? undefined,
         }),
         signal: abort.signal,
       })
@@ -357,7 +466,6 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
       setStreamContent("")
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
-        // User stopped — commit whatever was accumulated so far
         if (accumulated) {
           setMessages([...nextMessages, { role: "assistant", content: accumulated + " \u25a0" }])
         }
@@ -371,6 +479,13 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     } finally {
       setStreaming(false)
     }
+  }
+
+  function toggleAiMode() {
+    setAiMode((current) => (current === "assistant" ? "knowledge" : "assistant"))
+    setStreamContent("")
+    setStreaming(false)
+    abortRef.current?.abort()
   }
 
   if (!visible || pos === null) return null
@@ -438,7 +553,8 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   }
 
   // ── Chat mode ─────────────────────────────────────────────────────────────
-  const cp = chatPos ?? { x: window.innerWidth - chatSize.w - 8, y: window.innerHeight - chatSize.h - 8 }
+  const cp = chatPos ?? { x: window.innerWidth - totalChatWidth - 8, y: window.innerHeight - chatSize.h - 8 }
+  const activeDoc = documents.find((d) => d.id === activeDocId) ?? null
   return (
     <>
       {/* ── Pinning overlay: full-screen crosshair layer ── */}
@@ -477,8 +593,25 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
       <div
         ref={chatBoxRef}
         data-chat-box=""
-        className="fixed z-[9999] flex flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl"
-        style={{ width: chatSize.w, height: chatSize.h, left: cp.x, top: cp.y, pointerEvents: pinningMode ? "none" : undefined }}
+        className={cn(
+          "fixed z-[9999] flex flex-col overflow-hidden rounded-2xl border bg-card shadow-2xl",
+          chatDragOver && "ring-2 ring-primary/50",
+        )}
+        style={{ width: totalChatWidth, height: chatSize.h, left: cp.x, top: cp.y, pointerEvents: pinningMode ? "none" : undefined }}
+        onDragOver={(e) => {
+          if (!e.dataTransfer.types.includes("Files") && !e.dataTransfer.types.includes("application/x-ma-chat-document")) return
+          e.preventDefault()
+          setChatDragOver(true)
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node)) return
+          setChatDragOver(false)
+        }}
+        onDrop={(e) => {
+          e.preventDefault()
+          setChatDragOver(false)
+          if (handleDataTransfer(e.dataTransfer)) setDocsPanelOpen(true)
+        }}
       >
       {/* Header — drag handle only on left portion, buttons on right stay clickable */}
       <div
@@ -491,9 +624,40 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
           onPointerUp={onChatHeaderPointerUp}
         >
           <Bot className="h-4 w-4 pointer-events-none" />
-          <span className="text-sm font-semibold pointer-events-none">AI 助手</span>
+          <span className="text-sm font-semibold pointer-events-none">
+            {aiMode === "knowledge" ? "AI 知识库" : "AI 助手"}
+          </span>
+          {aiMode === "knowledge" && (
+            <span className="rounded bg-primary-foreground/15 px-1.5 py-0.5 text-[10px] font-medium pointer-events-none">
+              知识库
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
+          {canUseKnowledge && (
+            <button
+              className={cn(
+                "rounded p-1.5 transition-colors hover:bg-primary-foreground/10",
+                aiMode === "knowledge"
+                  ? "text-primary-foreground"
+                  : "text-primary-foreground/70 hover:text-primary-foreground",
+              )}
+              onClick={toggleAiMode}
+              title={aiMode === "knowledge" ? "切换为页面助手模式" : "切换为知识库模式"}
+            >
+              <BookOpen className="h-4 w-4" />
+            </button>
+          )}
+          <button
+            className={cn(
+              "rounded p-1.5 transition-colors hover:bg-primary-foreground/10",
+              docsPanelOpen ? "text-primary-foreground" : "text-primary-foreground/70 hover:text-primary-foreground",
+            )}
+            onClick={() => setDocsPanelOpen((v) => !v)}
+            title={docsPanelOpen ? "收起资料暂存区" : "展开资料暂存区"}
+          >
+            {docsPanelOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+          </button>
           <button
             className="rounded p-1.5 text-primary-foreground/70 transition-colors hover:bg-primary-foreground/10 hover:text-primary-foreground"
             onClick={() => setMode("ball")}
@@ -511,6 +675,21 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
         </div>
       </div>
 
+      <div className="flex min-h-0 flex-1">
+        {docsPanelOpen && (
+          <ChatBotDocPanel
+            documents={documents}
+            activeDocId={activeDocId}
+            readerWidth={docReaderWidth}
+            onReaderWidthChange={setDocReaderWidth}
+            onActiveDocChange={setActiveDocId}
+            onAddLocalFiles={(files) => Array.from(files).forEach(addLocalFile)}
+            onDataTransfer={handleDataTransfer}
+            onRemoveDocument={removeDocument}
+          />
+        )}
+
+        <div className="flex min-w-0 flex-1 flex-col">
       {/* Messages */}
       <div
         ref={messagesBoxRef}
@@ -524,12 +703,14 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
       >
         {messages.length === 0 && !streaming && (
           <p className="mt-10 text-center text-xs text-muted-foreground px-4">
-            你好！有关于当前页面数据或市场分析的问题，随时问我。
+            {aiMode === "knowledge"
+              ? "知识库模式：基于 AI 知识库资料检索作答，对话会同步保存到知识库历史。"
+              : "你好！有关于当前页面数据或市场分析的问题，随时问我。"}
           </p>
         )}
 
         {messages.map((m, i) => (
-          <div key={i} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+          <div key={i} className={cn("flex flex-col gap-1", m.role === "user" ? "items-end" : "items-start")}>
             <div
               className={cn(
                 "max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words",
@@ -540,6 +721,12 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
             >
               {m.content}
             </div>
+            {m.role === "assistant" && m.sources && m.sources.length > 0 && (
+              <div className="max-w-[85%] px-1 text-[10px] leading-snug text-muted-foreground">
+                来源：{m.sources.slice(0, 3).map((s) => s.split("/").pop() || s).join("、")}
+                {m.sources.length > 3 ? ` 等 ${m.sources.length} 个文件` : ""}
+              </div>
+            )}
           </div>
         ))}
 
@@ -592,11 +779,43 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
           </div>
         )}
 
+        {/* Knowledge base scope */}
+        {aiMode === "knowledge" && (
+          <div className="mb-2 flex items-center gap-2 overflow-hidden rounded-lg border border-cyan-300 bg-cyan-50 px-2.5 py-1.5 text-xs dark:border-cyan-700 dark:bg-cyan-950">
+            <BookOpen className="h-3.5 w-3.5 shrink-0 text-cyan-600" />
+            <span className="flex-1 truncate font-medium text-cyan-700 dark:text-cyan-300" title={kbScopeLabel}>
+              检索范围：{kbScopeLabel}
+            </span>
+            <a
+              href="/ma/dashboard/ai-knowledge"
+              className="shrink-0 text-cyan-600 hover:underline"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              打开
+            </a>
+          </div>
+        )}
+
+        {/* Active document chip */}
+        {aiMode === "assistant" && activeDoc && (
+          <div className="mb-2 flex items-center gap-2 overflow-hidden rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs dark:border-emerald-700 dark:bg-emerald-950">
+            <FileText className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+            <span className="flex-1 truncate font-medium text-emerald-700 dark:text-emerald-300" title={activeDoc.name}>
+              正在阅读：{activeDoc.name}
+            </span>
+            {activeDoc.textLoading && <Loader2 className="h-3 w-3 animate-spin text-emerald-500" />}
+            <button onClick={() => setActiveDocId(null)} className="shrink-0 text-emerald-400 hover:text-emerald-600">
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+
         <div className="flex items-end gap-2">
           <textarea
             ref={textareaRef}
             rows={1}
-            placeholder="输入问题… Enter 发送，Shift+Enter 换行"
+            placeholder={aiMode === "knowledge" ? "向知识库提问… Enter 发送" : "输入问题… Enter 发送，Shift+Enter 换行"}
             value={input}
             onChange={(e) => {
               setInput(e.target.value)
@@ -613,6 +832,8 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
             className="flex-1 resize-none overflow-y-auto rounded-xl border bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
             style={{ minHeight: 36, maxHeight: 100 }}
           />
+          {aiMode === "assistant" && (
+            <>
           <Button
             ref={pinBtnRef}
             size="icon"
@@ -636,6 +857,8 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
               ? <Loader2 className="h-4 w-4 animate-spin" />
               : <Camera className="h-4 w-4" />}
           </Button>
+            </>
+          )}
           {streaming ? (
             <Button
               size="icon"
@@ -656,6 +879,8 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
               <Send className="h-4 w-4" />
             </Button>
           )}
+        </div>
+      </div>
         </div>
       </div>
 

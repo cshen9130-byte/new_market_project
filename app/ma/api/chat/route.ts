@@ -110,7 +110,7 @@ function isSelectOnly(sql: string): boolean {
 
 // ── Main handler ───────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
-  const { messages, pageContext, screenshot } = await req.json()
+  const { messages, pageContext, screenshot, documentContext } = await req.json()
 
   if (!Array.isArray(messages)) {
     return Response.json({ error: "messages must be an array" }, { status: 400 })
@@ -122,8 +122,17 @@ export async function POST(req: NextRequest) {
   // Stamp the page context directly onto the last user message so it stays
   // co-located with the question even after the conversation grows long.
   const stampedMessages = messages.map((m: Record<string, unknown>, i: number) => {
-    if (i === messages.length - 1 && m.role === "user" && pageContext) {
-      return { ...m, content: `${m.content}\n\n[当前页面：${pageContext}]` }
+    if (i === messages.length - 1 && m.role === "user") {
+      let content = String(m.content ?? "")
+      if (pageContext) content += `\n\n[当前页面：${pageContext}]`
+      const docName = typeof documentContext?.name === "string" ? documentContext.name.trim() : ""
+      const docText = typeof documentContext?.text === "string" ? documentContext.text.trim() : ""
+      if (docName) {
+        content += docText
+          ? `\n\n[当前阅读文档：${docName}]\n${docText}`
+          : `\n\n[当前阅读文档：${docName}（未能提取文字内容，请结合文件名作答或告知用户）]`
+      }
+      return { ...m, content }
     }
     return m
   })

@@ -28,6 +28,7 @@ import {
   Strikethrough,
   Trash2,
   Underline,
+  Upload,
   X,
   ZoomIn,
   ZoomOut,
@@ -73,6 +74,7 @@ import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-bu
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { RepresentativeProductCell } from "./RepresentativeProductCell"
 import { StrategySelectCell } from "./StrategySelectCell"
+import { DdMaterialsCell } from "./DdMaterialsCell"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import {
   ContextMenu,
@@ -90,6 +92,21 @@ import {
   teamStrategyL3Options,
   type TeamStrategyNode,
 } from "@/lib/ma/team-strategy-tree"
+import {
+  fetchSavedTeamStrategies,
+  getStrategyCellMatchStatus,
+  hasSavedTeamStrategy,
+  rowHasAnyTableStrategy,
+  syncTeamStrategiesToDatabase,
+  type SavedTeamStrategiesMap,
+} from "@/lib/ma/due-diligence-team-strategies"
+import {
+  buildDdMaterialsAutoFillPatch,
+  buildDdMaterialsFolderIndex,
+  getDdMaterialsDocuments,
+  resolveDdMaterialsFolderPath,
+  type DdMaterialsFolderIndex,
+} from "@/lib/ma/due-diligence-materials"
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -725,6 +742,13 @@ export function DueDiligenceTableView() {
   const [trackedTeam, setTrackedTeam] = useState<Set<string>>(new Set())
   const [trackingDialogFund, setTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
   const [teamTrackingDialogFund, setTeamTrackingDialogFund] = useState<{ beian_hao: string; product_name: string } | null>(null)
+  const [savedTeamStrategies, setSavedTeamStrategies] = useState<SavedTeamStrategiesMap>({})
+  const [savedStrategiesLoading, setSavedStrategiesLoading] = useState(false)
+  const [isImportingStrategies, setIsImportingStrategies] = useState(false)
+  const [isSyncingStrategies, setIsSyncingStrategies] = useState(false)
+  const [materialsIndex, setMaterialsIndex] = useState<DdMaterialsFolderIndex | null>(null)
+  const [materialsLoading, setMaterialsLoading] = useState(false)
+  const materialsAutoFillRef = useRef(false)
   const strategyMigrationRef = useRef(false)
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -880,6 +904,70 @@ export function DueDiligenceTableView() {
 
   useEffect(() => {
     let cancelled = false
+    setMaterialsLoading(true)
+    void (async () => {
+      try {
+        const headers: Record<string, string> = {}
+        try {
+          const raw = localStorage.getItem("currentUser")
+          if (raw) {
+            const user = JSON.parse(raw) as { id?: string }
+            if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+          }
+        } catch {
+          // ignore
+        }
+        const res = await fetch("/api/knowledge-base/tree", { headers })
+        const data = await res.json()
+        if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+        if (cancelled) return
+        setMaterialsIndex(buildDdMaterialsFolderIndex(data.tree ?? null))
+      } catch {
+        if (!cancelled) setMaterialsIndex(buildDdMaterialsFolderIndex(null))
+      } finally {
+        if (!cancelled) setMaterialsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const rowMaterialsMap = useMemo(() => {
+    if (!materialsIndex) return new Map<string, { folderPath: string | null; folderName: string | null; documents: ReturnType<typeof getDdMaterialsDocuments> }>()
+    const map = new Map<string, { folderPath: string | null; folderName: string | null; documents: ReturnType<typeof getDdMaterialsDocuments> }>()
+    for (const row of rows) {
+      const folderPath = resolveDdMaterialsFolderPath(row, materialsIndex)
+      const folderName = folderPath ? materialsIndex.folders.get(folderPath)?.name ?? null : null
+      map.set(row.id, {
+        folderPath,
+        folderName,
+        documents: getDdMaterialsDocuments(folderPath, materialsIndex),
+      })
+    }
+    return map
+  }, [materialsIndex, rows])
+
+  useEffect(() => {
+    if (!hydrated || !materialsIndex || materialsAutoFillRef.current) return
+
+    let changed = false
+    const nextRows = rows.map((row) => {
+      const patch = buildDdMaterialsAutoFillPatch(row, materialsIndex)
+      if (!patch) return row
+      changed = true
+      return { ...row, ...patch }
+    })
+    if (!changed) {
+      materialsAutoFillRef.current = true
+      return
+    }
+    materialsAutoFillRef.current = true
+    persistRowsChange(rows, nextRows, formats)
+  }, [hydrated, materialsIndex, rows, formats, persistRowsChange])
+
+  useEffect(() => {
+    let cancelled = false
     void loadTeamStrategyTree().then((tree) => {
       if (!cancelled) setTeamStrategyTree(tree)
     })
@@ -893,6 +981,42 @@ export function DueDiligenceTableView() {
     }
     return [...set]
   }, [rows])
+
+  const refreshSavedTeamStrategies = useCallback(async () => {
+    if (linkedBeianHaos.length === 0) {
+      setSavedTeamStrategies({})
+      return
+    }
+    setSavedStrategiesLoading(true)
+    try {
+      const strategies = await fetchSavedTeamStrategies(linkedBeianHaos)
+      setSavedTeamStrategies(strategies)
+    } catch {
+      setSavedTeamStrategies({})
+    } finally {
+      setSavedStrategiesLoading(false)
+    }
+  }, [linkedBeianHaos])
+
+  useEffect(() => {
+    if (linkedBeianHaos.length === 0) {
+      setSavedTeamStrategies({})
+      return
+    }
+    let cancelled = false
+    setSavedStrategiesLoading(true)
+    void fetchSavedTeamStrategies(linkedBeianHaos)
+      .then((strategies) => {
+        if (!cancelled) setSavedTeamStrategies(strategies)
+      })
+      .catch(() => {
+        if (!cancelled) setSavedTeamStrategies({})
+      })
+      .finally(() => {
+        if (!cancelled) setSavedStrategiesLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [linkedBeianHaos])
 
   const refreshTrackedIds = useCallback(() => {
     fetch("/ma/api/tracking-funds/tracked-ids")
@@ -1067,6 +1191,153 @@ export function DueDiligenceTableView() {
     [selection, rows],
   )
 
+  function getStrategyActionTargetRows(): DueDiligenceTableRow[] {
+    const withProduct = (row: DueDiligenceTableRow) => Boolean(row.representativeProductBeianHao)
+    if (selectedRowActionIds.length > 0) {
+      const idSet = new Set(selectedRowActionIds)
+      return rows.filter((row) => idSet.has(row.id) && withProduct(row))
+    }
+    return rows.filter(withProduct)
+  }
+
+  function getRowSavedStrategy(row: DueDiligenceTableRow) {
+    const beian = row.representativeProductBeianHao
+    if (!beian) return undefined
+    return savedTeamStrategies[beian]
+  }
+
+  function getStrategyMatchStatusForCell(
+    row: DueDiligenceTableRow,
+    level: 1 | 2 | 3,
+  ): "match" | "mismatch" | "none" {
+    const saved = getRowSavedStrategy(row)
+    if (!saved || !hasSavedTeamStrategy(saved)) return "none"
+    const tableValue =
+      level === 1 ? row.strategyLevel1 : level === 2 ? row.strategyLevel2 : row.strategyLevel3
+    const savedValue =
+      level === 1 ? saved.strategy_l1 : level === 2 ? saved.strategy_l2 : saved.strategy_l3
+    return getStrategyCellMatchStatus(tableValue, savedValue, Boolean(savedValue))
+  }
+
+  function getSavedStrategyValueForCell(
+    row: DueDiligenceTableRow,
+    level: 1 | 2 | 3,
+  ): string | undefined {
+    const saved = getRowSavedStrategy(row)
+    if (!saved) return undefined
+    return level === 1 ? saved.strategy_l1 : level === 2 ? saved.strategy_l2 : saved.strategy_l3
+  }
+
+  async function handleImportTeamStrategies() {
+    if (isImportingStrategies) return
+    const targetRows = getStrategyActionTargetRows()
+    if (targetRows.length === 0) {
+      alert("请先为行关联代表产品（备案编码），或选中含代表产品的行。")
+      return
+    }
+
+    setIsImportingStrategies(true)
+    try {
+      const strategies = await fetchSavedTeamStrategies(
+        targetRows.map((row) => row.representativeProductBeianHao!),
+      )
+      setSavedTeamStrategies((prev) => ({ ...prev, ...strategies }))
+
+      let updated = 0
+      let skipped = 0
+      const nextRows = rows.map((row) => {
+        const beian = row.representativeProductBeianHao
+        const isTarget = targetRows.some((target) => target.id === row.id)
+        if (!isTarget || !beian) return row
+
+        const saved = strategies[beian]
+        if (!hasSavedTeamStrategy(saved)) {
+          skipped += 1
+          return row
+        }
+
+        const migrated = migrateRowTeamStrategies(
+          {
+            strategyLevel1: saved!.strategy_l1,
+            strategyLevel2: saved!.strategy_l2,
+            strategyLevel3: saved!.strategy_l3,
+          },
+          teamStrategyTree,
+        )
+        if (
+          migrated.strategyLevel1 === row.strategyLevel1
+          && migrated.strategyLevel2 === row.strategyLevel2
+          && migrated.strategyLevel3 === row.strategyLevel3
+        ) {
+          skipped += 1
+          return row
+        }
+
+        updated += 1
+        return {
+          ...row,
+          strategyLevel1: migrated.strategyLevel1,
+          strategyLevel2: migrated.strategyLevel2,
+          strategyLevel3: migrated.strategyLevel3,
+        }
+      })
+
+      if (updated === 0) {
+        alert(
+          skipped > 0
+            ? "所选行在数据库中暂无团队策略标签，或表格已与数据库一致。"
+            : "没有可提取的团队策略标签。",
+        )
+        return
+      }
+
+      persistRowsChange(rows, nextRows, formats)
+      alert(`已提取 ${updated} 行的团队策略标签${skipped > 0 ? `，${skipped} 行跳过` : ""}。`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "提取失败"
+      alert(`提取团队策略标签失败：${message}`)
+    } finally {
+      setIsImportingStrategies(false)
+    }
+  }
+
+  async function handleSyncTeamStrategies() {
+    if (isSyncingStrategies) return
+    const targetRows = getStrategyActionTargetRows().filter(rowHasAnyTableStrategy)
+    if (targetRows.length === 0) {
+      alert("请先选择含代表产品且已填写策略标签的行。")
+      return
+    }
+
+    const msg = selectedRowActionIds.length > 0
+      ? `将选中的 ${targetRows.length} 行策略标签同步到数据库中的团队策略，是否继续？`
+      : `将 ${targetRows.length} 行（已关联代表产品）的策略标签同步到数据库，是否继续？`
+    if (!window.confirm(msg)) return
+
+    setIsSyncingStrategies(true)
+    try {
+      const updates = [...new Map(
+        targetRows.map((row) => [
+          row.representativeProductBeianHao!,
+          {
+            beian_hao: row.representativeProductBeianHao!,
+            strategy_l1: row.strategyLevel1.trim(),
+            strategy_l2: row.strategyLevel2.trim(),
+            strategy_l3: row.strategyLevel3.trim(),
+          },
+        ]),
+      ).values()]
+      const { updated } = await syncTeamStrategiesToDatabase(updates)
+      await refreshSavedTeamStrategies()
+      alert(`同步完成：已更新 ${updated} 个产品的团队策略标签。`)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "同步失败"
+      alert(`同步团队策略标签失败：${message}`)
+    } finally {
+      setIsSyncingStrategies(false)
+    }
+  }
+
   function focusCellInput(rowId: string, colKey: DueDiligenceTableColumn["key"]) {
     const el = containerRef.current?.querySelector(
       `[data-cell="${selectionCellKey(rowId, colKey)}"]`,
@@ -1081,11 +1352,12 @@ export function DueDiligenceTableView() {
     e: ReactMouseEvent,
   ) {
     if (e.button !== 0) return
-    const isStrategyCol =
+    const skipPreventDefault =
       colKey === "strategyLevel1" ||
       colKey === "strategyLevel2" ||
-      colKey === "strategyLevel3"
-    if (!isStrategyCol) {
+      colKey === "strategyLevel3" ||
+      colKey === "ddMaterials"
+    if (!skipPreventDefault) {
       e.preventDefault()
     }
     const coord = { rowId, colKey }
@@ -1419,6 +1691,10 @@ export function DueDiligenceTableView() {
             <h1 className="text-base font-semibold text-foreground">尽调表格</h1>
             <p className="mt-0.5 text-xs text-zinc-500">
               团队协作收集尽调信息，可直接在单元格中编辑。
+              <span className="ml-2 text-emerald-700">绿色</span>
+              <span>=与数据库一致，</span>
+              <span className="text-amber-700">黄色</span>
+              <span>=与数据库不一致</span>
               {saveStatus === "saving" && <span className="ml-2 text-amber-600">保存中…</span>}
               {saveStatus === "saved" && <span className="ml-2 text-emerald-600">已保存到团队</span>}
               {saveStatus === "error" && (
@@ -1440,6 +1716,26 @@ export function DueDiligenceTableView() {
             <button type="button" onClick={() => void handleExtractToCalendar()} disabled={isExtracting}
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50">
               <CalendarDays className="h-3.5 w-3.5" />{isExtracting ? "提取中…" : "提取到尽调日历"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleImportTeamStrategies()}
+              disabled={isImportingStrategies || savedStrategiesLoading}
+              title="从数据库读取代表产品的团队策略标签并填入表格"
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {isImportingStrategies ? "提取中…" : "提取团队策略标签"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSyncTeamStrategies()}
+              disabled={isSyncingStrategies}
+              title="将表格中的策略标签同步到数据库"
+              className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              {isSyncingStrategies ? "同步中…" : "从团队策略提取标签"}
             </button>
             <button type="button" onClick={handleResetSeed}
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
@@ -1660,6 +1956,9 @@ export function DueDiligenceTableView() {
                               options={teamL1Options}
                               placeholder="一级策略"
                               disabled={teamL1Options.length === 0}
+                              matchStatus={getStrategyMatchStatusForCell(row, 1)}
+                              dbValue={getSavedStrategyValueForCell(row, 1)}
+                              levelLabel="一级策略"
                               onActivate={() => {
                                 setFocusCell({ rowId: row.id, colKey: col.key })
                                 setSelection({
@@ -1681,6 +1980,9 @@ export function DueDiligenceTableView() {
                               options={teamStrategyL2Options(teamStrategyTree, row.strategyLevel1)}
                               placeholder={row.strategyLevel1 ? "二级策略" : "先选一级"}
                               disabled={!row.strategyLevel1}
+                              matchStatus={getStrategyMatchStatusForCell(row, 2)}
+                              dbValue={getSavedStrategyValueForCell(row, 2)}
+                              levelLabel="二级策略"
                               onActivate={() => {
                                 setFocusCell({ rowId: row.id, colKey: col.key })
                                 setSelection({
@@ -1712,6 +2014,9 @@ export function DueDiligenceTableView() {
                                     : "三级策略"
                               }
                               disabled={!row.strategyLevel1 || !row.strategyLevel2}
+                              matchStatus={getStrategyMatchStatusForCell(row, 3)}
+                              dbValue={getSavedStrategyValueForCell(row, 3)}
+                              levelLabel="三级策略"
                               onActivate={() => {
                                 setFocusCell({ rowId: row.id, colKey: col.key })
                                 setSelection({
@@ -1736,6 +2041,33 @@ export function DueDiligenceTableView() {
                                     && !(beian in poolMemberships)
                                   }
                                   width={col.width}
+                                />
+                              )
+                            })()
+                          ) : col.key === "ddMaterials" ? (
+                            (() => {
+                              const materials = rowMaterialsMap.get(row.id)
+                              return (
+                                <DdMaterialsCell
+                                  cellId={cellId}
+                                  value={row.ddMaterials}
+                                  width={col.width}
+                                  format={fmt}
+                                  isActive={isActive}
+                                  isSelected={isSelected}
+                                  folderPath={materials?.folderPath ?? null}
+                                  folderName={materials?.folderName ?? null}
+                                  documents={materials?.documents ?? []}
+                                  materialsLoading={materialsLoading}
+                                  onActivate={() => {
+                                    setFocusCell({ rowId: row.id, colKey: col.key })
+                                    setSelection({
+                                      kind: "range",
+                                      anchor: { rowId: row.id, colKey: col.key },
+                                      focus: { rowId: row.id, colKey: col.key },
+                                    })
+                                  }}
+                                  onChange={(value) => handleCellChange(row.id, col.key, value)}
                                 />
                               )
                             })()
