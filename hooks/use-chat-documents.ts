@@ -144,6 +144,17 @@ export function useChatDocuments() {
     setActiveDocId((current) => (current === id ? null : current))
   }, [])
 
+  const clearAllDocuments = useCallback(() => {
+    setDocuments((prev) => {
+      for (const doc of prev) {
+        if (doc.objectUrl) URL.revokeObjectURL(doc.objectUrl)
+        localFilesRef.current.delete(doc.id)
+      }
+      return []
+    })
+    setActiveDocId(null)
+  }, [])
+
   return {
     documents,
     activeDocId,
@@ -152,6 +163,7 @@ export function useChatDocuments() {
     addLocalFile,
     handleDataTransfer,
     removeDocument,
+    clearAllDocuments,
   }
 }
 

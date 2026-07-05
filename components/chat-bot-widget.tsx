@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { usePathname, useSearchParams } from "next/navigation"
-import { BookOpen, Bot, Camera, ChevronDown, Crosshair, FileText, Loader2, PanelLeftClose, PanelLeftOpen, Send, Square, X } from "lucide-react"
+import { BookOpen, Bot, Camera, ChevronDown, Crosshair, FileText, Loader2, PanelLeftClose, PanelLeftOpen, Send, Square, Trash2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ChatBotDocPanel } from "@/components/chat-bot-doc-panel"
 import { CHAT_DOC_READER_WIDTH, computeMaChatOpenLayout, getChatDocPanelWidth, MA_CHAT_OPEN_DOCUMENTS_EVENT, consumePendingMaChatDocuments, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
@@ -121,6 +121,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
     addLocalFile,
     handleDataTransfer,
     removeDocument,
+    clearAllDocuments,
   } = useChatDocuments()
   const [chatDragOver, setChatDragOver] = useState(false)
 
@@ -129,6 +130,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   const [pinLineStart, setPinLineStart] = useState<Pos | null>(null)
   const [pinCursorPos, setPinCursorPos] = useState<Pos | null>(null)
   const [pinnedTarget, setPinnedTarget] = useState<{ label: string; screenshot?: string } | null>(null)
+  const [kbScopeMode, setKbScopeMode] = useState<"current" | "sidebar" | "whole">("current")
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesBoxRef = useRef<HTMLDivElement>(null)
@@ -149,7 +151,19 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   const messages = aiMode === "knowledge" ? knowledgeMessages : assistantMessages
   const setMessages = aiMode === "knowledge" ? setKnowledgeMessages : setAssistantMessages
 
-  const kbScope = useMemo(
+  const sidebarKbPaths = useMemo(
+    () => documents.filter((d) => d.source === "kb" && d.relativePath).map((d) => d.relativePath!),
+    [documents],
+  )
+  const sidebarInlineDocs = useMemo(
+    () =>
+      documents
+        .filter((d) => d.source === "local" && d.textContent?.trim())
+        .map((d) => ({ name: d.name, text: d.textContent!.trim() })),
+    [documents],
+  )
+  const canToggleSidebarScope = documents.length >= 2
+  const naturalKbScope = useMemo(
     () =>
       resolveKnowledgeChatScope({
         pathname,
@@ -163,7 +177,29 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
       }),
     [pathname, searchParams, activeDocId, documents],
   )
+  const kbScope = useMemo(() => {
+    if (kbScopeMode === "whole") {
+      return resolveKnowledgeChatScope({ pathname, searchWholeLibrary: true })
+    }
+    if (kbScopeMode === "sidebar" && canToggleSidebarScope) {
+      return {
+        filePaths: sidebarKbPaths,
+        inlineDocuments: sidebarInlineDocs.length > 0 ? sidebarInlineDocs : undefined,
+        title: `侧栏 ${documents.length} 个文件`,
+      }
+    }
+    return naturalKbScope
+  }, [
+    kbScopeMode,
+    pathname,
+    naturalKbScope,
+    canToggleSidebarScope,
+    sidebarKbPaths,
+    sidebarInlineDocs,
+    documents.length,
+  ])
   const kbScopeLabel = formatKnowledgeScopeLabel(kbScope)
+  const canToggleWholeScope = Boolean(naturalKbScope.filePath || naturalKbScope.folderPath)
 
   useEffect(() => {
     authService.init()
@@ -200,8 +236,12 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   }, [visible, loadKbDocumentsIntoPanel])
 
   useEffect(() => {
+    setKbScopeMode("current")
+  }, [naturalKbScope.filePath, naturalKbScope.folderPath, documents.length])
+
+  useEffect(() => {
     kbConversationIdRef.current = null
-  }, [kbScope.filePath, kbScope.folderPath])
+  }, [kbScope.filePath, kbScope.folderPath, kbScope.filePaths?.join("|"), kbScopeMode])
 
   // Set default ball position on first render (client-only)
   useEffect(() => {
@@ -379,6 +419,27 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
   }
 
   // ── Send message ─────────────────────────────────────────────────────────
+  function handleClearDocuments() {
+    if (documents.length === 0) return
+    clearAllDocuments()
+  }
+
+  function handleClearChat() {
+    if (streaming) {
+      abortRef.current?.abort()
+      setStreaming(false)
+      setStreamContent("")
+    }
+    setInput("")
+    userScrolledUpRef.current = false
+    if (aiMode === "knowledge") {
+      setKnowledgeMessages([])
+      kbConversationIdRef.current = null
+    } else {
+      setAssistantMessages([])
+    }
+  }
+
   async function sendMessage() {
     const text = input.trim()
     if (!text || streaming) return
@@ -699,6 +760,14 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
             {docsPanelOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
           </button>
           <button
+            className="rounded p-1.5 text-primary-foreground/70 transition-colors hover:bg-primary-foreground/10 hover:text-primary-foreground disabled:opacity-40"
+            onClick={handleClearChat}
+            disabled={messages.length === 0 && !streaming}
+            title="清空对话"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+          <button
             className="rounded p-1.5 text-primary-foreground/70 transition-colors hover:bg-primary-foreground/10 hover:text-primary-foreground"
             onClick={() => setMode("ball")}
             title="最小化"
@@ -726,6 +795,7 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
             onAddLocalFiles={(files) => Array.from(files).forEach(addLocalFile)}
             onDataTransfer={handleDataTransfer}
             onRemoveDocument={removeDocument}
+            onClearAllDocuments={handleClearDocuments}
           />
         )}
 
@@ -826,6 +896,46 @@ export function ChatBotWidget({ visible, onClose }: ChatBotWidgetProps) {
             <span className="flex-1 truncate font-medium text-cyan-700 dark:text-cyan-300" title={kbScopeLabel}>
               检索范围：{kbScopeLabel}
             </span>
+            {canToggleSidebarScope && kbScopeMode !== "sidebar" && (
+              <button
+                type="button"
+                onClick={() => setKbScopeMode("sidebar")}
+                className="shrink-0 text-cyan-600 hover:underline"
+                title={`检索侧栏全部 ${documents.length} 个文件`}
+              >
+                侧栏全部
+              </button>
+            )}
+            {kbScopeMode === "sidebar" && (
+              <button
+                type="button"
+                onClick={() => setKbScopeMode("current")}
+                className="shrink-0 text-cyan-600 hover:underline"
+                title="切换为当前文件"
+              >
+                当前文件
+              </button>
+            )}
+            {canToggleWholeScope && kbScopeMode !== "whole" && (
+              <button
+                type="button"
+                onClick={() => setKbScopeMode("whole")}
+                className="shrink-0 text-cyan-600 hover:underline"
+                title="切换为全部资料"
+              >
+                全部资料
+              </button>
+            )}
+            {kbScopeMode === "whole" && (
+              <button
+                type="button"
+                onClick={() => setKbScopeMode("current")}
+                className="shrink-0 text-cyan-600 hover:underline"
+                title="切换为当前文件/文件夹"
+              >
+                当前范围
+              </button>
+            )}
             <a
               href="/ma/dashboard/ai-knowledge"
               className="shrink-0 text-cyan-600 hover:underline"

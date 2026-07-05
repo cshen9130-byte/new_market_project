@@ -630,6 +630,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [explorerSort, setExplorerSort] = useState<{ key: ExplorerSortKey; dir: "asc" | "desc" }>({ key: "updatedAt", dir: "desc" })
   const [uploading, setUploading] = useState(false)
   const [question, setQuestion] = useState("")
+  const [searchWholeKb, setSearchWholeKb] = useState(false)
   const [chatLoading, setChatLoading] = useState(false)
   const [chatElapsed, setChatElapsed] = useState(0)
   const [chatPhase, setChatPhase] = useState<"searching" | "generating" | null>(null)
@@ -855,6 +856,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
 
     return () => window.clearTimeout(timer)
   }, [previewScrollToken, variant])
+
+  useEffect(() => {
+    setSearchWholeKb(false)
+  }, [selectedDocument?.relativePath, selectedFolder])
 
   function getKnowledgeBaseAuthHeaders(user: User | null = currentUser) {
     const resolvedUser = user ?? authService.getCurrentUser()
@@ -1335,6 +1340,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     }
     return parts.length > 0 ? parts.join("，") : "当前文件夹为空"
   }, [currentFolderStats])
+  const chatScopeFilePath = searchWholeKb ? null : (selectedDocument?.relativePath ?? null)
+  const chatScopeFolderPath = searchWholeKb ? null : selectedFolder
+  const chatScopeLabel = searchWholeKb ? "全部资料" : (selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料"))
+  const canToggleChatScope = Boolean(selectedDocument || selectedFolder)
   const explorerEntries = useMemo<ExplorerEntry[]>(() => {
     if (!currentFolderNode) {
       return []
@@ -2517,8 +2526,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   async function ensureConversation(): Promise<string | null> {
     if (activeConversationId) return activeConversationId
     if (!getKnowledgeBaseAuthHeaders()) return null
-    const scope = selectedDocument?.relativePath ?? selectedFolder
-    const scopeType: "folder" | "file" = selectedDocument ? "file" : "folder"
+    const scope = chatScopeFilePath ?? chatScopeFolderPath
+    const scopeType: "folder" | "file" = chatScopeFilePath ? "file" : "folder"
     // Use a placeholder; the server will rename to the first question after the response
     const title = "新对话"
     try {
@@ -2811,7 +2820,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   }
 
   function buildConversationText() {
-    const scope = selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料")
+    const scope = chatScopeLabel
     const activeConv = conversations.find((c) => c.id === activeConversationId)
     const title = activeConv?.title || "知识库对话"
     const dateStr = new Date().toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })
@@ -2951,8 +2960,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
         signal: controller.signal,
         body: JSON.stringify({
           question: trimmedQuestion,
-          folderPath: selectedFolder,
-          filePath: selectedDocument?.relativePath ?? null,
+          folderPath: chatScopeFolderPath,
+          filePath: chatScopeFilePath,
           useBm25,
           useGraphRag,
           stream: true,
@@ -2960,9 +2969,9 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           deepSearch: queryMode === "deep" || queryMode === "thinking",
           thinkingSearch: queryMode === "thinking",
           conversationId: convId,
-          title: selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料"),
-          fileName: selectedDocument?.name,
-          folderName: selectedFolder || "全部资料",
+          title: chatScopeLabel,
+          fileName: searchWholeKb ? undefined : selectedDocument?.name,
+          folderName: chatScopeFolderPath || "全部资料",
         }),
       })
 
@@ -3123,8 +3132,8 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             signal: cellAbort.signal,
             body: JSON.stringify({
               question: q,
-              folderPath: selectedFolder,
-              filePath: selectedDocument?.relativePath ?? null,
+              folderPath: chatScopeFolderPath,
+              filePath: chatScopeFilePath,
               useBm25: true,
               useGraphRag: false,
               stream: true,
@@ -5375,13 +5384,24 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               </div>
               </div>
               <div className="flex items-center justify-between text-sm text-muted-foreground">
-                <div className="flex items-center gap-2">
-                  <BrainCircuit className="h-4 w-4" />
-                  <span>当前检索范围：{selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料")}</span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <BrainCircuit className="h-4 w-4 shrink-0" />
+                  <span className="truncate">当前检索范围：{chatScopeLabel}</span>
+                  {canToggleChatScope && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 shrink-0 px-2 text-xs"
+                      onClick={() => setSearchWholeKb((value) => !value)}
+                      title={searchWholeKb ? "切换为当前文件/文件夹" : "切换为全部资料"}
+                    >
+                      {searchWholeKb ? "当前范围" : "全部资料"}
+                    </Button>
+                  )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <FolderOpen className="h-4 w-4" />
-                  <span>{selectedDocument ? "1 个文件" : currentFolderSummary}</span>
+                  <span>{searchWholeKb ? `${totalDocuments} 个文件` : (selectedDocument ? "1 个文件" : currentFolderSummary)}</span>
                 </div>
               </div>
             </div>
@@ -6274,11 +6294,22 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
               )}
 
               <div className="flex items-center justify-between rounded-xl border border-cyan-500/15 bg-black/25 px-4 py-3 text-sm text-cyan-300/80">
-                <div className="flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4" />
-                  <span>提问范围：{selectedDocument ? selectedDocument.name : (selectedFolder || "全部资料")}</span>
+                <div className="flex min-w-0 items-center gap-2">
+                  <MessageSquare className="h-4 w-4 shrink-0" />
+                  <span className="truncate">提问范围：{chatScopeLabel}</span>
+                  {canToggleChatScope && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 shrink-0 px-2 text-xs text-cyan-300 hover:bg-cyan-500/10 hover:text-cyan-100"
+                      onClick={() => setSearchWholeKb((value) => !value)}
+                      title={searchWholeKb ? "切换为当前文件/文件夹" : "切换为全部资料"}
+                    >
+                      {searchWholeKb ? "当前范围" : "全部资料"}
+                    </Button>
+                  )}
                 </div>
-                <div>{selectedDocument ? "1 个文件" : currentFolderSummary}</div>
+                <div className="shrink-0">{searchWholeKb ? `${totalDocuments} 个文件` : (selectedDocument ? "1 个文件" : currentFolderSummary)}</div>
               </div>
 
               {/* Conversation history sidebar + messages */}

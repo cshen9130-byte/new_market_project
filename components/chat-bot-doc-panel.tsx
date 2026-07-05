@@ -26,6 +26,7 @@ export function ChatBotDocPanel({
   onAddLocalFiles,
   onDataTransfer,
   onRemoveDocument,
+  onClearAllDocuments,
 }: {
   documents: MaChatDocumentItem[]
   activeDocId: string | null
@@ -35,6 +36,7 @@ export function ChatBotDocPanel({
   onAddLocalFiles: (files: FileList | File[]) => void
   onDataTransfer: (dataTransfer: DataTransfer) => boolean
   onRemoveDocument: (id: string) => void
+  onClearAllDocuments?: () => void
 }) {
   const [previewZoom, setPreviewZoom] = useState(100)
   const activeDoc = documents.find((d) => d.id === activeDocId) ?? null
@@ -119,6 +121,8 @@ export function ChatBotDocPanel({
           compact
           onDataTransfer={onDataTransfer}
           onAddLocalFiles={onAddLocalFiles}
+          onClearAll={onClearAllDocuments}
+          canClear={documents.length > 0}
         />
 
         <div className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5">
@@ -272,10 +276,14 @@ function DropZone({
   compact,
   onDataTransfer,
   onAddLocalFiles,
+  onClearAll,
+  canClear,
 }: {
   compact?: boolean
   onDataTransfer: (dataTransfer: DataTransfer) => boolean
   onAddLocalFiles: (files: FileList | File[]) => void
+  onClearAll?: () => void
+  canClear?: boolean
 }) {
   const [dragOver, setDragOver] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -304,6 +312,17 @@ function DropZone({
           <Plus className="h-3 w-3" />
           添加
         </button>
+        {canClear && onClearAll && (
+          <button
+            type="button"
+            className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-destructive hover:underline"
+            onClick={onClearAll}
+            title="清空资料暂存区"
+          >
+            <Trash2 className="h-3 w-3" />
+            清空
+          </button>
+        )}
         <input
           ref={fileInputRef}
           type="file"

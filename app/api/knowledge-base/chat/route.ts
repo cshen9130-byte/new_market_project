@@ -14,8 +14,21 @@ export async function POST(req: Request) {
     const userId = String(req.headers.get("x-market-user-id") || "").trim()
     const user = userId ? await getUserById(userId) : null
 
-    const scope = String(body?.filePath ?? body?.folderPath ?? "")
-    const scopeType: "folder" | "file" = body?.filePath ? "file" : "folder"
+    const filePaths = Array.isArray(body?.filePaths)
+      ? body.filePaths.map((p: unknown) => String(p).trim()).filter(Boolean)
+      : []
+    const inlineDocuments = Array.isArray(body?.inlineDocuments)
+      ? body.inlineDocuments
+          .map((doc: { name?: unknown; text?: unknown }) => ({
+            name: String(doc?.name || "").trim(),
+            text: String(doc?.text || "").trim(),
+          }))
+          .filter((doc: { name: string; text: string }) => doc.name && doc.text)
+      : []
+    const scope = filePaths.length > 0
+      ? `sidebar:${filePaths.slice(0, 3).join(",")}${filePaths.length > 3 ? `+${filePaths.length - 3}` : ""}`
+      : String(body?.filePath ?? body?.folderPath ?? "")
+    const scopeType: "folder" | "file" = body?.filePath && filePaths.length === 0 ? "file" : "folder"
     const titleCandidate = String(body?.title || body?.fileName || body?.folderName || scope || "新对话")
     let effectiveConversationId: string | null = requestedConversationId
 
@@ -38,7 +51,9 @@ export async function POST(req: Request) {
             const gen = streamKnowledgeBaseAnswer({
               question: String(body?.question || ""),
               folderPath: body?.folderPath,
-              filePath: body?.filePath ?? null,
+              filePath: filePaths.length > 0 ? null : body?.filePath ?? null,
+              filePaths: filePaths.length > 0 ? filePaths : undefined,
+              inlineDocuments: inlineDocuments.length > 0 ? inlineDocuments : undefined,
               useBm25: body?.useBm25 !== false,
               useGraphRag: body?.useGraphRag === true,
               modelMode,
@@ -98,7 +113,9 @@ export async function POST(req: Request) {
     const answer = await askKnowledgeBaseQuestion({
       question: String(body?.question || ""),
       folderPath: body?.folderPath,
-      filePath: body?.filePath ?? null,
+      filePath: filePaths.length > 0 ? null : body?.filePath ?? null,
+      filePaths: filePaths.length > 0 ? filePaths : undefined,
+      inlineDocuments: inlineDocuments.length > 0 ? inlineDocuments : undefined,
       useBm25: body?.useBm25 !== false,
       useGraphRag: body?.useGraphRag === true,
       modelMode,

@@ -1250,10 +1250,70 @@ async function pgVectorSearchDocs(
   }
 }
 
+async function buildMultiFileRetrievalContext(input: {
+  question: string
+  filePaths: string[]
+  inlineDocuments?: Array<{ name: string; text: string }>
+}): Promise<RetrievalContext> {
+  const question = input.question.trim()
+  const MAX_CONTEXT_CHARS = 28000
+  const parts: string[] = []
+  const sources: string[] = []
+
+  for (const filePath of input.filePaths) {
+    try {
+      const file = await getKnowledgeBaseFile(filePath)
+      const text = await readFileDocumentText(file.absolutePath, file.extension)
+      if (text) {
+        parts.push(`【${file.relativePath}】\n${text}`)
+        sources.push(file.relativePath)
+      }
+    } catch {
+      // Skip missing or unreadable files.
+    }
+  }
+
+  for (const doc of input.inlineDocuments ?? []) {
+    const text = doc.text.trim()
+    if (!text) continue
+    parts.push(`【${doc.name}】\n${text}`)
+    sources.push(doc.name)
+  }
+
+  let combined = parts.join("\n\n")
+  if (combined.length > MAX_CONTEXT_CHARS) {
+    combined = combined.slice(0, MAX_CONTEXT_CHARS) + "\n\n[…内容过长，已截断]"
+  }
+
+  const scopeLabel = `侧栏 ${sources.length} 个文件`
+
+  return {
+    messages: [
+      {
+        role: "system",
+        content: parts.length > 0
+          ? "你是市场研究知识库助手。只允许基于提供的资料回答问题。资料来自用户侧栏暂存的多个文件。如果资料里没有足够依据，直接明确说明不知道或资料不足，不要编造。回答使用中文，并在结尾列出引用到的文件。"
+          : "你是市场研究助手。侧栏文件内容为空或暂不支持提取文字。请告知用户无法解读这些文件内容。回答使用中文。",
+      },
+      {
+        role: "user",
+        content: parts.length > 0
+          ? `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容：\n${combined}`
+          : `当前检索范围：${scopeLabel}\n\n问题：${question}\n\n文件内容为空，无法作答。`,
+      },
+    ],
+    sources,
+    indexedDocuments: sources.length,
+    indexedChunks: sources.length,
+  }
+}
+
 async function buildRetrievalContext(input: {
   question: string
   folderPath?: string | null
   filePath?: string | null
+  filePaths?: string[] | null
+  inlineDocuments?: Array<{ name: string; text: string }> | null
   useBm25?: boolean
   useGraphRag?: boolean
   deepSearch?: boolean
@@ -1264,6 +1324,12 @@ async function buildRetrievalContext(input: {
   const enableGraphRag = input.useGraphRag === true
   const topK = input.thinkingSearch ? 40 : input.deepSearch ? 20 : 4
   const matchCap = input.thinkingSearch ? 60 : input.deepSearch ? 30 : 8
+
+  const filePaths = (input.filePaths ?? []).map((p) => String(p).trim()).filter(Boolean)
+  const inlineDocuments = (input.inlineDocuments ?? []).filter((doc) => doc.name && doc.text?.trim())
+  if (filePaths.length > 0 || inlineDocuments.length > 0) {
+    return buildMultiFileRetrievalContext({ question, filePaths, inlineDocuments })
+  }
 
   // ── Single-file mode ──
   if (input.filePath) {
@@ -1387,6 +1453,8 @@ export async function askKnowledgeBaseQuestion(input: {
   question: string
   folderPath?: string | null
   filePath?: string | null
+  filePaths?: string[] | null
+  inlineDocuments?: Array<{ name: string; text: string }> | null
   useBm25?: boolean
   useGraphRag?: boolean
   modelMode?: KbModelMode
@@ -1419,6 +1487,8 @@ export async function* streamKnowledgeBaseAnswer(input: {
   question: string
   folderPath?: string | null
   filePath?: string | null
+  filePaths?: string[] | null
+  inlineDocuments?: Array<{ name: string; text: string }> | null
   useBm25?: boolean
   useGraphRag?: boolean
   modelMode?: KbModelMode

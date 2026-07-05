@@ -3,6 +3,8 @@ import { authService } from "@/lib/auth"
 export type KnowledgeChatScope = {
   folderPath?: string | null
   filePath?: string | null
+  filePaths?: string[] | null
+  inlineDocuments?: Array<{ name: string; text: string }> | null
   title?: string
   fileName?: string
   folderName?: string
@@ -26,8 +28,11 @@ export async function ensureKnowledgeConversation(scope: KnowledgeChatScope): Pr
 
   const filePath = scope.filePath?.trim() || null
   const folderPath = scope.folderPath?.trim() || ""
-  const kbScope = filePath ?? folderPath
-  const scopeType: "folder" | "file" = filePath ? "file" : "folder"
+  const filePaths = scope.filePaths?.filter(Boolean) ?? []
+  const kbScope = filePaths.length > 0
+    ? `sidebar:${filePaths.join(",")}`
+    : filePath ?? folderPath
+  const scopeType: "folder" | "file" = filePath && filePaths.length === 0 ? "file" : "folder"
 
   try {
     const res = await fetch("/api/knowledge-base/conversations", {
@@ -63,6 +68,8 @@ export async function streamKnowledgeBaseChat(input: {
   const scope = input.scope
   const filePath = scope.filePath?.trim() || null
   const folderPath = scope.folderPath ?? null
+  const filePaths = scope.filePaths?.filter(Boolean) ?? []
+  const inlineDocuments = scope.inlineDocuments?.filter((doc) => doc.name && doc.text?.trim()) ?? []
 
   const res = await fetch("/api/knowledge-base/chat", {
     method: "POST",
@@ -71,7 +78,9 @@ export async function streamKnowledgeBaseChat(input: {
     body: JSON.stringify({
       question: input.question,
       folderPath,
-      filePath,
+      filePath: filePaths.length > 0 ? null : filePath,
+      filePaths: filePaths.length > 0 ? filePaths : undefined,
+      inlineDocuments: inlineDocuments.length > 0 ? inlineDocuments : undefined,
       useBm25: input.useBm25 !== false,
       useGraphRag: input.useGraphRag === true,
       stream: true,
@@ -142,7 +151,12 @@ export function resolveKnowledgeChatScope(input: {
   folderFromUrl?: string | null
   activeKbRelativePath?: string | null
   activeKbName?: string | null
+  searchWholeLibrary?: boolean
 }): KnowledgeChatScope {
+  if (input.searchWholeLibrary) {
+    return { folderPath: null, folderName: "全部资料", title: "全部资料" }
+  }
+
   if (input.activeKbRelativePath) {
     return {
       filePath: input.activeKbRelativePath,
@@ -163,6 +177,11 @@ export function resolveKnowledgeChatScope(input: {
 }
 
 export function formatKnowledgeScopeLabel(scope: KnowledgeChatScope): string {
+  if (scope.filePaths?.length || scope.inlineDocuments?.length) {
+    if (scope.title) return scope.title
+    const total = (scope.filePaths?.length ?? 0) + (scope.inlineDocuments?.length ?? 0)
+    return total > 0 ? `侧栏 ${total} 个文件` : "侧栏文件"
+  }
   if (scope.filePath) return scope.fileName || scope.filePath.split("/").pop() || "当前文件"
   if (scope.folderPath) return scope.folderName || scope.folderPath
   return "全部资料"
