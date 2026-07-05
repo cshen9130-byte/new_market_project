@@ -102,8 +102,7 @@ function toChatPayload(doc: DdMaterialsDocument): MaChatKbDocumentPayload {
   }
 }
 
-function stopPanelEvent(event: MouseEvent | React.PointerEvent) {
-  event.preventDefault()
+function stopPointerBubble(event: React.PointerEvent) {
   event.stopPropagation()
 }
 
@@ -196,7 +195,7 @@ export function DdMaterialsCell({
 
   const onHeaderPointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      stopPanelEvent(event)
+      stopPointerBubble(event)
       event.currentTarget.setPointerCapture(event.pointerId)
       dragRef.current = { px: event.clientX, py: event.clientY, ox: dialogPos.x, oy: dialogPos.y }
 
@@ -224,7 +223,7 @@ export function DdMaterialsCell({
 
   const onResizePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>, dir: "se" | "e" | "s") => {
-      stopPanelEvent(event)
+      stopPointerBubble(event)
       event.currentTarget.setPointerCapture(event.pointerId)
       resizeRef.current = { px: event.clientX, py: event.clientY, w: dialogSize.w, h: dialogSize.h, dir }
 
@@ -275,8 +274,7 @@ export function DdMaterialsCell({
     openModal(event)
   }
 
-  function openInPageAi(event: MouseEvent) {
-    stopPanelEvent(event)
+  function openInPageAi() {
     if (documents.length === 0) return
     dispatchMaChatOpenDocuments(documents.map(toChatPayload))
     setOpen(false)
@@ -329,12 +327,15 @@ export function DdMaterialsCell({
                 </div>
                 <div
                   className="flex items-center gap-2 shrink-0"
-                  onPointerDown={(event) => stopPanelEvent(event)}
+                  onPointerDown={stopPointerBubble}
                 >
                   {documents.length > 0 && (
                     <button
                       type="button"
-                      onMouseDown={openInPageAi}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        openInPageAi()
+                      }}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border bg-background text-xs hover:bg-muted transition-colors"
                     >
                       <Bot className="h-3.5 w-3.5" />
@@ -346,7 +347,7 @@ export function DdMaterialsCell({
                       href={kbUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      onMouseDown={stopPanelEvent}
+                      onClick={(event) => event.stopPropagation()}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border bg-background text-xs hover:bg-muted transition-colors"
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
@@ -355,8 +356,8 @@ export function DdMaterialsCell({
                   )}
                   <button
                     type="button"
-                    onMouseDown={(event) => {
-                      stopPanelEvent(event)
+                    onClick={(event) => {
+                      event.stopPropagation()
                       setOpen(false)
                     }}
                     className="p-1 rounded text-muted-foreground hover:text-foreground"

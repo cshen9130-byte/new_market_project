@@ -16,13 +16,13 @@ export function dispatchMaChatOpenDocuments(documents: MaChatKbDocumentPayload[]
   if (documents.length === 0) return
   pendingOpenDocuments = documents
   window.dispatchEvent(
-    new CustomEvent<MaChatOpenDocumentsDetail>(MA_CHAT_OPEN_DOCUMENTS_EVENT, {
-      detail: { documents },
+    new CustomEvent<{ visible: boolean }>(MA_CHAT_VISIBLE_EVENT, {
+      detail: { visible: true },
     }),
   )
   window.dispatchEvent(
-    new CustomEvent<{ visible: boolean }>(MA_CHAT_VISIBLE_EVENT, {
-      detail: { visible: true },
+    new CustomEvent<MaChatOpenDocumentsDetail>(MA_CHAT_OPEN_DOCUMENTS_EVENT, {
+      detail: { documents },
     }),
   )
 }
