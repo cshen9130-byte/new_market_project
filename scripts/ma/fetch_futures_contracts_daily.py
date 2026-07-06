@@ -67,11 +67,12 @@ Output JSON schema
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # ── Field definitions ─────────────────────────────────────────────────────────
@@ -116,6 +117,8 @@ ALL_API_FIELDS = list(FIELD_MAP.keys())
 
 # Batch size — how many contracts per c.csd() call
 _BATCH_SIZE = 20
+# Per-batch API timeout (seconds) — prevents indefinite hangs on EmQuant
+_CSD_TIMEOUT = int(os.environ.get("EMQ_CSD_TIMEOUT", "120"))
 
 
 # ── Contract code normalizer ──────────────────────────────────────────────────
@@ -461,6 +464,23 @@ def _parse_date(s: str) -> str:
     return datetime.strptime(s, "%Y%m%d").strftime("%Y-%m-%d")
 
 
+def _clamp_end_date(end: date) -> date:
+    """Don't request today's bar before the afternoon settlement window."""
+    today = date.today()
+    if end < today:
+        return end
+    if end == today and datetime.now().hour < 16:
+        return end - timedelta(days=1)
+    return end
+
+
+def _csd_call(c, codes_str: str, start_date: str, end_date: str):
+    """Run c.csd() with a wall-clock timeout so a hung API call can't block forever."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(c.csd, codes_str, CSD_FIELDS, start_date, end_date, CSD_OPTS)
+        return future.result(timeout=_CSD_TIMEOUT)
+
+
 def main():
     _load_env_from_files()
 
@@ -470,6 +490,14 @@ def main():
     # Positional: [start_date] [end_date] [contracts_csv]
     start_date = _parse_date(argv[0]) if len(argv) >= 1 else _fmt(today - timedelta(days=1))
     end_date   = _parse_date(argv[1]) if len(argv) >= 2 else _fmt(today)
+    end_date   = _fmt(_clamp_end_date(datetime.strptime(end_date, "%Y-%m-%d").date()))
+    if start_date > end_date:
+        print(json.dumps({
+            "start_date": start_date, "end_date": end_date,
+            "contracts": [], "count": 0, "data": [],
+            "message": "start_date > end_date after clamping",
+        }))
+        return
     manual_contracts: list[str] = (
         [c.strip() for c in argv[2].split(",") if c.strip()] if len(argv) >= 3 else []
     )
@@ -509,10 +537,19 @@ def main():
         sys.exit(1)
 
     options = f"UserName={username},PassWord={password},TestLatency=1,ForceLogin=0"
-    login = c.start(options)
+    sys.stderr.write("EmQuant: logging in…\n")
+    sys.stderr.flush()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        login_future = pool.submit(c.start, options)
+        try:
+            login = login_future.result(timeout=60)
+        except concurrent.futures.TimeoutError:
+            print(json.dumps({"error": "EmQuant login timed out after 60s"}))
+            sys.exit(1)
     if login.ErrorCode != 0:
         print(json.dumps({"error": f"EmQuant login failed: {login.ErrorMsg}"}))
         sys.exit(1)
+    sys.stderr.write("EmQuant: login OK\n")
 
     all_records: list[dict] = []
     batches = [
@@ -520,35 +557,41 @@ def main():
         for i in range(0, len(contracts), _BATCH_SIZE)
     ]
     total_batches = len(batches)
+    sys.stderr.write(
+        f"Fetching {len(contracts)} contracts in {total_batches} batch(es), "
+        f"{start_date} → {end_date}\n"
+    )
 
     try:
         for batch_idx, batch in enumerate(batches):
             codes_str = ",".join(batch)
             pct = int((batch_idx + 1) / total_batches * 100)
-            # Progress: write to stderr so it's visible but not captured as JSON
             sys.stderr.write(
-                f"\r[{batch_idx+1}/{total_batches}] ({pct}%) fetching {len(batch)} contracts "
-                f"{start_date} → {end_date}  "
+                f"[{batch_idx+1}/{total_batches}] ({pct}%) fetching {len(batch)} contracts "
+                f"{start_date} → {end_date}\n"
             )
             sys.stderr.flush()
             try:
-                data = c.csd(codes_str, CSD_FIELDS, start_date, end_date, CSD_OPTS)
+                data = _csd_call(c, codes_str, start_date, end_date)
                 if data.ErrorCode != 0:
                     if data.ErrorCode == 10003008 and len(batch) > 1:
                         # Batch contains at least one invalid/delisted code — retry individually
                         sys.stderr.write(
-                            f"\n[batch {batch_idx+1}] invalid code in batch, retrying individually...\n"
+                            f"[batch {batch_idx+1}] invalid code in batch, retrying individually...\n"
                         )
                         good = bad = 0
                         for single_code in batch:
                             try:
-                                sd = c.csd(single_code, CSD_FIELDS, start_date, end_date, CSD_OPTS)
+                                sd = _csd_call(c, single_code, start_date, end_date)
                                 if sd.ErrorCode != 0:
                                     bad += 1
                                 else:
                                     rows = _parse_batch(sd, [single_code])
                                     all_records.extend(rows)
                                     good += 1
+                            except concurrent.futures.TimeoutError:
+                                bad += 1
+                                sys.stderr.write(f"[{single_code}] timed out after {_CSD_TIMEOUT}s\n")
                             except Exception:
                                 bad += 1
                         sys.stderr.write(
@@ -556,16 +599,18 @@ def main():
                         )
                     else:
                         sys.stderr.write(
-                            f"\n[batch {batch_idx+1}] API error ({data.ErrorCode}): {data.ErrorMsg}\n"
+                            f"[batch {batch_idx+1}] API error ({data.ErrorCode}): {data.ErrorMsg}\n"
                         )
                     continue
                 rows = _parse_batch(data, batch)
-                sys.stderr.write(
-                    f"→ {len(rows)} rows\n"
-                )
+                sys.stderr.write(f"[batch {batch_idx+1}] → {len(rows)} rows\n")
                 all_records.extend(rows)
+            except concurrent.futures.TimeoutError:
+                sys.stderr.write(
+                    f"[batch {batch_idx+1}] timed out after {_CSD_TIMEOUT}s — skipping batch\n"
+                )
             except Exception as exc:
-                sys.stderr.write(f"\n[batch {batch_idx+1}] Exception: {exc}\n")
+                sys.stderr.write(f"[batch {batch_idx+1}] Exception: {exc}\n")
     finally:
         sys.stderr.write("\n")
         try:

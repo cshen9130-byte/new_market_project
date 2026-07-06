@@ -113,11 +113,12 @@ export async function POST(request: Request) {
       proc.stdout?.on("data", (d: Buffer) => splitLines(d.toString(), ""))
       proc.stderr?.on("data", (d: Buffer) => splitLines(d.toString(), "stderr"))
 
+      const ETL_TIMEOUT_MS = 1_800_000 // 30 min — market-data EmQuant steps can exceed 10 min
       const timer = setTimeout(() => {
         proc?.kill()
         send("__EXIT__:timeout")
         controller.close()
-      }, 600_000)
+      }, ETL_TIMEOUT_MS)
 
       proc.on("close", async (code: number | null) => {
         clearTimeout(timer)

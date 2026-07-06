@@ -30,6 +30,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import threading
 import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -335,23 +336,67 @@ def _run_script(
     extra_args: list | None = None,
     timeout: int = 600,
 ) -> dict | None:
-    """Run a sibling script and return its JSON stdout, or None on failure."""
+    """Run a sibling script and return its JSON stdout, or None on failure.
+
+    Child stderr is streamed line-by-line so long EmQuant fetches show progress
+    in the dashboard log instead of appearing stuck.
+    """
     script_path = SCRIPT_DIR / script_name
     python_exe = os.environ.get("PYTHON_EXE") or (
         "py" if sys.platform == "win32" else "python3"
     )
     prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
     cmd = prefix + [str(script_path)] + (extra_args or [])
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+
+    def _drain(stream, chunks: list[str], *, stream_stderr: bool) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                chunks.append(line)
+                if stream_stderr:
+                    text = line.rstrip("\r\n")
+                    if text:
+                        log.info("[%s] %s", script_name, text)
+        finally:
+            stream.close()
+
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=os.environ
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=os.environ,
+            bufsize=1,
         )
-        stderr = (result.stderr or "").strip()
-        if result.returncode != 0:
-            log.warning("[%s] exit %d: %s", script_name, result.returncode, stderr[:800])
-        elif stderr:
-            log.info("[%s] stderr:\n%s", script_name, stderr[:2000])
-        stdout = (result.stdout or "").strip()
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        t_out = threading.Thread(target=_drain, args=(proc.stdout, stdout_chunks), kwargs={"stream_stderr": False})
+        t_err = threading.Thread(target=_drain, args=(proc.stderr, stderr_chunks), kwargs={"stream_stderr": True})
+        t_out.start()
+        t_err.start()
+
+        try:
+            returncode = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            t_out.join()
+            t_err.join()
+            log.error("[%s] timed out after %ds", script_name, timeout)
+            return None
+
+        t_out.join()
+        t_err.join()
+
+        stderr = "".join(stderr_chunks).strip()
+        if returncode != 0:
+            log.warning("[%s] exit %d: %s", script_name, returncode, stderr[:800])
+
+        stdout = "".join(stdout_chunks).strip()
         if stdout:
             first = stdout.find("{")
             last = stdout.rfind("}")
@@ -361,9 +406,6 @@ def _run_script(
                 except json.JSONDecodeError:
                     pass
         log.warning("[%s] no valid JSON in stdout", script_name)
-        return None
-    except subprocess.TimeoutExpired:
-        log.error("[%s] timed out after %ds", script_name, timeout)
         return None
     except Exception as exc:
         log.error("[%s] exception: %s", script_name, exc)

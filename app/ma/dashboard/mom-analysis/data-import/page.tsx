@@ -271,7 +271,7 @@ export default function DataImportPage() {
       if (exitCode === "0") {
         toast({ title: "ETL 完成", description: "数据已成功写入数据库。" })
       } else if (exitCode === "timeout") {
-        toast({ title: "ETL 超时", description: "运行超过 600 秒被终止。", variant: "destructive" })
+        toast({ title: "ETL 超时", description: "运行超过 30 分钟被终止。", variant: "destructive" })
       } else {
         toast({ title: "ETL 失败", description: `退出码 ${exitCode ?? "unknown"}`, variant: "destructive" })
       }
