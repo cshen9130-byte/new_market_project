@@ -220,10 +220,14 @@ auto_tune_build_settings() {
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  if [[ -n "$mem_total_kb" && "$mem_total_kb" -ge 3500000 && "$BUILD_MEMORY_MB" == "1024" ]]; then
-    BUILD_MEMORY_MB="2048"
-  elif [[ -n "$mem_total_kb" && "$mem_total_kb" -ge 2500000 && "$BUILD_MEMORY_MB" == "1024" ]]; then
-    BUILD_MEMORY_MB="1536"
+  # Only bump heap when the user left the default; stay conservative below 6 GiB
+  # because Next.js spawns parallel jest-worker processes that each consume RAM.
+  if [[ "$BUILD_MEMORY_MB" == "1024" && -n "$mem_total_kb" ]]; then
+    if [[ "$mem_total_kb" -ge 6000000 ]]; then
+      BUILD_MEMORY_MB="2048"
+    elif [[ "$mem_total_kb" -ge 4500000 ]]; then
+      BUILD_MEMORY_MB="1536"
+    fi
   fi
 
   echo "Build settings: memory=${BUILD_MEMORY_MB}MB, temp_swap=${TEMP_SWAP_GB}G, debug=${DEBUG_BUILD}, interval=${BUILD_DEBUG_INTERVAL_SEC}s"
@@ -261,7 +265,7 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
   set +e
   (
     set -o pipefail
-    CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
+    CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
       pnpm exec next build --webpack --debug 2>&1 | tee "$BUILD_LOG_FILE"
   ) &
   BUILD_PID=$!
@@ -277,7 +281,7 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
     exit "$BUILD_RC"
   fi
 else
-  CI=1 NEXT_TELEMETRY_DISABLED=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
+  CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
 fi
 
 # 7) Persist credentials to .env so all Python scripts find them without PM2

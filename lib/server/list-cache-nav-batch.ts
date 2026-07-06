@@ -1183,6 +1183,49 @@ export async function enrichTrackFundMetricsRows<T extends TrackFundMetricsField
   })
 }
 
+/** Prefer team/email+manual NAV for ops tracking lists (团队单位净值 columns). */
+export async function overlayTeamNavOnTrackRows<T extends TrackFundMetricsFields>(
+  rows: T[],
+  asOfDate: string,
+): Promise<T[]> {
+  if (rows.length === 0) return rows
+
+  const { loadManagedProductTeamNavBatch } = await import("@/lib/server/team-nav-manage-pg")
+  const { resolveTeamSeriesListNavAt } = await import("@/lib/server/managed-product-nav-seed")
+
+  const teamBatch = await loadManagedProductTeamNavBatch(
+    rows.map((row) => ({
+      beian_hao: row.beian_hao,
+      product_name: row.product_name,
+      short_name: row.short_name,
+    })),
+  )
+
+  return rows.map((row) => {
+    const series = teamBatch.get(row.beian_hao)
+    if (!series?.length) return row
+    const point = resolveTeamSeriesListNavAt(series, asOfDate)
+    if (!point) return row
+
+    const unitNav = parseFloat(point.nav)
+    let returnPct: number | null = null
+    if (point.prev_nav != null) {
+      const prev = parseFloat(point.prev_nav)
+      if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
+        returnPct = unitNav / prev - 1
+      }
+    }
+
+    return {
+      ...row,
+      latest_nav: point.nav,
+      latest_nav_date: point.nav_date,
+      latest_price_change:
+        returnPct != null ? String(returnPct) : row.latest_price_change,
+    }
+  })
+}
+
 /** Chunked INSERT to stay within Postgres parameter limits. */
 export async function chunkedInsert(
   sqlPrefix: string,

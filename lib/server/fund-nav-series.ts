@@ -11,7 +11,7 @@ import {
   loadManagedProductNavSeed,
   mergeManagedProductDetailNav,
 } from "@/lib/server/managed-product-nav-seed"
-import { loadManagedProductEmailPoints, loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
+import { loadManagedProductEmailPoints, loadManagedProductNavSeries, loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
 function pickNavLevel(row: LegacyNavRow): number | null {
   for (const field of [row.cum_nav_withdrawal, row.cumulative_nav, row.nav]) {
@@ -72,23 +72,30 @@ async function loadMergedNavRows(
     lookupManagedProductOverride(beian_hao)
     ?? lookupManagedProductOverride(product_name)
 
-  if (!managedOverride) return navSeries
+  const manualTeamNavMap = await loadManualTeamNavBatch([beian_hao])
+  const effectiveManagedOverride =
+    managedOverride
+    ?? ((manualTeamNavMap.get(beian_hao)?.length ?? 0) > 0
+      ? { beian_hao, product_name }
+      : null)
+
+  if (!effectiveManagedOverride) return navSeries
 
   try {
     const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
       loadManagedProductEmailPoints({
-        beian_hao: managedOverride.beian_hao,
-        product_name: managedOverride.product_name,
+        beian_hao: effectiveManagedOverride.beian_hao,
+        product_name: effectiveManagedOverride.product_name,
         short_name: short_name || null,
         extraNames,
       }),
       loadManagedProductNavSeries({
-        beian_hao: managedOverride.beian_hao,
-        product_name: managedOverride.product_name,
+        beian_hao: effectiveManagedOverride.beian_hao,
+        product_name: effectiveManagedOverride.product_name,
         short_name: short_name || null,
         extraNames,
       }),
-      Promise.resolve(loadManagedProductNavSeed(managedOverride.beian_hao)),
+      Promise.resolve(loadManagedProductNavSeed(effectiveManagedOverride.beian_hao)),
     ])
 
     if (seedRows.length > 0) {

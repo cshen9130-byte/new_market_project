@@ -41,8 +41,8 @@ const BENCHMARK_OPTIONS = [
 ] as const
 
 const NAV_FREQUENCY_OPTIONS = [
-  { value: "daily", label: "日频" },
   { value: "weekly", label: "周频" },
+  { value: "daily", label: "日频" },
   { value: "monthly", label: "月频" },
 ] as const
 
@@ -341,7 +341,7 @@ export function FofWeeklyReportDialog({
   const [weekBegin, setWeekBegin] = useState("")
   const [weekEnd, setWeekEnd] = useState("")
   const [benchmarkKey, setBenchmarkKey] = useState("IF")
-  const [navFrequency, setNavFrequency] = useState<NavFrequency>("daily")
+  const [navFrequency, setNavFrequency] = useState<NavFrequency>("weekly")
   const [productSource, setProductSource] = useState<ProductSource>("managed")
   const [presets, setPresets] = useState<FofWeeklyReportPreset[]>([])
   const [selectedPresetName, setSelectedPresetName] = useState("")
@@ -363,7 +363,7 @@ export function FofWeeklyReportDialog({
       setWeekBegin("")
       setWeekEnd("")
       setBenchmarkKey("IF")
-      setNavFrequency("daily")
+      setNavFrequency("weekly")
       setProductSource("managed")
       setSelectedPresetName("")
       setShowSavePresetModal(false)
@@ -387,7 +387,7 @@ export function FofWeeklyReportDialog({
     setWeekBegin(preset.week_begin)
     setWeekEnd(preset.week_end)
     setBenchmarkKey(preset.benchmark_key)
-    setNavFrequency(preset.nav_frequency ?? "daily")
+    setNavFrequency(preset.nav_frequency ?? "weekly")
     setSelectedPresetName(preset.name)
     setResult(null)
     setError(null)

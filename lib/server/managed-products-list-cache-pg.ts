@@ -135,9 +135,14 @@ export async function refreshManagedProductsListCache(): Promise<number> {
   const overrideItems = Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES).map(
     ([product_name, beian_hao]) => ({ product_name, beian_hao }),
   )
+  const allTeamItems = products.map((p, i) => ({
+    beian_hao: identities[i].beian_hao ?? p.beian_hao ?? "",
+    product_name: p.product_name,
+    short_name: p.short_name,
+  })).filter((item) => item.beian_hao)
   const [postSeedByBeian, fullTeamByBeian] = await Promise.all([
     loadManagedProductPostSeedExtensions(Object.values(MANAGED_PRODUCT_BEIAN_OVERRIDES)),
-    loadManagedProductTeamNavBatch(overrideItems),
+    loadManagedProductTeamNavBatch(allTeamItems.length > 0 ? allTeamItems : overrideItems),
   ])
 
   const beianHaos = products.map((p) => p.beian_hao).filter(Boolean) as string[]
@@ -193,6 +198,18 @@ export async function refreshManagedProductsListCache(): Promise<number> {
           fullTeamByBeian.get(managedOverride.beian_hao) ?? [],
           asOfDate,
         )
+      if (listPoint) {
+        unitNav = parseFloat(listPoint.nav)
+        navDate = listPoint.nav_date
+        if (listPoint.prev_nav != null) {
+          const prev = parseFloat(listPoint.prev_nav)
+          if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
+            returnPct = unitNav / prev - 1
+          }
+        }
+      }
+    } else if (beian) {
+      const listPoint = resolveTeamSeriesListNavAt(fullTeamByBeian.get(beian) ?? [], asOfDate)
       if (listPoint) {
         unitNav = parseFloat(listPoint.nav)
         navDate = listPoint.nav_date

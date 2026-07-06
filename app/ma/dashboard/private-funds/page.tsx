@@ -2350,7 +2350,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   }, [])
 
   const totalPages = Math.max(1, Math.ceil(total / 50))
-  const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}\u0000${teamCutoffDate}\u0000${dataReloadKey}`
+  const trackingFilterKey = `${sourcePool}\u0000${strategySource}\u0000${orgSizeFilter}\u0000${teamTagMode}\u0000${teamTags.join("\u0001")}\u0000${teamCutoffDate}\u0000${dataReloadKey}\u0000${isOps ? "team" : "platform"}`
   const mineFilterKey = `${myActivePool}\u0000${myOrgSize}\u0000${myKeyword}\u0000${mineCutoffDate}\u0000${myPersonalTagMode}\u0000${myPersonalTags.join("\u0001")}\u0000${dataReloadKey}`
 
   function handleSort(col: string) {
@@ -2603,6 +2603,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       keyword: isMineTab ? myKeyword : keyword,
       team_tag_mode: teamTagMode,
     })
+    if (isOps && !isMineTab) params.set("nav_source", "team")
     if (!isMineTab) {
       params.set("strategy_l1", strategyL1)
       params.set("strategy_l2", strategyL2)
@@ -2648,7 +2649,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
       .finally(() => { if (!cancelled) setLoading(false) })
 
     return () => { cancelled = true }
-  }, [listPool, listPoolSupported, isMineTab, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
+  }, [listPool, listPoolSupported, isMineTab, isOps, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
 
   useEffect(() => {
     setPage(1)
@@ -14188,7 +14189,9 @@ function OperationsTeamDataView() {
     addTeamFundSearchRef.current = setTimeout(async () => {
       setAddTeamFundLoading(true)
       try {
-        const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(addTeamFundSearch.trim())}`)
+        const res = await fetch(
+          `/ma/api/private-funds/products/search?q=${encodeURIComponent(addTeamFundSearch.trim())}&format=picker`,
+        )
         const json = await res.json()
         setAddTeamFundResults(Array.isArray(json) ? json : [])
         setAddTeamFundShowDropdown(true)

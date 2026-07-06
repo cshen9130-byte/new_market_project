@@ -5,7 +5,7 @@ import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNa
 import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed, mergeManagedProductDetailNav } from "@/lib/server/managed-product-nav-seed"
-import { loadManagedProductEmailPoints, loadManagedProductNavSeries } from "@/lib/server/team-nav-manage-pg"
+import { loadManagedProductEmailPoints, loadManagedProductNavSeries, loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 import { addDays } from "@/lib/server/list-cache-nav-batch"
 import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 
@@ -285,23 +285,30 @@ export async function GET(
     ?? lookupManagedProductOverride(productName)
     ?? lookupManagedProductOverride(rawId)
 
+  const manualTeamNavMap = await loadManualTeamNavBatch([routeBeianHao])
+  const effectiveManagedOverride =
+    managedOverride
+    ?? ((manualTeamNavMap.get(routeBeianHao)?.length ?? 0) > 0
+      ? { beian_hao: routeBeianHao, product_name: productName }
+      : null)
+
   let nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
-  if (managedOverride) {
+  if (effectiveManagedOverride) {
     try {
       const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
         loadManagedProductEmailPoints({
-          beian_hao: managedOverride.beian_hao,
-          product_name: managedOverride.product_name,
+          beian_hao: effectiveManagedOverride.beian_hao,
+          product_name: effectiveManagedOverride.product_name,
           short_name: shortName || null,
           extraNames: emailNameAliases,
         }),
         loadManagedProductNavSeries({
-          beian_hao: managedOverride.beian_hao,
-          product_name: managedOverride.product_name,
+          beian_hao: effectiveManagedOverride.beian_hao,
+          product_name: effectiveManagedOverride.product_name,
           short_name: shortName || null,
           extraNames: emailNameAliases,
         }),
-        Promise.resolve(loadManagedProductNavSeed(managedOverride.beian_hao)),
+        Promise.resolve(loadManagedProductNavSeed(effectiveManagedOverride.beian_hao)),
       ])
       collectPriceDates(seedRows, teamNavDates)
       if (seedRows.length > 0) {

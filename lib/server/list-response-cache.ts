@@ -78,7 +78,9 @@ export function buildListResponseCacheKey(opts: {
   pool: string; page: number; pageSize: number; sortKey: string; sortDir: string
   keyword: string; strategyL1: string; strategyL2: string; strategyL3: string
   strategySource: string; orgSize: string; teamTagMode: string; teamTags: string[]
-  personalTagMode: string; personalTags: string[]; personalUserKey: string; asOfDate: string
+  personalTagMode: string; personalTags: string[];   personalUserKey: string
+  asOfDate: string
+  navSource?: string
 }): string {
   // "不限" means "no filter" — normalise to "" so it shares a cache entry with
   // requests that omit the param entirely (both produce identical SQL).
@@ -90,6 +92,7 @@ export function buildListResponseCacheKey(opts: {
     ss: opts.strategySource, os: normOrgSize, ttm: opts.teamTagMode,
     tt: [...opts.teamTags].sort(), ptm: opts.personalTagMode,
     pt: [...opts.personalTags].sort(), uk: opts.personalUserKey, aod: opts.asOfDate,
+    ns: opts.navSource ?? "",
   })
 }
 

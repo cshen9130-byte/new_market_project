@@ -9,7 +9,7 @@ import {
   ensureTrackingFundsListCachePopulated,
   shouldUseTrackingFundsListCache,
 } from "@/lib/server/tracking-funds-list-cache-pg"
-import { enrichTrackFundMetricsRows } from "@/lib/server/list-cache-nav-batch"
+import { enrichTrackFundMetricsRows, overlayTeamNavOnTrackRows } from "@/lib/server/list-cache-nav-batch"
 import {
   buildListResponseCacheKey,
   withListResponseCache,
@@ -511,13 +511,15 @@ async function handleCachedTrackingList(opts: {
   personalTags: string[]
   personalUserKey: string
   asOfDate: string
+  navSource?: string
 }): Promise<NextResponse> {
   const {
     page, pageSize, offset, sortKey, sortDir, pool, requestedPool,
     isCustomPool, isMineAllPool, keyword, strategyL1, strategyL2, strategyL3,
     strategySource, orgSize, teamTagMode, teamTags,
-    personalTagMode, personalTags, personalUserKey, asOfDate,
+    personalTagMode, personalTags, personalUserKey, asOfDate, navSource,
   } = opts
+  const useTeamNav = navSource === "team"
 
   // Check server-side response cache first, with concurrent request deduplication
   // so that multiple simultaneous requests for the same pool never race to run
@@ -648,7 +650,10 @@ async function handleCachedTrackingList(opts: {
       ])
 
       const total = parseInt(countRow[0]?.total ?? "0")
-      const enrichedRows = await enrichTrackFundMetricsRows(rows, asOfDate)
+      let enrichedRows = await enrichTrackFundMetricsRows(rows, asOfDate)
+      if (useTeamNav) {
+        enrichedRows = await overlayTeamNavOnTrackRows(enrichedRows, asOfDate)
+      }
       return {
         page,
         pageSize,
@@ -679,11 +684,13 @@ async function handleBflOpsList(opts: {
   orgSize: string
   teamTagMode: string
   teamTags: string[]
+  navSource?: string
+  asOfDate?: string
 }): Promise<NextResponse> {
   const {
     page, pageSize, offset, sortKey, sortDir, cutoffExpr,
     keyword, strategyL1, strategyL2, strategyL3, strategyPrefix,
-    orgSize, teamTagMode, teamTags,
+    orgSize, teamTagMode, teamTags, navSource, asOfDate,
   } = opts
 
   const strategyL1Expr = `NULLIF(BTRIM(COALESCE(i.${strategyPrefix}_strategy_one, '')), '')`
@@ -791,12 +798,16 @@ async function handleBflOpsList(opts: {
     ])
 
     const total = parseInt(countRow[0]?.total ?? "0")
+    let data = sanitizeTrackRows(rows)
+    if (navSource === "team" && asOfDate) {
+      data = sanitizeTrackRows(await overlayTeamNavOnTrackRows(data, asOfDate))
+    }
     return NextResponse.json({
       page,
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: sanitizeTrackRows(rows),
+      data,
     })
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e)
@@ -840,11 +851,12 @@ export async function GET(req: Request) {
   const cutoffRaw = (searchParams.get("cutoff") || "").trim()
   const cutoffExpr = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw) ? `'${cutoffRaw}'::date` : "CURRENT_DATE"
   const strategyPrefix = strategySource === "platform" ? "platform" : "company"
+  const navSource = searchParams.get("nav_source") === "team" ? "team" : "platform"
+  const asOfDateForNav = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
+    ? cutoffRaw
+    : new Date().toISOString().slice(0, 10)
 
   if (await shouldUseTrackingFundsListCache(cutoffRaw)) {
-    const asOfDate = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
-      ? cutoffRaw
-      : new Date().toISOString().slice(0, 10)
     return handleCachedTrackingList({
       page,
       pageSize,
@@ -866,7 +878,8 @@ export async function GET(req: Request) {
       personalTagMode,
       personalTags,
       personalUserKey,
-      asOfDate,
+      asOfDate: asOfDateForNav,
+      navSource,
     })
   }
 
@@ -886,6 +899,8 @@ export async function GET(req: Request) {
       orgSize,
       teamTagMode,
       teamTags,
+      navSource,
+      asOfDate: asOfDateForNav,
     })
   }
 
@@ -1189,12 +1204,16 @@ export async function GET(req: Request) {
     ])
 
     const total = parseInt(countRow[0]?.total ?? "0")
+    let data = sanitizeTrackRows(rows)
+    if (navSource === "team") {
+      data = sanitizeTrackRows(await overlayTeamNavOnTrackRows(data, asOfDateForNav))
+    }
     return NextResponse.json({
       page,
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data: sanitizeTrackRows(rows),
+      data,
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })

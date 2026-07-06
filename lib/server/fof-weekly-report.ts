@@ -51,8 +51,8 @@ function resolveReportFontEnv(): Record<string, string> {
 export type FofWeeklyNavFrequency = "daily" | "weekly" | "monthly"
 
 export const FOF_WEEKLY_NAV_FREQUENCY_OPTIONS: Array<{ value: FofWeeklyNavFrequency; label: string }> = [
-  { value: "daily", label: "日频" },
   { value: "weekly", label: "周频" },
+  { value: "daily", label: "日频" },
   { value: "monthly", label: "月频" },
 ]
 
@@ -67,9 +67,9 @@ export type FofWeeklyReportRequest = {
 }
 
 function normalizeNavFrequency(value: string | undefined): FofWeeklyNavFrequency {
-  const freq = (value ?? "daily").trim().toLowerCase()
-  if (freq === "weekly" || freq === "monthly") return freq
-  return "daily"
+  const freq = (value ?? "weekly").trim().toLowerCase()
+  if (freq === "daily" || freq === "monthly") return freq
+  return "weekly"
 }
 
 export type FofWeeklyReportResult = {

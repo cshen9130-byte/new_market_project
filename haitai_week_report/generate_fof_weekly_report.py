@@ -140,10 +140,29 @@ def load_nav_data(file_path: str) -> pd.DataFrame:
     return df
 
 
+RISK_FREE_RATE = 0.02
+
+
+def normalize_nav_frequency(freq: str | None) -> str:
+    normalized = (freq or "weekly").strip().lower()
+    if normalized in ("daily", "weekly", "monthly"):
+        return normalized
+    return "weekly"
+
+
+def periods_per_year_for_frequency(freq: str | None) -> int:
+    normalized = normalize_nav_frequency(freq)
+    if normalized == "daily":
+        return 252
+    if normalized == "monthly":
+        return 12
+    return 52
+
+
 def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
     """Resample NAV series to the requested frequency before metrics/charting."""
-    normalized = (freq or "daily").strip().lower()
-    if normalized in ("", "daily", "auto"):
+    normalized = normalize_nav_frequency(freq)
+    if normalized == "daily":
         return df
 
     work = df.sort_values("date").set_index("date")
@@ -390,23 +409,10 @@ def find_nav_file(base_dir: str) -> str:
 def risk_return_series(nav: pd.Series, nav_frequency: str | None = None) -> tuple[pd.Series, int]:
     """Build return series and annualization factor for risk metrics."""
     nav = nav.sort_index()
+    periods_per_year = periods_per_year_for_frequency(nav_frequency)
     if len(nav) <= 1:
-        return nav.pct_change().dropna(), 252
-
-    freq = (nav_frequency or "auto").strip().lower()
-    if freq == "weekly":
-        return nav.pct_change().dropna(), 52
-    if freq == "monthly":
-        return nav.pct_change().dropna(), 12
-    if freq == "daily":
-        return nav.pct_change().dropna(), 252
-
-    median_gap = float(pd.Series(nav.index).diff().dropna().dt.days.median())
-    if median_gap >= 3:
-        weekly = nav.resample("W-FRI").last().dropna()
-        return weekly.pct_change().dropna(), 52
-
-    return nav.pct_change().dropna(), 252
+        return nav.pct_change().dropna(), periods_per_year
+    return nav.pct_change().dropna(), periods_per_year
 
 
 def compute_metrics(
@@ -429,36 +435,28 @@ def compute_metrics(
     total_return = end_nav / start_nav - 1.0
 
     returns, periods_per_year = risk_return_series(series, nav_frequency)
-    n = len(returns)
-    annual_return = (end_nav / start_nav) ** (periods_per_year / n) - 1.0 if n > 0 else 0.0
-    volatility = returns.std() * np.sqrt(periods_per_year) if n > 1 else 0.0
+    years = max((series.index[-1] - series.index[0]).days / 365.25, 1 / 365.25)
+    annual_return = (end_nav / start_nav) ** (1 / years) - 1.0
+    volatility = returns.std(ddof=1) * np.sqrt(periods_per_year) if len(returns) > 1 else 0.0
 
     wealth = series / start_nav
     roll_max = wealth.cummax()
     drawdown = (wealth - roll_max) / roll_max
     max_drawdown = float(drawdown.min()) if not drawdown.empty else 0.0
 
-    sharpe = annual_return / volatility if volatility > 0 else 0.0
+    sharpe = (annual_return - RISK_FREE_RATE) / volatility if volatility > 0 else 0.0
     calmar = annual_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
 
     win_rate = (returns > 0).sum() / len(returns) if len(returns) > 0 else 0.0
     max_daily_gain = returns.max() if len(returns) > 0 else 0.0
     max_daily_loss = returns.min() if len(returns) > 0 else 0.0
 
-    freq = (nav_frequency or "auto").strip().lower()
-    if freq in ("weekly", "monthly"):
-        bench_nav = bench.sort_index()
-    elif periods_per_year == 52:
-        bench_nav = bench.sort_index().resample("W-FRI").last().dropna()
-    else:
-        bench_nav = bench.sort_index()
+    bench_nav = bench.sort_index()
     bench_returns = bench_nav.pct_change().dropna()
-    bench_n = len(bench_returns)
     bench_start = float(bench_nav.iloc[0])
     bench_end = float(bench_nav.iloc[-1])
-    bench_annual_return = (
-        (bench_end / bench_start) ** (periods_per_year / bench_n) - 1.0 if bench_n > 0 else 0.0
-    )
+    bench_years = max((bench_nav.index[-1] - bench_nav.index[0]).days / 365.25, 1 / 365.25)
+    bench_annual_return = (bench_end / bench_start) ** (1 / bench_years) - 1.0
     annual_excess = annual_return - bench_annual_return
 
     ref_date = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else work["date"].iloc[-1]
@@ -728,7 +726,7 @@ def make_report(
     report_title: str = REPORT_TITLE,
     product_tagline: str = PRODUCT_TAGLINE,
     benchmark_label: str = "沪深300",
-    nav_frequency: str | None = "daily",
+    nav_frequency: str | None = "weekly",
 ) -> tuple[str, str]:
     output_dir = output_dir or str(Path(nav_file).parent)
 
@@ -1012,7 +1010,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--nav-frequency",
-        default="daily",
+        default="weekly",
         choices=["daily", "weekly", "monthly"],
         help="净值频率：daily=日频, weekly=周频, monthly=月频",
     )
