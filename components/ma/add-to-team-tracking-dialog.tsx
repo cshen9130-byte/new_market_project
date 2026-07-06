@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { ChevronDown } from "lucide-react"
 import { invalidateTrackingListCache } from "@/lib/client/tracking-list-cache"
-import { fetchTeamPoolOptions } from "@/lib/client/tracking-pools"
+import { fetchTeamPoolOptions, splitFundPoolMemberships } from "@/lib/client/tracking-pools"
 
 const DEFAULT_MINE_POOLS = [
   { key: "", label: "不添加个人池" },
@@ -54,12 +54,15 @@ export function AddToTeamTrackingDialog({
   open,
   beian_hao,
   product_name,
+  initialTeamPoolKey,
   onClose,
   onSaved,
 }: {
   open: boolean
   beian_hao: string
   product_name: string
+  /** Pre-select a team pool tab (e.g. the active sidebar pool). */
+  initialTeamPoolKey?: string
   onClose: () => void
   onSaved?: () => void
 }) {
@@ -83,7 +86,7 @@ export function AddToTeamTrackingDialog({
 
   useEffect(() => {
     if (!open) return
-    setTeamPoolsSelected([])
+    setTeamPoolsSelected(initialTeamPoolKey ? [initialTeamPoolKey] : [])
     setMinePool("")
     setTeamTagsSelected([])
     setError(null)
@@ -106,7 +109,28 @@ export function AddToTeamTrackingDialog({
       .then((r) => r.json())
       .then((d) => Array.isArray(d) ? setTeamTagOptions(d.map((t: { name: string }) => t.name)) : null)
       .catch(() => {})
-  }, [open, beian_hao])
+
+    fetch(`/ma/api/ops/fund-tags?beian_hao=${encodeURIComponent(beian_hao)}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => {
+        if (!Array.isArray(d?.pools)) return
+        const { teamPools, inMine } = splitFundPoolMemberships(
+          d.pools.map((p: { pool_key: string; pool_label: string }) => ({
+            pool_key: p.pool_key,
+            pool_label: p.pool_label,
+          })),
+        )
+        const teamKeys = teamPools.map((p) => p.pool_key)
+        if (teamKeys.length > 0) {
+          setTeamPoolsSelected((prev) => {
+            const merged = new Set([...prev, ...teamKeys])
+            return [...merged]
+          })
+        }
+        if (inMine) setMinePool("mine_default")
+      })
+      .catch(() => {})
+  }, [open, beian_hao, initialTeamPoolKey])
 
   function openTagPicker(e: React.MouseEvent) {
     e.stopPropagation()
@@ -120,7 +144,7 @@ export function AddToTeamTrackingDialog({
 
   async function handleConfirm() {
     if (teamPoolsSelected.length === 0 && !minePool) {
-      setError("请至少选择一个产品池")
+      setError("请至少选择一个团队产品池或个人产品池")
       return
     }
     setSaving(true)
@@ -192,9 +216,9 @@ export function AddToTeamTrackingDialog({
             <span className="font-semibold text-sm">{product_name}</span>
           </div>
 
-          {/* 产品池 — mine/personal pool select */}
+          {/* 个人产品池 */}
           <div className="flex items-center gap-3">
-            <span className={labelW}>产品池：</span>
+            <span className={labelW}>个人产品池：</span>
             <div className="relative flex-1">
               <select
                 value={minePool}
@@ -210,9 +234,9 @@ export function AddToTeamTrackingDialog({
           </div>
 
           {/* 团队产品池 — always-visible team pool pills */}
-          <div className="flex items-center gap-3">
-            <span className={labelW}>团队产品池：</span>
-            <div className="flex flex-1 flex-nowrap items-center gap-1.5 overflow-x-auto bg-muted/30 rounded px-3 py-2 min-w-0">
+          <div className="flex items-start gap-3">
+            <span className={`${labelW} pt-1.5`}>团队产品池：</span>
+            <div className="flex flex-1 flex-wrap items-center gap-1.5 bg-muted/30 rounded px-3 py-2 min-w-0">
               {teamPoolOptions.map((p) => (
                 <button
                   key={p.key}

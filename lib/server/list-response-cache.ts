@@ -22,6 +22,17 @@ declare global {
   var _listResponseCache: Map<string, CachedEntry> | undefined
   // eslint-disable-next-line no-var
   var _listResponseInFlight: Map<string, Promise<unknown>> | undefined
+  // Bumped on invalidation so in-flight list queries cannot repopulate stale entries.
+  // eslint-disable-next-line no-var
+  var _listResponseCacheGen: number | undefined
+}
+
+function cacheGeneration(): number {
+  return global._listResponseCacheGen ?? 0
+}
+
+function bumpCacheGeneration(): void {
+  global._listResponseCacheGen = cacheGeneration() + 1
 }
 
 function getCache(): Map<string, CachedEntry> {
@@ -50,8 +61,12 @@ export async function withListResponseCache(
   const existing = inFlight.get(key)
   if (existing) return existing
 
+  const genAtStart = cacheGeneration()
   const promise = fn().then(
-    (result) => { setListResponseCache(key, result); return result },
+    (result) => {
+      if (cacheGeneration() === genAtStart) setListResponseCache(key, result)
+      return result
+    },
     (err) => { inFlight.delete(key); throw err },
   ).finally(() => { inFlight.delete(key) })
 
@@ -100,12 +115,27 @@ export function setListResponseCache(key: string, body: unknown): void {
  * Invalidate cache entries for a specific pool (or all entries when poolKey
  * is omitted). Call this from mutation routes after writing to the DB.
  */
+function cacheKeyMatchesPool(key: string, poolKey: string): boolean {
+  try {
+    return (JSON.parse(key) as { pool: string }).pool === poolKey
+  } catch {
+    return false
+  }
+}
+
 export function invalidateListResponseCache(poolKey?: string): void {
+  bumpCacheGeneration()
   const c = getCache()
-  if (!poolKey) { c.clear(); return }
+  const inFlight = getInFlight()
+  if (!poolKey) {
+    c.clear()
+    inFlight.clear()
+    return
+  }
   for (const k of c.keys()) {
-    try {
-      if ((JSON.parse(k) as { pool: string }).pool === poolKey) c.delete(k)
-    } catch { /* ignore malformed keys */ }
+    if (cacheKeyMatchesPool(k, poolKey)) c.delete(k)
+  }
+  for (const k of inFlight.keys()) {
+    if (cacheKeyMatchesPool(k, poolKey)) inFlight.delete(k)
   }
 }

@@ -447,25 +447,21 @@ function buildCachedFromClause(
     INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (pool === "bfl_ops") {
-    // Instead of DISTINCT ON over the entire type6_ops_team_full table (which
-    // requires a full sort of a large historical table), start from the much
-    // smaller ops_tracking_funds_list_cache and filter to rows that have at
-    // least one entry in type6_ops_team_full.  The EXISTS uses the
-    // idx_type6_ops_team_full_dedup index (leading column = register_number),
-    // turning each lookup into O(log N) instead of a full O(N log N) sort.
+    // Start from type6 membership so manual adds appear immediately even before
+    // the nightly list-cache refresh. Metrics come from LEFT JOIN cache.
     return `FROM (
-      SELECT i.beian_hao, i.product_name
-      FROM ops_tracking_funds_list_cache i
-      WHERE EXISTS (
-        SELECT 1 FROM type6_ops_team_full t
-        WHERE t.register_number = i.beian_hao
-      )
+      SELECT DISTINCT ON (t.register_number)
+        t.register_number AS beian_hao,
+        COALESCE(t.fund_short_name, t.fund_name) AS product_name
+      FROM type6_ops_team_full t
+      WHERE t.register_number IS NOT NULL
+      ORDER BY t.register_number, t.updated_at DESC NULLS LAST, t.id DESC
     ) i
-    JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (pool === "bfl") {
     return `FROM private_fund_info_bfl i
-    INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+    LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }
   if (isCustomPool) {
     const poolFilter = isMineAllPool
@@ -490,7 +486,7 @@ function buildCachedFromClause(
     FROM ${sourceTable} p
     WHERE p.register_number IS NOT NULL
   ) i
-  INNER JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
+  LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
 }
 
 async function handleCachedTrackingList(opts: {
