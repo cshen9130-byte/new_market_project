@@ -16,6 +16,7 @@ import {
 import { loadFundNavRange, loadMergedFundNavRows, resolveFundNames } from "@/lib/server/fund-nav-series"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
 
 const execFileAsync = promisify(execFile)
 const REPORT_TMP_ROOT = path.join(process.cwd(), ".tmp", "fof-weekly-reports")
@@ -47,6 +48,14 @@ function resolveReportFontEnv(): Record<string, string> {
   return {}
 }
 
+export type FofWeeklyNavFrequency = "daily" | "weekly" | "monthly"
+
+export const FOF_WEEKLY_NAV_FREQUENCY_OPTIONS: Array<{ value: FofWeeklyNavFrequency; label: string }> = [
+  { value: "daily", label: "日频" },
+  { value: "weekly", label: "周频" },
+  { value: "monthly", label: "月频" },
+]
+
 export type FofWeeklyReportRequest = {
   product_name: string
   beian_hao?: string
@@ -54,6 +63,13 @@ export type FofWeeklyReportRequest = {
   report_title?: string
   product_tagline?: string
   benchmark_key?: string
+  nav_frequency?: FofWeeklyNavFrequency
+}
+
+function normalizeNavFrequency(value: string | undefined): FofWeeklyNavFrequency {
+  const freq = (value ?? "daily").trim().toLowerCase()
+  if (freq === "weekly" || freq === "monthly") return freq
+  return "daily"
 }
 
 export type FofWeeklyReportResult = {
@@ -285,6 +301,20 @@ function resolveNavDateRangeFromRows(rows: Array<{ date: string }>): {
   return { earliestNavDate, latestNavDate }
 }
 
+/** Date span from a bundled FOF weekly xlsx (merged portfolio NAV, not product seed). */
+function resolveBundledNavDateRange(navPath: string): {
+  earliestNavDate: string
+  latestNavDate: string
+} | null {
+  try {
+    const analysis = analyzeNavWorkbook(readFileSync(navPath), path.basename(navPath))
+    const sorted = [...analysis.rows].sort((a, b) => a.date.localeCompare(b.date))
+    return resolveNavDateRangeFromRows(sorted.map((row) => ({ date: row.date })))
+  } catch {
+    return null
+  }
+}
+
 function formatPct(value: string | null | undefined): string {
   const raw = (value ?? "").trim()
   if (!raw || raw === "--") return ""
@@ -441,6 +471,7 @@ export async function generateFofWeeklyReport(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(week_end)) throw new Error("请选择有效的报告周日期")
 
   const benchmark = resolveFofWeeklyBenchmark(input.benchmark_key)
+  const navFrequency = normalizeNavFrequency(input.nav_frequency)
   const beian_hao = await resolveProductBeianHao(product_name, input.beian_hao)
   const customFund = getCustomFundByCode(beian_hao) ?? findCustomFundByName(product_name)
   const names = customFund
@@ -456,10 +487,14 @@ export async function generateFofWeeklyReport(
   if (bundledResult) {
     navFile = bundledResult.navPath
     benchLabel = benchmark.label
-    const seedRows = loadFullManagedSeedRows(bundledResult.seedCode)
-    const range = resolveNavDateRangeFromRows(
-      seedRows ? legacyRowsToNavCsvInput(seedRows) : [],
-    )
+    const range =
+      resolveBundledNavDateRange(bundledResult.navPath)
+      ?? (() => {
+        const seedRows = loadFullManagedSeedRows(bundledResult.seedCode)
+        return resolveNavDateRangeFromRows(
+          seedRows ? legacyRowsToNavCsvInput(seedRows) : [],
+        )
+      })()
     if (!range) {
       throw new Error("无法读取 bundled 净值文件的日期范围")
     }
@@ -520,6 +555,8 @@ export async function generateFofWeeklyReport(
     productTagline,
     "--benchmark-label",
     benchLabel,
+    "--nav-frequency",
+    navFrequency,
   ]
 
   console.log("[fof-weekly-report] Using Python:", pythonExe, prefixArgs.join(" "))

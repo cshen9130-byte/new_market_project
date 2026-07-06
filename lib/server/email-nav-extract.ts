@@ -69,10 +69,22 @@ function parseAssetNavAnnouncementSubject(text: string): { code: string; fundNam
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
 }
 
+/** Citics Auto-Disclosure: 【基金净值】SBDF95(总)_产品名_YYYYMMDD-YYYYMMDD */
+function parseCiticsFundNavSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    new RegExp(`【基金净值】([A-Z0-9]+)(?:\\([总]\\))?_(?:${FUND_NAME_RE.source})_`),
+  )
+  if (!m) return null
+  const fundMatch = text.match(FUND_NAME_RE)
+  if (!fundMatch) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(fundMatch[0]) }
+}
+
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
 function extractFundNameFromSubject(subject: string): string | null {
   for (const parser of [
     parseCmsCustodyNavSubject,
+    parseCiticsFundNavSubject,
     parseVirtualEstSubject,
     parseAssetNavAnnouncementSubject,
     parseVirtualPerfSubject,
@@ -88,9 +100,12 @@ function extractFundNameFromSubject(subject: string): string | null {
   if (bracketVirtualSubj) return normalizeFundDisplayName(bracketVirtualSubj[1])
 
   const virtualSubj = subject.match(
-    /】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
+    /】[A-Z0-9]+(?:\([总]\))?_(?:[\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)_/,
   )
-  if (virtualSubj) return normalizeFundDisplayName(virtualSubj[1])
+  if (virtualSubj) {
+    const fundMatch = subject.match(FUND_NAME_RE)
+    if (fundMatch) return normalizeFundDisplayName(fundMatch[0])
+  }
 
   const guotaiSubj = subject.match(/发送[：:](.+?)(?:【|$)/)
   if (guotaiSubj && /私募证券|投资基金/.test(guotaiSubj[1])) {
@@ -112,6 +127,7 @@ function extractFundNameFromSubject(subject: string): string | null {
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
     parseCmsCustodyNavSubject,
+    parseCiticsFundNavSubject,
     parseVirtualEstSubject,
     parseAssetNavAnnouncementSubject,
     parseVirtualPerfSubject,
@@ -179,7 +195,7 @@ export function extractProductCodeFromText(text: string): string | null {
   const assetNavSubj = text.match(/资产净值公告_([A-Z0-9]+)_/i)
   if (assetNavSubj) return assetNavSubj[1]
 
-  const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)_/)
+  const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)(?:\([总]\))?_/)
   if (virtualSubj) return virtualSubj[1]
 
   const bracketVirtualSubj = text.match(/【虚拟净值】([A-Z0-9]+)_/)

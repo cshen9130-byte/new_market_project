@@ -601,7 +601,69 @@ All 43 test assertions pass. All 52 FOF底层 funds satisfy `adj >= cum >= unit`
 
 ---
 
-## What Was Fixed (木莲安澜1号A类 — ATL22A, 2026-07-03)
+## What Was Fixed (衡颐海泰1号 — SBPU97, 2026-07-06 — wrong seed scale caused NAV cliff)
+
+### The Problem
+
+Fund detail page for **衡颐海泰1号** showed a corrupt NAV series:
+
+| Date | Shown (wrong) | Expected |
+|---|---|---|
+| 2026-06-26 | unit **1.5848** | unit **~1.068** |
+| 2026-06-29 | unit **1.0733** (−32.27% daily) | unit **~1.073** (smooth) |
+| 2026-07-02 | unit 1.0775 | unit **~1.078** |
+
+Symptoms: 收益曲线 showed a sharp cliff at the end; 成立以来最大回撤 inflated to **−37%**; header metrics (latest unit ~1.08, +7.75% since inception) disagreed with the historical table/chart (~1.58 scale).
+
+### Root Cause
+
+`data/managed-product-nav/SBPU97.json` was built from **`低波稳健FOF 1号合并净值.xlsx`** — the internal **merged FOF portfolio** NAV (~1.48–1.58 scale, history back to 2023-12-29).
+
+The product detail page for **衡颐海泰1号** must use the **product unit NAV** (~1.0 at inception 2026-03-10, ~1.07 by June 2026), verified in `衡颐海泰1号净值20260626.xlsx`.
+
+Post-seed email rows (correct ~1.07 scale) were merged after the wrong seed tail (~1.58), producing the −32% cliff.
+
+**Do not** use the merged FOF xlsx as the managed-product seed for SBPU97. That file remains for FOF weekly reports via `BUNDLED_FOF_NAV_BY_BEIAN` in `lib/server/fof-weekly-report.ts`.
+
+### The Correct Fix Applied
+
+| Area | What changed |
+|---|---|
+| Seed file | Rebuilt `data/managed-product-nav/SBPU97.json` from `衡颐海泰1号净值20260626.xlsx` (71 rows, 2026-03-10 → 2026-06-23, unit ~1.0 → ~1.0682) |
+| FOF weekly report | `resolveBundledNavDateRange` in `fof-weekly-report.ts` reads date span from bundled merged xlsx, not product seed — weekly reports still use `低波稳健FOF 1号合并净值.xlsx` |
+| Pipeline | **No NAV merge code changes** — existing `mergeManagedProductDetailNav` seed+email merge is correct once the seed scale matches the product |
+
+Rebuild command:
+
+```bash
+npx tsx scripts/ma/build_managed_nav_seed.mjs "衡颐海泰1号净值20260626.xlsx" SBPU97 --all
+```
+
+Verify:
+
+```bash
+npx tsx scripts/ma/compare_sbpu97_nav.mjs "衡颐海泰1号净值20260626.xlsx"
+```
+
+### What This Fix Does NOT Change
+
+- `preferEmailNavRow`, `mergeNavSeriesWithEmail`, `syncExDivAdjustedNav`, etc. — unchanged
+- SBAH99 / SNF018 / SSG947 / BAH99A / SBPC20 / SLA063 / SQX078 fixes — unchanged
+- FOF weekly report bundled nav (`低波稳健FOF 1号合并净值.xlsx`) — unchanged
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/compare_sbpu97_nav.mjs "衡颐海泰1号净值20260626.xlsx"
+```
+
+After deploy, refresh managed-products cache if the list still shows stale values:
+
+```bash
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+```
+
 
 ### Problem 1 — Fund detail page returned HTTP 404
 

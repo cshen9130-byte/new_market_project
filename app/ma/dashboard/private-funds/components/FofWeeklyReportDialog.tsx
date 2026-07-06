@@ -40,6 +40,14 @@ const BENCHMARK_OPTIONS = [
   { key: "NHCI.NH", label: "南华商品指数" },
 ] as const
 
+const NAV_FREQUENCY_OPTIONS = [
+  { value: "daily", label: "日频" },
+  { value: "weekly", label: "周频" },
+  { value: "monthly", label: "月频" },
+] as const
+
+type NavFrequency = (typeof NAV_FREQUENCY_OPTIONS)[number]["value"]
+
 function userFetchHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {}
   try {
@@ -333,6 +341,7 @@ export function FofWeeklyReportDialog({
   const [weekBegin, setWeekBegin] = useState("")
   const [weekEnd, setWeekEnd] = useState("")
   const [benchmarkKey, setBenchmarkKey] = useState("IF")
+  const [navFrequency, setNavFrequency] = useState<NavFrequency>("daily")
   const [productSource, setProductSource] = useState<ProductSource>("managed")
   const [presets, setPresets] = useState<FofWeeklyReportPreset[]>([])
   const [selectedPresetName, setSelectedPresetName] = useState("")
@@ -354,6 +363,7 @@ export function FofWeeklyReportDialog({
       setWeekBegin("")
       setWeekEnd("")
       setBenchmarkKey("IF")
+      setNavFrequency("daily")
       setProductSource("managed")
       setSelectedPresetName("")
       setShowSavePresetModal(false)
@@ -377,6 +387,7 @@ export function FofWeeklyReportDialog({
     setWeekBegin(preset.week_begin)
     setWeekEnd(preset.week_end)
     setBenchmarkKey(preset.benchmark_key)
+    setNavFrequency(preset.nav_frequency ?? "daily")
     setSelectedPresetName(preset.name)
     setResult(null)
     setError(null)
@@ -407,6 +418,7 @@ export function FofWeeklyReportDialog({
       week_begin: weekBegin,
       week_end: weekEnd,
       benchmark_key: benchmarkKey,
+      nav_frequency: navFrequency,
       savedAt: new Date().toISOString(),
     }
     const next = upsertFofWeeklyReportPreset(preset)
@@ -509,6 +521,7 @@ export function FofWeeklyReportDialog({
           week_end: weekEnd,
           report_title: reportTitle.trim() || productName.trim(),
           benchmark_key: benchmarkKey,
+          nav_frequency: navFrequency,
         }),
       })
       const json = await resp.json()
@@ -668,6 +681,29 @@ export function FofWeeklyReportDialog({
             </div>
 
             <div>
+              <label className="mb-1.5 block text-sm font-medium">
+                <span className="text-red-500">*</span> 净值频率
+              </label>
+              <select
+                value={navFrequency}
+                onChange={(e) => {
+                  setNavFrequency(e.target.value as NavFrequency)
+                  setResult(null)
+                }}
+                className="h-10 w-full rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {NAV_FREQUENCY_OPTIONS.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-xs text-zinc-400">
+                若原始净值为日频，选择周频/月频时将自动聚合后再计算业绩指标
+              </p>
+            </div>
+
+            <div className="sm:col-span-2">
               <label className="mb-1.5 block text-sm font-medium">报告标题</label>
               <input
                 type="text"

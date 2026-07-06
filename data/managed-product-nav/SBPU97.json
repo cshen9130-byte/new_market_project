@@ -1,1372 +1,504 @@
 {
   "beian_hao": "SBPU97",
   "before_date": null,
-  "source_file": "低波稳健FOF 1号合并净值.xlsx",
-  "row_count": 195,
+  "source_file": "衡颐海泰1号净值20260626.xlsx",
+  "row_count": 71,
   "rows": [
     {
-      "price_date": "2023-12-29",
+      "price_date": "2026-03-10",
       "nav": "1",
       "cumulative_nav": "1",
       "cum_nav_withdrawal": "1",
       "price_change": ""
     },
     {
-      "price_date": "2024-01-05",
-      "nav": "1.00610629",
-      "cumulative_nav": "1.00610629",
-      "cum_nav_withdrawal": "1.00610629",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-01-12",
-      "nav": "1.0035302",
-      "cumulative_nav": "1.0035302",
-      "cum_nav_withdrawal": "1.0035302",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-01-19",
-      "nav": "1.00419807",
-      "cumulative_nav": "1.00419807",
-      "cum_nav_withdrawal": "1.00419807",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-01-26",
-      "nav": "1.0150749",
-      "cumulative_nav": "1.0150749",
-      "cum_nav_withdrawal": "1.0150749",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-01-31",
-      "nav": "1.01106765",
-      "cumulative_nav": "1.01106765",
-      "cum_nav_withdrawal": "1.01106765",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-02-02",
-      "nav": "1.00963649",
-      "cumulative_nav": "1.00963649",
-      "cum_nav_withdrawal": "1.00963649",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-02-08",
-      "nav": "1.00915943",
-      "cumulative_nav": "1.00915943",
-      "cum_nav_withdrawal": "1.00915943",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-02-23",
-      "nav": "1.02471138",
-      "cumulative_nav": "1.02471138",
-      "cum_nav_withdrawal": "1.02471138",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-02-29",
-      "nav": "1.02261235",
-      "cumulative_nav": "1.02261235",
-      "cum_nav_withdrawal": "1.02261235",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-03-01",
-      "nav": "1.03243965",
-      "cumulative_nav": "1.03243965",
-      "cum_nav_withdrawal": "1.03243965",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-03-08",
-      "nav": "1.0373056",
-      "cumulative_nav": "1.0373056",
-      "cum_nav_withdrawal": "1.0373056",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-03-15",
-      "nav": "1.03950005",
-      "cumulative_nav": "1.03950005",
-      "cum_nav_withdrawal": "1.03950005",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-03-22",
-      "nav": "1.05724645",
-      "cumulative_nav": "1.05724645",
-      "cum_nav_withdrawal": "1.05724645",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-03-29",
-      "nav": "1.04837325",
-      "cumulative_nav": "1.04837325",
-      "cum_nav_withdrawal": "1.04837325",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-04-03",
-      "nav": "1.05085393",
-      "cumulative_nav": "1.05085393",
-      "cum_nav_withdrawal": "1.05085393",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-04-12",
-      "nav": "1.04760996",
-      "cumulative_nav": "1.04760996",
-      "cum_nav_withdrawal": "1.04760996",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-04-19",
-      "nav": "1.03902299",
-      "cumulative_nav": "1.03902299",
-      "cum_nav_withdrawal": "1.03902299",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-04-26",
-      "nav": "1.0346341",
-      "cumulative_nav": "1.0346341",
-      "cum_nav_withdrawal": "1.0346341",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-04-30",
-      "nav": "1.03444328",
-      "cumulative_nav": "1.03444328",
-      "cum_nav_withdrawal": "1.03444328",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-05-10",
-      "nav": "1.04007251",
-      "cumulative_nav": "1.04007251",
-      "cum_nav_withdrawal": "1.04007251",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-05-17",
-      "nav": "1.03835512",
-      "cumulative_nav": "1.03835512",
-      "cum_nav_withdrawal": "1.03835512",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-05-24",
-      "nav": "1.04159908",
-      "cumulative_nav": "1.04159908",
-      "cum_nav_withdrawal": "1.04159908",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-05-31",
-      "nav": "1.04236237",
-      "cumulative_nav": "1.04236237",
-      "cum_nav_withdrawal": "1.04236237",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-06-07",
-      "nav": "1.0373056",
-      "cumulative_nav": "1.0373056",
-      "cum_nav_withdrawal": "1.0373056",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-06-14",
-      "nav": "1.0408358",
-      "cumulative_nav": "1.0408358",
-      "cum_nav_withdrawal": "1.0408358",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-06-21",
-      "nav": "1.04093121",
-      "cumulative_nav": "1.04093121",
-      "cum_nav_withdrawal": "1.04093121",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-06-28",
-      "nav": "1.04074039",
-      "cumulative_nav": "1.04074039",
-      "cum_nav_withdrawal": "1.04074039",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-07-05",
-      "nav": "1.03444328",
-      "cumulative_nav": "1.03444328",
-      "cum_nav_withdrawal": "1.03444328",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-07-12",
-      "nav": "1.04054957",
-      "cumulative_nav": "1.04054957",
-      "cum_nav_withdrawal": "1.04054957",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-07-19",
-      "nav": "1.04074039",
-      "cumulative_nav": "1.04074039",
-      "cum_nav_withdrawal": "1.04074039",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-07-26",
-      "nav": "1.04217155",
-      "cumulative_nav": "1.04217155",
-      "cum_nav_withdrawal": "1.04217155",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-07-31",
-      "nav": "1.0488503",
-      "cumulative_nav": "1.0488503",
-      "cum_nav_withdrawal": "1.0488503",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-08-02",
-      "nav": "1.05180803",
-      "cumulative_nav": "1.05180803",
-      "cum_nav_withdrawal": "1.05180803",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-08-09",
-      "nav": "1.05247591",
-      "cumulative_nav": "1.05247591",
-      "cum_nav_withdrawal": "1.05247591",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-08-16",
-      "nav": "1.06049041",
-      "cumulative_nav": "1.06049041",
-      "cum_nav_withdrawal": "1.06049041",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-08-23",
-      "nav": "1.06726457",
-      "cumulative_nav": "1.06726457",
-      "cum_nav_withdrawal": "1.06726457",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-08-30",
-      "nav": "1.05133098",
-      "cumulative_nav": "1.05133098",
-      "cum_nav_withdrawal": "1.05133098",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-09-06",
-      "nav": "1.0470375",
-      "cumulative_nav": "1.0470375",
-      "cum_nav_withdrawal": "1.0470375",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-09-13",
-      "nav": "1.03673314",
-      "cumulative_nav": "1.03673314",
-      "cum_nav_withdrawal": "1.03673314",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-09-20",
-      "nav": "1.0408358",
-      "cumulative_nav": "1.0408358",
-      "cum_nav_withdrawal": "1.0408358",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-09-27",
-      "nav": "1.06669211",
-      "cumulative_nav": "1.06669211",
-      "cum_nav_withdrawal": "1.06669211",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-09-30",
-      "nav": "1.08711001",
-      "cumulative_nav": "1.08711001",
-      "cum_nav_withdrawal": "1.08711001",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-10-11",
-      "nav": "1.14769583",
-      "cumulative_nav": "1.14769583",
-      "cum_nav_withdrawal": "1.14769583",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-10-18",
-      "nav": "1.16658716",
-      "cumulative_nav": "1.16658716",
-      "cum_nav_withdrawal": "1.16658716",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-10-25",
-      "nav": "1.20656426",
-      "cumulative_nav": "1.20656426",
-      "cum_nav_withdrawal": "1.20656426",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-10-31",
-      "nav": "1.25541456",
-      "cumulative_nav": "1.25541456",
-      "cum_nav_withdrawal": "1.25541456",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-11-01",
-      "nav": "1.27029864",
-      "cumulative_nav": "1.27029864",
-      "cum_nav_withdrawal": "1.27029864",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-11-08",
-      "nav": "1.27716821",
-      "cumulative_nav": "1.27716821",
-      "cum_nav_withdrawal": "1.27716821",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-11-15",
-      "nav": "1.26152085",
-      "cumulative_nav": "1.26152085",
-      "cum_nav_withdrawal": "1.26152085",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-11-22",
-      "nav": "1.27802691",
-      "cumulative_nav": "1.27802691",
-      "cum_nav_withdrawal": "1.27802691",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-11-29",
-      "nav": "1.27287473",
-      "cumulative_nav": "1.27287473",
-      "cum_nav_withdrawal": "1.27287473",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-12-06",
-      "nav": "1.30149795",
-      "cumulative_nav": "1.30149795",
-      "cum_nav_withdrawal": "1.30149795",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-12-13",
-      "nav": "1.30684095",
-      "cumulative_nav": "1.30684095",
-      "cum_nav_withdrawal": "1.30684095",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-12-20",
-      "nav": "1.10638298",
-      "cumulative_nav": "1.29987597",
-      "cum_nav_withdrawal": "1.29987597",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-12-27",
-      "nav": "1.1030436",
-      "cumulative_nav": "1.29596413",
-      "cum_nav_withdrawal": "1.29653659",
-      "price_change": ""
-    },
-    {
-      "price_date": "2024-12-31",
-      "nav": "1.10161244",
-      "cumulative_nav": "1.29424673",
-      "cum_nav_withdrawal": "1.29510543",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-01-03",
-      "nav": "1.09760519",
-      "cumulative_nav": "1.28957161",
-      "cum_nav_withdrawal": "1.29109818",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-01-10",
-      "nav": "1.09836848",
-      "cumulative_nav": "1.2904303",
-      "cum_nav_withdrawal": "1.29186146",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-01-17",
-      "nav": "1.09875012",
-      "cumulative_nav": "1.29090736",
-      "cum_nav_withdrawal": "1.29224311",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-01-24",
-      "nav": "1.09607862",
-      "cumulative_nav": "1.2877588",
-      "cum_nav_withdrawal": "1.28957161",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-01-27",
-      "nav": "1.09445664",
-      "cumulative_nav": "1.28585059",
-      "cum_nav_withdrawal": "1.28794962",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-02-07",
-      "nav": "1.1030436",
-      "cumulative_nav": "1.29596413",
-      "cum_nav_withdrawal": "1.29653659",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-02-14",
-      "nav": "1.11563782",
-      "cumulative_nav": "1.31075279",
-      "cum_nav_withdrawal": "1.30913081",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-02-21",
-      "nav": "1.12584677",
-      "cumulative_nav": "1.32277454",
-      "cum_nav_withdrawal": "1.31933976",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-02-28",
-      "nav": "1.13176224",
-      "cumulative_nav": "1.32973953",
-      "cum_nav_withdrawal": "1.32525522",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-03-07",
-      "nav": "1.13424292",
-      "cumulative_nav": "1.33260185",
-      "cum_nav_withdrawal": "1.3277359",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-03-14",
-      "nav": "1.12861368",
-      "cumulative_nav": "1.32601851",
-      "cum_nav_withdrawal": "1.32210667",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-03-21",
-      "nav": "1.13033108",
-      "cumulative_nav": "1.32802214",
-      "cum_nav_withdrawal": "1.32382406",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-03-28",
-      "nav": "1.13004484",
-      "cumulative_nav": "1.32764049",
-      "cum_nav_withdrawal": "1.32353783",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-03-31",
-      "nav": "1.12889991",
-      "cumulative_nav": "1.32630474",
-      "cum_nav_withdrawal": "1.3223929",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-04-03",
-      "nav": "1.12670547",
-      "cumulative_nav": "1.32372865",
-      "cum_nav_withdrawal": "1.32019845",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-04-11",
-      "nav": "1.13395668",
-      "cumulative_nav": "1.33231562",
-      "cum_nav_withdrawal": "1.32744967",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-04-18",
-      "nav": "1.13538784",
-      "cumulative_nav": "1.3339376",
-      "cum_nav_withdrawal": "1.32888083",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-04-25",
-      "nav": "1.13519702",
-      "cumulative_nav": "1.33374678",
-      "cum_nav_withdrawal": "1.32869001",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-04-30",
-      "nav": "1.13185765",
-      "cumulative_nav": "1.32983494",
-      "cum_nav_withdrawal": "1.32535063",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-05-09",
-      "nav": "1.13519702",
-      "cumulative_nav": "1.33374678",
-      "cum_nav_withdrawal": "1.32869001",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-05-16",
-      "nav": "1.13281175",
-      "cumulative_nav": "1.33088446",
-      "cum_nav_withdrawal": "1.32630474",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-05-23",
-      "nav": "1.13443374",
-      "cumulative_nav": "1.33279267",
-      "cum_nav_withdrawal": "1.32792672",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-05-30",
-      "nav": "1.14254365",
-      "cumulative_nav": "1.34233375",
-      "cum_nav_withdrawal": "1.33603664",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-06-06",
-      "nav": "1.14464269",
-      "cumulative_nav": "1.34481443",
-      "cum_nav_withdrawal": "1.33813567",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-06-13",
-      "nav": "1.14397481",
-      "cumulative_nav": "1.34405114",
-      "cum_nav_withdrawal": "1.3374678",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-06-20",
-      "nav": "1.14550138",
-      "cumulative_nav": "1.34586394",
-      "cum_nav_withdrawal": "1.33899437",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-06-27",
-      "nav": "1.15342048",
-      "cumulative_nav": "1.35511879",
-      "cum_nav_withdrawal": "1.34691346",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-06-30",
-      "nav": "1.15599657",
-      "cumulative_nav": "1.35817193",
-      "cum_nav_withdrawal": "1.34948955",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-07-04",
-      "nav": "1.15685526",
-      "cumulative_nav": "1.35922145",
-      "cum_nav_withdrawal": "1.35034825",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-07-11",
-      "nav": "1.16009923",
-      "cumulative_nav": "1.36294247",
-      "cum_nav_withdrawal": "1.35359221",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-07-18",
-      "nav": "1.15876348",
-      "cumulative_nav": "1.3614159",
-      "cum_nav_withdrawal": "1.35225646",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-07-25",
-      "nav": "1.16887702",
-      "cumulative_nav": "1.37334224",
-      "cum_nav_withdrawal": "1.36237",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-07-31",
-      "nav": "1.16038546",
-      "cumulative_nav": "1.36332411",
-      "cum_nav_withdrawal": "1.35387845",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-08-01",
-      "nav": "1.15857266",
-      "cumulative_nav": "1.36122507",
-      "cum_nav_withdrawal": "1.35206564",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-08-08",
-      "nav": "1.16553764",
-      "cumulative_nav": "1.36933499",
-      "cum_nav_withdrawal": "1.35903063",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-08-15",
-      "nav": "1.17965843",
-      "cumulative_nav": "1.38593646",
-      "cum_nav_withdrawal": "1.37315142",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-08-22",
-      "nav": "1.19263429",
-      "cumulative_nav": "1.40120218",
-      "cum_nav_withdrawal": "1.38612728",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-08-29",
-      "nav": "1.19921763",
-      "cumulative_nav": "1.40893045",
-      "cum_nav_withdrawal": "1.39271062",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-09-05",
-      "nav": "1.19101231",
-      "cumulative_nav": "1.39929396",
-      "cum_nav_withdrawal": "1.3845053",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-09-12",
-      "nav": "1.20179372",
-      "cumulative_nav": "1.41198359",
-      "cum_nav_withdrawal": "1.39528671",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-09-19",
-      "nav": "1.20017174",
-      "cumulative_nav": "1.41007537",
-      "cum_nav_withdrawal": "1.39366473",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-09-26",
-      "nav": "1.2024616",
-      "cumulative_nav": "1.41274688",
-      "cum_nav_withdrawal": "1.39595458",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-09-30",
-      "nav": "1.20303406",
-      "cumulative_nav": "1.41341475",
-      "cum_nav_withdrawal": "1.39652705",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-10-10",
-      "nav": "1.20446522",
-      "cumulative_nav": "1.41513214",
-      "cum_nav_withdrawal": "1.39795821",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-10-17",
-      "nav": "1.20188913",
-      "cumulative_nav": "1.412079",
-      "cum_nav_withdrawal": "1.39538212",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-10-24",
-      "nav": "1.2007442",
-      "cumulative_nav": "1.41074325",
-      "cum_nav_withdrawal": "1.39423719",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-10-31",
-      "nav": "1.19816811",
-      "cumulative_nav": "1.40769011",
-      "cum_nav_withdrawal": "1.3916611",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-11-07",
-      "nav": "1.20713672",
-      "cumulative_nav": "1.4182807",
-      "cum_nav_withdrawal": "1.40062971",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-11-14",
-      "nav": "1.21782273",
-      "cumulative_nav": "1.43077951",
-      "cum_nav_withdrawal": "1.41131571",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-11-21",
-      "nav": "1.20713672",
-      "cumulative_nav": "1.4182807",
-      "cum_nav_withdrawal": "1.40062971",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-11-28",
-      "nav": "1.21095315",
-      "cumulative_nav": "1.422765",
-      "cum_nav_withdrawal": "1.40444614",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-12-05",
-      "nav": "1.20942658",
-      "cumulative_nav": "1.4209522",
-      "cum_nav_withdrawal": "1.40291957",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-12-12",
-      "nav": "1.21639157",
-      "cumulative_nav": "1.42915752",
-      "cum_nav_withdrawal": "1.40988455",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-12-19",
-      "nav": "1.2211621",
-      "cumulative_nav": "1.43469135",
-      "cum_nav_withdrawal": "1.41465509",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-12-26",
-      "nav": "1.22669593",
-      "cumulative_nav": "1.44127469",
-      "cum_nav_withdrawal": "1.42018891",
-      "price_change": ""
-    },
-    {
-      "price_date": "2025-12-31",
-      "nav": "1.22297491",
-      "cumulative_nav": "1.43688579",
-      "cum_nav_withdrawal": "1.41646789",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-01-09",
-      "nav": "1.24606431",
-      "cumulative_nav": "1.46398244",
-      "cum_nav_withdrawal": "1.43955729",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-01-16",
-      "nav": "1.25102567",
-      "cumulative_nav": "1.4698025",
-      "cum_nav_withdrawal": "1.44451865",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-01-23",
-      "nav": "1.25598702",
-      "cumulative_nav": "1.47562256",
-      "cum_nav_withdrawal": "1.44948001",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-01-30",
-      "nav": "1.25570079",
-      "cumulative_nav": "1.47533632",
-      "cum_nav_withdrawal": "1.44919378",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-02-06",
-      "nav": "1.2548421",
-      "cumulative_nav": "1.4742868",
-      "cum_nav_withdrawal": "1.44833508",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-02-13",
-      "nav": "1.25694113",
-      "cumulative_nav": "1.47676748",
-      "cum_nav_withdrawal": "1.45043412",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-02-27",
-      "nav": "1.26419235",
-      "cumulative_nav": "1.48525904",
-      "cum_nav_withdrawal": "1.45768534",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-03-06",
-      "nav": "1.26075756",
-      "cumulative_nav": "1.48125179",
-      "cum_nav_withdrawal": "1.45425055",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-03-10",
-      "nav": "1.48125179",
-      "cumulative_nav": "1.48125179",
-      "cum_nav_withdrawal": "1.48125179",
-      "price_change": ""
-    },
-    {
       "price_date": "2026-03-11",
-      "nav": "1.48125179",
-      "cumulative_nav": "1.48125179",
-      "cum_nav_withdrawal": "1.48125179",
+      "nav": "1",
+      "cumulative_nav": "1",
+      "cum_nav_withdrawal": "1",
       "price_change": ""
     },
     {
       "price_date": "2026-03-12",
-      "nav": "1.48125179",
-      "cumulative_nav": "1.48125179",
-      "cum_nav_withdrawal": "1.48125179",
+      "nav": "1",
+      "cumulative_nav": "1",
+      "cum_nav_withdrawal": "1",
       "price_change": ""
     },
     {
       "price_date": "2026-03-13",
-      "nav": "1.48110366",
-      "cumulative_nav": "1.48110366",
-      "cum_nav_withdrawal": "1.48110366",
+      "nav": "0.9999",
+      "cumulative_nav": "0.9999",
+      "cum_nav_withdrawal": "0.9999",
       "price_change": ""
     },
     {
       "price_date": "2026-03-16",
-      "nav": "1.48110366",
-      "cumulative_nav": "1.48110366",
-      "cum_nav_withdrawal": "1.48110366",
+      "nav": "0.9999",
+      "cumulative_nav": "0.9999",
+      "cum_nav_withdrawal": "0.9999",
       "price_change": ""
     },
     {
       "price_date": "2026-03-17",
-      "nav": "1.48110366",
-      "cumulative_nav": "1.48110366",
-      "cum_nav_withdrawal": "1.48110366",
+      "nav": "0.9999",
+      "cumulative_nav": "0.9999",
+      "cum_nav_withdrawal": "0.9999",
       "price_change": ""
     },
     {
       "price_date": "2026-03-18",
-      "nav": "1.48095554",
-      "cumulative_nav": "1.48095554",
-      "cum_nav_withdrawal": "1.48095554",
+      "nav": "0.9998",
+      "cumulative_nav": "0.9998",
+      "cum_nav_withdrawal": "0.9998",
       "price_change": ""
     },
     {
       "price_date": "2026-03-19",
-      "nav": "1.48095554",
-      "cumulative_nav": "1.48095554",
-      "cum_nav_withdrawal": "1.48095554",
+      "nav": "0.9998",
+      "cumulative_nav": "0.9998",
+      "cum_nav_withdrawal": "0.9998",
       "price_change": ""
     },
     {
       "price_date": "2026-03-20",
-      "nav": "1.47636366",
-      "cumulative_nav": "1.47636366",
-      "cum_nav_withdrawal": "1.47636366",
+      "nav": "0.9967",
+      "cumulative_nav": "0.9967",
+      "cum_nav_withdrawal": "0.9967",
       "price_change": ""
     },
     {
       "price_date": "2026-03-23",
-      "nav": "1.47354928",
-      "cumulative_nav": "1.47354928",
-      "cum_nav_withdrawal": "1.47354928",
+      "nav": "0.9948",
+      "cumulative_nav": "0.9948",
+      "cum_nav_withdrawal": "0.9948",
       "price_change": ""
     },
     {
       "price_date": "2026-03-24",
-      "nav": "1.47577116",
-      "cumulative_nav": "1.47577116",
-      "cum_nav_withdrawal": "1.47577116",
+      "nav": "0.9963",
+      "cumulative_nav": "0.9963",
+      "cum_nav_withdrawal": "0.9963",
       "price_change": ""
     },
     {
       "price_date": "2026-03-25",
-      "nav": "1.47977054",
-      "cumulative_nav": "1.47977054",
-      "cum_nav_withdrawal": "1.47977054",
+      "nav": "0.999",
+      "cumulative_nav": "0.999",
+      "cum_nav_withdrawal": "0.999",
       "price_change": ""
     },
     {
       "price_date": "2026-03-26",
-      "nav": "1.47636366",
-      "cumulative_nav": "1.47636366",
-      "cum_nav_withdrawal": "1.47636366",
+      "nav": "0.9967",
+      "cumulative_nav": "0.9967",
+      "cum_nav_withdrawal": "0.9967",
       "price_change": ""
     },
     {
       "price_date": "2026-03-27",
-      "nav": "1.47473428",
-      "cumulative_nav": "1.47473428",
-      "cum_nav_withdrawal": "1.47473428",
+      "nav": "0.9956",
+      "cumulative_nav": "0.9956",
+      "cum_nav_withdrawal": "0.9956",
       "price_change": ""
     },
     {
       "price_date": "2026-03-30",
-      "nav": "1.47902991",
-      "cumulative_nav": "1.47902991",
-      "cum_nav_withdrawal": "1.47902991",
+      "nav": "0.9985",
+      "cumulative_nav": "0.9985",
+      "cum_nav_withdrawal": "0.9985",
       "price_change": ""
     },
     {
       "price_date": "2026-03-31",
-      "nav": "1.48139991",
-      "cumulative_nav": "1.48139991",
-      "cum_nav_withdrawal": "1.48139991",
+      "nav": "1.0001",
+      "cumulative_nav": "1.0001",
+      "cum_nav_withdrawal": "1.0001",
       "price_change": ""
     },
     {
       "price_date": "2026-04-01",
-      "nav": "1.47473428",
-      "cumulative_nav": "1.47473428",
-      "cum_nav_withdrawal": "1.47473428",
+      "nav": "0.9956",
+      "cumulative_nav": "0.9956",
+      "cum_nav_withdrawal": "0.9956",
       "price_change": ""
     },
     {
       "price_date": "2026-04-02",
-      "nav": "1.47221615",
-      "cumulative_nav": "1.47221615",
-      "cum_nav_withdrawal": "1.47221615",
+      "nav": "0.9939",
+      "cumulative_nav": "0.9939",
+      "cum_nav_withdrawal": "0.9939",
       "price_change": ""
     },
     {
       "price_date": "2026-04-03",
-      "nav": "1.47103115",
-      "cumulative_nav": "1.47103115",
-      "cum_nav_withdrawal": "1.47103115",
+      "nav": "0.9931",
+      "cumulative_nav": "0.9931",
+      "cum_nav_withdrawal": "0.9931",
       "price_change": ""
     },
     {
       "price_date": "2026-04-07",
-      "nav": "1.46851302",
-      "cumulative_nav": "1.46851302",
-      "cum_nav_withdrawal": "1.46851302",
+      "nav": "0.9914",
+      "cumulative_nav": "0.9914",
+      "cum_nav_withdrawal": "0.9914",
       "price_change": ""
     },
     {
       "price_date": "2026-04-08",
-      "nav": "1.47384553",
-      "cumulative_nav": "1.47384553",
-      "cum_nav_withdrawal": "1.47384553",
+      "nav": "0.995",
+      "cumulative_nav": "0.995",
+      "cum_nav_withdrawal": "0.995",
       "price_change": ""
     },
     {
       "price_date": "2026-04-09",
-      "nav": "1.47651178",
-      "cumulative_nav": "1.47651178",
-      "cum_nav_withdrawal": "1.47651178",
+      "nav": "0.9968",
+      "cumulative_nav": "0.9968",
+      "cum_nav_withdrawal": "0.9968",
       "price_change": ""
     },
     {
       "price_date": "2026-04-10",
-      "nav": "1.47680803",
-      "cumulative_nav": "1.47680803",
-      "cum_nav_withdrawal": "1.47680803",
+      "nav": "0.997",
+      "cumulative_nav": "0.997",
+      "cum_nav_withdrawal": "0.997",
       "price_change": ""
     },
     {
       "price_date": "2026-04-13",
-      "nav": "1.48065929",
-      "cumulative_nav": "1.48065929",
-      "cum_nav_withdrawal": "1.48065929",
+      "nav": "0.9996",
+      "cumulative_nav": "0.9996",
+      "cum_nav_withdrawal": "0.9996",
       "price_change": ""
     },
     {
       "price_date": "2026-04-14",
-      "nav": "1.48214054",
-      "cumulative_nav": "1.48214054",
-      "cum_nav_withdrawal": "1.48214054",
+      "nav": "1.0006",
+      "cumulative_nav": "1.0006",
+      "cum_nav_withdrawal": "1.0006",
       "price_change": ""
     },
     {
       "price_date": "2026-04-15",
-      "nav": "1.48125179",
-      "cumulative_nav": "1.48125179",
-      "cum_nav_withdrawal": "1.48125179",
+      "nav": "1",
+      "cumulative_nav": "1",
+      "cum_nav_withdrawal": "1",
       "price_change": ""
     },
     {
       "price_date": "2026-04-16",
-      "nav": "1.48228867",
-      "cumulative_nav": "1.48228867",
-      "cum_nav_withdrawal": "1.48228867",
+      "nav": "1.0007",
+      "cumulative_nav": "1.0007",
+      "cum_nav_withdrawal": "1.0007",
       "price_change": ""
     },
     {
       "price_date": "2026-04-17",
-      "nav": "1.47888179",
-      "cumulative_nav": "1.47888179",
-      "cum_nav_withdrawal": "1.47888179",
+      "nav": "0.9984",
+      "cumulative_nav": "0.9984",
+      "cum_nav_withdrawal": "0.9984",
       "price_change": ""
     },
     {
       "price_date": "2026-04-20",
-      "nav": "1.4865843",
-      "cumulative_nav": "1.4865843",
-      "cum_nav_withdrawal": "1.4865843",
+      "nav": "1.0036",
+      "cumulative_nav": "1.0036",
+      "cum_nav_withdrawal": "1.0036",
       "price_change": ""
     },
     {
       "price_date": "2026-04-21",
-      "nav": "1.48762117",
-      "cumulative_nav": "1.48762117",
-      "cum_nav_withdrawal": "1.48762117",
+      "nav": "1.0043",
+      "cumulative_nav": "1.0043",
+      "cum_nav_withdrawal": "1.0043",
       "price_change": ""
     },
     {
       "price_date": "2026-04-22",
-      "nav": "1.48939867",
-      "cumulative_nav": "1.48939867",
-      "cum_nav_withdrawal": "1.48939867",
+      "nav": "1.0055",
+      "cumulative_nav": "1.0055",
+      "cum_nav_withdrawal": "1.0055",
       "price_change": ""
     },
     {
       "price_date": "2026-04-23",
-      "nav": "1.48821367",
-      "cumulative_nav": "1.48821367",
-      "cum_nav_withdrawal": "1.48821367",
+      "nav": "1.0047",
+      "cumulative_nav": "1.0047",
+      "cum_nav_withdrawal": "1.0047",
       "price_change": ""
     },
     {
       "price_date": "2026-04-24",
-      "nav": "1.48258492",
-      "cumulative_nav": "1.48258492",
-      "cum_nav_withdrawal": "1.48258492",
+      "nav": "1.0009",
+      "cumulative_nav": "1.0009",
+      "cum_nav_withdrawal": "1.0009",
       "price_change": ""
     },
     {
       "price_date": "2026-04-27",
-      "nav": "1.48732492",
-      "cumulative_nav": "1.48732492",
-      "cum_nav_withdrawal": "1.48732492",
+      "nav": "1.0041",
+      "cumulative_nav": "1.0041",
+      "cum_nav_withdrawal": "1.0041",
       "price_change": ""
     },
     {
       "price_date": "2026-04-28",
-      "nav": "1.4907318",
-      "cumulative_nav": "1.4907318",
-      "cum_nav_withdrawal": "1.4907318",
+      "nav": "1.0064",
+      "cumulative_nav": "1.0064",
+      "cum_nav_withdrawal": "1.0064",
       "price_change": ""
     },
     {
       "price_date": "2026-04-29",
-      "nav": "1.49280555",
-      "cumulative_nav": "1.49280555",
-      "cum_nav_withdrawal": "1.49280555",
+      "nav": "1.0078",
+      "cumulative_nav": "1.0078",
+      "cum_nav_withdrawal": "1.0078",
       "price_change": ""
     },
     {
       "price_date": "2026-04-30",
-      "nav": "1.4919168",
-      "cumulative_nav": "1.4919168",
-      "cum_nav_withdrawal": "1.4919168",
+      "nav": "1.0072",
+      "cumulative_nav": "1.0072",
+      "cum_nav_withdrawal": "1.0072",
       "price_change": ""
     },
     {
       "price_date": "2026-05-06",
-      "nav": "1.49769368",
-      "cumulative_nav": "1.49769368",
-      "cum_nav_withdrawal": "1.49769368",
+      "nav": "1.0111",
+      "cumulative_nav": "1.0111",
+      "cum_nav_withdrawal": "1.0111",
       "price_change": ""
     },
     {
       "price_date": "2026-05-07",
-      "nav": "1.51176558",
-      "cumulative_nav": "1.51176558",
-      "cum_nav_withdrawal": "1.51176558",
+      "nav": "1.0206",
+      "cumulative_nav": "1.0206",
+      "cum_nav_withdrawal": "1.0206",
       "price_change": ""
     },
     {
       "price_date": "2026-05-08",
-      "nav": "1.51754246",
-      "cumulative_nav": "1.51754246",
-      "cum_nav_withdrawal": "1.51754246",
+      "nav": "1.0245",
+      "cumulative_nav": "1.0245",
+      "cum_nav_withdrawal": "1.0245",
       "price_change": ""
     },
     {
       "price_date": "2026-05-11",
-      "nav": "1.52065309",
-      "cumulative_nav": "1.52065309",
-      "cum_nav_withdrawal": "1.52065309",
+      "nav": "1.0266",
+      "cumulative_nav": "1.0266",
+      "cum_nav_withdrawal": "1.0266",
       "price_change": ""
     },
     {
       "price_date": "2026-05-12",
-      "nav": "1.52109746",
-      "cumulative_nav": "1.52109746",
-      "cum_nav_withdrawal": "1.52109746",
+      "nav": "1.0269",
+      "cumulative_nav": "1.0269",
+      "cum_nav_withdrawal": "1.0269",
       "price_change": ""
     },
     {
       "price_date": "2026-05-13",
-      "nav": "1.52642997",
-      "cumulative_nav": "1.52642997",
-      "cum_nav_withdrawal": "1.52642997",
+      "nav": "1.0305",
+      "cumulative_nav": "1.0305",
+      "cum_nav_withdrawal": "1.0305",
       "price_change": ""
     },
     {
       "price_date": "2026-05-14",
-      "nav": "1.52480059",
-      "cumulative_nav": "1.52480059",
-      "cum_nav_withdrawal": "1.52480059",
+      "nav": "1.0294",
+      "cumulative_nav": "1.0294",
+      "cum_nav_withdrawal": "1.0294",
       "price_change": ""
     },
     {
       "price_date": "2026-05-15",
-      "nav": "1.51206183",
-      "cumulative_nav": "1.51206183",
-      "cum_nav_withdrawal": "1.51206183",
+      "nav": "1.0208",
+      "cumulative_nav": "1.0208",
+      "cum_nav_withdrawal": "1.0208",
       "price_change": ""
     },
     {
       "price_date": "2026-05-18",
-      "nav": "1.51265433",
-      "cumulative_nav": "1.51265433",
-      "cum_nav_withdrawal": "1.51265433",
+      "nav": "1.0212",
+      "cumulative_nav": "1.0212",
+      "cum_nav_withdrawal": "1.0212",
       "price_change": ""
     },
     {
       "price_date": "2026-05-19",
-      "nav": "1.51665371",
-      "cumulative_nav": "1.51665371",
-      "cum_nav_withdrawal": "1.51665371",
+      "nav": "1.0239",
+      "cumulative_nav": "1.0239",
+      "cum_nav_withdrawal": "1.0239",
       "price_change": ""
     },
     {
       "price_date": "2026-05-20",
-      "nav": "1.51931996",
-      "cumulative_nav": "1.51931996",
-      "cum_nav_withdrawal": "1.51931996",
+      "nav": "1.0257",
+      "cumulative_nav": "1.0257",
+      "cum_nav_withdrawal": "1.0257",
       "price_change": ""
     },
     {
       "price_date": "2026-05-21",
-      "nav": "1.5095437",
-      "cumulative_nav": "1.5095437",
-      "cum_nav_withdrawal": "1.5095437",
+      "nav": "1.0191",
+      "cumulative_nav": "1.0191",
+      "cum_nav_withdrawal": "1.0191",
       "price_change": ""
     },
     {
       "price_date": "2026-05-22",
-      "nav": "1.5101362",
-      "cumulative_nav": "1.5101362",
-      "cum_nav_withdrawal": "1.5101362",
+      "nav": "1.0195",
+      "cumulative_nav": "1.0195",
+      "cum_nav_withdrawal": "1.0195",
       "price_change": ""
     },
     {
       "price_date": "2026-05-25",
-      "nav": "1.52168996",
-      "cumulative_nav": "1.52168996",
-      "cum_nav_withdrawal": "1.52168996",
+      "nav": "1.0273",
+      "cumulative_nav": "1.0273",
+      "cum_nav_withdrawal": "1.0273",
       "price_change": ""
     },
     {
       "price_date": "2026-05-26",
-      "nav": "1.52361559",
-      "cumulative_nav": "1.52361559",
-      "cum_nav_withdrawal": "1.52361559",
+      "nav": "1.0286",
+      "cumulative_nav": "1.0286",
+      "cum_nav_withdrawal": "1.0286",
       "price_change": ""
     },
     {
       "price_date": "2026-05-27",
-      "nav": "1.52183809",
-      "cumulative_nav": "1.52183809",
-      "cum_nav_withdrawal": "1.52183809",
+      "nav": "1.0274",
+      "cumulative_nav": "1.0274",
+      "cum_nav_withdrawal": "1.0274",
       "price_change": ""
     },
     {
       "price_date": "2026-05-28",
-      "nav": "1.52539309",
-      "cumulative_nav": "1.52539309",
-      "cum_nav_withdrawal": "1.52539309",
+      "nav": "1.0298",
+      "cumulative_nav": "1.0298",
+      "cum_nav_withdrawal": "1.0298",
       "price_change": ""
     },
     {
       "price_date": "2026-05-29",
-      "nav": "1.52865185",
-      "cumulative_nav": "1.52865185",
-      "cum_nav_withdrawal": "1.52865185",
+      "nav": "1.032",
+      "cumulative_nav": "1.032",
+      "cum_nav_withdrawal": "1.032",
       "price_change": ""
     },
     {
       "price_date": "2026-06-01",
-      "nav": "1.53028122",
-      "cumulative_nav": "1.53028122",
-      "cum_nav_withdrawal": "1.53028122",
+      "nav": "1.0331",
+      "cumulative_nav": "1.0331",
+      "cum_nav_withdrawal": "1.0331",
       "price_change": ""
     },
     {
       "price_date": "2026-06-02",
-      "nav": "1.53116997",
-      "cumulative_nav": "1.53116997",
-      "cum_nav_withdrawal": "1.53116997",
+      "nav": "1.0337",
+      "cumulative_nav": "1.0337",
+      "cum_nav_withdrawal": "1.0337",
       "price_change": ""
     },
     {
       "price_date": "2026-06-03",
-      "nav": "1.53561373",
-      "cumulative_nav": "1.53561373",
-      "cum_nav_withdrawal": "1.53561373",
+      "nav": "1.0367",
+      "cumulative_nav": "1.0367",
+      "cum_nav_withdrawal": "1.0367",
       "price_change": ""
     },
     {
       "price_date": "2026-06-04",
-      "nav": "1.54124249",
-      "cumulative_nav": "1.54124249",
-      "cum_nav_withdrawal": "1.54124249",
+      "nav": "1.0405",
+      "cumulative_nav": "1.0405",
+      "cum_nav_withdrawal": "1.0405",
       "price_change": ""
     },
     {
       "price_date": "2026-06-05",
-      "nav": "1.53783561",
-      "cumulative_nav": "1.53783561",
-      "cum_nav_withdrawal": "1.53783561",
+      "nav": "1.0382",
+      "cumulative_nav": "1.0382",
+      "cum_nav_withdrawal": "1.0382",
       "price_change": ""
     },
     {
       "price_date": "2026-06-08",
-      "nav": "1.5342806",
-      "cumulative_nav": "1.5342806",
-      "cum_nav_withdrawal": "1.5342806",
+      "nav": "1.0358",
+      "cumulative_nav": "1.0358",
+      "cum_nav_withdrawal": "1.0358",
       "price_change": ""
     },
     {
       "price_date": "2026-06-09",
-      "nav": "1.53324373",
-      "cumulative_nav": "1.53324373",
-      "cum_nav_withdrawal": "1.53324373",
+      "nav": "1.0351",
+      "cumulative_nav": "1.0351",
+      "cum_nav_withdrawal": "1.0351",
       "price_change": ""
     },
     {
       "price_date": "2026-06-10",
-      "nav": "1.53620623",
-      "cumulative_nav": "1.53620623",
-      "cum_nav_withdrawal": "1.53620623",
+      "nav": "1.0371",
+      "cumulative_nav": "1.0371",
+      "cum_nav_withdrawal": "1.0371",
       "price_change": ""
     },
     {
       "price_date": "2026-06-11",
-      "nav": "1.5289481",
-      "cumulative_nav": "1.5289481",
-      "cum_nav_withdrawal": "1.5289481",
+      "nav": "1.0322",
+      "cumulative_nav": "1.0322",
+      "cum_nav_withdrawal": "1.0322",
       "price_change": ""
     },
     {
       "price_date": "2026-06-12",
-      "nav": "1.5348731",
-      "cumulative_nav": "1.5348731",
-      "cum_nav_withdrawal": "1.5348731",
+      "nav": "1.0362",
+      "cumulative_nav": "1.0362",
+      "cum_nav_withdrawal": "1.0362",
       "price_change": ""
     },
     {
       "price_date": "2026-06-15",
-      "nav": "1.53605811",
-      "cumulative_nav": "1.53605811",
-      "cum_nav_withdrawal": "1.53605811",
+      "nav": "1.037",
+      "cumulative_nav": "1.037",
+      "cum_nav_withdrawal": "1.037",
       "price_change": ""
     },
     {
       "price_date": "2026-06-16",
-      "nav": "1.55472188",
-      "cumulative_nav": "1.55472188",
-      "cum_nav_withdrawal": "1.55472188",
+      "nav": "1.0496",
+      "cumulative_nav": "1.0496",
+      "cum_nav_withdrawal": "1.0496",
       "price_change": ""
     },
     {
       "price_date": "2026-06-17",
-      "nav": "1.56731252",
-      "cumulative_nav": "1.56731252",
-      "cum_nav_withdrawal": "1.56731252",
+      "nav": "1.0581",
+      "cumulative_nav": "1.0581",
+      "cum_nav_withdrawal": "1.0581",
       "price_change": ""
     },
     {
       "price_date": "2026-06-18",
-      "nav": "1.56494252",
-      "cumulative_nav": "1.56494252",
-      "cum_nav_withdrawal": "1.56494252",
+      "nav": "1.0565",
+      "cumulative_nav": "1.0565",
+      "cum_nav_withdrawal": "1.0565",
       "price_change": ""
     },
     {
       "price_date": "2026-06-22",
-      "nav": "1.5772369",
-      "cumulative_nav": "1.5772369",
-      "cum_nav_withdrawal": "1.5772369",
+      "nav": "1.0648",
+      "cumulative_nav": "1.0648",
+      "cum_nav_withdrawal": "1.0648",
       "price_change": ""
     },
     {
       "price_date": "2026-06-23",
-      "nav": "1.58227316",
-      "cumulative_nav": "1.58227316",
-      "cum_nav_withdrawal": "1.58227316",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-06-24",
-      "nav": "1.58138441",
-      "cumulative_nav": "1.58138441",
-      "cum_nav_withdrawal": "1.58138441",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-06-25",
-      "nav": "1.58745754",
-      "cumulative_nav": "1.58745754",
-      "cum_nav_withdrawal": "1.58745754",
-      "price_change": ""
-    },
-    {
-      "price_date": "2026-06-26",
-      "nav": "1.58479129",
-      "cumulative_nav": "1.58479129",
-      "cum_nav_withdrawal": "1.58479129",
+      "nav": "1.0682",
+      "cumulative_nav": "1.0682",
+      "cum_nav_withdrawal": "1.0682",
       "price_change": ""
     }
   ]

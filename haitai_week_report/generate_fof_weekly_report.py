@@ -140,6 +140,24 @@ def load_nav_data(file_path: str) -> pd.DataFrame:
     return df
 
 
+def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
+    """Resample NAV series to the requested frequency before metrics/charting."""
+    normalized = (freq or "daily").strip().lower()
+    if normalized in ("", "daily", "auto"):
+        return df
+
+    work = df.sort_values("date").set_index("date")
+    rule = "W-FRI" if normalized == "weekly" else "ME"
+    resampled = work.resample(rule).last()
+    resampled = resampled.dropna(subset=["adj_nav"]).reset_index()
+
+    resampled["daily_ret"] = resampled["adj_nav"].pct_change()
+    resampled["pct_chg"] = resampled["daily_ret"].apply(
+        lambda x: f"{x * 100:+.2f}%" if pd.notna(x) else "--"
+    )
+    return resampled
+
+
 def compute_interval_returns(df: pd.DataFrame, fund_name: str = PRODUCT_NAME) -> list[dict]:
     """按年计算各月收益率、胜率与全年收益。"""
     work = df.copy()
@@ -369,10 +387,18 @@ def find_nav_file(base_dir: str) -> str:
     raise FileNotFoundError(f"未找到净值数据文件: {base_dir}")
 
 
-def risk_return_series(nav: pd.Series) -> tuple[pd.Series, int]:
-    """按净值频率构造风险指标用的收益率序列及年化因子。"""
+def risk_return_series(nav: pd.Series, nav_frequency: str | None = None) -> tuple[pd.Series, int]:
+    """Build return series and annualization factor for risk metrics."""
     nav = nav.sort_index()
     if len(nav) <= 1:
+        return nav.pct_change().dropna(), 252
+
+    freq = (nav_frequency or "auto").strip().lower()
+    if freq == "weekly":
+        return nav.pct_change().dropna(), 52
+    if freq == "monthly":
+        return nav.pct_change().dropna(), 12
+    if freq == "daily":
         return nav.pct_change().dropna(), 252
 
     median_gap = float(pd.Series(nav.index).diff().dropna().dt.days.median())
@@ -383,7 +409,11 @@ def risk_return_series(nav: pd.Series) -> tuple[pd.Series, int]:
     return nav.pct_change().dropna(), 252
 
 
-def compute_metrics(df: pd.DataFrame, as_of_date: pd.Timestamp | None = None) -> dict:
+def compute_metrics(
+    df: pd.DataFrame,
+    as_of_date: pd.Timestamp | None = None,
+    nav_frequency: str | None = None,
+) -> dict:
     work = df.copy()
     if as_of_date is not None:
         as_of_date = pd.Timestamp(as_of_date).normalize()
@@ -398,7 +428,7 @@ def compute_metrics(df: pd.DataFrame, as_of_date: pd.Timestamp | None = None) ->
     end_nav = float(series.iloc[-1])
     total_return = end_nav / start_nav - 1.0
 
-    returns, periods_per_year = risk_return_series(series)
+    returns, periods_per_year = risk_return_series(series, nav_frequency)
     n = len(returns)
     annual_return = (end_nav / start_nav) ** (periods_per_year / n) - 1.0 if n > 0 else 0.0
     volatility = returns.std() * np.sqrt(periods_per_year) if n > 1 else 0.0
@@ -415,7 +445,10 @@ def compute_metrics(df: pd.DataFrame, as_of_date: pd.Timestamp | None = None) ->
     max_daily_gain = returns.max() if len(returns) > 0 else 0.0
     max_daily_loss = returns.min() if len(returns) > 0 else 0.0
 
-    if periods_per_year == 52:
+    freq = (nav_frequency or "auto").strip().lower()
+    if freq in ("weekly", "monthly"):
+        bench_nav = bench.sort_index()
+    elif periods_per_year == 52:
         bench_nav = bench.sort_index().resample("W-FRI").last().dropna()
     else:
         bench_nav = bench.sort_index()
@@ -695,10 +728,11 @@ def make_report(
     report_title: str = REPORT_TITLE,
     product_tagline: str = PRODUCT_TAGLINE,
     benchmark_label: str = "沪深300",
+    nav_frequency: str | None = "daily",
 ) -> tuple[str, str]:
     output_dir = output_dir or str(Path(nav_file).parent)
 
-    df = load_nav_data(nav_file)
+    df = apply_nav_frequency(load_nav_data(nav_file), nav_frequency)
     as_of = pd.Timestamp(week_end).normalize() if week_end else None
     if as_of is not None:
         if as_of < df["date"].min() or as_of > df["date"].max():
@@ -709,7 +743,7 @@ def make_report(
 
     plot_df = df[df["date"] <= as_of].copy() if as_of is not None else df
     interval_rows = compute_interval_returns(plot_df, fund_name=product_name)
-    metrics = compute_metrics(df, as_of)
+    metrics = compute_metrics(df, as_of, nav_frequency)
 
     fp, fp_bold = configure_cn_font()
     if fp is None:
@@ -976,6 +1010,12 @@ def main(argv: list[str] | None = None) -> int:
         default="沪深300",
         help="基准名称（图表与文案）",
     )
+    parser.add_argument(
+        "--nav-frequency",
+        default="daily",
+        choices=["daily", "weekly", "monthly"],
+        help="净值频率：daily=日频, weekly=周频, monthly=月频",
+    )
     args = parser.parse_args(argv)
 
     nav_file = args.nav_file
@@ -996,6 +1036,7 @@ def main(argv: list[str] | None = None) -> int:
             report_title=args.report_title,
             product_tagline=args.product_tagline,
             benchmark_label=args.benchmark_label,
+            nav_frequency=args.nav_frequency,
         )
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)

@@ -1,3 +1,5 @@
+export type FofWeeklyNavFrequency = "daily" | "weekly" | "monthly"
+
 export type FofWeeklyReportPreset = {
   name: string
   product_name: string
@@ -7,6 +9,7 @@ export type FofWeeklyReportPreset = {
   week_begin: string
   week_end: string
   benchmark_key: string
+  nav_frequency: FofWeeklyNavFrequency
   savedAt: string
 }
 
