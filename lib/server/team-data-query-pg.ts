@@ -10,6 +10,7 @@ import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import { EMAIL_NAV_SOURCE_PRIORITY } from "@/lib/server/email-nav-query"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
+import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
 export type TeamDataListParams = {
   page: number
@@ -648,6 +649,38 @@ function resolveFund(
   }
 }
 
+function mergeLatestTeamNav(
+  emailDate: string,
+  emailNav: string,
+  manualRows: Array<{ nav_date: string; unit_nav: string }> | undefined,
+): { team_nav_date: string; team_nav: string } {
+  let bestDate = emailDate.trim()
+  let bestNav = emailNav.trim()
+  for (const row of manualRows ?? []) {
+    if (!bestDate || row.nav_date.localeCompare(bestDate) > 0) {
+      bestDate = row.nav_date
+      bestNav = row.unit_nav
+    } else if (row.nav_date === bestDate) {
+      bestNav = row.unit_nav
+    }
+  }
+  return { team_nav_date: bestDate, team_nav: bestNav }
+}
+
+async function overlayManualTeamNav(rows: ResolvedFund[]): Promise<ResolvedFund[]> {
+  const beians = [...new Set(rows.map((r) => r.beian_hao?.trim()).filter(Boolean) as string[])]
+  if (beians.length === 0) return rows
+  const manualByBeian = await loadManualTeamNavBatch(beians)
+  if (manualByBeian.size === 0) return rows
+  return rows.map((row) => {
+    if (!row.beian_hao) return row
+    const manual = manualByBeian.get(row.beian_hao)
+    if (!manual?.length) return row
+    const merged = mergeLatestTeamNav(row.team_nav_date, row.team_nav, manual)
+    return { ...row, ...merged }
+  })
+}
+
 async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> {
   if (rows.length === 0) return []
   try {
@@ -683,14 +716,16 @@ async function enrichPageRows(rows: ResolvedFund[]): Promise<TeamDataListRow[]> 
 
   return rows.map((row) => {
     const plat = row.beian_hao ? platByBeian.get(row.beian_hao) : undefined
+    const teamNav = row.team_nav?.trim() || null
+    const teamNavDate = row.team_nav_date?.trim() || null
     return {
       id: row.id,
       beian_hao: row.beian_hao,
       product_name: row.product_name,
       platform_nav: plat?.nav ?? null,
       platform_nav_date: plat?.price_date ?? null,
-      team_nav: row.team_nav,
-      team_nav_date: row.team_nav_date,
+      team_nav: teamNav,
+      team_nav_date: teamNavDate,
       valuation_date: row.beian_hao ? (vmByCode.get(row.beian_hao) ?? null) : null,
       product_source: row.product_source,
       strategy_l1: row.strategy_l1,
@@ -735,6 +770,7 @@ export async function listTeamData(params: TeamDataListParams): Promise<{
 
   let resolved = dedupeResolvedByBeian(rawRows.map((row) => resolveFund(row, indexes, strategySource)))
   resolved = mergeManualTeamDataProducts(resolved, manualProducts, indexes, strategySource)
+  resolved = await overlayManualTeamNav(resolved)
 
   if (keyword) {
     const kw = keyword.toLowerCase()

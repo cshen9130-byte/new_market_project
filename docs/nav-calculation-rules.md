@@ -879,5 +879,58 @@ Some legacy platform ingest rows stored **累计净值 in `cum_nav_withdrawal`**
 ```bash
 npx tsx scripts/test-nav-rechain.mjs
 npx tsx scripts/ma/check_fof_nav_invariant.ts
-npx tsx scripts/ma/_diag_sqx078_nav.ts
+---
+
+## What Was Fixed (锐耐稳健对冲11号 — SBDF95, 2026-07-03)
+
+### The Problem
+
+Fund detail page for **锐耐稳健对冲11号** (Citics auto-disclosure 【基金净值】 email, 备案号 **SBDF95**) showed a corrupt latest row on **2026-07-03**:
+
+| Date | Shown (wrong) | Expected |
+|---|---|---|
+| 2026-07-01 | unit 1.0214, cum 1.0214, adj 1.0214 | (correct) |
+| 2026-07-03 | unit **4.6587**, cum **4.6587**, adj **4.6587**, 涨跌幅 **+356%** | unit **~1.02**, cum/adj rechained from prior |
+
+Symptoms: 成立以来收益 **+365%**, 收益曲线 spiked vertically at the end, max drawdown / Sharpe distorted.
+
+The value **4.6587 ≈ 1 + 365.87%** — a cumulative-return index (成立以来复权倍数), not unit NAV.
+
+### Root Causes
+
+1. **Legacy / summary row as NAV** — Platform or attachment summary rows can store cumulative-return multiples with unit = cum = adj collapsed. No prior-row context exists for `repairCorruptUnitNavRows` (all fields corrupt together).
+
+2. **Citics 【基金净值】 xlsx column bleed** — Headers like **基金资产净值** / bare **净值** matched unit-NAV scoring in `nav-cleaner`, allowing total-AUM or return-index columns to win on summary rows at the bottom of the workbook.
+
+3. **Gap after enabling attachment ingest** — `【基金净值】` subjects were added to NAV-table detection in the same release as SBPU97; SBDF95 email rows merge correctly through **2026-07-01**, but **2026-07-03** came from a corrupt legacy/summary row with no email override.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Terminal spike removal | `sanitizeIsolatedNavSpikes` | Drop last (or gap) rows where unit/cum/adj are equal and unit jumps >100% from prior; skip ex-div dates and V-shape middles (still handled by `sanitizeVShapeNavOutliers`) |
+| Pipeline order | `finalizeNavSeries` | Runs `sanitizeIsolatedNavSpikes` after V-shape cleanup, before corrupt-unit repair |
+| Citics xlsx column guard | `isNonUnitNavHeader`, `UNIT_NAV_HEADER_PATTERNS` | Exclude 资产净值 / 净资产 / 份额 / 收益率 headers from unit scoring; require explicit 单位净值-style headers |
+| Workbook row filter | `filterImplausibleWorkbookNavRows` | Skip same-pattern spike rows during `analyzeNavWorkbook` ingest |
+
+### What This Fix Does NOT Change
+
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev`, `propagateMissingAdjRows` — unchanged.
+- SBAH99 / SNF018 / SSG947 / BAH99A / SBPC20 / SBPU97 / SLA063 / SQX078 fixes — unchanged.
+- `preferEmailNavRow`, virtual-first FOF priority — unchanged.
+
+### After deployment
+
+Re-parse Citics email or refresh cache so list views pick up corrected series:
+
+```bash
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+```
+
+Regression checks:
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+npx tsx scripts/ma/_diag_sbdf95.ts
 ```

@@ -295,6 +295,92 @@ export type SuggestTailResult =
     }
   | { ok: false; error: string }
 
+export type SuggestStartResult =
+  | { ok: true; start_date: string; product_name: string }
+  | { ok: false; error: string }
+
+async function lookupInceptionByBeian(
+  beianHao: string,
+  productName?: string,
+): Promise<string | null> {
+  const code = beianHao.trim()
+  if (!code) return null
+  const name = (productName ?? "").trim()
+
+  const [trackRows, bflRows, pfiRows] = await Promise.all([
+    query<{ inception_date: string | null }>(
+      `SELECT inception_date::text AS inception_date
+       FROM basicinfo_bfl_track
+       WHERE register_number = $1 OR record_key = $1
+          OR ($2 <> '' AND (fund_name = $2 OR fund_short_name = $2))
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [code, name],
+    ).catch(() => [] as { inception_date: string | null }[]),
+    query<{ inception_date: string | null }>(
+      `SELECT inception_date::text AS inception_date
+       FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
+      [code],
+    ).catch(() => [] as { inception_date: string | null }[]),
+    query<{ inception_date: string | null }>(
+      `SELECT inception_date::text AS inception_date
+       FROM private_fund_info WHERE beian_hao = $1 LIMIT 1`,
+      [code],
+    ).catch(() => [] as { inception_date: string | null }[]),
+  ])
+
+  const pick = (value: string | null | undefined) => value?.slice(0, 10) || null
+  return (
+    pick(trackRows[0]?.inception_date)
+    ?? pick(bflRows[0]?.inception_date)
+    ?? pick(pfiRows[0]?.inception_date)
+  )
+}
+
+async function lookupFundInceptionDate(entry: FundSpliceEntry): Promise<string | null> {
+  const name = entry.product_name.trim()
+  if (!name) return null
+
+  switch (entry.fund_category) {
+    case "自建基金": {
+      const fund = findCustomFundByName(name)
+      if (!fund) throw new Error(`未找到自建基金「${name}」`)
+      const { listCustomFundNavSeries } = await import("@/lib/server/custom-fund-nav")
+      const navSeries = listCustomFundNavSeries(fund.product_code)
+      return normalizeDate(navSeries[0]?.price_date ?? fund.created_at.slice(0, 10))
+    }
+    case "在管产品": {
+      const managed = await lookupManagedProduct(name)
+      const beian = resolveManagedProductBeian(managed.product_name, managed.beian_hao) ?? managed.beian_hao
+      return lookupInceptionByBeian(beian, managed.product_name)
+    }
+    case "FOF底层": {
+      const fof = await lookupFofUnderlying(name)
+      return lookupInceptionByBeian(fof.beian_hao, fof.product_name)
+    }
+    default: {
+      const beian = await lookupPrivateFundBeian(name)
+      return lookupInceptionByBeian(beian.beian_hao, name)
+    }
+  }
+}
+
+/** Resolve fund-1 inception date for auto-filling splice start date. */
+export async function suggestSpliceStartDate(fund1: FundSpliceEntry): Promise<SuggestStartResult> {
+  try {
+    if (!fund1.product_name.trim()) {
+      return { ok: false, error: "请先选择基金1" }
+    }
+    const inception = await lookupFundInceptionDate(fund1)
+    if (!inception) {
+      return { ok: false, error: `「${fund1.product_name}」未找到成立日期` }
+    }
+    return { ok: true, start_date: inception, product_name: fund1.product_name }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "获取成立日期失败" }
+  }
+}
+
 /** Pick fund-1 tail date = last fund-1 NAV before fund-2 begins (handoff point). */
 export async function suggestSpliceTailDate(
   startDate: string,

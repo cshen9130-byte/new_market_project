@@ -371,6 +371,7 @@ export function CustomFundNavGenerationRulesDialog({
   const [error, setError] = useState("")
   const [tailHint, setTailHint] = useState("")
   const [autoTailLoading, setAutoTailLoading] = useState(false)
+  const [autoStartLoading, setAutoStartLoading] = useState(false)
   const [showCalcRules, setShowCalcRules] = useState(false)
 
   useEffect(() => {
@@ -402,6 +403,35 @@ export function CustomFundNavGenerationRulesDialog({
   function updateFund(index: number, next: FundSpliceEntry) {
     setFunds((prev) => prev.map((row, i) => (i === index ? next : row)))
     if (index === 0) setTailHint("")
+  }
+
+  async function handleAutoStartDate() {
+    if (!funds[0]?.product_name.trim()) {
+      setError("请先选择基金1")
+      return
+    }
+    setAutoStartLoading(true)
+    setError("")
+    try {
+      const res = await fetch("/ma/api/custom-funds/nav-rules/suggest-start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...userFetchHeaders() },
+        body: JSON.stringify({
+          code: productCode,
+          fund1: funds[0],
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(String(json.message || "获取成立日期失败"))
+      }
+      setStartDate(String(json.start_date ?? ""))
+      setTailHint("")
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "获取成立日期失败")
+    } finally {
+      setAutoStartLoading(false)
+    }
   }
 
   async function handleAutoTailDate() {
@@ -534,7 +564,7 @@ export function CustomFundNavGenerationRulesDialog({
                 请按实际拼接顺序选择基金。第一只基金的「尾部净值日期」应接在第二只基金开始之前；可点击「自动对接下一只」自动填入。
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <span className="text-sm text-zinc-600 shrink-0">
                   <span className="text-red-500 mr-0.5">*</span>
                   开始时间：
@@ -544,6 +574,14 @@ export function CustomFundNavGenerationRulesDialog({
                   onChange={(v) => { setStartDate(v); setTailHint("") }}
                   placeholder="选择开始时间"
                 />
+                <button
+                  type="button"
+                  onClick={() => void handleAutoStartDate()}
+                  disabled={autoStartLoading || !funds[0]?.product_name.trim()}
+                  className="text-sm text-blue-600 hover:text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline shrink-0"
+                >
+                  {autoStartLoading ? "获取中…" : "填入基金1成立日期"}
+                </button>
               </div>
 
               <div className="space-y-2">

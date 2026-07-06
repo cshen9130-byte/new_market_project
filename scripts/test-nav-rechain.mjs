@@ -267,6 +267,18 @@ const combined = mergeLegacyWithTeamNav(seedBackfill, emailTeam)
 const combined622 = combined.find((r) => r.price_date === "2026-06-22")
 assert("email team wins over seed on 0622", Math.abs(parseFloat(combined622.nav) - 1.9983) < 0.001)
 
+// SBDF95: terminal legacy / Citics summary row stored cumulative-return index (~4.66) as unit NAV
+const sbdf95Legacy = [
+  { price_date: "2026-06-29", nav: "1.0270", cumulative_nav: "1.0270", cum_nav_withdrawal: "1.0270", price_change: "" },
+  { price_date: "2026-07-01", nav: "1.0214", cumulative_nav: "1.0214", cum_nav_withdrawal: "1.0214", price_change: "" },
+  { price_date: "2026-07-03", nav: "4.6587", cumulative_nav: "4.6587", cum_nav_withdrawal: "4.6587", price_change: "" },
+]
+const sbdf95Out = mergeNavSeriesWithEmail(sbdf95Legacy, [])
+assert("SBDF95 terminal spike removed", !sbdf95Out.some((r) => r.price_date === "2026-07-03"))
+const sbdf95Latest = sbdf95Out.at(-1)
+assert("SBDF95 latest ~1.0214", Math.abs(parseFloat(sbdf95Latest.nav) - 1.0214) < 0.001)
+assert("SBDF95 max unit sane", Math.max(...sbdf95Out.map((r) => parseFloat(r.nav))) < 2)
+
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"
 if (fs.existsSync(excelPath)) {
   const buf = fs.readFileSync(excelPath)

@@ -4785,7 +4785,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
             </div>
             {/* 选择基金 */}
             <div className="flex items-start gap-3 mb-5">
-              <span className="text-sm shrink-0 w-16 text-right mt-2"><span className="text-red-500 mr-0.5">*</span>选择基金：</span>
+              <span className="text-sm shrink-0 w-20 whitespace-nowrap text-right mt-2"><span className="text-red-500 mr-0.5">*</span>选择基金：</span>
               <div className="flex flex-1 flex-col gap-0">
                 {/* Input row */}
                 <div className="flex flex-1 items-center gap-0 border rounded overflow-visible">
@@ -15281,7 +15281,7 @@ function OperationsTeamDataView() {
                 添加后可上传该产品净值数据，且净值仅内部可见
               </div>
               <div className="flex items-start gap-3">
-                <span className="text-sm shrink-0 w-[4.5rem] text-right pt-2">
+                <span className="text-sm shrink-0 w-20 whitespace-nowrap text-right pt-2">
                   <span className="text-red-500 mr-0.5">*</span>选择基金：
                 </span>
                 <div className="flex flex-1 flex-col gap-1 relative">
@@ -16358,7 +16358,7 @@ function OperationsManagedProductsView() {
             </div>
             <div className="px-6 py-5">
               <div className="flex items-start gap-3">
-                <span className="text-sm shrink-0 w-[4.5rem] text-right pt-2"><span className="text-red-500 mr-0.5">*</span>选择基金：</span>
+                <span className="text-sm shrink-0 w-20 whitespace-nowrap text-right pt-2"><span className="text-red-500 mr-0.5">*</span>选择基金：</span>
                 <div className="flex flex-1 flex-col gap-0 relative">
                   {addManagedFundSelected ? (
                     <div className="flex items-center justify-between border rounded px-3 h-9">

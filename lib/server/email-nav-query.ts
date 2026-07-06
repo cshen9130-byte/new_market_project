@@ -1455,6 +1455,60 @@ function sanitizeVShapeNavOutliers(rows: LegacyNavRow[]): LegacyNavRow[] {
   return sorted
 }
 
+const ISOLATED_SPIKE_RATIO = 2
+
+function navFieldsAllEqual(row: LegacyNavRow): boolean {
+  const unit = parseOptionalNav(row.nav)
+  if (unit == null || unit <= 0) return false
+  const cum = parseOptionalNav(row.cum_nav_withdrawal) ?? parseOptionalNav(row.cumulative_nav)
+  const adj = parseOptionalNav(row.cumulative_nav)
+  if (cum != null && Math.abs(unit - cum) / unit > 0.001) return false
+  if (adj != null && Math.abs(unit - adj) / unit > 0.001) return false
+  return true
+}
+
+/**
+ * Drop terminal (or gap) rows where unit/cum/adj collapsed to one value that jumped
+ * >100% from the prior row — e.g. legacy platform storing cumulative-return index as NAV.
+ * V-shaped middle outliers are left for sanitizeVShapeNavOutliers.
+ */
+function sanitizeIsolatedNavSpikes(rows: LegacyNavRow[]): LegacyNavRow[] {
+  if (rows.length < 2) return rows
+
+  return rows.filter((row, i, sorted) => {
+    if (i === 0) return true
+    const prev = sorted[i - 1]
+    const next = i < sorted.length - 1 ? sorted[i + 1] : null
+
+    const currUnit = parseOptionalNav(row.nav)
+    const prevUnit = parseOptionalNav(prev.nav)
+    if (currUnit == null || prevUnit == null || prevUnit <= 0) return true
+
+    const ratio = currUnit / prevUnit
+    if (ratio < ISOLATED_SPIKE_RATIO && ratio > 1 / ISOLATED_SPIKE_RATIO) return true
+
+    const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+    const currCum = parseOptionalNav(row.cum_nav_withdrawal) ?? parseOptionalNav(row.cumulative_nav)
+    if (
+      prevCum != null && currCum != null &&
+      isLikelyDividendExDate(prevUnit, currUnit, prevCum, currCum)
+    ) {
+      return true
+    }
+
+    if (!navFieldsAllEqual(row)) return true
+
+    if (next) {
+      const nextUnit = parseOptionalNav(next.nav)
+      if (nextUnit != null && Math.abs(nextUnit / prevUnit - 1) <= 0.06) {
+        return true
+      }
+    }
+
+    return false
+  })
+}
+
 /** Fix stale/spike 累计/复权 when unit moved but derived fields did not. */
 function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = rows.map((row) => ({ ...row }))
@@ -1572,6 +1626,7 @@ function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string>
   let out = sanitizeMisassignedUnitNavRows(rows)
   out = repairSwappedCumAdjRows(out)
   out = sanitizeVShapeNavOutliers(out)
+  out = sanitizeIsolatedNavSpikes(out)
   out = repairCorruptUnitNavRows(out)
   out = syncExDivAdjustedNav(out)
   out = propagateMissingAdjRows(out)

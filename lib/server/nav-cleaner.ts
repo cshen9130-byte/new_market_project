@@ -46,7 +46,7 @@ const DATE_HEADER_PATTERNS = [
 ]
 
 const UNIT_NAV_HEADER_PATTERNS = [
-  /单位净值|基金净值|netassetvalue|unitnav|navperunit|navunit|netvalue|净值|^nav$/i,
+  /单位净值|今日单位净值|基金份额净值|基金单位净值|份额净值|netassetvalue|unitnav|navperunit|navunit|^nav$/i,
 ]
 
 const WITHDRAWAL_NAV_HEADER_PATTERNS = [
@@ -73,6 +73,14 @@ function isWithdrawalNavHeader(normalizedHeader: string): boolean {
 
 function isCumulativeNavHeader(normalizedHeader: string): boolean {
   return isWithdrawalNavHeader(normalizedHeader) || isAdjustedNavHeader(normalizedHeader)
+}
+
+/** Total AUM / share-count columns must not score as unit NAV (Citics 【基金净值】 xlsx). */
+function isNonUnitNavHeader(normalizedHeader: string): boolean {
+  if (isCumulativeNavHeader(normalizedHeader)) return true
+  return /资产净值|净资产|资产份额|持有份额|份额数|成立以来|收益率|涨跌幅|totalasset|netasset(?!value)/i.test(
+    normalizedHeader,
+  )
 }
 
 function stringifyCell(value: unknown) {
@@ -362,7 +370,7 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
       dateScore:
         matchHeaderScore(normalizedHeader, DATE_HEADER_PATTERNS) + (parseableDateCount / sampleCount) * 6,
       unitScore:
-        (isCumulativeNavHeader(normalizedHeader)
+        (isNonUnitNavHeader(normalizedHeader)
           ? 0
           : matchHeaderScore(normalizedHeader, UNIT_NAV_HEADER_PATTERNS)) +
         (numericCount / sampleCount) * 3,
@@ -394,7 +402,7 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
 
   const unitCandidate = [...navCandidates]
     .filter((column) => column.index !== cumulativeIndex && column.index !== adjustedIndex)
-    .filter((column) => !isCumulativeNavHeader(normalizeHeader(column.header)))
+    .filter((column) => !isNonUnitNavHeader(normalizeHeader(column.header)))
     .sort((left, right) => right.unitScore - left.unitScore)[0] ?? null
   let unitIndex = unitCandidate && unitCandidate.unitScore > 1 ? unitCandidate.index : null
 
@@ -438,6 +446,30 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
     adjustedIndex,
     inferredDateFormat,
   }
+}
+
+/** Drop summary rows where cumulative-return / AUM columns were misread as unit NAV. */
+function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: string[]): NavCleanerRow[] {
+  if (rows.length < 2) return rows
+  const SPIKE_RATIO = 2
+  const filtered: NavCleanerRow[] = []
+  for (const row of rows) {
+    const prev = filtered.at(-1)
+    if (prev) {
+      const ratio = row.unitNav / prev.unitNav
+      const allEqual =
+        Math.abs(row.unitNav - row.cumulativeNav) / row.unitNav < 0.001 &&
+        (row.adjustedNav == null || Math.abs(row.unitNav - row.adjustedNav) / row.unitNav < 0.001)
+      if (allEqual && (ratio >= SPIKE_RATIO || ratio <= 1 / SPIKE_RATIO)) {
+        warnings.push(
+          `已跳过 ${row.date} 异常净值 ${row.unitNav}（相对前一日 ${prev.unitNav} 变动过大，疑似累计收益/资产净值误读）`,
+        )
+        continue
+      }
+    }
+    filtered.push(row)
+  }
+  return filtered
 }
 
 function isChinaTradingDay(isoDate: string) {
@@ -539,6 +571,7 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
   const dedupedRows = [...dedupedByDate.values()].sort((left, right) => left.date.localeCompare(right.date))
   const duplicateDateCount = parsedRows.length - dedupedRows.length
   const nonTradingDayCount = dedupedRows.filter((row) => !row.isChinaTradingDay).length
+  const filteredRows = filterImplausibleWorkbookNavRows(dedupedRows, warnings)
 
   if (skippedRows > 0) {
     warnings.push(`已跳过 ${skippedRows} 行无法识别的记录。`)
@@ -560,11 +593,11 @@ export function analyzeNavWorkbook(buffer: Buffer, sourceFileName: string): NavC
     },
     inferredDateFormat: inferredDateFormat.label,
     totalSourceRows: Math.max(rawRows.length - (headerRowIndex + 1), 0),
-    validRowCount: dedupedRows.length,
+    validRowCount: filteredRows.length,
     duplicateDateCount,
     nonTradingDayCount,
     warnings,
-    rows: dedupedRows,
+    rows: filteredRows,
   }
 }
 
