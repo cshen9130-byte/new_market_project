@@ -31,6 +31,7 @@ import { PeIndustryView } from "./components/PeIndustryView"
 import { FuturesStyleView } from "./components/FuturesStyleView"
 import { EquityStyleView } from "./components/EquityStyleView"
 import { ReportsManagementView } from "./components/ReportsManagementView"
+import { ReportTemplateManagementView } from "./components/ReportTemplateManagementView"
 import { authService, type User } from "@/lib/auth"
 import {
   canAccessInvestmentTab,
@@ -2193,9 +2194,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           if (d?.data?.team && d?.data?.mine) {
             reconcilePools(setPools, POOLS_CACHE_KEY, TEAM_ALL_POOL, d.data.team)
             reconcilePools(setMyPools, MINE_POOLS_CACHE_KEY, MINE_ALL_POOL, d.data.mine)
-          } else if (d?.error) console.error("[loadPools]", d.error, d.detail)
+          }
         })
-        .catch((e) => console.error("[loadPools fetch]", e))
+        .catch(() => {})
     }
 
     reloadPoolsRef.current = loadPools
@@ -23491,7 +23492,8 @@ function PrivateFundsPageContent() {
             </div>
           )}
           {activeTab === "reports" && activeSideItem === "rpt-mine" && <ReportsManagementView />}
-          {activeTab === "reports" && activeSideItem !== "rpt-mine" && (
+          {activeTab === "reports" && activeSideItem === "rpt-templates" && <ReportTemplateManagementView />}
+          {activeTab === "reports" && activeSideItem !== "rpt-mine" && activeSideItem !== "rpt-templates" && (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
               该功能正在建设中，敬请期待
             </div>

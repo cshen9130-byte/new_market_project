@@ -1,17 +1,42 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { Inbox, Search } from "lucide-react"
 import { NewReportDialog } from "./NewReportDialog"
+import { loadCustomReports, type SavedCustomReport } from "@/lib/ma/custom-report-storage"
 
 type ScopeTab = "team" | "mine"
 
 const thBase = "px-3 py-0 h-9 text-left text-xs font-semibold text-zinc-500 whitespace-nowrap box-border leading-tight align-middle"
 
+function currentUserName(): string {
+  try {
+    const u = JSON.parse(localStorage.getItem("currentUser") || "null")
+    return u?.name ?? u?.email ?? ""
+  } catch {
+    return ""
+  }
+}
+
 export function ReportsManagementView() {
   const [scopeTab, setScopeTab] = useState<ScopeTab>("team")
   const [keyword, setKeyword] = useState("")
   const [newReportOpen, setNewReportOpen] = useState(false)
+  const [reports, setReports] = useState<SavedCustomReport[]>(() => loadCustomReports())
+
+  const refreshReports = useCallback(() => {
+    setReports(loadCustomReports())
+  }, [])
+
+  const filtered = useMemo(() => {
+    const q = keyword.trim().toLowerCase()
+    const mine = currentUserName()
+    return reports.filter((r) => {
+      if (scopeTab === "mine" && r.creator && mine && r.creator !== mine) return false
+      if (!q) return true
+      return r.title.toLowerCase().includes(q) || r.templateName.toLowerCase().includes(q)
+    })
+  }, [reports, keyword, scopeTab])
 
   return (
     <div className="flex flex-col h-full min-w-0">
@@ -53,7 +78,11 @@ export function ReportsManagementView() {
         </button>
       </div>
 
-      <NewReportDialog open={newReportOpen} onClose={() => setNewReportOpen(false)} />
+      <NewReportDialog
+        open={newReportOpen}
+        onClose={() => setNewReportOpen(false)}
+        onCustomReportSaved={refreshReports}
+      />
 
       <div className="flex-1 min-h-0 bg-background border rounded-xl shadow-sm overflow-hidden flex flex-col">
         <div className="overflow-auto flex-1 min-h-0">
@@ -62,37 +91,43 @@ export function ReportsManagementView() {
               <tr>
                 <th className={`${thBase} w-16 text-center`}>序号</th>
                 <th className={thBase}>标题</th>
-                <th className={thBase}>截止日期</th>
-                <th className={thBase}>是否修改</th>
-                <th className={thBase}>修改日期</th>
+                <th className={thBase}>模板</th>
+                <th className={thBase}>创建日期</th>
                 <th className={thBase}>创建人</th>
-                <th className={`${thBase} w-20 text-center`}>操作</th>
+                <th className={`${thBase} w-20 text-center`}>类型</th>
               </tr>
             </thead>
             <tbody>
-              <tr>
-                <td colSpan={7} className="h-48">
-                  <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
-                    <Inbox className="h-10 w-10 text-zinc-300 dark:text-zinc-600" />
-                    <span className="text-sm">暂无数据</span>
-                  </div>
-                </td>
-              </tr>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="h-48">
+                    <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-2">
+                      <Inbox className="h-10 w-10 text-zinc-300 dark:text-zinc-600" />
+                      <span className="text-sm">暂无数据</span>
+                      <span className="text-xs text-zinc-400">新建报告 → 自定义报告，使用模板管理中的模板</span>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((r, i) => (
+                  <tr key={r.id} className="border-b border-border last:border-0 hover:bg-muted/30">
+                    <td className="px-3 py-3 text-center text-zinc-500 text-xs">{i + 1}</td>
+                    <td className="px-3 py-3 font-medium text-zinc-700 dark:text-zinc-200">{r.title}</td>
+                    <td className="px-3 py-3 text-zinc-500 text-xs">{r.templateName}</td>
+                    <td className="px-3 py-3 text-zinc-500 text-xs">
+                      {new Date(r.createdAt).toLocaleString("zh-CN", { hour12: false })}
+                    </td>
+                    <td className="px-3 py-3 text-zinc-500 text-xs">{r.creator || "—"}</td>
+                    <td className="px-3 py-3 text-center">
+                      <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400">
+                        自定义
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
-        </div>
-        <div className="flex items-center justify-end px-4 py-3 border-t flex-shrink-0">
-          <div className="flex items-center gap-1 text-sm text-zinc-500">
-            <button type="button" className="p-1 rounded hover:bg-muted/60 disabled:opacity-40" disabled>
-              ‹
-            </button>
-            <span className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-1 rounded bg-red-50 text-red-600 dark:bg-red-950/30 dark:text-red-400 text-xs font-medium">
-              1
-            </span>
-            <button type="button" className="p-1 rounded hover:bg-muted/60 disabled:opacity-40" disabled>
-              ›
-            </button>
-          </div>
         </div>
       </div>
     </div>

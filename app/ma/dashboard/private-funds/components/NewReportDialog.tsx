@@ -1,19 +1,22 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { FileText } from "lucide-react"
+import Link from "next/link"
+import { FileText, LayoutTemplate } from "lucide-react"
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import { loadReportTemplates, normalizeTemplate, type ReportCustomTemplate } from "@/lib/ma/report-template-types"
 import { FofWeeklyReportDialog } from "./FofWeeklyReportDialog"
 import { ProductMonthlyReportDialog } from "./ProductMonthlyReportDialog"
 import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
+import { CustomReportGenerateDialog, CustomTemplateCard } from "./CustomReportGenerateDialog"
 
-type TemplateCategory = "weekly" | "monthly" | "other"
-type ReportWizardStep = "pick" | "fof-weekly" | "product-monthly"
+type TemplateCategory = "weekly" | "monthly" | "custom" | "other"
+type ReportWizardStep = "pick" | "fof-weekly" | "product-monthly" | "custom-report"
 
 interface ReportTemplate {
   id: string
@@ -27,10 +30,11 @@ interface ReportTemplate {
 const TEMPLATE_CATEGORIES: { key: TemplateCategory; label: string }[] = [
   { key: "weekly", label: "产品周报" },
   { key: "monthly", label: "产品月报" },
+  { key: "custom", label: "自定义报告" },
   { key: "other", label: "其他" },
 ]
 
-const TEMPLATES_BY_CATEGORY: Record<TemplateCategory, ReportTemplate[]> = {
+const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "other", ReportTemplate[]> = {
   weekly: [
     {
       id: "weekly-track-curve",
@@ -138,25 +142,31 @@ function TemplateCard({
 export function NewReportDialog({
   open,
   onClose,
+  onCustomReportSaved,
 }: {
   open: boolean
   onClose: () => void
+  onCustomReportSaved?: () => void
 }) {
   const [step, setStep] = useState<ReportWizardStep>("pick")
   const [category, setCategory] = useState<TemplateCategory>("weekly")
   const [exampleTemplate, setExampleTemplate] = useState<ReportTemplate | null>(null)
+  const [customTemplates, setCustomTemplates] = useState<ReportCustomTemplate[]>([])
+  const [selectedCustom, setSelectedCustom] = useState<ReportCustomTemplate | null>(null)
 
   useEffect(() => {
     if (open) {
       setStep("pick")
       setCategory("weekly")
       setExampleTemplate(null)
+      setSelectedCustom(null)
+      setCustomTemplates(loadReportTemplates().map(normalizeTemplate))
     }
   }, [open])
 
-  const templates = TEMPLATES_BY_CATEGORY[category]
+  const officialTemplates = category === "custom" ? [] : TEMPLATES_BY_CATEGORY[category as "weekly" | "monthly" | "other"]
 
-  function handleUseTemplate(template: ReportTemplate) {
+  function handleUseOfficialTemplate(template: ReportTemplate) {
     if (template.id === "weekly-track-curve") {
       setStep("fof-weekly")
       return
@@ -164,6 +174,11 @@ export function NewReportDialog({
     if (template.id === "monthly-pe-official") {
       setStep("product-monthly")
     }
+  }
+
+  function handleUseCustomTemplate(template: ReportCustomTemplate) {
+    setSelectedCustom(template)
+    setStep("custom-report")
   }
 
   return (
@@ -200,21 +215,58 @@ export function NewReportDialog({
               </aside>
 
               <div className="min-w-0 flex-1 overflow-y-auto px-6 py-5">
-                <p className="mb-5 text-sm text-zinc-400">联系客服，提交自定义模板。</p>
-                {templates.length > 0 ? (
+                {category === "custom" ? (
+                  <>
+                    <p className="mb-5 text-sm text-zinc-500">
+                      使用在
+                      {" "}
+                      <Link href="/ma/dashboard/private-funds?tab=reports&side=rpt-templates" className="text-red-500 hover:underline" onClick={onClose}>
+                        模板管理
+                      </Link>
+                      {" "}
+                      中保存的自定义模板。用户需填写的内容在模板的「用户输入」中配置。
+                    </p>
+                    {customTemplates.length > 0 ? (
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                        {customTemplates.map((template) => (
+                          <CustomTemplateCard
+                            key={template.id}
+                            template={template}
+                            onUse={() => handleUseCustomTemplate(template)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center h-48 text-muted-foreground gap-3">
+                        <LayoutTemplate className="h-10 w-10 text-zinc-300" />
+                        <span className="text-sm">暂无自定义模板</span>
+                        <Link
+                          href="/ma/dashboard/private-funds?tab=reports&side=rpt-templates"
+                          className="text-sm text-red-500 hover:text-red-600"
+                          onClick={onClose}
+                        >
+                          前往模板管理创建 →
+                        </Link>
+                      </div>
+                    )}
+                  </>
+                ) : category === "other" ? (
+                  <>
+                    <p className="mb-5 text-sm text-zinc-400">联系客服，提交自定义模板。</p>
+                    <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
+                      暂无模板
+                    </div>
+                  </>
+                ) : (
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {templates.map((template) => (
+                    {officialTemplates.map((template) => (
                       <TemplateCard
                         key={template.id}
                         template={template}
                         onViewExample={(t) => setExampleTemplate(t)}
-                        onUseTemplate={handleUseTemplate}
+                        onUseTemplate={handleUseOfficialTemplate}
                       />
                     ))}
-                  </div>
-                ) : (
-                  <div className="flex h-40 items-center justify-center text-sm text-muted-foreground">
-                    暂无模板
                   </div>
                 )}
               </div>
@@ -222,19 +274,19 @@ export function NewReportDialog({
           </DialogContent>
         )}
         {step === "fof-weekly" && (
-          <FofWeeklyReportDialog
-            embedded
-            open={open}
-            onClose={onClose}
-            onBack={() => setStep("pick")}
-          />
+          <FofWeeklyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
         )}
         {step === "product-monthly" && (
-          <ProductMonthlyReportDialog
+          <ProductMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+        )}
+        {step === "custom-report" && selectedCustom && (
+          <CustomReportGenerateDialog
             embedded
             open={open}
+            template={selectedCustom}
             onClose={onClose}
             onBack={() => setStep("pick")}
+            onSaved={() => onCustomReportSaved?.()}
           />
         )}
       </Dialog>

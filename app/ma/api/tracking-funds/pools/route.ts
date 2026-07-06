@@ -205,6 +205,19 @@ const MINE_POOLS_SQL = `
   WHERE scope = 'mine' AND user_key = $1 AND pool_key NOT LIKE '\\_\\_%'
   ORDER BY sort_order ASC, id ASC`
 
+function isDbConnectionError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /ECONNREFUSED|ENOTFOUND|ETIMEDOUT|connection terminated|connect timeout/i.test(msg)
+}
+
+function fallbackPoolRows(scope: "team" | "mine" | "both") {
+  const team = DEFAULT_TEAM_POOLS.map((p) => ({ ...p, scope: "team", user_key: "" }))
+  const mine = [{ ...DEFAULT_MINE_POOL, scope: "mine", user_key: "" }]
+  if (scope === "team") return { data: team }
+  if (scope === "mine") return { data: mine }
+  return { data: { team, mine } }
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const scopeRaw = searchParams.get("scope")
@@ -249,6 +262,11 @@ export async function GET(req: Request) {
     return NextResponse.json({ data: rows }, { headers: NO_STORE_HEADERS })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    if (isDbConnectionError(err)) {
+      // Local dev often runs without the SSH tunnel; return built-in defaults so
+      // the UI can still render pool tabs from cache/defaults without console noise.
+      return NextResponse.json(fallbackPoolRows(scope), { headers: NO_STORE_HEADERS })
+    }
     console.error("[tracking-funds/pools GET]", msg)
     return NextResponse.json({ error: "db_error", detail: msg }, { status: 500, headers: NO_STORE_HEADERS })
   }
