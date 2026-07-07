@@ -518,6 +518,7 @@ export function FofWeeklyReportDialog({
         body: JSON.stringify({
           product_name: productName.trim(),
           beian_hao: beianHao ?? undefined,
+          week_begin: weekBegin,
           week_end: weekEnd,
           report_title: reportTitle.trim() || productName.trim(),
           benchmark_key: benchmarkKey,
@@ -655,7 +656,7 @@ export function FofWeeklyReportDialog({
                 </div>
               </div>
               <p className="mt-1.5 text-xs text-zinc-400">
-                填写报告覆盖的起止日期；生成时以结束日期所在 ISO 周统计业绩
+                填写报告覆盖的起止日期，业绩统计与图表高亮均按所选区间计算
                 {navRange.start && navRange.end ? `（净值区间 ${navRange.start} ~ ${navRange.end}）` : ""}
               </p>
             </div>

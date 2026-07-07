@@ -419,6 +419,7 @@ def compute_metrics(
     df: pd.DataFrame,
     as_of_date: pd.Timestamp | None = None,
     nav_frequency: str | None = None,
+    week_begin: pd.Timestamp | None = None,
 ) -> dict:
     work = df.copy()
     if as_of_date is not None:
@@ -460,16 +461,25 @@ def compute_metrics(
     annual_excess = annual_return - bench_annual_return
 
     ref_date = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else work["date"].iloc[-1]
-    ref_iso_week = ref_date.isocalendar()[1]
-    ref_iso_year = ref_date.isocalendar()[0]
-    week_mask = work["date"].apply(
-        lambda d: d.isocalendar()[1] == ref_iso_week and d.isocalendar()[0] == ref_iso_year
-    )
-    week_df = work[week_mask]
-    if len(week_df) < 1:
-        week_df = work.tail(5)
-    week_start = week_df["date"].iloc[0]
-    week_end = week_df["date"].iloc[-1]
+    if week_begin is not None:
+        week_begin = pd.Timestamp(week_begin).normalize()
+        week_mask = (work["date"] >= week_begin) & (work["date"] <= ref_date)
+        week_df = work[week_mask]
+        if len(week_df) < 1:
+            week_df = work.tail(5)
+        week_start = week_begin
+        week_end = ref_date
+    else:
+        ref_iso_week = ref_date.isocalendar()[1]
+        ref_iso_year = ref_date.isocalendar()[0]
+        week_mask = work["date"].apply(
+            lambda d: d.isocalendar()[1] == ref_iso_week and d.isocalendar()[0] == ref_iso_year
+        )
+        week_df = work[week_mask]
+        if len(week_df) < 1:
+            week_df = work.tail(5)
+        week_start = week_df["date"].iloc[0]
+        week_end = week_df["date"].iloc[-1]
     week_start_loc = work.index.get_loc(week_df.index[0])
     if week_start_loc > 0:
         prior_row = work.iloc[week_start_loc - 1]
@@ -721,6 +731,7 @@ def make_report(
     nav_file: str,
     output_dir: str | None = None,
     *,
+    week_begin: str | None = None,
     week_end: str | None = None,
     product_name: str = PRODUCT_NAME,
     report_title: str = REPORT_TITLE,
@@ -732,16 +743,21 @@ def make_report(
 
     df = apply_nav_frequency(load_nav_data(nav_file), nav_frequency)
     as_of = pd.Timestamp(week_end).normalize() if week_end else None
+    report_week_begin = pd.Timestamp(week_begin).normalize() if week_begin else None
     if as_of is not None:
         if as_of < df["date"].min() or as_of > df["date"].max():
             raise ValueError(
                 f"所选日期 {as_of.date()} 超出净值区间 "
                 f"{df['date'].min().date()} ~ {df['date'].max().date()}"
             )
+    if report_week_begin is not None and as_of is not None and report_week_begin > as_of:
+        raise ValueError(
+            f"报告周开始日期 {report_week_begin.date()} 不能晚于结束日期 {as_of.date()}"
+        )
 
     plot_df = df[df["date"] <= as_of].copy() if as_of is not None else df
     interval_rows = compute_interval_returns(plot_df, fund_name=product_name)
-    metrics = compute_metrics(df, as_of, nav_frequency)
+    metrics = compute_metrics(df, as_of, nav_frequency, report_week_begin)
 
     fp, fp_bold = configure_cn_font()
     if fp is None:
@@ -985,8 +1001,12 @@ def main(argv: list[str] | None = None) -> int:
         help="输出目录（默认与净值文件同目录）",
     )
     parser.add_argument(
+        "--week-begin",
+        help="报告周开始日期 (YYYY-MM-DD)，与 --week-end 一起指定报告覆盖区间",
+    )
+    parser.add_argument(
         "--week-end",
-        help="报告截止周内的任意日期 (YYYY-MM-DD)，默认使用净值最新日期",
+        help="报告周结束日期 (YYYY-MM-DD)，默认使用净值最新日期",
     )
     parser.add_argument(
         "--product-name",
@@ -1029,6 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
         make_report(
             nav_file,
             args.output,
+            week_begin=args.week_begin,
             week_end=args.week_end,
             product_name=args.product_name,
             report_title=args.report_title,

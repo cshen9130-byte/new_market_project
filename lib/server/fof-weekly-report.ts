@@ -59,6 +59,7 @@ export const FOF_WEEKLY_NAV_FREQUENCY_OPTIONS: Array<{ value: FofWeeklyNavFreque
 export type FofWeeklyReportRequest = {
   product_name: string
   beian_hao?: string
+  week_begin?: string
   week_end: string
   report_title?: string
   product_tagline?: string
@@ -467,8 +468,15 @@ export async function generateFofWeeklyReport(
 ): Promise<FofWeeklyReportResult> {
   const product_name = input.product_name.trim()
   const week_end = input.week_end.trim()
+  const week_begin = input.week_begin?.trim() ?? ""
   if (!product_name) throw new Error("请选择产品")
   if (!/^\d{4}-\d{2}-\d{2}$/.test(week_end)) throw new Error("请选择有效的报告周日期")
+  if (week_begin && !/^\d{4}-\d{2}-\d{2}$/.test(week_begin)) {
+    throw new Error("请选择有效的报告周开始日期")
+  }
+  if (week_begin && week_begin > week_end) {
+    throw new Error("报告周开始日期不能晚于结束日期")
+  }
 
   const benchmark = resolveFofWeeklyBenchmark(input.benchmark_key)
   const navFrequency = normalizeNavFrequency(input.nav_frequency)
@@ -520,6 +528,9 @@ export async function generateFofWeeklyReport(
   if (week_end < earliestNavDate || week_end > latestNavDate) {
     throw new Error(`报告周日期需在 ${earliestNavDate} ~ ${latestNavDate} 之间`)
   }
+  if (week_begin && week_begin < earliestNavDate) {
+    throw new Error(`报告周开始日期不能早于 ${earliestNavDate}`)
+  }
 
   if (!existsSync(SCRIPT_PATH)) {
     throw new Error("周报生成脚本不存在")
@@ -547,6 +558,7 @@ export async function generateFofWeeklyReport(
     outDir,
     "--week-end",
     week_end,
+    ...(week_begin ? ["--week-begin", week_begin] : []),
     "--product-name",
     names.short_name || names.product_name,
     "--report-title",
@@ -606,7 +618,7 @@ export async function generateFofWeeklyReport(
   }
   await writeFile(path.join(outDir, "meta.json"), JSON.stringify(meta), "utf8")
 
-  const weekStart = getIsoWeekStart(week_end)
+  const weekStart = week_begin || getIsoWeekStart(week_end)
   return {
     reportId,
     reportTitle,
