@@ -227,6 +227,7 @@ interface FundInfo {
   manager_names:  string | null
   scale:          string | null
   inception_date: string | null
+  operation_date: string | null
   benchmark:      string | null
   ret_1w:         string | null
   ret_1m:         string | null
@@ -362,6 +363,16 @@ function getDefaultFilterRange(data: DetailData, todayStr: string): { from: stri
     data.nav_series[0]?.price_date ??
     to
   return { from, to }
+}
+
+function getOperationFilterRange(data: DetailData, todayStr: string): { from: string; to: string } {
+  const { from: defaultFrom, to } = getDefaultFilterRange(data, todayStr)
+  const from = data.info.operation_date?.slice(0, 10) ?? defaultFrom
+  return { from, to }
+}
+
+function getInitialFilterPeriod(data: DetailData): string {
+  return data.info.operation_date?.slice(0, 10) ? "运作以来" : "成立以来"
 }
 
 function downsample(rows: NavRow[], maxPoints = 500): NavRow[] {
@@ -1087,10 +1098,14 @@ export default function PrivateFundDetailPage() {
   // When data loads, seed benchmark and dates
   useEffect(() => {
     if (!data) return
-    const { from, to } = getDefaultFilterRange(data, todayStr)
+    const period = getInitialFilterPeriod(data)
+    const range = period === "运作以来"
+      ? getOperationFilterRange(data, todayStr)
+      : getDefaultFilterRange(data, todayStr)
     const benchmarkKey = normalizeBenchmarkKey(data.info.benchmark)
-    setFilterFrom(from)
-    setFilterTo(to)
+    setFilterPeriod(period)
+    setFilterFrom(range.from)
+    setFilterTo(range.to)
     setFilterBench(benchmarkKey)
     setAppliedBench(benchmarkKey)
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1126,13 +1141,14 @@ export default function PrivateFundDetailPage() {
     }
   }, [data, appliedBench])
 
-  const PERIOD_OPTIONS = ["成立以来", "近1年", "近3年", "近5年", "今年以来", "自定义"]
+  const PERIOD_OPTIONS = ["成立以来", "运作以来", "近1年", "近3年", "近5年", "今年以来", "自定义"]
   function applyPeriod(p: string) {
     setFilterPeriod(p)
     if (!data) return
     const { from: defaultFrom, to: last } = getDefaultFilterRange(data, todayStr)
     let from = defaultFrom
-    if (p === "近1年")  from = sub(last, 1, "year")
+    if (p === "运作以来") from = getOperationFilterRange(data, todayStr).from
+    else if (p === "近1年")  from = sub(last, 1, "year")
     else if (p === "近3年")  from = sub(last, 3, "year")
     else if (p === "近5年")  from = sub(last, 5, "year")
     else if (p === "今年以来") from = last.slice(0, 4) + "-01-01"
@@ -1152,11 +1168,14 @@ export default function PrivateFundDetailPage() {
   }
   function handleReset() {
     if (!data) return
-    const { from, to } = getDefaultFilterRange(data, todayStr)
+    const period = getInitialFilterPeriod(data)
+    const range = period === "运作以来"
+      ? getOperationFilterRange(data, todayStr)
+      : getDefaultFilterRange(data, todayStr)
     const benchmarkKey = normalizeBenchmarkKey(data.info.benchmark)
-    setFilterPeriod("成立以来")
-    setFilterFrom(from)
-    setFilterTo(to)
+    setFilterPeriod(period)
+    setFilterFrom(range.from)
+    setFilterTo(range.to)
     setFilterNavType("复权净值")
     setFilterFreq("全部")
     setFilterBench(benchmarkKey)

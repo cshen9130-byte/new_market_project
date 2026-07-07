@@ -224,8 +224,11 @@ export async function GET(
     manager_names: string | null
     advisor: string | null
     inception_date: string | null
+    operation_date: string | null
   }>(
-    `SELECT scale, manager_names, advisor, inception_date::text AS inception_date
+    `SELECT scale, manager_names, advisor,
+            inception_date::text AS inception_date,
+            operation_date::text AS operation_date
      FROM basicinfo_bfl_track
      WHERE register_number = $1 OR record_key = $1
      ORDER BY updated_at DESC NULLS LAST, id DESC
@@ -236,6 +239,7 @@ export async function GET(
     manager_names: string | null
     advisor: string | null
     inception_date: string | null
+    operation_date: string | null
   }[])
 
   const bflTrack = bflTrackRows[0]
@@ -243,6 +247,7 @@ export async function GET(
   const manager_names = bflTrack?.manager_names ?? null
   const trackAdvisor = bflTrack?.advisor?.trim() || null
   const trackInception = bflTrack?.inception_date?.slice(0, 10) ?? null
+  const trackOperationDate = bflTrack?.operation_date?.slice(0, 10) ?? null
 
   let navRows: {
     price_date: string
@@ -442,6 +447,7 @@ export async function GET(
       scale,
       manager_names,
       inception_date: info.inception_date?.slice(0, 10) ?? trackInception,
+      operation_date: trackOperationDate,
       manager: info.manager?.trim() || trackAdvisor || info.manager,
     },
     nav_series,

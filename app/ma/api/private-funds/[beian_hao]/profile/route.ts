@@ -36,6 +36,7 @@ type TrackRow = {
   advisor: string | null
   inception_date: string | null
   puton_date: string | null
+  operation_date: string | null
   mandator_name: string | null
   open_day: string | null
   is_temporary_open: number | null
@@ -91,7 +92,7 @@ async function loadTrack(beian_hao: string): Promise<TrackRow[]> {
   try {
     return await query<TrackRow>(
       `SELECT fund_name, fund_short_name, register_number,
-              advisor, inception_date::text, puton_date::text,
+              advisor, inception_date::text, operation_date::text, puton_date::text,
               mandator_name, open_day, is_temporary_open,
               fee_purchase, add_amount, fee_redeem,
               precautious_line, closed_period, stop_line,
@@ -138,6 +139,8 @@ export async function GET(
       fmtDate(bfl?.inception_date) ??
       fmtDate(pfi?.inception_date)
 
+    const operationDate = fmtDate(track?.operation_date)
+
     const putonDate =
       fmtDate(track?.puton_date) ??
       fmtDate(bfl?.registration_date)
@@ -163,7 +166,7 @@ export async function GET(
       fund_manager: pfi?.manager?.trim() || track?.advisor?.trim() || null,
       register_number: track?.register_number ?? beian_hao,
       inception_date: inceptionDate,
-      operation_date: null,
+      operation_date: operationDate,
       custodian: track?.mandator_name ?? bfl?.custodian ?? null,
       puton_date: putonDate,
       open_day: track?.open_day ?? null,

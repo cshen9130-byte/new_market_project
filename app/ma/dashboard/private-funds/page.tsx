@@ -9012,6 +9012,7 @@ interface OpsFundElementsData {
   advisor: string | null
   fund_manager: string | null
   inception_date: string | null
+  operation_date: string | null
   puton_date: string | null
   custodian: string | null
   platform_l1: string | null
@@ -9092,6 +9093,7 @@ function OpsEditElementsDialog({
   const [advisor, setAdvisor] = useState("")
   const [fundManager, setFundManager] = useState("")
   const [inceptionDate, setInceptionDate] = useState("")
+  const [operationDate, setOperationDate] = useState("")
   const [filingDate, setFilingDate] = useState("")
   const [custodian, setCustodian] = useState("")
 
@@ -9148,6 +9150,7 @@ function OpsEditElementsDialog({
         setAdvisor(d.advisor ?? "")
         setFundManager(d.fund_manager ?? "")
         setInceptionDate(d.inception_date ?? "")
+        setOperationDate(d.operation_date ?? "")
         setFilingDate(d.puton_date ?? "")
         setCustodian(d.custodian ?? "")
         setPlatformL1(d.platform_l1 ?? "")
@@ -9233,6 +9236,7 @@ function OpsEditElementsDialog({
           advisor: advisor || null,
           fund_manager: fundManager || null,
           inception_date: inceptionDate || null,
+          operation_date: operationDate || null,
           puton_date: filingDate || null,
           custodian: custodian || null,
           open_day: openDay || null,
@@ -9405,6 +9409,10 @@ function OpsEditElementsDialog({
               <div className="flex items-center gap-3">
                 <OpsElementsFieldLabel>备案日期：</OpsElementsFieldLabel>
                 <input type="date" value={filingDate} onChange={(e) => setFilingDate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
+              </div>
+              <div className="flex items-center gap-3">
+                <OpsElementsFieldLabel>运作日：</OpsElementsFieldLabel>
+                <input type="date" value={operationDate} onChange={(e) => setOperationDate(e.target.value)} className="flex-1 border rounded px-3 py-1.5 text-sm bg-background focus:outline-none focus:ring-1 focus:ring-ring" />
               </div>
               <div className="col-span-2 flex items-center gap-3">
                 <OpsElementsFieldLabel>托管券商：</OpsElementsFieldLabel>

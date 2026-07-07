@@ -23,6 +23,7 @@ export async function GET(req: Request) {
       register_number: string | null
       advisor: string | null
       inception_date: string | null
+      operation_date: string | null
       puton_date: string | null
       mandator_name: string | null
       open_day: string | null
@@ -40,7 +41,7 @@ export async function GET(req: Request) {
       fee_pay: string | null
     }>(
       `SELECT fund_name, register_number, advisor,
-              inception_date::text, puton_date::text, mandator_name,
+              inception_date::text, operation_date::text, puton_date::text, mandator_name,
               open_day, is_temporary_open,
               fee_purchase, add_amount, fee_redeem,
               precautious_line, closed_period, stop_line,
@@ -106,6 +107,7 @@ export async function GET(req: Request) {
     advisor: el?.advisor ?? null,
     fund_manager,
     inception_date: el?.inception_date ? el.inception_date.slice(0, 10) : null,
+    operation_date: el?.operation_date ? el.operation_date.slice(0, 10) : null,
     puton_date: el?.puton_date ? el.puton_date.slice(0, 10) : null,
     custodian: el?.mandator_name ?? null,
     platform_l1: team?.platform_strategy_one ?? null,
@@ -229,6 +231,7 @@ export async function PATCH(req: Request) {
     fund_name: normalizeOptionalString(body.fund_name),
     advisor: normalizeOptionalString(body.advisor),
     inception_date: body.inception_date !== undefined ? normalizeDate(body.inception_date) : undefined,
+    operation_date: body.operation_date !== undefined ? normalizeDate(body.operation_date) : undefined,
     puton_date: body.puton_date !== undefined ? normalizeDate(body.puton_date) : undefined,
     mandator_name: normalizeOptionalString(body.custodian),
     open_day: normalizeOptionalString(body.open_day),
@@ -256,7 +259,7 @@ export async function PATCH(req: Request) {
 
   for (const [column, value] of Object.entries(fieldValues)) {
     if (value === undefined) continue
-    if (column === "inception_date" || column === "puton_date") {
+    if (column === "inception_date" || column === "operation_date" || column === "puton_date") {
       setClauses.push(`${column} = $${paramIndex}::date`)
     } else if (column === "fee_manage_rate") {
       setClauses.push(`${column} = $${paramIndex}::numeric`)
@@ -295,7 +298,7 @@ export async function PATCH(req: Request) {
       for (const [column, value] of Object.entries(fieldValues)) {
         if (value === undefined) continue
         insertColumns.push(column)
-        if (column === "inception_date" || column === "puton_date") {
+        if (column === "inception_date" || column === "operation_date" || column === "puton_date") {
           insertPlaceholders.push(`$${insertIndex}::date`)
         } else if (column === "fee_manage_rate") {
           insertPlaceholders.push(`$${insertIndex}::numeric`)
