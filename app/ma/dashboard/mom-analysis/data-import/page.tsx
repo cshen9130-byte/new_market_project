@@ -226,6 +226,21 @@ export default function DataImportPage() {
     }
   }, [])
 
+  const loadFolders = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const res = await fetch("/ma/api/mom-analysis/data-import/list")
+      const data = await res.json()
+      if (!res.ok) throw new Error(readError(data, "加载目录失败"))
+      setFolders(data.folders)
+      setTotalFolders(data.total)
+    } catch (e) {
+      toast({ title: "加载失败", description: e instanceof Error ? e.message : "加载目录失败", variant: "destructive" })
+    } finally {
+      setIsLoading(false)
+    }
+  }, [toast])
+
   const runEtl = useCallback(async (opts?: { skipDedup?: boolean; skipMarketData?: boolean; reset?: boolean }) => {
     setIsRunningEtl(true)
     setEtlLog([])
@@ -269,7 +284,11 @@ export default function DataImportPage() {
       }
 
       if (exitCode === "0") {
-        toast({ title: "ETL 完成", description: "数据已成功写入数据库。" })
+        toast({ title: "ETL 完成", description: "数据已写入数据库并完成标准化命名。" })
+        setFolderFiles({})
+        setExpandedFolder(null)
+        await loadFolders()
+        await checkDates()
       } else if (exitCode === "timeout") {
         toast({ title: "ETL 超时", description: "运行超过 30 分钟被终止。", variant: "destructive" })
       } else {
@@ -281,7 +300,7 @@ export default function DataImportPage() {
       setIsRunningEtl(false)
       await checkEtlStatus()
     }
-  }, [toast, checkEtlStatus])
+  }, [toast, checkEtlStatus, loadFolders, checkDates])
 
   useEffect(() => {
     autoFollowLogRef.current = autoFollowLog
@@ -307,21 +326,6 @@ export default function DataImportPage() {
     }
     return "text-zinc-300"
   }, [])
-
-  const loadFolders = useCallback(async () => {
-    setIsLoading(true)
-    try {
-      const res = await fetch("/ma/api/mom-analysis/data-import/list")
-      const data = await res.json()
-      if (!res.ok) throw new Error(readError(data, "加载目录失败"))
-      setFolders(data.folders)
-      setTotalFolders(data.total)
-    } catch (e) {
-      toast({ title: "加载失败", description: e instanceof Error ? e.message : "加载目录失败", variant: "destructive" })
-    } finally {
-      setIsLoading(false)
-    }
-  }, [toast])
 
   const loadSettlementConfig = useCallback(async () => {
     try {
