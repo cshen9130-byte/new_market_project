@@ -53,7 +53,7 @@ export type DueDiligenceTableColumn = {
 
 export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
   { key: "ddPersonnel",        label: "尽调人员",      width: 68, hoverPreview: true },
-  { key: "ddDate",             label: "尽调日期",      width: 80 },
+  { key: "ddDate",             label: "尽调日期",      width: 96 },
   { key: "ddTime",             label: "尽调时间",      width: 56 },
   { key: "ddMethod",           label: "尽调形式",      width: 72 },
   { key: "ddTarget",           label: "尽调对象",      width: 110, hoverPreview: true },
