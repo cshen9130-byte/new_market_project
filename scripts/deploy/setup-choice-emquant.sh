@@ -222,25 +222,20 @@ auto_tune_build_settings() {
     swap_total_kb=$(awk '/SwapTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # Only auto-tune when the user left the default. The heaviest phase of
-  # `next build --webpack` is a single worker, so it can safely use a large
-  # heap as long as physical RAM + swap can back it. We size the heap by the
-  # effective ceiling (RAM + swap) rather than RAM alone — otherwise low-RAM
-  # servers with plenty of swap get capped at 1024 MB and OOM.
+  # Only auto-tune when the user left the default. Size the heap from physical
+  # RAM only — swap is a safety net for OS paging, not a license to raise the
+  # V8 heap. Setting heap ≈ RAM (e.g. 3072 MB on a 3.4 GiB box) fills physical
+  # memory and thrashes even when swap is available.
   if [[ "$BUILD_MEMORY_MB" == "1024" && -n "$mem_total_kb" ]]; then
-    local effective_kb="$mem_total_kb"
-    if [[ -n "$swap_total_kb" ]]; then
-      effective_kb=$(( mem_total_kb + swap_total_kb ))
-    fi
-
     if   [[ "$mem_total_kb" -ge 6000000 ]]; then
       BUILD_MEMORY_MB="4096"
-    elif [[ "$effective_kb" -ge 8000000 ]]; then
-      BUILD_MEMORY_MB="3072"
-    elif [[ "$effective_kb" -ge 5000000 ]]; then
-      BUILD_MEMORY_MB="2048"
     elif [[ "$mem_total_kb" -ge 4500000 ]]; then
+      BUILD_MEMORY_MB="2048"
+    elif [[ "$mem_total_kb" -ge 3000000 ]]; then
+      # ~3–4 GiB RAM: enough headroom to avoid the 1024 MB OOM without starving the OS
       BUILD_MEMORY_MB="1536"
+    elif [[ "$mem_total_kb" -ge 2000000 && -n "$swap_total_kb" && "$swap_total_kb" -ge 1000000 ]]; then
+      BUILD_MEMORY_MB="1280"
     fi
   fi
 
@@ -295,7 +290,8 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
     exit "$BUILD_RC"
   fi
 else
-  CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm run build:lowmem
+  CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
+    pnpm exec next build --webpack
 fi
 
 # 7) Persist credentials to .env so all Python scripts find them without PM2
