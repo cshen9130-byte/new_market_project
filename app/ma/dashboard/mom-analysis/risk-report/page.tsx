@@ -1593,6 +1593,7 @@ function VarSandboxContent({
             <Card className="flex-1">
               <CardContent className="p-3 pb-2">
                 <ReactECharts
+                  key={prodMcrData.map(d => `${d.name}:${Math.round(d.value)}`).join("|")}
                   option={{
                     color: ['#5470c6','#91cc75','#fac858','#73c0de','#3ba272','#fc8452','#9a60b4','#ea7ccc','#48b0f1','#70d9a2','#f7a35c','#a0d8ef','#c9b4d4','#7cb5ec','#f4a460','#e4d354','#2b908f','#b0c4de','#7798bf','#aaeeee','#d4e157','#ffb74d','#80cbc4','#ce93d8','#80deea'],
                     title: { text: "品种边际波动贡献占比(%)（沙盒持仓）", textStyle: { fontSize: 12, fontWeight: "bold" }, top: 0, left: 0 },
@@ -1621,6 +1622,7 @@ function VarSandboxContent({
                   }}
                   style={{ height: 300 }}
                   notMerge
+                  lazyUpdate={false}
                 />
               </CardContent>
             </Card>
@@ -7259,7 +7261,7 @@ export default function RiskReportNewPage() {
   // Briefing: latest daily return + YTD return from product-nav API
   const [briefingNav, setBriefingNav] = useState<{ date: string; nav: number; dailyReturn: number; cumCapital: number }[]>([])
   const [briefingLoading, setBriefingLoading] = useState(false)
-  const [briefingSandboxProdMcr, setBriefingSandboxProdMcr] = useState<{ name: string; value: number }[] | undefined>(undefined)
+  const [briefingSandboxProdMcr, setBriefingSandboxProdMcr] = useState<{ name: string; value: number }[]>([])
   const briefingSandboxDataRef = useRef<SandboxExportData | null>(null)
   const [briefingSubAccountCount, setBriefingSubAccountCount] = useState<number | null>(null)
   const [briefingPdfDownloading, setBriefingPdfDownloading] = useState(false)
@@ -9219,7 +9221,7 @@ export default function RiskReportNewPage() {
                       <div id="briefing-sandbox-pie-container"
                            className="rounded border border-[#d4c9a8] overflow-hidden p-3 h-[360px]"
                            style={{ background: "#ffffff" }}>
-                        <SandboxProductMcrPieChart height={300} prodNameMap={PROD_NAMES} mcrData={briefingSandboxProdMcr} />
+                        <SandboxProductMcrPieChart height={300} prodNameMap={PROD_NAMES} mcrData={briefingSandboxProdMcr} liveData />
                       </div>
                       <div className="rounded border border-[#d4c9a8] overflow-hidden p-1 h-[360px]"
                            style={{ background: "#ffffff" }}>

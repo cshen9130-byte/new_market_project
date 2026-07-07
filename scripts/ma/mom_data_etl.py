@@ -1612,8 +1612,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
 
         with conn.cursor() as cur:
             # ── 成交明细 ──────────────────────────────────────────────────────
-            # Delete by business key so renamed files don't leave orphan rows
-            cur.execute("DELETE FROM mom_trade_details WHERE account = %s AND trade_date = %s", (account, trade_date_iso))
             insert_cols = "account, trade_date, " + ", ".join(DETAIL_SQL_COLS) + ", source_file_rel, row_hash"
             values = []
             for ri, rv in enumerate(rows):
@@ -1621,6 +1619,10 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel, account, trade_date, rv, ri)
                 values.append(tuple([account, trade_date_iso] + detail_vals + [rel, rh]))
             if values:
+                # Delete-then-insert by business key ONLY when this file actually has rows.
+                # A companion settlement file (e.g. 结算信息_*) may present an empty sheet
+                # for the same (account, date); deleting on that would wipe good data.
+                cur.execute("DELETE FROM mom_trade_details WHERE account = %s AND trade_date = %s", (account, trade_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_trade_details ({insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1628,7 +1630,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期货成交明细 ──────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_futures_trade_details WHERE "账户" = %s AND "交易日期" = %s', (futures_account, futures_date_iso))
             futures_insert_cols = ", ".join(FUTURES_SQL_COLS) + ", source_file_rel, row_hash"
             fvalues = []
             for ri, rv in enumerate(futures_rows):
@@ -1636,6 +1637,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#futures", futures_account, futures_date, rv, ri)
                 fvalues.append(tuple([futures_account, futures_date_iso] + detail_vals + [rel, rh]))
             if fvalues:
+                cur.execute('DELETE FROM mom_futures_trade_details WHERE "账户" = %s AND "交易日期" = %s', (futures_account, futures_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_futures_trade_details ({futures_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1643,7 +1645,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期权成交明细 ──────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_options_trade_details WHERE "账户" = %s AND "交易日期" = %s', (options_account, options_date_iso))
             options_insert_cols = ", ".join(OPTIONS_SQL_COLS) + ", source_file_rel, row_hash"
             ovalues = []
             for ri, rv in enumerate(options_rows):
@@ -1651,6 +1652,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#options", options_account, options_date, rv, ri)
                 ovalues.append(tuple([options_account, options_date_iso] + detail_vals + [rel, rh]))
             if ovalues:
+                cur.execute('DELETE FROM mom_options_trade_details WHERE "账户" = %s AND "交易日期" = %s', (options_account, options_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_options_trade_details ({options_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1658,7 +1660,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 平仓明细 ──────────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_close_details WHERE "账户" = %s AND "交易日期" = %s', (close_account, close_date_iso))
             close_insert_cols = ", ".join(CLOSE_SQL_COLS) + ", source_file_rel, row_hash"
             cvalues = []
             for ri, rv in enumerate(close_rows):
@@ -1667,6 +1668,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#close", close_account, close_date, rv, ri)
                 cvalues.append(tuple([close_account, close_date_iso] + detail_vals + [rel, rh]))
             if cvalues:
+                cur.execute('DELETE FROM mom_close_details WHERE "账户" = %s AND "交易日期" = %s', (close_account, close_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_close_details ({close_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1674,7 +1676,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 持仓明细 ──────────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_position_details WHERE "账户" = %s AND "交易日期" = %s', (position_account, position_date_iso))
             position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             pvalues = []
             for ri, rv in enumerate(position_rows):
@@ -1682,6 +1683,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#position", position_account, position_date, rv, ri)
                 pvalues.append(tuple([position_account, position_date_iso] + detail_vals + [rel, rh]))
             if pvalues:
+                cur.execute('DELETE FROM mom_position_details WHERE "账户" = %s AND "交易日期" = %s', (position_account, position_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_position_details ({position_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1689,7 +1691,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期权持仓明细 ──────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_options_position_details WHERE "账户" = %s AND "交易日期" = %s', (options_position_account, options_position_date_iso))
             options_position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             opvalues = []
             for ri, rv in enumerate(options_position_rows):
@@ -1697,6 +1698,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#optpos", options_position_account, options_position_date, rv, ri)
                 opvalues.append(tuple([options_position_account, options_position_date_iso] + detail_vals + [rel, rh]))
             if opvalues:
+                cur.execute('DELETE FROM mom_options_position_details WHERE "账户" = %s AND "交易日期" = %s', (options_position_account, options_position_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_options_position_details ({options_position_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1704,7 +1706,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 期货持仓明细 ──────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_futures_position_details WHERE "账户" = %s AND "交易日期" = %s', (futures_position_account, futures_position_date_iso))
             futures_position_insert_cols = ", ".join(POSITION_SQL_COLS) + ", source_file_rel, row_hash"
             fpvalues = []
             for ri, rv in enumerate(futures_position_rows):
@@ -1712,6 +1713,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#futpos", futures_position_account, futures_position_date, rv, ri)
                 fpvalues.append(tuple([futures_position_account, futures_position_date_iso] + detail_vals + [rel, rh]))
             if fpvalues:
+                cur.execute('DELETE FROM mom_futures_position_details WHERE "账户" = %s AND "交易日期" = %s', (futures_position_account, futures_position_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_futures_position_details ({futures_position_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1719,7 +1721,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 委托明细 ──────────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_order_details WHERE "账户" = %s AND "交易日期" = %s', (order_account, order_date_iso))
             order_insert_cols = ", ".join(ORDER_SQL_COLS) + ", source_file_rel, row_hash"
             ordvalues = []
             for ri, rv in enumerate(order_rows):
@@ -1727,6 +1728,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#order", order_account, order_date, rv, ri)
                 ordvalues.append(tuple([order_account, order_date_iso] + detail_vals + [rel, rh]))
             if ordvalues:
+                cur.execute('DELETE FROM mom_order_details WHERE "账户" = %s AND "交易日期" = %s', (order_account, order_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_order_details ({order_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1734,7 +1736,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 品种汇总 ──────────────────────────────────────────────────────
-            cur.execute('DELETE FROM mom_summary_details WHERE "账户" = %s AND "交易日期" = %s', (summary_detail_account, summary_detail_date_iso))
             summary_detail_insert_cols = ", ".join(SUMMARY_DETAIL_SQL_COLS) + ", source_file_rel, row_hash"
             sumvalues = []
             for ri, rv in enumerate(summary_detail_rows):
@@ -1742,6 +1743,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#summary", summary_detail_account, summary_detail_date, rv, ri)
                 sumvalues.append(tuple([summary_detail_account, summary_detail_date_iso] + detail_vals + [rel, rh]))
             if sumvalues:
+                cur.execute('DELETE FROM mom_summary_details WHERE "账户" = %s AND "交易日期" = %s', (summary_detail_account, summary_detail_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_summary_details ({summary_detail_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
@@ -1749,9 +1751,10 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 )
 
             # ── 客户交易核算日报 ────────────────────────────────────────────────
-            # Delete by business key; one daily report per account per date
-            cur.execute('DELETE FROM mom_daily_reports WHERE "账户" = %s AND "交易日期" = %s', (dr_account, dr_date_iso))
+            # Delete by business key ONLY when this file carries a daily report,
+            # so an empty companion file can't wipe the good row.
             if daily_report_row is not None:
+                cur.execute('DELETE FROM mom_daily_reports WHERE "账户" = %s AND "交易日期" = %s', (dr_account, dr_date_iso))
                 dr_vals: list = []
                 for ref, col in DAILY_REPORT_COL_ORDER:
                     if col == "账户":
@@ -1770,7 +1773,6 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
             daily_report_count = 1 if daily_report_row is not None else 0
 
             # ── 客户交易核算日报 / 期货期权账户出入金明细 ───────────────────────
-            cur.execute('DELETE FROM mom_daily_report_fund_flows WHERE "账户" = %s AND "交易日期" = %s', (dr_account, dr_date_iso))
             daily_report_fund_flow_insert_cols = ", ".join(DAILY_REPORT_FUND_FLOW_SQL_COLS) + ", source_file_rel, row_hash"
             dffvalues = []
             for ri, rv in enumerate(daily_report_fund_flow_rows):
@@ -1778,6 +1780,7 @@ def process_file(conn, base_dir: Path, file_path: Path) -> Tuple[bool, str]:
                 rh = row_hash(rel + "#daily-fund-flow", dr_account, dr_date, rv, ri)
                 dffvalues.append(tuple([dr_account, dr_date_iso] + detail_vals + [rel, rh]))
             if dffvalues:
+                cur.execute('DELETE FROM mom_daily_report_fund_flows WHERE "账户" = %s AND "交易日期" = %s', (dr_account, dr_date_iso))
                 execute_values(
                     cur,
                     f"INSERT INTO mom_daily_report_fund_flows ({daily_report_fund_flow_insert_cols}) VALUES %s ON CONFLICT (row_hash) DO NOTHING",
