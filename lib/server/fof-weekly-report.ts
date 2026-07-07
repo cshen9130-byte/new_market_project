@@ -488,7 +488,9 @@ export async function buildFofWeeklyNavCsv(
       // Prefer the bundled Excel as the authoritative historical series.
       // It was carefully curated and yields the correct Sharpe / scale.
       // Only the dates AFTER the bundled file are fetched fresh from the DB.
-      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[customFund.product_code]
+      // NOTE: BUNDLED_FOF_NAV_BY_BEIAN is keyed by beian_hao (e.g. "SBPU97"),
+      // not by the auto-generated customFund.product_code (e.g. "380001").
+      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[beian_hao]
       const bundledPath = bundledFileName ? path.join(SCRIPT_DIR, bundledFileName) : null
 
       if (bundledPath && existsSync(bundledPath)) {
@@ -548,7 +550,7 @@ export async function resolveFofWeeklyProductNavRange(
   if (customFund) {
     const rule = getCustomFundNavGenerationRule(customFund.product_code)
     if (rule && rule.rule_type === "splice") {
-      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[customFund.product_code]
+      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[resolvedBeian]
       const bundledPath = bundledFileName ? path.join(SCRIPT_DIR, bundledFileName) : null
 
       if (bundledPath && existsSync(bundledPath)) {
