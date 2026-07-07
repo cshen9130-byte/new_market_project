@@ -750,7 +750,8 @@ def make_report(
     print(f"[make_report] week_begin={week_begin!r} week_end={week_end!r} nav_frequency={nav_frequency!r}")
     output_dir = output_dir or str(Path(nav_file).parent)
 
-    df = apply_nav_frequency(load_nav_data(nav_file), nav_frequency)
+    raw_df = load_nav_data(nav_file)
+    df = apply_nav_frequency(raw_df, nav_frequency)
     as_of = pd.Timestamp(week_end).normalize() if week_end else None
     report_week_begin = pd.Timestamp(week_begin).normalize() if week_begin else None
     if as_of is not None:
@@ -765,7 +766,10 @@ def make_report(
         )
 
     plot_df = df[df["date"] <= as_of].copy() if as_of is not None else df
-    interval_rows = compute_interval_returns(plot_df, fund_name=product_name)
+    # 区间收益率 table always uses daily nav data regardless of the chosen frequency,
+    # so that monthly return figures are consistent across all frequency selections.
+    daily_plot_df = raw_df[raw_df["date"] <= as_of].copy() if as_of is not None else raw_df.copy()
+    interval_rows = compute_interval_returns(daily_plot_df, fund_name=product_name)
     metrics = compute_metrics(df, as_of, nav_frequency, report_week_begin)
 
     fp, fp_bold = configure_cn_font()
