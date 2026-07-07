@@ -1319,7 +1319,7 @@ export async function writeKnowledgeBaseEditableText(
   }
 }
 
-function shouldSkipKnowledgeBaseChatPath(relativePath: string, entryName: string, isDirectory: boolean): boolean {
+export function shouldSkipKnowledgeBaseChatPath(relativePath: string, entryName: string, isDirectory: boolean): boolean {
   const normalized = relativePath.replace(/\\/g, "/")
   if (isDirectory) {
     return entryName === "_images" || normalized.endsWith("/_images")

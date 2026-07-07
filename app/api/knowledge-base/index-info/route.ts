@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server"
 import { getUserById } from "@/lib/server/users"
-import { getKnowledgeBaseStorageRoot, normalizeKnowledgeBasePath, isKnowledgeBaseChatSupported } from "@/lib/server/knowledge-base"
+import {
+  getKnowledgeBaseStorageRoot,
+  normalizeKnowledgeBasePath,
+  isKnowledgeBaseChatSupported,
+  shouldSkipKnowledgeBaseChatPath,
+} from "@/lib/server/knowledge-base"
 import { getDiskIndexInfo } from "@/lib/server/knowledge-chat"
 import fs from "fs/promises"
 import path from "path"
@@ -25,8 +30,10 @@ async function scanIndexableFiles(
   for (const entry of entries) {
     const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
     if (entry.isDirectory()) {
+      if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, true)) continue
       await scanIndexableFiles(path.join(absoluteDir, entry.name), relativePath, results)
     } else if (entry.isFile()) {
+      if (shouldSkipKnowledgeBaseChatPath(relativePath, entry.name, false)) continue
       const ext = path.extname(entry.name).toLowerCase()
       if (!isKnowledgeBaseChatSupported(ext)) continue
       try {
