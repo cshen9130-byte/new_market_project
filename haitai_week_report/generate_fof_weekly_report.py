@@ -772,6 +772,13 @@ def make_report(
     interval_rows = compute_interval_returns(daily_plot_df, fund_name=product_name)
     metrics = compute_metrics(df, as_of, nav_frequency, report_week_begin)
 
+    # Override ytd_return with the daily-data-based annual return so 今年以来 KPI
+    # matches the 2026 全年 figure in the 区间收益率 table.
+    cur_year = int(as_of.year) if as_of is not None else int(daily_plot_df["date"].dt.year.max())
+    year_row = next((r for r in interval_rows if r["year"] == cur_year), None)
+    if year_row and year_row.get("annual") is not None:
+        metrics["ytd_return"] = float(year_row["annual"])
+
     fp, fp_bold = configure_cn_font()
     if fp is None:
         raise RuntimeError(
@@ -957,7 +964,7 @@ def make_report(
     table_items = [
         ("成立日期", metrics["start_date"].strftime("%Y-%m-%d")),
         ("运作天数", f"{metrics['trading_days']} 个交易日"),
-        ("初始净值", f"{metrics['start_nav']:.4f}"),
+        ("初始净值", "1.0000"),
         ("年化收益", fmt_pct(metrics["annual_return"])),
         ("卡玛比率", f"{metrics['calmar']:.2f}"),
         ("日度胜率", fmt_pct(metrics["win_rate"], signed=False)),
