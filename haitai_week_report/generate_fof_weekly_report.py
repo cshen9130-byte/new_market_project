@@ -140,6 +140,8 @@ def load_nav_data(file_path: str) -> pd.DataFrame:
     return df
 
 
+# Retained for reference; the Sharpe display uses annualized return / volatility
+# (no risk-free subtraction) to match the historical reports.
 RISK_FREE_RATE = 0.02
 
 
@@ -452,7 +454,10 @@ def compute_metrics(
     drawdown = (wealth - roll_max) / roll_max
     max_drawdown = float(drawdown.min()) if not drawdown.empty else 0.0
 
-    sharpe = (annual_return - RISK_FREE_RATE) / volatility if volatility > 0 else 0.0
+    # Sharpe here follows the house convention of annualized return over
+    # annualized volatility (no risk-free subtraction), matching the historical
+    # reference reports (e.g. 20.57% / 7.09% = 2.90).
+    sharpe = annual_return / volatility if volatility > 0 else 0.0
     calmar = annual_return / abs(max_drawdown) if max_drawdown < 0 else 0.0
 
     win_rate = (returns > 0).sum() / len(returns) if len(returns) > 0 else 0.0
