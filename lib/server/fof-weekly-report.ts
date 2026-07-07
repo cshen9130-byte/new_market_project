@@ -492,9 +492,9 @@ export async function generateFofWeeklyReport(
   let latestNavDate: string
   let navCsv = ""
 
+  // Try bundled file first; fall back to live database if week_end is beyond its range
+  let useBundled = false
   if (bundledResult) {
-    navFile = bundledResult.navPath
-    benchLabel = benchmark.label
     const range =
       resolveBundledNavDateRange(bundledResult.navPath)
       ?? (() => {
@@ -503,12 +503,16 @@ export async function generateFofWeeklyReport(
           seedRows ? legacyRowsToNavCsvInput(seedRows) : [],
         )
       })()
-    if (!range) {
-      throw new Error("无法读取 bundled 净值文件的日期范围")
+    if (range && week_end <= range.latestNavDate) {
+      navFile = bundledResult.navPath
+      benchLabel = benchmark.label
+      earliestNavDate = range.earliestNavDate
+      latestNavDate = range.latestNavDate
+      useBundled = true
     }
-    earliestNavDate = range.earliestNavDate
-    latestNavDate = range.latestNavDate
-  } else {
+  }
+
+  if (!useBundled) {
     const built = await buildFofWeeklyNavCsv(
       beian_hao,
       names.product_name,
@@ -540,7 +544,7 @@ export async function generateFofWeeklyReport(
   const outDir = reportDir(reportId)
   await mkdir(outDir, { recursive: true })
 
-  if (!bundledResult) {
+  if (!useBundled) {
     navFile = path.join(outDir, "nav.csv")
     await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
   }
