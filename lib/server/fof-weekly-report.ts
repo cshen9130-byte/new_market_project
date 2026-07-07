@@ -318,6 +318,95 @@ function resolveBundledNavDateRange(navPath: string): {
   }
 }
 
+type NavRow = {
+  date: string
+  unit: string
+  cum: string
+  adj: string
+  pct: string | null | undefined
+}
+
+/**
+ * Load historical nav rows from a bundled Excel file.
+ * Returns rows sorted ascending by date, or null if the file cannot be parsed.
+ */
+function loadBundledNavRows(bundledPath: string): NavRow[] | null {
+  try {
+    const analysis = analyzeNavWorkbook(readFileSync(bundledPath), path.basename(bundledPath))
+    const seen = new Set<string>()
+    const rows: NavRow[] = []
+    for (const r of [...analysis.rows].sort((a, b) => a.date.localeCompare(b.date))) {
+      if (!r.date || r.adjustedNav == null || seen.has(r.date)) continue
+      seen.add(r.date)
+      rows.push({
+        date: r.date,
+        unit: r.unitNav.toFixed(4),
+        cum: r.cumulativeNav.toFixed(4),
+        adj: r.adjustedNav.toFixed(4),
+        pct: null,
+      })
+    }
+    return rows.length > 0 ? rows : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Extend a set of (bundled) nav rows with newer rows from the database,
+ * applying the DB percentage-changes onto the last bundled adj_nav.
+ * This preserves the original historical scale while adding new trading days.
+ */
+function extendNavRowsWithDatabase(
+  bundledRows: NavRow[],
+  dbRows: Array<{ nav_date: string; adjusted_nav: string | null | undefined; unit_nav: string }>,
+): NavRow[] {
+  if (bundledRows.length === 0) return bundledRows
+
+  const bundledLastDate = bundledRows[bundledRows.length - 1].date
+  const bundledLastAdj = parseFloat(bundledRows[bundledRows.length - 1].adj)
+  if (!isFinite(bundledLastAdj) || bundledLastAdj <= 0) return bundledRows
+
+  const sortedDb = [...dbRows].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+
+  // Find anchor: the DB row at or just before bundled's last date (used as pct-change base)
+  const anchorRow = sortedDb.filter((r) => r.nav_date <= bundledLastDate).at(-1)
+  if (!anchorRow) return bundledRows
+
+  const anchorAdj = parseFloat(anchorRow.adjusted_nav ?? anchorRow.unit_nav)
+  if (!isFinite(anchorAdj) || anchorAdj <= 0) return bundledRows
+
+  // Walk DB rows that are strictly after the bundled last date
+  const newDbRows = sortedDb.filter((r) => r.nav_date > bundledLastDate)
+  if (newDbRows.length === 0) return bundledRows
+
+  const extensionRows: NavRow[] = []
+  let prevDbAdj = anchorAdj
+  let prevExtAdj = bundledLastAdj
+
+  for (const dbRow of newDbRows) {
+    const currDbAdj = parseFloat(dbRow.adjusted_nav ?? dbRow.unit_nav)
+    if (!isFinite(currDbAdj) || currDbAdj <= 0 || prevDbAdj <= 0) {
+      prevDbAdj = isFinite(currDbAdj) ? currDbAdj : prevDbAdj
+      continue
+    }
+    const pctChange = currDbAdj / prevDbAdj
+    const extAdj = prevExtAdj * pctChange
+    const extStr = extAdj.toFixed(4)
+    extensionRows.push({
+      date: dbRow.nav_date,
+      unit: extStr,
+      cum: extStr,
+      adj: extStr,
+      pct: `${((pctChange - 1) * 100).toFixed(4)}%`,
+    })
+    prevDbAdj = currDbAdj
+    prevExtAdj = extAdj
+  }
+
+  return [...bundledRows, ...extensionRows]
+}
+
 function formatPct(value: string | null | undefined): string {
   const raw = (value ?? "").trim()
   if (!raw || raw === "--") return ""
@@ -394,10 +483,33 @@ export async function buildFofWeeklyNavCsv(
 ): Promise<{ csv: string; benchLabel: string }> {
   const customFund = getCustomFundByCode(beian_hao) ?? findCustomFundByName(product_name)
   if (customFund) {
-    // Re-run the nav generation rule so the report always uses the latest data
-    // from the underlying funds (e.g. 团队净值 from PostgreSQL).
     const rule = getCustomFundNavGenerationRule(customFund.product_code)
     if (rule && rule.rule_type === "splice") {
+      // Prefer the bundled Excel as the authoritative historical series.
+      // It was carefully curated and yields the correct Sharpe / scale.
+      // Only the dates AFTER the bundled file are fetched fresh from the DB.
+      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[customFund.product_code]
+      const bundledPath = bundledFileName ? path.join(SCRIPT_DIR, bundledFileName) : null
+
+      if (bundledPath && existsSync(bundledPath)) {
+        const bundledRows = loadBundledNavRows(bundledPath)
+        if (bundledRows) {
+          // Regenerate so the JSON has fresh data including the latest trading days
+          await generateCustomFundNavFromRule(customFund.product_code, rule)
+          const dbRows = listCustomFundNavRows(customFund.product_code)
+          const mergedRows = extendNavRowsWithDatabase(
+            bundledRows,
+            dbRows.map((r) => ({
+              nav_date: r.nav_date,
+              adjusted_nav: r.adjusted_nav ?? r.unit_nav,
+              unit_nav: r.unit_nav,
+            })),
+          )
+          return buildNavRowsWithBenchmark(mergedRows, benchmarkKey)
+        }
+      }
+
+      // No bundled file (or unreadable) – fall back to pure DB regeneration
       await generateCustomFundNavFromRule(customFund.product_code, rule)
     }
     const rows = listCustomFundNavRows(customFund.product_code).slice().reverse()
@@ -436,6 +548,26 @@ export async function resolveFofWeeklyProductNavRange(
   if (customFund) {
     const rule = getCustomFundNavGenerationRule(customFund.product_code)
     if (rule && rule.rule_type === "splice") {
+      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[customFund.product_code]
+      const bundledPath = bundledFileName ? path.join(SCRIPT_DIR, bundledFileName) : null
+
+      if (bundledPath && existsSync(bundledPath)) {
+        const bundledRange = resolveBundledNavDateRange(bundledPath)
+        if (bundledRange) {
+          // Refresh DB so we know if there are newer trading days
+          await generateCustomFundNavFromRule(customFund.product_code, rule)
+          const dbRows = listCustomFundNavRows(customFund.product_code)
+          const dbLatest = dbRows.at(-1)?.nav_date ?? bundledRange.latestNavDate
+          return {
+            beian_hao: customFund.product_code,
+            product_name: customFund.product_name,
+            nav_start_date: bundledRange.earliestNavDate,
+            latest_nav_date: dbLatest > bundledRange.latestNavDate ? dbLatest : bundledRange.latestNavDate,
+          }
+        }
+      }
+
+      // Fallback: pure DB
       await generateCustomFundNavFromRule(customFund.product_code, rule)
     }
     const rows = listCustomFundNavRows(customFund.product_code).slice().reverse()

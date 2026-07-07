@@ -751,6 +751,13 @@ def make_report(
     output_dir = output_dir or str(Path(nav_file).parent)
 
     raw_df = load_nav_data(nav_file)
+    # Normalize adj_nav so the series always starts at 1.0000.
+    # This makes 最新净值 display the cumulative performance index (e.g. 1.5848 means +58.48%)
+    # regardless of whether the underlying data starts at 1.0000 or some other base value.
+    first_adj = float(raw_df["adj_nav"].iloc[0]) if len(raw_df) > 0 else 1.0
+    if first_adj > 0 and abs(first_adj - 1.0) > 1e-6:
+        raw_df = raw_df.copy()
+        raw_df["adj_nav"] = raw_df["adj_nav"] / first_adj
     df = apply_nav_frequency(raw_df, nav_frequency)
     as_of = pd.Timestamp(week_end).normalize() if week_end else None
     report_week_begin = pd.Timestamp(week_begin).normalize() if week_begin else None
