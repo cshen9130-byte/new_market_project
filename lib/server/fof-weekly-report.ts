@@ -7,6 +7,8 @@ import { promisify } from "util"
 import { query } from "@/lib/db"
 import { findCustomFundByName, getCustomFundByCode } from "@/lib/server/custom-funds"
 import { listCustomFundNavRows } from "@/lib/server/custom-fund-nav"
+import { generateCustomFundNavFromRule } from "@/lib/server/custom-fund-nav-generate"
+import { getCustomFundNavGenerationRule } from "@/lib/server/custom-fund-nav-rules"
 import type { LegacyNavRow } from "@/lib/server/email-nav-query"
 import {
   loadBenchmarkForNavDates,
@@ -392,6 +394,12 @@ export async function buildFofWeeklyNavCsv(
 ): Promise<{ csv: string; benchLabel: string }> {
   const customFund = getCustomFundByCode(beian_hao) ?? findCustomFundByName(product_name)
   if (customFund) {
+    // Re-run the nav generation rule so the report always uses the latest data
+    // from the underlying funds (e.g. 团队净值 from PostgreSQL).
+    const rule = getCustomFundNavGenerationRule(customFund.product_code)
+    if (rule && rule.rule_type === "splice") {
+      await generateCustomFundNavFromRule(customFund.product_code, rule)
+    }
     const rows = listCustomFundNavRows(customFund.product_code).slice().reverse()
     return buildNavRowsWithBenchmark(
       rows.map((row) => ({
@@ -426,6 +434,10 @@ export async function resolveFofWeeklyProductNavRange(
   const resolvedBeian = await resolveProductBeianHao(product_name, beian_hao)
   const customFund = getCustomFundByCode(resolvedBeian) ?? findCustomFundByName(product_name.trim())
   if (customFund) {
+    const rule = getCustomFundNavGenerationRule(customFund.product_code)
+    if (rule && rule.rule_type === "splice") {
+      await generateCustomFundNavFromRule(customFund.product_code, rule)
+    }
     const rows = listCustomFundNavRows(customFund.product_code).slice().reverse()
     return {
       beian_hao: customFund.product_code,
