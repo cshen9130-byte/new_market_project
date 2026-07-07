@@ -170,6 +170,13 @@ def apply_nav_frequency(df: pd.DataFrame, freq: str | None) -> pd.DataFrame:
     resampled = work.resample(rule).last()
     resampled = resampled.dropna(subset=["adj_nav"]).reset_index()
 
+    # Clamp period-end labels to the actual last data date so that a partial
+    # week/month (e.g. data ending on a Wednesday) is not labeled with the
+    # upcoming Friday/month-end, which would otherwise be excluded when the
+    # caller filters with `date <= as_of`.
+    max_actual_date = df["date"].max()
+    resampled["date"] = resampled["date"].apply(lambda d: min(d, max_actual_date))
+
     resampled["daily_ret"] = resampled["adj_nav"].pct_change()
     resampled["pct_chg"] = resampled["daily_ret"].apply(
         lambda x: f"{x * 100:+.2f}%" if pd.notna(x) else "--"

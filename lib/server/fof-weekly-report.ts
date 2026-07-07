@@ -485,49 +485,20 @@ export async function generateFofWeeklyReport(
   const names = customFund
     ? { product_name: customFund.product_name, short_name: "" }
     : await resolveFundNames(beian_hao, product_name)
-  const bundledResult = resolveBundledFofWeeklyNavPath(beian_hao, names.product_name)
-  let navFile: string
-  let benchLabel: string
-  let earliestNavDate: string
-  let latestNavDate: string
-  let navCsv = ""
+  // Always fetch fresh NAV data from the database
+  const built = await buildFofWeeklyNavCsv(
+    beian_hao,
+    names.product_name,
+    names.short_name,
+    benchmark.key,
+  )
+  const navCsv = built.csv
+  const benchLabel = built.benchLabel
 
-  // Try bundled file first; fall back to live database if week_end is beyond its range
-  let useBundled = false
-  if (bundledResult) {
-    const range =
-      resolveBundledNavDateRange(bundledResult.navPath)
-      ?? (() => {
-        const seedRows = loadFullManagedSeedRows(bundledResult.seedCode)
-        return resolveNavDateRangeFromRows(
-          seedRows ? legacyRowsToNavCsvInput(seedRows) : [],
-        )
-      })()
-    if (range && week_end <= range.latestNavDate) {
-      navFile = bundledResult.navPath
-      benchLabel = benchmark.label
-      earliestNavDate = range.earliestNavDate
-      latestNavDate = range.latestNavDate
-      useBundled = true
-    }
-  }
-
-  if (!useBundled) {
-    const built = await buildFofWeeklyNavCsv(
-      beian_hao,
-      names.product_name,
-      names.short_name,
-      benchmark.key,
-    )
-    navCsv = built.csv
-    benchLabel = built.benchLabel
-
-    const navRows = navCsv.split("\n").slice(1).map((line) => line.split(",")[0]).filter(Boolean)
-    latestNavDate = navRows.at(-1) ?? ""
-    earliestNavDate = navRows[0] ?? ""
-    if (!latestNavDate || !earliestNavDate) throw new Error("净值数据为空")
-    navFile = ""
-  }
+  const navRows = navCsv.split("\n").slice(1).map((line) => line.split(",")[0]).filter(Boolean)
+  const latestNavDate = navRows.at(-1) ?? ""
+  const earliestNavDate = navRows[0] ?? ""
+  if (!latestNavDate || !earliestNavDate) throw new Error("净值数据为空")
 
   if (week_end < earliestNavDate || week_end > latestNavDate) {
     throw new Error(`报告周日期需在 ${earliestNavDate} ~ ${latestNavDate} 之间`)
@@ -544,10 +515,8 @@ export async function generateFofWeeklyReport(
   const outDir = reportDir(reportId)
   await mkdir(outDir, { recursive: true })
 
-  if (!useBundled) {
-    navFile = path.join(outDir, "nav.csv")
-    await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
-  }
+  const navFile = path.join(outDir, "nav.csv")
+  await writeFile(navFile, `\uFEFF${navCsv}`, "utf8")
 
   const reportTitle = (input.report_title || names.product_name).trim()
   const productTagline = (input.product_tagline || "低波动 · 稳健运作 · 强势股策略").trim()
