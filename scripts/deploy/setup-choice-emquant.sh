@@ -215,15 +215,29 @@ ensure_temp_swap() {
 
 auto_tune_build_settings() {
   local mem_total_kb="0"
+  local swap_total_kb="0"
 
   if [[ -r /proc/meminfo ]]; then
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
+    swap_total_kb=$(awk '/SwapTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # Only bump heap when the user left the default; stay conservative below 6 GiB
-  # because Next.js spawns parallel jest-worker processes that each consume RAM.
+  # Only auto-tune when the user left the default. The heaviest phase of
+  # `next build --webpack` is a single worker, so it can safely use a large
+  # heap as long as physical RAM + swap can back it. We size the heap by the
+  # effective ceiling (RAM + swap) rather than RAM alone — otherwise low-RAM
+  # servers with plenty of swap get capped at 1024 MB and OOM.
   if [[ "$BUILD_MEMORY_MB" == "1024" && -n "$mem_total_kb" ]]; then
-    if [[ "$mem_total_kb" -ge 6000000 ]]; then
+    local effective_kb="$mem_total_kb"
+    if [[ -n "$swap_total_kb" ]]; then
+      effective_kb=$(( mem_total_kb + swap_total_kb ))
+    fi
+
+    if   [[ "$mem_total_kb" -ge 6000000 ]]; then
+      BUILD_MEMORY_MB="4096"
+    elif [[ "$effective_kb" -ge 8000000 ]]; then
+      BUILD_MEMORY_MB="3072"
+    elif [[ "$effective_kb" -ge 5000000 ]]; then
       BUILD_MEMORY_MB="2048"
     elif [[ "$mem_total_kb" -ge 4500000 ]]; then
       BUILD_MEMORY_MB="1536"
