@@ -469,6 +469,7 @@ def compute_metrics(
             week_df = work.tail(5)
         week_start = week_begin
         week_end = ref_date
+        print(f"[compute_metrics] explicit range: week_start={week_start.date()} week_end={week_end.date()} week_df_len={len(week_df)}")
     else:
         ref_iso_week = ref_date.isocalendar()[1]
         ref_iso_year = ref_date.isocalendar()[0]
@@ -739,6 +740,7 @@ def make_report(
     benchmark_label: str = "沪深300",
     nav_frequency: str | None = "weekly",
 ) -> tuple[str, str]:
+    print(f"[make_report] week_begin={week_begin!r} week_end={week_end!r} nav_frequency={nav_frequency!r}")
     output_dir = output_dir or str(Path(nav_file).parent)
 
     df = apply_nav_frequency(load_nav_data(nav_file), nav_frequency)
