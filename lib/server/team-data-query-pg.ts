@@ -10,6 +10,7 @@ import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import { EMAIL_NAV_SOURCE_PRIORITY } from "@/lib/server/email-nav-query"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
+import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
 export type TeamDataListParams = {
@@ -615,7 +616,7 @@ function resolveFund(
   const bfl = bestBflMatch(indexes, candidate, row.product_code)
   const t6 = bestT6Match(indexes, candidate, row.product_code)
 
-  const beian_hao = (() => {
+  const autoBeian = (() => {
     if (row.product_code && codeMatchesShareClass(row.product_code, candidate)) {
       return row.product_code.trim()
     }
@@ -627,6 +628,8 @@ function resolveFund(
     bfl?.short_name ?? t6?.fund_short_name,
     candidate,
   )
+
+  const beian_hao = resolveManagedProductBeian(product_name, autoBeian) ?? autoBeian
 
   const fromT6 = strategiesFromRow(t6, strategySource)
   const fromBfl = strategiesFromRow(bfl, strategySource)

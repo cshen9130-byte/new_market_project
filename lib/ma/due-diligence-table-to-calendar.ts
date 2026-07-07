@@ -26,6 +26,21 @@ export function parseTableDate(raw: string): string | null {
   return null
 }
 
+/** Convert ISO date (YYYY-MM-DD) to table display format, e.g. 2026/6/29 */
+export function formatTableDate(isoDate: string): string {
+  const [y, m, d] = isoDate.split("-")
+  return `${y}/${Number(m)}/${Number(d)}`
+}
+
+const WEEKDAY_LABELS = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"]
+
+/** Returns 星期x label for a table date string, or null if invalid/empty. */
+export function tableDateWeekdayLabel(raw: string): string | null {
+  const iso = parseTableDate(raw)
+  if (!iso) return null
+  return WEEKDAY_LABELS[new Date(`${iso}T12:00:00`).getDay()]
+}
+
 export function parseTableMethod(raw: string): DueDiligenceScheduleForm["method"] {
   const s = raw.trim()
   if (/实地|线下|现场|onsite/i.test(s)) return "onsite"

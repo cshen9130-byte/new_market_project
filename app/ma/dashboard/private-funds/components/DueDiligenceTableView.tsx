@@ -75,6 +75,7 @@ import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-bu
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
 import { RepresentativeProductCell } from "./RepresentativeProductCell"
 import { StrategySelectCell } from "./StrategySelectCell"
+import { DdDateCell } from "./DdDateCell"
 import { DdMaterialsCell } from "./DdMaterialsCell"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import {
@@ -1511,6 +1512,7 @@ export function DueDiligenceTableView() {
   ) {
     if (e.button !== 0) return
     const skipPreventDefault =
+      colKey === "ddDate" ||
       colKey === "strategyLevel1" ||
       colKey === "strategyLevel2" ||
       colKey === "strategyLevel3" ||
@@ -1588,11 +1590,12 @@ export function DueDiligenceTableView() {
       setIsDragging(false)
       setFocusCell({ rowId: drag.anchor.rowId, colKey: drag.anchor.colKey })
       const colKey = drag.anchor.colKey
-      const isStrategyCol =
+      const skipAutoFocus =
+        colKey === "ddDate" ||
         colKey === "strategyLevel1" ||
         colKey === "strategyLevel2" ||
         colKey === "strategyLevel3"
-      if (!drag.dragging && !isStrategyCol) {
+      if (!drag.dragging && !skipAutoFocus) {
         requestAnimationFrame(() => focusCellInput(drag.anchor.rowId, drag.anchor.colKey))
       }
     }
@@ -2126,6 +2129,24 @@ export function DueDiligenceTableView() {
                               onChange={(value, link) =>
                                 handleRepresentativeProductChange(row.id, value, link)
                               }
+                            />
+                          ) : col.key === "ddDate" ? (
+                            <DdDateCell
+                              cellId={cellId}
+                              value={row.ddDate}
+                              width={col.width}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleCellChange(row.id, col.key, value)}
                             />
                           ) : col.key === "strategyLevel1" ? (
                             <StrategyCellContextMenu
