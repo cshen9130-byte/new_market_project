@@ -3263,6 +3263,35 @@ const CAT_TO_SECTORS: Record<string, readonly string[]> = {
   国债: ["国债"],
 }
 
+// 净资本 = 组合累计净资本 (product-nav cumCapital); ignore early junk values
+const MIN_NET_CAPITAL = 10_000_000
+const FALLBACK_NET_CAPITAL = 12_000_000
+
+function buildNetCapitalMap(
+  navData: { date: string; cumCapital: number }[],
+  exposureDates: string[],
+): Map<string, number> {
+  const raw = new Map<string, number>()
+  for (const d of navData) {
+    if (d.cumCapital > 0) raw.set(d.date, d.cumCapital)
+  }
+  const navDates = navData.map(d => d.date).sort()
+  const resolved = new Map<string, number>()
+  for (const date of exposureDates) {
+    const navIdx = navDates.indexOf(date)
+    let cap = navIdx >= 0 ? (raw.get(date) ?? 0) : 0
+    if (cap < MIN_NET_CAPITAL) {
+      const start = navIdx >= 0 ? navIdx : navDates.length - 1
+      for (let i = start; i >= 0; i--) {
+        const c = raw.get(navDates[i]) ?? 0
+        if (c >= MIN_NET_CAPITAL) { cap = c; break }
+      }
+    }
+    resolved.set(date, cap >= MIN_NET_CAPITAL ? cap : FALLBACK_NET_CAPITAL)
+  }
+  return resolved
+}
+
 const EXPOSURE_SERIES_CFG = [
   { key: "long商品",  name: "多-商品", stack: "long",  cat: "商品", color: "#38bdf8" },
   { key: "long股指",  name: "多-股指", stack: "long",  cat: "股指", color: "#818cf8" },
@@ -4632,16 +4661,15 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
     let doneCount = 0
     const maybeFinish = () => { if (++doneCount >= 2) setLoading(false) }
 
-    fetchJsonCached("/ma/api/mom-analysis/category-exposure").then(expJ => {
+    Promise.all([
+      fetchJsonCached("/ma/api/mom-analysis/category-exposure"),
+      fetchJsonCached("/ma/api/mom-analysis/product-nav"),
+    ]).then(([expJ, navJ]) => {
       if (expJ.ok) {
         const expSeries: ExposureRow[] = expJ.series ?? []
         setSeries(expSeries)
-        const map = new Map<string, number>()
-        for (const d of expSeries) {
-          const eq = Number((d as Record<string, unknown>).equity ?? 0)
-          if (Number.isFinite(eq) && eq > 0) map.set(d.date, eq)
-        }
-        setCapitalMap(map)
+        const navData: { date: string; cumCapital: number }[] = navJ.data ?? []
+        setCapitalMap(buildNetCapitalMap(navData, expSeries.map(r => r.date)))
       }
     }).catch(() => {}).finally(maybeFinish)
 
@@ -4920,12 +4948,10 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
   }, [pcProdFilter, pcCatFilter, pcSectorFilter, pcSubSectorFilter])
 
   const miniFilteredNet = useMemo(() => {
-    if (pcProdFilter !== "全部") return series.map(r => ((r as Record<string,number>)[`long_p_${pcProdFilter}`] ?? 0) + ((r as Record<string,number>)[`short_p_${pcProdFilter}`] ?? 0))
-    if (pcSubSectorFilter !== "全部") return series.map(r => ((r as Record<string,number>)[`long_ss_${pcSubSectorFilter}`] ?? 0) + ((r as Record<string,number>)[`short_ss_${pcSubSectorFilter}`] ?? 0))
-    if (pcSectorFilter !== "全部") return series.map(r => ((r as Record<string,number>)[`long_s_${pcSectorFilter}`] ?? 0) + ((r as Record<string,number>)[`short_s_${pcSectorFilter}`] ?? 0))
-    if (pcCatFilter === "全部") return series.map(r => r.net)
-    return series.map(r => ((r as Record<string,number>)[`long${pcCatFilter}`] ?? 0) + ((r as Record<string,number>)[`short${pcCatFilter}`] ?? 0))
-  }, [series, pcProdFilter, pcCatFilter, pcSectorFilter, pcSubSectorFilter])
+    return series.map(r =>
+      miniVisibleCfg.reduce((sum, c) => sum + ((r as Record<string, number>)[c.key] ?? 0), 0),
+    )
+  }, [series, miniVisibleCfg])
 
   // Zoom to last 90 trading days (~last 15% of a 600-day window)
   const miniZoomStart = series.length > 0 ? Math.max(0, Math.round((1 - 90 / series.length) * 100)) : 80
@@ -5065,44 +5091,39 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
 
   const visibleCfg2 = visibleCfg
 
+  // Net MV = sum of the same long/short fields shown in the bar chart (short keys are negative)
   const filteredNet = useMemo(() => {
-    if (prodFilter !== "全部") {
-      return series.map(r => {
-        const lv = (r as Record<string, number>)[`long_p_${prodFilter}`] ?? 0
-        const sv = (r as Record<string, number>)[`short_p_${prodFilter}`] ?? 0
-        return lv + sv
-      })
-    }
-    if (subSectorFilter !== "全部") {
-      return series.map(r => {
-        const lv = (r as Record<string, number>)[`long_ss_${subSectorFilter}`] ?? 0
-        const sv = (r as Record<string, number>)[`short_ss_${subSectorFilter}`] ?? 0
-        return lv + sv
-      })
-    }
-    if (sectorFilter !== "全部") {
-      return series.map(r => {
-        const lv = (r as Record<string, number>)[`long_s_${sectorFilter}`] ?? 0
-        const sv = (r as Record<string, number>)[`short_s_${sectorFilter}`] ?? 0
-        return lv + sv
-      })
-    }
-    if (catFilter === "全部") return series.map(r => r.net)
-    return series.map(r => {
-      const longKey  = `long${catFilter}`  as keyof ExposureRow
-      const shortKey = `short${catFilter}` as keyof ExposureRow
-      return (r[longKey] as number) + (r[shortKey] as number)
-    })
-  }, [series, catFilter, sectorFilter, subSectorFilter, prodFilter])
-
-  const filteredNet2 = filteredNet
+    return series.map(r =>
+      visibleCfg.reduce((sum, c) => sum + ((r as Record<string, number>)[c.key] ?? 0), 0),
+    )
+  }, [series, visibleCfg])
 
   // Divide a raw MV value by the capital for that date (returns multiplier, e.g. 1.96)
   const toRatio = useCallback((mv: number, date: string) => {
-    const cap = capitalMap.get(date)
-    if (!cap || cap === 0) return 0
+    const rowIdx = series.findIndex(r => r.date === date)
+    let cap = 0
+    for (let i = rowIdx; i >= 0; i--) {
+      const c = capitalMap.get(series[i].date)
+      if (c && c > 0) { cap = c; break }
+    }
+    if (!cap) return 0
     return Math.round(mv / cap * 10000) / 10000
-  }, [capitalMap])
+  }, [capitalMap, series])
+
+  const ratioBarValue = useCallback((raw: number, date: string, stack: string) => {
+    const ratio = toRatio(raw, date)
+    return stack === "short" ? -Math.abs(ratio) : ratio
+  }, [toRatio])
+
+  // Net ratio = sum of visible bar ratios so the line always matches long + short on chart
+  const filteredNetRatio = useMemo(() => {
+    return series.map(r =>
+      visibleCfg.reduce(
+        (sum, c) => sum + ratioBarValue((r as Record<string, number>)[c.key] ?? 0, r.date, c.stack),
+        0,
+      ),
+    )
+  }, [series, visibleCfg, ratioBarValue])
 
   const exposureOption = useMemo(() => ({
     tooltip: {
@@ -5184,8 +5205,8 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
         const fmtNet = (v: number) => v.toFixed(2)
         if (prodFilter !== "全部" || subSectorFilter !== "全部" || sectorFilter !== "全部" || catFilter === "全部") {
           const longTotal  = params.filter(p => p.seriesName.startsWith("多")).reduce((s, p) => s + p.value, 0)
-          const shortTotal = params.filter(p => p.seriesName.startsWith("空")).reduce((s, p) => s + Math.abs(p.value), 0)
-          const net        = params.find(p => p.seriesName === "净持仓/净资本")?.value ?? (longTotal - shortTotal)
+          const shortTotal = params.filter(p => p.seriesName.startsWith("空")).reduce((s, p) => s + p.value, 0)
+          const net        = params.find(p => p.seriesName === "净持仓/净资本")?.value ?? (longTotal + shortTotal)
           const dot = (color: string) => `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:4px"></span>`
           return [
             date,
@@ -5221,13 +5242,13 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
         name: c.name + "/净资本",
         type: "bar" as const,
         stack: c.stack,
-        data: series.map(r => toRatio((r as Record<string, number>)[c.key] ?? 0, r.date)),
+        data: series.map(r => ratioBarValue((r as Record<string, number>)[c.key] ?? 0, r.date, c.stack)),
         itemStyle: { color: c.color },
       })),
       {
         name: "净持仓/净资本",
         type: "line" as const,
-        data: filteredNet2.map((v, i) => toRatio(v, series[i]?.date ?? "")),      
+        data: filteredNetRatio,
         symbol: "none",
         lineStyle: { color: "#dc2626", width: 3 },
         itemStyle: { color: "#dc2626" },
@@ -5241,7 +5262,7 @@ function PositionContent({ sectorChartCapturing, setSectorChartCapturing }: {
         z: 10,
       },
     ],
-  }), [series, dates, visibleCfg2, filteredNet2, catFilter, sectorFilter, subSectorFilter, prodFilter, toRatio])
+  }), [series, dates, visibleCfg2, filteredNetRatio, catFilter, sectorFilter, subSectorFilter, prodFilter, ratioBarValue])
 
   const sectorBarRows = useMemo(() => {
     let row: ExposureRow | undefined
