@@ -177,6 +177,28 @@ CREATE TABLE IF NOT EXISTS amac_extra_sync_state (
     last_incremental_sync_at  TIMESTAMPTZ,
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS amac_manager_metrics_history (
+    id                        BIGSERIAL PRIMARY KEY,
+    registration_no           TEXT NOT NULL,
+    manager_name              TEXT,
+    snapshot_date             DATE NOT NULL DEFAULT CURRENT_DATE,
+    full_time_staff_count     INTEGER,
+    fund_practitioner_count   INTEGER,
+    mgmt_scale_range          TEXT,
+    active_fund_count         INTEGER,
+    staff_count               INTEGER,
+    fund_manager_count        INTEGER,
+    investment_manager_count  INTEGER,
+    source                    TEXT NOT NULL DEFAULT 'amac_api',
+    captured_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_amac_manager_metrics_history_reg_captured
+    ON amac_manager_metrics_history (registration_no, captured_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_amac_manager_metrics_history_snapshot_date
+    ON amac_manager_metrics_history (snapshot_date DESC, registration_no);
 """
 
 UPSERT_MANAGERS = """
@@ -195,7 +217,7 @@ ON CONFLICT (registration_no) DO UPDATE SET
     office_location   = EXCLUDED.office_location,
     inception_date    = EXCLUDED.inception_date,
     registration_date = EXCLUDED.registration_date,
-    active_fund_count = EXCLUDED.active_fund_count,
+    active_fund_count = COALESCE(EXCLUDED.active_fund_count, amac_managers.active_fund_count),
     member_type       = EXCLUDED.member_type,
     has_alert_info    = EXCLUDED.has_alert_info,
     has_integrity_info = EXCLUDED.has_integrity_info,
@@ -215,16 +237,16 @@ INSERT INTO amac_person_org_stats (
 ) VALUES %s
 ON CONFLICT (org_name) DO UPDATE SET
     org_type                              = EXCLUDED.org_type,
-    staff_count                           = EXCLUDED.staff_count,
-    fund_qualification_count              = EXCLUDED.fund_qualification_count,
-    fund_sales_qualification_count        = EXCLUDED.fund_sales_qualification_count,
-    investment_manager_count              = EXCLUDED.investment_manager_count,
-    fund_manager_count                    = EXCLUDED.fund_manager_count,
-    external_staff_count                  = EXCLUDED.external_staff_count,
-    external_fund_qualification_count     = EXCLUDED.external_fund_qualification_count,
-    external_fund_sales_qualification_count = EXCLUDED.external_fund_sales_qualification_count,
-    external_investment_manager_count     = EXCLUDED.external_investment_manager_count,
-    external_fund_manager_count           = EXCLUDED.external_fund_manager_count,
+    staff_count                           = COALESCE(EXCLUDED.staff_count, amac_person_org_stats.staff_count),
+    fund_qualification_count              = COALESCE(EXCLUDED.fund_qualification_count, amac_person_org_stats.fund_qualification_count),
+    fund_sales_qualification_count        = COALESCE(EXCLUDED.fund_sales_qualification_count, amac_person_org_stats.fund_sales_qualification_count),
+    investment_manager_count              = COALESCE(EXCLUDED.investment_manager_count, amac_person_org_stats.investment_manager_count),
+    fund_manager_count                    = COALESCE(EXCLUDED.fund_manager_count, amac_person_org_stats.fund_manager_count),
+    external_staff_count                  = COALESCE(EXCLUDED.external_staff_count, amac_person_org_stats.external_staff_count),
+    external_fund_qualification_count     = COALESCE(EXCLUDED.external_fund_qualification_count, amac_person_org_stats.external_fund_qualification_count),
+    external_fund_sales_qualification_count = COALESCE(EXCLUDED.external_fund_sales_qualification_count, amac_person_org_stats.external_fund_sales_qualification_count),
+    external_investment_manager_count     = COALESCE(EXCLUDED.external_investment_manager_count, amac_person_org_stats.external_investment_manager_count),
+    external_fund_manager_count           = COALESCE(EXCLUDED.external_fund_manager_count, amac_person_org_stats.external_fund_manager_count),
     source_file                           = EXCLUDED.source_file,
     updated_at                            = NOW()
 """
@@ -252,9 +274,9 @@ ON CONFLICT (registration_no) DO UPDATE SET
     enterprise_nature                     = EXCLUDED.enterprise_nature,
     org_type                              = EXCLUDED.org_type,
     business_type                         = EXCLUDED.business_type,
-    full_time_staff_count                 = EXCLUDED.full_time_staff_count,
-    fund_practitioner_count               = EXCLUDED.fund_practitioner_count,
-    mgmt_scale_range                      = EXCLUDED.mgmt_scale_range,
+    full_time_staff_count                 = COALESCE(EXCLUDED.full_time_staff_count, amac_manager_details.full_time_staff_count),
+    fund_practitioner_count               = COALESCE(EXCLUDED.fund_practitioner_count, amac_manager_details.fund_practitioner_count),
+    mgmt_scale_range                      = COALESCE(EXCLUDED.mgmt_scale_range, amac_manager_details.mgmt_scale_range),
     is_investment_advisory_third_party    = EXCLUDED.is_investment_advisory_third_party,
     actual_controller                     = EXCLUDED.actual_controller,
     is_member                             = EXCLUDED.is_member,
@@ -462,3 +484,59 @@ def load_manager_executive_resume_from_csv(csv_dir: Path = DEFAULT_CSV_DIR) -> l
         [t for t in tuples if t],
         lambda r: (r[0], r[2], r[3], r[4], r[5], r[6], r[7]),
     )
+
+
+SNAPSHOT_MANAGER_METRICS_SQL = """
+INSERT INTO amac_manager_metrics_history (
+    registration_no, manager_name, snapshot_date,
+    full_time_staff_count, fund_practitioner_count, mgmt_scale_range, active_fund_count,
+    staff_count, fund_manager_count, investment_manager_count,
+    source, captured_at
+)
+SELECT
+    d.registration_no,
+    COALESCE(d.manager_name_cn, m.manager_name),
+    CURRENT_DATE,
+    d.full_time_staff_count,
+    d.fund_practitioner_count,
+    d.mgmt_scale_range,
+    m.active_fund_count,
+    p.staff_count,
+    p.fund_manager_count,
+    p.investment_manager_count,
+    %s,
+    NOW()
+FROM amac_manager_details d
+JOIN amac_managers m ON m.registration_no = d.registration_no
+LEFT JOIN amac_person_org_stats p
+    ON p.org_name = COALESCE(d.manager_name_cn, m.manager_name)
+LEFT JOIN LATERAL (
+    SELECT
+        h.id,
+        h.full_time_staff_count,
+        h.fund_practitioner_count,
+        h.mgmt_scale_range,
+        h.active_fund_count,
+        h.staff_count,
+        h.fund_manager_count,
+        h.investment_manager_count
+    FROM amac_manager_metrics_history h
+    WHERE h.registration_no = d.registration_no
+    ORDER BY h.captured_at DESC
+    LIMIT 1
+) prev ON TRUE
+WHERE prev.id IS NULL
+   OR prev.full_time_staff_count IS DISTINCT FROM d.full_time_staff_count
+   OR prev.fund_practitioner_count IS DISTINCT FROM d.fund_practitioner_count
+   OR prev.mgmt_scale_range IS DISTINCT FROM d.mgmt_scale_range
+   OR prev.active_fund_count IS DISTINCT FROM m.active_fund_count
+   OR prev.staff_count IS DISTINCT FROM p.staff_count
+   OR prev.fund_manager_count IS DISTINCT FROM p.fund_manager_count
+   OR prev.investment_manager_count IS DISTINCT FROM p.investment_manager_count
+"""
+
+
+def append_manager_metrics_history(cur, *, source: str = SOURCE_API) -> int:
+    """Append snapshot rows when tracked metrics change. Never updates existing history."""
+    cur.execute(SNAPSHOT_MANAGER_METRICS_SQL, (source,))
+    return cur.rowcount

@@ -21,6 +21,7 @@ CSV_DIR = ROOT / "fetch_amac_data" / "amac_extra"
 
 sys.path.insert(0, str(ROOT / "scripts" / "db"))
 from amac_extra_db import (  # noqa: E402
+    append_manager_metrics_history,
     DDL,
     UPSERT_EXECUTIVE_RESUME,
     UPSERT_EXECUTIVES,
@@ -101,6 +102,9 @@ def main() -> None:
                 total = cur.fetchone()[0]
                 cur.execute(f"ANALYZE {table}")
                 print(f"  Upserted {len(rows):,} rows ({total:,} rows in {table})")
+
+            history_rows = append_manager_metrics_history(cur)
+            print(f"  Metrics history baseline: {history_rows:,} snapshot(s)")
 
     conn.close()
     print("Migration complete.")

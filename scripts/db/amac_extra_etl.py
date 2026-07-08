@@ -5,7 +5,8 @@ amac_extra_etl.py
 Fetch AMAC manager / personnel data and upsert into PostgreSQL.
 
 Tables: amac_managers, amac_person_org_stats, amac_manager_details,
-        amac_manager_executives, amac_manager_executive_resume
+        amac_manager_executives, amac_manager_executive_resume,
+        amac_manager_metrics_history (append-only metric snapshots)
 
 Nightly incremental (default):
   - Full refresh of manager list + person-org stats (paginated APIs, ~minutes)
@@ -38,6 +39,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "fetch_amac_data"))
+sys.path.insert(0, str(ROOT / "scripts" / "db"))
 
 from fetch_amac_extra import (  # noqa: E402
     HEADERS,
@@ -50,6 +52,7 @@ from fetch_amac_extra import (  # noqa: E402
     post_json,
 )
 from amac_extra_db import (  # noqa: E402
+    append_manager_metrics_history,
     DDL,
     SOURCE_API,
     UPSERT_EXECUTIVE_RESUME,
@@ -472,6 +475,8 @@ def run_etl(
                 full_details_sync=full_details_sync,
             )
 
+            metrics_history_appended = append_manager_metrics_history(cur)
+
     conn.close()
     rows_upserted = (
         managers_upserted + person_org_upserted + details_fetched + executives_upserted + resumes_upserted
@@ -485,13 +490,15 @@ def run_etl(
         "details_fetched": details_fetched,
         "executives_upserted": executives_upserted,
         "resumes_upserted": resumes_upserted,
+        "metrics_history_appended": metrics_history_appended,
         "rows_upserted": rows_upserted,
         "dry_run": False,
     }
     print(json.dumps(summary, ensure_ascii=False))
     print(
         f"Done. mode={mode} managers={managers_upserted:,} person_org={person_org_upserted:,} "
-        f"details={details_fetched:,} executives={executives_upserted:,} resumes={resumes_upserted:,}"
+        f"details={details_fetched:,} executives={executives_upserted:,} resumes={resumes_upserted:,} "
+        f"history+={metrics_history_appended:,}"
     )
     return summary
 

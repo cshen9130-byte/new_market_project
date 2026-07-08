@@ -10,14 +10,16 @@ Fields synced:
   - 公司管理规模 basicinfo_bfl_track.scale     ← amac_manager_details.mgmt_scale_range
   - 管理人规模  private_fund_managers_list.mgmt_scale ← amac_manager_details.mgmt_scale_range
 
-Default behaviour fills NULL values only. Manual ops edits (source = ops/fund-elements)
-for 备案日期 are preserved unless --overwrite is passed.
+Default behaviour: fill NULL values only — never overwrite existing data.
+Manual ops edits (source = ops/fund-elements) for 备案日期 are always preserved.
+
+Manager metric trends (employee count, scale, etc.) are tracked in
+amac_manager_metrics_history by amac_extra_etl.py (append-only snapshots).
 
 Usage:
     python scripts/db/sync_amac_fund_metadata.py
     python scripts/db/sync_amac_fund_metadata.py --dry-run
-    python scripts/db/sync_amac_fund_metadata.py --beian-hao SBAA99 --beian-hao TY187B
-    python scripts/db/sync_amac_fund_metadata.py --overwrite --backfill-rows
+    python scripts/db/sync_amac_fund_metadata.py --beian-hao SBAA99 --backfill-rows
 """
 
 from __future__ import annotations
@@ -210,16 +212,11 @@ def _beian_filter(alias: str, beian_haos: list[str], params: list) -> str:
     )
 
 
-def _build_puton_date_sql(overwrite: bool, beian_haos: list[str]) -> tuple[str, list]:
+def _build_puton_date_sql(beian_haos: list[str]) -> tuple[str, list]:
     params: list = []
     beian_clause = _beian_filter("b", beian_haos, params)
     if beian_haos:
         params.extend(beian_haos)
-
-    if overwrite:
-        puton_guard = f"(b.source IS NULL OR b.source <> '{OPS_SOURCE}')"
-    else:
-        puton_guard = "b.puton_date IS NULL"
 
     return (
         f"""
@@ -236,22 +233,19 @@ def _build_puton_date_sql(overwrite: bool, beian_haos: list[str]) -> tuple[str, 
         FROM amac_private_funds a
         WHERE {_amac_fund_match_clause("b", "a")}
           AND a.put_on_record_date IS NOT NULL
-          AND ({puton_guard}
-               OR (%s AND b.puton_date IS DISTINCT FROM a.put_on_record_date
-                   AND (b.source IS NULL OR b.source <> '{OPS_SOURCE}')))
+          AND b.puton_date IS NULL
+          AND (b.source IS NULL OR b.source <> '{OPS_SOURCE}')
           {beian_clause}
         """,
-        [overwrite, *params],
+        params,
     )
 
 
-def _build_scale_sql(overwrite: bool, beian_haos: list[str]) -> tuple[str, list]:
+def _build_scale_sql(beian_haos: list[str]) -> tuple[str, list]:
     params: list = []
     beian_clause = _beian_filter("b", beian_haos, params)
     if beian_haos:
         params.extend(beian_haos)
-
-    scale_guard = "b.scale IS NULL" if not overwrite else "TRUE"
 
     return (
         f"""
@@ -301,27 +295,25 @@ def _build_scale_sql(overwrite: bool, beian_haos: list[str]) -> tuple[str, list]
         ) src
         WHERE b.id = src.id
           AND src.mgmt_scale_range IS NOT NULL
-          AND ({scale_guard}
-               OR (%s AND b.scale IS DISTINCT FROM src.mgmt_scale_range))
+          AND b.scale IS NULL
           {beian_clause}
         """,
-        [overwrite, *params],
+        params,
     )
 
 
 MANAGERS_LIST_SQL = """
 UPDATE private_fund_managers_list p
 SET
-    mgmt_scale = d.mgmt_scale_range,
-    active_product_count = COALESCE(m.active_fund_count, p.active_product_count),
+    mgmt_scale = COALESCE(p.mgmt_scale, d.mgmt_scale_range),
+    active_product_count = COALESCE(p.active_product_count, m.active_fund_count),
     updated_at = NOW()
 FROM amac_manager_details d
 JOIN amac_managers m ON m.registration_no = d.registration_no
 WHERE p.registration_no = d.registration_no
-  AND d.mgmt_scale_range IS NOT NULL
   AND (
-    p.mgmt_scale IS NULL
-    OR (%s AND p.mgmt_scale IS DISTINCT FROM d.mgmt_scale_range)
+    (p.mgmt_scale IS NULL AND d.mgmt_scale_range IS NOT NULL)
+    OR (p.active_product_count IS NULL AND m.active_fund_count IS NOT NULL)
   )
 """
 
@@ -460,11 +452,6 @@ def main() -> None:
     )
     parser.add_argument("--dry-run", action="store_true", help="Preview counts only.")
     parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing non-null values (except ops/fund-elements 备案日期).",
-    )
-    parser.add_argument(
         "--backfill-rows",
         action="store_true",
         help="Insert basicinfo_bfl_track rows for tracked funds missing from the table.",
@@ -526,15 +513,15 @@ def main() -> None:
                 if fetched:
                     print(f"Fetched {fetched} missing fund(s) from AMAC API")
 
-            puton_sql, puton_params = _build_puton_date_sql(args.overwrite, beian_haos)
+            puton_sql, puton_params = _build_puton_date_sql(beian_haos)
             cur.execute(puton_sql, puton_params)
             puton_updated = cur.rowcount
 
-            scale_sql, scale_params = _build_scale_sql(args.overwrite, beian_haos)
+            scale_sql, scale_params = _build_scale_sql(beian_haos)
             cur.execute(scale_sql, scale_params)
             scale_updated = cur.rowcount
 
-            cur.execute(MANAGERS_LIST_SQL, [args.overwrite])
+            cur.execute(MANAGERS_LIST_SQL)
             managers_updated = cur.rowcount
 
             backfill_inserted = 0
@@ -572,7 +559,6 @@ def main() -> None:
         "scale_updated": scale_updated,
         "managers_list_updated": managers_updated,
         "backfill_inserted": backfill_inserted,
-        "overwrite": args.overwrite,
         "beian_haos": beian_haos,
     }
     print(json.dumps(summary, ensure_ascii=False))
