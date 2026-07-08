@@ -1,43 +1,37 @@
 /**
- * Rebuild ops_fof_overview_list_cache from the current (corrected) NAV
- * selection logic. Use after deploying email-selection fixes so the FOF概览
- * list reflects the right 单位净值 (e.g. BAH99A should be ~1.27, not 6.27M).
+ * Refresh FOF底层 list cache + managed underlying snapshot (no heavy JSONB backfills).
  *
- * Recomputes ALL funds from BatchNavResolver — does not single out any fund,
- * so already-correct funds stay correct.
+ * Usage: npx tsx scripts/ma/_refresh_fof_cache.ts
  */
 import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-project-env"
-loadProjectEnvFiles()
-configureEtlDbTimeout()
 
 async function main() {
-  const { query } = await import("@/lib/db")
-  const { refreshFofOverviewListCache } = await import(
-    "@/lib/server/fof-overview-list-cache-pg"
-  )
+  loadProjectEnvFiles()
+  configureEtlDbTimeout()
 
-  const before = await query<{ unit_nav: string; nav_date: string }>(
-    `SELECT unit_nav::text, nav_date::text
-     FROM ops_fof_overview_list_cache
-     WHERE beian_hao = 'BAH99A'`,
-  )
-  console.log("BAH99A cache BEFORE:", before[0] ?? "(none)")
+  console.error("[refresh_fof_cache] backfilling custody 估值表 NAV into ops_email_nav_records…")
+  try {
+    const { backfillCustodyValuationNavFromRecords } = await import("@/lib/server/email-valuation-nav-backfill")
+    const navBackfill = await backfillCustodyValuationNavFromRecords({ sinceDate: "2026-06-01" })
+    console.error(`[refresh_fof_cache] custody NAV backfill done (rows=${navBackfill.navBackfilled})`)
+  } catch (err) {
+    console.warn("[refresh_fof_cache] custody NAV backfill skipped:", err)
+  }
 
-  console.log("Rebuilding FOF overview list cache (1–3 min)…")
-  const n = await refreshFofOverviewListCache()
-  console.log(`Rebuilt ${n} rows.`)
+  console.error("[refresh_fof_cache] refreshing managed FOF underlying snapshot…")
+  const { refreshManagedFofUnderlying } = await import("@/lib/server/managed-fof-underlying-pg")
+  const managedRows = await refreshManagedFofUnderlying()
+  console.error(`[refresh_fof_cache] managed FOF underlying done (${managedRows} rows)`)
 
-  const after = await query<{ unit_nav: string; nav_date: string; return_pct: string }>(
-    `SELECT unit_nav::text, nav_date::text, return_pct::text
-     FROM ops_fof_overview_list_cache
-     WHERE beian_hao = 'BAH99A'`,
-  )
-  console.log("BAH99A cache AFTER:", after[0] ?? "(none)")
+  console.error("[refresh_fof_cache] rebuilding FOF overview list cache…")
+  const { refreshFofOverviewListCache } = await import("@/lib/server/fof-overview-list-cache-pg")
+  const cacheRows = await refreshFofOverviewListCache()
+  console.error(`[refresh_fof_cache] FOF overview cache done (${cacheRows} rows)`)
 
-  process.exit(0)
+  console.log(JSON.stringify({ ok: true, managedRows, cacheRows }))
 }
 
-main().catch((e) => {
-  console.error(e)
+main().catch((err) => {
+  console.error("[refresh_fof_cache] failed:", err)
   process.exit(1)
 })

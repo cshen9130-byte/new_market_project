@@ -125,22 +125,32 @@ function applyFilters(records: EmailParseRecord[], filters: EmailParseRecordFilt
  *                        in this scan run (regardless of success/failure per
  *                        email).  Pass an empty array to do a full replace
  *                        (legacy behaviour).
- * @param scanSince      Start of the IMAP `since` window for this run.
+ * @param scanSinceByAccount  Per-mailbox start of the IMAP `since` window for this run.
+ *                          Legacy: pass a single Date for all scanned accounts.
  */
 export function replaceEmailParseRecords(
   records: Omit<EmailParseRecord, "id">[],
   scannedAccounts: string[] = [],
-  scanSince?: Date | null,
+  scanSinceByAccount?: Map<string, Date> | Record<string, Date> | Date | null,
 ): EmailParseRecord[] {
   const store = readStore()
   const scanned = new Set(scannedAccounts.map((a) => a.trim().toLowerCase()))
   const doPerAccount = scanned.size > 0
   const newKeys = new Set(records.map((r) => recordKey(r.crawlEmailAccount, r.uid)))
 
+  const sinceForAccount = (acct: string): Date | null => {
+    if (scanSinceByAccount == null) return null
+    if (scanSinceByAccount instanceof Date) return scanSinceByAccount
+    const key = acct.trim().toLowerCase()
+    if (scanSinceByAccount instanceof Map) return scanSinceByAccount.get(key) ?? null
+    return scanSinceByAccount[key] ?? null
+  }
+
   const preserved = doPerAccount
     ? store.records.filter((r) => {
         const acct = r.crawlEmailAccount.trim().toLowerCase()
         if (!scanned.has(acct)) return true
+        const scanSince = sinceForAccount(acct)
         if (!scanSince) return false
         if (new Date(r.sentAt) < scanSince) return true
         return !newKeys.has(recordKey(r.crawlEmailAccount, r.uid))
@@ -219,6 +229,19 @@ export function patchSenderEmails(
 
 export function countRecordsMissingSender(): number {
   return readStore().records.filter((r) => !r.senderEmail?.trim()).length
+}
+
+/** Latest sentAt per crawl mailbox — used to bootstrap incremental scan cursors. */
+export function maxSentAtByCrawlAccount(accounts: string[]): Map<string, string> {
+  const wanted = new Set(accounts.map((a) => a.trim().toLowerCase()))
+  const out = new Map<string, string>()
+  for (const row of readStore().records) {
+    const key = row.crawlEmailAccount.trim().toLowerCase()
+    if (!wanted.has(key)) continue
+    const prev = out.get(key)
+    if (!prev || row.sentAt > prev) out.set(key, row.sentAt)
+  }
+  return out
 }
 
 export function getRecordsNeedingSender(): Pick<EmailParseRecord, "crawlEmailAccount" | "uid" | "crawlEmailId">[] {

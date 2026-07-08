@@ -261,6 +261,114 @@ assert("SNF018 0625 unit < 1.5", parseFloat(snf625.nav) < 1.5)
 assert("SNF018 0625 adj >= cum >= unit", parseFloat(snf625.cumulative_nav) >= parseFloat(snf625.cum_nav_withdrawal) - 0.001
   && parseFloat(snf625.cum_nav_withdrawal) >= parseFloat(snf625.nav) - 0.001)
 
+// SBPC20: 虚拟计提净值表 attachment mis-parsed fund AUM as unit NAV; subject + virtual carry correct unit
+const sbpc20Rows = [
+  {
+    nav_date: "2026-07-07",
+    nav: "5494454.23",
+    cumulative_nav: "1.351700",
+    adjusted_nav: "1.351700",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20_六妙星九紫一号_20260707.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-07，单位净值为1.1386",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-07",
+    nav: "1.138600",
+    cumulative_nav: "1.127600",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_荣熙海泰1号私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-07.xls",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-07-06",
+    nav: "1.151100",
+    cumulative_nav: "1.370200",
+    adjusted_nav: "1.370200",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20_六妙星九紫一号_20260706.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-06，单位净值为1.1511",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-06",
+    nav: "1.151100",
+    cumulative_nav: "1.092700",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_衡颐海泰1号私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-06.xls",
+    source: "body_table",
+  },
+]
+const sbpc20Selected = selectEmailNavSeriesRows(sbpc20Rows, "SBPC20", ["六妙星九紫一号"])
+const sbpc0707 = sbpc20Selected.find((r) => r.nav_date === "2026-07-07")
+const sbpc0706 = sbpc20Selected.find((r) => r.nav_date === "2026-07-06")
+assert("SBPC20 0707 unit ~1.1386", Math.abs(parseFloat(sbpc0707.nav) - 1.1386) < 0.001)
+assert("SBPC20 0706 attachment wins over virtual (dividend offset)", Math.abs(parseFloat(sbpc0706.cumulative_nav) - 1.3702) < 0.001)
+
+// BDW42B: parent SBDW42 attachment publishes A/B share-class NAVs on the same date (~1.09 vs ~1.45).
+const bdw42bRows = [
+  {
+    nav_date: "2026-07-06",
+    nav: "1.093700",
+    cumulative_nav: "1.093700",
+    adjusted_nav: null,
+    product_code: "SBDW42",
+    fund_name: "青钱基石1号",
+    attachment_filename: "SBDW42_青钱基石1号_20260706.xls",
+    subject: "【净值信息】SBDW42_青钱基石1号_20260706",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-06",
+    nav: "1.458200",
+    cumulative_nav: "1.458200",
+    adjusted_nav: null,
+    product_code: "SBDW42",
+    fund_name: "青钱基石1号",
+    attachment_filename: "SBDW42_青钱基石1号_20260706.xls",
+    subject: "【净值信息】SBDW42_青钱基石1号_20260706",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-07",
+    nav: "1.089800",
+    cumulative_nav: "1.089800",
+    adjusted_nav: null,
+    product_code: "SBDW42",
+    fund_name: "青钱基石1号",
+    attachment_filename: "SBDW42_青钱基石1号_20260707.xls",
+    subject: "【净值信息】SBDW42_青钱基石1号_20260707",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-07",
+    nav: "1.455800",
+    cumulative_nav: "1.455800",
+    adjusted_nav: null,
+    product_code: "SBDW42",
+    fund_name: "青钱基石1号",
+    attachment_filename: "SBDW42_青钱基石1号_20260707.xls",
+    subject: "【净值信息】SBDW42_青钱基石1号_20260707",
+    source: "attachment_nav_table",
+  },
+]
+const bdw42bSelected = selectEmailNavSeriesRows(bdw42bRows, "BDW42B", ["青钱基石1号私募证券投资基金B类"])
+const bdw0706 = bdw42bSelected.find((r) => r.nav_date === "2026-07-06")
+const bdw0707 = bdw42bSelected.find((r) => r.nav_date === "2026-07-07")
+assert("BDW42B picks B-class NAV on 0706", Math.abs(parseFloat(bdw0706.nav) - 1.4582) < 0.001)
+assert("BDW42B picks B-class NAV on 0707", Math.abs(parseFloat(bdw0707.nav) - 1.4558) < 0.001)
+const bdwDaily = parseFloat(bdw0707.nav) / parseFloat(bdw0706.nav) - 1
+assert("BDW42B daily move sane", Math.abs(bdwDaily + 0.0016) < 0.005)
+
 const seedBackfill = ssgSeed.filter((r) => r.price_date < "2024-11-19")
 const emailTeam = custodyMerged
 const combined = mergeLegacyWithTeamNav(seedBackfill, emailTeam)

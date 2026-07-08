@@ -286,7 +286,15 @@ function resolveValuationTableNavDate(
 
   if (header && (!subjectDate || header !== subjectDate)) return header
   if (summary && (!subjectDate || summary !== subjectDate)) return summary
-  if (custodySend && subjectDate) return previousChinaTradingDay(subjectDate)
+  if (custodySend && subjectDate) {
+    // Guohai / GTJA 4级科目估值表_YYYYMMDD: filename date is the NAV date when the
+    // workbook header agrees. Only shift back one trading day when header is absent
+    // (legacy custodians that embed send-date in the filename).
+    if (header === subjectDate || summary === subjectDate) return subjectDate
+    if (header) return header
+    if (summary) return summary
+    return previousChinaTradingDay(subjectDate)
+  }
   return header ?? summary ?? subjectDate
 }
 

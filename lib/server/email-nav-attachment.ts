@@ -7,6 +7,10 @@ import {
   extractNavMetadata,
   type ExtractedNavData,
 } from "@/lib/server/email-nav-extract"
+import {
+  extractSubjectUnitNavHint,
+  isPlausibleEmailUnitNav,
+} from "@/lib/server/email-nav-query"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
 
 export type NavTableAttachmentInfo = { filename: string; part: string }
@@ -51,15 +55,22 @@ export function extractNavTableFromBuffer(
     const analysis = analyzeNavWorkbook(buffer, filename)
     const { productCode, fundName } = extractNavMetadata(subject, filename)
 
-    return analysis.rows.map((row) => ({
-      nav: row.unitNav,
-      navDate: row.date,
-      cumulativeNav: row.cumulativeNav,
-      adjustedNav: row.adjustedNav,
-      productCode,
-      fundName,
-      source: "attachment_nav_table" as const,
-    }))
+    return analysis.rows.map((row) => {
+      let unitNav = row.unitNav
+      if (!isPlausibleEmailUnitNav(unitNav, row.cumulativeNav)) {
+        const hinted = extractSubjectUnitNavHint(subject)
+        if (hinted != null) unitNav = hinted
+      }
+      return {
+        nav: unitNav,
+        navDate: row.date,
+        cumulativeNav: row.cumulativeNav,
+        adjustedNav: row.adjustedNav,
+        productCode,
+        fundName,
+        source: "attachment_nav_table" as const,
+      }
+    })
   } catch {
     return []
   }

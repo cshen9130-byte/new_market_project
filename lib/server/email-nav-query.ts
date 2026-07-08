@@ -126,6 +126,17 @@ export function isPlausibleEmailUnitNav(
   return true
 }
 
+/** Parse unit NAV embedded in email subject (e.g. 单位净值为1.1386). */
+export function extractSubjectUnitNavHint(subject: string | null | undefined): number | null {
+  if (!subject) return null
+  const m =
+    subject.match(/单位净(?:值|价)\s*(?:为|[：:])\s*(\d+\.\d{3,8})/u)
+    ?? subject.match(/单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  return isPlausibleEmailUnitNav(n) ? n : null
+}
+
 function isVirtualAccrualNavTableRow(row: EmailNavRawRow): boolean {
   const meta = `${row.subject ?? ""}${row.attachment_filename ?? ""}`
   return /虚拟计提净值表/u.test(meta)
@@ -156,7 +167,13 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
     if (candidateTier < currentTier && candidateTier === -1 && currentTier === 0) {
       const currNav = parseOptionalNav(current.nav)
       const currCum = parseOptionalNav(current.cumulative_nav)
-      if (currNav != null && currCum != null && hasDistinctCumulative(currNav, currCum)) {
+      // Require plausible unit NAV + cum above unit (dividend offset). Reject attachments
+      // where unit was mis-parsed as fund AUM / share count (nav >> cum).
+      if (
+        currNav != null && currCum != null
+        && isPlausibleEmailUnitNav(currNav, currCum)
+        && hasDividendOffset(currNav, currCum)
+      ) {
         return current
       }
     }
@@ -184,8 +201,12 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   const currCumField = parseOptionalNav(current.cumulative_nav)
   const candNav = parseOptionalNav(candidate.nav)
   const candCumField = parseOptionalNav(candidate.cumulative_nav)
-  const currentDistinct = currNav != null && currCumField != null && hasDistinctCumulative(currNav, currCumField)
-  const candidateDistinct = candNav != null && candCumField != null && hasDistinctCumulative(candNav, candCumField)
+  const currentDistinct = currNav != null && currCumField != null
+    && isPlausibleEmailUnitNav(currNav, currCumField)
+    && hasDividendOffset(currNav, currCumField)
+  const candidateDistinct = candNav != null && candCumField != null
+    && isPlausibleEmailUnitNav(candNav, candCumField)
+    && hasDividendOffset(candNav, candCumField)
   if (candidateDistinct && !currentDistinct) return candidate
   if (currentDistinct && !candidateDistinct) return current
 
@@ -399,6 +420,56 @@ function selectEmailSourceStream(
   return Array.from(byDate.values()).sort((a, b) => a.nav_date.localeCompare(b.nav_date))
 }
 
+function isParentCodeEmailRow(row: EmailNavRawRow, beian: string): boolean {
+  const code = (row.product_code ?? "").trim().toUpperCase()
+  if (!code || !beian) return false
+  if (code === beian) return false
+  return shareClassProductCodesMatch(code, beian)
+}
+
+/** When parent-code attachments publish multiple share-class NAVs on one date, keep the series-continuous point. */
+function pickEmailNavRowWithContinuity(
+  dayRows: EmailNavRawRow[],
+  tierBest: EmailNavRawRow,
+  beian: string,
+  prevNav: number | null,
+): EmailNavRawRow {
+  const parentRows = dayRows.filter((row) => isParentCodeEmailRow(row, beian))
+  if (parentRows.length <= 1) return tierBest
+
+  const plausible = parentRows.filter((row) => {
+    const nav = parseOptionalNav(row.nav)
+    return nav != null && isPlausibleEmailUnitNav(nav, parseOptionalNav(row.cumulative_nav))
+  })
+  if (plausible.length <= 1) return tierBest
+
+  if (prevNav == null || prevNav <= 0) {
+    const shareLetter = beian.slice(-1)
+    if (!/[ABC]/.test(shareLetter)) return tierBest
+    const navs = plausible
+      .map((row) => parseOptionalNav(row.nav))
+      .filter((nav): nav is number => nav != null)
+      .sort((a, b) => a - b)
+    const targetNav = shareLetter === "A" ? navs[0] : navs[navs.length - 1]
+    return plausible.find((row) => Math.abs(parseOptionalNav(row.nav)! - targetNav) < 0.000001) ?? tierBest
+  }
+
+  const continuityPick = plausible.reduce((best, row) => {
+    const nav = parseOptionalNav(row.nav)!
+    const bestNav = parseOptionalNav(best.nav)!
+    return Math.abs(nav / prevNav - 1) < Math.abs(bestNav / prevNav - 1) ? row : best
+  })
+
+  const tierNav = parseOptionalNav(tierBest.nav)
+  const contNav = parseOptionalNav(continuityPick.nav)
+  if (tierNav == null || contNav == null) return tierBest
+
+  const tierMove = Math.abs(tierNav / prevNav - 1)
+  const contMove = Math.abs(contNav / prevNav - 1)
+  if (contMove <= 0.15 && tierMove > 0.15) return continuityPick
+  return tierBest
+}
+
 /** Per-date best email row (virtual TA > attachment), with unit NAV correction for cum-as-unit rows. */
 export function selectEmailNavSeriesRows(
   rows: EmailNavRawRow[],
@@ -418,18 +489,29 @@ export function selectEmailNavSeriesRows(
   const candidates = pool.length > 0 ? pool : filtered
 
   const beian = beianHao.trim().toUpperCase()
-  const byDate = new Map<string, EmailNavRawRow>()
+  const byDateGroups = new Map<string, EmailNavRawRow[]>()
   for (const row of candidates) {
-    const prev = byDate.get(row.nav_date)
-    if (!prev) {
-      byDate.set(row.nav_date, row)
-      continue
-    }
-    byDate.set(row.nav_date, preferEmailNavRow(prev, row, beian))
+    const list = byDateGroups.get(row.nav_date) ?? []
+    list.push(row)
+    byDateGroups.set(row.nav_date, list)
   }
 
-  const sorted = Array.from(byDate.values()).sort((a, b) => a.nav_date.localeCompare(b.nav_date))
-  return applyEmailUnitNavCorrection(sorted)
+  const sortedDates = [...byDateGroups.keys()].sort()
+  const selected: EmailNavRawRow[] = []
+  let prevNav: number | null = null
+
+  for (const date of sortedDates) {
+    const dayRows = byDateGroups.get(date)!
+    let best = dayRows[0]
+    for (let i = 1; i < dayRows.length; i++) {
+      best = preferEmailNavRow(best, dayRows[i], beian)
+    }
+    best = pickEmailNavRowWithContinuity(dayRows, best, beian, prevNav)
+    selected.push(best)
+    prevNav = parseOptionalNav(best.nav)
+  }
+
+  return applyEmailUnitNavCorrection(selected)
 }
 
 function applyEmailUnitNavCorrection(rows: EmailNavRawRow[]): EmailNavRawRow[] {
@@ -437,6 +519,13 @@ function applyEmailUnitNavCorrection(rows: EmailNavRawRow[]): EmailNavRawRow[] {
   return rows.map((row) => {
     const unit = parseOptionalNav(row.nav)
     const cum = parseOptionalNav(row.cumulative_nav)
+    if (unit != null && !isPlausibleEmailUnitNav(unit, cum)) {
+      const hinted = extractSubjectUnitNavHint(row.subject)
+      if (hinted != null) {
+        if (cum != null && cum - hinted > 0.05) latestRatio = hinted / cum
+        return { ...row, nav: String(+hinted.toFixed(6)) }
+      }
+    }
     if (unit != null && cum != null && cum - unit > 0.05) {
       latestRatio = unit / cum
     }

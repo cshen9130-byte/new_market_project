@@ -3,12 +3,17 @@
  *
  * Usage:
  *   npx tsx scripts/ma/email_nav_etl.ts
- *   npx tsx scripts/ma/email_nav_etl.ts --days=31
- *   npx tsx scripts/ma/email_nav_etl.ts --parse-only --days=31
+ *   npx tsx scripts/ma/email_nav_etl.ts --parse-only
+ *   npx tsx scripts/ma/email_nav_etl.ts --parse-only --days=400
+ *   npx tsx scripts/ma/email_nav_etl.ts --parse-only --full-backfill
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+ *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --fof-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --managed-only
  *   npx tsx scripts/ma/email_nav_etl.ts --refresh-only --tracking-only
+ *
+ * `--cache-only` skips valuation/holdings backfills and rebuilds list caches only
+ * (use for nightly investment_pool_metrics — full --refresh-only can exceed 60 min).
  *
  * Loads `.env.local` / `.env` from the project root automatically (same as nightly_etl.py).
  * Prints JSON to stdout for nightly_etl.py to consume.
@@ -19,19 +24,24 @@ import { loadProjectEnvFiles, configureEtlDbTimeout } from "@/lib/server/load-pr
 loadProjectEnvFiles()
 configureEtlDbTimeout()
 
-function parseDays(argv: string[]): number {
+function parseDays(argv: string[]): number | undefined {
+  if (argv.includes("--full-backfill")) {
+    const env = parseInt(process.env.EMAIL_NAV_ETL_INITIAL_DAYS ?? process.env.EMAIL_NAV_ETL_DAYS ?? "400", 10)
+    return Number.isFinite(env) && env > 0 ? Math.min(env, 730) : 400
+  }
   const flag = argv.find((a) => a.startsWith("--days="))
   if (flag) {
     const n = parseInt(flag.slice("--days=".length), 10)
     if (Number.isFinite(n) && n > 0) return n
   }
-  const env = parseInt(process.env.EMAIL_NAV_ETL_DAYS ?? "400", 10)
-  return Number.isFinite(env) && env > 0 ? Math.min(env, 730) : 400
+  // Default: incremental scan from per-mailbox checkpoint (nightly ETL).
+  return undefined
 }
 
 async function main() {
   const argv = process.argv.slice(2)
   const refreshOnly = argv.includes("--refresh-only")
+  const cacheOnly = argv.includes("--cache-only")
   const parseOnly = argv.includes("--parse-only")
   const fofOnly = argv.includes("--fof-only")
   const managedOnly = argv.includes("--managed-only")
@@ -52,6 +62,9 @@ async function main() {
       let detailFofUnderlyingAdded = 0
       let investmentOverviewCache = { products: 0, navRows: 0, underlyingRows: 0 }
 
+      if (cacheOnly) {
+        console.error("[email_nav_etl] --cache-only: skipping valuation/holdings backfills")
+      } else {
       const { syncEmailValuationToProductTables } = await import(
         "@/lib/server/email-valuation-sync-pg"
       )
@@ -152,6 +165,7 @@ async function main() {
           console.warn("[email_nav_etl] valuation sync skipped (will enrich list caches instead):", err)
         }
       }
+      }
 
       if (refreshManaged) {
         console.error("[email_nav_etl] refresh-only: rebuilding managed products list cache…")
@@ -187,6 +201,7 @@ async function main() {
         ok: true,
         skipped: false,
         refreshOnly: true,
+        cacheOnly,
         listCacheRefreshed: listCache,
         fofOverviewListCacheRefreshed: fofOverviewListCache,
         trackingFundsListCacheRefreshed: trackingFundsListCache,
@@ -249,7 +264,8 @@ async function main() {
         ok: true,
         skipped: false,
         parseOnly,
-        days,
+        incremental: days == null,
+        days: days ?? null,
         emailPoolSync,
         ...result,
       }),

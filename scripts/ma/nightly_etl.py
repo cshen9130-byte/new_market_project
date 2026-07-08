@@ -11,16 +11,20 @@ Usage
   python scripts/ma/nightly_etl.py --step nhci   # run single step only
   python scripts/ma/nightly_etl.py --step email_nav_parse
   python scripts/ma/nightly_etl.py --step amac_private_funds
+  python scripts/ma/nightly_etl.py --step amac_extra
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
   python scripts/ma/nightly_etl.py --step dd_materials_links
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
-  EMAIL_NAV_ETL_DAYS                    — email lookback window for nightly sync (default 400;
-                                          set to 45 after initial backfill for faster runs)
+  EMAIL_NAV_ETL_DAYS                    — explicit backfill lookback when --days=N is passed (default 400)
+  EMAIL_NAV_ETL_INITIAL_DAYS            — first-time mailbox scan window (default 400)
+  EMAIL_NAV_ETL_OVERLAP_DAYS            — incremental scan overlap before last parsed mail (default 2)
   AMAC_ETL_INCREMENTAL_MAX_PAGES        — AMAC nightly incremental page cap (default 50)
   AMAC_ETL_INCREMENTAL_MIN_PAGES        — minimum AMAC pages refreshed nightly (default 10)
   AMAC_ETL_FULL_SYNC_DOW                — weekday for weekly full AMAC sync, 0=Mon..6=Sun (default 6)
+  AMAC_EXTRA_ETL_DETAIL_BATCH_SIZE      — nightly stale manager-detail refresh batch (default 300)
+  AMAC_EXTRA_ETL_REQUEST_DELAY          — delay between AMAC extra requests (default 0.3)
 
 Required env vars (loaded automatically from .env / .env.local):
   DATABASE_URL                          — e.g. postgresql://user:pass@localhost/market_data
@@ -2292,7 +2296,13 @@ def step_valuation_cache() -> int:
 def step_investment_pool_metrics() -> int:
     """Refresh 在管产品 + FOF底层 + 跟踪产品 list caches from stored email NAV / 估值表."""
     log.info("investment_pool_metrics: rebuilding managed / FOF / tracking list caches …")
-    result = run_node_script("email_nav_etl.ts", extra_args=["--refresh-only"], timeout=3600)
+    # --cache-only skips valuation JSONB backfills that exceed the 60-min timeout;
+    # run full `email_nav_etl.ts --refresh-only` manually after deploy if needed.
+    result = run_node_script(
+        "email_nav_etl.ts",
+        extra_args=["--refresh-only", "--cache-only"],
+        timeout=1800,
+    )
     if not result:
         raise RuntimeError("investment_pool_metrics: no result from email_nav_etl.ts")
     if not result.get("ok"):
@@ -2334,18 +2344,17 @@ def step_tracking_fund_metrics() -> int:
 
 def step_email_nav_parse(days: int | None = None) -> int:
     """Crawl fund emails, parse NAV/估值表 attachments, upsert ops_email_nav_records."""
-    lookback = days
-    if lookback is None:
-        try:
-            lookback = int(os.environ.get("EMAIL_NAV_ETL_DAYS", "400"))
-        except ValueError:
-            lookback = 400
+    extra_args = ["--parse-only"]
+    if days is not None:
+        extra_args.append(f"--days={days}")
+        log.info("email_nav_parse: explicit backfill (last %d days) …", days)
+    else:
+        log.info("email_nav_parse: incremental scan from last checkpoint …")
 
-    log.info("email_nav_parse: fetching fund emails (last %d days) …", lookback)
     result = run_node_script(
         "email_nav_etl.ts",
-        extra_args=["--parse-only", f"--days={lookback}"],
-        timeout=1800,
+        extra_args=extra_args,
+        timeout=5400,
     )
     if not result:
         raise RuntimeError("email_nav_parse: no result from email_nav_etl.ts")
@@ -2412,6 +2421,128 @@ def step_dd_materials_links() -> int:
             change.get("toPath") or "(empty)",
         )
     return changed
+
+
+def step_amac_extra(force_full: bool = False) -> int:
+    """Fetch AMAC manager/personnel data and upsert amac_* extra tables."""
+    project_root = SCRIPT_DIR.parent.parent
+    script_path = project_root / "scripts" / "db" / "amac_extra_etl.py"
+    python_exe = os.environ.get("PYTHON_EXE") or (
+        "py" if sys.platform == "win32" else "python3"
+    )
+    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
+    cmd = prefix + [str(script_path)]
+    if force_full:
+        cmd.append("--full")
+
+    try:
+        full_sync_dow = int(os.environ.get("AMAC_ETL_FULL_SYNC_DOW", "6"))
+    except ValueError:
+        full_sync_dow = 6
+    weekly_full = datetime.now().weekday() == full_sync_dow
+    # Full manager-detail sync (~19k HTML pages) can take several hours.
+    timeout = 21600 if force_full or weekly_full else 7200
+
+    log.info(
+        "amac_extra: running amac_extra_etl.py (timeout=%ds%s) …",
+        timeout,
+        ", full detail sync" if force_full or weekly_full else ", incremental",
+    )
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        env={**os.environ},
+        cwd=str(project_root),
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout:
+        for line in stdout.splitlines():
+            log.info(line)
+    if stderr:
+        for line in stderr.splitlines():
+            log.info(line)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"amac_extra_etl.py failed (exit {result.returncode}): "
+            f"{stderr or stdout or 'no output'}"
+        )
+
+    summary = None
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                summary = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+
+    if summary and summary.get("ok"):
+        return int(summary.get("rows_upserted") or 0)
+
+    match = re.search(r"managers=([\d,]+)", stdout)
+    if match:
+        return int(match.group(1).replace(",", ""))
+    return 0
+
+
+def step_sync_amac_fund_metadata() -> int:
+    """Sync 备案日期 / 公司管理规模 from amac_* tables into basicinfo_bfl_track."""
+    project_root = SCRIPT_DIR.parent.parent
+    script_path = project_root / "scripts" / "db" / "sync_amac_fund_metadata.py"
+    python_exe = os.environ.get("PYTHON_EXE") or (
+        "py" if sys.platform == "win32" else "python3"
+    )
+    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
+    cmd = prefix + [str(script_path), "--backfill-rows"]
+
+    log.info("sync_amac_fund_metadata: running sync_amac_fund_metadata.py …")
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=1800,
+        env={**os.environ},
+        cwd=str(project_root),
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout:
+        for line in stdout.splitlines():
+            log.info(line)
+    if stderr:
+        for line in stderr.splitlines():
+            log.info(line)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"sync_amac_fund_metadata.py failed (exit {result.returncode}): "
+            f"{stderr or stdout or 'no output'}"
+        )
+
+    summary = None
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                summary = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+
+    if summary and summary.get("ok"):
+        return int(summary.get("puton_date_updated") or 0) + int(summary.get("scale_updated") or 0)
+
+    match = re.search(r"puton_date=([\d,]+)", stdout)
+    if match:
+        return int(match.group(1).replace(",", ""))
+    return 0
 
 
 def step_amac_private_funds(force_full: bool = False) -> int:
@@ -2528,6 +2659,8 @@ ORDERED_STEPS = [
     "money_credit",                  # money+credit cycle calculation
     "email_nav_parse",               # crawl fund emails → ops_email_nav_records + 估值表 (allocation trend history)
     "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
+    "amac_extra",                    # AMAC managers / personnel / executive details → amac_* tables
+    "sync_amac_fund_metadata",       # 备案日期 / 公司管理规模 → basicinfo_bfl_track
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "dd_materials_links",            # 尽调表格 ↔ 内部尽调资料 knowledge-base folder links
@@ -2645,6 +2778,8 @@ def main():
         "money_credit":                    lambda: step_money_credit(conn),
         "email_nav_parse":                 lambda: step_email_nav_parse(),
         "amac_private_funds":              lambda: step_amac_private_funds(force_full=force),
+        "amac_extra":                      lambda: step_amac_extra(force_full=force),
+        "sync_amac_fund_metadata":         lambda: step_sync_amac_fund_metadata(),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "dd_materials_links":              lambda: step_dd_materials_links(),

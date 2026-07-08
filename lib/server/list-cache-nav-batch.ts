@@ -14,6 +14,7 @@ import {
   isPostInvestmentVirtualNavEmail,
   preferEmailNavRow,
   isPlausibleEmailUnitNav,
+  selectEmailNavSeriesRows,
   type LegacyNavRow,
   type LegacyNavRowWithPri,
 } from "@/lib/server/email-nav-query"
@@ -293,6 +294,7 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
 async function loadEmailNavByNameBatch(
   names: string[],
   sinceDate: string,
+  beianByName: Map<string, string> = new Map(),
 ): Promise<Map<string, NavPoint[]>> {
   const out = new Map<string, NavPoint[]>()
   const validNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
@@ -328,34 +330,58 @@ async function loadEmailNavByNameBatch(
     rows.map((row) => ({ ...row, code: row.matched_name })),
   )
 
-  const bestByNameDate = new Map<string, EmailNavBatchRow & { matched_name: string }>()
+  const rowsByName = new Map<string, (EmailNavBatchRow & { matched_name: string })[]>()
   for (const row of rows) {
-    const dedupe = `${row.matched_name}\0${row.nav_date.slice(0, 10)}`
-    const prev = bestByNameDate.get(dedupe)
-    const override = lookupManagedProductOverride(row.matched_name)
-    const beianForPick = (row.code ?? "").trim() || override?.beian_hao || ""
-    if (!prev || preferEmailNavRow(prev, row, beianForPick) === row) {
-      bestByNameDate.set(dedupe, row)
-    }
+    const list = rowsByName.get(row.matched_name) ?? []
+    list.push(row)
+    rowsByName.set(row.matched_name, list)
   }
 
-  for (const row of bestByNameDate.values()) {
-    const rawNav = parseNav(row.nav)
-    if (rawNav == null) continue
-    const override = lookupManagedProductOverride(row.matched_name)
-    const matchBeian = (row.code ?? "").trim() || override?.beian_hao || ""
-    const aliases = collectFundNameAliases(row.matched_name, row.fund_name)
-    if (matchBeian && !filterEmailBatchRow(row, matchBeian, aliases)) continue
-    if (!matchBeian && !isPostInvestmentVirtualNavEmail(row.subject) && /虚拟/u.test(`${row.subject ?? ""}${row.fund_name ?? ""}`)) continue
-    const ratio = virtualRatioByName.get(row.matched_name) ?? null
-    const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
-    const nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
-    pushNavPoint(out, row.matched_name, {
-      nav,
-      nav_date: row.nav_date.slice(0, 10),
-      source: row.source,
-      subject: row.subject,
-    })
+  for (const [matchedName, nameRows] of rowsByName) {
+    const override = lookupManagedProductOverride(matchedName)
+    const beianForPick =
+      beianByName.get(matchedName)?.trim()
+      ?? override?.beian_hao
+      ?? ""
+    const aliases = collectFundNameAliases(matchedName, nameRows[0]?.fund_name)
+    const selected = selectEmailNavSeriesRows(
+      nameRows.map((row) => ({
+        nav_date: row.nav_date.slice(0, 10),
+        nav: row.nav,
+        cumulative_nav: row.cumulative_nav,
+        adjusted_nav: null,
+        product_code: row.product_code,
+        fund_name: row.fund_name,
+        attachment_filename: row.attachment_filename,
+        subject: row.subject,
+        source: row.source,
+      })),
+      beianForPick,
+      aliases,
+    )
+
+    for (const row of selected) {
+      const rawNav = parseNav(row.nav)
+      if (rawNav == null) continue
+      const matchBeian = beianForPick
+      const batchRow = nameRows.find((r) => r.nav_date.slice(0, 10) === row.nav_date)
+      if (matchBeian && batchRow && !filterEmailBatchRow(batchRow, matchBeian, aliases)) continue
+      if (
+        !matchBeian
+        && batchRow
+        && !isPostInvestmentVirtualNavEmail(row.subject)
+        && /虚拟/u.test(`${row.subject ?? ""}${row.fund_name ?? ""}`)
+      ) continue
+      const ratio = virtualRatioByName.get(matchedName) ?? null
+      const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
+      const nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
+      pushNavPoint(out, matchedName, {
+        nav,
+        nav_date: row.nav_date.slice(0, 10),
+        source: row.source,
+        subject: row.subject,
+      })
+    }
   }
   sortNavMapsDesc([out])
   return out
@@ -748,6 +774,15 @@ export class BatchNavResolver {
     const defaultSince = addDays(asOfDate, NAV_HISTORY_LOOKBACK_DAYS)
     const { staleBeians, staleNames, staleSince } = collectStaleNavKeys(products, hints, defaultSince)
 
+    const beianByName = new Map<string, string>()
+    for (const product of products) {
+      const beian = (product.beian_hao ?? "").trim()
+      if (!beian) continue
+      beianByName.set(product.product_name, beian)
+      const short = (product.short_name ?? "").trim()
+      if (short) beianByName.set(short, beian)
+    }
+
     const seedByBeian = new Map<string, NavPoint[]>()
     const seedLatestByBeian = new Map<string, string>()
     for (const product of products) {
@@ -771,7 +806,7 @@ export class BatchNavResolver {
 
     const [emailByBeian, emailByName, type6, legacy] = await Promise.all([
       loadEmailNavBatch(beians, defaultSince),
-      loadEmailNavByNameBatch(names, defaultSince),
+      loadEmailNavByNameBatch(names, defaultSince, beianByName),
       loadType6NavBatch(beians, names, defaultSince),
       loadLegacyNavBatch(beians, names, defaultSince),
     ])
@@ -779,7 +814,7 @@ export class BatchNavResolver {
     if (staleSince && (staleBeians.length > 0 || staleNames.length > 0)) {
       const [staleEmail, staleEmailName, staleType6, staleLegacy] = await Promise.all([
         loadEmailNavBatch(staleBeians, staleSince),
-        loadEmailNavByNameBatch(staleNames, staleSince),
+        loadEmailNavByNameBatch(staleNames, staleSince, beianByName),
         loadType6NavBatch(staleBeians, staleNames, staleSince),
         loadLegacyNavBatch(staleBeians, staleNames, staleSince),
       ])
@@ -916,16 +951,30 @@ export class BatchNavResolver {
       (beian ? navAtOrBefore(this.type6ByBeian.get(beian), beforeDate) : null) ??
       navAtOrBefore(this.type6ByProduct.get(identity.product_name), beforeDate) ??
       (short ? navAtOrBefore(this.type6ByProduct.get(short), beforeDate) : null)
-    if (type6) return this.withLegacyReturnNav(identity, type6)
 
     const legacy =
       (beian ? navAtOrBefore(this.legacyByBeian.get(beian), beforeDate) : null) ??
       navAtOrBefore(this.legacyByProduct.get(identity.product_name), beforeDate) ??
       (short ? navAtOrBefore(this.legacyByProduct.get(short), beforeDate) : null)
-    if (legacy) return legacy
 
     const valuation = this.valuationAt(identity, beforeDate)
-    if (valuation) return valuation
+
+    // FOF underlyings often have stale 平台 legacy NAV while parent 估值表 holdings are fresher.
+    // Pick the newest plausible date among type6 / legacy / valuation (email still wins above).
+    const nonEmailCandidates = [type6, legacy, valuation].filter(
+      (p): p is NavPoint => p != null && isPlausibleEmailUnitNav(p.nav),
+    )
+    if (nonEmailCandidates.length > 0) {
+      const sourceRank = (p: NavPoint) => (p === type6 ? 3 : p === legacy ? 2 : 1)
+      nonEmailCandidates.sort((a, b) => {
+        const byDate = b.nav_date.localeCompare(a.nav_date)
+        return byDate !== 0 ? byDate : sourceRank(b) - sourceRank(a)
+      })
+      const best = nonEmailCandidates[0]
+      if (best === type6) return this.withLegacyReturnNav(identity, type6)
+      if (best === legacy) return legacy
+      return best
+    }
 
     if (fallbackNav != null && fallbackDate && fallbackDate <= beforeDate) {
       return { nav: fallbackNav, nav_date: fallbackDate }

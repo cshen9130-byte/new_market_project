@@ -2,6 +2,7 @@ import fs from "fs"
 import path from "path"
 import { randomUUID } from "crypto"
 import { ImapFlow } from "imapflow"
+import { resetEmailParseCursor } from "@/lib/server/email-parse-cursor"
 import { readSenders } from "@/lib/server/email-dispatch"
 import { readConfig as readSettlementEmailConfig } from "@/lib/server/settlement-email"
 
@@ -279,6 +280,7 @@ export async function createCrawlEmail(input: {
   const rows = readAll()
   rows.push(row)
   writeAll(rows)
+  resetEmailParseCursor(row.account)
   return toPublic(row)
 }
 

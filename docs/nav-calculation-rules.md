@@ -934,3 +934,128 @@ npx tsx scripts/test-nav-rechain.mjs
 npx tsx scripts/ma/check_fof_nav_invariant.ts
 npx tsx scripts/ma/_diag_sbdf95.ts
 ```
+
+---
+
+## What Was Fixed (2026-07-08 — custody 估值表 date shift + nightly ETL + FOF底层)
+
+Some **在管产品** and **FOF底层** rows showed stale NAV dates while newer custody emails were already in the mailbox (e.g. **SBTX45 衡颐承和FOF1号** with subject `…_4级科目估值表_20260706`, unit NAV **1.0013** on **2026-07-06**; **SNF018 钜融添宝20号** stuck at **2026-07-02** in FOF底层). Four separate issues contributed.
+
+### 1. Custody 估值表 NAV date shifted back one trading day
+
+**Symptom:** Guohai / GTJA **4级科目估值表_YYYYMMDD** emails were parsed and stored, but `nav_date` / `valuation_date` was **one China trading day earlier** than the workbook header. Example: email for **2026-07-06** stored as **2026-07-03** (Mon → Fri) with wrong unit NAV **1.002** instead of **1.0013**.
+
+**Root cause:** `resolveValuationTableNavDate()` in `email-valuation-attachment.ts` treated every `估值表_YYYYMMDD` subject/filename as a **batch send date** and always called `previousChinaTradingDay(subjectDate)`, even when the spreadsheet header already showed `估值日期：2026-07-06` matching the subject date.
+
+**Fix:**
+
+| Area | File / function | What changed |
+|---|---|---|
+| Date resolution | `resolveValuationTableNavDate()` | When header or summary `valuation_date` equals the subject `估值表_YYYYMMDD` date, use that date directly. Only shift back when header is absent (legacy custodians that embed send-date in filename). |
+| DB repair (one-time) | `scripts/ma/repair_valuation_nav_shift.mjs --db-fix-dates` | For rows already in DB: correct `valuation_date` from stored `summary.valuation_date`, extract unit NAV from `summary.header_rows` (`单位净值：…`), delete mis-dated NAV rows, re-insert at correct date. Handles duplicate valuation rows (shifted + correct) by deleting the shifted copy. |
+| Re-parse path | `repair_valuation_nav_shift.mjs` (default) | Deletes all custody 估值表 NAV rows and re-fetches mail via IMAP with fixed date logic. Use when production has the code deploy and mail credentials. |
+
+**Products corrected (2026-07-08 repair — 在管产品):** SBTX45, SBPC69, SAVW72 → **2026-07-06**; SSG947 unchanged (no Jul 6 email in DB yet).
+
+**What this fix does NOT change:** `preferEmailNavRow`, `syncExDivAdjustedNav`, virtual-first priority (SNF018), SSG947 seed merge, SBPC20 attachment-wins-over-virtual, FOF multi-level 估值表 rejection — unchanged.
+
+### 2. List cache stuck (investment_pool_metrics timeout)
+
+**Symptom:** `ops_managed_products_list_cache` stopped refreshing after **2026-07-05** while email data was fresher.
+
+**Root cause:** Nightly `step_investment_pool_metrics()` ran `email_nav_etl.ts --refresh-only`, which includes heavy valuation JSONB backfills and exceeded the **60-minute** timeout before reaching `refreshManagedProductsListCache()`.
+
+**Fix:**
+
+| Area | File | What changed |
+|---|---|---|
+| Cache-only refresh | `scripts/ma/email_nav_etl.ts` | New `--cache-only` flag: skips valuation/holdings backfills; rebuilds list caches only (~2 min). |
+| Nightly orchestrator | `scripts/ma/nightly_etl.py` `step_investment_pool_metrics()` | Calls `--refresh-only --cache-only`. Full `--refresh-only` can still be run manually after deploy when valuation sync is needed. |
+
+### 3. Email parse timeout (400-day lookback every night)
+
+**Symptom:** Nightly `email_nav_parse` timed out scanning **400 days** of mail on every run.
+
+**Fix:** Incremental per-mailbox scan from checkpoint:
+
+| Area | File | What changed |
+|---|---|---|
+| Cursor store | `lib/server/email-parse-cursor.ts` | Per-mailbox cursors in `data/ops_email_parse_cursors.json`; bootstrap from existing parse records. |
+| Lookback config | `lib/server/email-parse-lookback.ts` | `INITIAL_DAYS` (default 400) for first-time mailbox; `OVERLAP_DAYS` (default 2) for incremental overlap. |
+| Fetch | `lib/server/email-parse-fetch.ts` | Uses `resolveAccountScanSince()` per account; updates cursor after successful scan. |
+| Default parse | `email_nav_etl.ts --parse-only` | No `--days` → incremental scan. Explicit `--days=N` or `--full-backfill` for manual backfill. |
+| New mailbox | `lib/server/crawl-emails.ts` | Resets cursor when a mailbox is newly added. |
+
+### 4. FOF底层 table stale dates
+
+**Symptom:** FOF底层 (底层汇总) showed old **最新净值日期** for many rows (e.g. SNF018 **2026-07-02**, ATL22A **2026-07-01**, BGW80A **2026-06-05**) while the UI cutoff was **2026-07-08**. `ops_fof_overview_list_cache` had not refreshed since **2026-07-04**.
+
+**Root causes:**
+
+1. **Same custody date-shift bug (§1)** — parent 估值表 rows and FOF holding history used mis-dated `valuation_date`, so `loadManagedUnderlyingNavHistory()` could not surface Jul 6 points for holdings-backed underlyings.
+2. **FOF cache not rebuilt** — the manual recovery run used `--managed-only`, which skips `refreshFofOverviewListCache()`. Nightly `--cache-only` (no `--managed-only`) rebuilds **在管产品 + FOF底层 + 跟踪产品** together once deployed.
+3. **Two NAV sources for FOF underlyings** — `refreshFofOverviewListCache()` resolves latest NAV via `BatchNavResolver` (email / type6 / legacy) first, then `resolveManagedUnderlyingValuationNav()` / `loadManagedUnderlyingNavHistory()` (parent FOF 估值表 holdings). Email-backed funds update immediately after §1 repair; holdings-only funds (no rows in `ops_email_nav_records`) only advance when the underlying appears in a newer parent 估值表.
+
+**Fix applied (2026-07-08):**
+
+| Step | Command / file | Result |
+|---|---|---|
+| Custody date repair | `repair_valuation_nav_shift.mjs --db-fix-dates --since=2026-06-01` | 59 valuation dates fixed; 140 NAV rows re-inserted at correct dates (shared with 在管产品) |
+| Custody NAV backfill | `backfillCustodyValuationNavFromRecords({ sinceDate: "2026-06-01" })` | 58 rows copied from corrected 估值表 into `ops_email_nav_records` |
+| FOF list cache rebuild | `refreshFofOverviewListCache()` via `--refresh-only --cache-only --fof-only` | **52 rows** in `ops_fof_overview_list_cache`; refreshed **2026-07-08** (~15 min via SSH tunnel) |
+| Helper script | `scripts/ma/_refresh_fof_cache.ts` | Optional: custody backfill + `refreshManagedFofUnderlying()` + FOF cache. **Avoid** for routine use — `refreshManagedFofUnderlying()` calls `backfillFundHoldingSymbols()` which can hang >20 min. |
+
+**FOF底层 products updated after cache rebuild:**
+
+| Product | Beian | Before | After | Source |
+|---|---|---|---|---|
+| 钜融添宝20号 | SNF018 | 2026-07-02 | **2026-07-06** | Email NAV |
+| 木莲安澜1号A类 | ATL22A | 2026-07-01 | **2026-07-06** | FOF 估值表 holding history (corrected parent dates) |
+| 特夫郁金香全量化 | SQX078 | 2026-05-29 | **2026-07-06** | FOF 估值表 holding history (legacy 平台 was stale) |
+| 敦和芝诺量化CTA专享3号A类 | BGW80A | 2026-06-05 | 2026-06-05 | Holdings-only — no newer parent 估值表 row in DB |
+| 天戈钻选CTA1号B类 | VN917B | 2026-06-12 | 2026-06-12 | Holdings-only — same |
+
+**Follow-up fix — stale legacy blocking fresher 估值表 (SQX078):**
+
+| Area | File / function | What changed |
+|---|---|---|
+| Latest NAV selection | `BatchNavResolver.resolveAt()` in `list-cache-nav-batch.ts` | Among type6 / legacy / valuation (when no email NAV), pick the **newest plausible `nav_date`** instead of always preferring legacy over FOF 估值表 holdings. Email NAV priority unchanged. |
+
+**What this fix does NOT change:** Email-first priority, seed overrides, SNF018 virtual-first, SQX078 cum/adj repair in `finalizeNavSeries` — unchanged.
+
+**Code paths (FOF底层 list):**
+
+| Concern | File |
+|---|---|
+| API route | `app/ma/api/ops/fof-underlying/list/route.ts` |
+| Nightly cache | `lib/server/fof-overview-list-cache-pg.ts` `refreshFofOverviewListCache()` |
+| FOF holding NAV history | `lib/server/managed-fof-underlying-pg.ts` `loadManagedUnderlyingNavHistory()` |
+| Underlying snapshot (slow; optional) | `lib/server/managed-fof-underlying-pg.ts` `refreshManagedFofUnderlying()` |
+| Frontend table | `app/ma/dashboard/private-funds/page.tsx` (FOF底层 tab) |
+
+### Manual recovery commands
+
+```bash
+# Fix already-parsed custody rows in DB (no IMAP; safe via SSH tunnel)
+npx tsx scripts/ma/repair_valuation_nav_shift.mjs --db-fix-dates --since=2026-06-01
+
+# Rebuild 在管产品 list cache only (fast; no valuation backfill)
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --managed-only
+
+# Rebuild FOF底层 list cache only (~15 min via tunnel; uses corrected 估值表 dates + email NAV)
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --fof-only
+
+# Rebuild all three list caches (在管产品 + FOF底层 + 跟踪产品; nightly default after deploy)
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only
+
+# Optional — full FOF underlying snapshot + cache (symbol backfill can hang; prefer --fof-only above)
+# npx tsx scripts/ma/_refresh_fof_cache.ts
+
+# Full re-parse after code deploy (needs IMAP credentials on server)
+npx tsx scripts/ma/repair_valuation_nav_shift.mjs --days=90
+
+# Incremental nightly parse (default after deploy)
+npx tsx scripts/ma/email_nav_etl.ts --parse-only
+```
+
+See also **在管产品 data flow** in `docs/managed-products-list-data.md` for ETL trigger details.

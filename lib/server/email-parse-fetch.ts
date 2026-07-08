@@ -9,6 +9,7 @@ import {
 import {
   countRecordsMissingSender,
   getRecordsNeedingSender,
+  maxSentAtByCrawlAccount,
   patchSenderEmails,
   replaceEmailParseRecords,
   type EmailParseRecord,
@@ -36,7 +37,12 @@ import {
   type EmailValuationInsert,
 } from "@/lib/server/email-valuation-pg"
 import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
-import { resolveEmailParseLookbackDays } from "@/lib/server/email-parse-lookback"
+import {
+  markAccountScanCompleted,
+  bootstrapEmailParseCursorIfMissing,
+  resolveAccountScanSince,
+  type EmailParseScanMode,
+} from "@/lib/server/email-parse-cursor"
 
 export type EmailParseFetchResult = {
   emailsScanned: number
@@ -58,6 +64,9 @@ export type EmailParseFetchResult = {
   fofUnderlyingMarketSynced: number
   navLatestRefreshed: number
   errors: string[]
+  /** True when no explicit --days lookback was passed (checkpoint-based scan). */
+  incremental: boolean
+  scanByAccount: Record<string, { since: string; mode: EmailParseScanMode }>
 }
 
 const FUND_EMAIL_RE =
@@ -498,13 +507,13 @@ async function fetchMailbox(
 
 export async function fetchEmailParseRecords(options?: {
   crawlEmailId?: string
+  /** Explicit lookback for all mailboxes. Omit for nightly incremental (checkpoint-based). */
   days?: number
   /** Skip precomputed managed-product refresh (caller may run it in background). */
   skipNavLatestRefresh?: boolean
 }): Promise<EmailParseFetchResult> {
   const errors: string[] = []
-  const since = new Date()
-  since.setDate(since.getDate() - resolveEmailParseLookbackDays(options?.days))
+  const incremental = options?.days == null
 
   const accounts: CrawlEmailAccount[] = []
   if (options?.crawlEmailId) {
@@ -533,21 +542,48 @@ export async function fetchEmailParseRecords(options?: {
   // Track every account we attempted so records from un-attempted accounts
   // are preserved even if this run errors out for a particular mailbox.
   const scannedAccounts: string[] = accounts.map((a) => a.account)
+  const scanSinceByAccount = new Map<string, Date>()
+  const scanByAccount: Record<string, { since: string; mode: EmailParseScanMode }> = {}
+
+  const historySentAt = maxSentAtByCrawlAccount(scannedAccounts)
+  for (const account of accounts) {
+    bootstrapEmailParseCursorIfMissing(
+      account.account,
+      historySentAt.get(account.account.trim().toLowerCase()) ?? null,
+    )
+  }
 
   for (const account of accounts) {
+    const acctKey = account.account.trim().toLowerCase()
+    if (!account.pass?.trim()) {
+      errors.push(`${account.account}: 未配置授权码`)
+      continue
+    }
+
+    const { since, mode } = resolveAccountScanSince(account.account, options?.days)
+    scanSinceByAccount.set(acctKey, since)
+    scanByAccount[account.account] = { since: since.toISOString().slice(0, 10), mode }
+
     try {
       const { parseRecords, navRecords, valuationRecords } = await fetchMailbox(account, since, errors)
       emailsScanned += parseRecords.length
       allParseRecords.push(...parseRecords)
       allNavRecords.push(...navRecords)
       allValuationRecords.push(...valuationRecords)
+
+      let maxSentAt: Date | null = null
+      for (const row of parseRecords) {
+        const sentAt = new Date(row.sentAt)
+        if (!maxSentAt || sentAt > maxSentAt) maxSentAt = sentAt
+      }
+      markAccountScanCompleted(account.account, { mode, maxSentAt })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       errors.push(`${account.account}: ${msg}`)
     }
   }
 
-  replaceEmailParseRecords(allParseRecords, scannedAccounts, since)
+  replaceEmailParseRecords(allParseRecords, scannedAccounts, scanSinceByAccount)
 
   let navSaved = 0
   try {
@@ -660,6 +696,8 @@ export async function fetchEmailParseRecords(options?: {
     fofUnderlyingMarketSynced,
     navLatestRefreshed,
     errors,
+    incremental,
+    scanByAccount,
   }
 }
 

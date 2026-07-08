@@ -200,11 +200,14 @@ COALESCE(b.beian_hao, pi.beian_hao, o.register_number, fd.beian_hao, t.beian_hao
 
 | Trigger | Function |
 |---------|----------|
-| Nightly ETL (parse) | `scripts/ma/nightly_etl.py` → `step_email_nav_parse()` → `email_nav_etl.ts --parse-only` |
-| Nightly ETL (cache) | `scripts/ma/nightly_etl.py` → `step_investment_pool_metrics()` → `email_nav_etl.ts --refresh-only` |
+| Nightly ETL (parse) | `scripts/ma/nightly_etl.py` → `step_email_nav_parse()` → `email_nav_etl.ts --parse-only` (incremental from per-mailbox checkpoint; no `--days` by default) |
+| Nightly ETL (cache) | `scripts/ma/nightly_etl.py` → `step_investment_pool_metrics()` → `email_nav_etl.ts --refresh-only --cache-only` |
 | After manual email parse | `lib/server/email-parse-fetch.ts` |
 | Background email job | `lib/server/email-parse-fetch-job.ts` |
-| Manual refresh | `npx tsx scripts/ma/email_nav_etl.ts --refresh-only` |
+| Manual refresh (fast, 在管产品) | `npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --managed-only` |
+| Manual refresh (fast, FOF底层) | `npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --fof-only` (~15 min) |
+| Manual refresh (fast, both list caches) | `npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only` |
+| Manual refresh (full) | `npx tsx scripts/ma/email_nav_etl.ts --refresh-only` (includes valuation JSONB backfills; can exceed 60 min) |
 
 All of the above call:
 
@@ -252,6 +255,12 @@ Computed in TypeScript during refresh (`managed-products-list-cache-pg.ts`):
 | Frontend table | `app/ma/dashboard/private-funds/page.tsx` |
 | Nightly email ETL script | `scripts/ma/email_nav_etl.ts` |
 | Nightly orchestrator | `scripts/ma/nightly_etl.py` (`step_email_nav_parse` + `step_investment_pool_metrics`) |
+| Incremental parse cursors | `lib/server/email-parse-cursor.ts` → `data/ops_email_parse_cursors.json` |
+| Custody 估值表 date repair | `scripts/ma/repair_valuation_nav_shift.mjs` (`--db-fix-dates` or re-fetch) |
+| FOF底层 list cache | `lib/server/fof-overview-list-cache-pg.ts` |
+| FOF holding NAV history | `lib/server/managed-fof-underlying-pg.ts` |
+| FOF list API | `app/ma/api/ops/fof-underlying/list/route.ts` |
+| FOF cache refresh helper | `scripts/ma/_refresh_fof_cache.ts` (optional; can be slow) |
 
 ---
 
@@ -283,8 +292,16 @@ Edit `useManagedProductsListCache()` in `managed-products-list-cache-pg.ts`.
 
 ### Force refresh after deploy
 
+**Fast (recommended for nightly / stale list dates):** rebuild list caches only, skip valuation backfills (~2 min):
+
 ```bash
 cd ~/new_market_project
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only
+```
+
+**Full refresh** (valuation sync + cache; may take >60 min):
+
+```bash
 npx tsx scripts/ma/email_nav_etl.ts --refresh-only
 ```
 
@@ -293,7 +310,17 @@ The script loads `.env.local` / `.env` from the project root automatically. If y
 ```bash
 grep -E '^DATABASE_URL=|^DB_PASSWORD=' .env.local
 # or run with explicit env:
-set -a && source .env.local && set +a && npx tsx scripts/ma/email_nav_etl.ts --refresh-only
+set -a && source .env.local && set +a && npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only
+```
+
+### Fix stale custody 估值表 dates (2026-07-08)
+
+If emails were parsed but NAV dates lag the mailbox (Guohai/GTJA `4级科目估值表_YYYYMMDD` shifted back one trading day), see **What Was Fixed (2026-07-08)** in `docs/nav-calculation-rules.md`. Quick recovery:
+
+```bash
+npx tsx scripts/ma/repair_valuation_nav_shift.mjs --db-fix-dates --since=2026-06-01
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --managed-only
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --fof-only
 ```
 
 ### Historical date picker (cutoff ≠ today)
@@ -347,5 +374,6 @@ Uses **slow path** only. To support historical dates from cache, you would need 
 
 ## Related but separate
 
+- **FOF底层 list** (`/ma/api/ops/fof-underlying/list`) uses `ops_fof_overview_list_cache`, refreshed by the same nightly `step_investment_pool_metrics()` → `--refresh-only --cache-only` (or `--fof-only` for FOF only). See **What Was Fixed (2026-07-08 — §4 FOF底层)** in `docs/nav-calculation-rules.md` for stale-date recovery and NAV source priority (email vs parent 估值表 holdings).
 - **私募基金 list** (`/ma/api/private-funds/list`) uses `private_fund_info` with precomputed columns from `scripts/ma/private_fund_indicators_etl.py` — different page, different cache strategy.
 - **跟踪产品 list** (`/ma/api/tracking-funds/list`) has its own similar NAV fallback logic in `app/ma/api/tracking-funds/list/route.ts`.
