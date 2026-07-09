@@ -469,6 +469,23 @@ const sbdf95Latest = sbdf95Out.at(-1)
 assert("SBDF95 latest ~1.0214", Math.abs(parseFloat(sbdf95Latest.nav) - 1.0214) < 0.001)
 assert("SBDF95 max unit sane", Math.max(...sbdf95Out.map((r) => parseFloat(r.nav))) < 2)
 
+// AVM354 笃熙泰渊流1号A类: platform stored 单位 in 复权 while 累计 is correct (post-dividend)
+const avm354Legacy = [
+  { price_date: "2026-06-03", nav: "1.1710", cum_nav_withdrawal: "1.9226", cumulative_nav: "1.1710", price_change: "" },
+  { price_date: "2026-07-08", nav: "1.1950", cum_nav_withdrawal: "1.9440", cumulative_nav: "1.9440", price_change: "" },
+]
+const avm354Out = mergeNavSeriesWithEmail(avm354Legacy, [])
+const avm3540603 = avm354Out.find((r) => r.price_date === "2026-06-03")
+const avm3540708 = avm354Out.find((r) => r.price_date === "2026-07-08")
+assert("AVM354 0603 adj not collapsed to unit", Math.abs(parseFloat(avm3540603.cumulative_nav) - 1.171) > 0.01)
+assert("AVM354 0603 adj >= cum", parseFloat(avm3540603.cumulative_nav) >= parseFloat(avm3540603.cum_nav_withdrawal) - 0.001)
+assert("AVM354 0708 adj >= cum >= unit", parseFloat(avm3540708.cumulative_nav) >= parseFloat(avm3540708.cum_nav_withdrawal) - 0.001
+  && parseFloat(avm3540708.cum_nav_withdrawal) >= parseFloat(avm3540708.nav) - 0.001)
+const avm354Ret = parseFloat(avm3540708.cumulative_nav) / parseFloat(avm3540603.cumulative_nav) - 1
+const avm354Days = (new Date("2026-07-08").getTime() - new Date("2026-06-03").getTime()) / 86400000
+const avm354Ann = Math.pow(1 + avm354Ret, 365 / avm354Days) - 1
+assert("AVM354 ann not absurd when adj repaired", avm354Ann < 5)
+
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"
 if (fs.existsSync(excelPath)) {
   const buf = fs.readFileSync(excelPath)

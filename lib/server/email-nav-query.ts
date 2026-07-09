@@ -1665,6 +1665,47 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
   return sorted
 }
 
+/**
+ * Legacy/platform rows sometimes store 单位净值 in the 复权 column while 累计 stays correct
+ * (cum >> unit). Metrics then treat adj ≈ unit as the series start → absurd annualized returns.
+ */
+function repairAdjCollapsedToUnitRows(rows: LegacyNavRow[]): LegacyNavRow[] {
+  const flatEps = 0.001
+  const sorted = rows.map((row) => ({ ...row }))
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const unit = parseOptionalNav(sorted[i].nav)
+    const cum = parseOptionalNav(sorted[i].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i].cumulative_nav)
+    const adj = parseOptionalNav(sorted[i].cumulative_nav)
+    if (unit == null || cum == null || adj == null) continue
+    if (!hasDividendOffset(unit, cum)) continue
+    if (Math.abs(adj - cum) <= flatEps) continue
+    if (Math.abs(adj - unit) > flatEps) continue
+
+    if (i > 0) {
+      const prev = sorted[i - 1]
+      const prevAdj = parseOptionalNav(prev.cumulative_nav) ?? parseOptionalNav(prev.cum_nav_withdrawal)
+      const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
+      if (
+        prevAdj != null && prevCum != null && prevCum > 0 &&
+        isReasonableNav(prevAdj) && prevAdj >= prevCum - flatEps
+      ) {
+        const rechained = +(prevAdj * cum / prevCum).toFixed(6)
+        if (isReasonableNav(rechained) && rechained >= cum - flatEps) {
+          sorted[i].cumulative_nav = String(rechained)
+          continue
+        }
+      }
+    }
+
+    if (isReasonableNav(cum)) {
+      sorted[i].cumulative_nav = String(+cum.toFixed(6))
+    }
+  }
+
+  return sorted
+}
+
 /** When 复权 drifted below 累计 (stale legacy adj), rechain from neighbors. */
 function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   const sorted = rows.map((row) => ({ ...row }))
@@ -1770,6 +1811,7 @@ function finalizeNavSeries(
   out = refreshStaleDerivedFields(out)
   out = refreshDerivedForEmailRows(out, unitOnlyEmailDates, adjOnlyEmailDates)
   out = clampSanityNavRows(out)
+  out = repairAdjCollapsedToUnitRows(out)
   out = repairAdjBelowCumRows(out)
   out = alignPreDividendNavRows(out)
   return recomputeNavPriceChanges(out)

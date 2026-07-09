@@ -348,6 +348,7 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `propagateMissingAdjRows` | Fills adj for manual-upload rows — removing it leaves cum without adj for ops_team_nav_manual data |
 | `alignPreDividendNavRows` | Sets pre-dividend rows to unit = cum = adj — threshold `hasDividendOffset > 0.05` determines which rows are "pre-dividend" |
 | `repairAdjBelowCumRows` | Fixes stale legacy 复权 that drifted below 累计 when email refreshes unit+cum — runs before `alignPreDividendNavRows` |
+| `repairAdjCollapsedToUnitRows` | Fixes legacy rows where 复权 = 单位 while 累计 >> 单位 (AVM354 pattern) — runs before `repairAdjBelowCumRows` |
 | `filterEmailNavManageStream` | Must use `selectEmailNavSeriesRows` — reverting to `selectEmailSourceStream` breaks 在管产品 email unit correction |
 | `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
 | `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
@@ -1136,3 +1137,57 @@ Result: SBPC69 → **2026-07-07 / 1.0293**, SBTX45 → **2026-07-07**, SBNX55 �
 **Verified after fix (2026-07-07):** unit **1.3291**, cum **1.7395**, adj **~1.809** (ratio ≈ 1.040, aligned with reference ~1.8095).
 
 Regression: `npx tsx scripts/test-nav-rechain.mjs` (SNF018 flat-adj + legacy tail cases).
+
+---
+
+## What Was Fixed (2026-07-09 — 笃熙泰渊流1号A类 — AVM354, 复权 collapsed to unit)
+
+### The Problem
+
+Fund detail for **笃熙泰渊流1号A类 (AVM354)** showed corrupt headline metrics and a broken 收益曲线:
+
+| Symptom | Wrong value |
+|---|---|
+| 成立以来收益 / 今年以来 | Both **+66.01%** (identical) |
+| 成立以来年化 | **+16959.59%** |
+| 成立以来夏普比率 | **85.49** |
+| 复权净值 (latest) | **1.9440** (= 累计, should track reinvested wealth) |
+| 收益曲线 | Near-vertical spike at series start |
+
+Correct reference (same unit / 累计 on latest dates): 复权 **~2.09**, 成立以来收益 **~109%**, 成立以来年化 **~75%**, Sharpe **~4.86**.
+
+Unit NAV and 累计净值 in the table were already correct (e.g. unit **1.1950**, cum **1.9440** on 2026-07-08). Only **复权** and derived metrics were wrong.
+
+### Root Cause
+
+On post-dividend dates (after the **2026-02-03** ex-dividend event where unit dropped from **1.687** to **1.000** while 累计 stayed **~1.749**), legacy platform rows stored **单位净值 in the `cumulative_nav` (复权) column** while `cum_nav_withdrawal` (累计) was correct.
+
+Example corrupt row:
+
+| Date | 单位 | 累计 (`cum_nav_withdrawal`) | 复权 (`cumulative_nav`) — wrong |
+|---|---|---|---|
+| 2026-06-03 | 1.1710 | 1.9226 | **1.1710** (= unit) |
+
+Headline metrics use `nav_series[0].cumulative_nav` as the inception anchor. When the visible series start had **复权 = 单位** instead of **~1.92**, `成立以来收益` became `1.944 / 1.171 − 1 ≈ 66%` over only **~36 days** → annualized return exploded to **~17000%**.
+
+Email NAV history (when fully merged) is fine; the bug appears when legacy/platform points with mis-mapped 复权 win or supply the series tail.
+
+### The Correct Fix Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Adj=unit repair | `repairAdjCollapsedToUnitRows` | When `cum − unit > 0.05` but `adj ≈ unit` (not `≈ cum`), rechain 复权 from prior row cum-ratio or fall back to 累计 |
+| Pipeline order | `finalizeNavSeries` | Runs after `clampSanityNavRows`, before `repairAdjBelowCumRows` |
+
+### What This Fix Does NOT Change
+
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev`, SNF018 virtual-first / flat-adj repair — unchanged
+- SBAH99 dividend formulas, SSG947 seed merge, SBPC20 attachment-wins-over-virtual — unchanged
+- `alignPreDividendNavRows`, `preferEmailNavRow` — unchanged
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
