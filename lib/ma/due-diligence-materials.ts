@@ -170,6 +170,71 @@ export function buildDdMaterialsFolderIndex(tree: KbTreeFolder | null): DdMateri
 /** Minimum score to accept a folder match (requires date + label alignment). */
 const DD_MATERIALS_MIN_MATCH_SCORE = 70
 
+function folderMatchesDate(folderName: string, datePart: string): boolean {
+  const name = folderName.trim()
+  return name === datePart || name.startsWith(`${datePart}-`) || name.startsWith(`${datePart}.`)
+}
+
+function extractFolderDateLabel(folderName: string, datePart: string): string {
+  const name = folderName.trim()
+  if (!folderMatchesDate(name, datePart)) return ""
+  if (name === datePart) return ""
+  const rest = name.slice(datePart.length).replace(/^[-_.]/u, "").trim()
+  return rest.replace(/项目$/u, "").trim() || rest
+}
+
+function addAlternateMatchLabel(labels: Set<string>, raw: string) {
+  const trimmed = raw.trim()
+  if (!trimmed) return
+
+  const addToken = (token: string) => {
+    const part = token.trim()
+    if (part.length < 2) return
+    labels.add(part.slice(0, 6))
+    const normalized = normalizeLabel(part)
+    if (normalized.length >= 2) {
+      labels.add(normalized.slice(0, 4))
+      if (normalized.length > 2) labels.add(normalized.slice(0, 2))
+    }
+  }
+
+  addToken(trimmed)
+  for (const segment of trimmed.split(/[、,，/\s]+/u)) addToken(segment)
+  for (const segment of trimmed.split(/[-－—]/u)) addToken(segment)
+}
+
+/** Extra labels from ddTarget / other fields when KB folder uses a different short name. */
+function collectAlternateMatchLabels(
+  row: Pick<
+    DueDiligenceTableRow,
+    | "fundCompany"
+    | "investmentManager"
+    | "representativeProduct"
+    | "ddTarget"
+    | "strategyPreliminary"
+    | "otherInfo"
+  >,
+): string[] {
+  const labels = new Set<string>()
+
+  addAlternateMatchLabel(labels, row.fundCompany)
+  addAlternateMatchLabel(labels, row.investmentManager.split(/[、,，/]/u)[0] ?? "")
+  addAlternateMatchLabel(labels, row.representativeProduct)
+  addAlternateMatchLabel(labels, row.ddTarget)
+  addAlternateMatchLabel(labels, row.strategyPreliminary)
+  addAlternateMatchLabel(labels, row.otherInfo)
+
+  const primary = extractDdMaterialsLabel(row)
+  if (primary) labels.add(primary)
+
+  return [...labels].filter((label) => label.length >= 2)
+}
+
+function labelsOverlap(a: string, b: string): boolean {
+  if (a.length < 2 || b.length < 2) return false
+  return a.includes(b) || b.includes(a)
+}
+
 function scoreFolderMatch(folderName: string, slug: string, label: string, datePart: string): number {
   const normalizedName = folderName.trim()
   if (normalizedName === slug) return 100
@@ -177,6 +242,20 @@ function scoreFolderMatch(folderName: string, slug: string, label: string, dateP
   if (normalizedName.includes(slug)) return 80
   if (normalizedName.startsWith(datePart) && normalizedName.includes(label)) return 70
   return 0
+}
+
+function scoreFolderAlternateMatch(folderName: string, datePart: string, alternateLabels: string[]): number {
+  if (!folderMatchesDate(folderName, datePart)) return 0
+
+  const folderLabel = extractFolderDateLabel(folderName, datePart)
+  if (!folderLabel) return 0
+
+  let best = 0
+  for (const label of alternateLabels) {
+    if (folderName.includes(label)) best = Math.max(best, 70)
+    if (labelsOverlap(folderLabel, label)) best = Math.max(best, 75)
+  }
+  return best
 }
 
 function isPlausibleDdMaterialsFolderMatch(
@@ -193,45 +272,54 @@ function isPlausibleDdMaterialsFolderMatch(
 export function resolveDdMaterialsFolderPath(
   row: Pick<
     DueDiligenceTableRow,
-    "ddDate" | "fundCompany" | "investmentManager" | "representativeProduct" | "ddMaterialsKbPath"
+    | "ddDate"
+    | "fundCompany"
+    | "investmentManager"
+    | "representativeProduct"
+    | "ddTarget"
+    | "strategyPreliminary"
+    | "otherInfo"
+    | "ddMaterialsKbPath"
   >,
   index: DdMaterialsFolderIndex,
 ): string | null {
   const slug = buildExpectedFolderSlug(row)
   const datePart = formatKbFolderDate(row.ddDate)
   const label = extractDdMaterialsLabel(row)
+  const alternateLabels = collectAlternateMatchLabels(row)
 
   const explicit = row.ddMaterialsKbPath?.trim()
   if (explicit && index.folders.has(explicit)) {
     const folder = index.folders.get(explicit)!
     if (isPlausibleDdMaterialsFolderMatch(folder.name, row)) return explicit
+    if (datePart && scoreFolderAlternateMatch(folder.name, datePart, alternateLabels) >= DD_MATERIALS_MIN_MATCH_SCORE) {
+      return explicit
+    }
   }
 
-  if (!slug || !datePart || !label) return null
+  if (!datePart) return null
 
   let bestPath: string | null = null
   let bestScore = 0
 
   for (const [path, folder] of index.folders) {
-    const score = scoreFolderMatch(folder.name, slug, label, datePart)
+    if (!folderMatchesDate(folder.name, datePart)) continue
+
+    let score = 0
+    if (slug && label) {
+      score = scoreFolderMatch(folder.name, slug, label, datePart)
+    }
+    if (score < DD_MATERIALS_MIN_MATCH_SCORE) {
+      score = Math.max(score, scoreFolderAlternateMatch(folder.name, datePart, alternateLabels))
+    }
+
     if (score > bestScore) {
       bestScore = score
       bestPath = path
     }
   }
 
-  if (bestScore >= DD_MATERIALS_MIN_MATCH_SCORE) return bestPath
-
-  // Project-style folders like `2026.7.7-嘉润项目` when fund company doesn't match.
-  const dateFolders = [...index.folders.entries()].filter(([, folder]) => {
-    const name = folder.name.trim()
-    return name === datePart || name.startsWith(`${datePart}-`) || name.startsWith(`${datePart}.`)
-  })
-  if (dateFolders.length === 1 && dateFolders[0][1].documents.length > 0) {
-    return dateFolders[0][0]
-  }
-
-  return null
+  return bestScore >= DD_MATERIALS_MIN_MATCH_SCORE ? bestPath : null
 }
 
 export function getDdMaterialsDocuments(

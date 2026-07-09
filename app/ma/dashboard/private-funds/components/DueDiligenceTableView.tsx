@@ -64,6 +64,7 @@ import {
   extractTableRowsToCalendar,
   parseTableDate,
   rowsPendingCalendarSync,
+  sortDueDiligenceTableRowsByDateAsc,
 } from "@/lib/ma/due-diligence-table-to-calendar"
 import type { DueDiligenceSchedule } from "@/lib/ma/due-diligence-schedules"
 import {
@@ -1274,10 +1275,10 @@ export function DueDiligenceTableView() {
 
   // ── Filtered rows ──
 
-  const filteredRows = useMemo(
-    () => rows.filter((row) => rowMatchesKeyword(row, keyword)),
-    [rows, keyword],
-  )
+  const filteredRows = useMemo(() => {
+    const filtered = rows.filter((row) => rowMatchesKeyword(row, keyword))
+    return sortDueDiligenceTableRowsByDateAsc(filtered)
+  }, [rows, keyword])
 
   const selectedCellSet = useMemo(
     () => buildSelectionCellSet(selection, filteredRows),

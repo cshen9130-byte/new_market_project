@@ -26,6 +26,20 @@ export function parseTableDate(raw: string): string | null {
   return null
 }
 
+/** Sort rows by 尽调日期 ascending; rows without a valid date appear last. */
+export function sortDueDiligenceTableRowsByDateAsc(
+  rows: DueDiligenceTableRow[],
+): DueDiligenceTableRow[] {
+  return [...rows].sort((a, b) => {
+    const dateA = parseTableDate(a.ddDate)
+    const dateB = parseTableDate(b.ddDate)
+    if (!dateA && !dateB) return 0
+    if (!dateA) return 1
+    if (!dateB) return -1
+    return dateA.localeCompare(dateB)
+  })
+}
+
 /** Convert ISO date (YYYY-MM-DD) to table display format, e.g. 2026/6/29 */
 export function formatTableDate(isoDate: string): string {
   const [y, m, d] = isoDate.split("-")
