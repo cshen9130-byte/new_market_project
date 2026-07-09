@@ -247,19 +247,49 @@ assert("custody email unit ~1.9983", Math.abs(parseFloat(custody622.nav) - 1.998
 assert("custody email cum ~2.5632", Math.abs(parseFloat(custody622.cum_nav_withdrawal) - 2.5632) < 0.001)
 
 // SNF018: email series should carry distinct unit/cum (attachment-only days corrected before merge)
+const snfLegacyTail = [
+  { price_date: "2026-06-22", nav: "1.3343", cum_nav_withdrawal: "1.7447", cumulative_nav: "1.8020", price_change: "" },
+]
 const snfEmail = [
   { price_date: "2026-06-23", nav: "1.3358", cumulative_nav: "1.7462", adjusted_nav: null },
   { price_date: "2026-06-25", nav: "1.3475", cumulative_nav: "1.7600", adjusted_nav: null },
 ]
-const snfMerged = mergeNavSeriesWithEmail([], snfEmail)
+const snfMerged = mergeNavSeriesWithEmail(snfLegacyTail, snfEmail)
 const snf623 = snfMerged.find((r) => r.price_date === "2026-06-23")
 const snf625 = snfMerged.find((r) => r.price_date === "2026-06-25")
 assert("SNF018 0623 unit ~1.3358", Math.abs(parseFloat(snf623.nav) - 1.3358) < 0.001)
 assert("SNF018 0623 cum ~1.7462", Math.abs(parseFloat(snf623.cum_nav_withdrawal) - 1.7462) < 0.001)
-assert("SNF018 0623 adj >= cum", parseFloat(snf623.cumulative_nav) >= parseFloat(snf623.cum_nav_withdrawal) - 0.001)
+assert("SNF018 0623 adj > cum", parseFloat(snf623.cumulative_nav) > parseFloat(snf623.cum_nav_withdrawal) + 0.01)
 assert("SNF018 0625 unit < 1.5", parseFloat(snf625.nav) < 1.5)
 assert("SNF018 0625 adj >= cum >= unit", parseFloat(snf625.cumulative_nav) >= parseFloat(snf625.cum_nav_withdrawal) - 0.001
   && parseFloat(snf625.cum_nav_withdrawal) >= parseFloat(snf625.nav) - 0.001)
+
+// SNF018: attachment copies cum into adjusted_nav — must still rechain 复权 from legacy ratio
+const snfLegacy = [
+  { price_date: "2026-06-12", nav: "1.3186", cum_nav_withdrawal: "1.7290", cumulative_nav: "1.785628", price_change: "" },
+]
+const snfEmailFlatAdj = [
+  { price_date: "2026-06-15", nav: "1.3188", cumulative_nav: "1.7292", adjusted_nav: "1.7292" },
+]
+const snfFlatMerged = mergeNavSeriesWithEmail(snfLegacy, snfEmailFlatAdj)
+const snf615 = snfFlatMerged.find((r) => r.price_date === "2026-06-15")
+assert("SNF018 flat email adj rechains above cum", parseFloat(snf615.cumulative_nav) > parseFloat(snf615.cum_nav_withdrawal) + 0.01)
+
+// SNF018: email overlapping legacy must not wipe good legacy 复权 when email has unit+cum only
+const snfLegacyOverlap = [
+  { price_date: "2026-05-29", nav: "1.3273", cum_nav_withdrawal: "1.7377", cumulative_nav: "1.807104", price_change: "" },
+]
+const snfEmailOverlap = [
+  { price_date: "2026-05-29", nav: "1.3273", cumulative_nav: "1.7377", adjusted_nav: null },
+  { price_date: "2026-06-15", nav: "1.3188", cumulative_nav: "1.7292", adjusted_nav: "1.7292" },
+]
+const snfOverlapMerged = mergeNavSeriesWithEmail(snfLegacyOverlap, snfEmailOverlap)
+const snf529 = snfOverlapMerged.find((r) => r.price_date === "2026-05-29")
+const snf615b = snfOverlapMerged.find((r) => r.price_date === "2026-06-15")
+assert("SNF018 overlap keeps legacy adj on 0529", Math.abs(parseFloat(snf529.cumulative_nav) - 1.807104) < 0.001)
+assert("SNF018 overlap rechains flat adj on 0615", parseFloat(snf615b.cumulative_nav) > parseFloat(snf615b.cum_nav_withdrawal) + 0.01)
+const snf615Ratio = parseFloat(snf615b.cumulative_nav) / parseFloat(snf615b.cum_nav_withdrawal)
+assert("SNF018 overlap 0615 ratio ~legacy", Math.abs(snf615Ratio - 1.807104 / 1.7377) < 0.002)
 
 // SBPC20: 虚拟计提净值表 attachment mis-parsed fund AUM as unit NAV; subject + virtual carry correct unit
 const sbpc20Rows = [

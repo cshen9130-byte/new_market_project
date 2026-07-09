@@ -1,9 +1,10 @@
 "use client"
 
-import { type ClipboardEvent, type ChangeEvent, useRef } from "react"
-import { ImageIcon, LoaderCircle } from "lucide-react"
+import { type ClipboardEvent, type ChangeEvent, useRef, useState } from "react"
+import { Eye, ImageIcon, LoaderCircle, PencilLine } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { MarkdownNotePreview } from "@/components/markdown-note-preview"
 import { cn } from "@/lib/utils"
 
 function insertTextAtCursor(textarea: HTMLTextAreaElement, content: string, insertText: string) {
@@ -26,6 +27,7 @@ type KnowledgeBaseSharedNoteEditorProps = {
   disabled?: boolean
   loading?: boolean
   uploadingImage?: boolean
+  defaultViewMode?: "edit" | "preview"
   className?: string
   textareaClassName?: string
   placeholder?: string
@@ -38,12 +40,14 @@ export function KnowledgeBaseSharedNoteEditor({
   disabled = false,
   loading = false,
   uploadingImage = false,
+  defaultViewMode = "edit",
   className,
   textareaClassName,
   placeholder = "笔记内容，支持 Markdown 格式…",
 }: KnowledgeBaseSharedNoteEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [viewMode, setViewMode] = useState<"edit" | "preview">(defaultViewMode)
 
   const applyMarkdownInsert = async (file: File) => {
     const textarea = textareaRef.current
@@ -52,6 +56,7 @@ export function KnowledgeBaseSharedNoteEditor({
     const markdown = await onUploadImage(file)
     const { nextContent, cursor } = insertTextAtCursor(textarea, content, markdown)
     onContentChange(nextContent)
+    setViewMode("preview")
     requestAnimationFrame(() => {
       textarea.focus()
       textarea.selectionStart = cursor
@@ -113,16 +118,49 @@ export function KnowledgeBaseSharedNoteEditor({
           插入图片
         </Button>
         <span className="text-xs text-muted-foreground">在光标处插入，或直接粘贴截图</span>
+        <div className="ml-auto flex items-center gap-1 rounded-md border p-0.5">
+          <Button
+            type="button"
+            variant={viewMode === "edit" ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 px-2.5"
+            onClick={() => setViewMode("edit")}
+          >
+            <PencilLine className="mr-1.5 h-3.5 w-3.5" />
+            编辑
+          </Button>
+          <Button
+            type="button"
+            variant={viewMode === "preview" ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 px-2.5"
+            onClick={() => setViewMode("preview")}
+          >
+            <Eye className="mr-1.5 h-3.5 w-3.5" />
+            预览
+          </Button>
+        </div>
       </div>
-      <Textarea
-        ref={textareaRef}
-        value={content}
-        onChange={(event) => onContentChange(event.target.value)}
-        onPaste={(event) => void handlePaste(event)}
-        placeholder={placeholder}
-        disabled={disabled || loading}
-        className={cn("min-h-0 flex-1 resize-none text-sm leading-6", textareaClassName)}
-      />
+      {viewMode === "edit" ? (
+        <Textarea
+          ref={textareaRef}
+          value={content}
+          onChange={(event) => onContentChange(event.target.value)}
+          onPaste={(event) => void handlePaste(event)}
+          placeholder={placeholder}
+          disabled={disabled || loading}
+          className={cn("min-h-0 flex-1 resize-none text-sm leading-6", textareaClassName)}
+        />
+      ) : (
+        <div
+          className={cn(
+            "min-h-0 flex-1 overflow-hidden rounded-md border bg-muted/10 px-3 py-2",
+            textareaClassName,
+          )}
+        >
+          <MarkdownNotePreview content={content} className="h-full" />
+        </div>
+      )}
     </div>
   )
 }

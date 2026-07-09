@@ -40,6 +40,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Search,
   Send,
   Settings2,
   Square,
@@ -63,6 +64,7 @@ import { ScrollArea } from "@/components/ui/scroll-area"
 import { Switch } from "@/components/ui/switch"
 import { Textarea } from "@/components/ui/textarea"
 import { KnowledgeBaseSharedNoteEditor } from "@/components/knowledge-base-shared-note-editor"
+import { KnowledgeBaseFileSearchDialog } from "@/components/knowledge-base-file-search-dialog"
 import { cn } from "@/lib/utils"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu"
@@ -664,6 +666,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [sharedNoteImageUploading, setSharedNoteImageUploading] = useState(false)
   const [sharedNoteError, setSharedNoteError] = useState<string | null>(null)
   const [sharedNoteEditPath, setSharedNoteEditPath] = useState<string | null>(null)
+  const [fileSearchOpen, setFileSearchOpen] = useState(false)
   const [publishTitle, setPublishTitle] = useState("")
   const [publishSaving, setPublishSaving] = useState(false)
   const [publishError, setPublishError] = useState<string | null>(null)
@@ -860,6 +863,18 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   useEffect(() => {
     setSearchWholeKb(false)
   }, [selectedDocument?.relativePath, selectedFolder])
+
+  useEffect(() => {
+    function onKeyDown(event: globalThis.KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault()
+        setFileSearchOpen(true)
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [])
 
   function getKnowledgeBaseAuthHeaders(user: User | null = currentUser) {
     const resolvedUser = user ?? authService.getCurrentUser()
@@ -1309,6 +1324,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     return set
   }, [notIndexedSet])
   const totalDocuments = useMemo(() => countDocuments(tree), [tree])
+  const allDocuments = useMemo(() => collectDocumentsInFolder(tree), [tree])
   const currentFolderNode = useMemo(() => findFolderByPath(tree, selectedFolder), [selectedFolder, tree])
   const syncServerFiles = useMemo(() => {
     if (syncServerFolder === null) return []
@@ -3313,6 +3329,22 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
     void handlePreview(document)
   }
 
+  function navigateToDocument(document: DocumentNode) {
+    const parentFolder = document.relativePath.includes("/")
+      ? document.relativePath.slice(0, document.relativePath.lastIndexOf("/"))
+      : ""
+    setSelectedFolder(parentFolder)
+    setSelectedExplorerEntry(null)
+    setFileSearchOpen(false)
+    if (variant === "traditional") {
+      setTraditionalPanel("preview")
+    }
+    shouldScrollToPreviewRef.current = true
+    setPreviewScrollToken((current) => current + 1)
+    setSelectedDocument(document)
+    void handlePreview(document)
+  }
+
   function handleExplorerEntryOpen(entry: ExplorerEntry) {
     if (entry.kind === "folder") {
       setSelectedFolder(entry.relativePath)
@@ -3361,6 +3393,17 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setFileSearchOpen(true)}
+              title="搜索文件 (Ctrl+K)"
+              className={cn(isCyber && "border-cyan-500/40 text-cyan-200")}
+            >
+              <Search className="h-4 w-4" />
+              搜索
+            </Button>
             <Button type="button" variant="outline" size="sm" onClick={() => {
               setSelectedFolder("")
               setSelectedExplorerEntry(null)
@@ -3931,9 +3974,21 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 <>
                 <div className="flex items-start justify-between gap-4">
                   <h2 className="text-xl font-semibold">资料操作区</h2>
-                  <div className="text-right text-sm">
-                    <div className="text-muted-foreground">资料总数</div>
-                    <div className="font-semibold">{totalDocuments}</div>
+                  <div className="flex items-center gap-3">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setFileSearchOpen(true)}
+                      title="搜索文件 (Ctrl+K)"
+                    >
+                      <Search className="mr-1.5 h-4 w-4" />
+                      搜索文件
+                    </Button>
+                    <div className="text-right text-sm">
+                      <div className="text-muted-foreground">资料总数</div>
+                      <div className="font-semibold">{totalDocuments}</div>
+                    </div>
                   </div>
                 </div>
 
@@ -5229,7 +5284,7 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                       <h2 className="text-xl font-semibold">在线笔记</h2>
                       <p className="mt-1 text-sm text-muted-foreground">
                         {sharedNotesView === "edit"
-                          ? (sharedNoteEditPath ? "编辑笔记内容，支持 Markdown 与插入图片" : "创建新笔记，支持 Markdown 与插入图片")
+                          ? (sharedNoteEditPath ? "编辑笔记内容，支持 Markdown 与插入图片；切换到「预览」可查看图片效果" : "创建新笔记，支持 Markdown 与插入图片；切换到「预览」可查看图片效果")
                           : "从左侧选择笔记，或点击「+ 新建」开始编辑"}
                       </p>
                     </div>
@@ -5251,12 +5306,14 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                         </div>
                       ) : (
                         <KnowledgeBaseSharedNoteEditor
+                          key={sharedNoteEditPath ?? "__new__"}
                           content={sharedNoteContent}
                           onContentChange={setSharedNoteContent}
                           onUploadImage={uploadSharedNoteImageForInsert}
                           disabled={sharedNoteLoading}
                           loading={sharedNoteLoading}
                           uploadingImage={sharedNoteImageUploading}
+                          defaultViewMode={sharedNoteEditPath ? "preview" : "edit"}
                         />
                       )}
                       {sharedNoteError && (
@@ -6001,6 +6058,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <KnowledgeBaseFileSearchDialog
+          open={fileSearchOpen}
+          onOpenChange={setFileSearchOpen}
+          documents={allDocuments}
+          onSelectDocument={navigateToDocument}
+        />
       </div>
     )
   }
@@ -6020,6 +6084,10 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
             </p>
           </div>
           <div className="flex gap-3">
+            <Button variant="outline" className="border-cyan-500/50 bg-transparent text-cyan-200" onClick={() => setFileSearchOpen(true)} title="搜索文件 (Ctrl+K)">
+              <Search className="h-4 w-4" />
+              搜索文件
+            </Button>
             <Button variant="outline" className="border-cyan-500/50 bg-transparent text-cyan-200" onClick={() => void refreshTree()}>
               <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
               刷新资料库
@@ -6549,6 +6617,13 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
           </Card>
         </div>
       </div>
+
+      <KnowledgeBaseFileSearchDialog
+        open={fileSearchOpen}
+        onOpenChange={setFileSearchOpen}
+        documents={allDocuments}
+        onSelectDocument={navigateToDocument}
+      />
     </div>
   )
 }

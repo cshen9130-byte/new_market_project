@@ -63,6 +63,7 @@ import {
   countExtractableRows,
   extractTableRowsToCalendar,
   parseTableDate,
+  rowsPendingCalendarSync,
 } from "@/lib/ma/due-diligence-table-to-calendar"
 import type { DueDiligenceSchedule } from "@/lib/ma/due-diligence-schedules"
 import {
@@ -73,6 +74,11 @@ import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
 import { AddToTeamTrackingButton } from "@/components/ma/add-to-team-tracking-button"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
+import {
+  AddDueDiligenceRecordDialog,
+  recordFormToRowData,
+  type DueDiligenceTableRecordForm,
+} from "./AddDueDiligenceRecordDialog"
 import { RepresentativeProductCell } from "./RepresentativeProductCell"
 import { StrategySelectCell } from "./StrategySelectCell"
 import { DdDateCell } from "./DdDateCell"
@@ -751,6 +757,22 @@ function strategyLevelLabel(level: 1 | 2 | 3): string {
   return level === 1 ? "一级策略" : level === 2 ? "二级策略" : "三级策略"
 }
 
+function collectDdPersonnelOptions(rows: DueDiligenceTableRow[]): string[] {
+  const names = new Set<string>()
+  for (const row of rows) {
+    const raw = row.ddPersonnel.trim()
+    if (!raw) continue
+    const parts = raw.split(/[、,，/|]/).map((part) => part.trim()).filter(Boolean)
+    if (parts.length <= 1) {
+      names.add(raw)
+      continue
+    }
+    for (const part of parts) names.add(part)
+    names.add(raw)
+  }
+  return [...names].sort((a, b) => a.localeCompare(b, "zh-CN"))
+}
+
 function StrategyCellContextMenu({
   row,
   level,
@@ -840,6 +862,7 @@ export function DueDiligenceTableView() {
   const [isSyncingStrategies, setIsSyncingStrategies] = useState(false)
   const [strategySyncTarget, setStrategySyncTarget] = useState<StrategySyncTarget | null>(null)
   const [isSyncingSingleStrategy, setIsSyncingSingleStrategy] = useState(false)
+  const [showAddRecordDialog, setShowAddRecordDialog] = useState(false)
   const [ddConclusionEditTarget, setDdConclusionEditTarget] = useState<{
     rowId: string
     rowHint: string
@@ -1697,6 +1720,11 @@ export function DueDiligenceTableView() {
     [teamStrategyTree],
   )
 
+  const personnelOptions = useMemo(
+    () => collectDdPersonnelOptions(rows),
+    [rows],
+  )
+
   function handleRepresentativeProductChange(
     rowId: string,
     value: string,
@@ -1714,8 +1742,12 @@ export function DueDiligenceTableView() {
     persistRows(rows, next, formats)
   }
 
-  function handleAddRow() {
-    const newRow = createDueDiligenceTableRow()
+  function handleAddRecordSubmit(form: DueDiligenceTableRecordForm) {
+    const { data, representativeProductBeianHao } = recordFormToRowData(form)
+    const newRow = createDueDiligenceTableRow(data)
+    if (representativeProductBeianHao) {
+      newRow.representativeProductBeianHao = representativeProductBeianHao
+    }
     persistRowsChange(rows, [newRow, ...rows], formats)
     setSelection({ kind: "rows", rowIds: [newRow.id] })
   }
@@ -1809,13 +1841,10 @@ export function DueDiligenceTableView() {
 
     setIsExtracting(true)
     try {
+      const pendingRows = rowsPendingCalendarSync(rows, existingSchedules)
       const result = extractTableRowsToCalendar(rows, existingSchedules)
       await saveDueDiligenceSchedulesToServer(result.schedules)
-      const syncedBefore = new Set(
-        existingSchedules.map((s) => s.sourceTableRowId).filter((id): id is string => Boolean(id)),
-      )
-      const addedDates = rows
-        .filter((row) => parseTableDate(row.ddDate) && !syncedBefore.has(row.id))
+      const addedDates = pendingRows
         .map((row) => parseTableDate(row.ddDate)!)
         .sort()
       const monthHint =
@@ -1925,7 +1954,7 @@ export function DueDiligenceTableView() {
               className="inline-flex items-center gap-1.5 rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:bg-zinc-50 transition-colors">
               <RotateCcw className="h-3.5 w-3.5" />恢复初始数据
             </button>
-            <button type="button" onClick={handleAddRow}
+            <button type="button" onClick={() => setShowAddRecordDialog(true)}
               className="inline-flex items-center gap-1.5 rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600 transition-colors">
               <Plus className="h-3.5 w-3.5" />添加记录
             </button>
@@ -2473,6 +2502,13 @@ export function DueDiligenceTableView() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AddDueDiligenceRecordDialog
+        open={showAddRecordDialog}
+        onOpenChange={setShowAddRecordDialog}
+        onSubmit={handleAddRecordSubmit}
+        teamStrategyTree={teamStrategyTree}
+        personnelOptions={personnelOptions}
+      />
       <Dialog
         open={ddConclusionEditTarget !== null}
         onOpenChange={(open) => {

@@ -9,9 +9,10 @@
  *                 but production cannot re-fetch mail yet.
  */
 import { loadProjectEnvFiles } from "../../lib/server/load-project-env.ts"
-import { rawQuery } from "../../lib/db.ts"
 
 loadProjectEnvFiles()
+
+const { rawQuery } = await import("../../lib/db.ts")
 
 function parseDays(argv) {
   const flag = argv.find((a) => a.startsWith("--days="))

@@ -108,6 +108,59 @@ export function tableRowToScheduleForm(row: DueDiligenceTableRow): DueDiligenceS
   }
 }
 
+/** Stable fingerprint for matching a table row to an existing calendar entry. */
+export function scheduleSyncKey(form: Pick<
+  DueDiligenceScheduleForm,
+  "startDate" | "startTime" | "allDay" | "institution" | "personnel" | "target" | "method"
+>): string {
+  return [
+    form.startDate,
+    form.allDay ? "all-day" : form.startTime.slice(0, 5),
+    form.institution.trim(),
+    form.personnel.trim(),
+    form.target.trim(),
+    form.method,
+  ].join("\u0001")
+}
+
+function tableRowSyncKey(row: DueDiligenceTableRow): string | null {
+  const form = tableRowToScheduleForm(row)
+  return form ? scheduleSyncKey(form) : null
+}
+
+type CalendarSyncIndex = {
+  syncedRowIds: Set<string>
+  contentKeyToIndex: Map<string, number>
+}
+
+function buildCalendarSyncIndex(schedules: DueDiligenceSchedule[]): CalendarSyncIndex {
+  const syncedRowIds = new Set<string>()
+  const contentKeyToIndex = new Map<string, number>()
+  schedules.forEach((schedule, index) => {
+    if (schedule.sourceTableRowId) syncedRowIds.add(schedule.sourceTableRowId)
+    const key = scheduleSyncKey(schedule)
+    if (!contentKeyToIndex.has(key)) contentKeyToIndex.set(key, index)
+  })
+  return { syncedRowIds, contentKeyToIndex }
+}
+
+export function isTableRowSyncedToCalendar(
+  row: DueDiligenceTableRow,
+  index: CalendarSyncIndex,
+): boolean {
+  if (index.syncedRowIds.has(row.id)) return true
+  const key = tableRowSyncKey(row)
+  return key ? index.contentKeyToIndex.has(key) : false
+}
+
+export function rowsPendingCalendarSync(
+  rows: DueDiligenceTableRow[],
+  existingSchedules: DueDiligenceSchedule[],
+): DueDiligenceTableRow[] {
+  const index = buildCalendarSyncIndex(existingSchedules)
+  return rows.filter((row) => parseTableDate(row.ddDate) && !isTableRowSyncedToCalendar(row, index))
+}
+
 export function countExtractableRows(
   rows: DueDiligenceTableRow[],
   existingSchedules: DueDiligenceSchedule[] = loadDueDiligenceSchedules(),
@@ -115,17 +168,13 @@ export function countExtractableRows(
   withDate: number
   alreadySynced: number
 } {
-  const syncedIds = new Set(
-    existingSchedules
-      .map((s) => s.sourceTableRowId)
-      .filter((id): id is string => Boolean(id)),
-  )
+  const index = buildCalendarSyncIndex(existingSchedules)
   let withDate = 0
   let alreadySynced = 0
   for (const row of rows) {
     if (!parseTableDate(row.ddDate)) continue
     withDate++
-    if (syncedIds.has(row.id)) alreadySynced++
+    if (isTableRowSyncedToCalendar(row, index)) alreadySynced++
   }
   return { withDate, alreadySynced }
 }
@@ -134,30 +183,43 @@ export function extractTableRowsToCalendar(
   rows: DueDiligenceTableRow[],
   existingSchedules: DueDiligenceSchedule[] = loadDueDiligenceSchedules(),
 ): ExtractToCalendarResult & { schedules: DueDiligenceSchedule[] } {
-  const existing = existingSchedules
-  const syncedIds = new Set(
-    existing.map((s) => s.sourceTableRowId).filter((id): id is string => Boolean(id)),
-  )
+  const next: DueDiligenceSchedule[] = [...existingSchedules]
+  const index = buildCalendarSyncIndex(next)
 
   let added = 0
   let skipped = 0
   let noDate = 0
-  const next: DueDiligenceSchedule[] = [...existing]
+  const now = new Date().toISOString()
 
   for (const row of rows) {
-    if (syncedIds.has(row.id)) {
+    if (index.syncedRowIds.has(row.id)) {
       skipped++
       continue
     }
+
     const form = tableRowToScheduleForm(row)
     if (!form) {
       noDate++
       continue
     }
+
+    const contentKey = scheduleSyncKey(form)
+    const existingIndex = index.contentKeyToIndex.get(contentKey)
+    if (existingIndex !== undefined) {
+      const existing = next[existingIndex]
+      if (!existing.sourceTableRowId) {
+        next[existingIndex] = { ...existing, sourceTableRowId: row.id, updatedAt: now }
+      }
+      index.syncedRowIds.add(row.id)
+      skipped++
+      continue
+    }
+
     const schedule = createDueDiligenceSchedule(form)
     schedule.sourceTableRowId = row.id
+    index.contentKeyToIndex.set(contentKey, next.length)
+    index.syncedRowIds.add(row.id)
     next.push(schedule)
-    syncedIds.add(row.id)
     added++
   }
 

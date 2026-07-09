@@ -1097,6 +1097,12 @@ function hasDividendOffset(unit: number, cum: number): boolean {
   return cum - unit > 0.05
 }
 
+/** Email 复权 is meaningful only when strictly above 累计 (attachments often copy cum into adj). */
+function isPlausibleEmailAdjustedNav(cum: number | null, adj: number | null): boolean {
+  if (adj == null || cum == null || !isReasonableNav(adj) || !isReasonableNav(cum)) return false
+  return adj > cum + 0.001
+}
+
 function findFirstDividendRowIndex(rows: LegacyNavRow[]): number {
   for (let i = 0; i < rows.length; i += 1) {
     const unit = parseOptionalNav(rows[i].nav)
@@ -1661,18 +1667,38 @@ function repairAdjBelowCumRows(rows: LegacyNavRow[]): LegacyNavRow[] {
     }
   }
 
+  const flatAdjEps = 0.001
+  const minAdjCumRatio = 1.001
+  let lastGoodRatio: number | null = null
+  for (let i = 0; i < sorted.length; i += 1) {
+    const cum = parseOptionalNav(sorted[i].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i].cumulative_nav)
+    const adj = parseOptionalNav(sorted[i].cumulative_nav)
+    if (cum == null || cum <= 0 || adj == null) continue
+    if (adj > cum + flatAdjEps) {
+      lastGoodRatio = adj / cum
+      continue
+    }
+    if (lastGoodRatio != null && lastGoodRatio >= minAdjCumRatio && adj <= cum + flatAdjEps) {
+      const filled = +(cum * lastGoodRatio).toFixed(6)
+      if (isReasonableNav(filled) && filled >= cum + flatAdjEps) {
+        sorted[i].cumulative_nav = String(filled)
+        lastGoodRatio = filled / cum
+      }
+    }
+  }
+
   let trailingRatio: number | null = null
   for (let i = sorted.length - 1; i >= 0; i -= 1) {
     const cum = parseOptionalNav(sorted[i].cum_nav_withdrawal) ?? parseOptionalNav(sorted[i].cumulative_nav)
     const adj = parseOptionalNav(sorted[i].cumulative_nav)
     if (cum == null || cum <= 0) continue
-    if (adj != null && adj >= cum) {
+    if (adj != null && adj > cum + flatAdjEps) {
       trailingRatio = adj / cum
       continue
     }
-    if (trailingRatio == null) continue
+    if (trailingRatio == null || trailingRatio < minAdjCumRatio) continue
     const filled = +(cum * trailingRatio).toFixed(6)
-    if (isReasonableNav(filled) && filled >= cum) {
+    if (isReasonableNav(filled) && filled >= cum + flatAdjEps) {
       sorted[i].cumulative_nav = String(filled)
     }
   }
@@ -1783,7 +1809,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
     if (!Number.isFinite(unitNav)) continue
 
     const emailCum = parseOptionalNav(row.cumulative_nav)
-    const emailAdj = parseOptionalNav(row.adjusted_nav)
+    const emailAdjRaw = parseOptionalNav(row.adjusted_nav)
     const hasEmailCum = hasDistinctCumulative(unitNav, emailCum)
     const existing = byDate.get(row.price_date)
     const prevDate = sortedLegacyDates.filter((d) => d < row.price_date).at(-1)
@@ -1796,6 +1822,8 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
       : cumOnlyEmail
         ? unitNav
         : null
+    const emailAdj =
+      isPlausibleEmailAdjustedNav(resolvedCum, emailAdjRaw) ? emailAdjRaw : null
 
     if (existing) {
       const updated: LegacyNavRow = {
@@ -1808,9 +1836,17 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
       if (emailAdj != null) {
         updated.cumulative_nav = String(emailAdj)
       } else if (resolvedCum != null) {
-        // Email refreshed unit + cum — drop stale legacy 复权 so finalizeNavSeries rechains adj.
-        updated.cumulative_nav = ""
-        unitOnlyEmailDates.add(row.price_date)
+        const existingAdj = parseOptionalNav(existing.cumulative_nav)
+        const keepLegacyAdj =
+          existingAdj != null && isPlausibleEmailAdjustedNav(resolvedCum, existingAdj)
+        if (keepLegacyAdj) {
+          // Email confirms unit+cum only; legacy 复权 is still valid — do not wipe and rechain.
+          updated.cumulative_nav = existing.cumulative_nav
+        } else {
+          // Email refreshed unit + cum — drop stale legacy 复权 so finalizeNavSeries rechains adj.
+          updated.cumulative_nav = ""
+          unitOnlyEmailDates.add(row.price_date)
+        }
       } else if (emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {
         unitOnlyEmailDates.add(row.price_date)
       }

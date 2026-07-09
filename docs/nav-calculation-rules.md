@@ -1059,3 +1059,44 @@ npx tsx scripts/ma/email_nav_etl.ts --parse-only
 ```
 
 See also **在管产品 data flow** in `docs/managed-products-list-data.md` for ETL trigger details.
+
+---
+
+## What Was Fixed (2026-07-09 — Jul 7 custody emails stored as Jul 6)
+
+**Symptom:** After nightly ETL, **衡颐海宸1号 (SBPC69)**, **衡颐承和FOF1号 (SBTX45)**, **荣熙共赢 (SBNX55)**, and other custody funds stayed on **2026-07-06** while Jul 7 emails were already in the mailbox (e.g. SBPC69 `_20260707_估值表`, unit NAV **1.0293** on **2026-07-07**).
+
+**Root cause:** Same custody date-shift bug as §1 (2026-07-08), still running on production when last night's parse executed. Emails **were parsed** but `nav_date` / `valuation_date` was shifted back one trading day (`2026-07-07` → `2026-07-06`) because production had not yet deployed the `resolveValuationTableNavDate()` fix. Stored `summary.valuation_date` was already correct (`2026-07-07`).
+
+**SBNX55 nuance:** Email rows for **2026-07-07** were already correct in DB; only the **list cache** was stale until refresh.
+
+**Recovery (2026-07-09):**
+
+```bash
+npx tsx scripts/ma/repair_valuation_nav_shift.mjs --db-fix-dates --since=2026-07-01
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only --managed-only
+```
+
+Result: SBPC69 → **2026-07-07 / 1.0293**, SBTX45 → **2026-07-07**, SBNX55 → **2026-07-07**, SBPU97 / SAVW72 → **2026-07-07**.
+
+**Prevent recurrence:** Deploy local `resolveValuationTableNavDate()` fix to production (`/root/new_market_project`) so incremental nightly parse writes the correct date without manual `--db-fix-dates`.
+
+---
+
+## What Was Fixed (2026-07-09 — SNF018 复权净值 flat after attachment emails)
+
+**Symptom:** Fund detail for **钜融添宝20号 (SNF018)** showed **复权净值 = 累计净值** (e.g. **1.7395** on 2026-07-07) while reference platforms show **~1.8095** — the 收益曲线 (复权净值) and period returns were understated.
+
+**Root cause:** After 2026-06-15, **资产净值公告** attachment emails stored `adjusted_nav` equal to **累计净值** (not a true 复权). Additionally, email rows overlapping legacy Apr–May dates **cleared** good legacy 复权 whenever email supplied unit+cum without adj, forcing a rechained ratio (~**1.033**) lower than the true legacy ratio (~**1.040**).
+
+**Fix (does not change SNF018 virtual-first priority or unit inference):**
+
+| Area | File / function | What changed |
+|---|---|---|
+| Ignore fake email adj | `isPlausibleEmailAdjustedNav`, `mergeNavSeriesWithEmail` | Only accept email `adjusted_nav` when strictly **above** 累计; cum-copied adj triggers rechain like `adjusted_nav: null` |
+| Keep good legacy adj | `mergeNavSeriesWithEmail` | When email confirms unit+cum only and legacy already has plausible 复权, **keep** legacy adj instead of clearing |
+| Repair flat adj series | `repairAdjBelowCumRows` | Forward-fill 复权 using last good **adj/cum** ratio when rows have adj ≈ cum but history had adj > cum |
+
+**Verified after fix (2026-07-07):** unit **1.3291**, cum **1.7395**, adj **~1.809** (ratio ≈ 1.040, aligned with reference ~1.8095).
+
+Regression: `npx tsx scripts/test-nav-rechain.mjs` (SNF018 flat-adj + legacy tail cases).
