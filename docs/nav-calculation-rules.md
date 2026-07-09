@@ -625,6 +625,18 @@ Regression: `npx tsx scripts/test-nav-rechain.mjs` (SBPC20 Jul 8 virtual-first +
 
 ---
 
+## What Was Fixed (2026-07-09 — SBPC20 legacy tail overwriting email 累计)
+
+**Symptom:** After deploy, fund detail still showed **单位 = 累计 = 复权** on recent dates and a **sharp drop** on the 复权 chart — even though email-only merge was correct.
+
+**Root cause:** `mergeNavSeriesWithEmail` correctly stored email **累计** (e.g. **1.3696** on 2026-07-08), then added those dates to `unitOnlyEmailDates` because attachment `adjusted_nav` equalled cum. `refreshDerivedForEmailRows` **rechained both cum and adj** from pre-email legacy rows (Feb–May platform data with unit = cum), wiping the email 累计.
+
+**Fix:** Split email-derived dates into **`adjOnlyEmailDates`** (email supplied unit + cum, rechain 复权 only) vs **`unitOnlyEmailDates`** (unit only, rechain both). `refreshDerivedForEmailRows` preserves email 累计 on adj-only dates.
+
+**Verified (2026-07-08, legacy + email path):** unit **1.1565**, cum **1.3696**, adj **1.3696**; chart no longer cliffs at unit-only scale.
+
+---
+
 ## What Was Fixed (衡颐海泰1号 — SBPU97, 2026-07-06 — wrong seed scale caused NAV cliff)
 
 ### The Problem

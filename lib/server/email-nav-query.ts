@@ -1244,21 +1244,27 @@ function rechainDerivedFromPrev(
  * previous row had unit == cum (no prior dividend history).  Without this, a fund receiving its
  * first dividend would have its correctly-sourced cumulative NAV overwritten with unit NAV.
  */
-function refreshDerivedForUnitOnlyEmailRows(
+function refreshDerivedForEmailRows(
   rows: LegacyNavRow[],
   unitOnlyEmailDates: Set<string>,
+  adjOnlyEmailDates: Set<string>,
 ): LegacyNavRow[] {
-  if (unitOnlyEmailDates.size === 0) return rows
+  if (unitOnlyEmailDates.size === 0 && adjOnlyEmailDates.size === 0) return rows
 
   const sorted = rows.map((row) => ({ ...row }))
   for (let i = 0; i < sorted.length; i += 1) {
-    if (!unitOnlyEmailDates.has(sorted[i].price_date) || i === 0) continue
+    const date = sorted[i].price_date
+    const adjOnly = adjOnlyEmailDates.has(date)
+    const unitOnly = unitOnlyEmailDates.has(date)
+    if ((!adjOnly && !unitOnly) || i === 0) continue
     const unit = parseOptionalNav(sorted[i].nav)
     if (unit == null) continue
     const currCum = parseOptionalNav(sorted[i].cum_nav_withdrawal)
     const rechained = rechainDerivedFromPrev(sorted[i - 1], unit, currCum)
     if (rechained) {
-      sorted[i].cum_nav_withdrawal = rechained.cum
+      if (!adjOnly) {
+        sorted[i].cum_nav_withdrawal = rechained.cum
+      }
       sorted[i].cumulative_nav = rechained.adj
     }
   }
@@ -1749,7 +1755,11 @@ function repairSwappedCumAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   })
 }
 
-function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string> = new Set()): LegacyNavRow[] {
+function finalizeNavSeries(
+  rows: LegacyNavRow[],
+  unitOnlyEmailDates: Set<string> = new Set(),
+  adjOnlyEmailDates: Set<string> = new Set(),
+): LegacyNavRow[] {
   let out = sanitizeMisassignedUnitNavRows(rows)
   out = repairSwappedCumAdjRows(out)
   out = sanitizeVShapeNavOutliers(out)
@@ -1758,7 +1768,7 @@ function finalizeNavSeries(rows: LegacyNavRow[], unitOnlyEmailDates: Set<string>
   out = syncExDivAdjustedNav(out)
   out = propagateMissingAdjRows(out)
   out = refreshStaleDerivedFields(out)
-  out = refreshDerivedForUnitOnlyEmailRows(out, unitOnlyEmailDates)
+  out = refreshDerivedForEmailRows(out, unitOnlyEmailDates, adjOnlyEmailDates)
   out = clampSanityNavRows(out)
   out = repairAdjBelowCumRows(out)
   out = alignPreDividendNavRows(out)
@@ -1813,6 +1823,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
 
   const sortedLegacyDates = legacyRows.map((row) => row.price_date).sort()
   const unitOnlyEmailDates = new Set<string>()
+  const adjOnlyEmailDates = new Set<string>()
 
   for (const row of emailRows) {
     const nav = row.nav ?? row.cumulative_nav
@@ -1857,14 +1868,17 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
         } else {
           // Email refreshed unit + cum — drop stale legacy 复权 so finalizeNavSeries rechains adj.
           updated.cumulative_nav = ""
-          unitOnlyEmailDates.add(row.price_date)
+          adjOnlyEmailDates.add(row.price_date)
         }
       } else if (emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {
         unitOnlyEmailDates.add(row.price_date)
       }
       byDate.set(row.price_date, updated)
     } else {
-      if (emailAdj == null) unitOnlyEmailDates.add(row.price_date)
+      if (emailAdj == null) {
+        if (resolvedCum != null) adjOnlyEmailDates.add(row.price_date)
+        else unitOnlyEmailDates.add(row.price_date)
+      }
       byDate.set(row.price_date, {
         price_date: row.price_date,
         nav: String(resolvedUnitNav),
@@ -1876,7 +1890,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
   }
 
   const merged = Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
-  return finalizeNavSeries(merged, unitOnlyEmailDates)
+  return finalizeNavSeries(merged, unitOnlyEmailDates, adjOnlyEmailDates)
 }
 
 /**

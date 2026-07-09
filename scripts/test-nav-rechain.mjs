@@ -382,6 +382,20 @@ const sbpcMerged708 = sbpc20MergedJul8.find((r) => r.price_date === "2026-07-08"
 assert("SBPC20 merged 0708 cum > unit", parseFloat(sbpcMerged708.cum_nav_withdrawal) > parseFloat(sbpcMerged708.nav) + 0.05)
 assert("SBPC20 merged 0708 cum ~1.3696", Math.abs(parseFloat(sbpcMerged708.cum_nav_withdrawal) - 1.3696) < 0.001)
 
+// SBPC20: legacy pre-email rows must not overwrite email 累计 during adj rechain
+const sbpcLegacyTail = [
+  { price_date: "2026-05-23", nav: "1.2513", cum_nav_withdrawal: "1.2513", cumulative_nav: "1.2513", price_change: "" },
+  { price_date: "2026-05-25", nav: "1.2489", cum_nav_withdrawal: "1.2489", cumulative_nav: "1.2489", price_change: "" },
+]
+const sbpcEmailJul = [
+  { price_date: "2026-07-07", nav: "1.138600", cumulative_nav: "1.351700", adjusted_nav: "1.351700" },
+  { price_date: "2026-07-08", nav: "1.156500", cumulative_nav: "1.369600", adjusted_nav: "1.369600" },
+]
+const sbpcLegacyEmail = mergeNavSeriesWithEmail(sbpcLegacyTail, sbpcEmailJul)
+const sbpc708le = sbpcLegacyEmail.find((r) => r.price_date === "2026-07-08")
+assert("SBPC20 legacy+email 0708 cum ~1.3696", Math.abs(parseFloat(sbpc708le.cum_nav_withdrawal) - 1.3696) < 0.001)
+assert("SBPC20 legacy+email 0708 cum > unit", parseFloat(sbpc708le.cum_nav_withdrawal) > parseFloat(sbpc708le.nav) + 0.05)
+
 // BDW42B: parent SBDW42 attachment publishes A/B share-class NAVs on the same date (~1.09 vs ~1.45).
 const bdw42bRows = [
   {
