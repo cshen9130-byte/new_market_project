@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server"
+import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
 import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 import {
   fmtIsoDate,
@@ -26,6 +27,21 @@ export async function GET(
     const mgr = await lookupManagerList(managerHint || manager, productName)
 
     if (!mgr) {
+      const amac = await lookupAmacFundMetadata(beian_hao, {
+        managerHint: managerHint || manager || null,
+      })
+      if (amac) {
+        return NextResponse.json({
+          manager_name: amac.manager_name ?? (manager || null),
+          legal_representative: null,
+          inception_date: amac.establish_date,
+          representative_product: null,
+          active_product_count: null,
+          mgmt_scale: amac.mgmt_scale,
+          registration_no: amac.registration_no,
+        })
+      }
+
       return NextResponse.json({
         manager_name: manager || null,
         legal_representative: null,

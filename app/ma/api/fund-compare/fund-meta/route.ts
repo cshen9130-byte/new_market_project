@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -139,6 +140,22 @@ export async function POST(req: Request) {
         remark: null,
       }
     })
+
+    const missingScale = data.filter((item) => !item.manager_scale)
+    if (missingScale.length > 0) {
+      const amacScales = await Promise.all(
+        missingScale.map(async (item) => {
+          const amac = await lookupAmacFundMetadata(item.beian_hao, { managerHint: item.manager })
+          return [item.beian_hao, amac?.mgmt_scale ?? null] as const
+        }),
+      )
+      const scaleById = new Map(amacScales)
+      for (const item of data) {
+        if (!item.manager_scale) {
+          item.manager_scale = scaleById.get(item.beian_hao) ?? null
+        }
+      }
+    }
 
     return NextResponse.json({ data })
   } catch (err) {

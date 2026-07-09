@@ -225,6 +225,7 @@ interface FundInfo {
   strategy_l3:    string | null
   manager:        string
   manager_names:  string | null
+  manager_registration_no?: string | null
   scale:          string | null
   inception_date: string | null
   operation_date: string | null
@@ -1027,6 +1028,12 @@ export default function PrivateFundDetailPage() {
       })
       .catch(() => {})
   }, [beian_hao, data?.info?.manager])
+
+  useEffect(() => {
+    if (data?.info?.manager_registration_no) {
+      setManagerRegistrationNo(data.info.manager_registration_no)
+    }
+  }, [data?.info?.manager_registration_no])
 
   useEffect(() => {
     if (!beian_hao) return

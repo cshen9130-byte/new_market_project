@@ -1,5 +1,6 @@
 import { query, fmtIso } from "@/lib/db"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { lookupAmacFundMetadata, lookupAmacManagerByName } from "@/lib/server/amac-fund-metadata"
 
 export interface ManagerListRow {
   manager_name: string
@@ -121,7 +122,18 @@ export async function lookupManagerList(manager: string, productName: string): P
        LIMIT 1`,
       [manager],
     )
-    if (exact[0]) return exact[0]
+    if (exact[0]) {
+      if (exact[0].mgmt_scale) return exact[0]
+      const amac = await lookupAmacManagerByName(manager)
+      if (amac?.mgmt_scale) {
+        return {
+          ...exact[0],
+          mgmt_scale: amac.mgmt_scale,
+          registration_no: exact[0].registration_no || amac.registration_no,
+        }
+      }
+      return exact[0]
+    }
 
     const fuzzy = await query<ManagerListRow>(
       `SELECT manager_name, inception_date, active_product_count, mgmt_scale, registration_no
@@ -131,7 +143,29 @@ export async function lookupManagerList(manager: string, productName: string): P
        LIMIT 1`,
       [`%${manager}%`],
     )
-    if (fuzzy[0]) return fuzzy[0]
+    if (fuzzy[0]) {
+      if (fuzzy[0].mgmt_scale) return fuzzy[0]
+      const amac = await lookupAmacManagerByName(manager)
+      if (amac?.mgmt_scale) {
+        return {
+          ...fuzzy[0],
+          mgmt_scale: amac.mgmt_scale,
+          registration_no: fuzzy[0].registration_no || amac.registration_no,
+        }
+      }
+      return fuzzy[0]
+    }
+
+    const amacOnly = await lookupAmacManagerByName(manager)
+    if (amacOnly) {
+      return {
+        manager_name: amacOnly.manager_name ?? manager,
+        inception_date: null,
+        active_product_count: null,
+        mgmt_scale: amacOnly.mgmt_scale,
+        registration_no: amacOnly.registration_no,
+      }
+    }
   }
 
   const brand = extractProductBrand(productName)

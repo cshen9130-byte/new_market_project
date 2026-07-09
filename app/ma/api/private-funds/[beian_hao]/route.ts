@@ -8,6 +8,7 @@ import { loadManagedProductNavSeed, mergeManagedProductDetailNav } from "@/lib/s
 import { loadManagedProductEmailPoints, loadManagedProductNavSeries, loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 import { addDays } from "@/lib/server/list-cache-nav-batch"
 import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
+import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
 
 export const dynamic = "force-dynamic"
 
@@ -223,12 +224,11 @@ export async function GET(
     scale: string | null
     manager_names: string | null
     advisor: string | null
+    register_code: string | null
     inception_date: string | null
-    operation_date: string | null
   }>(
-    `SELECT scale, manager_names, advisor,
-            inception_date::text AS inception_date,
-            operation_date::text AS operation_date
+    `SELECT scale, manager_names, advisor, register_code,
+            inception_date::text AS inception_date
      FROM basicinfo_bfl_track
      WHERE register_number = $1 OR record_key = $1
      ORDER BY updated_at DESC NULLS LAST, id DESC
@@ -238,16 +238,39 @@ export async function GET(
     scale: string | null
     manager_names: string | null
     advisor: string | null
+    register_code: string | null
     inception_date: string | null
-    operation_date: string | null
   }[])
 
+  let trackOperationDate: string | null = null
+  try {
+    const opRows = await query<{ operation_date: string | null }>(
+      `SELECT operation_date::text AS operation_date
+       FROM basicinfo_bfl_track
+       WHERE register_number = $1 OR record_key = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [routeBeianHao],
+    )
+    trackOperationDate = opRows[0]?.operation_date?.slice(0, 10) ?? null
+  } catch {
+    // operation_date column may not exist until migration 013 is applied
+  }
+
   const bflTrack = bflTrackRows[0]
-  const scale = bflTrack?.scale ?? null
-  const manager_names = bflTrack?.manager_names ?? null
   const trackAdvisor = bflTrack?.advisor?.trim() || null
-  const trackInception = bflTrack?.inception_date?.slice(0, 10) ?? null
-  const trackOperationDate = bflTrack?.operation_date?.slice(0, 10) ?? null
+  const managerHint = trackAdvisor || info.manager?.trim() || null
+  const amacMeta = await lookupAmacFundMetadata(routeBeianHao, {
+    managerHint,
+    registerCode: bflTrack?.register_code ?? null,
+  })
+
+  const scale = bflTrack?.scale?.trim() || amacMeta?.mgmt_scale || null
+  const manager_names = bflTrack?.manager_names ?? null
+  const trackInception =
+    bflTrack?.inception_date?.slice(0, 10) ??
+    amacMeta?.establish_date ??
+    null
 
   let navRows: {
     price_date: string
@@ -446,9 +469,14 @@ export async function GET(
       strategy_l3,
       scale,
       manager_names,
-      inception_date: info.inception_date?.slice(0, 10) ?? trackInception,
+      inception_date:
+        info.inception_date?.slice(0, 10) ??
+        trackInception ??
+        amacMeta?.establish_date ??
+        null,
       operation_date: trackOperationDate,
-      manager: info.manager?.trim() || trackAdvisor || info.manager,
+      manager: info.manager?.trim() || trackAdvisor || amacMeta?.manager_name || info.manager,
+      manager_registration_no: amacMeta?.registration_no ?? null,
     },
     nav_series,
     nav_data_source,

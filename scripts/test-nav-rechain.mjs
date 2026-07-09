@@ -344,6 +344,44 @@ const sbpc0706 = sbpc20Selected.find((r) => r.nav_date === "2026-07-06")
 assert("SBPC20 0707 unit ~1.1386", Math.abs(parseFloat(sbpc0707.nav) - 1.1386) < 0.001)
 assert("SBPC20 0706 attachment wins over virtual (dividend offset)", Math.abs(parseFloat(sbpc0706.cumulative_nav) - 1.3702) < 0.001)
 
+// SBPC20: virtual stored first must not block attachment with dividend offset (Jul 8 regression)
+const sbpc20Jul8Rows = [
+  {
+    nav_date: "2026-07-08",
+    nav: "1.156500",
+    cumulative_nav: "1.109600",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_荣熙海泰1号私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-08.xls",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-07-08",
+    nav: "1.156500",
+    cumulative_nav: "1.369600",
+    adjusted_nav: "1.369600",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20_六妙星九紫一号_20260708.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-08，单位净值为1.1565",
+    source: "attachment_nav_table",
+  },
+]
+const sbpc20Jul8Selected = selectEmailNavSeriesRows(sbpc20Jul8Rows, "SBPC20", ["六妙星九紫一号"])
+const sbpc0708 = sbpc20Jul8Selected.find((r) => r.nav_date === "2026-07-08")
+assert("SBPC20 0708 unit ~1.1565", Math.abs(parseFloat(sbpc0708.nav) - 1.1565) < 0.001)
+assert("SBPC20 0708 cum ~1.3696", Math.abs(parseFloat(sbpc0708.cumulative_nav) - 1.3696) < 0.001)
+
+const sbpc20MergedJul8 = mergeNavSeriesWithEmail([], [
+  { price_date: "2026-07-07", nav: "1.138600", cumulative_nav: "1.351700", adjusted_nav: "1.351700" },
+  { price_date: "2026-07-08", nav: "1.156500", cumulative_nav: "1.369600", adjusted_nav: "1.369600" },
+])
+const sbpcMerged708 = sbpc20MergedJul8.find((r) => r.price_date === "2026-07-08")
+assert("SBPC20 merged 0708 cum > unit", parseFloat(sbpcMerged708.cum_nav_withdrawal) > parseFloat(sbpcMerged708.nav) + 0.05)
+assert("SBPC20 merged 0708 cum ~1.3696", Math.abs(parseFloat(sbpcMerged708.cum_nav_withdrawal) - 1.3696) < 0.001)
+
 // BDW42B: parent SBDW42 attachment publishes A/B share-class NAVs on the same date (~1.09 vs ~1.45).
 const bdw42bRows = [
   {

@@ -2491,6 +2491,56 @@ def step_amac_extra(force_full: bool = False) -> int:
     return 0
 
 
+def step_pe_industry_stats() -> int:
+    """Aggregate AMAC data into pe_industry_* tables for the 私募行业 dashboard."""
+    project_root = SCRIPT_DIR.parent.parent
+    script_path = project_root / "scripts" / "db" / "pe_industry_stats_etl.py"
+    python_exe = os.environ.get("PYTHON_EXE") or (
+        "py" if sys.platform == "win32" else "python3"
+    )
+    prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
+    cmd = prefix + [str(script_path)]
+
+    log.info("pe_industry_stats: running pe_industry_stats_etl.py …")
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=1800,
+        env={**os.environ},
+        cwd=str(project_root),
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if stdout:
+        for line in stdout.splitlines():
+            log.info(line)
+    if stderr:
+        for line in stderr.splitlines():
+            log.info(line)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"pe_industry_stats_etl.py failed (exit {result.returncode}): "
+            f"{stderr or stdout or 'no output'}"
+        )
+
+    summary = None
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                summary = json.loads(line)
+                break
+            except json.JSONDecodeError:
+                continue
+
+    if summary and summary.get("ok"):
+        return int(summary.get("monthly_rows") or 0)
+    return 0
+
+
 def step_sync_amac_fund_metadata() -> int:
     """Sync 备案日期 / 公司管理规模 from amac_* tables into basicinfo_bfl_track."""
     project_root = SCRIPT_DIR.parent.parent
@@ -2661,6 +2711,7 @@ ORDERED_STEPS = [
     "amac_private_funds",            # AMAC disclosure list → amac_private_funds (+ new private_fund_info)
     "amac_extra",                    # AMAC managers / personnel / executive details → amac_* tables
     "sync_amac_fund_metadata",       # 备案日期 / 公司管理规模 → basicinfo_bfl_track
+    "pe_industry_stats",             # 私募行业 dashboard aggregates from amac_* tables
     "private_fund_indicators",       # recompute 私募基金 dashboard metrics from NAV
     "investment_pool_metrics",       # 在管产品 + FOF底层 + 跟踪产品 list caches
     "dd_materials_links",            # 尽调表格 ↔ 内部尽调资料 knowledge-base folder links
@@ -2780,6 +2831,7 @@ def main():
         "amac_private_funds":              lambda: step_amac_private_funds(force_full=force),
         "amac_extra":                      lambda: step_amac_extra(force_full=force),
         "sync_amac_fund_metadata":         lambda: step_sync_amac_fund_metadata(),
+        "pe_industry_stats":               lambda: step_pe_industry_stats(),
         "private_fund_indicators":         lambda: step_private_fund_indicators(conn),
         "investment_pool_metrics":         lambda: step_investment_pool_metrics(),
         "dd_materials_links":              lambda: step_dd_materials_links(),

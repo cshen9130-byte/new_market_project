@@ -152,6 +152,17 @@ function embeddedCodeMatchesBeian(code: string, beian: string): boolean {
   return code === beian || shareClassProductCodesMatch(code, beian)
 }
 
+function emailRowHasAttachmentDividendOffset(row: EmailNavRawRow): boolean {
+  const nav = parseOptionalNav(row.nav)
+  const cum = parseOptionalNav(row.cumulative_nav)
+  return (
+    nav != null
+    && cum != null
+    && isPlausibleEmailUnitNav(nav, cum)
+    && hasDividendOffset(nav, cum)
+  )
+}
+
 export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRawRow, beian: string): EmailNavRawRow {
   const currentTier = sourceTier(current.source, current.subject)
   const candidateTier = sourceTier(candidate.source, candidate.subject)
@@ -165,17 +176,11 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
     // (SNF018-style funds where attachment stores cum-as-unit are unaffected:
     //  their attachment has nav ≈ cum → no distinct cumulative → virtual still wins.)
     if (candidateTier < currentTier && candidateTier === -1 && currentTier === 0) {
-      const currNav = parseOptionalNav(current.nav)
-      const currCum = parseOptionalNav(current.cumulative_nav)
-      // Require plausible unit NAV + cum above unit (dividend offset). Reject attachments
-      // where unit was mis-parsed as fund AUM / share count (nav >> cum).
-      if (
-        currNav != null && currCum != null
-        && isPlausibleEmailUnitNav(currNav, currCum)
-        && hasDividendOffset(currNav, currCum)
-      ) {
-        return current
-      }
+      if (emailRowHasAttachmentDividendOffset(current)) return current
+    }
+    // Symmetric: virtual already stored as current, attachment arrives as candidate.
+    if (currentTier < candidateTier && currentTier === -1 && candidateTier === 0) {
+      if (emailRowHasAttachmentDividendOffset(candidate)) return candidate
     }
     return candidateTier < currentTier ? candidate : current
   }
@@ -1092,6 +1097,13 @@ function hasDistinctCumulative(nav: number, cumulative: number | null): boolean 
   return Math.abs(cumulative - nav) / nav > 0.001
 }
 
+/** Reject FOF virtual performance-fee rows whose cum sits below unit (not fund 累计净值). */
+function isUsableEmailCumulativeNav(unit: number, cum: number | null): boolean {
+  if (cum == null || !isReasonableNav(cum)) return false
+  if (!hasDistinctCumulative(unit, cum)) return false
+  return cum >= unit - 0.001
+}
+
 /** Cumulative NAV materially above unit NAV — post-dividend structure (e.g. cum = unit + 0.21). */
 function hasDividendOffset(unit: number, cum: number): boolean {
   return cum - unit > 0.05
@@ -1810,7 +1822,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
 
     const emailCum = parseOptionalNav(row.cumulative_nav)
     const emailAdjRaw = parseOptionalNav(row.adjusted_nav)
-    const hasEmailCum = hasDistinctCumulative(unitNav, emailCum)
+    const hasEmailCum = isUsableEmailCumulativeNav(unitNav, emailCum)
     const existing = byDate.get(row.price_date)
     const prevDate = sortedLegacyDates.filter((d) => d < row.price_date).at(-1)
       ?? Array.from(byDate.keys()).filter((d) => d < row.price_date).sort().at(-1)

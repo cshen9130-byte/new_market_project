@@ -4,9 +4,7 @@ import { useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { ChevronDown, ChevronUp, Download, Menu } from "lucide-react"
 import {
-  PE_INDUSTRY_REGION_DONUT,
   PE_INDUSTRY_REGION_NOTE,
-  PE_INDUSTRY_REGION_TABLE,
   type PeIndustryRegionRow,
 } from "@/lib/pe-industry-data"
 
@@ -15,7 +13,9 @@ const PAGE_SIZE = 10
 type SortKey = "managerCount" | "activeProductCount"
 type SortDir = "asc" | "desc"
 
-function buildDonutOption(): Record<string, unknown> {
+function buildDonutOption(
+  regionDonut: Array<{ name: string; value: number; color: string }>,
+): Record<string, unknown> {
   return {
     backgroundColor: "transparent",
     animation: false,
@@ -48,7 +48,7 @@ function buildDonutOption(): Record<string, unknown> {
           length: 12,
           length2: 8,
         },
-        data: PE_INDUSTRY_REGION_DONUT.map((item) => ({
+        data: regionDonut.map((item) => ({
           name: item.name,
           value: item.value,
           itemStyle: { color: item.color },
@@ -115,20 +115,26 @@ function SortHeader({
   )
 }
 
-export function PeIndustryRegionSection() {
+export function PeIndustryRegionSection({
+  regionDonut,
+  regionTable,
+}: {
+  regionDonut: Array<{ name: string; value: number; color: string }>
+  regionTable: PeIndustryRegionRow[]
+}) {
   const [page, setPage] = useState(1)
   const [sortKey, setSortKey] = useState<SortKey>("managerCount")
   const [sortDir, setSortDir] = useState<SortDir>("desc")
-  const donutOption = useMemo(() => buildDonutOption(), [])
+  const donutOption = useMemo(() => buildDonutOption(regionDonut), [regionDonut])
 
   const sortedRows = useMemo(() => {
-    const rows = [...PE_INDUSTRY_REGION_TABLE]
+    const rows = [...regionTable]
     rows.sort((a, b) => {
       const diff = a[sortKey] - b[sortKey]
       return sortDir === "asc" ? diff : -diff
     })
     return rows
-  }, [sortKey, sortDir])
+  }, [regionTable, sortKey, sortDir])
 
   const totalPages = Math.max(1, Math.ceil(sortedRows.length / PAGE_SIZE))
   const pagedRows = sortedRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
@@ -153,7 +159,11 @@ export function PeIndustryRegionSection() {
 
         <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <div className="min-w-0">
-            <ReactECharts option={donutOption} style={{ height: 320, width: "100%" }} notMerge lazyUpdate />
+            {regionDonut.length > 0 ? (
+              <ReactECharts option={donutOption} style={{ height: 320, width: "100%" }} notMerge lazyUpdate />
+            ) : (
+              <div className="flex items-center justify-center h-[320px] text-sm text-zinc-400">暂无地区分布数据</div>
+            )}
           </div>
 
           <div className="min-w-0 rounded border border-zinc-100 overflow-hidden flex flex-col">
@@ -168,7 +178,8 @@ export function PeIndustryRegionSection() {
               <button
                 type="button"
                 onClick={() => exportRegionCsv(sortedRows)}
-                className="inline-flex items-center gap-1 h-7 px-2.5 rounded border border-zinc-200 text-xs text-zinc-600 hover:bg-white transition-colors"
+                disabled={sortedRows.length === 0}
+                className="inline-flex items-center gap-1 h-7 px-2.5 rounded border border-zinc-200 text-xs text-zinc-600 hover:bg-white transition-colors disabled:opacity-40"
               >
                 <Download className="h-3.5 w-3.5" />
                 导出

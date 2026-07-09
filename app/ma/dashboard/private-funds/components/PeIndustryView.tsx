@@ -1,16 +1,18 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { BarChart2, Building2, ChevronDown, Coins, TableIcon, Timer } from "lucide-react"
 import {
-  PE_INDUSTRY_MANAGER_SCALE_DIST,
-  PE_INDUSTRY_SUMMARY,
   formatPeIndustryMonthLabel,
   formatPeIndustryNumber,
   peIndustryRowsForGranularity,
   type PeIndustryGranularity,
+  type PeIndustryManagerScaleChange,
   type PeIndustryMonthRow,
+  type PeIndustryRegionRow,
+  type PeIndustryScaleTrendPoint,
+  type PeIndustrySummary,
 } from "@/lib/pe-industry-data"
 import { PeIndustryManagerScaleSection } from "./PeIndustryManagerScaleSection"
 import { PeIndustryRegionSection } from "./PeIndustryRegionSection"
@@ -328,6 +330,21 @@ function buildCategoryBarOption(
 
 export function PeIndustryView() {
   const [granularity, setGranularity] = useState<PeIndustryGranularity>("month")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [summary, setSummary] = useState<PeIndustrySummary | null>(null)
+  const [monthly, setMonthly] = useState<PeIndustryMonthRow[]>([])
+  const [scaleDist, setScaleDist] = useState<{ updatedAt: string; buckets: { label: string; count: number }[] }>({
+    updatedAt: "",
+    buckets: [],
+  })
+  const [scaleTrend, setScaleTrend] = useState<PeIndustryScaleTrendPoint[]>([])
+  const [scaleChanges, setScaleChanges] = useState<{ updatedAt: string; rows: PeIndustryManagerScaleChange[] }>({
+    updatedAt: "",
+    rows: [],
+  })
+  const [regionDonut, setRegionDonut] = useState<Array<{ name: string; value: number; color: string }>>([])
+  const [regionTable, setRegionTable] = useState<PeIndustryRegionRow[]>([])
   const [viewModes, setViewModes] = useState({
     newFiling: "chart" as "chart" | "table",
     newManager: "chart" as "chart" | "table",
@@ -338,8 +355,47 @@ export function PeIndustryView() {
     scaleDist: "chart" as "chart" | "table",
   })
 
-  const rows = useMemo(() => peIndustryRowsForGranularity(granularity), [granularity])
-  const summary = PE_INDUSTRY_SUMMARY
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    fetch("/ma/api/pe-industry", { cache: "no-store" })
+      .then(async (res) => {
+        const body = await res.json()
+        if (!res.ok || !body.ok) {
+          throw new Error(body.error || `HTTP ${res.status}`)
+        }
+        if (cancelled) return
+        setSummary(body.summary)
+        setMonthly(body.monthly ?? [])
+        setScaleDist(body.managerScaleDist ?? { updatedAt: "", buckets: [] })
+        setScaleTrend(body.scaleTrend ?? [])
+        setScaleChanges(body.scaleChanges ?? { updatedAt: "", rows: [] })
+        setRegionDonut(body.regionDonut ?? [])
+        setRegionTable(body.regionTable ?? [])
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "加载失败")
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const chartMonthly = useMemo(
+    () => monthly.slice(-12),
+    [monthly],
+  )
+
+  const rows = useMemo(
+    () => peIndustryRowsForGranularity(chartMonthly, granularity),
+    [chartMonthly, granularity],
+  )
 
   const periodRows = useMemo(
     () => rows.map((r) => ({ period: formatPeIndustryMonthLabel(r.month, granularity), ...r })),
@@ -370,7 +426,6 @@ export function PeIndustryView() {
     () => buildBarOption(rows, granularity, "deregisteredManagerCount", "注销数量"),
     [rows, granularity],
   )
-  const scaleDist = PE_INDUSTRY_MANAGER_SCALE_DIST
   const scaleDistOption = useMemo(
     () => buildCategoryBarOption(
       scaleDist.buckets.map((b) => b.label),
@@ -386,6 +441,22 @@ export function PeIndustryView() {
 
   function setViewMode(key: keyof typeof viewModes, mode: "chart" | "table") {
     setViewModes((prev) => ({ ...prev, [key]: mode }))
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16 text-sm text-zinc-500">
+        正在加载私募行业数据…
+      </div>
+    )
+  }
+
+  if (error || !summary) {
+    return (
+      <div className="rounded-lg border border-red-100 bg-red-50 px-4 py-6 text-sm text-red-700">
+        私募行业数据加载失败：{error ?? "暂无数据"}。请确认已运行 nightly ETL 中的 pe_industry_stats 步骤。
+      </div>
+    )
   }
 
   return (
@@ -511,9 +582,9 @@ export function PeIndustryView() {
         tableRows={scaleDistRows}
       />
 
-      <PeIndustryManagerScaleSection />
+      <PeIndustryManagerScaleSection scaleTrend={scaleTrend} scaleChanges={scaleChanges} />
 
-      <PeIndustryRegionSection />
+      <PeIndustryRegionSection regionDonut={regionDonut} regionTable={regionTable} />
     </div>
   )
 }

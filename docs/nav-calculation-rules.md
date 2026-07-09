@@ -601,6 +601,30 @@ All 43 test assertions pass. All 52 FOF底层 funds satisfy `adj >= cum >= unit`
 
 ---
 
+## What Was Fixed (2026-07-09 — SBPC20 Jul 8 unit=cum=adj regression)
+
+**Symptom:** Fund detail for **六妙星九紫一号 (SBPC20)** showed **单位净值 = 累计净值 = 复权净值 = 1.1565** on **2026-07-08** (reference platform: unit **1.1565**, cum **~1.3696**, adj **~1.4030**). Historical Jun–Jul rows also collapsed to unit-only after **2026-06-11**.
+
+**Root cause (two gaps in the prior SBPC20 fix):**
+
+1. **`preferEmailNavRow` was one-directional** — attachment-wins-over-virtual only fired when attachment was already `current` and virtual was `candidate`. When a **虚拟业绩报酬** row was stored first, later attachment rows could not displace it.
+2. **Merge accepted virtual `cum` below unit** — FOF fee-accrual body emails carry cum slightly under unit; `hasDistinctCumulative` treated that as valid 累计, blocking rechaining from the Jun-11 dividend anchor.
+
+**Fix (extends 2026-07-02 SBPC20 logic; SNF018 virtual-first unchanged):**
+
+| Area | File / function | What changed |
+|---|---|---|
+| Symmetric attachment guard | `preferEmailNavRow`, `emailRowHasAttachmentDividendOffset` | When virtual is `current` and attachment is `candidate`, keep attachment if it has post-dividend cum > unit |
+| Reject sub-unit email cum | `isUsableEmailCumulativeNav`, `mergeNavSeriesWithEmail` | Ignore email 累计 when cum < unit; finalize rechains from prior dividend row |
+
+**Verified after fix (2026-07-08):** unit **1.1565**, cum **1.3696**, adj **1.3696**; **2026-07-01** daily change **+1.74%** (not −20%).
+
+Regression: `npx tsx scripts/test-nav-rechain.mjs` (SBPC20 Jul 8 virtual-first + merged cum cases).
+
+**Does NOT change:** SNF018 virtual-first, SNF018 legacy-adj keep, SBAH99, SSG947, SLA063, SQX078, SBPU97 fixes.
+
+---
+
 ## What Was Fixed (衡颐海泰1号 — SBPU97, 2026-07-06 — wrong seed scale caused NAV cliff)
 
 ### The Problem
