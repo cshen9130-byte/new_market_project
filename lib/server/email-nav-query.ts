@@ -1587,21 +1587,40 @@ function isReturnIndexLikeRow(row: LegacyNavRow, baselineUnit: number): boolean 
   return unit / baselineUnit >= ISOLATED_SPIKE_RATIO
 }
 
-/** Last row before `beforeIdx` whose unit NAV is not a return-index spike vs its predecessor. */
+/** Typical unit NAV from recent rows before index `i` (excludes already-inflated values). */
+function typicalUnitNavBefore(rows: LegacyNavRow[], i: number): number | null {
+  const window = rows.slice(Math.max(0, i - 30), i)
+  const units = window
+    .map((row) => parseOptionalNav(row.nav))
+    .filter((u): u is number => u != null && u > 0 && u < 2.5)
+  if (units.length === 0) return null
+  units.sort((a, b) => a - b)
+  return units[Math.floor(units.length / 2)]
+}
+
+function isReturnIndexLikeVsHistory(row: LegacyNavRow, rows: LegacyNavRow[], index: number): boolean {
+  if (!navFieldsAllEqual(row)) return false
+  const unit = parseOptionalNav(row.nav)
+  if (unit == null) return false
+  const typical = typicalUnitNavBefore(rows, index)
+  if (typical != null && typical > 0 && unit / typical >= ISOLATED_SPIKE_RATIO) {
+    return true
+  }
+  if (index > 0) {
+    const prevUnit = parseOptionalNav(rows[index - 1].nav)
+    if (prevUnit != null && prevUnit > 0 && unit / prevUnit >= ISOLATED_SPIKE_RATIO) {
+      return true
+    }
+  }
+  return false
+}
+
+/** Last row before `beforeIdx` whose unit NAV is not a return-index spike vs recent history. */
 function findLastSaneNavIndex(rows: LegacyNavRow[], beforeIdx: number): number {
   for (let i = Math.min(beforeIdx - 1, rows.length - 1); i >= 0; i -= 1) {
     const unit = parseOptionalNav(rows[i].nav)
     if (unit == null || !isReasonableNav(unit)) continue
-    if (i > 0) {
-      const prevUnit = parseOptionalNav(rows[i - 1].nav)
-      if (
-        prevUnit != null &&
-        navFieldsAllEqual(rows[i]) &&
-        unit / prevUnit >= ISOLATED_SPIKE_RATIO
-      ) {
-        continue
-      }
-    }
+    if (isReturnIndexLikeVsHistory(rows[i], rows, i)) continue
     return i
   }
   return -1

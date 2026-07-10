@@ -946,7 +946,7 @@ The value **4.6587 ≈ 1 + 365.87%** — a cumulative-return index (成立以来
 | Area | File / function | What changed |
 |---|---|---|
 | Terminal spike removal | `sanitizeIsolatedNavSpikes` | Drop last (or gap) rows where unit/cum/adj are equal and unit jumps >100% from prior; skip ex-div dates and V-shape middles (still handled by `sanitizeVShapeNavOutliers`) |
-| Multi-day return-index tail | `sanitizeReturnIndexTail` | After spike cleanup, drop trailing run of unit=cum=adj rows still at ~成立以来倍数 vs last sane baseline (SBDF95 **2026-07-07/08** when first row spiked from **2026-07-01**) |
+| Multi-day return-index tail | `sanitizeReturnIndexTail` | After spike cleanup, drop trailing run of unit=cum=adj rows still at ~成立以来倍数 vs last sane baseline (SBDF95 **2026-07-07/08** when first row spiked from **2026-07-01**). Baseline uses median of prior ~30 sane unit rows so consecutive corrupt rows (07-03→07-06→07-08) are all removed even when day-over-day change is flat. |
 | Pipeline order | `finalizeNavSeries` | Runs `sanitizeIsolatedNavSpikes` then `sanitizeReturnIndexTail`, before corrupt-unit repair |
 | Citics xlsx column guard | `isNonUnitNavHeader`, `UNIT_NAV_HEADER_PATTERNS` | Exclude 资产净值 / 净资产 / 份额 / 收益率 headers from unit scoring; require explicit 单位净值-style headers |
 | Workbook row filter | `filterImplausibleWorkbookNavRows` | Skip same-pattern spike rows during `analyzeNavWorkbook` ingest |

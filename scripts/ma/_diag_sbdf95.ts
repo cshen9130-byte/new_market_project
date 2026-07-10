@@ -6,9 +6,17 @@ import {
   selectNavTableAttachments,
 } from "../../lib/server/email-nav-attachment"
 import { extractNavMetadata } from "../../lib/server/email-nav-extract"
-import { mergeNavSeriesWithEmail } from "../../lib/server/email-nav-query"
+import {
+  loadEmailNavSeries,
+  loadPrivateFundLegacyNavRows,
+  mergeNavSeriesWithEmail,
+} from "../../lib/server/email-nav-query"
 
 loadProjectEnvFiles()
+
+const BEIAN = "SBDF95"
+const PRODUCT_NAME = "锐耐稳健对冲11号私募证券投资基金"
+const SHORT_NAME = "锐耐稳健对冲11号"
 
 const subject =
   "【基金净值】SBDF95(总)_锐耐稳健对冲11号私募证券投资基金_20250808-20260702"
@@ -54,17 +62,9 @@ async function main() {
           OR attachment_filename ILIKE '%锐耐%'`,
     )
 
-    const parse = await query<{
-      subj: string | null
-      att: string | null
-      nav_parse_status: string | null
-      nav_saved_count: number | null
-    }>(
-      `SELECT left(subject, 100) AS subj,
-              left(attachment_filename, 80) AS att,
-              nav_parse_status,
-              nav_saved_count
-       FROM ops_email_parse_records
+    const parse = await query<{ subj: string | null; sent_at: string }>(
+      `SELECT left(subject, 100) AS subj, sent_at::text
+       FROM ops_email_valuation_records
        WHERE subject ILIKE '%SBDF95%' OR subject ILIKE '%锐耐稳健%'
        ORDER BY sent_at DESC
        LIMIT 5`,
@@ -82,6 +82,19 @@ async function main() {
     console.log("nav rows:", nav[0]?.n)
     console.log("parse records:", parse)
     console.log("latest email nav:", latest)
+
+    const legacy = await loadPrivateFundLegacyNavRows(BEIAN, PRODUCT_NAME, SHORT_NAME)
+    const email = await loadEmailNavSeries(BEIAN, PRODUCT_NAME)
+    const nav_series = mergeNavSeriesWithEmail(legacy, email)
+    console.log("\n=== merged series (legacy + email) ===")
+    console.log("legacy rows:", legacy.length, "email rows:", email.length, "merged:", nav_series.length)
+    for (const r of nav_series.filter((x) => x.price_date >= "2026-06-28")) {
+      console.log(r.price_date, "unit", r.nav, "cum", r.cum_nav_withdrawal, "adj", r.cumulative_nav)
+    }
+    const latestMerged = nav_series.at(-1)
+    console.log("\nlatest merged:", latestMerged?.price_date, latestMerged?.nav, latestMerged?.cum_nav_withdrawal)
+    const maxUnit = Math.max(...nav_series.map((r) => parseFloat(r.nav)))
+    console.log("max unit:", maxUnit, "tail corrupt removed:", maxUnit < 2)
   } catch (err) {
     console.log("\n=== database (skipped — no connection) ===")
     console.log(String(err))
