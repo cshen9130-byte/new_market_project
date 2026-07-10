@@ -946,7 +946,8 @@ The value **4.6587 ≈ 1 + 365.87%** — a cumulative-return index (成立以来
 | Area | File / function | What changed |
 |---|---|---|
 | Terminal spike removal | `sanitizeIsolatedNavSpikes` | Drop last (or gap) rows where unit/cum/adj are equal and unit jumps >100% from prior; skip ex-div dates and V-shape middles (still handled by `sanitizeVShapeNavOutliers`) |
-| Pipeline order | `finalizeNavSeries` | Runs `sanitizeIsolatedNavSpikes` after V-shape cleanup, before corrupt-unit repair |
+| Multi-day return-index tail | `sanitizeReturnIndexTail` | After spike cleanup, drop trailing run of unit=cum=adj rows still at ~成立以来倍数 vs last sane baseline (SBDF95 **2026-07-07/08** when first row spiked from **2026-07-01**) |
+| Pipeline order | `finalizeNavSeries` | Runs `sanitizeIsolatedNavSpikes` then `sanitizeReturnIndexTail`, before corrupt-unit repair |
 | Citics xlsx column guard | `isNonUnitNavHeader`, `UNIT_NAV_HEADER_PATTERNS` | Exclude 资产净值 / 净资产 / 份额 / 收益率 headers from unit scoring; require explicit 单位净值-style headers |
 | Workbook row filter | `filterImplausibleWorkbookNavRows` | Skip same-pattern spike rows during `analyzeNavWorkbook` ingest |
 

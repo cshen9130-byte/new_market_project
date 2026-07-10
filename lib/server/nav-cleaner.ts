@@ -448,6 +448,13 @@ function detectColumns(rows: unknown[][], headerRowIndex: number) {
   }
 }
 
+function isWorkbookReturnIndexRow(row: NavCleanerRow, baselineUnit: number): boolean {
+  const allEqual =
+    Math.abs(row.unitNav - row.cumulativeNav) / row.unitNav < 0.001 &&
+    (row.adjustedNav == null || Math.abs(row.unitNav - row.adjustedNav) / row.unitNav < 0.001)
+  return allEqual && row.unitNav / baselineUnit >= 2
+}
+
 /** Drop summary rows where cumulative-return / AUM columns were misread as unit NAV. */
 function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: string[]): NavCleanerRow[] {
   if (rows.length < 2) return rows
@@ -469,7 +476,36 @@ function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: strin
     }
     filtered.push(row)
   }
-  return filtered
+
+  let baselineIdx = -1
+  for (let i = filtered.length - 1; i >= 0; i -= 1) {
+    const unit = filtered[i]?.unitNav
+    if (unit == null || !Number.isFinite(unit)) continue
+    if (i > 0) {
+      const prevUnit = filtered[i - 1]?.unitNav
+      if (
+        prevUnit != null &&
+        Math.abs(unit - filtered[i].cumulativeNav) / unit < 0.001 &&
+        unit / prevUnit >= SPIKE_RATIO
+      ) {
+        continue
+      }
+    }
+    baselineIdx = i
+    break
+  }
+  if (baselineIdx < 0 || baselineIdx >= filtered.length - 1) return filtered
+
+  const baselineUnit = filtered[baselineIdx].unitNav
+  let cutFrom = filtered.length
+  for (let i = filtered.length - 1; i > baselineIdx; i -= 1) {
+    if (!isWorkbookReturnIndexRow(filtered[i], baselineUnit)) break
+    warnings.push(
+      `已跳过 ${filtered[i].date} 异常净值 ${filtered[i].unitNav}（尾部累计收益指数误读，相对基准 ${baselineUnit} 过高）`,
+    )
+    cutFrom = i
+  }
+  return cutFrom < filtered.length ? filtered.slice(0, cutFrom) : filtered
 }
 
 function isChinaTradingDay(isoDate: string) {

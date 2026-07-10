@@ -30,9 +30,19 @@ async function main() {
     { price_date: "2026-07-03", nav: "4.6587", cumulative_nav: "4.6587", cum_nav_withdrawal: "4.6587", price_change: "" },
   ]
   const merged = mergeNavSeriesWithEmail(sampleLegacy, [])
-  console.log("\n=== merge (no DB) ===")
+  console.log("\n=== merge single spike (no DB) ===")
   console.log("rows:", merged.map((r) => ({ d: r.price_date, unit: r.nav, cum: r.cum_nav_withdrawal, adj: r.cumulative_nav })))
   console.log("spike removed:", !merged.some((r) => r.price_date === "2026-07-03"))
+
+  const tailLegacy = [
+    { price_date: "2026-07-01", nav: "1.0214", cumulative_nav: "1.0214", cum_nav_withdrawal: "1.0214", price_change: "" },
+    { price_date: "2026-07-07", nav: "4.6831", cumulative_nav: "4.6831", cum_nav_withdrawal: "4.6831", price_change: "" },
+    { price_date: "2026-07-08", nav: "4.6627", cumulative_nav: "4.6627", cum_nav_withdrawal: "4.6627", price_change: "" },
+  ]
+  const tailMerged = mergeNavSeriesWithEmail(tailLegacy, [])
+  console.log("\n=== merge multi-day tail (no DB) ===")
+  console.log("rows:", tailMerged.map((r) => ({ d: r.price_date, unit: r.nav })))
+  console.log("tail removed:", !tailMerged.some((r) => r.price_date >= "2026-07-07"))
 
   try {
     const nav = await query<{ n: string }>(

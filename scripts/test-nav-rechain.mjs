@@ -469,6 +469,16 @@ const sbdf95Latest = sbdf95Out.at(-1)
 assert("SBDF95 latest ~1.0214", Math.abs(parseFloat(sbdf95Latest.nav) - 1.0214) < 0.001)
 assert("SBDF95 max unit sane", Math.max(...sbdf95Out.map((r) => parseFloat(r.nav))) < 2)
 
+const sbdf95Tail = [
+  { price_date: "2026-06-30", nav: "1.0284", cumulative_nav: "1.0284", cum_nav_withdrawal: "1.0284", price_change: "" },
+  { price_date: "2026-07-01", nav: "1.0214", cumulative_nav: "1.0214", cum_nav_withdrawal: "1.0214", price_change: "" },
+  { price_date: "2026-07-07", nav: "4.6831", cumulative_nav: "4.6831", cum_nav_withdrawal: "4.6831", price_change: "" },
+  { price_date: "2026-07-08", nav: "4.6627", cumulative_nav: "4.6627", cum_nav_withdrawal: "4.6627", price_change: "" },
+]
+const sbdf95TailOut = mergeNavSeriesWithEmail(sbdf95Tail, [])
+assert("SBDF95 multi-day return-index tail removed", !sbdf95TailOut.some((r) => r.price_date >= "2026-07-07"))
+assert("SBDF95 tail latest ~1.0214", Math.abs(parseFloat(sbdf95TailOut.at(-1).nav) - 1.0214) < 0.001)
+
 // AVM354 笃熙泰渊流1号A类: platform stored 单位 in 复权 while 累计 is correct (post-dividend)
 const avm354Legacy = [
   { price_date: "2026-06-03", nav: "1.1710", cum_nav_withdrawal: "1.9226", cumulative_nav: "1.1710", price_change: "" },

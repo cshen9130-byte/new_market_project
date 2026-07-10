@@ -1580,6 +1580,56 @@ function navFieldsAllEqual(row: LegacyNavRow): boolean {
   return true
 }
 
+function isReturnIndexLikeRow(row: LegacyNavRow, baselineUnit: number): boolean {
+  if (!navFieldsAllEqual(row)) return false
+  const unit = parseOptionalNav(row.nav)
+  if (unit == null || baselineUnit <= 0) return false
+  return unit / baselineUnit >= ISOLATED_SPIKE_RATIO
+}
+
+/** Last row before `beforeIdx` whose unit NAV is not a return-index spike vs its predecessor. */
+function findLastSaneNavIndex(rows: LegacyNavRow[], beforeIdx: number): number {
+  for (let i = Math.min(beforeIdx - 1, rows.length - 1); i >= 0; i -= 1) {
+    const unit = parseOptionalNav(rows[i].nav)
+    if (unit == null || !isReasonableNav(unit)) continue
+    if (i > 0) {
+      const prevUnit = parseOptionalNav(rows[i - 1].nav)
+      if (
+        prevUnit != null &&
+        navFieldsAllEqual(rows[i]) &&
+        unit / prevUnit >= ISOLATED_SPIKE_RATIO
+      ) {
+        continue
+      }
+    }
+    return i
+  }
+  return -1
+}
+
+/**
+ * Drop trailing run of return-index rows (unit=cum=adj at ~成立以来倍数) after a sane baseline.
+ * Handles multi-day tails where only the first row spiked vs baseline (SBDF95 2026-07-07/08).
+ */
+function sanitizeReturnIndexTail(rows: LegacyNavRow[]): LegacyNavRow[] {
+  if (rows.length < 2) return rows
+
+  const baselineIdx = findLastSaneNavIndex(rows, rows.length)
+  if (baselineIdx < 0) return rows
+
+  const baselineUnit = parseOptionalNav(rows[baselineIdx].nav)
+  if (baselineUnit == null || baselineUnit <= 0) return rows
+
+  let cutFrom = rows.length
+  for (let i = rows.length - 1; i > baselineIdx; i -= 1) {
+    if (!isReturnIndexLikeRow(rows[i], baselineUnit)) break
+    cutFrom = i
+  }
+
+  if (cutFrom >= rows.length) return rows
+  return rows.slice(0, cutFrom)
+}
+
 /**
  * Drop terminal (or gap) rows where unit/cum/adj collapsed to one value that jumped
  * >100% from the prior row — e.g. legacy platform storing cumulative-return index as NAV.
@@ -1805,6 +1855,7 @@ function finalizeNavSeries(
   out = repairSwappedCumAdjRows(out)
   out = sanitizeVShapeNavOutliers(out)
   out = sanitizeIsolatedNavSpikes(out)
+  out = sanitizeReturnIndexTail(out)
   out = repairCorruptUnitNavRows(out)
   out = syncExDivAdjustedNav(out)
   out = propagateMissingAdjRows(out)
