@@ -32,6 +32,14 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
@@ -90,6 +98,15 @@ export default function DataImportPage() {
   const [showEtlLog, setShowEtlLog] = useState(false)
   const [autoFollowLog, setAutoFollowLog] = useState(true)
   const [showXlsxUpload, setShowXlsxUpload] = useState(false)
+  const [etlCompleteDialog, setEtlCompleteDialog] = useState<{
+    status: "success" | "error" | "timeout"
+    description: string
+    totalFiles?: number
+    totalRows?: number
+    okFiles?: number
+    errorFiles?: number
+    lastRun?: string | null
+  } | null>(null)
 
   // ── Capital-flow import state ──────────────────────────────────────────────
   const capitalFlowInputRef = useRef<HTMLInputElement | null>(null)
@@ -219,8 +236,10 @@ export default function DataImportPage() {
       const data = await res.json()
       if (!res.ok) throw new Error(readError(data, "ETL状态查询失败"))
       setEtlStatus(data)
+      return data as typeof etlStatus
     } catch {
       // non-critical, don't toast
+      return null
     } finally {
       setIsLoadingEtl(false)
     }
@@ -241,23 +260,29 @@ export default function DataImportPage() {
     }
   }, [toast])
 
-  const runEtl = useCallback(async (opts?: { skipDedup?: boolean; skipMarketData?: boolean; reset?: boolean }) => {
+  const runEtl = useCallback(async (opts?: { skipDedup?: boolean; skipMarketData?: boolean; reset?: boolean; folders?: string[] }) => {
     setIsRunningEtl(true)
     setEtlLog([])
     setShowEtlLog(true)
     setAutoFollowLog(true)
+    setEtlCompleteDialog(null)
+    let exitCode: string | null = null
     try {
       const res = await fetch("/ma/api/mom-analysis/data-import/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ skipDedup: opts?.skipDedup ?? false, skipMarketData: opts?.skipMarketData ?? false, reset: opts?.reset ?? false }),
+        body: JSON.stringify({
+          skipDedup: opts?.skipDedup ?? false,
+          skipMarketData: opts?.skipMarketData ?? false,
+          reset: opts?.reset ?? false,
+          ...(opts?.folders && opts.folders.length > 0 ? { folders: opts.folders } : {}),
+        }),
       })
       if (!res.body) throw new Error("无响应流")
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ""
-      let exitCode: string | null = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -284,23 +309,50 @@ export default function DataImportPage() {
       }
 
       if (exitCode === "0") {
-        toast({ title: "ETL 完成", description: "数据已写入数据库并完成标准化命名。" })
         setFolderFiles({})
         setExpandedFolder(null)
         await loadFolders()
         await checkDates()
-      } else if (exitCode === "timeout") {
-        toast({ title: "ETL 超时", description: "运行超过 30 分钟被终止。", variant: "destructive" })
-      } else {
-        toast({ title: "ETL 失败", description: `退出码 ${exitCode ?? "unknown"}`, variant: "destructive" })
       }
     } catch (e) {
+      exitCode = "error"
       toast({ title: "ETL 失败", description: e instanceof Error ? e.message : "运行失败", variant: "destructive" })
     } finally {
       setIsRunningEtl(false)
-      await checkEtlStatus()
+      const latestStatus = await checkEtlStatus()
+
+      if (exitCode === "0") {
+        setEtlCompleteDialog({
+          status: "success",
+          description: opts?.folders?.length
+            ? "数据已写入数据库并完成标准化命名。"
+            : "数据已写入数据库。",
+          totalFiles: latestStatus?.totalFiles,
+          totalRows: latestStatus?.totalRows,
+          okFiles: latestStatus?.okFiles,
+          errorFiles: latestStatus?.errorFiles,
+          lastRun: latestStatus?.lastRun,
+        })
+      } else if (exitCode === "timeout") {
+        setEtlCompleteDialog({
+          status: "timeout",
+          description: "运行超过 30 分钟被终止。",
+        })
+      } else if (exitCode !== null) {
+        setEtlCompleteDialog({
+          status: "error",
+          description: exitCode === "error"
+            ? "ETL 运行失败，请查看日志了解详情。"
+            : `ETL 退出码 ${exitCode}，请查看日志了解详情。`,
+          totalFiles: latestStatus?.totalFiles,
+          totalRows: latestStatus?.totalRows,
+          okFiles: latestStatus?.okFiles,
+          errorFiles: latestStatus?.errorFiles,
+          lastRun: latestStatus?.lastRun,
+        })
+      }
     }
-  }, [toast, checkEtlStatus, loadFolders, checkDates])
+  }, [checkEtlStatus, loadFolders, checkDates, toast])
 
   useEffect(() => {
     autoFollowLogRef.current = autoFollowLog
@@ -650,15 +702,39 @@ export default function DataImportPage() {
       }
     }
 
-    if (allExtracted.length > 0) setPendingRenameFolders((prev) => [...new Set([...prev, ...allExtracted])])
     setFolderFiles({})
     setExpandedFolder(null)
     await loadFolders()
     await checkDates()
     setIsUploading(false)
     if (zipInputRef.current) zipInputRef.current.value = ""
-    // Auto-trigger ETL whenever at least one file was successfully extracted
-    if (allExtracted.length > 0) void runEtl()
+
+    if (allExtracted.length > 0) {
+      const uniqueFolders = [...new Set(allExtracted)]
+
+      // Rename only the newly extracted folders before ETL (same as xlsx upload path)
+      setIsRenaming(true)
+      setRenameResult(null)
+      try {
+        const renameRes = await fetch("/ma/api/mom-analysis/data-import/rename", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folders: uniqueFolders }),
+        })
+        const renameData = await renameRes.json()
+        setRenameResult(renameData)
+        if (!renameData.nothingToDo) {
+          setFolderFiles({})
+          setExpandedFolder(null)
+          await loadFolders()
+          await checkDates()
+        }
+      } finally {
+        setIsRenaming(false)
+      }
+
+      void runEtl({ skipDedup: true, skipMarketData: true })
+    }
   }
 
   async function handleUpload(file: File) {
@@ -2171,6 +2247,76 @@ export default function DataImportPage() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={etlCompleteDialog !== null} onOpenChange={(open) => { if (!open) setEtlCompleteDialog(null) }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {etlCompleteDialog?.status === "success" ? (
+                <>
+                  <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                  ETL 完成
+                </>
+              ) : etlCompleteDialog?.status === "timeout" ? (
+                <>
+                  <AlertCircle className="h-5 w-5 text-amber-500" />
+                  ETL 超时
+                </>
+              ) : (
+                <>
+                  <AlertCircle className="h-5 w-5 text-destructive" />
+                  ETL 失败
+                </>
+              )}
+            </DialogTitle>
+            <DialogDescription>{etlCompleteDialog?.description}</DialogDescription>
+          </DialogHeader>
+
+          {etlCompleteDialog?.status === "success" && etlCompleteDialog.totalFiles != null && (
+            <div className="rounded-md border border-border/50 bg-muted/30 px-4 py-3 text-sm space-y-1.5">
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground">入库文件</span>
+                <span className="font-medium tabular-nums">{etlCompleteDialog.totalFiles.toLocaleString()} 个</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground">入库行数</span>
+                <span className="font-medium tabular-nums">{etlCompleteDialog.totalRows?.toLocaleString() ?? "—"}</span>
+              </div>
+              <div className="flex justify-between gap-4">
+                <span className="text-muted-foreground">状态</span>
+                <span className={etlCompleteDialog.errorFiles ? "text-amber-600 dark:text-amber-400 font-medium" : "text-emerald-600 dark:text-emerald-400 font-medium"}>
+                  {etlCompleteDialog.errorFiles
+                    ? `${etlCompleteDialog.okFiles ?? 0} 成功 / ${etlCompleteDialog.errorFiles} 失败`
+                    : "全部成功"}
+                </span>
+              </div>
+              {etlCompleteDialog.lastRun && (
+                <div className="flex justify-between gap-4">
+                  <span className="text-muted-foreground">完成时间</span>
+                  <span className="font-medium">{new Date(etlCompleteDialog.lastRun).toLocaleString("zh-CN")}</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 sm:gap-0">
+            {etlLog.length > 0 && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowEtlLog(true)
+                  setEtlCompleteDialog(null)
+                }}
+              >
+                查看日志
+              </Button>
+            )}
+            <Button onClick={() => setEtlCompleteDialog(null)}>
+              确定
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

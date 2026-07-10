@@ -37,11 +37,15 @@ export async function POST(request: Request) {
   let skipDedup = false
   let skipMarketData = false
   let reset = false
+  let renameFolders: string[] | null = null
   try {
     const body = await request.json()
     if (body?.skipDedup) skipDedup = true
     if (body?.skipMarketData) skipMarketData = true
     if (body?.reset) reset = true
+    if (Array.isArray(body?.folders) && body.folders.length > 0) {
+      renameFolders = body.folders as string[]
+    }
   } catch { /* no body or not JSON — use defaults */ }
 
   const args = [script]
@@ -123,42 +127,44 @@ export async function POST(request: Request) {
       proc.on("close", async (code: number | null) => {
         clearTimeout(timer)
         if (code === 0) {
-          send("[rename] ETL 完成，开始标准化命名…")
-          try {
-            const { formatStandardizeNamesSummary, standardizeMomDataNames } = await import(
-              "@/lib/server/mom-data-standardize-names"
-            )
-            const renameResult = standardizeMomDataNames()
-            if (renameResult.nothingToDo) {
-              send("[rename] 所有文件名和文件夹名均符合标准格式。")
-            } else {
-              for (const line of formatStandardizeNamesSummary(renameResult)) {
-                send(`[rename] ${line}`)
+          if (renameFolders && renameFolders.length > 0) {
+            send(`[rename] ETL 完成，开始标准化命名（${renameFolders.length} 个文件夹）…`)
+            try {
+              const { formatStandardizeNamesSummary, standardizeMomDataNames } = await import(
+                "@/lib/server/mom-data-standardize-names"
+              )
+              const renameResult = standardizeMomDataNames(renameFolders)
+              if (renameResult.nothingToDo) {
+                send("[rename] 所有文件名和文件夹名均符合标准格式。")
+              } else {
+                for (const line of formatStandardizeNamesSummary(renameResult)) {
+                  send(`[rename] ${line}`)
+                }
+                for (const r of renameResult.renamedFolders.slice(0, 30)) {
+                  send(`[rename] 📁 ${r}`)
+                }
+                for (const r of renameResult.renamedFiles.slice(0, 30)) {
+                  send(`[rename] 📄 ${r}`)
+                }
+                for (const r of renameResult.duplicates.slice(0, 30)) {
+                  send(`[rename] ⚠ ${r}`)
+                }
+                const extraFiles = renameResult.renamedFiles.length - 30
+                const extraFolders = renameResult.renamedFolders.length - 30
+                const extraDupes = renameResult.duplicates.length - 30
+                if (extraFiles > 0) send(`[rename] … 另有 ${extraFiles} 个文件重命名`)
+                if (extraFolders > 0) send(`[rename] … 另有 ${extraFolders} 个文件夹重命名`)
+                if (extraDupes > 0) send(`[rename] … 另有 ${extraDupes} 个重复项`)
               }
-              for (const r of renameResult.renamedFolders.slice(0, 30)) {
-                send(`[rename] 📁 ${r}`)
+              if (renameResult.errors.length > 0) {
+                send(`[rename] 警告: ${renameResult.errors.length} 个文件无法处理`)
+                for (const err of renameResult.errors.slice(0, 10)) {
+                  send(`[rename] ⚠ ${err}`)
+                }
               }
-              for (const r of renameResult.renamedFiles.slice(0, 30)) {
-                send(`[rename] 📄 ${r}`)
-              }
-              for (const r of renameResult.duplicates.slice(0, 30)) {
-                send(`[rename] ⚠ ${r}`)
-              }
-              const extraFiles = renameResult.renamedFiles.length - 30
-              const extraFolders = renameResult.renamedFolders.length - 30
-              const extraDupes = renameResult.duplicates.length - 30
-              if (extraFiles > 0) send(`[rename] … 另有 ${extraFiles} 个文件重命名`)
-              if (extraFolders > 0) send(`[rename] … 另有 ${extraFolders} 个文件夹重命名`)
-              if (extraDupes > 0) send(`[rename] … 另有 ${extraDupes} 个重复项`)
+            } catch (e) {
+              send(`[rename] 标准化命名失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
             }
-            if (renameResult.errors.length > 0) {
-              send(`[rename] 警告: ${renameResult.errors.length} 个文件无法处理`)
-              for (const err of renameResult.errors.slice(0, 10)) {
-                send(`[rename] ⚠ ${err}`)
-              }
-            }
-          } catch (e) {
-            send(`[rename] 标准化命名失败 (非致命): ${e instanceof Error ? e.message : String(e)}`)
           }
 
           send("[warm-cache] 开始预热图表缓存…")

@@ -57,6 +57,8 @@ export function StrategyMultiSelectCell({
     [options, selected],
   )
   const displayText = selected.join("、")
+  const visibleTags = selected.slice(0, 2)
+  const hiddenTagCount = Math.max(0, selected.length - visibleTags.length)
 
   const style: CSSProperties = {
     width: width - 4,
@@ -73,7 +75,7 @@ export function StrategyMultiSelectCell({
       : ""
 
   const baseClass = [
-    "relative block h-7 w-full rounded border bg-transparent px-1 text-xs outline-none transition-colors",
+    "relative block h-7 max-h-7 w-full overflow-hidden rounded border bg-transparent px-1 text-xs outline-none transition-colors",
     "hover:border-zinc-200 hover:bg-white/80",
     isActive
       ? "border-blue-500 bg-blue-50/40 ring-1 ring-blue-300"
@@ -104,8 +106,24 @@ export function StrategyMultiSelectCell({
       className={baseClass}
       title={displayText || placeholder}
     >
-      <span className="pointer-events-none absolute inset-y-0 left-1 right-1 flex items-center truncate leading-none">
-        {displayText || placeholder}
+      <span className="pointer-events-none absolute inset-y-0 left-1 right-1 flex items-center gap-0.5 overflow-hidden leading-none">
+        {selected.length === 0 ? (
+          <span className="truncate text-zinc-400">{placeholder}</span>
+        ) : (
+          <>
+            {visibleTags.map((tag) => (
+              <span
+                key={tag}
+                className="inline-flex max-w-[3.5rem] shrink-0 items-center truncate rounded border border-blue-200 bg-blue-50 px-1 text-[10px] leading-none text-blue-700"
+              >
+                {tag}
+              </span>
+            ))}
+            {hiddenTagCount > 0 && (
+              <span className="shrink-0 text-[10px] text-zinc-500">+{hiddenTagCount}</span>
+            )}
+          </>
+        )}
       </span>
       <select
         value=""
@@ -145,7 +163,7 @@ export function StrategyMultiSelectCell({
   return (
     <HoverCard openDelay={200} closeDelay={100}>
       <HoverCardTrigger asChild>
-        <div className="w-full">{compactCell}</div>
+        <div className="h-7 max-h-7 w-full overflow-hidden">{compactCell}</div>
       </HoverCardTrigger>
       <HoverCardContent
         side="top"
