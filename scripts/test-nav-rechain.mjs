@@ -1,4 +1,7 @@
 import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate } from "../lib/server/email-nav-query.ts"
+import { enrichReturnNavSeries, capPeriodReturnByDrawdown, calcReturn } from "../lib/server/list-cache-nav-batch.ts"
+import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
+import { extractNavMetadata, extractNavData } from "../lib/server/email-nav-extract.ts"
 import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio, loadManagedProductNavSeed, mergeManagedProductDetailNav } from "../lib/server/managed-product-nav-seed.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
 import fs from "fs"
@@ -451,6 +454,32 @@ assert("BDW42B picks B-class NAV on 0707", Math.abs(parseFloat(bdw0707.nav) - 1.
 const bdwDaily = parseFloat(bdw0707.nav) / parseFloat(bdw0706.nav) - 1
 assert("BDW42B daily move sane", Math.abs(bdwDaily + 0.0016) < 0.005)
 
+const bdw42bJul9OnlyA = [
+  ...bdw42bRows,
+  {
+    nav_date: "2026-07-09",
+    nav: "1.086700",
+    cumulative_nav: "1.086700",
+    adjusted_nav: null,
+    product_code: "SBDW42",
+    fund_name: "青钱基石1号",
+    attachment_filename: "集合计划每日净值表.xls",
+    subject: "【净值表】青钱基石1号-SBDW42-20260709",
+    source: "attachment_nav_table",
+  },
+]
+const bdwJul9 = selectEmailNavSeriesRows(bdw42bJul9OnlyA, "BDW42B", ["青钱基石1号私募证券投资基金B类"])
+assert("BDW42B skips 0709 when only A-class row published", !bdwJul9.some((r) => r.nav_date === "2026-07-09"))
+assert("BDW42B latest stays 0707", bdwJul9.at(-1)?.nav_date === "2026-07-07")
+
+const sbdwJul9 = selectEmailNavSeriesRows(bdw42bJul9OnlyA, "SBDW42", ["青钱基石1号"])
+assert("SBDW42 skips 0709 single-class discontinuity", !sbdwJul9.some((r) => r.nav_date === "2026-07-09"))
+
+const sbdw0707Selected = selectEmailNavSeriesRows(bdw42bRows, "SBDW42", ["青钱基石1号"]).find((r) => r.nav_date === "2026-07-07")
+const sbdw0707FirstRaw = bdw42bRows.find((r) => r.nav_date === "2026-07-07")
+assert("SBDW42 selected parent NAV ~1.4558", Math.abs(parseFloat(sbdw0707Selected.nav) - 1.4558) < 0.001)
+assert("date-only remap would wrongly pick B-class ~1.0898", parseFloat(sbdw0707FirstRaw.nav) < 1.2)
+
 const seedBackfill = ssgSeed.filter((r) => r.price_date < "2024-11-19")
 const emailTeam = custodyMerged
 const combined = mergeLegacyWithTeamNav(seedBackfill, emailTeam)
@@ -507,6 +536,184 @@ const avm354Ret = parseFloat(avm3540708.cumulative_nav) / parseFloat(avm3540603.
 const avm354Days = (new Date("2026-07-08").getTime() - new Date("2026-06-03").getTime()) / 86400000
 const avm354Ann = Math.pow(1 + avm354Ret, 365 / avm354Days) - 1
 assert("AVM354 ann not absurd when adj repaired", avm354Ann < 5)
+
+// SQU767 六妙星豪鑫主观2号: 【净值表】 stored 基金资产净值 (AUM ~212M) in nav; cumulative holds true unit NAV
+const squ767Rows = [
+  {
+    nav_date: "2026-06-04",
+    nav: "222061940.860000",
+    cumulative_nav: "2.901900",
+    adjusted_nav: "2.901900",
+    product_code: "SQU767",
+    fund_name: "六妙星豪鑫主观2号私募证券投资基金",
+    attachment_filename: "净值表.xlsx",
+    subject: "【净值表】六妙星豪鑫主观2号-SQU767",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-06-18",
+    nav: "3.144800",
+    cumulative_nav: "3.144800",
+    adjusted_nav: "3.144800",
+    product_code: "SQU767",
+    fund_name: "六妙星豪鑫主观2号私募证券投资基金",
+    attachment_filename: "净值表.xlsx",
+    subject: "【净值表】六妙星豪鑫主观2号-SQU767",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-02",
+    nav: "3.333600",
+    cumulative_nav: "3.333600",
+    adjusted_nav: "3.333600",
+    product_code: "SQU767",
+    fund_name: "六妙星豪鑫主观2号私募证券投资基金",
+    attachment_filename: "净值表.xlsx",
+    subject: "【净值表】六妙星豪鑫主观2号-SQU767",
+    source: "attachment_nav_table",
+  },
+]
+const squ767Selected = selectEmailNavSeriesRows(squ767Rows, "SQU767", ["六妙星豪鑫主观2号"])
+assert("SQU767 AUM row recovered from cumulative", squ767Selected.some((r) => r.nav_date === "2026-06-04" && Math.abs(parseFloat(r.nav) - 2.9019) < 0.001))
+assert("SQU767 includes post-gap dates", squ767Selected.some((r) => r.nav_date === "2026-07-02"))
+assert("SQU767 latest ~3.3336", Math.abs(parseFloat(squ767Selected.at(-1).nav) - 3.3336) < 0.001)
+
+// ASX73A-style: email-only tail lacks 复权; legacy row establishes unit→adj ratio before ex-div unit drop
+const asx73History = enrichReturnNavSeries([
+  { nav_date: "2025-12-24", nav: 1.0007, return_nav: 1.419193 },
+  { nav_date: "2026-06-25", nav: 1.0 },
+  { nav_date: "2026-07-02", nav: 1.0187 },
+])
+const jul2 = asx73History.find((p) => p.nav_date === "2026-07-02")
+const jun25 = asx73History.find((p) => p.nav_date === "2026-06-25")
+assert("ASX73A enrich fills return_nav on email tail", jul2?.return_nav != null && jul2.return_nav > 1.4)
+const asx73Ret1m = calcReturn(jul2.return_nav, jun25.return_nav)
+assert("ASX73A 1m return sane after enrich", asx73Ret1m != null && Math.abs(asx73Ret1m) < 0.15)
+assert(
+  "ASX73A cap rejects unit-vs-adj phantom loss",
+  capPeriodReturnByDrawdown(-0.3889, asx73History, "2026-07-02", 30) == null,
+)
+
+const dupFunds = dedupeShareClassDisplayFunds([
+  { beian_hao: "ASX73A", product_name: "六妙星豪鑫3号A类" },
+  { beian_hao: "SASX73", product_name: "六妙星豪鑫3号A类" },
+  { beian_hao: "SASX73", product_name: "六妙星豪鑫3号" },
+])
+assert("share-class dedupe keeps ASX73A", dupFunds.some((f) => f.beian_hao === "ASX73A"))
+assert("share-class dedupe drops mislabeled SASX73 A类", !dupFunds.some((f) => f.beian_hao === "SASX73" && f.product_name.includes("A类")))
+assert("share-class dedupe keeps parent SASX73 main name", dupFunds.some((f) => f.beian_hao === "SASX73" && f.product_name === "六妙星豪鑫3号"))
+
+const bangkeMeta = extractNavMetadata(
+  "SAUV26_邦客鼎成精选私募证券投资基金_净值2026-07-09【国信托管】",
+  "",
+)
+assert("subject extracts SAUV26 邦客", bangkeMeta.productCode === "SAUV26" && bangkeMeta.fundName?.includes("邦客"))
+
+const bangkeBody = extractNavData(
+  "SAUV26邦客鼎成精选私募证券投资基金净值2026-07-09【国信托管】",
+  "1 SAUV26 邦客鼎成精选私募证券投资基金 2026-07-09 未授权 未授权 1.3014 1.3014",
+)
+assert("guosen body table extracts 0709 nav", bangkeBody?.navDate === "2026-07-09" && bangkeBody?.nav === 1.3014)
+
+const zhufengSubject =
+  "虚拟净值-铸锋太阿3号私募证券投资基金A类[衡顾海岳1号私募证券投资基金]-20260709.xls"
+const zhufengBody =
+  "净值日期 确认日期 基金代码 基金名称 基金账号 客户名称 试算提成金额 发生份额 试算后单位净值 试算前单位净值 试算前累计净值 试算后客户净资产 " +
+  "2026-07-09 2026-07-10 SB969A 铸锋太阿3号私募证券投资基金A类 CJ8001210951 衡顾海岳1号私募证券投资基金 0.00 1000000.00 1.0000 1 1 1000000.00"
+const zhufengMeta = extractNavMetadata(zhufengSubject, zhufengBody)
+assert(
+  "changjiang virtual subject extracts SB969A",
+  zhufengMeta.productCode === "SB969A" && zhufengMeta.fundName?.includes("铸锋太阿"),
+)
+const zhufengNav = extractNavData(zhufengSubject, zhufengBody)
+assert(
+  "changjiang virtual body extracts 0709 nav",
+  zhufengNav?.navDate === "2026-07-09" && zhufengNav?.nav === 1.0 && zhufengNav?.productCode === "SB969A",
+)
+
+const sbhk26History = [
+  {
+    nav_date: "2026-06-12",
+    nav: "1.325300",
+    cumulative_nav: "1.529900",
+    adjusted_nav: null,
+    product_code: "BHK26A",
+    fund_name: "六妙星豪鑫6号A类",
+    attachment_filename: "",
+    subject: "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-06-12_荣熙共赢私募证券投资基金",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-06-29",
+    nav: "1.122700",
+    cumulative_nav: "1.122700",
+    adjusted_nav: null,
+    product_code: "SBHK26",
+    fund_name: "六妙星豪鑫6号",
+    attachment_filename: "SBHK26_六妙星豪鑫6号私募证券投资基金_资产估值表_20260630_4级_荣熙共赢私募证券投资基金.xls",
+    subject: "【基金估值表】SBHK26_六妙星豪鑫6号私募证券投资基金_资产估值表_20260630_4级_荣熙共赢私募证券投资基金.xls",
+    source: "attachment_valuation_table",
+  },
+]
+const sbhk26Selected = selectEmailNavSeriesRows(sbhk26History, "SBHK26", ["六妙星豪鑫6号"])
+const sbhk26Jun29 = sbhk26Selected.find((r) => r.nav_date === "2026-06-29")
+assert(
+  "SBHK26 custody valuation keeps unit 1.1227",
+  sbhk26Jun29 != null && Math.abs(parseFloat(sbhk26Jun29.nav) - 1.1227) < 0.0001,
+)
+
+const savm35BrokenLegacy = [
+  { price_date: "2026-07-01", nav: "0.7658", cum_nav_withdrawal: "1.5158", cumulative_nav: "1.5158", price_change: "" },
+  { price_date: "2026-07-08", nav: "0.7279", cum_nav_withdrawal: "1.4769", cumulative_nav: "1.4769", price_change: "" },
+  { price_date: "2026-07-09", nav: "0.7400", cum_nav_withdrawal: "1.4890", cumulative_nav: "1.4890", price_change: "" },
+]
+const savm35Email = [
+  { price_date: "2026-07-08", nav: "1.1950", cumulative_nav: null, adjusted_nav: null },
+  { price_date: "2026-07-09", nav: "1.2150", cumulative_nav: null, adjusted_nav: null },
+]
+const savm35Merged = mergeNavSeriesWithEmail(savm35BrokenLegacy, savm35Email)
+const savm35Jul9 = savm35Merged.find((r) => r.price_date === "2026-07-09")
+assert("SAVM35 halved legacy + email unit ~1.215", Math.abs(parseFloat(savm35Jul9.nav) - 1.215) < 0.001)
+assert("SAVM35 halved legacy + email cum ~1.964", Math.abs(parseFloat(savm35Jul9.cum_nav_withdrawal) - 1.964) < 0.01)
+
+const emailPoolDedupe = (funds) => {
+  const isCode = (r) => /^[A-Z0-9]{4,10}$/i.test(String(r).trim())
+  const coded = funds.filter((f) => isCode(f.register_number))
+  const nameOnly = funds.filter((f) => !isCode(f.register_number))
+  const codedNames = new Set(coded.map((f) => f.product_name.trim().toLowerCase()))
+  return [...coded, ...nameOnly.filter((f) => !codedNames.has(f.product_name.trim().toLowerCase()))]
+}
+const hengyingPool = emailPoolDedupe([
+  { register_number: "SBAH99", product_name: "荣熙恒盈2号A类" },
+  { register_number: "BAH99A", product_name: "荣熙恒盈2号A类" },
+  { register_number: "BAH99C", product_name: "荣熙恒盈2号C类" },
+  { register_number: "SBAH99", product_name: "荣熙恒盈2号" },
+])
+assert(
+  "email pool keeps parent + A + C registers",
+  hengyingPool.some((f) => f.register_number === "SBAH99" && f.product_name === "荣熙恒盈2号")
+    && hengyingPool.some((f) => f.register_number === "BAH99A")
+    && hengyingPool.some((f) => f.register_number === "BAH99C"),
+)
+
+function canonicalEmailPoolNameForTest(bflName, emailNameByCode) {
+  const emailName = String(emailNameByCode ?? "").trim()
+  const bfl = String(bflName ?? "").trim()
+  if (emailName && bfl) {
+    const same =
+      emailName === bfl
+      || emailName.startsWith(bfl)
+      || bfl.startsWith(emailName)
+      || emailName.replace(/[^\u4e00-\u9fff0-9A-Za-z]/g, "") === bfl.replace(/[^\u4e00-\u9fff0-9A-Za-z]/g, "")
+    if (!same && !emailName.includes("文艺复兴") && emailName.includes("多资产轮动")) return emailName
+  }
+  return bfl || emailName
+}
+assert(
+  "email pool prefers email name when BFL register label disagrees (SNG210)",
+  canonicalEmailPoolNameForTest("笃熙禀泰文艺复兴16号", "笃熙禀泰多资产轮动策略2号")
+    === "笃熙禀泰多资产轮动策略2号",
+)
 
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"
 if (fs.existsSync(excelPath)) {

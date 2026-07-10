@@ -154,6 +154,52 @@ export function shareClassCodeMatchesProductLenient(
   return false
 }
 
+/** Prefer the row whose 备案号 suffix matches A/B/C class in the display name. */
+export function shareClassDisplayAlignmentScore(
+  beianHao: string | null | undefined,
+  productName: string,
+): number {
+  if (!beianHao?.trim()) return 0
+  return shareClassCodeMatchesProduct(beianHao, productName) ? 2 : 1
+}
+
+/** Collapse duplicate display names (e.g. SASX73 parent mislabeled as A类 vs ASX73A). */
+export function dedupeShareClassDisplayFunds<
+  T extends { beian_hao: string | null; product_name: string },
+>(rows: T[]): T[] {
+  const byName = new Map<string, T>()
+  const noName: T[] = []
+  for (const row of rows) {
+    const key = row.product_name.trim().toLowerCase()
+    if (!key) {
+      noName.push(row)
+      continue
+    }
+    const prev = byName.get(key)
+    if (!prev) {
+      byName.set(key, row)
+      continue
+    }
+    if (
+      shareClassDisplayAlignmentScore(row.beian_hao, row.product_name)
+      > shareClassDisplayAlignmentScore(prev.beian_hao, prev.product_name)
+    ) {
+      byName.set(key, row)
+    }
+  }
+  return [...byName.values(), ...noName]
+}
+
+/** SQL ORDER BY prefix: prefer beian whose suffix matches share class in product_name. */
+export const SQL_SHARE_CLASS_DISPLAY_DEDUPE_ORDER = `
+  CASE
+    WHEN product_name ILIKE '%A类%' AND UPPER(register_number) ~ 'A$' THEN 0
+    WHEN product_name ILIKE '%B类%' AND UPPER(register_number) ~ 'B$' THEN 0
+    WHEN product_name ILIKE '%C类%' AND UPPER(register_number) ~ 'C$' THEN 0
+    ELSE 1
+  END,
+  register_number`
+
 /** SQL: code suffix guard for valuation holdings when name may carry share class. */
 export function sqlShareClassHoldingCodeGuard(
   codeCol: string,

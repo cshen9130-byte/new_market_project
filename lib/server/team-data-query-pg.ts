@@ -5,11 +5,14 @@
  */
 
 import { query } from "@/lib/db"
-import { normalizeFundDisplayName } from "@/lib/server/email-nav-extract"
+import { extractNavMetadata, normalizeFundDisplayName } from "@/lib/server/email-nav-extract"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
+import { ensureEmailValuationTable } from "@/lib/server/email-valuation-pg"
+import { getAllEmailParseRecords } from "@/lib/server/email-parse-records"
 import { EMAIL_NAV_SOURCE_PRIORITY } from "@/lib/server/email-nav-query"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
+import { shareClassProductCodesMatch } from "@/lib/server/fund-name-match"
 import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
@@ -501,6 +504,260 @@ function matchesStrategyL3(stored: string | null, filter: string): boolean {
   if (!filter) return true
   if (!stored) return false
   return stored.toLowerCase().includes(filter.toLowerCase())
+}
+
+export type EmailPoolFund = {
+  register_number: string
+  product_name: string
+}
+
+async function loadRawEmailFundsFromValuation(): Promise<RawEmailFund[]> {
+  await ensureEmailValuationTable()
+  return query<RawEmailFund>(
+    `WITH val_ranked AS (
+       SELECT
+         NULLIF(BTRIM(product_code), '') AS product_code,
+         NULLIF(BTRIM(fund_name), '') AS fund_name,
+         valuation_date,
+         unit_nav,
+         COALESCE(
+           NULLIF(BTRIM(product_code), ''),
+           NULLIF(BTRIM(fund_name), '')
+         ) AS fund_key
+       FROM ops_email_valuation_records
+       WHERE unit_nav IS NOT NULL AND valuation_date IS NOT NULL
+     )
+     SELECT DISTINCT ON (fund_key)
+       fund_key,
+       product_code,
+       fund_name,
+       valuation_date::text AS team_nav_date,
+       unit_nav::text AS team_nav
+     FROM val_ranked
+     WHERE fund_key IS NOT NULL
+     ORDER BY fund_key, valuation_date DESC`,
+  )
+}
+
+async function loadRawEmailFundsFromSubjects(): Promise<RawEmailFund[]> {
+  await Promise.all([ensureEmailNavTable(), ensureEmailValuationTable()])
+  const rows = await query<{ subject: string }>(
+    `SELECT DISTINCT subject FROM (
+       SELECT subject FROM ops_email_nav_records
+       WHERE NULLIF(BTRIM(subject), '') IS NOT NULL
+       UNION ALL
+       SELECT subject FROM ops_email_valuation_records
+       WHERE NULLIF(BTRIM(subject), '') IS NOT NULL
+     ) s`,
+  )
+  const subjects = new Set(rows.map((r) => r.subject.trim()).filter(Boolean))
+  for (const rec of getAllEmailParseRecords()) {
+    const subject = rec.subject?.trim()
+    if (subject) subjects.add(subject)
+  }
+
+  const out: RawEmailFund[] = []
+  for (const subject of subjects) {
+    const meta = extractNavMetadata(subject, "")
+    const productCode = meta.productCode?.trim() || null
+    const fundName = meta.fundName?.trim() || null
+    if (!productCode && !fundName) continue
+    const fund_key = productCode ?? fundName!
+    out.push({
+      fund_key,
+      product_code: productCode,
+      fund_name: fundName,
+      team_nav_date: "",
+      team_nav: "",
+    })
+  }
+  return out
+}
+
+async function loadAllRawEmailFundRows(): Promise<RawEmailFund[]> {
+  const [navRows, valRows, subjectRows] = await Promise.all([
+    loadRawEmailFunds(),
+    loadRawEmailFundsFromValuation(),
+    loadRawEmailFundsFromSubjects(),
+  ])
+  return dedupeRawFunds([...navRows, ...valRows, ...subjectRows])
+}
+
+function emailPoolRegisterNumber(resolved: ResolvedFund, raw: RawEmailFund): string | null {
+  const beian = resolved.beian_hao?.trim()
+  if (beian) return beian
+  const code = raw.product_code?.trim()
+  if (code) return code.toUpperCase()
+  const id = resolved.id?.trim()
+  return id || null
+}
+
+function isPlausibleEmailPoolFund(productName: string, registerNumber: string): boolean {
+  const name = productName.trim()
+  const reg = registerNumber.trim()
+  if (!name || !reg) return false
+  if (name.length < 4 || reg.length < 2) return false
+  if (name === "号" || reg === "号") return false
+  if (!/[\u4e00-\u9fffA-Za-z]/.test(name)) return false
+  return true
+}
+
+function isFundCodeRegisterNumber(reg: string): boolean {
+  return /^[A-Z0-9]{4,10}$/i.test(reg.trim())
+}
+
+function upgradePoolRegisterNumber(fund: EmailPoolFund, indexes: IdentityIndexes): EmailPoolFund {
+  if (isFundCodeRegisterNumber(fund.register_number)) return fund
+  const candidate = fund.product_name.trim()
+  const bfl = bestBflMatch(indexes, candidate, null)
+  if (bfl?.beian_hao?.trim()) {
+    return { ...fund, register_number: bfl.beian_hao.trim() }
+  }
+  const t6 = bestT6Match(indexes, candidate, null)
+  if (t6?.register_number?.trim()) {
+    return { ...fund, register_number: t6.register_number.trim() }
+  }
+  return fund
+}
+
+function isParentFundRegisterNumber(reg: string): boolean {
+  const u = reg.trim().toUpperCase()
+  return isFundCodeRegisterNumber(u) && !/[ABC]$/.test(u)
+}
+
+/** Stable display name per 备案号 — parent SBAH99 must not inherit A/C类 labels from email rows. */
+function canonicalEmailPoolProductName(
+  registerNumber: string,
+  resolvedName: string,
+  indexes: IdentityIndexes,
+  emailNameByCode?: string,
+): string {
+  const reg = registerNumber.trim()
+  const upper = reg.toUpperCase()
+  const bfl = indexes.bflByBeian.get(reg) ?? indexes.bflByBeian.get(upper)
+  const t6 = indexes.t6ByRegister.get(reg) ?? indexes.t6ByRegister.get(upper)
+  const emailName = emailNameByCode?.trim() ?? ""
+  if (emailName && bfl?.product_name?.trim()) {
+    const bflDisplay = displayProductName(bfl.product_name, bfl.short_name, bfl.product_name)
+    if (!fundNamesMatch(bflDisplay, emailName) && !fundNamesMatch(bfl.product_name, emailName)) {
+      return normalizeFundDisplayName(emailName) ?? emailName
+    }
+  }
+  if (bfl?.product_name?.trim()) {
+    return displayProductName(bfl.product_name, bfl.short_name, bfl.product_name)
+  }
+  if (t6?.fund_short_name?.trim()) return t6.fund_short_name.trim()
+  if (t6?.fund_name?.trim()) {
+    return normalizeFundDisplayName(t6.fund_name) ?? t6.fund_name.trim()
+  }
+
+  const name = resolvedName.trim()
+  const suffix = upper.match(/([ABC])$/)?.[1]
+  if (suffix) {
+    if (!name.includes(`${suffix}类`)) {
+      const base = fundNameBase(name)
+      return base ? `${base}${suffix}类` : name
+    }
+    return name
+  }
+  if (isParentFundRegisterNumber(reg) && /[ABC]类/u.test(name)) {
+    const base = fundNameBase(name)
+    return base || name
+  }
+  return name
+}
+
+function emailPoolRowIdentityScore(
+  raw: RawEmailFund,
+  registerNumber: string,
+  candidate: string,
+): number {
+  const reg = registerNumber.trim().toUpperCase()
+  const code = raw.product_code?.trim().toUpperCase() ?? ""
+  let score = 0
+  if (code === reg) score += 20
+  else if (code && shareClassProductCodesMatch(code, reg)) score += 2
+
+  const regSuffix = reg.match(/([ABC])$/)?.[1]
+  const nameSuffix = candidate.match(/([ABC])类/u)?.[1]
+  if (regSuffix && nameSuffix === regSuffix) score += 10
+  else if (!regSuffix && !nameSuffix) score += 10
+  else if (!regSuffix && nameSuffix) score -= 15
+  else if (regSuffix && !nameSuffix) score -= 5
+  return score
+}
+
+/** One pool row per display name — prefer 备案号/product code over Chinese name keys. */
+function dedupeEmailPoolFundsByDisplayName(funds: EmailPoolFund[]): EmailPoolFund[] {
+  const coded = funds.filter((f) => isFundCodeRegisterNumber(f.register_number))
+  const nameOnly = funds.filter((f) => !isFundCodeRegisterNumber(f.register_number))
+  const codedNames = new Set(coded.map((f) => f.product_name.trim().toLowerCase()))
+  return [
+    ...coded,
+    ...nameOnly.filter((f) => !codedNames.has(f.product_name.trim().toLowerCase())),
+  ]
+}
+
+/** Every fund discovered from email NAV, valuation, or parse subjects — for 邮箱运维池 sync. */
+export async function loadEmailPoolFunds(): Promise<EmailPoolFund[]> {
+  const [{ indexes }, rawRows] = await Promise.all([
+    loadIdentityTables(),
+    loadAllRawEmailFundRows(),
+  ])
+
+  const byRegister = new Map<string, EmailPoolFund & { navDate: string; identityScore: number }>()
+  const emailNameByRegister = new Map<string, { name: string; navDate: string; identityScore: number }>()
+  for (const row of rawRows) {
+    const resolved = resolveFund(row, indexes, "company")
+    const register_number = emailPoolRegisterNumber(resolved, row)
+    if (!register_number || !isPlausibleEmailPoolFund(resolved.product_name, register_number)) continue
+    const candidate = nameCandidate(row)
+    const identityScore = emailPoolRowIdentityScore(row, register_number, candidate)
+    const code = row.product_code?.trim().toUpperCase() ?? ""
+    const regUpper = register_number.trim().toUpperCase()
+    if (code && code === regUpper) {
+      const prevEmail = emailNameByRegister.get(regUpper)
+      if (
+        !prevEmail
+        || row.team_nav_date.localeCompare(prevEmail.navDate) > 0
+        || (row.team_nav_date === prevEmail.navDate && identityScore > prevEmail.identityScore)
+      ) {
+        emailNameByRegister.set(regUpper, {
+          name: candidate,
+          navDate: row.team_nav_date,
+          identityScore,
+        })
+      }
+    }
+    const prev = byRegister.get(register_number)
+    if (
+      !prev
+      || row.team_nav_date.localeCompare(prev.navDate) > 0
+      || (row.team_nav_date === prev.navDate && identityScore > prev.identityScore)
+    ) {
+      byRegister.set(register_number, {
+        register_number,
+        product_name: resolved.product_name,
+        navDate: row.team_nav_date,
+        identityScore,
+      })
+    }
+  }
+
+  const merged = new Map<string, EmailPoolFund>()
+  for (const { register_number, product_name } of byRegister.values()) {
+    const upgraded = upgradePoolRegisterNumber({ register_number, product_name }, indexes)
+    merged.set(upgraded.register_number, {
+      register_number: upgraded.register_number,
+      product_name: canonicalEmailPoolProductName(
+        upgraded.register_number,
+        upgraded.product_name,
+        indexes,
+        emailNameByRegister.get(upgraded.register_number.trim().toUpperCase())?.name,
+      ),
+    })
+  }
+  return dedupeEmailPoolFundsByDisplayName(Array.from(merged.values()))
 }
 
 async function loadRawEmailFunds(): Promise<RawEmailFund[]> {

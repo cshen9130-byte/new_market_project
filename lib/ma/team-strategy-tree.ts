@@ -152,8 +152,30 @@ export function migrateRowTeamStrategies(
 
   const l3Options = teamStrategyL3Options(tree, strategyLevel1, strategyLevel2)
   const strategyLevel3 = strategyLevel1 && strategyLevel2
-    ? matchNearestTeamStrategyCompound(row.strategyLevel3, l3Options)
+    ? migrateStrategyLevel3(row.strategyLevel3, l3Options)
     : ""
 
   return { strategyLevel1, strategyLevel2, strategyLevel3 }
+}
+
+function migrateStrategyLevel3(value: string, options: string[]): string {
+  const parts = value
+    .split(/[，,、/]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  if (parts.length === 0) return ""
+
+  const seen = new Set<string>()
+  const matched: string[] = []
+  for (const part of parts) {
+    const next = matchNearestTeamStrategy(part, options)
+    if (next && !seen.has(next)) {
+      seen.add(next)
+      matched.push(next)
+    }
+  }
+  if (matched.length > 0) return matched.join("、")
+
+  const compound = matchNearestTeamStrategyCompound(value, options)
+  return compound
 }

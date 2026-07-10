@@ -1,3 +1,5 @@
+import { strategyLevel3SetsEqual } from "@/lib/ma/strategy-level3"
+
 export type SavedTeamStrategy = {
   strategy_l1: string
   strategy_l2: string
@@ -72,6 +74,21 @@ export function getStrategyCellMatchStatus(
   }
   if (!table) return "none"
   return table === saved ? "match" : "mismatch"
+}
+
+export function getStrategyLevel3MatchStatus(
+  tableValue: string,
+  savedValue: string,
+  hasSaved: boolean,
+): "match" | "mismatch" | "none" {
+  const table = norm(tableValue)
+  const saved = norm(savedValue)
+  if (!hasSaved || !saved) {
+    if (table && saved && !strategyLevel3SetsEqual(table, saved)) return "mismatch"
+    return "none"
+  }
+  if (!table) return "none"
+  return strategyLevel3SetsEqual(table, saved) ? "match" : "mismatch"
 }
 
 export function rowHasAnyTableStrategy(row: {

@@ -468,9 +468,12 @@ function buildCachedFromClause(
       ? "AND (p.pool_key = 'mine_default' OR p.pool_key LIKE 'mine_custom_%')"
       : "AND p.pool_key = $1"
     return `FROM (
-      SELECT p.register_number AS beian_hao, p.product_name
+      SELECT DISTINCT ON (UPPER(BTRIM(register_number)))
+        p.register_number AS beian_hao,
+        p.product_name
       FROM user_custom_pool p
       WHERE p.register_number IS NOT NULL ${poolFilter}
+      ORDER BY UPPER(BTRIM(register_number)), p.updated_at DESC NULLS LAST, p.id DESC
     ) i
     LEFT JOIN ops_tracking_funds_list_cache cache ON cache.beian_hao = i.beian_hao`
   }

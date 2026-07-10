@@ -176,6 +176,11 @@ export function replaceEmailParseRecords(
   return store.records
 }
 
+/** All stored parse records (no pagination cap) — for ETL pool sync. */
+export function getAllEmailParseRecords(): EmailParseRecord[] {
+  return readStore().records
+}
+
 export function listEmailParseRecords(filters: EmailParseRecordFilters = {}): {
   rows: EmailParseRecord[]
   total: number

@@ -9,7 +9,7 @@
 import { createHash } from "crypto"
 import { query } from "@/lib/db"
 import { invalidateTrackingPoolListCaches } from "@/lib/server/tracking-pool-membership"
-import { listTeamData } from "@/lib/server/team-data-query-pg"
+import { loadEmailPoolFunds } from "@/lib/server/team-data-query-pg"
 import { upsertTrackingFundListCacheEntry } from "@/lib/server/tracking-funds-list-cache-pg"
 
 export const EMAIL_OPS_POOL_KEY = "custom_email_nav"
@@ -41,31 +41,12 @@ async function ensurePoolDefinition(): Promise<void> {
   )
 }
 
-/** All email-synced team-data rows with a resolved 备案号. */
+/** All funds discovered from email (NAV, valuation, parse subjects). */
 async function loadEmailSyncFunds(): Promise<{ beian_hao: string; product_name: string }[]> {
-  const { data } = await listTeamData({
-    page: 1,
-    pageSize: 100_000,
-    keyword: "",
-    strategySource: "company",
-    strategyL1: "",
-    strategyL2: "",
-    strategyL3: "",
-    sort: "product_name",
-    sortDir: "ASC",
-  })
-
-  const byBeian = new Map<string, string>()
-  for (const row of data) {
-    if (row.product_source !== "邮箱同步") continue
-    const beian = row.beian_hao?.trim()
-    const name = row.product_name.trim()
-    if (!beian || !name) continue
-    byBeian.set(beian, name)
-  }
-  return Array.from(byBeian.entries()).map(([beian_hao, product_name]) => ({
-    beian_hao,
-    product_name,
+  const funds = await loadEmailPoolFunds()
+  return funds.map((f) => ({
+    beian_hao: f.register_number,
+    product_name: f.product_name,
   }))
 }
 

@@ -223,6 +223,7 @@ export function OperationsElementExtractView() {
   const [isDragOver, setIsDragOver] = useState(false)
   const [fundOptions, setFundOptions] = useState<FundMatchCandidate[]>([])
   const [fundShowDropdown, setFundShowDropdown] = useState(false)
+  const [fundSearchError, setFundSearchError] = useState<string | null>(null)
   const [batchApplying, setBatchApplying] = useState(false)
 
   const activeJob = useMemo(
@@ -241,16 +242,25 @@ export function OperationsElementExtractView() {
     const q = activeJob?.fundInput.trim()
     if (!q) {
       setFundOptions([])
+      setFundSearchError(null)
       return
     }
     searchRef.current = setTimeout(async () => {
       try {
         const res = await fetch(`/ma/api/tracking-funds/search?q=${encodeURIComponent(q)}`)
         const json = await res.json()
-        setFundOptions(Array.isArray(json) ? json : [])
+        if (!res.ok || json?.error) {
+          setFundOptions([])
+          setFundSearchError("基金搜索失败，请稍后重试")
+          return
+        }
+        const rows = Array.isArray(json) ? json : []
+        setFundOptions(rows)
+        setFundSearchError(rows.length === 0 ? "未找到匹配基金，可尝试输入备案号或「-」后的产品名" : null)
         setFundShowDropdown(true)
       } catch {
         setFundOptions([])
+        setFundSearchError("基金搜索失败，请检查网络后重试")
       }
     }, 250)
     return () => {
@@ -320,6 +330,7 @@ export function OperationsElementExtractView() {
     setExtractProgress({ done: 0, total: 0 })
     setFundOptions([])
     setFundShowDropdown(false)
+    setFundSearchError(null)
   }
 
   const hasWork = files.length > 0 || jobs.length > 0
@@ -764,6 +775,7 @@ export function OperationsElementExtractView() {
                             loadingCurrent: true,
                           })
                           setFundShowDropdown(false)
+                          setFundSearchError(null)
                         }}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-muted/50"
                       >
@@ -772,6 +784,9 @@ export function OperationsElementExtractView() {
                       </button>
                     ))}
                   </div>
+                )}
+                {fundSearchError && activeJobId === activeJob.id && (
+                  <p className="mt-1 text-xs text-amber-700">{fundSearchError}</p>
                 )}
               </div>
               <div>

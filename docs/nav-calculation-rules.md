@@ -1192,3 +1192,362 @@ Email NAV history (when fully merged) is fine; the bug appears when legacy/platf
 npx tsx scripts/test-nav-rechain.mjs
 npx tsx scripts/ma/check_fof_nav_invariant.ts
 ```
+
+---
+
+## What Was Fixed (六妙星豪鑫主观2号 — SQU767, 2026-07-10)
+
+### The Problem
+
+**跟踪产品** list showed absurd values for **六妙星豪鑫主观2号** (备案号 **SQU767**):
+
+| Field | Shown (wrong) | Expected |
+|---|---|---|
+| 最新单位净值 | **219550733.5500** | **~3.33** |
+| 最新涨跌幅 | **+9125892889.86%** | ~±1% |
+| 近三月收益 | **+9138047579.60%** | ~±10% |
+
+Correct **【净值表】** emails from **2026-06-18** onward stored unit NAV ~**3.14–3.33** with `nav == cumulative_nav`.
+
+### Root Causes
+
+1. **AUM stored as unit NAV** — Earlier **【净值表】** rows (e.g. **2026-06-01–04**) stored **基金资产净值** (~212M) in `nav` while `cumulative_nav` held the true per-unit value (~**2.77–2.90**).
+
+2. **Continuity gate blocked good rows** — `selectEmailNavSeriesRows` kept the corrupt AUM rows, then skipped **2026-06-18+** dates because the >15% day-over-day jump from ~222M to ~3.14 looked like a share-class discontinuity.
+
+3. **List cache used uncorrected batch NAV** — `loadEmailNavBatch` pushed implausible `nav` without recovering from `cumulative_nav`; stale `ops_tracking_funds_list_cache` held the bad value.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| AUM recovery | `recoverPlausibleEmailUnitNav` | When `nav` is implausible but `cumulative_nav` is a sane unit NAV, use cumulative as unit |
+| Email series selection | `selectEmailNavSeriesRows`, `applyEmailUnitNavCorrection` | Recover unit before continuity check; skip dates still implausible after recovery |
+| List batch | `loadEmailNavBatch`, `loadEmailNavByNameBatch` | Apply recovery; skip rows still implausible |
+| Resolver guard | `BatchNavResolver.resolveAt` | Reject implausible email point; symmetric name/beian fallback |
+
+### DB repair (one-time via tunnel)
+
+Delete corrupt email rows where `nav > 1000`:
+
+```bash
+npx tsx scripts/ma/_repair_squ767_aum.ts
+npx tsx scripts/ma/_fix_tracking_squ767.ts
+```
+
+### What This Fix Does NOT Change
+
+- SBAH99 / SNF018 / SSG947 / BAH99A / SBPC20 / SBDF95 / SBDW42 / SLA063 fixes — unchanged
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev`, virtual-first priority — unchanged
+- SBDW42 share-class continuity skip — unchanged (still applies when only one class row and >15% jump)
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/_diag_haoxin_subjective2.ts
+```
+
+---
+
+## What Was Fixed (六妙星豪鑫3号A类 — ASX73A, period returns vs max drawdown, 2026-07-10)
+
+### The Problem
+
+**跟踪产品 / 彭博运维池** showed **近一月收益 −38.89%** for **六妙星豪鑫3号A类** (ASX73A) while the fund detail page showed **成立以来最大回撤 −5.79%** on the 复权 curve — impossible if both used the same return series.
+
+Same pattern affected multiple dividend / virtual-NAV funds in `ops_tracking_funds_list_cache`.
+
+### Root Causes
+
+1. **Mixed NAV scales in period returns** — Latest point came from email/virtual (**单位净值** ~1.02) while the 1-month base came from legacy with **复权** ~1.67. `calcReturn(1.02, 1.67) ≈ −39%`.
+
+2. **Email tail without `return_nav`** — `loadEmailNavBatch` stored unit NAV only; `navForReturn` fell back to unit on recent dates but used `return_nav` (复权) on older legacy bases.
+
+3. **Stale cache** — Rows were computed before `isSameShareClassNavLevel` / `resolvePeriodBase` guards and never rebuilt.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| 复权 forward-fill | `enrichReturnNavSeries` | Propagate legacy `return_nav / unit` ratio onto email-only tail points |
+| Period returns | `calcPeriodReturns` | Build from enriched `mergedHistoryForRiskMetrics` + `resolvePeriodBaseFromHistory` (same scale end-to-end) |
+| Sanity cap | `capPeriodReturnByDrawdown` | Null out period loss when \|ret\| exceeds lifetime/window max drawdown on the same series |
+| Cache rebuild | `scripts/ma/_refresh_tracking_cache.ts` | Recompute all `ops_tracking_funds_list_cache` rows |
+
+### What This Fix Does NOT Change
+
+- SBAH99 / SNF018 / SSG947 / BAH99A / SBPC20 / SBDF95 / SBDW42 / SQU767 / SLA063 fixes — unchanged
+- `resolvePeriodBase` (share-class / stale-base guards for other callers) — unchanged
+- `syncExDivAdjustedNav`, virtual-first priority — unchanged
+
+### After deployment
+
+```bash
+npx tsx scripts/ma/_refresh_tracking_cache.ts
+```
+
+Regression checks:
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/_diag_asx73a_returns.ts 2026-07-02
+```
+
+---
+
+## What Was Fixed (邮箱运维池 — email fund coverage, 2026-07-10)
+
+### The Problem
+
+**投资 → 团队跟踪 → 邮箱运维池** showed only **59** funds while **105+** distinct products appeared in mailbox parse / NAV data. Example: **邦客鼎成精选 (SAUV26)** appeared in email subjects but not in the pool when searching **邦客**.
+
+### Root Causes
+
+1. **Pool sync used `listTeamData` + 备案号 required** — funds without a resolved 备案号 were skipped (3 known cases).
+2. **`dedupeShareClassDisplayFunds` in pool sync** — collapsed **70** beian-resolved funds to **59** by display name (e.g. parent vs A类 rows).
+3. **Subject-only discovery missing** — funds present in email subjects (parse UI) but without a stored NAV row never entered `ops_email_nav_records`, so they were invisible to the old sync.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Pool fund loader | `loadEmailPoolFunds` in `team-data-query-pg.ts` | Union NAV rows, valuation rows, and subject metadata (DB subjects + `ops_email_parse_records.json`) |
+| Register number | `emailPoolRegisterNumber` | Use 备案号 when available; else product code; else stable fund key |
+| Pool sync | `syncEmailTrackingPool` | Uses `loadEmailPoolFunds` directly — no display-name dedupe, no 备案号 gate |
+| Parse records | `getAllEmailParseRecords` | Exposes all parse subjects for nightly pool sync on the server |
+
+### Production backfill (2026-07-10)
+
+Ran `syncEmailTrackingPool` + cache refresh: **59 → 86** funds in `custom_email_nav`, including **SAUV26 邦客鼎成精选**.
+
+### After deployment
+
+```bash
+npx tsx scripts/ma/seed_email_tracking_pool.ts
+npx tsx scripts/ma/_sync_email_pool_cache.ts
+```
+
+Nightly `email_nav_etl.ts` already calls `syncEmailTrackingPool` after parse.
+
+---
+
+## What Was Fixed (国信托管 净值邮件 — SAUV26 邦客鼎成精选, 2026-07-10)
+
+### The Problem
+
+**邮箱运维池** showed **邦客鼎成精选 (SAUV26)** at **2026-06-05 / 1.3594** (stale platform NAV) while the mailbox had **2026-07-09 / 1.3014** from Guosen/国信托管 (`gxtgwbhs@guosen.com.cn`).
+
+### Root Cause
+
+Guosen custody emails use subject/filename pattern **`净值20260709`** (no **净值表** suffix). Old attachment selectors required **净值表**, so the `.xls` attachment was skipped and the body table row (`产品代码 … 日期 … 单位净值`) had no dedicated parser.
+
+### Fix
+
+| Area | Change |
+|---|---|
+| `email-nav-attachment.ts` | Match `净值20\d{6}` / `净值YYYY-MM-DD` in subject and filename |
+| `email-nav-extract.ts` | `parseGuosenCustodyNavSubject` + Guosen body-table row parser |
+| Production backfill | Inserted 2026-07-09 email NAV; cache refreshed to **1.3014** |
+
+After deploy, re-parse recent mail: `npx tsx scripts/ma/email_nav_etl.ts --parse-only --days=30`
+
+---
+
+## What Was Fixed (青钱基石1号 — SBDW42, manage stream remap, 2026-07-10)
+
+### The Problem
+
+**私募基金 → 青钱基石1号** (备案号 **SBDW42**) detail page showed **2026-07-09 unit NAV 1.0867** (−25% daily) while the email **【净值表】** had **1.4548** on the same date.
+
+### Root Cause
+
+`filterEmailNavManageStream` called `selectEmailNavSeriesRows` correctly (parent ~**1.45** series), then **discarded the selection** when re-attaching DB row ids: it fell back to `typeFiltered.find(r => r.nav_date === row.nav_date)`, which returned the **first** raw row for that date — the **B-class ~1.09** NAV also stored under product code **SBDW42** in the same attachment.
+
+The public `loadEmailNavSeries` path was unaffected; only **在管 / manage** streams (`loadEmailNavManagePoints`, `loadManagedProductNavSeries`, `loadFundNavSeries` with manual team NAV) showed the wrong values.
+
+### Fix
+
+| Area | Change |
+|---|---|
+| `filterEmailNavManageStream` | Reattach ids by matching **nav_date + nav** (then name), and always spread selected `row` values last |
+
+### What This Fix Does NOT Change
+
+- SBDW42 `selectEmailNavSeriesRows` share-class continuity logic — unchanged
+- SQU767 / ASX73A / SNF018 / other protected fixes — unchanged
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/_diag_sbdw42_detail.ts
+```
+
+---
+
+## What Was Fixed (长江证券 虚拟净值 — SB969A 铸锋太阿3号A类, 2026-07-10)
+
+### The Problem
+
+**投资 → 团队跟踪 → 邮箱运维池** search for **铸锋太阿3号A类** showed a pool row but **all NAV columns empty** (—). The product detail page had **0 条** platform NAV rows despite a Changjiang email with **2026-07-09 / 1.0000** (`cjtgdata@pbcjsc.com`, subject `虚拟净值-铸锋太阿3号…-20260709.xls`).
+
+### Root Cause
+
+1. **No parser** for Changjiang **虚拟净值** body tables — column is **试算后单位净值**, not **单位净值**.
+2. **Attachment skipped** — `selectNavTableAttachments` required **净值表** in subject/filename; `虚拟净值-*.xls` was excluded by the old `!/虚拟净值/` filter.
+3. **Name-only pool key** — pool row used `register_number = '铸锋太阿3号A'` (from subject discovery) instead of product code **SB969A**, so cache could not join email NAV.
+
+### Fix
+
+| Area | Change |
+|---|---|
+| `email-nav-extract.ts` | Changjiang virtual body-table parser (试算后单位净值 row) |
+| `email-nav-attachment.ts` | Accept `^虚拟净值-` subjects/filenames; do not exclude virtual-NAV xls |
+| `nav-cleaner.ts` | **试算后单位净值** as unit column; exclude **试算前** headers from unit scoring |
+| `email-parse-fetch.ts` | `hasTableNav` accepts **试算后单位净值** body tables |
+| Production backfill | `_fix_sb969a.ts` inserts 2026-07-09 row; pool key → **SB969A** |
+
+After deploy, re-parse recent mail: `npx tsx scripts/ma/email_nav_etl.ts --parse-only --days=30`
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/_diag_sb969a.ts
+```
+
+---
+
+## What Was Fixed (六妙星豪鑫6号 — SBHK26, custody unit inference, 2026-07-10)
+
+### The Problem
+
+**私募基金 → 六妙星豪鑫6号** (SBHK26) detail page showed **2026-06-29 unit NAV 0.9726** (−26.62% daily) while the custody **【基金估值表】** stored **1.1227** on the same date.
+
+### Root Cause
+
+`applyEmailUnitNavCorrection` learned a **unit/cum ratio (~0.867)** from **BHK26A** post-investment virtual emails (A-class share class) and applied it to the parent fund’s own **attachment_valuation_table** row where `nav == cumulative_nav`. That scaled **1.1227 × 0.867 ≈ 0.9726**.
+
+SSG947-style inference is correct for **资产净值公告** rows that store cumulative as unit — but must **not** run on the fund’s own custody **估值表** rows, and must **not** learn ratios from share-class (parent-code) virtual streams.
+
+### Fix
+
+| Area | Change |
+|---|---|
+| `applyEmailUnitNavCorrection` | Skip unit inference for `isCustodyValuationEmailRow`; learn ratio only from non-share-class rows (`!isParentCodeEmailRow`) |
+
+### What This Fix Does NOT Change
+
+- SSG947 custody ratio learning + 资产净值公告 inference — unchanged
+- SBDW42 share-class continuity / manage-stream remap — unchanged
+- SQU767 AUM recovery, ASX73A period returns, SNF018 virtual-first — unchanged
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/_diag_sbhk26.ts
+```
+
+After deploy, refresh tracking cache if needed: `npx tsx scripts/ma/_fix_sbhk26.ts`
+
+---
+
+## What Was Fixed (笃熙景泰泰渊流1号 — SAVM35, halved legacy unit + email rechain, 2026-07-10)
+
+### The Problem
+
+**私募基金 → 笃熙景泰泰渊流1号** (SAVM35) showed **unit NAV 0.7400** with **累计 1.4890** and a near-vertical drop on the 收益曲线, while custody **4级科目估值表** emails had **~1.195–1.215** on the same dates.
+
+### Root Cause
+
+1. **Legacy platform halved unit NAV** after a dividend (unit ≈ cum/2) while cumulative stayed at the pre-scale level (~1.489).
+2. **Email custody rows** store unit-only (`cumulative_nav` null). When email corrected unit from ~0.74 → ~1.21, `rechainDerivedFromPrev` rejected the >50% jump and **kept stale cumulative**.
+3. When email did not merge (or cum was not cleared), the page showed the raw halved legacy values.
+
+### Fix
+
+| Area | Change |
+|---|---|
+| `rechainDerivedFromPrev` | Gap-based rechain when unit jump >50% but prior row has post-div cum-unit gap |
+| `mergeNavSeriesWithEmail` | Clear stale cum/adj when email unit jumps >25% vs legacy (force gap rechain) |
+
+### What This Fix Does NOT Change
+
+- AVM354 `repairAdjCollapsedToUnitRows`, SBHK26 custody inference, SSG947 seed merge — unchanged
+- SBDW42 / SQU767 / ASX73A / SNF018 protected fixes — unchanged
+
+### Regression
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/_diag_savm35_window.ts
+```
+
+After deploy: `npx tsx scripts/ma/_fix_savm35.ts`
+
+### Follow-up (2026-07-10 — list cache stuck on last 净值公告)
+
+**Symptom:** **SAVM35** parent was in **邮箱运维池** but list showed **2026-05-28 / 1.167** while custody **4级科目估值表** emails through **2026-07-09 / 1.215** were already parsed.
+
+**Root cause:** `BatchNavResolver.resolveEmailNavAt()` and `buildEmailNavLatestJoins()` treated **估值表** as fallback only when **no** primary 净值公告 existed. SAVM35 still had a May **资产净值公告** row, so fresher Jul **估值表** rows were ignored for latest NAV.
+
+**Fix:** When primary and valuation streams both exist, pick the **fresher `nav_date`** (same-date ties still prefer primary). Custom **邮箱运维池** list query now dedupes by **register_number**, not display name — keeps parent + share classes (SBAH99 / BAH99A / BAH99C).
+
+---
+
+## What Was Fixed (荣熙恒盈2号 — SBAH99 / BAH99A / BAH99C, 邮箱运维池 share classes, 2026-07-10)
+
+### The Problem
+
+**邮箱运维池** search for **荣熙恒盈2号** showed only **A类** and **C类** rows — missing the parent **荣熙恒盈2号 (SBAH99)**. Clicking **荣熙恒盈2号A类** opened the **parent** fund detail (SBAH99 / 荣熙恒盈2号) because the pool row used `register_number = SBAH99` with `product_name = 荣熙恒盈2号A类`. **BAH99A** was dropped entirely.
+
+### Root Cause
+
+1. **`dedupeEmailPoolFundsByDisplayName`** collapsed all rows sharing a display name into one register number — when SBAH99 was mislabeled as **荣熙恒盈2号A类**, it beat **BAH99A**.
+2. **Latest email row wins** for `product_name` per register — A类-tagged valuation rows could overwrite the parent **SBAH99** name.
+3. No **canonical name from BFL** per 备案号 in pool sync.
+
+### Fix
+
+| Area | Change |
+|---|---|
+| `dedupeEmailPoolFundsByDisplayName` | Keep **all** fund-code registers; drop only Chinese name-only duplicates |
+| `canonicalEmailPoolProductName` | Parent codes (SBAH99) strip A/B/C suffix; class codes get matching suffix |
+| `emailPoolRowIdentityScore` | Prefer rows whose product_code / fund_name align with register suffix |
+| Production repair | `_repair_sbah99_pool.ts` — sync pool + refresh SBAH99 / BAH99A / BAH99C cache |
+
+### What This Fix Does NOT Change
+
+- BAH99A FOF/detail routing (`resolveRouteFundId`, `sqlShareClassProductNameGuard`) — unchanged
+- SBAH99 dividend rechaining / managed-product seed — unchanged
+- SBHK26 / SAVM35 / other pool coverage fixes — unchanged
+
+### Regression
+
+```bash
+npx tsx scripts/ma/_diag_sbah99_pool.ts
+npx tsx scripts/test-nav-rechain.mjs
+```
+
+After deploy: `npx tsx scripts/ma/_repair_sbah99_pool.ts`
+
+---
+
+## What Was Fixed (笃熙禀泰多资产轮动策略2号 — SNG210, wrong pool name, 2026-07-10)
+
+### The Problem
+
+**邮箱运维池** search for **多资产轮动策略2号** / **SNG210** did not find the fund — it was stored as **笃熙禀泰文艺复兴16号** because BFL maps register **SNG210** to the wrong name, while every custody email uses **笃熙禀泰多资产轮动策略2号**.
+
+### Fix
+
+| Area | Change |
+|---|---|
+| `canonicalEmailPoolProductName` | When email `product_code` matches the register but `fund_name` disagrees with BFL, use the **email name** for pool display |
+| Production repair | `_repair_sng210_pool.ts` — resync pool + refresh cache (**2026-07-09 / 1.1970**) |
+
+**Note:** **多资产轮动策略3号** is **SQQ300** (a different fund). Search **2号** or **SNG210** for this email product.
+
+After deploy: `npx tsx scripts/ma/_repair_sng210_pool.ts`

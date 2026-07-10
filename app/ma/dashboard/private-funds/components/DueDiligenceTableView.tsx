@@ -82,6 +82,7 @@ import {
 } from "./AddDueDiligenceRecordDialog"
 import { RepresentativeProductCell } from "./RepresentativeProductCell"
 import { StrategySelectCell } from "./StrategySelectCell"
+import { StrategyMultiSelectCell } from "./StrategyMultiSelectCell"
 import { DdDateCell } from "./DdDateCell"
 import { DdMaterialsCell } from "./DdMaterialsCell"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
@@ -120,11 +121,16 @@ import {
 import {
   fetchSavedTeamStrategies,
   getStrategyCellMatchStatus,
+  getStrategyLevel3MatchStatus,
   hasSavedTeamStrategy,
   rowHasAnyTableStrategy,
   syncTeamStrategiesToDatabase,
   type SavedTeamStrategiesMap,
 } from "@/lib/ma/due-diligence-team-strategies"
+import {
+  strategyLevel3ForDatabase,
+  strategyLevel3FromDatabase,
+} from "@/lib/ma/strategy-level3"
 import {
   buildDdMaterialsAutoFillPatch,
   buildDdMaterialsFolderIndex,
@@ -1341,6 +1347,9 @@ export function DueDiligenceTableView() {
       level === 1 ? row.strategyLevel1 : level === 2 ? row.strategyLevel2 : row.strategyLevel3
     const savedValue =
       level === 1 ? saved.strategy_l1 : level === 2 ? saved.strategy_l2 : saved.strategy_l3
+    if (level === 3) {
+      return getStrategyLevel3MatchStatus(tableValue, savedValue, Boolean(savedValue))
+    }
     return getStrategyCellMatchStatus(tableValue, savedValue, Boolean(savedValue))
   }
 
@@ -1385,7 +1394,7 @@ export function DueDiligenceTableView() {
           {
             strategyLevel1: saved!.strategy_l1,
             strategyLevel2: saved!.strategy_l2,
-            strategyLevel3: saved!.strategy_l3,
+            strategyLevel3: strategyLevel3FromDatabase(saved!.strategy_l3),
           },
           teamStrategyTree,
         )
@@ -1448,7 +1457,7 @@ export function DueDiligenceTableView() {
             beian_hao: row.representativeProductBeianHao!,
             strategy_l1: row.strategyLevel1.trim(),
             strategy_l2: row.strategyLevel2.trim(),
-            strategy_l3: row.strategyLevel3.trim(),
+            strategy_l3: strategyLevel3ForDatabase(row.strategyLevel3),
           },
         ]),
       ).values()]
@@ -1506,8 +1515,8 @@ export function DueDiligenceTableView() {
             : (saved?.strategy_l2 ?? row.strategyLevel2.trim()),
         strategy_l3:
           level === 3
-            ? row.strategyLevel3.trim()
-            : (saved?.strategy_l3 ?? row.strategyLevel3.trim()),
+            ? strategyLevel3ForDatabase(row.strategyLevel3)
+            : (saved?.strategy_l3 ?? strategyLevel3ForDatabase(row.strategyLevel3)),
       }
       await syncTeamStrategiesToDatabase([update])
       await refreshSavedTeamStrategies()
@@ -2244,7 +2253,7 @@ export function DueDiligenceTableView() {
                               level={3}
                               onSyncRequest={openStrategySyncConfirm}
                             >
-                              <StrategySelectCell
+                              <StrategyMultiSelectCell
                                 cellId={cellId}
                                 value={row.strategyLevel3}
                                 width={col.width}
@@ -2289,6 +2298,7 @@ export function DueDiligenceTableView() {
                                   loading={
                                     Boolean(beian)
                                     && poolsLoading
+                                    && beian != null
                                     && !(beian in poolMemberships)
                                   }
                                   width={col.width}

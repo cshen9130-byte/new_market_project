@@ -46,6 +46,7 @@ const DATE_HEADER_PATTERNS = [
 ]
 
 const UNIT_NAV_HEADER_PATTERNS = [
+  /试算后单位净值/i,
   /单位净值|今日单位净值|基金份额净值|基金单位净值|份额净值|netassetvalue|unitnav|navperunit|navunit|^nav$/i,
 ]
 
@@ -78,7 +79,7 @@ function isCumulativeNavHeader(normalizedHeader: string): boolean {
 /** Total AUM / share-count columns must not score as unit NAV (Citics 【基金净值】 xlsx). */
 function isNonUnitNavHeader(normalizedHeader: string): boolean {
   if (isCumulativeNavHeader(normalizedHeader)) return true
-  return /资产净值|净资产|资产份额|持有份额|份额数|成立以来|收益率|涨跌幅|totalasset|netasset(?!value)/i.test(
+  return /资产净值|净资产|资产份额|持有份额|份额数|成立以来|收益率|涨跌幅|试算前单位净值|试算前累计|totalasset|netasset(?!value)/i.test(
     normalizedHeader,
   )
 }

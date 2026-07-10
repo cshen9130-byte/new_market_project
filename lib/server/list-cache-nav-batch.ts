@@ -14,6 +14,7 @@ import {
   isPostInvestmentVirtualNavEmail,
   preferEmailNavRow,
   isPlausibleEmailUnitNav,
+  recoverPlausibleEmailUnitNav,
   selectEmailNavSeriesRows,
   type LegacyNavRow,
   type LegacyNavRowWithPri,
@@ -40,6 +41,98 @@ function navForReturn(p: NavPoint | null | undefined, fallback?: number): number
   if (!p) return fallback ?? null
   const v = p.return_nav ?? p.nav
   return Number.isFinite(v) && v > 0 ? v : (fallback ?? null)
+}
+
+const MIN_RETURN_NAV_RATIO = 0.85
+const MAX_RETURN_NAV_RATIO = 2.5
+
+/**
+ * Forward-fill 复权 from legacy rows onto email-only points that carry unit NAV only.
+ * Keeps ret_1w/1m/3m on the same scale as max-drawdown / Sharpe (SLA063 / ASX73A pattern).
+ */
+export function enrichReturnNavSeries(points: NavPoint[]): NavPoint[] {
+  const sorted = [...points].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+  let lastRatio: number | null = null
+  return sorted.map((row) => {
+    const unit = row.nav
+    const existing = row.return_nav
+    if (existing != null && Number.isFinite(existing) && unit > 0) {
+      const ratio = existing / unit
+      if (
+        ratio >= MIN_RETURN_NAV_RATIO
+        && ratio <= MAX_RETURN_NAV_RATIO
+        && Math.abs(ratio - 1) > 0.02
+      ) {
+        lastRatio = ratio
+        return { ...row, return_nav: existing }
+      }
+    }
+    if (lastRatio != null && unit > 0) {
+      return { ...row, return_nav: +(unit * lastRatio).toFixed(6) }
+    }
+    return row
+  })
+}
+
+function maxDrawdownFraction(values: number[]): number {
+  if (values.length < 2) return 0
+  let peak = values[0]
+  let maxDd = 0
+  for (const v of values) {
+    if (v > peak) peak = v
+    if (peak > 0) maxDd = Math.max(maxDd, (peak - v) / peak)
+  }
+  return maxDd
+}
+
+/** Period loss cannot exceed lifetime or window max drawdown on the same return series. */
+export function capPeriodReturnByDrawdown(
+  ret: number | null,
+  historyAsc: NavPoint[],
+  navDate: string,
+  periodDays: number,
+): number | null {
+  if (ret == null || ret >= -0.001) return ret
+  const toValues = (pts: NavPoint[]) =>
+    pts.map((p) => navForReturn(p)).filter((v): v is number => v != null && v > 0)
+  const windowStart = addDays(navDate, periodDays + 5)
+  const windowValues = toValues(
+    historyAsc.filter((p) => p.nav_date >= windowStart && p.nav_date <= navDate),
+  )
+  const lifetimeValues = toValues(historyAsc.filter((p) => p.nav_date <= navDate))
+  const cap = Math.max(
+    maxDrawdownFraction(windowValues),
+    maxDrawdownFraction(lifetimeValues),
+  ) + 0.005
+  if (Math.abs(ret) > cap + 0.01) return null
+  return ret
+}
+
+function resolvePeriodBaseFromHistory(
+  historyAsc: NavPoint[],
+  navDate: string,
+  periodDays: number,
+  latestReturnNav: number,
+): NavPoint | null {
+  const targetDate = addDays(navDate, periodDays)
+  const targetMs = new Date(`${targetDate}T00:00:00Z`).getTime()
+  let best: NavPoint | null = null
+  let bestScore = Number.POSITIVE_INFINITY
+  for (const p of historyAsc) {
+    if (p.nav_date >= navDate) break
+    const baseNav = navForReturn(p)
+    if (baseNav == null || !isSameShareClassNavLevel(latestReturnNav, baseNav)) continue
+    const gap = calendarDaysBetween(navDate, p.nav_date)
+    if (gap > periodDays * 2) continue
+    if (isStalePeriodBase(navDate, p.nav_date, periodDays)) continue
+    const dist = Math.abs(new Date(`${p.nav_date}T00:00:00Z`).getTime() - targetMs)
+    const score = dist + Math.max(0, periodDays - gap) * 86_400_000 * 0.001
+    if (score < bestScore) {
+      bestScore = score
+      best = p
+    }
+  }
+  return best
 }
 
 function legacyRowToNavPoint(row: LegacyNavRow): NavPoint | null {
@@ -96,8 +189,13 @@ function resolveEmailNavAt(points: NavPoint[] | undefined, beforeDate: string): 
   if (!points?.length) return null
   const primary = points.filter(isPrimaryEmailNavPoint)
   const fromPrimary = navAtOrBefore(primary, beforeDate)
-  if (fromPrimary) return fromPrimary
-  return navAtOrBefore(points, beforeDate)
+  const fromAll = navAtOrBefore(points, beforeDate)
+  if (!fromPrimary) return fromAll
+  if (!fromAll) return fromPrimary
+  // Custody 估值表 often continues after the last 净值公告 (SAVM35-style). Prefer the
+  // fresher point across all email sources; same-date ties still favor primary streams.
+  if (fromAll.nav_date > fromPrimary.nav_date) return fromAll
+  return fromPrimary
 }
 
 export type ProductNavIdentity = {
@@ -121,6 +219,29 @@ export function fmtDate(d: string | Date | null): string | null {
   if (!d) return null
   if (d instanceof Date) return d.toISOString().slice(0, 10)
   return String(d).slice(0, 10)
+}
+
+export function calendarDaysBetween(laterDate: string, earlierDate: string): number {
+  const later = new Date(`${laterDate.slice(0, 10)}T00:00:00Z`).getTime()
+  const earlier = new Date(`${earlierDate.slice(0, 10)}T00:00:00Z`).getTime()
+  return Math.round((later - earlier) / 86_400_000)
+}
+
+/** Reject period bases that are far older than the requested window (data gaps / share-class switches). */
+export function isStalePeriodBase(navDate: string, baseDate: string | null | undefined, periodDays: number): boolean {
+  if (!baseDate) return true
+  const gap = calendarDaysBetween(navDate, baseDate)
+  const slack = Math.max(5, Math.floor(periodDays * 0.15))
+  return gap > periodDays + slack
+}
+
+/** Same share-class tier — excludes A/B jumps (~1.09 vs ~1.45). */
+export function isSameShareClassNavLevel(latestNav: number, baseNav: number): boolean {
+  if (!Number.isFinite(latestNav) || !Number.isFinite(baseNav) || latestNav <= 0 || baseNav <= 0) {
+    return false
+  }
+  const ratio = baseNav / latestNav
+  return ratio >= 0.85 && ratio <= 1.15
 }
 
 export function addDays(isoDate: string, days: number): string {
@@ -272,7 +393,10 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
     if (rawNav == null) continue
     const ratio = virtualRatioByCode.get(row.code) ?? null
     const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
-    const nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
+    let nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
+    const recovered = recoverPlausibleEmailUnitNav(nav, cum, row.subject)
+    if (recovered == null) continue
+    nav = recovered
     const aliases = collectFundNameAliases(row.fund_name ?? "", null)
     if (!filterEmailBatchRow(row, row.code, aliases)) continue
     pushNavPoint(out, row.code, {
@@ -374,7 +498,10 @@ async function loadEmailNavByNameBatch(
       ) continue
       const ratio = virtualRatioByName.get(matchedName) ?? null
       const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
-      const nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
+      let nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
+      const recovered = recoverPlausibleEmailUnitNav(nav, cum, row.subject)
+      if (recovered == null) continue
+      nav = recovered
       pushNavPoint(out, matchedName, {
         nav,
         nav_date: row.nav_date.slice(0, 10),
@@ -940,6 +1067,16 @@ export class BatchNavResolver {
       && isPlausibleEmailUnitNav(emailBeian.nav)
     ) {
       emailPoint = emailBeian
+    } else if (
+      emailName
+      && emailBeian
+      && !isPlausibleEmailUnitNav(emailBeian.nav)
+      && isPlausibleEmailUnitNav(emailName.nav)
+    ) {
+      emailPoint = emailName
+    }
+    if (emailPoint && !isPlausibleEmailUnitNav(emailPoint.nav)) {
+      emailPoint = null
     }
 
     if (seedPoint && seedLatest && beforeDate <= seedLatest) {
@@ -1007,14 +1144,77 @@ export class BatchNavResolver {
     unitNav: number,
     navDate: string,
   ): Record<(typeof RETURN_OFFSETS)[number]["key"], number | null> {
-    const latestPoint = this.resolveAt(identity, navDate)
+    const historyAsc = enrichReturnNavSeries(
+      this.mergedHistoryForRiskMetrics(identity, addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS)),
+    )
+    const latestPoint =
+      historyAsc.filter((p) => p.nav_date <= navDate).at(-1)
+      ?? this.resolveAt(identity, navDate)
     const latestReturnNav = navForReturn(latestPoint, unitNav)
     const out = {} as Record<(typeof RETURN_OFFSETS)[number]["key"], number | null>
+    if (latestReturnNav == null) {
+      for (const { key } of RETURN_OFFSETS) out[key] = null
+      return out
+    }
     for (const { key, days } of RETURN_OFFSETS) {
-      const base = this.resolveAt(identity, addDays(navDate, days))
-      out[key] = calcReturn(latestReturnNav, navForReturn(base))
+      const base = resolvePeriodBaseFromHistory(
+        historyAsc,
+        navDate,
+        days,
+        latestReturnNav,
+      )
+      let ret = calcReturn(latestReturnNav, navForReturn(base))
+      ret = capPeriodReturnByDrawdown(ret, historyAsc, navDate, days)
+      out[key] = ret
     }
     return out
+  }
+
+  /**
+   * Period base at the lookback date, or the nearest prior same-share-class point when the
+   * exact window is empty (e.g. SBDW42 B-class email starts 2026-07-06, gap before May legacy).
+   */
+  resolvePeriodBase(
+    identity: ProductNavIdentity,
+    navDate: string,
+    periodDays: number,
+    latestReturnNav: number,
+  ): NavPoint | null {
+    const targetDate = addDays(navDate, periodDays)
+    const primary = this.resolveAt(identity, targetDate)
+    if (primary && !isStalePeriodBase(navDate, primary.nav_date, periodDays)) {
+      const baseNav = navForReturn(primary)
+      if (baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav)) {
+        return primary
+      }
+    }
+
+    const sinceDate = addDays(navDate, periodDays * 2)
+    const history = this.mergedHistory(identity, sinceDate)
+      .filter((p) => p.nav_date < navDate)
+      .sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+
+    const sameClass = history.filter((p) => {
+      const baseNav = navForReturn(p)
+      return baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav)
+    })
+    if (sameClass.length === 0) return null
+
+    const targetMs = new Date(`${targetDate}T00:00:00Z`).getTime()
+    let best: NavPoint | null = null
+    let bestScore = Number.POSITIVE_INFINITY
+    for (const p of sameClass) {
+      const gap = calendarDaysBetween(navDate, p.nav_date)
+      if (gap > periodDays * 2) continue
+      if (isStalePeriodBase(navDate, p.nav_date, periodDays)) continue
+      const dist = Math.abs(new Date(`${p.nav_date}T00:00:00Z`).getTime() - targetMs)
+      const score = dist + Math.max(0, periodDays - gap) * 86_400_000 * 0.001
+      if (score < bestScore) {
+        bestScore = score
+        best = p
+      }
+    }
+    return best
   }
 
   mergedHistory(identity: ProductNavIdentity, sinceDate: string): NavPoint[] {

@@ -126,6 +126,21 @@ export function isPlausibleEmailUnitNav(
   return true
 }
 
+/**
+ * Recover unit NAV when parsers store 基金资产净值 (total AUM) in `nav` but
+ * `cumulative_nav` holds the true per-unit value (SQU767 / BAH99A-style column bleed).
+ */
+export function recoverPlausibleEmailUnitNav(
+  nav: number | null | undefined,
+  cumulativeNav: number | null | undefined,
+  subject?: string | null,
+): number | null {
+  if (nav != null && isPlausibleEmailUnitNav(nav, cumulativeNav)) return nav
+  const cum = cumulativeNav ?? null
+  if (cum != null && isPlausibleEmailUnitNav(cum, cum)) return cum
+  return extractSubjectUnitNavHint(subject)
+}
+
 /** Parse unit NAV embedded in email subject (e.g. 单位净值为1.1386). */
 export function extractSubjectUnitNavHint(subject: string | null | undefined): number | null {
   if (!subject) return null
@@ -432,29 +447,50 @@ function isParentCodeEmailRow(row: EmailNavRawRow, beian: string): boolean {
   return shareClassProductCodesMatch(code, beian)
 }
 
+/** Same parent attachment publishing A/B share-class NAVs under one product_code (e.g. SBDW42 ~1.09 vs ~1.45). */
+function collectMultiShareClassNavRows(dayRows: EmailNavRawRow[], beian: string): EmailNavRawRow[] {
+  const beianU = beian.trim().toUpperCase()
+  const related = dayRows.filter((row) => {
+    const code = (row.product_code ?? "").trim().toUpperCase()
+    if (!code) return false
+    return code === beianU || shareClassProductCodesMatch(code, beianU)
+  })
+  const plausible = related.filter((row) => {
+    const nav = parseOptionalNav(row.nav)
+    return nav != null && isPlausibleEmailUnitNav(nav, parseOptionalNav(row.cumulative_nav))
+  })
+  if (plausible.length <= 1) return plausible
+  const navs = plausible
+    .map((row) => parseOptionalNav(row.nav))
+    .filter((nav): nav is number => nav != null)
+    .sort((a, b) => a - b)
+  if (navs.length <= 1) return plausible
+  if (navs[navs.length - 1] / navs[0] > 1.05) return plausible
+  return plausible
+}
+
 /** When parent-code attachments publish multiple share-class NAVs on one date, keep the series-continuous point. */
 function pickEmailNavRowWithContinuity(
   dayRows: EmailNavRawRow[],
   tierBest: EmailNavRawRow,
   beian: string,
   prevNav: number | null,
+  aClass: boolean,
 ): EmailNavRawRow {
-  const parentRows = dayRows.filter((row) => isParentCodeEmailRow(row, beian))
-  if (parentRows.length <= 1) return tierBest
-
-  const plausible = parentRows.filter((row) => {
-    const nav = parseOptionalNav(row.nav)
-    return nav != null && isPlausibleEmailUnitNav(nav, parseOptionalNav(row.cumulative_nav))
-  })
+  const plausible = collectMultiShareClassNavRows(dayRows, beian)
   if (plausible.length <= 1) return tierBest
 
   if (prevNav == null || prevNav <= 0) {
-    const shareLetter = beian.slice(-1)
-    if (!/[ABC]/.test(shareLetter)) return tierBest
     const navs = plausible
       .map((row) => parseOptionalNav(row.nav))
       .filter((nav): nav is number => nav != null)
       .sort((a, b) => a - b)
+    if (navs.length > 1 && navs[navs.length - 1] / navs[0] > 1.05) {
+      const targetNav = aClass ? navs[0] : navs[navs.length - 1]
+      return plausible.find((row) => Math.abs(parseOptionalNav(row.nav)! - targetNav) < 0.000001) ?? tierBest
+    }
+    const shareLetter = beian.slice(-1)
+    if (!/[ABC]/.test(shareLetter)) return tierBest
     const targetNav = shareLetter === "A" ? navs[0] : navs[navs.length - 1]
     return plausible.find((row) => Math.abs(parseOptionalNav(row.nav)! - targetNav) < 0.000001) ?? tierBest
   }
@@ -511,28 +547,52 @@ export function selectEmailNavSeriesRows(
     for (let i = 1; i < dayRows.length; i++) {
       best = preferEmailNavRow(best, dayRows[i], beian)
     }
-    best = pickEmailNavRowWithContinuity(dayRows, best, beian, prevNav)
+    best = pickEmailNavRowWithContinuity(dayRows, best, beian, prevNav, aClass)
+    const recovered = recoverPlausibleEmailUnitNav(
+      parseOptionalNav(best.nav),
+      parseOptionalNav(best.cumulative_nav),
+      best.subject,
+    )
+    if (recovered == null) continue
+    if (Math.abs(recovered - (parseOptionalNav(best.nav) ?? recovered)) >= 0.000001) {
+      best = { ...best, nav: String(+recovered.toFixed(6)) }
+    }
+    const bestNav = recovered
+    if (
+      prevNav != null && bestNav != null && prevNav > 0 &&
+      Math.abs(bestNav / prevNav - 1) > 0.15 &&
+      collectMultiShareClassNavRows(dayRows, beian).length <= 1
+    ) {
+      // Missing share-class row in email (e.g. SBDW42 B-class absent on 2026-07-09) — keep prior date.
+      continue
+    }
     selected.push(best)
-    prevNav = parseOptionalNav(best.nav)
+    prevNav = bestNav
   }
 
-  return applyEmailUnitNavCorrection(selected)
+  return applyEmailUnitNavCorrection(selected, beianHao)
 }
 
-function applyEmailUnitNavCorrection(rows: EmailNavRawRow[]): EmailNavRawRow[] {
+function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): EmailNavRawRow[] {
+  const beian = beianHao.trim().toUpperCase()
   let latestRatio: number | null = null
   return rows.map((row) => {
     const unit = parseOptionalNav(row.nav)
     const cum = parseOptionalNav(row.cumulative_nav)
     if (unit != null && !isPlausibleEmailUnitNav(unit, cum)) {
-      const hinted = extractSubjectUnitNavHint(row.subject)
-      if (hinted != null) {
-        if (cum != null && cum - hinted > 0.05) latestRatio = hinted / cum
-        return { ...row, nav: String(+hinted.toFixed(6)) }
+      const recovered = recoverPlausibleEmailUnitNav(unit, cum, row.subject)
+      if (recovered != null) {
+        if (cum != null && cum - recovered > 0.05 && !isParentCodeEmailRow(row, beian)) {
+          latestRatio = recovered / cum
+        }
+        return { ...row, nav: String(+recovered.toFixed(6)) }
       }
     }
-    if (unit != null && cum != null && cum - unit > 0.05) {
+    if (unit != null && cum != null && cum - unit > 0.05 && !isParentCodeEmailRow(row, beian)) {
       latestRatio = unit / cum
+    }
+    if (isCustodyValuationEmailRow(row, beian)) {
+      return row
     }
     if (isPostInvestmentVirtualNavEmail(row.subject)) {
       return row
@@ -686,7 +746,6 @@ export function buildEmailNavLatestJoins(
       WHERE ${match}
         AND ${fofReject}
         AND ${aClassGuard}
-        AND en.nav IS NULL
         AND ${EMAIL_NAV_VALUATION_SOURCE_FILTER}
         AND e.nav_date <= ${cutoffExpr}
         AND e.nav IS NOT NULL
@@ -707,12 +766,20 @@ export function buildEmailNavLatestJoins(
       WHERE ${match}
         AND ${fofReject}
         AND ${aClassGuard}
-        AND COALESCE(en.nav_date, en_val.nav_date) IS NOT NULL
-        AND e.nav_date < COALESCE(en.nav_date, en_val.nav_date)
+        AND (
+          en.nav_date IS NOT NULL
+          OR en_val.nav_date IS NOT NULL
+        )
+        AND e.nav_date < CASE
+          WHEN en.nav_date IS NULL THEN en_val.nav_date
+          WHEN en_val.nav_date IS NULL THEN en.nav_date
+          WHEN en_val.nav_date > en.nav_date THEN en_val.nav_date
+          ELSE en.nav_date
+        END
         AND e.nav IS NOT NULL
         AND (
           (${EMAIL_NAV_PRIMARY_SOURCE_FILTER})
-          OR (en.nav IS NULL AND ${EMAIL_NAV_VALUATION_SOURCE_FILTER})
+          OR ${EMAIL_NAV_VALUATION_SOURCE_FILTER}
         )
       ORDER BY ${emailNavOrder}
       LIMIT 1
@@ -729,8 +796,18 @@ export function buildEmailNavLatestExprs(
 ) {
   const legacyNav = legacyNavExpr ?? "NULL::numeric"
   const legacyDate = legacyDateExpr ?? "NULL::date"
-  const currentNav = "COALESCE(en.nav, en_val.nav)"
-  const currentDate = "COALESCE(en.nav_date, en_val.nav_date)"
+  const currentNav = `CASE
+    WHEN en.nav IS NULL THEN en_val.nav
+    WHEN en_val.nav IS NULL THEN en.nav
+    WHEN en_val.nav_date > en.nav_date THEN en_val.nav
+    ELSE en.nav
+  END`
+  const currentDate = `CASE
+    WHEN en.nav_date IS NULL THEN en_val.nav_date
+    WHEN en_val.nav_date IS NULL THEN en.nav_date
+    WHEN en_val.nav_date > en.nav_date THEN en_val.nav_date
+    ELSE en.nav_date
+  END`
   return {
     navExpr: `COALESCE(${currentNav}, ${legacyNav}, ${fallbackNavExpr})`,
     dateExpr: `COALESCE(${currentDate}, ${legacyDate}, CASE WHEN (${fallbackNavExpr}) IS NOT NULL THEN ${fallbackDateExpr} END)`,
@@ -808,9 +885,21 @@ function filterEmailNavManageStream(
     navType === "virtual" ? isVirtualNavRow(row) : !isVirtualNavRow(row),
   )
   return selectEmailNavSeriesRows(typeFiltered, beian, aliases).map((row) => {
-    const match = typeFiltered.find((r) => r.nav_date === row.nav_date && r.fund_name === row.fund_name)
-      ?? typeFiltered.find((r) => r.nav_date === row.nav_date)
-    return match ?? ({ ...row, id: row.nav_date } as EmailNavRawRowWithId)
+    const nav = row.nav
+    const match =
+      typeFiltered.find(
+        (r) =>
+          r.nav_date === row.nav_date
+          && r.nav === nav
+          && (r.fund_name ?? "") === (row.fund_name ?? ""),
+      )
+      ?? typeFiltered.find((r) => r.nav_date === row.nav_date && r.nav === nav)
+      ?? typeFiltered.find((r) => r.nav_date === row.nav_date && r.fund_name === row.fund_name)
+    return {
+      ...(match ?? row),
+      ...row,
+      id: match?.id ?? row.nav_date,
+    } as EmailNavRawRowWithId
   })
 }
 
@@ -1204,9 +1293,23 @@ function rechainDerivedFromPrev(
   }
 
   const unitRatio = unit / prevUnit
-  if (unitRatio <= 0.5 || unitRatio >= 1.5) return null
-
   const prevCumW = parseOptionalNav(prev.cum_nav_withdrawal) ?? prevCum
+  const prevPostDiv = hasDividendOffset(prevUnit, prevCumW)
+
+  // Email corrected a legacy halved unit (large jump) — preserve cum-unit gap from prior post-div row.
+  if ((unitRatio <= 0.5 || unitRatio >= 1.5) && prevPostDiv) {
+    const cumUnitGap = prevCumW - prevUnit
+    if (cumUnitGap > 0.05) {
+      const cum = unit + cumUnitGap
+      const adj = prevCumW > 0 ? prevAdj * cum / prevCumW : cum
+      if (isReasonableNav(adj) && isReasonableNav(cum)) {
+        return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
+      }
+    }
+    return null
+  }
+
+  if (unitRatio <= 0.5 || unitRatio >= 1.5) return null
 
   // Ex-dividend day: unit dropped while cumulative NAV stays near its prior level.
   // When currCum is available (set by email), pass it to the dividend check so the
@@ -1221,7 +1324,6 @@ function rechainDerivedFromPrev(
     return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
   }
 
-  const prevPostDiv = hasDividendOffset(prevUnit, prevCumW)
   if (!prevPostDiv) {
     const v = String(+unit.toFixed(6))
     return { cum: v, adj: v }
@@ -1968,6 +2070,11 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
       if (resolvedCum != null) {
         updated.cum_nav_withdrawal = String(resolvedCum)
       }
+      const existingUnit = parseOptionalNav(existing.nav)
+      const unitJump =
+        existingUnit != null &&
+        resolvedUnitNav > 0 &&
+        Math.abs(resolvedUnitNav - existingUnit) / Math.max(existingUnit, resolvedUnitNav) > 0.25
       if (emailAdj != null) {
         updated.cumulative_nav = String(emailAdj)
       } else if (resolvedCum != null) {
@@ -1982,6 +2089,11 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
           updated.cumulative_nav = ""
           adjOnlyEmailDates.add(row.price_date)
         }
+      } else if (unitJump) {
+        // Custody email corrected a legacy halved unit — drop stale cum/adj for gap rechain.
+        updated.cum_nav_withdrawal = ""
+        updated.cumulative_nav = ""
+        unitOnlyEmailDates.add(row.price_date)
       } else if (emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {
         unitOnlyEmailDates.add(row.price_date)
       }

@@ -124,10 +124,20 @@ function extractFundNameFromSubject(subject: string): string | null {
   return m ? normalizeFundDisplayName(m[0]) : null
 }
 
+/** Guosen/国信托管: SAUV26邦客鼎成精选私募证券投资基金净值2026-07-09【国信托管】 */
+function parseGuosenCustodyNavSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    /^([A-Z0-9]{4,8})([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)净值(\d{4}-\d{2}-\d{2}|20\d{6})/u,
+  )
+  if (!m) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
+    parseGuosenCustodyNavSubject,
     parseVirtualEstSubject,
     parseAssetNavAnnouncementSubject,
     parseVirtualPerfSubject,
@@ -372,6 +382,42 @@ export function extractNavData(
       productCode: shared.productCode ?? cmsRowM[4],
       fundName: shared.fundName ?? normalizeFundDisplayName(cmsRowM[5]),
       source: "body_table",
+    }
+  }
+
+  // ── 3c. Body: Guosen/国信托管 table row ───────────────────────────────────
+  // 1 SAUV26 邦客鼎成精选私募证券投资基金 2026-07-09 未授权 未授权 1.3014 1.3014
+  const guosenRowM = bodyText.match(
+    /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(20\d{2}-\d{2}-\d{2})\s+(?:\S+\s+)*?(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/u,
+  )
+  if (guosenRowM) {
+    return {
+      nav: parseFloat(guosenRowM[4]),
+      navDate: guosenRowM[3],
+      cumulativeNav: parseFloat(guosenRowM[5]),
+      adjustedNav: null,
+      productCode: shared.productCode ?? guosenRowM[1],
+      fundName: shared.fundName ?? normalizeFundDisplayName(guosenRowM[2]),
+      source: "body_table",
+    }
+  }
+
+  // ── 3d. Body: Changjiang 长江证券 虚拟净值 (试算后单位净值 column) ─────────
+  // 2026-07-09 2026-07-10 SB969A 铸锋太阿3号...A类 ... 1.0000 1 1 1000000.00
+  if (/^虚拟净值-/u.test(subject) || /试算后单位净值/u.test(bodyText)) {
+    const cjRowM = bodyText.match(
+      /(\d{4}-\d{2}-\d{2})\s+\d{4}-\d{2}-\d{2}\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)[\s\S]*?(\d+\.\d{2,8})\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+[\d,]+\.[\d]+/u,
+    )
+    if (cjRowM) {
+      return {
+        nav: parseFloat(cjRowM[4]),
+        navDate: cjRowM[1],
+        cumulativeNav: parseFloat(cjRowM[6]),
+        adjustedNav: null,
+        productCode: shared.productCode ?? cjRowM[2],
+        fundName: shared.fundName ?? normalizeFundDisplayName(cjRowM[3]),
+        source: "body_table",
+      }
     }
   }
 

@@ -64,7 +64,7 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
   { key: "representativeProduct", label: "代表产品",   width: 100 },
   { key: "strategyLevel1",     label: "一级策略",      width: 68 },
   { key: "strategyLevel2",     label: "二级策略",      width: 68 },
-  { key: "strategyLevel3",     label: "三级策略",      width: 90 },
+  { key: "strategyLevel3",     label: "三级策略",      width: 110 },
   { key: "inTrackingPool",     label: "已加入跟踪池", width: 130 },
   { key: "ddMaterials",        label: "尽调材料",      width: 84 },
   { key: "otherInfo",          label: "其他补充信息",  width: 150, multiline: true, hoverPreview: true },

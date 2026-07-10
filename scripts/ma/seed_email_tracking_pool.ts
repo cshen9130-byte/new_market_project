@@ -17,25 +17,11 @@ async function main() {
   const { syncEmailTrackingPool, EMAIL_OPS_POOL_KEY, EMAIL_OPS_POOL_LABEL } = await import(
     "@/lib/server/email-tracking-pool-sync"
   )
-  const { listTeamData } = await import("@/lib/server/team-data-query-pg")
+  const { loadEmailPoolFunds } = await import("@/lib/server/team-data-query-pg")
 
-  const { data, total } = await listTeamData({
-    page: 1,
-    pageSize: 100_000,
-    keyword: "",
-    strategySource: "company",
-    strategyL1: "",
-    strategyL2: "",
-    strategyL3: "",
-    sort: "product_name",
-    sortDir: "ASC",
-  })
+  const emailFunds = await loadEmailPoolFunds()
 
-  const emailFunds = data.filter(
-    (row) => row.product_source === "邮箱同步" && row.beian_hao?.trim(),
-  )
-
-  console.log(`Email-sync funds with 备案号: ${emailFunds.length} / ${total} team-data rows`)
+  console.log(`Email pool fund candidates: ${emailFunds.length}`)
 
   if (emailFunds.length === 0) {
     console.log("Nothing to seed.")
@@ -45,7 +31,7 @@ async function main() {
   if (dryRun) {
     console.log(`[dry-run] Would sync pool "${EMAIL_OPS_POOL_LABEL}" (${EMAIL_OPS_POOL_KEY}) with ${emailFunds.length} funds`)
     for (const row of emailFunds.slice(0, 10)) {
-      console.log(`  ${row.beian_hao}  ${row.product_name}`)
+      console.log(`  ${row.register_number}  ${row.product_name}`)
     }
     if (emailFunds.length > 10) console.log(`  ... and ${emailFunds.length - 10} more`)
     process.exit(0)

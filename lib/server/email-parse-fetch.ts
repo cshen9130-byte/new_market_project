@@ -152,6 +152,12 @@ function hasTableNav(body: string): boolean {
   if (/产品代码\s+产品名称/u.test(body) && /\d{4}年\d{1,2}月\d{1,2}日/u.test(body)) {
     return /\d+\.\d{2,8}/.test(text)
   }
+  if (/产品代码\s+产品名称/u.test(body) && /20\d{2}-\d{2}-\d{2}/u.test(body)) {
+    return /\d+\.\d{2,8}/.test(text)
+  }
+  if (/试算后单位净值/u.test(body) && /20\d{2}-\d{2}-\d{2}/u.test(body)) {
+    return /\d+\.\d{2,8}/.test(text)
+  }
   return /单位净值|基金份额净值|资产净值|虚拟净值|虚拟单位净值/.test(text) && /\d+\.\d{2,8}/.test(text) && /<table|┌|│|净值日期/u.test(body)
 }
 

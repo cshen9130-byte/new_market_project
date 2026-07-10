@@ -1,9 +1,13 @@
 import { promises as fs } from "fs"
 import path from "path"
 import { ChatOpenAI } from "@langchain/openai"
-import { query } from "@/lib/db"
 import { readFileDocumentText } from "@/lib/server/knowledge-base"
-import { sqlFundNameMatch, sqlFundNameMatchPriority } from "@/lib/server/fund-name-match"
+import {
+  fundNameCore,
+  normalizeRegisterCode,
+  searchFundsByName,
+  searchFundsByRegister,
+} from "@/lib/server/fund-picker-search"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -298,7 +302,6 @@ export async function readFundContractText(buffer: Buffer, fileName: string): Pr
 }
 
 const BEIAN_CODE_RE = /(?<![A-Z0-9])([A-Z][A-Z0-9]{4,7}[A-Z]?)(?![A-Z0-9])/g
-const INVALID_REGISTER_VALUES = new Set(["-", "—", "无", "null", "none", "n/a", "NA"])
 
 type MatchHints = {
   fileName?: string
@@ -306,14 +309,6 @@ type MatchHints = {
 }
 
 type ScoredFundMatch = FundMatchCandidate & { score: number }
-
-function fundNameCore(name: string): string {
-  return name
-    .trim()
-    .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)/g, "")
-    .replace(/[ABC]类$/g, "")
-    .trim()
-}
 
 function serialSuffix(name: string): string {
   const m = fundNameCore(name).match(/[一二三四五六七八九十百千0-9]+号$/)
@@ -336,14 +331,6 @@ function namesLooselyMatch(a: string, b: string): boolean {
     if (rightBase.startsWith(leftBase) && guard) return true
   }
   return false
-}
-
-function normalizeRegisterCode(value: string | null | undefined): string | null {
-  if (!value) return null
-  const s = String(value).trim().toUpperCase()
-  if (!s || INVALID_REGISTER_VALUES.has(s) || INVALID_REGISTER_VALUES.has(s.toLowerCase())) return null
-  if (!/^[A-Z][A-Z0-9]{4,7}[A-Z]?$/.test(s)) return null
-  return s
 }
 
 function extractBeianCodes(...sources: Array<string | null | undefined>): string[] {
@@ -410,74 +397,6 @@ function addMatches(target: Map<string, ScoredFundMatch>, rows: FundMatchCandida
       target.set(beian, { beian_hao: beian, product_name: name, short_name: row.short_name ?? null, score })
     }
   }
-}
-
-async function searchFundsByRegister(codes: string[]): Promise<FundMatchCandidate[]> {
-  if (!codes.length) return []
-  return query<FundMatchCandidate>(
-    `SELECT beian_hao, product_name, short_name
-     FROM (
-       SELECT beian_hao, product_name, short_name
-       FROM private_fund_info_bfl
-       WHERE beian_hao = ANY($1::text[])
-       UNION
-       SELECT beian_hao, product_name, NULL::text AS short_name
-       FROM private_fund_info
-       WHERE beian_hao = ANY($1::text[])
-       UNION
-       SELECT register_number AS beian_hao, fund_name AS product_name, NULL::text AS short_name
-       FROM basicinfo_bfl_track
-       WHERE register_number = ANY($1::text[])
-     ) t
-     WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
-     ORDER BY product_name ASC
-     LIMIT 10`,
-    [codes],
-  ).catch((err) => {
-    console.error("[fund-contract-element-extract] searchFundsByRegister", err)
-    return []
-  })
-}
-
-async function searchFundsByName(name: string): Promise<FundMatchCandidate[]> {
-  const trimmed = name.trim()
-  if (!trimmed) return []
-  const core = fundNameCore(trimmed)
-  const ilike = `%${trimmed.slice(0, Math.min(trimmed.length, 16))}%`
-  const coreIlike = core ? `%${core.slice(0, Math.min(core.length, 12))}%` : ilike
-
-  return query<FundMatchCandidate>(
-    `SELECT beian_hao, product_name, short_name
-     FROM (
-       SELECT beian_hao, product_name, short_name
-       FROM private_fund_info_bfl
-       WHERE ${sqlFundNameMatch("product_name", "$1")}
-          OR ${sqlFundNameMatch("short_name", "$1")}
-          OR product_name ILIKE $2
-          OR short_name ILIKE $2
-          OR product_name ILIKE $3
-          OR short_name ILIKE $3
-       UNION
-       SELECT beian_hao, product_name, NULL::text AS short_name
-       FROM private_fund_info
-       WHERE ${sqlFundNameMatch("product_name", "$1")}
-          OR product_name ILIKE $2
-          OR product_name ILIKE $3
-       UNION
-       SELECT register_number AS beian_hao, fund_name AS product_name, NULL::text AS short_name
-       FROM basicinfo_bfl_track
-       WHERE ${sqlFundNameMatch("fund_name", "$1")}
-          OR fund_name ILIKE $2
-          OR fund_name ILIKE $3
-     ) t
-     WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
-     ORDER BY ${sqlFundNameMatchPriority("product_name", "$1")}, product_name ASC
-     LIMIT 10`,
-    [trimmed, ilike, coreIlike],
-  ).catch((err) => {
-    console.error("[fund-contract-element-extract] searchFundsByName", err)
-    return []
-  })
 }
 
 function rankMatchedFunds(
