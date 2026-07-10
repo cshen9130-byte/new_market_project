@@ -56,6 +56,7 @@ export function StrategyMultiSelectCell({
     () => options.filter((opt) => !selected.includes(opt)),
     [options, selected],
   )
+  const displayText = selected.join("、")
 
   const style: CSSProperties = {
     width: width - 4,
@@ -72,7 +73,7 @@ export function StrategyMultiSelectCell({
       : ""
 
   const baseClass = [
-    "min-h-[1.75rem] w-full rounded border px-1 py-0.5 text-xs outline-none transition-colors",
+    "relative block h-7 w-full rounded border bg-transparent px-1 text-xs outline-none transition-colors",
     "hover:border-zinc-200 hover:bg-white/80",
     isActive
       ? "border-blue-500 bg-blue-50/40 ring-1 ring-blue-300"
@@ -80,6 +81,11 @@ export function StrategyMultiSelectCell({
         ? "border-blue-300/60"
         : matchClass || "border-transparent",
     disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
+    !displayText
+      ? "text-zinc-400"
+      : matchStatus === "none" && !matchClass
+        ? "text-zinc-800"
+        : "",
   ].join(" ")
 
   function addTag(tag: string) {
@@ -91,66 +97,34 @@ export function StrategyMultiSelectCell({
     onChange(joinStrategyLevel3(selected.filter((item) => item !== tag)))
   }
 
-  const content = (
+  const compactCell = (
     <div
       data-cell={cellId}
       style={style}
       className={baseClass}
-      onMouseDown={(e) => {
-        e.stopPropagation()
-        onActivate()
-      }}
-      onFocus={onActivate}
-      tabIndex={disabled ? -1 : 0}
-      title={selected.length > 0 ? selected.join("、") : placeholder}
+      title={displayText || placeholder}
     >
-      {selected.length > 0 && (
-        <div className="mb-0.5 flex flex-wrap gap-0.5">
-          {selected.map((tag) => (
-            <span
-              key={tag}
-              className="inline-flex max-w-full items-center gap-0.5 rounded border border-blue-200 bg-blue-50 px-1 py-px text-[10px] leading-tight text-blue-700"
-            >
-              <span className="truncate">{tag}</span>
-              {!disabled && (
-                <button
-                  type="button"
-                  className="shrink-0 text-blue-400 hover:text-blue-700"
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    removeTag(tag)
-                  }}
-                  aria-label={`移除 ${tag}`}
-                >
-                  ×
-                </button>
-              )}
-            </span>
-          ))}
-        </div>
-      )}
+      <span className="pointer-events-none absolute inset-y-0 left-1 right-1 flex items-center truncate leading-none">
+        {displayText || placeholder}
+      </span>
       <select
         value=""
         disabled={disabled || availableOptions.length === 0}
-        onMouseDown={(e) => e.stopPropagation()}
+        onMouseDown={(e) => {
+          e.stopPropagation()
+          onActivate()
+        }}
+        onFocus={onActivate}
         onChange={(e) => addTag(e.target.value)}
-        className={[
-          "block h-6 w-full rounded border border-transparent bg-transparent px-0.5 text-xs outline-none",
-          selected.length === 0 ? "text-zinc-400" : "text-zinc-600",
-          disabled ? "cursor-not-allowed" : "cursor-pointer",
-        ].join(" ")}
+        className="absolute inset-0 h-full w-full cursor-pointer opacity-0 disabled:cursor-not-allowed"
+        aria-label={levelLabel ?? "三级策略"}
       >
         <option value="">
-          {disabled
-            ? placeholder
-            : availableOptions.length === 0
-              ? selected.length > 0
-                ? "已全部添加"
-                : placeholder
-              : selected.length > 0
-                ? "添加标签"
-                : placeholder}
+          {availableOptions.length === 0
+            ? selected.length > 0
+              ? "已全部添加"
+              : placeholder
+            : placeholder}
         </option>
         {availableOptions.map((opt) => (
           <option key={opt} value={opt}>
@@ -161,39 +135,80 @@ export function StrategyMultiSelectCell({
     </div>
   )
 
-  const showDbHover = matchStatus === "mismatch" && dbValue !== undefined && !isActive
+  const showHover = selected.length > 0 || (matchStatus === "mismatch" && dbValue !== undefined && !isActive)
 
-  if (showDbHover) {
-    const tableDisplay = selected.length > 0 ? selected.join("、") : "（空）"
-    const dbDisplay = parseStrategyLevel3(dbValue).join("、") || "（空）"
-    return (
-      <HoverCard openDelay={200} closeDelay={100}>
-        <HoverCardTrigger asChild>
-          <div className="w-full">{content}</div>
-        </HoverCardTrigger>
-        <HoverCardContent
-          side="top"
-          align="start"
-          sideOffset={6}
-          className="pointer-events-none w-auto max-w-xs border border-amber-200 bg-amber-50 p-2.5 text-xs text-amber-950 shadow-md"
-        >
-          <p className="mb-1 font-medium text-amber-900">
-            {levelLabel ? `${levelLabel} · 与数据库不一致` : "与数据库不一致"}
-          </p>
-          <div className="space-y-1 leading-snug">
-            <p>
-              <span className="text-amber-800/80">表格：</span>
-              {tableDisplay}
+  if (!showHover) return compactCell
+
+  const dbTags = dbValue !== undefined ? parseStrategyLevel3(dbValue) : []
+  const showDbMismatch = matchStatus === "mismatch" && dbValue !== undefined && !isActive
+
+  return (
+    <HoverCard openDelay={200} closeDelay={100}>
+      <HoverCardTrigger asChild>
+        <div className="w-full">{compactCell}</div>
+      </HoverCardTrigger>
+      <HoverCardContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className={[
+          "w-auto max-w-xs p-2.5 text-xs shadow-md",
+          showDbMismatch
+            ? "border border-amber-200 bg-amber-50 text-amber-950"
+            : "border border-zinc-200 bg-white text-zinc-800",
+        ].join(" ")}
+      >
+        {showDbMismatch && (
+          <>
+            <p className="mb-1.5 font-medium text-amber-900">
+              {levelLabel ? `${levelLabel} · 与数据库不一致` : "与数据库不一致"}
             </p>
-            <p>
-              <span className="text-amber-800/80">数据库：</span>
-              <span className="font-medium">{dbDisplay}</span>
-            </p>
+            <div className="mb-2 space-y-1 leading-snug text-amber-950">
+              <p>
+                <span className="text-amber-800/80">表格：</span>
+                {selected.length > 0 ? selected.join("、") : "（空）"}
+              </p>
+              <p>
+                <span className="text-amber-800/80">数据库：</span>
+                <span className="font-medium">
+                  {dbTags.length > 0 ? dbTags.join("、") : "（空）"}
+                </span>
+              </p>
+            </div>
+          </>
+        )}
+        {selected.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {selected.map((tag) => (
+              <span
+                key={tag}
+                className={[
+                  "inline-flex max-w-full items-center gap-0.5 rounded border px-1.5 py-0.5 text-[11px] leading-tight",
+                  showDbMismatch
+                    ? "border-amber-200 bg-white text-amber-900"
+                    : "border-blue-200 bg-blue-50 text-blue-700",
+                ].join(" ")}
+              >
+                <span>{tag}</span>
+                {!disabled && (
+                  <button
+                    type="button"
+                    className={showDbMismatch ? "text-amber-500 hover:text-amber-800" : "text-blue-400 hover:text-blue-700"}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removeTag(tag)
+                    }}
+                    aria-label={`移除 ${tag}`}
+                  >
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
           </div>
-        </HoverCardContent>
-      </HoverCard>
-    )
-  }
-
-  return content
+        )}
+      </HoverCardContent>
+    </HoverCard>
+  )
 }

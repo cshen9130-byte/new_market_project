@@ -58,6 +58,21 @@ function synthesizeShareClass(
   }
 }
 
+function passesShareClassFilters(
+  beian: string,
+  name: string,
+  queryShareClass: ShareClassLetter | null,
+  originalQuery: string,
+): boolean {
+  if (queryShareClass) {
+    if (!shareClassProductNamesMatch(name, originalQuery)) return false
+    return shareClassCodeMatchesProduct(beian, name)
+  }
+  if (shareClassFromProductName(name)) return false
+  if (shareClassFromRegisterCode(beian)) return false
+  return true
+}
+
 async function searchProductsByRegister(codes: string[], limit = 10): Promise<PrivateFundPickerResult[]> {
   if (!codes.length) return []
   return query<PrivateFundPickerResult>(
@@ -70,6 +85,13 @@ async function searchProductsByRegister(codes: string[], limit = 10): Promise<Pr
        SELECT beian_hao, product_name, short_name, strategy_one
        FROM private_fund_info_bfl
        WHERE beian_hao = ANY($1::text[])
+       UNION
+       SELECT register_number AS beian_hao,
+              COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
+              fund_name AS short_name,
+              company_strategy_one AS strategy_one
+       FROM type6_ops_team_full
+       WHERE register_number = ANY($1::text[])
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY product_name ASC
@@ -83,13 +105,21 @@ async function searchProductsByRegister(codes: string[], limit = 10): Promise<Pr
 
 async function searchProductsByName(
   candidate: string,
-  guardQuery: string,
+  guardQuery: string | undefined,
   limit = 10,
 ): Promise<PrivateFundPickerResult[]> {
   const trimmed = candidate.trim()
   if (!trimmed) return []
   const ilike = `%${trimmed.slice(0, Math.min(trimmed.length, 16))}%`
-  const shareClassGuard = sqlShareClassProductNameGuard("product_name", "$2")
+  const core = fundNameCore(trimmed)
+  const coreIlike = core ? `%${core.slice(0, Math.min(core.length, 12))}%` : ilike
+  const usesShareClassGuard = guardQuery !== undefined
+  const shareClassGuard = usesShareClassGuard
+    ? sqlShareClassProductNameGuard("product_name", "$5")
+    : "TRUE"
+  const type6ShareClassGuard = usesShareClassGuard
+    ? sqlShareClassProductNameGuard("COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name)", "$5")
+    : "TRUE"
 
   return query<PrivateFundPickerResult>(
     `SELECT beian_hao, product_name, short_name, strategy_one
@@ -99,7 +129,9 @@ async function searchProductsByName(
        WHERE TRIM(product_name) <> ''
          AND (
            ${sqlFundNameMatch("product_name", "$1")}
-           OR beian_hao ILIKE $3
+           OR product_name ILIKE $2
+           OR product_name ILIKE $3
+           OR beian_hao ILIKE $2
          )
          AND ${shareClassGuard}
        UNION
@@ -109,16 +141,82 @@ async function searchProductsByName(
          AND (
            ${sqlFundNameMatch("product_name", "$1")}
            OR ${sqlFundNameMatch("short_name", "$1")}
-           OR beian_hao ILIKE $3
+           OR product_name ILIKE $2
+           OR short_name ILIKE $2
+           OR product_name ILIKE $3
+           OR beian_hao ILIKE $2
          )
          AND ${shareClassGuard}
+       UNION
+       SELECT register_number AS beian_hao,
+              COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
+              fund_name AS short_name,
+              company_strategy_one AS strategy_one
+       FROM type6_ops_team_full
+       WHERE TRIM(COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name)) <> ''
+         AND (
+           ${sqlFundNameMatch("COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name)", "$1")}
+           OR ${sqlFundNameMatch("fund_name", "$1")}
+           OR ${sqlFundNameMatch("fund_short_name", "$1")}
+           OR COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) ILIKE $2
+           OR fund_name ILIKE $2
+           OR fund_short_name ILIKE $2
+           OR COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) ILIKE $3
+           OR register_number ILIKE $2
+         )
+         AND ${type6ShareClassGuard}
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY ${sqlFundNameMatchPriority("product_name", "$1")}, product_name ASC
      LIMIT $4`,
-    [trimmed, guardQuery, ilike, limit],
+    usesShareClassGuard
+      ? [trimmed, ilike, coreIlike, limit, guardQuery]
+      : [trimmed, ilike, coreIlike, limit],
   ).catch((err) => {
     console.error("[private-fund-product-search] searchProductsByName", err)
+    return []
+  })
+}
+
+async function searchProductsBroad(name: string, limit = 10): Promise<PrivateFundPickerResult[]> {
+  const trimmed = name.trim()
+  if (!trimmed) return []
+  const pattern = `%${trimmed}%`
+  const prefix = `${trimmed}%`
+
+  return query<PrivateFundPickerResult>(
+    `SELECT beian_hao, product_name, short_name, strategy_one
+     FROM (
+       SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1 AS strategy_one
+       FROM private_fund_info
+       WHERE product_name ILIKE $1 OR beian_hao ILIKE $1
+       UNION
+       SELECT beian_hao, product_name, short_name, strategy_one
+       FROM private_fund_info_bfl
+       WHERE product_name ILIKE $1 OR short_name ILIKE $1 OR beian_hao ILIKE $1
+       UNION
+       SELECT register_number AS beian_hao,
+              COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
+              fund_name AS short_name,
+              company_strategy_one AS strategy_one
+       FROM type6_ops_team_full
+       WHERE COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) ILIKE $1
+          OR fund_name ILIKE $1
+          OR fund_short_name ILIKE $1
+          OR register_number ILIKE $1
+     ) t
+     WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
+     ORDER BY
+       CASE
+         WHEN beian_hao ILIKE $2 THEN 0
+         WHEN product_name ILIKE $2 THEN 1
+         ELSE 2
+       END,
+       product_name ASC
+     LIMIT $3`,
+    [pattern, prefix, limit],
+  ).catch((err) => {
+    console.error("[private-fund-product-search] searchProductsBroad", err)
     return []
   })
 }
@@ -142,9 +240,7 @@ export async function searchPrivateFundProductsForPicker(
     const beian = row.beian_hao?.trim()
     const name = row.product_name?.trim()
     if (!beian || !name) return
-    if (queryShareClass && !shareClassProductNamesMatch(name, trimmed)) return
-    if (!queryShareClass && shareClassFromProductName(name)) return
-    if (!shareClassCodeMatchesProduct(beian, name)) return
+    if (!passesShareClassFilters(beian, name, queryShareClass, trimmed)) return
     const existing = scored.get(beian)
     if (!existing || score < existing.score) {
       scored.set(beian, { row: { ...row, beian_hao: beian, product_name: name }, score })
@@ -174,8 +270,20 @@ export async function searchPrivateFundProductsForPicker(
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]
     if (normalizeRegisterCode(candidate)) continue
-    for (const row of await searchProductsByName(candidate, trimmed, limit)) {
+    for (const row of await searchProductsByName(candidate, undefined, limit)) {
       addRow(row, 5 + i)
+    }
+  }
+
+  if (scored.size === 0) {
+    for (const row of await searchProductsBroad(trimmed, limit)) {
+      addRow(row, 20)
+    }
+    for (const candidate of [fundNameCore(trimmed), baseGuardQuery].filter(Boolean)) {
+      if (candidate === trimmed) continue
+      for (const row of await searchProductsBroad(candidate, limit)) {
+        addRow(row, 25)
+      }
     }
   }
 
@@ -202,6 +310,15 @@ export async function searchPrivateFundProductsForPicker(
       }
       for (const { row, score } of baseScored.values()) {
         addRow(synthesizeShareClass(row, queryShareClass), 10 + score)
+      }
+      if (!Array.from(scored.values()).some(({ row }) => shareClassFromProductName(row.product_name) === queryShareClass)) {
+        for (const row of await searchProductsBroad(baseGuardQuery, limit)) {
+          if (!isBaseProduct(row)) continue
+          if (!baseNamesMatch(row.product_name, trimmed) && !(row.short_name && baseNamesMatch(row.short_name, trimmed))) {
+            continue
+          }
+          addRow(synthesizeShareClass(row, queryShareClass), 30)
+        }
       }
     }
   }

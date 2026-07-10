@@ -102,6 +102,12 @@ export async function searchFundsByRegister(
        SELECT register_number AS beian_hao, fund_name AS product_name, NULL::text AS short_name
        FROM basicinfo_bfl_track
        WHERE register_number = ANY($1::text[])
+       UNION
+       SELECT register_number AS beian_hao,
+              COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
+              fund_name AS short_name
+       FROM type6_ops_team_full
+       WHERE register_number = ANY($1::text[])
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY product_name ASC
@@ -143,6 +149,21 @@ function synthesizeShareClass(row: FundPickerSearchRow, letter: ShareClassLetter
   }
 }
 
+function passesShareClassFilters(
+  beian: string,
+  name: string,
+  queryShareClass: ShareClassLetter | null,
+  originalQuery: string,
+): boolean {
+  if (queryShareClass) {
+    if (!shareClassProductNamesMatch(name, originalQuery)) return false
+    return shareClassCodeMatchesProduct(beian, name)
+  }
+  if (shareClassFromProductName(name)) return false
+  if (shareClassFromRegisterCode(beian)) return false
+  return true
+}
+
 export async function searchFundsByName(
   name: string,
   limit = 10,
@@ -157,6 +178,9 @@ export async function searchFundsByName(
   const usesShareClassGuard = guardQuery !== undefined
   const shareClassGuard = usesShareClassGuard
     ? sqlShareClassProductNameGuard("product_name", "$5")
+    : "TRUE"
+  const type6ShareClassGuard = usesShareClassGuard
+    ? sqlShareClassProductNameGuard("COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name)", "$5")
     : "TRUE"
 
   return query<FundPickerSearchRow>(
@@ -185,6 +209,22 @@ export async function searchFundsByName(
           OR fund_name ILIKE $2
           OR fund_name ILIKE $3)
          AND ${shareClassGuard}
+       UNION
+       SELECT register_number AS beian_hao,
+              COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
+              fund_name AS short_name
+       FROM type6_ops_team_full
+       WHERE (${sqlFundNameMatch("COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name)", "$1")}
+          OR ${sqlFundNameMatch("fund_name", "$1")}
+          OR ${sqlFundNameMatch("fund_short_name", "$1")}
+          OR COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) ILIKE $2
+          OR fund_name ILIKE $2
+          OR fund_short_name ILIKE $2
+          OR COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) ILIKE $3
+          OR fund_name ILIKE $3
+          OR fund_short_name ILIKE $3
+          OR register_number ILIKE $2)
+         AND ${type6ShareClassGuard}
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY ${sqlFundNameMatchPriority("product_name", "$1")}, product_name ASC
@@ -192,6 +232,52 @@ export async function searchFundsByName(
     usesShareClassGuard ? [trimmed, ilike, coreIlike, limit, guard] : [trimmed, ilike, coreIlike, limit],
   ).catch((err) => {
     console.error("[fund-picker-search] searchFundsByName", err)
+    return []
+  })
+}
+
+async function searchFundsBroad(name: string, limit = 10): Promise<FundPickerSearchRow[]> {
+  const trimmed = name.trim()
+  if (!trimmed) return []
+  const pattern = `%${trimmed}%`
+  const prefix = `${trimmed}%`
+
+  return query<FundPickerSearchRow>(
+    `SELECT beian_hao, product_name, short_name
+     FROM (
+       SELECT beian_hao, product_name, short_name
+       FROM private_fund_info_bfl
+       WHERE product_name ILIKE $1 OR short_name ILIKE $1 OR beian_hao ILIKE $1
+       UNION
+       SELECT beian_hao, product_name, NULL::text AS short_name
+       FROM private_fund_info
+       WHERE product_name ILIKE $1 OR beian_hao ILIKE $1
+       UNION
+       SELECT register_number AS beian_hao, fund_name AS product_name, NULL::text AS short_name
+       FROM basicinfo_bfl_track
+       WHERE fund_name ILIKE $1 OR register_number ILIKE $1
+       UNION
+       SELECT register_number AS beian_hao,
+              COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
+              fund_name AS short_name
+       FROM type6_ops_team_full
+       WHERE COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) ILIKE $1
+          OR fund_name ILIKE $1
+          OR fund_short_name ILIKE $1
+          OR register_number ILIKE $1
+     ) t
+     WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
+     ORDER BY
+       CASE
+         WHEN beian_hao ILIKE $2 THEN 0
+         WHEN product_name ILIKE $2 THEN 1
+         ELSE 2
+       END,
+       product_name ASC
+     LIMIT $3`,
+    [pattern, prefix, limit],
+  ).catch((err) => {
+    console.error("[fund-picker-search] searchFundsBroad", err)
     return []
   })
 }
@@ -224,9 +310,7 @@ function addScoredRow(
   const beian = (row.beian_hao ?? "").trim()
   const name = (row.product_name ?? "").trim()
   if (!beian || !name) return
-  if (queryShareClass && !shareClassProductNamesMatch(name, originalQuery)) return
-  if (!queryShareClass && shareClassFromProductName(name)) return
-  if (!shareClassCodeMatchesProduct(beian, name)) return
+  if (!passesShareClassFilters(beian, name, queryShareClass, originalQuery)) return
   const existing = target.get(beian)
   if (!existing || score < existing.score) {
     target.set(beian, { row: { beian_hao: beian, product_name: name, short_name: row.short_name ?? null }, score })
@@ -271,8 +355,20 @@ export async function searchTrackingFunds(q: string, limit = 20): Promise<FundPi
   for (let i = 0; i < nameCandidates.length; i++) {
     const candidate = nameCandidates[i]
     if (normalizeRegisterCode(candidate)) continue
-    for (const row of await searchFundsByName(candidate, limit, trimmed)) {
+    for (const row of await searchFundsByName(candidate, limit)) {
       addScoredRow(scored, row, 5 + i, queryShareClass, trimmed)
+    }
+  }
+
+  if (scored.size === 0) {
+    for (const row of await searchFundsBroad(trimmed, limit)) {
+      addScoredRow(scored, row, 20, queryShareClass, trimmed)
+    }
+    for (const candidate of [fundNameCore(trimmed), baseGuardQuery].filter(Boolean)) {
+      if (candidate === trimmed) continue
+      for (const row of await searchFundsBroad(candidate, limit)) {
+        addScoredRow(scored, row, 25, queryShareClass, trimmed)
+      }
     }
   }
 
@@ -299,6 +395,15 @@ export async function searchTrackingFunds(q: string, limit = 20): Promise<FundPi
       }
       for (const { row, score } of baseScored.values()) {
         addScoredRow(scored, synthesizeShareClass(row, queryShareClass), 10 + score, queryShareClass, trimmed)
+      }
+      if (!Array.from(scored.values()).some(({ row }) => shareClassFromProductName(row.product_name) === queryShareClass)) {
+        for (const row of await searchFundsBroad(baseGuardQuery, limit)) {
+          if (!isBaseProduct(row)) continue
+          if (!baseNamesMatch(row.product_name, trimmed) && !(row.short_name && baseNamesMatch(row.short_name, trimmed))) {
+            continue
+          }
+          addScoredRow(scored, synthesizeShareClass(row, queryShareClass), 30, queryShareClass, trimmed)
+        }
       }
     }
   }
