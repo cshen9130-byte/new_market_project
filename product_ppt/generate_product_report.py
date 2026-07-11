@@ -1218,10 +1218,30 @@ def generate_ppt(reports: List[ProductReport], output_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _find_soffice() -> str | None:
+    candidates: list[str] = []
+    env_path = os.environ.get("SOFFICE_PATH", "").strip()
+    if env_path:
+        candidates.append(env_path)
     for cmd in ("soffice", "libreoffice"):
-        path = shutil.which(cmd)
-        if path:
-            return path
+        found = shutil.which(cmd)
+        if found:
+            candidates.append(found)
+    candidates.extend(
+        [
+            "/usr/bin/soffice",
+            "/usr/local/bin/soffice",
+            "/usr/bin/libreoffice",
+            "/usr/lib/libreoffice/program/soffice",
+        ]
+    )
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
     return None
 
 
@@ -1243,35 +1263,49 @@ def _pptx_to_pdf_soffice(soffice: str, pptx_path: Path, pdf_path: Path) -> None:
     """Convert PPTX to PDF via LibreOffice headless (Linux/macOS)."""
     out_dir = pdf_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
+    lo_profile = Path(tempfile.gettempdir()) / f"lo_profile_{os.getpid()}"
+    lo_profile.mkdir(parents=True, exist_ok=True)
 
-    result = subprocess.run(
-        [
-            soffice,
-            "--headless",
-            "--norestore",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            str(out_dir),
-            str(pptx_path.resolve()),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(f"LibreOffice PDF conversion failed: {detail or result.returncode}")
+    env = os.environ.copy()
+    env.setdefault("HOME", tempfile.gettempdir())
+    env.setdefault("LANG", "C.UTF-8")
+    env.setdefault("LC_ALL", "C.UTF-8")
+    env["SAL_USE_VCLPLUGIN"] = "svp"
 
-    produced = out_dir / f"{pptx_path.stem}.pdf"
-    if not produced.is_file():
-        raise RuntimeError("LibreOffice did not produce a PDF output")
+    try:
+        result = subprocess.run(
+            [
+                soffice,
+                f"-env:UserInstallation=file://{lo_profile.resolve()}",
+                "--headless",
+                "--norestore",
+                "--invisible",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(out_dir),
+                str(pptx_path.resolve()),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+            env=env,
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"LibreOffice PDF conversion failed: {detail or result.returncode}")
 
-    if produced.resolve() != pdf_path.resolve():
-        if pdf_path.exists():
-            pdf_path.unlink()
-        produced.replace(pdf_path)
+        produced = out_dir / f"{pptx_path.stem}.pdf"
+        if not produced.is_file():
+            raise RuntimeError("LibreOffice did not produce a PDF output")
+
+        if produced.resolve() != pdf_path.resolve():
+            if pdf_path.exists():
+                pdf_path.unlink()
+            produced.replace(pdf_path)
+    finally:
+        shutil.rmtree(lo_profile, ignore_errors=True)
 
 
 def pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> None:

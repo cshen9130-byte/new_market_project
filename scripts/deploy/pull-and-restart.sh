@@ -14,6 +14,9 @@ pnpm install --frozen-lockfile
 echo "==> build (lowmem)"
 pnpm run build:lowmem
 
+echo "==> product monthly report setup"
+bash "$PROJECT_ROOT/scripts/deploy/setup-product-ppt.sh" || true
+
 echo "==> pm2 restart"
 pm2 restart new_market_project --update-env
 pm2 save

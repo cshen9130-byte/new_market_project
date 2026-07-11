@@ -134,6 +134,22 @@ function pythonDepsInstallHint(): string {
   return "python3 -m pip install -r product_ppt/requirements.txt"
 }
 
+function pythonExecEnv(): NodeJS.ProcessEnv {
+  const pathKey = process.platform === "win32" ? "Path" : "PATH"
+  const existing = process.env[pathKey] ?? ""
+  const augmentedPath =
+    process.platform === "win32" || existing.includes("/usr/bin")
+      ? existing
+      : `${existing}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`
+
+  return {
+    ...process.env,
+    [pathKey]: augmentedPath,
+    PYTHONUTF8: "1",
+    PYTHONIOENCODING: "utf-8",
+  }
+}
+
 async function findPython(scriptDir: string): Promise<PythonInvocation> {
   const candidates = listPythonCandidates(scriptDir)
   await appendPathPythonCandidates(candidates)
@@ -384,11 +400,7 @@ export async function generateProductMonthlyReport(
   try {
     const { stdout, stderr } = await execFileAsync(pythonExe, args, {
       cwd: SCRIPT_DIR,
-      env: {
-        ...process.env,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-      },
+      env: pythonExecEnv(),
       encoding: "utf8",
       maxBuffer: 8 * 1024 * 1024,
       timeout: 600_000,
