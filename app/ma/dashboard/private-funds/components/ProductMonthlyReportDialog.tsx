@@ -571,7 +571,7 @@ export function ProductMonthlyReportDialog({
 
           {result && !result.previewUrl && (
             <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-900/40 dark:bg-amber-950/20 dark:text-amber-400">
-              PPT 已生成。PDF 预览需要 Windows 环境安装 Microsoft PowerPoint，您可先下载 PPT 文件。
+              PPT 已生成。PDF 预览需要服务器安装 LibreOffice（Linux）或 Microsoft PowerPoint（Windows），您可先下载 PPT 文件。
             </div>
           )}
         </div>

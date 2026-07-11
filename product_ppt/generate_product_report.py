@@ -17,6 +17,8 @@ import argparse
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -1215,7 +1217,15 @@ def generate_ppt(reports: List[ProductReport], output_path: Path) -> None:
 # PDF conversion & watermark
 # ---------------------------------------------------------------------------
 
-def pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> None:
+def _find_soffice() -> str | None:
+    for cmd in ("soffice", "libreoffice"):
+        path = shutil.which(cmd)
+        if path:
+            return path
+    return None
+
+
+def _pptx_to_pdf_powerpoint(pptx_path: Path, pdf_path: Path) -> None:
     """Convert PPTX to PDF via PowerPoint COM (Windows)."""
     import comtypes.client
 
@@ -1229,20 +1239,83 @@ def pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> None:
         powerpoint.Quit()
 
 
+def _pptx_to_pdf_soffice(soffice: str, pptx_path: Path, pdf_path: Path) -> None:
+    """Convert PPTX to PDF via LibreOffice headless (Linux/macOS)."""
+    out_dir = pdf_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    result = subprocess.run(
+        [
+            soffice,
+            "--headless",
+            "--norestore",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(out_dir),
+            str(pptx_path.resolve()),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"LibreOffice PDF conversion failed: {detail or result.returncode}")
+
+    produced = out_dir / f"{pptx_path.stem}.pdf"
+    if not produced.is_file():
+        raise RuntimeError("LibreOffice did not produce a PDF output")
+
+    if produced.resolve() != pdf_path.resolve():
+        if pdf_path.exists():
+            pdf_path.unlink()
+        produced.replace(pdf_path)
+
+
+def pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> None:
+    if sys.platform == "win32":
+        _pptx_to_pdf_powerpoint(pptx_path, pdf_path)
+        return
+
+    soffice = _find_soffice()
+    if soffice:
+        _pptx_to_pdf_soffice(soffice, pptx_path, pdf_path)
+        return
+
+    raise RuntimeError(
+        "No PDF converter available. Install LibreOffice (soffice) on Linux, "
+        "or Microsoft PowerPoint on Windows."
+    )
+
+
 def _register_chinese_font() -> str:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
+    workspace_root = Path(__file__).resolve().parent.parent
     candidates = [
         Path("C:/Windows/Fonts/msyh.ttc"),
         Path("C:/Windows/Fonts/simhei.ttf"),
         Path("C:/Windows/Fonts/simsun.ttc"),
+        workspace_root / "haitai_week_report" / "fonts" / "NotoSansSC-Regular.otf",
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"),
+        Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+        Path("/usr/share/fonts/wqy-microhei/wqy-microhei.ttc"),
     ]
     for font_path in candidates:
-        if font_path.exists():
-            name = "ChineseFont"
+        if not font_path.exists():
+            continue
+        name = "ChineseFont"
+        suffix = font_path.suffix.lower()
+        if suffix == ".ttc":
+            pdfmetrics.registerFont(TTFont(name, str(font_path), subfontIndex=0))
+        else:
             pdfmetrics.registerFont(TTFont(name, str(font_path)))
-            return name
+        return name
     return "Helvetica"
 
 
@@ -1348,7 +1421,11 @@ def main(argv: list[str] | None = None) -> int:
         pdf_ok = True
     except Exception as exc:
         print(f"PDF conversion failed: {exc}", file=sys.stderr)
-        print("PPT was generated successfully. PDF requires Microsoft PowerPoint on Windows.", file=sys.stderr)
+        print(
+            "PPT was generated successfully. PDF requires LibreOffice (soffice) on Linux "
+            "or Microsoft PowerPoint on Windows.",
+            file=sys.stderr,
+        )
 
     print("Done.")
     return 0 if pdf_ok else 2

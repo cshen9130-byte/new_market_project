@@ -457,7 +457,7 @@ export async function readProductMonthlyReportFile(
 
   const fileName = format === "pdf" ? meta.pdfFileName : meta.pptxFileName
   if (!fileName) {
-    throw new Error(format === "pdf" ? "PDF 未生成（需要 Windows 上的 Microsoft PowerPoint）" : "报告文件不存在")
+    throw new Error(format === "pdf" ? "PDF 未生成（Linux 需安装 LibreOffice，Windows 需安装 Microsoft PowerPoint）" : "报告文件不存在")
   }
 
   const filePath = path.join(dir, fileName)
