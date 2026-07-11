@@ -1260,52 +1260,99 @@ def _pptx_to_pdf_powerpoint(pptx_path: Path, pdf_path: Path) -> None:
 
 
 def _pptx_to_pdf_soffice(soffice: str, pptx_path: Path, pdf_path: Path) -> None:
-    """Convert PPTX to PDF via LibreOffice headless (Linux/macOS)."""
-    out_dir = pdf_path.parent
-    out_dir.mkdir(parents=True, exist_ok=True)
-    lo_profile = Path(tempfile.gettempdir()) / f"lo_profile_{os.getpid()}"
+    """Convert PPTX to PDF via LibreOffice headless (Linux/macOS).
+
+    Uses ASCII temp filenames — Chinese paths often break soffice on Linux servers.
+    """
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(tempfile.mkdtemp(prefix="lo_pptx2pdf_"))
+    lo_profile = work_dir / "profile"
     lo_profile.mkdir(parents=True, exist_ok=True)
+    ascii_pptx = work_dir / "report.pptx"
+    ascii_pdf = work_dir / "report.pdf"
 
     env = os.environ.copy()
-    env.setdefault("HOME", tempfile.gettempdir())
+    env["HOME"] = str(work_dir)
     env.setdefault("LANG", "C.UTF-8")
     env.setdefault("LC_ALL", "C.UTF-8")
     env["SAL_USE_VCLPLUGIN"] = "svp"
 
     try:
+        shutil.copy2(pptx_path, ascii_pptx)
+        profile_uri = lo_profile.resolve().as_uri()
+        cmd = [
+            soffice,
+            f"-env:UserInstallation={profile_uri}",
+            "--headless",
+            "--nologo",
+            "--nolockcheck",
+            "--nodefault",
+            "--norestore",
+            "--invisible",
+            "--convert-to",
+            "pdf:impress_pdf_Export",
+            "--outdir",
+            str(work_dir),
+            str(ascii_pptx),
+        ]
         result = subprocess.run(
-            [
-                soffice,
-                f"-env:UserInstallation=file://{lo_profile.resolve()}",
-                "--headless",
-                "--norestore",
-                "--invisible",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(out_dir),
-                str(pptx_path.resolve()),
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300,
             check=False,
             env=env,
         )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(f"LibreOffice PDF conversion failed: {detail or result.returncode}")
+        detail = (result.stderr or result.stdout or "").strip()
 
-        produced = out_dir / f"{pptx_path.stem}.pdf"
-        if not produced.is_file():
-            raise RuntimeError("LibreOffice did not produce a PDF output")
+        produced = ascii_pdf if ascii_pdf.is_file() else None
+        if produced is None:
+            pdfs = sorted(work_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+            produced = pdfs[0] if pdfs else None
 
-        if produced.resolve() != pdf_path.resolve():
-            if pdf_path.exists():
-                pdf_path.unlink()
-            produced.replace(pdf_path)
+        if produced is None:
+            # Retry once with the simpler filter name (some installs lack impress_pdf_Export).
+            if "impress_pdf_Export" in " ".join(cmd):
+                cmd_retry = [
+                    soffice,
+                    f"-env:UserInstallation={profile_uri}",
+                    "--headless",
+                    "--nologo",
+                    "--nolockcheck",
+                    "--nodefault",
+                    "--norestore",
+                    "--invisible",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(work_dir),
+                    str(ascii_pptx),
+                ]
+                result = subprocess.run(
+                    cmd_retry,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                    check=False,
+                    env=env,
+                )
+                detail = (result.stderr or result.stdout or "").strip()
+                if ascii_pdf.is_file():
+                    produced = ascii_pdf
+                else:
+                    pdfs = sorted(work_dir.glob("*.pdf"), key=lambda p: p.stat().st_mtime, reverse=True)
+                    produced = pdfs[0] if pdfs else None
+
+        if produced is None:
+            raise RuntimeError(
+                f"LibreOffice PDF conversion failed (exit={result.returncode}): {detail or 'no PDF produced'}"
+            )
+
+        if pdf_path.exists():
+            pdf_path.unlink()
+        shutil.copy2(produced, pdf_path)
     finally:
-        shutil.rmtree(lo_profile, ignore_errors=True)
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def pptx_to_pdf(pptx_path: Path, pdf_path: Path) -> None:
@@ -1330,10 +1377,10 @@ def _register_chinese_font() -> str:
 
     workspace_root = Path(__file__).resolve().parent.parent
     candidates = [
+        workspace_root / "haitai_week_report" / "fonts" / "NotoSansSC-Regular.otf",
         Path("C:/Windows/Fonts/msyh.ttc"),
         Path("C:/Windows/Fonts/simhei.ttf"),
         Path("C:/Windows/Fonts/simsun.ttc"),
-        workspace_root / "haitai_week_report" / "fonts" / "NotoSansSC-Regular.otf",
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
         Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
         Path("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"),
@@ -1344,12 +1391,15 @@ def _register_chinese_font() -> str:
         if not font_path.exists():
             continue
         name = "ChineseFont"
-        suffix = font_path.suffix.lower()
-        if suffix == ".ttc":
-            pdfmetrics.registerFont(TTFont(name, str(font_path), subfontIndex=0))
-        else:
-            pdfmetrics.registerFont(TTFont(name, str(font_path)))
-        return name
+        try:
+            suffix = font_path.suffix.lower()
+            if suffix == ".ttc":
+                pdfmetrics.registerFont(TTFont(name, str(font_path), subfontIndex=0))
+            else:
+                pdfmetrics.registerFont(TTFont(name, str(font_path)))
+            return name
+        except Exception:
+            continue
     return "Helvetica"
 
 
@@ -1390,7 +1440,11 @@ def convert_ppt_to_watermarked_pdf(pptx_path: Path, pdf_path: Path) -> None:
     tmp_pdf = pdf_path.with_suffix(".tmp.pdf")
     try:
         pptx_to_pdf(pptx_path, tmp_pdf)
-        add_watermark_to_pdf(tmp_pdf, pdf_path, WATERMARK_TEXT)
+        try:
+            add_watermark_to_pdf(tmp_pdf, pdf_path, WATERMARK_TEXT)
+        except Exception as watermark_err:
+            print(f"Watermark failed, keeping plain PDF: {watermark_err}", file=sys.stderr)
+            shutil.copy2(tmp_pdf, pdf_path)
     finally:
         if tmp_pdf.exists():
             tmp_pdf.unlink()
