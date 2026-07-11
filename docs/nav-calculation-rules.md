@@ -353,6 +353,8 @@ This keeps `adj / cum = constant` (the ratio established on the ex-div date). Si
 | `mergeManagedProductDetailNav` | Post-seed email must merge against seed base via `mergeNavSeriesWithEmail` — pre-finalizing email alone loses unit/cum context |
 | `applyEmailUnitNavCorrection` | Must learn unit/cum ratio from custody rows with distinct unit+cum, not only TA virtual subjects |
 | `preferEmailNavRow` / `isPlausibleEmailUnitNav` | Reject 虚拟计提 share-count rows; prefer `product_code`-matched 净值表 — reverting to id-only tie-break breaks BAH99A FOF list |
+| `isPlausibleEmailCumulativeNav` | Reject valuation column bleed (cum/unit > 2) — disabling re-breaks SBFM35 unit inference |
+| `selectEmailNavSeriesRows` per-date fallback | Use share-class email only when no parent row exists for that date — reverting to global pool drops SBFM35 A-class dates |
 | `repairSwappedCumAdjRows` | Fixes legacy rows where 累计 and 复权 DB columns are swapped (`cum > adj`) — disabling leaves SQX078-style corrupt 平台数据 |
 | `sanitizeVShapeNavOutliers` | Removes single-day V-shaped legacy outliers (~7–15% dip/spike with flat neighbors) — disabling lets corrupt platform rows distort max-drawdown and period returns |
 | `preferLegacyNavRow` / `dedupeLegacyNavRowsByDate` | When group + per-fund tables disagree on ex-div dates, prefer the row whose 累计 stayed near the prior level (SLA063) — reverting to pri-only tie-break keeps wrong group cum |
@@ -1532,6 +1534,79 @@ npx tsx scripts/test-nav-rechain.mjs
 ```
 
 After deploy: `npx tsx scripts/ma/_repair_sbah99_pool.ts`
+
+---
+
+## What Was Fixed (金友至远1号 — SBFM35, corrupt valuation cum + unit inference bleed, 2026-07-11)
+
+### The Problem
+
+**跟踪产品** and fund detail for **金友至远1号 (SBFM35)** showed absurd unit NAV:
+
+| Field | Shown (wrong) | Expected |
+|---|---|---|
+| 最新单位净值 | **0.3699** | **~1.08** |
+| 最新涨跌幅 | **−63.96%** | ~+5% |
+| 2026-06-12 detail row | unit **0.3606**, cum **2.3343** | unit **~1.05**, cum **~1.05** |
+
+### Root Causes
+
+1. **Corrupt 累计 on custody 估值表** — `2026-05-29` valuation row stored `nav=1.0263, cumulative_nav=**3.0000**` (wrong column — likely 成立以来倍数, not 累计净值).
+
+2. **Bad unit/cum ratio learned** — `applyEmailUnitNavCorrection` learned ratio `1.0263/3.0 ≈ 0.342` from that row and scaled later **BFM35A 资产净值公告** rows (`nav == cum ≈ 1.05`) down to **~0.36**.
+
+3. **Legacy halved unit kept on merge** — `emailNavLooksLikeCumulativeNotUnit` treated a normal +2.7% unit move (1.026→1.054) as “cum stored as unit”, keeping legacy unit **0.360573** instead of email **1.054**.
+
+4. **A-class-only dates dropped** — global share-class pool excluded BFM35A-only dates when any parent valuation row existed; fixed with per-date pool fallback.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Reject corrupt email 累计 | `isPlausibleEmailCumulativeNav`, `isUsableEmailCumulativeNav` | Ignore cum when `cum/unit > 2` (column bleed) |
+| No ratio from bad cum | `applyEmailUnitNavCorrection` | Only learn unit/cum ratio from plausible 累计; strip corrupt cum |
+| No inference on share-class rows | `applyEmailUnitNavCorrection` | Skip `inferEmailUnitNav` for `isParentCodeEmailRow` (BFM35A when querying SBFM35) |
+| Prefer plausible cum in tie-break | `preferEmailNavRow` | Deprioritize rows with implausible 累计; exclude from “distinct cum” bonus |
+| Per-date share-class fallback | `selectEmailNavSeriesRows` | Use A/B/C-class email only when no parent row exists for that date; don't advance `prevNav` from fallback rows |
+| Fix false cum-as-unit merge | `emailNavLooksLikeCumulativeNotUnit` | Require `nav/prevUnit > 1.05` (unit actually jumped to cum level), not merely `> 0.995` |
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 |
+|---|---|---|
+| 2026-05-29 | 1.0263 | 1.0263 |
+| 2026-06-12 | 1.0540 | 1.0540 |
+| 2026-06-30 | **1.0813** | 1.0813 |
+
+List cache refreshed: `unit_nav 0.3699 → 1.0813`, `return_pct −63.96% → +5.36%`.
+
+**BFM35A (南京金友A类)** had the same stale cache (`0.3699 / −65.6%`) even though email selection was already correct. Additional fixes:
+
+| Area | Change |
+|---|---|
+| `BatchNavResolver.resolveAt` | Share-class beians (`*A/*B/*C`) prefer `emailByBeian` direct code rows over fuzzy `emailByName` (which pulled parent SBFM35 估值表 on 2026-06-30) |
+| `selectEmailNavSeriesRows` | A-class per-date fallback uses **exact** `product_code` match only — not parent `SBFM35` via `shareClassProductCodesMatch` |
+| `upsertTrackingFundListCacheEntry` | Use `user_custom_pool` display name (`南京金友A类`) as `short_name` when BFL has none |
+
+BFM35A cache after refresh: **2026-07-03 / 1.0745**.
+
+### What This Fix Does NOT Change
+
+- SBAH99 / SNF018 / SSG947 / SBPC20 / SBHK26 custody skip / SBDW42 manage-stream remap — unchanged
+- `syncExDivAdjustedNav`, `rechainDerivedFromPrev` formulas — unchanged
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/_diag_sbfm35.ts
+```
+
+After deploy:
+
+```bash
+npx tsx scripts/ma/_fix_sbfm35.ts
+```
 
 ---
 

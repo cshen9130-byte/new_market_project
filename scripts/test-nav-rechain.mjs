@@ -662,6 +662,153 @@ assert(
   sbhk26Jun29 != null && Math.abs(parseFloat(sbhk26Jun29.nav) - 1.1227) < 0.0001,
 )
 
+const sbfm35History = [
+  {
+    nav_date: "2026-05-29",
+    nav: "1.026300",
+    cumulative_nav: "3.000000",
+    adjusted_nav: null,
+    product_code: "SBFM35",
+    fund_name: "金友至远1号",
+    attachment_filename: "",
+    subject: "SBFM35金友至远1号私募证券投资基金每日产品三级估值表20260529",
+    source: "attachment_valuation_table",
+  },
+  {
+    nav_date: "2026-05-29",
+    nav: "1.023400",
+    cumulative_nav: "1.023400",
+    adjusted_nav: null,
+    product_code: "BFM35A",
+    fund_name: "南京金友A类",
+    attachment_filename: "",
+    subject: "BFM35A（协会备案代码SBFM35)金友至远1号A类产品2026年05月29日资产净值份额公告",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-06-12",
+    nav: "1.054000",
+    cumulative_nav: "1.054000",
+    adjusted_nav: null,
+    product_code: "BFM35A",
+    fund_name: "南京金友A类",
+    attachment_filename: "",
+    subject: "BFM35A（协会备案代码SBFM35)金友至远1号A类产品2026年06月12日资产净值份额公告",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-06-30",
+    nav: "1.081300",
+    cumulative_nav: null,
+    adjusted_nav: null,
+    product_code: "SBFM35",
+    fund_name: "金友至远1号",
+    attachment_filename: "",
+    subject: "SBFM35金友至远1号私募证券投资基金每日产品三级估值表20260630",
+    source: "attachment_valuation_table",
+  },
+]
+const sbfm35Selected = selectEmailNavSeriesRows(sbfm35History, "SBFM35", ["金友至远1号"])
+const sbfm35May29 = sbfm35Selected.find((r) => r.nav_date === "2026-05-29")
+const sbfm35Jun12 = sbfm35Selected.find((r) => r.nav_date === "2026-06-12")
+const sbfm35Jun30 = sbfm35Selected.find((r) => r.nav_date === "2026-06-30")
+assert(
+  "SBFM35 May29 ignores corrupt cum=3 valuation row",
+  sbfm35May29 != null
+    && Math.abs(parseFloat(sbfm35May29.nav) - 1.0263) < 0.001
+    && (sbfm35May29.cumulative_nav == null || parseFloat(sbfm35May29.cumulative_nav) < 2),
+)
+assert(
+  "SBFM35 Jun12 keeps A-class unit ~1.054 (no ratio bleed)",
+  sbfm35Jun12 != null && Math.abs(parseFloat(sbfm35Jun12.nav) - 1.054) < 0.001,
+)
+assert(
+  "SBFM35 Jun30 custody valuation ~1.0813",
+  sbfm35Jun30 != null && Math.abs(parseFloat(sbfm35Jun30.nav) - 1.0813) < 0.001,
+)
+const sbfm35Legacy = [
+  { price_date: "2026-05-29", nav: "1.024100", cumulative_nav: "1.024100", cum_nav_withdrawal: "1.024100", price_change: "" },
+  { price_date: "2026-06-12", nav: "0.360573", cumulative_nav: "2.334273", cum_nav_withdrawal: "2.334273", price_change: "" },
+]
+const sbfm35EmailPoints = sbfm35Selected.map((r) => ({
+  price_date: r.nav_date,
+  nav: r.nav,
+  cumulative_nav: r.cumulative_nav,
+  adjusted_nav: r.adjusted_nav,
+}))
+const sbfm35Merged = mergeNavSeriesWithEmail(sbfm35Legacy, sbfm35EmailPoints)
+const sbfm35MergedJun12 = sbfm35Merged.find((r) => r.price_date === "2026-06-12")
+const sbfm35MergedJun30 = sbfm35Merged.find((r) => r.price_date === "2026-06-30")
+assert(
+  "SBFM35 merged Jun12 unit ~1.054 not halved legacy",
+  sbfm35MergedJun12 != null && Math.abs(parseFloat(sbfm35MergedJun12.nav) - 1.054) < 0.001,
+)
+assert(
+  "SBFM35 merged Jun30 unit ~1.0813",
+  sbfm35MergedJun30 != null && Math.abs(parseFloat(sbfm35MergedJun30.nav) - 1.0813) < 0.001,
+)
+
+const bfm35aHistory = [
+  {
+    nav_date: "2026-05-29",
+    nav: "1.026300",
+    cumulative_nav: "3.000000",
+    adjusted_nav: null,
+    product_code: "SBFM35",
+    fund_name: "金友至远1号",
+    attachment_filename: "",
+    subject: "SBFM35金友至远1号私募证券投资基金每日产品三级估值表20260529",
+    source: "attachment_valuation_table",
+  },
+  {
+    nav_date: "2026-05-29",
+    nav: "1.023400",
+    cumulative_nav: "1.023400",
+    adjusted_nav: null,
+    product_code: "BFM35A",
+    fund_name: "南京金友A类",
+    attachment_filename: "",
+    subject: "BFM35A（协会备案代码SBFM35)金友至远1号A类产品2026年05月29日资产净值份额公告",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-06-30",
+    nav: "1.081300",
+    cumulative_nav: null,
+    adjusted_nav: null,
+    product_code: "SBFM35",
+    fund_name: "金友至远1号",
+    attachment_filename: "",
+    subject: "SBFM35金友至远1号私募证券投资基金每日产品三级估值表20260630",
+    source: "attachment_valuation_table",
+  },
+  {
+    nav_date: "2026-07-03",
+    nav: "1.074500",
+    cumulative_nav: "1.074500",
+    adjusted_nav: null,
+    product_code: "BFM35A",
+    fund_name: "南京金友A类",
+    attachment_filename: "",
+    subject: "BFM35A（协会备案代码SBFM35)金友至远1号A类产品2026年07月03日资产净值份额公告",
+    source: "body_table",
+  },
+]
+const bfm35aSelected = selectEmailNavSeriesRows(bfm35aHistory, "BFM35A", ["金友至远1号A类", "南京金友A类"])
+assert(
+  "BFM35A May29 uses A-class body ~1.0234",
+  bfm35aSelected.some((r) => r.nav_date === "2026-05-29" && Math.abs(parseFloat(r.nav) - 1.0234) < 0.001),
+)
+assert(
+  "BFM35A skips parent valuation on 0630",
+  !bfm35aSelected.some((r) => r.nav_date === "2026-06-30"),
+)
+const bfm35aJul3 = bfm35aSelected.find((r) => r.nav_date === "2026-07-03")
+assert(
+  "BFM35A Jul3 unit ~1.0745",
+  bfm35aJul3 != null && Math.abs(parseFloat(bfm35aJul3.nav) - 1.0745) < 0.001,
+)
+
 const savm35BrokenLegacy = [
   { price_date: "2026-07-01", nav: "0.7658", cum_nav_withdrawal: "1.5158", cumulative_nav: "1.5158", price_change: "" },
   { price_date: "2026-07-08", nav: "0.7279", cum_nav_withdrawal: "1.4769", cumulative_nav: "1.4769", price_change: "" },

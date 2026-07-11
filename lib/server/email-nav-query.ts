@@ -112,6 +112,8 @@ function sourceTier(source: string | null | undefined, subject?: string | null):
 }
 
 const MAX_PLAUSIBLE_EMAIL_UNIT_NAV = 50
+/** Reject 成立以来倍数 / wrong columns stored as 累计 (SBFM35: cum=3.0, unit≈1.02). */
+const MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO = 2
 
 /** Reject share-count / cost columns mis-parsed as unit NAV (e.g. 虚拟计提净值表 holdings). */
 export function isPlausibleEmailUnitNav(
@@ -161,6 +163,11 @@ function productCodeMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
   if (!beian) return false
   const productCode = (row.product_code ?? "").trim().toUpperCase()
   return productCode === beian.trim().toUpperCase() || shareClassProductCodesMatch(productCode, beian)
+}
+
+function productCodeExactlyMatchesBeian(row: EmailNavRawRow, beian: string): boolean {
+  if (!beian) return false
+  return (row.product_code ?? "").trim().toUpperCase() === beian.trim().toUpperCase()
 }
 
 function embeddedCodeMatchesBeian(code: string, beian: string): boolean {
@@ -223,12 +230,32 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   const candCumField = parseOptionalNav(candidate.cumulative_nav)
   const currentDistinct = currNav != null && currCumField != null
     && isPlausibleEmailUnitNav(currNav, currCumField)
+    && isPlausibleEmailCumulativeNav(currNav, currCumField)
     && hasDividendOffset(currNav, currCumField)
   const candidateDistinct = candNav != null && candCumField != null
     && isPlausibleEmailUnitNav(candNav, candCumField)
+    && isPlausibleEmailCumulativeNav(candNav, candCumField)
     && hasDividendOffset(candNav, candCumField)
   if (candidateDistinct && !currentDistinct) return candidate
   if (currentDistinct && !candidateDistinct) return current
+
+  // Prefer rows with plausible 累计 over valuation column bleed (cum >> unit).
+  if (
+    currNav != null && currCumField != null
+    && !isPlausibleEmailCumulativeNav(currNav, currCumField)
+    && candNav != null
+    && (candCumField == null || isPlausibleEmailCumulativeNav(candNav, candCumField))
+  ) {
+    return candidate
+  }
+  if (
+    candNav != null && candCumField != null
+    && !isPlausibleEmailCumulativeNav(candNav, candCumField)
+    && currNav != null
+    && (currCumField == null || isPlausibleEmailCumulativeNav(currNav, currCumField))
+  ) {
+    return current
+  }
 
   if (beian) {
     const candCode = productCodeMatchesBeian(candidate, beian)
@@ -523,18 +550,27 @@ export function selectEmailNavSeriesRows(
   if (filtered.length === 0) return []
 
   const aClass = isAClassFund(beianHao, aliases)
-  const pool = filtered.filter((row) => {
-    const meta = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""}`
-    return aClass ? /A类/u.test(meta) : !/A类/u.test(meta)
-  })
-  const candidates = pool.length > 0 ? pool : filtered
-
   const beian = beianHao.trim().toUpperCase()
-  const byDateGroups = new Map<string, EmailNavRawRow[]>()
-  for (const row of candidates) {
-    const list = byDateGroups.get(row.nav_date) ?? []
+
+  const filteredByDate = new Map<string, EmailNavRawRow[]>()
+  for (const row of filtered) {
+    const list = filteredByDate.get(row.nav_date) ?? []
     list.push(row)
-    byDateGroups.set(row.nav_date, list)
+    filteredByDate.set(row.nav_date, list)
+  }
+
+  const byDateGroups = new Map<string, EmailNavRawRow[]>()
+  for (const [date, dayFiltered] of filteredByDate) {
+    const dayPool = dayFiltered.filter((row) => {
+      const meta = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""}`
+      return aClass ? /A类/u.test(meta) : !/[ABC]类/u.test(meta)
+    })
+    const dayFallback = aClass
+      ? dayFiltered.filter((row) => productCodeExactlyMatchesBeian(row, beian))
+      : dayFiltered
+    const dayCandidates = dayPool.length > 0 ? dayPool : dayFallback
+    if (dayCandidates.length === 0) continue
+    byDateGroups.set(date, dayCandidates)
   }
 
   const sortedDates = [...byDateGroups.keys()].sort()
@@ -542,6 +578,15 @@ export function selectEmailNavSeriesRows(
   let prevNav: number | null = null
 
   for (const date of sortedDates) {
+    const dayFiltered = filteredByDate.get(date) ?? []
+    const dayPool = dayFiltered.filter((row) => {
+      const meta = `${row.fund_name ?? ""} ${row.attachment_filename ?? ""}`
+      return aClass ? /A类/u.test(meta) : !/[ABC]类/u.test(meta)
+    })
+    const dayFallback = aClass
+      ? dayFiltered.filter((row) => productCodeExactlyMatchesBeian(row, beian))
+      : dayFiltered
+    const usingShareClassFallback = dayPool.length === 0 && dayFallback.length > 0
     const dayRows = byDateGroups.get(date)!
     let best = dayRows[0]
     for (let i = 1; i < dayRows.length; i++) {
@@ -567,7 +612,9 @@ export function selectEmailNavSeriesRows(
       continue
     }
     selected.push(best)
-    prevNav = bestNav
+    if (!usingShareClassFallback) {
+      prevNav = bestNav
+    }
   }
 
   return applyEmailUnitNavCorrection(selected, beianHao)
@@ -577,30 +624,44 @@ function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): 
   const beian = beianHao.trim().toUpperCase()
   let latestRatio: number | null = null
   return rows.map((row) => {
-    const unit = parseOptionalNav(row.nav)
-    const cum = parseOptionalNav(row.cumulative_nav)
+    let working = row
+    const unit = parseOptionalNav(working.nav)
+    let cum = parseOptionalNav(working.cumulative_nav)
+    if (unit != null && cum != null && !isPlausibleEmailCumulativeNav(unit, cum)) {
+      working = { ...working, cumulative_nav: null }
+      cum = null
+    }
     if (unit != null && !isPlausibleEmailUnitNav(unit, cum)) {
-      const recovered = recoverPlausibleEmailUnitNav(unit, cum, row.subject)
+      const recovered = recoverPlausibleEmailUnitNav(unit, cum, working.subject)
       if (recovered != null) {
-        if (cum != null && cum - recovered > 0.05 && !isParentCodeEmailRow(row, beian)) {
+        if (
+          cum != null && cum - recovered > 0.05 && !isParentCodeEmailRow(working, beian)
+          && isPlausibleEmailCumulativeNav(recovered, cum)
+        ) {
           latestRatio = recovered / cum
         }
-        return { ...row, nav: String(+recovered.toFixed(6)) }
+        return { ...working, nav: String(+recovered.toFixed(6)) }
       }
     }
-    if (unit != null && cum != null && cum - unit > 0.05 && !isParentCodeEmailRow(row, beian)) {
+    if (
+      unit != null && cum != null && cum - unit > 0.05 && !isParentCodeEmailRow(working, beian)
+      && isPlausibleEmailCumulativeNav(unit, cum)
+    ) {
       latestRatio = unit / cum
     }
-    if (isCustodyValuationEmailRow(row, beian)) {
-      return row
+    if (isCustodyValuationEmailRow(working, beian)) {
+      return working
     }
-    if (isPostInvestmentVirtualNavEmail(row.subject)) {
-      return row
+    if (isPostInvestmentVirtualNavEmail(working.subject)) {
+      return working
     }
-    if (unit == null || latestRatio == null) return row
-    const corrected = inferEmailUnitNav(unit, cum, row.subject, latestRatio)
-    if (Math.abs(corrected - unit) < 0.000001) return row
-    return { ...row, nav: String(+corrected.toFixed(6)) }
+    if (isParentCodeEmailRow(working, beian)) {
+      return working
+    }
+    if (unit == null || latestRatio == null) return working
+    const corrected = inferEmailUnitNav(unit, cum, working.subject, latestRatio)
+    if (Math.abs(corrected - unit) < 0.000001) return working
+    return { ...working, nav: String(+corrected.toFixed(6)) }
   })
 }
 
@@ -1186,10 +1247,19 @@ function hasDistinctCumulative(nav: number, cumulative: number | null): boolean 
   return Math.abs(cumulative - nav) / nav > 0.001
 }
 
+/** Reject corrupt 累计 from valuation column bleed (e.g. 成立以来倍数 stored as cum). */
+function isPlausibleEmailCumulativeNav(unit: number, cum: number): boolean {
+  if (!isReasonableNav(unit) || !isReasonableNav(cum)) return false
+  if (cum < unit - 0.001) return false
+  if (cum / unit > MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO) return false
+  return true
+}
+
 /** Reject FOF virtual performance-fee rows whose cum sits below unit (not fund 累计净值). */
 function isUsableEmailCumulativeNav(unit: number, cum: number | null): boolean {
   if (cum == null || !isReasonableNav(cum)) return false
   if (!hasDistinctCumulative(unit, cum)) return false
+  if (!isPlausibleEmailCumulativeNav(unit, cum)) return false
   return cum >= unit - 0.001
 }
 
@@ -1539,7 +1609,7 @@ function emailNavLooksLikeCumulativeNotUnit(
   const navToPrevCum = emailNav / prevCum
 
   // Email value continued from cumulative level (+/- a few %) while unit NAV should have dropped.
-  return navToPrevCum > 0.99 && navToPrevCum < 1.05 && navToPrevUnit > 0.995
+  return navToPrevCum > 0.99 && navToPrevCum < 1.05 && navToPrevUnit > 1.05
 }
 
 /**

@@ -210,10 +210,16 @@ export async function upsertTrackingFundListCacheEntry(
      LIMIT 1`,
     [beian_hao],
   )
+  const poolRows = await query<{ product_name: string }>(
+    `SELECT product_name FROM user_custom_pool
+     WHERE pool_key = 'custom_email_nav' AND register_number = $1
+     LIMIT 1`,
+    [beian_hao],
+  )
   const row: BaseFundRow = {
     beian_hao,
-    product_name,
-    short_name: bflRows[0]?.short_name ?? null,
+    product_name: poolRows[0]?.product_name ?? product_name,
+    short_name: bflRows[0]?.short_name ?? poolRows[0]?.product_name ?? null,
     raw_strategy: bflRows[0]?.raw_strategy ?? null,
   }
 

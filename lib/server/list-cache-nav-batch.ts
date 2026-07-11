@@ -1059,7 +1059,8 @@ export class BatchNavResolver {
         ? resolveEmailNavAt(this.emailByBeian.get(parentBeian), beforeDate)
         : null
     const emailBeian = emailBeianDirect ?? emailBeianParent
-    let emailPoint = emailName ?? emailBeian
+    const shareClassBeian = /[ABC]$/i.test(beian)
+    let emailPoint = shareClassBeian ? (emailBeianDirect ?? emailName ?? emailBeianParent) : (emailName ?? emailBeian)
     if (
       emailName
       && emailBeian
