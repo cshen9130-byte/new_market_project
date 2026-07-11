@@ -1,7 +1,7 @@
 import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate } from "../lib/server/email-nav-query.ts"
 import { enrichReturnNavSeries, capPeriodReturnByDrawdown, calcReturn } from "../lib/server/list-cache-nav-batch.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
-import { extractNavMetadata, extractNavData } from "../lib/server/email-nav-extract.ts"
+import { extractNavMetadata, extractNavData, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
 import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio, loadManagedProductNavSeed, mergeManagedProductDetailNav } from "../lib/server/managed-product-nav-seed.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
 import fs from "fs"
@@ -860,6 +860,23 @@ assert(
   "email pool prefers email name when BFL register label disagrees (SNG210)",
   canonicalEmailPoolNameForTest("笃熙禀泰文艺复兴16号", "笃熙禀泰多资产轮动策略2号")
     === "笃熙禀泰多资产轮动策略2号",
+)
+
+assert(
+  "文艺复兴26 NAV rows remap SQQ300 → SQQ26A",
+  applyEmailProductCodeOverride(
+    "SQQ300",
+    "笃熙禀泰文艺复兴26号",
+    "资产净值公告_SQQ300_笃熙禀泰文艺复兴26号私募证券投资基金_2026-06-18",
+  ) === "SQQ26A",
+)
+assert(
+  "多资产轮动策略3号 keeps SQQ300",
+  applyEmailProductCodeOverride(
+    "SQQ300",
+    "笃熙禀泰多资产轮动策略3号",
+    "资产净值公告_SQQ300_笃熙禀泰多资产轮动策略3号私募证券投资基金_2026-07-09",
+  ) === "SQQ300",
 )
 
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"

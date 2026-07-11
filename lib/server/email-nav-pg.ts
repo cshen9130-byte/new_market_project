@@ -4,7 +4,7 @@
  */
 
 import { query } from "@/lib/db"
-import type { ExtractedNavData } from "./email-nav-extract"
+import { applyEmailProductCodeOverride, type ExtractedNavData } from "./email-nav-extract"
 
 export type EmailNavInsert = ExtractedNavData & {
   crawlEmailAccount: string
@@ -123,6 +123,11 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
 
   let count = 0
   for (const r of records) {
+    const productCode = applyEmailProductCodeOverride(
+      r.productCode,
+      r.fundName,
+      r.subject,
+    )
     await query(
       `INSERT INTO ops_email_nav_records
          (crawl_email_account, email_uid, sent_at, subject, sender_email,
@@ -148,7 +153,7 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
         r.nav,
         r.cumulativeNav,
         r.adjustedNav,
-        r.productCode,
+        productCode,
         r.fundName,
         r.source,
         r.attachmentFilename ?? "",

@@ -259,10 +259,35 @@ function ensureShareClass(
   return name
 }
 
+/**
+ * Custody emails sometimes reuse another product's code in the subject while the
+ * fund_name is a different product (SQQ300 appears on both 多资产轮动策略3号 and
+ * 文艺复兴26号). Force a stable code so pool sync / NAV history do not collide.
+ */
+export function applyEmailProductCodeOverride(
+  productCode: string | null,
+  fundName: string | null,
+  subject = "",
+): string | null {
+  const blob = `${fundName ?? ""} ${subject}`
+  if (/文艺复兴\s*26\s*号/u.test(blob) || /文艺复兴26/u.test(blob)) {
+    return "SQQ26A"
+  }
+  const code = productCode?.trim()
+  return code ? code.toUpperCase() : null
+}
+
 export function extractNavMetadata(subject: string, bodyText: string) {
   const structured = resolveFromStructuredSubject(subject)
   if (structured) {
-    return { productCode: structured.code, fundName: structured.fundName }
+    return {
+      productCode: applyEmailProductCodeOverride(
+        structured.code,
+        structured.fundName,
+        subject,
+      ),
+      fundName: structured.fundName,
+    }
   }
 
   const metaText = `${subject}\n${bodyText}`
@@ -274,7 +299,10 @@ export function extractNavMetadata(subject: string, bodyText: string) {
     productCode,
     subject,
   )
-  return { productCode, fundName }
+  return {
+    productCode: applyEmailProductCodeOverride(productCode, fundName, subject),
+    fundName,
+  }
 }
 
 // ── date candidates from subject ──────────────────────────────────────────────

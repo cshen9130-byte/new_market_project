@@ -592,6 +592,27 @@ function emailPoolRegisterNumber(resolved: ResolvedFund, raw: RawEmailFund): str
   return id || null
 }
 
+/** Manager names / parse noise that must never become 邮箱运维池 rows. */
+const EMAIL_POOL_JUNK_DENYLIST = new Set(
+  [
+    "青岛立心",
+    "泉州棕榈滩",
+    "上海务扬",
+    "上海众量",
+    "上海诚奇",
+    "上海奇盾世家",
+    "国泰海通金舆基石一号",
+    "2026年07月07日金舆基石一号",
+    "aaa私募",
+    "号",
+    "上海务扬A类",
+  ].map((s) => s.trim().toLowerCase()),
+)
+
+/** Product-name tokens that distinguish a fund from a bare manager/company label. */
+const EMAIL_POOL_FUND_NAME_MARKERS =
+  /号|类|私募|证券|基金|专享|投资|对冲|CTA|量化|成长|精选|均衡|基石|轮动|文艺复兴/u
+
 function isPlausibleEmailPoolFund(productName: string, registerNumber: string): boolean {
   const name = productName.trim()
   const reg = registerNumber.trim()
@@ -599,6 +620,19 @@ function isPlausibleEmailPoolFund(productName: string, registerNumber: string): 
   if (name.length < 4 || reg.length < 2) return false
   if (name === "号" || reg === "号") return false
   if (!/[\u4e00-\u9fffA-Za-z]/.test(name)) return false
+
+  const nameKey = name.toLowerCase()
+  const regKey = reg.toLowerCase()
+  if (EMAIL_POOL_JUNK_DENYLIST.has(nameKey) || EMAIL_POOL_JUNK_DENYLIST.has(regKey)) {
+    return false
+  }
+
+  // Name-only pool keys (no 备案号) must look like fund products, not manager labels.
+  if (!isFundCodeRegisterNumber(reg)) {
+    if (reg === name && !EMAIL_POOL_FUND_NAME_MARKERS.test(name)) return false
+    if (/^20\d{2}年/.test(name) || /^20\d{2}年/.test(reg)) return false
+  }
+
   return true
 }
 
