@@ -2029,7 +2029,9 @@ export default function PrivateFundDetailPage() {
             <span className="whitespace-nowrap">私募管理人：</span>
             {managerRegistrationNo && info.manager ? (
               <a
-                href={`/ma/dashboard/private-funds/managers/${encodeURIComponent(managerRegistrationNo)}`}
+                href={`/ma/dashboard/private-funds/managers/${encodeURIComponent(managerRegistrationNo)}?manager=${encodeURIComponent(info.manager)}`}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="font-medium text-blue-600 hover:underline"
               >
                 {info.manager}

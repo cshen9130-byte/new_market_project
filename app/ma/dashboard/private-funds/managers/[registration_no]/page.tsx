@@ -1,7 +1,7 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useParams, useRouter } from "next/navigation"
+import { useParams, useRouter, useSearchParams } from "next/navigation"
 import Link from "next/link"
 import ReactECharts from "echarts-for-react"
 import { ArrowLeft } from "lucide-react"
@@ -148,6 +148,7 @@ function buildScaleChartOption(trend: ScaleTrendPoint[]): Record<string, unknown
 
 export default function PrivateFundManagerDetailPage() {
   const params = useParams()
+  const searchParams = useSearchParams()
   const router = useRouter()
   const registrationNo =
     typeof params.registration_no === "string" ? decodeURIComponent(params.registration_no) : ""
@@ -159,10 +160,15 @@ export default function PrivateFundManagerDetailPage() {
 
   useEffect(() => {
     if (!registrationNo) return
+    const managerHint = searchParams.get("manager")?.trim() || ""
     let cancelled = false
     setLoading(true)
     setError(null)
-    fetch(`/ma/api/private-fund-managers/${encodeURIComponent(registrationNo)}`)
+    fetch(
+      `/ma/api/private-fund-managers/${encodeURIComponent(registrationNo)}${
+        managerHint ? `?manager=${encodeURIComponent(managerHint)}` : ""
+      }`,
+    )
       .then(async (res) => {
         if (!res.ok) {
           const json = await res.json().catch(() => ({}))
@@ -182,7 +188,7 @@ export default function PrivateFundManagerDetailPage() {
     return () => {
       cancelled = true
     }
-  }, [registrationNo])
+  }, [registrationNo, searchParams])
 
   const navigate = useCallback(
     (tab: string, side?: string) => {

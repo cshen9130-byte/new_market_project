@@ -23,7 +23,7 @@ type MonthlyRow = {
 }
 
 type SnapshotRow = {
-  as_of: string
+  as_of: string | Date
   stock_scale: string
   stock_fund_count: string
   stock_manager_count: string
@@ -32,7 +32,7 @@ type SnapshotRow = {
   region_table: PeIndustryRegionRow[] | null
   scale_trend: PeIndustryScaleTrendPoint[] | null
   scale_changes: { updatedAt: string; rows: PeIndustryManagerScaleChange[] } | null
-  computed_at: string
+  computed_at: string | Date | null
 }
 
 export type PeIndustryPayload = {
@@ -58,6 +58,12 @@ function n(value: string | null | undefined): number {
 
 function fmtAsOf(month: string): string {
   return month.slice(0, 7).replace("-", ".")
+}
+
+function toDateStr(value: string | Date | null | undefined): string | null {
+  if (value == null) return null
+  if (value instanceof Date) return value.toISOString().slice(0, 10)
+  return String(value).slice(0, 10)
 }
 
 function normalizeScaleTrend(raw: PeIndustryScaleTrendPoint[] | null): PeIndustryScaleTrendPoint[] {
@@ -105,7 +111,9 @@ export async function loadPeIndustryData(): Promise<PeIndustryPayload | null> {
     deregisteredManagerCount: n(row.deregistered_manager_count),
   }))
 
-  const latestMonth = monthly[monthly.length - 1]?.month ?? snapshot.as_of.slice(0, 7)
+  const asOfDate = toDateStr(snapshot.as_of) ?? ""
+  const computedAt = toDateStr(snapshot.computed_at)
+  const latestMonth = monthly[monthly.length - 1]?.month ?? asOfDate.slice(0, 7)
 
   return {
     summary: {
@@ -116,13 +124,13 @@ export async function loadPeIndustryData(): Promise<PeIndustryPayload | null> {
     },
     monthly,
     managerScaleDist: {
-      updatedAt: snapshot.computed_at?.slice(0, 10) ?? snapshot.as_of,
+      updatedAt: computedAt ?? asOfDate,
       buckets: snapshot.scale_dist ?? [],
     },
     scaleTrend: normalizeScaleTrend(snapshot.scale_trend),
     scaleChanges: snapshot.scale_changes ?? { updatedAt: latestMonth, rows: [] },
     regionDonut: snapshot.region_donut ?? [],
     regionTable: snapshot.region_table ?? [],
-    computedAt: snapshot.computed_at ?? null,
+    computedAt,
   }
 }

@@ -275,8 +275,42 @@ def _select_detail_targets(cur, manager_rows: list[dict], *, full_sync: bool, ba
         if m.get("登记编号") and m.get("登记编号") not in existing and m.get("详情链接")
     ]
 
-    stale: list[tuple] = []
+    targets_by_reg: dict[str, dict] = {}
+    for m in missing:
+        reg = m.get("登记编号", "")
+        if reg:
+            targets_by_reg[reg] = m
+
+    # Prioritize managers from our product list that still lack scraped detail pages.
     if batch_size > 0:
+        try:
+            cur.execute(
+                """
+                SELECT m.registration_no, m.detail_url, m.manager_name
+                FROM private_fund_managers_list p
+                JOIN amac_managers m ON UPPER(m.registration_no) = UPPER(p.registration_no)
+                LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
+                WHERE m.detail_url IS NOT NULL AND m.detail_url <> ''
+                  AND d.registration_no IS NULL
+                ORDER BY p.seq_no ASC NULLS LAST, p.id ASC
+                LIMIT %s
+                """,
+                (batch_size,),
+            )
+            for reg_no, detail_url, manager_name in cur.fetchall():
+                if reg_no in targets_by_reg:
+                    continue
+                targets_by_reg[reg_no] = {
+                    "登记编号": reg_no,
+                    "详情链接": detail_url,
+                    "私募基金管理人名称": manager_name,
+                }
+        except Exception:
+            pass
+
+    remaining = max(0, batch_size - len(targets_by_reg)) if batch_size > 0 else 0
+    stale: list[tuple] = []
+    if remaining > 0:
         cur.execute(
             """
             SELECT m.registration_no, m.detail_url, m.manager_name
@@ -288,15 +322,9 @@ def _select_detail_targets(cur, manager_rows: list[dict], *, full_sync: bool, ba
             ) ASC
             LIMIT %s
             """,
-            (batch_size,),
+            (remaining,),
         )
         stale = cur.fetchall()
-
-    targets_by_reg: dict[str, dict] = {}
-    for m in missing:
-        reg = m.get("登记编号", "")
-        if reg:
-            targets_by_reg[reg] = m
 
     for reg_no, detail_url, manager_name in stale:
         if reg_no in targets_by_reg:

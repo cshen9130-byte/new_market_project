@@ -15,6 +15,7 @@ import {
   type PeIndustrySummary,
 } from "@/lib/pe-industry-data"
 import { PeIndustryManagerScaleSection } from "./PeIndustryManagerScaleSection"
+import { PeIndustryHotManagersSection } from "./PeIndustryHotManagersSection"
 import { PeIndustryRegionSection } from "./PeIndustryRegionSection"
 
 const GRANULARITY_OPTIONS: { key: PeIndustryGranularity; label: string }[] = [
@@ -583,6 +584,8 @@ export function PeIndustryView() {
       />
 
       <PeIndustryManagerScaleSection scaleTrend={scaleTrend} scaleChanges={scaleChanges} />
+
+      <PeIndustryHotManagersSection />
 
       <PeIndustryRegionSection regionDonut={regionDonut} regionTable={regionTable} />
     </div>

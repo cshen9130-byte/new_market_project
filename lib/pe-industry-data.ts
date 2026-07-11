@@ -69,6 +69,40 @@ export type PeIndustryRegionRow = {
   activeProductCount: number
 }
 
+export type PeIndustryStaffMetric = "full_time" | "practitioner"
+
+export type PeIndustryStaffTrendPoint = {
+  month: string
+  totalStaff: number
+  avgStaff: number
+  managerCount: number
+}
+
+export type PeIndustryHotManagerRow = {
+  managerName: string
+  registrationNo: string
+  mgmtScale: string
+  activeFundCount: number | null
+  staffCurrent: number
+  staffPrevious: number | null
+  staffDelta: number | null
+  staffGrowthPct: number | null
+}
+
+export type PeIndustryHotManagerSeries = {
+  registrationNo: string
+  managerName: string
+  points: Array<{ month: string; staff: number }>
+}
+
+export type PeIndustryHotManagersData = {
+  updatedAt: string
+  metric: PeIndustryStaffMetric
+  industryTrend: PeIndustryStaffTrendPoint[]
+  hotManagers: PeIndustryHotManagerRow[]
+  managerSeries: PeIndustryHotManagerSeries[]
+}
+
 function quarterKey(month: string): string {
   const [y, m] = month.split("-").map(Number)
   const q = Math.ceil(m / 3)

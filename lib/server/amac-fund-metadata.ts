@@ -1,5 +1,17 @@
 import { query, fmtIso } from "@/lib/db"
 
+function managerNameBrandHint(managerName: string): string {
+  const name = managerName.trim()
+  if (!name) return ""
+  const stripped = name.replace(
+    /^(上海|北京|深圳|广州|杭州|南京|成都|重庆|天津|苏州|宁波|武汉|厦门|青岛|大连|香港)/,
+    "",
+  )
+  if (stripped.length >= 2) return stripped.slice(0, 4)
+  const m = name.match(/^([\u4e00-\u9fff]{2})/)
+  return m?.[1] ?? ""
+}
+
 export type AmacFundMetadata = {
   manager_name: string | null
   establish_date: string | null
@@ -59,6 +71,178 @@ export async function lookupAmacManagerByName(
     [name],
   )
   return rows[0] ?? null
+}
+
+export type AmacManagerDetailFields = {
+  actual_controller: string | null
+  full_time_staff_count: number | null
+  fund_practitioner_count: number | null
+  mgmt_scale: string | null
+  legal_rep_name: string | null
+  manager_name_cn: string | null
+  registered_address: string | null
+  office_address: string | null
+  registered_capital_cny_wan: string | null
+  paid_in_capital_cny_wan: string | null
+  enterprise_nature: string | null
+  org_type: string | null
+  business_type: string | null
+  registration_date: string | null
+  inception_date: string | null
+  is_investment_advisory_third_party: string | null
+  org_code: string | null
+}
+
+type AmacManagerDetailRow = {
+  actual_controller: string | null
+  full_time_staff_count: number | null
+  fund_practitioner_count: number | null
+  mgmt_scale: string | null
+  legal_rep_name: string | null
+  manager_name_cn: string | null
+  registered_address: string | null
+  office_address: string | null
+  registered_capital_cny_wan: string | null
+  paid_in_capital_cny_wan: string | null
+  enterprise_nature: string | null
+  org_type: string | null
+  business_type: string | null
+  registration_date: string | null
+  inception_date: string | null
+  is_investment_advisory_third_party: string | null
+  org_code: string | null
+}
+
+const AMAC_MANAGER_DETAIL_SELECT = `
+  d.actual_controller,
+  COALESCE(d.full_time_staff_count, h.full_time_staff_count, p.staff_count) AS full_time_staff_count,
+  COALESCE(d.fund_practitioner_count, h.fund_practitioner_count, p.fund_qualification_count) AS fund_practitioner_count,
+  COALESCE(d.mgmt_scale_range, h.mgmt_scale_range) AS mgmt_scale,
+  m.legal_rep_name,
+  COALESCE(d.manager_name_cn, m.manager_name) AS manager_name_cn,
+  COALESCE(d.registered_address, m.reg_location) AS registered_address,
+  COALESCE(d.office_address, m.office_location) AS office_address,
+  d.registered_capital_cny_wan,
+  d.paid_in_capital_cny_wan,
+  d.enterprise_nature,
+  COALESCE(d.org_type, m.org_type) AS org_type,
+  d.business_type,
+  COALESCE(d.registration_date::text, m.registration_date::text) AS registration_date,
+  COALESCE(d.inception_date::text, m.inception_date::text) AS inception_date,
+  d.is_investment_advisory_third_party,
+  d.org_code
+`
+
+const AMAC_MANAGER_DETAIL_SUPPLEMENT_JOINS = `
+  LEFT JOIN LATERAL (
+    SELECT full_time_staff_count, fund_practitioner_count, mgmt_scale_range
+    FROM amac_manager_metrics_history h
+    WHERE h.registration_no = m.registration_no
+    ORDER BY h.captured_at DESC
+    LIMIT 1
+  ) h ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT staff_count, fund_qualification_count
+    FROM amac_person_org_stats p
+    WHERE p.org_name = COALESCE(d.manager_name_cn, m.manager_name)
+       OR ($2 <> '' AND (
+            p.org_name ILIKE '%' || $2 || '%'
+            OR $2 ILIKE '%' || p.org_name || '%'
+          ))
+       OR ($3 <> '' AND p.org_name ILIKE '%' || $3 || '%')
+    ORDER BY
+      CASE
+        WHEN p.org_name = COALESCE(d.manager_name_cn, m.manager_name) THEN 0
+        WHEN $2 <> '' AND p.org_name ILIKE '%' || $2 || '%' THEN 1
+        WHEN $3 <> '' AND p.org_name ILIKE '%' || $3 || '%' THEN 2
+        ELSE 3
+      END,
+      LENGTH(p.org_name) ASC
+    LIMIT 1
+  ) p ON TRUE
+`
+
+function mapAmacManagerDetailRow(row: AmacManagerDetailRow): AmacManagerDetailFields {
+  return {
+    actual_controller: row.actual_controller?.trim() || null,
+    full_time_staff_count: row.full_time_staff_count ?? null,
+    fund_practitioner_count: row.fund_practitioner_count ?? null,
+    mgmt_scale: row.mgmt_scale?.trim() || null,
+    legal_rep_name: row.legal_rep_name?.trim() || null,
+    manager_name_cn: row.manager_name_cn?.trim() || null,
+    registered_address: row.registered_address?.trim() || null,
+    office_address: row.office_address?.trim() || null,
+    registered_capital_cny_wan: row.registered_capital_cny_wan?.trim() || null,
+    paid_in_capital_cny_wan: row.paid_in_capital_cny_wan?.trim() || null,
+    enterprise_nature: row.enterprise_nature?.trim() || null,
+    org_type: row.org_type?.trim() || null,
+    business_type: row.business_type?.trim() || null,
+    registration_date: fmtDate(row.registration_date),
+    inception_date: fmtDate(row.inception_date),
+    is_investment_advisory_third_party: row.is_investment_advisory_third_party?.trim() || null,
+    org_code: row.org_code?.trim() || null,
+  }
+}
+
+async function queryAmacManagerDetailRow(
+  sql: string,
+  params: [string, string, string],
+): Promise<AmacManagerDetailFields | null> {
+  const rows = await query<AmacManagerDetailRow>(sql, params)
+  return rows[0] ? mapAmacManagerDetailRow(rows[0]) : null
+}
+
+/** Load manager profile fields from amac_managers + amac_manager_details (+ fallbacks). */
+export async function lookupAmacManagerDetail(
+  registrationNo: string,
+  managerName?: string | null,
+): Promise<AmacManagerDetailFields | null> {
+  const reg = registrationNo.trim()
+  const name = managerName?.trim() || ""
+  const brand = name ? managerNameBrandHint(name) : ""
+
+  try {
+    if (reg) {
+      const byReg = await queryAmacManagerDetailRow(
+        `SELECT ${AMAC_MANAGER_DETAIL_SELECT}
+         FROM amac_managers m
+         LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
+         ${AMAC_MANAGER_DETAIL_SUPPLEMENT_JOINS}
+         WHERE UPPER(m.registration_no) = UPPER($1)
+         LIMIT 1`,
+        [reg, name, brand],
+      )
+      if (byReg) return byReg
+    }
+
+    if (name) {
+      const byName = await queryAmacManagerDetailRow(
+        `SELECT ${AMAC_MANAGER_DETAIL_SELECT}
+         FROM amac_managers m
+         LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
+         ${AMAC_MANAGER_DETAIL_SUPPLEMENT_JOINS}
+         WHERE m.manager_name = $1
+            OR m.manager_name ILIKE '%' || $1 || '%'
+            OR $1 ILIKE '%' || m.manager_name || '%'
+            OR ($3 <> '' AND m.manager_name ILIKE '%' || $3 || '%')
+         ORDER BY
+           CASE
+             WHEN m.manager_name = $1 THEN 0
+             WHEN m.manager_name ILIKE '%' || $1 || '%' THEN 1
+             WHEN $1 ILIKE '%' || m.manager_name || '%' THEN 2
+             ELSE 3
+           END,
+           LENGTH(m.manager_name) ASC
+         LIMIT 1`,
+        [name, name, brand],
+      )
+      if (byName) return byName
+    }
+  } catch {
+    // amac tables may not exist in some environments
+  }
+
+  return null
 }
 
 /** Resolve fund/manager metadata from AMAC PostgreSQL tables (amac_private_funds, amac_managers, amac_manager_details). */

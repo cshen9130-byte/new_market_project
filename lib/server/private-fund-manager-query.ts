@@ -1,4 +1,5 @@
 import { query, fmtIso } from "@/lib/db"
+import { lookupAmacManagerDetail } from "@/lib/server/amac-fund-metadata"
 import { extractManagerBrand } from "@/lib/server/fund-company-query"
 
 export interface ManagerListDetail {
@@ -58,6 +59,9 @@ export function mgmtScaleToValue(scale: string | null | undefined): number | nul
 export async function lookupManagerByRegistrationNo(
   registrationNo: string,
 ): Promise<ManagerListDetail | null> {
+  const reg = registrationNo.trim()
+  if (!reg) return null
+
   const rows = await query<{
     id: number
     seq_no: number | null
@@ -72,15 +76,113 @@ export async function lookupManagerByRegistrationNo(
     `SELECT id, seq_no, manager_name, core_strategy, mgmt_scale, active_product_count,
             inception_date, member_type, registration_no
      FROM private_fund_managers_list
-     WHERE registration_no = $1
+     WHERE UPPER(registration_no) = UPPER($1)
      LIMIT 1`,
-    [registrationNo.trim()],
+    [reg],
   )
   const row = rows[0]
-  if (!row) return null
-  return {
-    ...row,
-    inception_date: row.inception_date ? fmtIso(row.inception_date) : null,
+  if (row) {
+    return {
+      ...row,
+      inception_date: row.inception_date ? fmtIso(row.inception_date) : null,
+    }
+  }
+
+  return lookupManagerFromAmac(reg)
+}
+
+async function lookupManagerFromAmac(registrationNo: string): Promise<ManagerListDetail | null> {
+  try {
+    const amacRows = await query<{
+      manager_name: string
+      inception_date: string | Date | null
+      active_fund_count: number | null
+      member_type: string | null
+      registration_no: string
+    }>(
+      `SELECT manager_name, inception_date, active_fund_count, member_type, registration_no
+       FROM amac_managers
+       WHERE UPPER(registration_no) = UPPER($1)
+       LIMIT 1`,
+      [registrationNo.trim()],
+    )
+    const amac = amacRows[0]
+    if (!amac) return null
+
+    const detail = await lookupAmacManagerDetail(registrationNo, amac.manager_name)
+    return {
+      id: 0,
+      seq_no: null,
+      manager_name: amac.manager_name,
+      core_strategy: null,
+      mgmt_scale: detail?.mgmt_scale ?? null,
+      active_product_count: amac.active_fund_count,
+      inception_date: amac.inception_date
+        ? fmtIso(amac.inception_date)
+        : detail?.inception_date ?? null,
+      member_type: amac.member_type,
+      registration_no: amac.registration_no,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Resolve manager for detail pages using registration no and/or manager name hint. */
+export async function lookupManagerForDetail(
+  registrationNo: string,
+  managerNameHint?: string | null,
+): Promise<ManagerListDetail | null> {
+  const fromReg = await lookupManagerByRegistrationNo(registrationNo)
+  if (fromReg) return fromReg
+
+  const name = managerNameHint?.trim()
+  if (!name) return null
+
+  try {
+    const amacRows = await query<{
+      manager_name: string
+      inception_date: string | Date | null
+      active_fund_count: number | null
+      member_type: string | null
+      registration_no: string
+    }>(
+      `SELECT manager_name, inception_date, active_fund_count, member_type, registration_no
+       FROM amac_managers m
+       WHERE m.manager_name = $1
+          OR m.manager_name ILIKE '%' || $1 || '%'
+          OR $1 ILIKE '%' || m.manager_name || '%'
+          OR ($2 <> '' AND m.manager_name ILIKE '%' || $2 || '%')
+       ORDER BY
+         CASE
+           WHEN UPPER(m.registration_no) = UPPER($3) THEN 0
+           WHEN m.manager_name = $1 THEN 1
+           WHEN m.manager_name ILIKE '%' || $1 || '%' THEN 2
+           ELSE 3
+         END,
+         LENGTH(m.manager_name) ASC
+       LIMIT 1`,
+      [name, extractManagerBrand(name) ?? "", registrationNo.trim()],
+    )
+    const amac = amacRows[0]
+    if (!amac) return null
+
+    const detail = await lookupAmacManagerDetail(amac.registration_no, amac.manager_name)
+    return {
+      id: 0,
+      seq_no: null,
+      manager_name: amac.manager_name,
+      core_strategy: null,
+      mgmt_scale: detail?.mgmt_scale ?? null,
+      active_product_count: amac.active_fund_count,
+      inception_date: amac.inception_date
+        ? fmtIso(amac.inception_date)
+        : detail?.inception_date ?? null,
+      member_type: amac.member_type,
+      registration_no: amac.registration_no,
+    }
+  } catch {
+    return null
   }
 }
 
@@ -130,7 +232,7 @@ export async function buildManagerScaleTrend(
     const count = inceptionDates.filter((d) => d <= period).length
     return {
       period: period.slice(0, 7),
-      active_product_count: count || manager.active_product_count || 0,
+      active_product_count: count,
       mgmt_scale: manager.mgmt_scale,
       mgmt_scale_value: scaleValue,
     }
