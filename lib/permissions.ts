@@ -19,6 +19,12 @@ export function canAccessAiKnowledge(user: User | null | undefined): boolean {
   return user.permissions?.aiKnowledge === true
 }
 
+export function canAccessAiResearcher(user: User | null | undefined): boolean {
+  if (!user) return false
+  if (isAdmin(user)) return true
+  return user.permissions?.aiResearcher === true
+}
+
 export function canAccessPfOperations(user: User | null | undefined): boolean {
   return hasMaScopedPermission(user, "pfOperations")
 }

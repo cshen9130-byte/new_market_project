@@ -5,6 +5,7 @@ export type PagePermissions = {
   classic?: boolean
   mom?: boolean
   aiKnowledge?: boolean
+  aiResearcher?: boolean
   pfOperations?: boolean
   pfInvestmentAlt?: boolean
   /** 勾选后：可进投资池（投资概览、在管产品、FOF底层、资料列表） */

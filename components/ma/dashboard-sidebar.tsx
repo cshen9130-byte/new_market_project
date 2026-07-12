@@ -4,10 +4,10 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { useEffect, useRef, useState } from "react"
 import { cn } from "@/lib/utils"
-import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X } from "lucide-react"
+import { TrendingUp, LineChart, Rocket, Target, Briefcase, LayoutDashboard, BrainCircuit, Home, Wrench, BarChart2, ChevronLeft, ChevronRight, X, FlaskConical } from "lucide-react"
 import type React from "react"
 import { authService } from "@/lib/auth"
-import { canAccessAiKnowledge } from "@/lib/permissions"
+import { canAccessAiKnowledge, canAccessAiResearcher } from "@/lib/permissions"
 
 const baseNavigation = [
   { name: "总览", href: "/ma/dashboard", icon: LayoutDashboard },
@@ -20,6 +20,7 @@ const baseNavigation = [
   { name: "小工具", href: "/ma/dashboard/tools", icon: Wrench },
   { name: "__home__", href: "/ma/dashboard", icon: Home },
   { name: "AI知识库", href: "/ma/dashboard/ai-knowledge", icon: BrainCircuit, permKey: "aiKnowledge" as const },
+  { name: "AI研究员", href: "/ma/dashboard/ai-researcher", icon: FlaskConical, permKey: "aiResearcher" as const },
 ]
 
 interface DashboardSidebarProps {
@@ -34,12 +35,16 @@ export function DashboardSidebar({ mobileOpen = false, onMobileClose }: Dashboar
     if (item.permKey === "aiKnowledge") {
       return canAccessAiKnowledge(currentUser)
     }
+    if (item.permKey === "aiResearcher") {
+      return canAccessAiResearcher(currentUser)
+    }
     if (!item.permKey) return true
     if (currentUser?.role === "admin") return true
     return !!currentUser?.permissions?.[item.permKey]
   })
   const shouldAutoCollapse =
     pathname === "/ma/dashboard/ai-knowledge" ||
+    pathname === "/ma/dashboard/ai-researcher" ||
     pathname === "/ma/dashboard/private-funds" ||
     pathname.startsWith("/ma/dashboard/private-funds/") ||
     pathname.startsWith("/ma/dashboard/settings") ||

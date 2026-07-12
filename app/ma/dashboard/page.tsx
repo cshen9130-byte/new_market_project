@@ -97,6 +97,10 @@ export default function DashboardPage() {
               <h3 className="font-semibold mb-2">AI知识库</h3>
               <p className="text-sm text-muted-foreground">知识检索与智能问答</p>
             </Link>
+            <Link href="/ma/dashboard/ai-researcher" className="border rounded-lg p-4 hover:bg-muted/50 transition-colors bg-gradient-to-br from-primary/5 to-transparent">
+              <h3 className="font-semibold mb-2">AI研究员</h3>
+              <p className="text-sm text-muted-foreground">自动规划任务、获取数据并生成专业研究报告</p>
+            </Link>
           </div>
         </CardContent>
       </Card>

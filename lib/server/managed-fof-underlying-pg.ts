@@ -87,6 +87,12 @@ const MIGRATE_NAV_COLUMNS = [
 ]
 
 let tableEnsured = false
+let managedFofUnderlyingRefreshInFlight: Promise<number> | null = null
+
+export type ManagedFofUnderlyingRefreshOptions = {
+  /** Skip slow symbol backfill when holdings already have codes (on-demand page load). */
+  skipSymbolBackfill?: boolean
+}
 
 export async function ensureManagedFofUnderlyingTable(): Promise<void> {
   if (tableEnsured) return
@@ -99,7 +105,9 @@ export async function ensureManagedFofUnderlyingTable(): Promise<void> {
 }
 
 /** Rebuild 在管产品 FOF 底层持仓 from latest email 估值表 per managed fund. */
-export async function refreshManagedFofUnderlying(): Promise<number> {
+export async function refreshManagedFofUnderlying(
+  options: ManagedFofUnderlyingRefreshOptions = {},
+): Promise<number> {
   await ensureManagedFofUnderlyingTable()
   await ensureEmailValuationMetricsTables()
   await ensureEmailValuationHoldingsTables()
@@ -117,7 +125,9 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
        )`,
   )
 
-  await backfillFundHoldingSymbols()
+  if (!options.skipSymbolBackfill) {
+    await backfillFundHoldingSymbols()
+  }
 
   await query(`DELETE FROM ops_managed_fof_underlying`)
 
@@ -225,6 +235,33 @@ export async function refreshManagedFofUnderlying(): Promise<number> {
     await backfillManagedFofUnderlyingNavFields()
   }
   return inserted
+}
+
+/** Populate ops_managed_fof_underlying when empty (deduped; used by FOF底层明细 list API). */
+export async function ensureManagedFofUnderlyingPopulated(): Promise<void> {
+  await ensureManagedFofUnderlyingTable()
+  const emptyTable = await query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM ops_managed_fof_underlying`,
+  )
+  if (parseInt(emptyTable[0]?.n ?? "0", 10) > 0) return
+
+  if (!managedFofUnderlyingRefreshInFlight) {
+    managedFofUnderlyingRefreshInFlight = (async () => {
+      try {
+        let rows = await refreshManagedFofUnderlying({ skipSymbolBackfill: true })
+        if (rows === 0) {
+          rows = await refreshManagedFofUnderlying()
+        }
+        return rows
+      } catch (err) {
+        console.error("[managed-fof-underlying] populate refresh failed:", err)
+        return 0
+      }
+    })().finally(() => {
+      managedFofUnderlyingRefreshInFlight = null
+    })
+  }
+  await managedFofUnderlyingRefreshInFlight
 }
 
 let navBackfillInFlight: Promise<number> | null = null
@@ -1553,17 +1590,8 @@ export async function listManagedFofUnderlyingDetail(options: {
   sortKey?: string
   sortDir?: "asc" | "desc"
 }): Promise<{ rows: ManagedFofDetailListRow[]; total: number; totalMarketValue: string }> {
-  await ensureManagedFofUnderlyingTable()
+  await ensureManagedFofUnderlyingPopulated()
   void ensureManagedFofUnderlyingNavPopulated()
-
-  const emptyTable = await query<{ n: string }>(
-    `SELECT COUNT(*)::text AS n FROM ops_managed_fof_underlying`,
-  )
-  if (parseInt(emptyTable[0]?.n ?? "0", 10) === 0) {
-    void refreshManagedFofUnderlying().catch((err) => {
-      console.error("[managed-fof-underlying] background refresh failed:", err)
-    })
-  }
 
   const page = Math.max(1, options.page)
   const pageSize = Math.min(200, Math.max(1, options.pageSize))
