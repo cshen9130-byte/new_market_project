@@ -382,6 +382,7 @@ export function AIResearcherPage() {
   const [planExpanded, setPlanExpanded] = useState(true)
   const abortRef = useRef<AbortController | null>(null)
   const reportEndRef = useRef<HTMLDivElement>(null)
+  const reportContainerRef = useRef<HTMLDivElement>(null)
 
   // Load task history from localStorage
   useEffect(() => {
@@ -560,16 +561,169 @@ export function AIResearcherPage() {
     }
   }
 
+  function baseFilename() {
+    return `对比分析报告_${activeTask?.subjects.slice(0, 2).join("_") ?? "报告"}_${new Date().toISOString().slice(0, 10)}`
+  }
+
   function handleDownloadReport() {
     if (!activeTask?.reportText) return
-    const filename = `对比分析报告_${activeTask.subjects.slice(0, 2).join("_")}_${new Date().toISOString().slice(0, 10)}.md`
-    const blob = new Blob([activeTask.reportText], { type: "text/markdown;charset=utf-8" })
+    triggerDownload(new Blob([activeTask.reportText], { type: "text/markdown;charset=utf-8" }), baseFilename() + ".md")
+  }
+
+  function handleDownloadWord() {
+    if (!activeTask?.reportText) return
+    // Build a minimal Word-compatible HTML document
+    const title = activeTask.subjects.join("、") + " 对比分析报告"
+    const bodyHtml = mdToWordHtml(activeTask.reportText)
+    const doc = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
+      xmlns:w='urn:schemas-microsoft-com:office:word'
+      xmlns='http://www.w3.org/TR/REC-html40'>
+      <head>
+        <meta charset='utf-8'>
+        <title>${escapeXml(title)}</title>
+        <style>
+          body { font-family: "宋体", SimSun, serif; font-size: 12pt; margin: 2cm; }
+          h1 { font-size: 18pt; font-weight: bold; margin-top: 18pt; }
+          h2 { font-size: 14pt; font-weight: bold; margin-top: 14pt; }
+          h3 { font-size: 12pt; font-weight: bold; margin-top: 12pt; }
+          table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
+          th, td { border: 1pt solid #999; padding: 4pt 6pt; font-size: 10pt; }
+          th { background: #f2f2f2; font-weight: bold; }
+          p { line-height: 1.6; margin: 6pt 0; }
+          ul, ol { margin: 6pt 0 6pt 20pt; }
+          li { margin-bottom: 3pt; }
+          strong { font-weight: bold; }
+        </style>
+      </head>
+      <body>${bodyHtml}</body>
+    </html>`
+    triggerDownload(new Blob(["\uFEFF" + doc], { type: "application/msword;charset=utf-8" }), baseFilename() + ".doc")
+  }
+
+  async function handleDownloadPDF() {
+    if (!reportContainerRef.current || !activeTask?.reportText) return
+    try {
+      const [html2canvasModule, { jsPDF }] = await Promise.all([
+        import("html2canvas"),
+        import("jspdf"),
+      ])
+      const html2canvas = html2canvasModule.default
+      const canvas = await html2canvas(reportContainerRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: "#ffffff",
+        logging: false,
+      })
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
+      const pageW = pdf.internal.pageSize.getWidth()
+      const pageH = pdf.internal.pageSize.getHeight()
+      const margin = 10
+      const contentW = pageW - margin * 2
+      const contentH = (canvas.height * contentW) / canvas.width
+      let remaining = contentH
+      let yOffset = 0
+      while (remaining > 0) {
+        const sliceH = Math.min(remaining, pageH - margin * 2)
+        const sliceCanvas = document.createElement("canvas")
+        sliceCanvas.width = canvas.width
+        sliceCanvas.height = Math.ceil((sliceH * canvas.width) / contentW)
+        const ctx = sliceCanvas.getContext("2d")!
+        ctx.drawImage(canvas, 0, Math.ceil((yOffset * canvas.width) / contentW), canvas.width, sliceCanvas.height, 0, 0, canvas.width, sliceCanvas.height)
+        pdf.addImage(sliceCanvas.toDataURL("image/png"), "PNG", margin, margin, contentW, sliceH)
+        remaining -= sliceH
+        yOffset += sliceH
+        if (remaining > 0) pdf.addPage()
+      }
+      pdf.save(baseFilename() + ".pdf")
+    } catch (err) {
+      console.error("[handleDownloadPDF]", err)
+    }
+  }
+
+  function triggerDownload(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob)
     const a = document.createElement("a")
     a.href = url
     a.download = filename
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  function escapeXml(s: string) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+  }
+
+  function mdToWordHtml(md: string): string {
+    const lines = md.replace(/\r\n/g, "\n").split("\n")
+    const out: string[] = []
+    let i = 0
+    while (i < lines.length) {
+      const trimmed = lines[i].trim()
+      if (!trimmed) { i++; continue }
+
+      // Headings
+      const hm = trimmed.match(/^(#{1,6})\s+(.+)$/)
+      if (hm) {
+        const lv = hm[1].length
+        out.push(`<h${lv}>${inlineMd(hm[2])}</h${lv}>`)
+        i++; continue
+      }
+
+      // Tables
+      if (/^\|.+\|$/.test(trimmed)) {
+        const rows: string[] = []
+        while (i < lines.length && /^\|.+\|$/.test(lines[i].trim())) {
+          rows.push(lines[i].trim()); i++
+        }
+        const headerCells = rows[0].replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim())
+        const bodyRows = rows.slice(1).filter(r => !/^\|[\s|:-]+\|$/.test(r))
+        out.push("<table><thead><tr>" + headerCells.map(c => `<th>${inlineMd(c)}</th>`).join("") + "</tr></thead><tbody>")
+        for (const row of bodyRows) {
+          const cells = row.replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim())
+          out.push("<tr>" + cells.map(c => `<td>${inlineMd(c)}</td>`).join("") + "</tr>")
+        }
+        out.push("</tbody></table>")
+        continue
+      }
+
+      // Unordered list
+      if (/^[-*+]\s+/.test(trimmed)) {
+        out.push("<ul>")
+        while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
+          out.push(`<li>${inlineMd(lines[i].trim().replace(/^[-*+]\s+/, ""))}</li>`)
+          i++
+        }
+        out.push("</ul>")
+        continue
+      }
+
+      // Ordered list
+      if (/^\d+\.\s+/.test(trimmed)) {
+        out.push("<ol>")
+        while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
+          out.push(`<li>${inlineMd(lines[i].trim().replace(/^\d+\.\s+/, ""))}</li>`)
+          i++
+        }
+        out.push("</ol>")
+        continue
+      }
+
+      // Paragraph
+      const pLines: string[] = []
+      while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\|.+\||[-*+]\s|\d+\.\s)/.test(lines[i].trim())) {
+        pLines.push(lines[i].trim()); i++
+      }
+      out.push(`<p>${inlineMd(pLines.join(" "))}</p>`)
+    }
+    return out.join("\n")
+  }
+
+  function inlineMd(text: string): string {
+    return text
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
   }
 
   return (
@@ -705,14 +859,16 @@ export function AIResearcherPage() {
                 <div>
                   <label className="text-sm font-medium mb-1.5 block">
                     知识库路径
-                    <span className="text-xs text-muted-foreground ml-2 font-normal">可选：指定知识库文件夹路径以补充分析信息</span>
+                    <span className="text-xs text-muted-foreground ml-2 font-normal">
+                      留空则自动全库检索；填写路径可缩小范围提高准确性
+                    </span>
                   </label>
                   <div className="relative">
                     <BookOpen className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       value={kbPath}
                       onChange={(e) => setKbPath(e.target.value)}
-                      placeholder="例如：私募基金/尽调资料"
+                      placeholder="留空自动全库检索，或填写路径如：私募基金/尽调资料"
                       className="pl-9"
                     />
                   </div>
@@ -803,7 +959,15 @@ export function AIResearcherPage() {
                     </Button>
                     <Button variant="outline" size="sm" onClick={handleDownloadReport} className="gap-1.5 h-7 text-xs">
                       <Download className="h-3.5 w-3.5" />
-                      下载 MD
+                      MD
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={handleDownloadWord} className="gap-1.5 h-7 text-xs">
+                      <Download className="h-3.5 w-3.5" />
+                      Word
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={handleDownloadPDF} className="gap-1.5 h-7 text-xs">
+                      <Download className="h-3.5 w-3.5" />
+                      PDF
                     </Button>
                   </>
                 )}
@@ -882,13 +1046,11 @@ export function AIResearcherPage() {
               {/* Report area */}
               <div className="flex-1 overflow-y-auto">
                 {activeTask.reportText ? (
-                  <div className="max-w-3xl mx-auto px-8 py-6">
-                    <div className="prose prose-sm max-w-none">
-                      <MarkdownNotePreview
-                        content={activeTask.reportText}
-                        className="text-sm leading-relaxed [&_h1]:text-xl [&_h1]:font-bold [&_h1]:mt-6 [&_h1]:mb-3 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:mt-5 [&_h2]:mb-2.5 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:mt-4 [&_h3]:mb-2 [&_p]:leading-7 [&_li]:leading-6 [&_strong]:font-semibold"
-                      />
-                    </div>
+                  <div ref={reportContainerRef} className="max-w-3xl mx-auto px-8 py-6 bg-white" style={{ color: "#111" }}>
+                    <MarkdownNotePreview
+                      content={activeTask.reportText}
+                      className="text-sm leading-relaxed"
+                    />
                     {activeTask.status === "running" && (
                       <div className="flex items-center gap-2 mt-4 text-sm text-muted-foreground">
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -897,6 +1059,7 @@ export function AIResearcherPage() {
                     )}
                     <div ref={reportEndRef} />
                   </div>
+
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full text-muted-foreground/50 gap-3">
                     {activeTask.status === "running" ? (

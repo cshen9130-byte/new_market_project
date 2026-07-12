@@ -16,6 +16,8 @@ const HEADING_RE = /^(#{1,6})\s+(.+)$/
 const UL_RE = /^[-*+]\s+(.+)$/
 const OL_RE = /^\d+\.\s+(.+)$/
 const BLOCKQUOTE_RE = /^>\s?(.*)$/
+const TABLE_ROW_RE = /^\|.+\|$/
+const TABLE_SEP_RE = /^\|[\s|:-]+\|$/
 
 function formatInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = []
@@ -85,6 +87,15 @@ function formatInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   return nodes.length > 0 ? nodes : [escapeHtml(text)]
 }
 
+function parseTableRow(line: string): string[] {
+  // Strip leading/trailing | and split on |
+  return line
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.trim())
+}
+
 function renderMarkdownBlocks(content: string): ReactNode[] {
   const lines = content.replace(/\r\n/g, "\n").split("\n")
   const blocks: ReactNode[] = []
@@ -125,10 +136,12 @@ function renderMarkdownBlocks(content: string): ReactNode[] {
       const text = headingMatch[2]
       const className =
         level === 1
-          ? "text-xl font-semibold"
+          ? "text-xl font-bold mt-6 mb-3 border-b pb-1"
           : level === 2
-            ? "text-lg font-semibold"
-            : "text-base font-semibold"
+            ? "text-lg font-semibold mt-5 mb-2"
+            : level === 3
+              ? "text-base font-semibold mt-4 mb-1.5"
+              : "text-sm font-semibold mt-3 mb-1"
       const key = blockKey++
       blocks.push(
         <div key={`block-${key}`} className={cn("my-2", className)}>
@@ -161,6 +174,60 @@ function renderMarkdownBlocks(content: string): ReactNode[] {
             </p>
           ))}
         </blockquote>,
+      )
+      continue
+    }
+
+    // ── Markdown pipe tables ───────────────────────────────────────────────────
+    if (TABLE_ROW_RE.test(trimmed)) {
+      const allRows: string[] = []
+      while (index < lines.length) {
+        const cur = lines[index].trim()
+        if (!TABLE_ROW_RE.test(cur)) break
+        allRows.push(cur)
+        index += 1
+      }
+
+      // First non-separator row is the header; skip separator rows
+      const headerRow = allRows[0]
+      const headers = parseTableRow(headerRow)
+      const bodyRows = allRows.slice(1).filter((r) => !TABLE_SEP_RE.test(r))
+
+      const key = blockKey++
+      blocks.push(
+        <div key={`block-${key}`} className="my-4 overflow-x-auto">
+          <table className="min-w-full border-collapse text-sm">
+            <thead>
+              <tr className="border-b-2 border-border bg-muted/40">
+                {headers.map((cell, ci) => (
+                  <th
+                    key={ci}
+                    className="whitespace-nowrap px-3 py-2 text-left text-xs font-semibold text-foreground"
+                  >
+                    {formatInlineMarkdown(cell, `th-${key}-${ci}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, ri) => {
+                const cells = parseTableRow(row)
+                return (
+                  <tr
+                    key={ri}
+                    className={cn("border-b border-border/60", ri % 2 === 1 ? "bg-muted/20" : "")}
+                  >
+                    {cells.map((cell, ci) => (
+                      <td key={ci} className="px-3 py-1.5 text-xs">
+                        {formatInlineMarkdown(cell, `td-${key}-${ri}-${ci}`)}
+                      </td>
+                    ))}
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>,
       )
       continue
     }
@@ -222,7 +289,8 @@ function renderMarkdownBlocks(content: string): ReactNode[] {
         HEADING_RE.test(nextTrimmed) ||
         BLOCKQUOTE_RE.test(nextTrimmed) ||
         UL_RE.test(nextTrimmed) ||
-        OL_RE.test(nextTrimmed)
+        OL_RE.test(nextTrimmed) ||
+        TABLE_ROW_RE.test(nextTrimmed)
       ) {
         break
       }

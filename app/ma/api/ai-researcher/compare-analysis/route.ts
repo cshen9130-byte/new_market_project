@@ -163,39 +163,61 @@ async function fetchManagerInfo(managerNames: string[]): Promise<ManagerInfo[]> 
 interface KbResult {
   answer: string
   sources: string[]
-  note?: string
 }
 
+// Query each subject individually – a single combined query dilutes the
+// vector similarity and misses fund-specific documents. Per-subject queries
+// mirror how the KB assistant is used manually (type the fund name → get hits).
 async function queryKnowledgeBase(
   subjects: string[],
-  kbPath: string,
+  kbPath: string | null,
   navMissing: boolean,
 ): Promise<KbResult> {
   const { askKnowledgeBaseQuestion } = await import("@/lib/server/knowledge-chat")
 
-  // When NAV data is absent from DB, ask specifically about performance/NAV data
-  // that may exist in roadshow materials, monthly reports, or research documents.
-  const question = navMissing
-    ? `请从相关文件（路演材料、月报、尽调报告等）中提取以下基金的净值走势、历史业绩、收益数据和风险指标：${subjects.join("、")}。
-如果找到净值数据请详细列出，同时提取策略特点、风险控制方法、团队背景等信息。`
-    : `关于${subjects.join("、")}的策略特点、投资方法、风险控制、团队背景有哪些信息？请从相关文件中提取关键信息。`
+  const folderPath = kbPath || null // null = global search across all indexed docs
 
-  const kbResult = await withTimeout(
-    askKnowledgeBaseQuestion({
-      question,
-      folderPath: kbPath,
-      useBm25: true,
-      modelMode: "turbo",
-      deepSearch: navMissing, // use deeper search when hunting for NAV data
-    }),
-    30_000,
-    { answer: "", sources: [], indexedDocuments: 0, indexedChunks: 0, model: "" },
-    "queryKnowledgeBase",
-  )
+  // Build one focused question per subject, then run all in parallel
+  const perSubjectQueries = subjects.map((subject) => {
+    const q = navMissing
+      ? `关于"${subject}"：请提取该基金/管理人的历史净值走势、累计收益率、最大回撤、夏普比率等业绩数据，以及策略特点、风险控制方法、投资团队背景。如有具体数字请完整列出。`
+      : `关于"${subject}"：请从相关文档（路演材料、月报、尽调资料等）中提取该基金/管理人的策略特点、投资方法、历史业绩、团队背景和产品特色。`
+    return withTimeout(
+      askKnowledgeBaseQuestion({
+        question: q,
+        folderPath,
+        useBm25: true,
+        modelMode: "turbo",
+        deepSearch: navMissing,
+      }),
+      25_000,
+      { answer: "", sources: [] as string[], indexedDocuments: 0, indexedChunks: 0, model: "" },
+      `kb-query:${subject}`,
+    )
+  })
+
+  const results = await Promise.allSettled(perSubjectQueries)
+
+  const sections: string[] = []
+  const allSources: string[] = []
+
+  for (let i = 0; i < subjects.length; i++) {
+    const res = results[i]
+    if (res.status === "rejected") continue
+    const { answer, sources } = res.value
+    if (answer && answer.trim().length > 30) {
+      sections.push(`【${subjects[i]}】\n${answer.trim()}`)
+    }
+    if (sources) {
+      for (const s of sources) {
+        if (!allSources.includes(s)) allSources.push(s)
+      }
+    }
+  }
 
   return {
-    answer: kbResult.answer,
-    sources: kbResult.sources ?? [],
+    answer: sections.join("\n\n---\n\n"),
+    sources: allSources,
   }
 }
 
@@ -266,10 +288,11 @@ function buildDataSummary(
   return lines.join("\n")
 }
 
+// Values in private_fund_info are already stored in percentage form (e.g. 50.44, not 0.5044)
 function pct(v: string | null): string {
   if (!v) return "N/A"
   const n = parseFloat(v)
-  return isNaN(n) ? "N/A" : (n * 100).toFixed(2) + "%"
+  return isNaN(n) ? "N/A" : (n >= 0 ? "+" : "") + n.toFixed(2) + "%"
 }
 
 function num(v: string | null): string {
@@ -422,32 +445,34 @@ export async function POST(req: Request) {
       }
 
       // ── Step 4: Knowledge base ──────────────────────────────────────────────
+      // Always query KB – when kbPath is given, scope to that folder;
+      // otherwise search all indexed documents globally.
       let kbContext = ""
       let hasKbNav = false
       emit({ type: "step_start", step: 4, title: "查询知识库相关文档" })
-      if (kbPath) {
-        try {
-          const kbResult = await queryKnowledgeBase(subjects, kbPath, navMissing || navTimedOut)
-          kbContext = kbResult.answer
-          // Heuristic: if KB answer contains numbers that look like NAV values, flag it
-          hasKbNav = navMissing && /净值|累计|收益率|回撤|夏普/.test(kbContext)
-          emit({
-            type: "step_done",
-            step: 4,
-            summary:
-              kbResult.answer && kbResult.answer.length > 50
-                ? `检索完成（${kbResult.sources.length} 个来源文件${hasKbNav ? "，发现业绩/净值信息" : ""}）`
-                : "知识库中未找到相关内容",
-          })
-        } catch (err) {
-          emit({ type: "step_done", step: 4, summary: `知识库查询出错：${(err as Error).message}` })
-        }
-      } else {
-        const hint =
-          navMissing || navTimedOut
-            ? "⚠️ 未指定知识库路径，且数据库净值数据不足——如有路演材料请在设置中填写知识库路径以补充数据"
-            : "未指定知识库路径，跳过（可在任务设置中填写路径以补充材料信息）"
-        emit({ type: "step_done", step: 4, summary: hint })
+      try {
+        const kbResult = await queryKnowledgeBase(
+          subjects,
+          kbPath || null,
+          navMissing || navTimedOut,
+        )
+        kbContext = kbResult.answer ?? ""
+        hasKbNav = (navMissing || navTimedOut) && /净值|累计净值|收益率|回撤|夏普|单位净值/.test(kbContext)
+        const scope = kbPath ? `路径: ${kbPath}` : "全库检索"
+        emit({
+          type: "step_done",
+          step: 4,
+          summary:
+            kbContext && kbContext.length > 50
+              ? `检索完成（${scope}，${kbResult.sources.length} 个来源文件${hasKbNav ? "，已找到业绩/净值数据" : ""}）`
+              : `知识库中未找到相关内容（${scope}）`,
+        })
+      } catch (err) {
+        emit({
+          type: "step_done",
+          step: 4,
+          summary: `知识库查询出错：${(err as Error).message}`,
+        })
       }
 
       // ── Step 5: Generate report ─────────────────────────────────────────────
