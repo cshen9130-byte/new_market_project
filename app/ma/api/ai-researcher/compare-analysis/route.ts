@@ -94,40 +94,101 @@ async function fetchFundsBySubjects(subjects: string[]): Promise<FundBasicInfo[]
   return rows
 }
 
-async function fetchNavHistoryRaw(beianHaos: string[], months = 24): Promise<Record<string, NavPoint[]>> {
-  if (beianHaos.length === 0) return {}
+// Mirrors the multi-table query used by the fund detail page so that funds
+// stored in private_fund_nav_group / private_fund_nav_group_hy are also found.
+// Matches by beian_hao; the result is keyed by beian_hao for easy lookup.
+async function fetchNavHistoryRaw(
+  funds: Pick<FundBasicInfo, "beian_hao" | "product_name">[],
+  months = 36,
+): Promise<Record<string, NavPoint[]>> {
+  if (funds.length === 0) return {}
   const cutoff = new Date()
   cutoff.setMonth(cutoff.getMonth() - months)
   const cutoffStr = cutoff.toISOString().slice(0, 10)
-  const rows = await query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
-    `SELECT beian_hao, price_date::text AS price_date, nav::text AS nav, cumulative_nav::text AS cumulative_nav
-     FROM private_fund_nav
-     WHERE beian_hao = ANY($1::text[])
-       AND price_date >= $2::date
-       AND nav IS NOT NULL AND nav::numeric > 0
-     ORDER BY beian_hao, price_date ASC`,
-    [beianHaos, cutoffStr],
-  )
+
+  // Run one query per fund so we can key results back by beian_hao.
+  // Each query tries nav_group → nav_group_hy → nav in priority order.
+  const perFundPromises = funds.map(async (f) => {
+    const rows = await query<{ price_date: string; nav: string; cumulative_nav: string | null }>(
+      `SELECT price_date::text AS price_date,
+              nav::text        AS nav,
+              cumulative_nav::text AS cumulative_nav
+       FROM (
+         SELECT price_date, nav, cumulative_nav, 1 AS pri
+         FROM private_fund_nav_group
+         WHERE beian_hao = $1 AND price_date >= $3::date
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, 2 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE beian_hao = $1 AND price_date >= $3::date
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, 3 AS pri
+         FROM private_fund_nav
+         WHERE beian_hao = $1 AND price_date >= $3::date
+
+         UNION ALL
+
+         -- product_name fallback (handles beian_hao mismatch across tables)
+         SELECT price_date, nav, cumulative_nav, 4 AS pri
+         FROM private_fund_nav_group
+         WHERE $2 <> '' AND product_name = $2 AND price_date >= $3::date
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, 5 AS pri
+         FROM private_fund_nav_group_hy
+         WHERE $2 <> '' AND product_name = $2 AND price_date >= $3::date
+
+         UNION ALL
+
+         SELECT price_date, nav, cumulative_nav, 6 AS pri
+         FROM private_fund_nav
+         WHERE $2 <> '' AND product_name = $2 AND price_date >= $3::date
+       ) nav_union
+       WHERE nav IS NOT NULL
+       ORDER BY price_date ASC, pri ASC`,
+      [f.beian_hao, f.product_name, cutoffStr],
+    )
+    // Deduplicate by date (keep lowest pri)
+    const seen = new Set<string>()
+    const deduped: NavPoint[] = []
+    for (const r of rows) {
+      if (!seen.has(r.price_date)) {
+        seen.add(r.price_date)
+        deduped.push({ price_date: r.price_date, nav: r.nav, cumulative_nav: r.cumulative_nav })
+      }
+    }
+    return { beian_hao: f.beian_hao, points: deduped }
+  })
+
+  const settled = await Promise.allSettled(perFundPromises)
   const result: Record<string, NavPoint[]> = {}
-  for (const row of rows) {
-    if (!result[row.beian_hao]) result[row.beian_hao] = []
-    result[row.beian_hao].push({ price_date: row.price_date, nav: row.nav, cumulative_nav: row.cumulative_nav })
+  for (const s of settled) {
+    if (s.status === "fulfilled" && s.value.points.length > 0) {
+      result[s.value.beian_hao] = s.value.points
+    }
   }
   return result
 }
 
-// Wraps the NAV fetch with a 12-second timeout so a slow/empty table scan
+// Wraps the NAV fetch with a 15-second timeout so a slow/empty table scan
 // never blocks the rest of the pipeline.
-async function fetchNavHistory(beianHaos: string[]): Promise<{ navMap: Record<string, NavPoint[]>; timedOut: boolean }> {
-  if (beianHaos.length === 0) return { navMap: {}, timedOut: false }
+async function fetchNavHistory(
+  funds: Pick<FundBasicInfo, "beian_hao" | "product_name">[],
+): Promise<{ navMap: Record<string, NavPoint[]>; timedOut: boolean }> {
+  if (funds.length === 0) return { navMap: {}, timedOut: false }
   let timedOut = false
   const navMap = await Promise.race([
-    fetchNavHistoryRaw(beianHaos),
+    fetchNavHistoryRaw(funds),
     new Promise<Record<string, NavPoint[]>>((resolve) =>
       setTimeout(() => {
         timedOut = true
         resolve({})
-      }, 12_000),
+      }, 15_000),
     ),
   ])
   return { navMap, timedOut }
@@ -487,12 +548,14 @@ export async function POST(req: Request) {
       let navMissing = false
       emit({ type: "step_start", step: 2, title: "获取净值历史数据" })
       try {
-        const beianHaos = funds.map((f) => f.beian_hao)
-        const result = await fetchNavHistory(beianHaos)
+        const result = await fetchNavHistory(funds.map((f) => ({ beian_hao: f.beian_hao, product_name: f.product_name })))
         navMap = result.navMap
         navTimedOut = result.timedOut
         const totalPoints = Object.values(navMap).reduce((s, v) => s + v.length, 0)
         navMissing = totalPoints === 0
+        const perFund = funds
+          .map((f) => `${f.product_name}(${navMap[f.beian_hao]?.length ?? 0}条)`)
+          .join("、")
         emit({
           type: "step_done",
           step: 2,
@@ -500,7 +563,7 @@ export async function POST(req: Request) {
             ? "⚠️ 查询超时，数据库净值序列未能获取（将从知识库补充）"
             : navMissing
               ? "数据库中暂无净值序列，将尝试从知识库路演材料中提取"
-              : `获取了 ${totalPoints} 条净值记录（近24个月）`,
+              : `获取了 ${totalPoints} 条净值记录：${perFund}`,
         })
       } catch (err) {
         navMissing = true
