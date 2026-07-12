@@ -61,7 +61,7 @@ interface FundBasicInfo {
 interface NavPoint {
   price_date: string
   nav: string
-  acc_nav: string | null
+  cumulative_nav: string | null
 }
 
 interface ManagerInfo {
@@ -99,19 +99,19 @@ async function fetchNavHistoryRaw(beianHaos: string[], months = 24): Promise<Rec
   const cutoff = new Date()
   cutoff.setMonth(cutoff.getMonth() - months)
   const cutoffStr = cutoff.toISOString().slice(0, 10)
-  const rows = await query<{ beian_hao: string; price_date: string; nav: string; acc_nav: string | null }>(
-    `SELECT beian_hao, price_date::text AS price_date, nav::text AS nav, acc_nav::text AS acc_nav
+  const rows = await query<{ beian_hao: string; price_date: string; nav: string; cumulative_nav: string | null }>(
+    `SELECT beian_hao, price_date::text AS price_date, nav::text AS nav, cumulative_nav::text AS cumulative_nav
      FROM private_fund_nav
      WHERE beian_hao = ANY($1::text[])
        AND price_date >= $2::date
-       AND nav IS NOT NULL AND nav > 0
+       AND nav IS NOT NULL AND nav::numeric > 0
      ORDER BY beian_hao, price_date ASC`,
     [beianHaos, cutoffStr],
   )
   const result: Record<string, NavPoint[]> = {}
   for (const row of rows) {
     if (!result[row.beian_hao]) result[row.beian_hao] = []
-    result[row.beian_hao].push({ price_date: row.price_date, nav: row.nav, acc_nav: row.acc_nav })
+    result[row.beian_hao].push({ price_date: row.price_date, nav: row.nav, cumulative_nav: row.cumulative_nav })
   }
   return result
 }
@@ -261,7 +261,7 @@ function buildDataSummary(
     }
   }
 
-  lines.push("\n=== 净值走势（数据库）===")
+  lines.push("\n=== 净值走势与计算指标（数据库）===")
   if (navTimedOut) {
     lines.push("⚠️ 净值数据库查询超时，未能获取历史净值序列。")
   }
@@ -271,18 +271,17 @@ function buildDataSummary(
       lines.push(`${f.product_name}: 数据库中无净值序列（可能未收录或备案号不匹配）`)
       continue
     }
-    const first = nav[0]
-    const last = nav[nav.length - 1]
-    const totalReturn =
-      last.acc_nav && first.acc_nav
-        ? (((parseFloat(last.acc_nav) - parseFloat(first.acc_nav)) / parseFloat(first.acc_nav)) * 100).toFixed(2)
-        : null
-    lines.push(
-      `${f.product_name}: ${nav.length}条记录 (${first.price_date} ~ ${last.price_date}), 区间累计收益: ${totalReturn ? totalReturn + "%" : "N/A"}`,
-    )
+    const stats = computeNavStats(nav)
+    lines.push(`${f.product_name}: ${stats.recordCount}条记录 (${stats.dateRange})`)
+    lines.push(`  区间累计收益: ${stats.totalReturn ? "+" + stats.totalReturn + "%" : "N/A"}`)
+    lines.push(`  年化收益率(计算): ${stats.annReturn ? "+" + stats.annReturn + "%" : "N/A"}`)
+    lines.push(`  今年以来收益(计算): ${stats.ytdReturn ? (parseFloat(stats.ytdReturn) >= 0 ? "+" : "") + stats.ytdReturn + "%" : "N/A"}`)
+    lines.push(`  最大回撤(计算): ${stats.maxDrawdown ? "-" + stats.maxDrawdown + "%" : "N/A"}`)
+    lines.push(`  夏普比率-成立以来(计算): ${stats.sharpe ?? "N/A"}`)
+    lines.push(`  卡玛比率-成立以来(计算): ${stats.calmar ?? "N/A"}`)
     const recent = nav.slice(-12)
-    const navStr = recent.map((p) => `${p.price_date.slice(0, 7)}: ${p.acc_nav || p.nav}`).join(", ")
-    lines.push(`  近期净值: ${navStr}`)
+    const navStr = recent.map((p) => `${p.price_date.slice(0, 7)}: ${p.cumulative_nav || p.nav}`).join(", ")
+    lines.push(`  近期累计净值: ${navStr}`)
   }
 
   return lines.join("\n")
@@ -301,6 +300,84 @@ function num(v: string | null): string {
   return isNaN(n) ? "N/A" : n.toFixed(3)
 }
 
+interface NavStats {
+  totalReturn: string | null     // percent
+  annReturn: string | null       // percent
+  ytdReturn: string | null       // percent
+  maxDrawdown: string | null     // percent (positive = loss)
+  sharpe: string | null
+  calmar: string | null
+  recordCount: number
+  dateRange: string
+}
+
+function computeNavStats(navPoints: NavPoint[]): NavStats {
+  if (navPoints.length < 2) {
+    return { totalReturn: null, annReturn: null, ytdReturn: null, maxDrawdown: null, sharpe: null, calmar: null, recordCount: navPoints.length, dateRange: "" }
+  }
+
+  const vals = navPoints.map((p) => parseFloat(p.cumulative_nav ?? p.nav))
+  const dates = navPoints.map((p) => p.price_date)
+
+  const first = vals[0]
+  const last = vals[vals.length - 1]
+  if (!isFinite(first) || first <= 0 || !isFinite(last)) {
+    return { totalReturn: null, annReturn: null, ytdReturn: null, maxDrawdown: null, sharpe: null, calmar: null, recordCount: navPoints.length, dateRange: `${dates[0]} ~ ${dates[dates.length - 1]}` }
+  }
+
+  const totalRet = (last / first - 1) * 100
+
+  const days = (new Date(dates[dates.length - 1]).getTime() - new Date(dates[0]).getTime()) / 86_400_000
+  const annRet = days > 0 ? (Math.pow(last / first, 365 / days) - 1) * 100 : null
+
+  // YTD
+  const thisYear = new Date().getFullYear().toString()
+  const ytdBaseIdx = (() => {
+    const lastBeforeYear = [...navPoints].reverse().findIndex((p) => p.price_date < `${thisYear}-01-01`)
+    if (lastBeforeYear >= 0) return navPoints.length - 1 - lastBeforeYear
+    return navPoints.findIndex((p) => p.price_date >= `${thisYear}-01-01`)
+  })()
+  const ytdBase = ytdBaseIdx >= 0 ? vals[ytdBaseIdx] : null
+  const ytdRet = ytdBase && ytdBase > 0 ? (last / ytdBase - 1) * 100 : null
+
+  // Max drawdown
+  let peak = -Infinity
+  let maxDd = 0
+  const dailyRets: number[] = []
+  for (let i = 0; i < vals.length; i++) {
+    const v = vals[i]
+    if (v > peak) peak = v
+    const dd = peak > 0 ? (peak - v) / peak : 0
+    if (dd > maxDd) maxDd = dd
+    if (i > 0 && vals[i - 1] > 0) dailyRets.push(v / vals[i - 1] - 1)
+  }
+
+  // Sharpe (since inception, rf=0)
+  let sharpe: string | null = null
+  if (annRet !== null && dailyRets.length > 1 && days > 0) {
+    const totalYears = days / 365
+    const recPerYear = dailyRets.length / totalYears
+    const mean = dailyRets.reduce((s, r) => s + r, 0) / dailyRets.length
+    const variance = dailyRets.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyRets.length
+    const annVol = Math.sqrt(variance) * Math.sqrt(recPerYear)
+    if (annVol > 0) sharpe = ((annRet / 100) / annVol).toFixed(2)
+  }
+
+  // Calmar = annReturn / maxDrawdown
+  const calmar = annRet !== null && maxDd > 0 ? ((annRet / 100) / maxDd).toFixed(2) : null
+
+  return {
+    totalReturn: totalRet.toFixed(2),
+    annReturn: annRet !== null ? annRet.toFixed(2) : null,
+    ytdReturn: ytdRet !== null ? ytdRet.toFixed(2) : null,
+    maxDrawdown: maxDd > 0 ? (maxDd * 100).toFixed(2) : null,
+    sharpe,
+    calmar,
+    recordCount: navPoints.length,
+    dateRange: `${dates[0]} ~ ${dates[dates.length - 1]}`,
+  }
+}
+
 function buildReportSystemPrompt(subjects: string[], hasKbNav: boolean): string {
   return `你是一位专业的私募基金研究员，擅长对同类策略的不同基金产品和管理人进行深度对比分析。
 
@@ -315,7 +392,8 @@ ${hasKbNav ? "4. 知识库提取的业绩/净值信息（来自路演材料、�
 - 格式：Markdown（#/##/### 标题，- 列表，**粗体**强调关键数字）
 - 内容：深度分析而非数据堆砌，给出有判断力的结论
 - 数据缺失时：明确标注"数据不足"，不编造数字，但可基于可用信息进行定性分析
-- 净值数据不足时：利用系统预计算的绩效指标（如有）和知识库中的业绩描述进行分析
+- 年化/年度指标（ret_1y、sharpe_1y 等）为 N/A 仅表示该基金成立不足一年，**不代表无净值数据**；请直接使用已有的 latest_nav、近1月/近3月/近6月收益和净值序列进行分析
+- 若 latest_nav 字段有值，说明数据库中有最新净值记录，应明确引用；不得将"年化指标 N/A"误描述为"无任何净值披露"
 
 建议报告结构（根据数据可用性灵活调整）：
 1. 执行摘要（核心结论，2-3点关键发现）

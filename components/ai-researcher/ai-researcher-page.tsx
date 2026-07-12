@@ -379,6 +379,7 @@ export function AIResearcherPage() {
   const [kbPath, setKbPath] = useState("")
   const [tasks, setTasks] = useState<ResearchTask[]>([])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
+  const [pdfDownloading, setPdfDownloading] = useState(false)
   const [planExpanded, setPlanExpanded] = useState(true)
   const abortRef = useRef<AbortController | null>(null)
   const reportEndRef = useRef<HTMLDivElement>(null)
@@ -572,71 +573,128 @@ export function AIResearcherPage() {
 
   function handleDownloadWord() {
     if (!activeTask?.reportText) return
-    // Build a minimal Word-compatible HTML document
-    const title = activeTask.subjects.join("、") + " 对比分析报告"
+    const title = activeTask.subjects.join("、") + "对比分析报告"
+    const dateStr = new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })
+    const subjectLine = activeTask.subjects.join(" · ")
     const bodyHtml = mdToWordHtml(activeTask.reportText)
+
+    const css = `
+      @page { size: A4; margin: 2.5cm 2.8cm 2.5cm 2.8cm; }
+      body {
+        font-family: "微软雅黑", "Microsoft YaHei", "宋体", SimSun, sans-serif;
+        font-size: 11pt; color: #1a1a2e; margin: 0; line-height: 1.75;
+      }
+      .cover-title {
+        text-align: center; font-size: 22pt; font-weight: bold;
+        color: #1F3864; margin: 30pt 0 6pt; letter-spacing: 1pt;
+      }
+      .cover-sub {
+        text-align: center; font-size: 12pt; color: #2E74B5;
+        margin-bottom: 4pt; font-weight: normal;
+      }
+      .cover-meta {
+        text-align: center; font-size: 10pt; color: #888;
+        margin-bottom: 30pt; border-bottom: 2pt solid #2E74B5; padding-bottom: 12pt;
+      }
+      h1 {
+        font-size: 16pt; font-weight: bold; color: #1F3864;
+        margin: 20pt 0 6pt; text-align: center;
+        border-bottom: 2pt solid #2E74B5; padding-bottom: 6pt; display: none;
+      }
+      h2 {
+        font-size: 13pt; font-weight: bold; color: #ffffff;
+        background-color: #2E74B5; padding: 5pt 10pt;
+        margin: 18pt 0 8pt; border-left: 5pt solid #1F3864;
+      }
+      h3 {
+        font-size: 11.5pt; font-weight: bold; color: #2E74B5;
+        margin: 12pt 0 5pt; border-left: 3pt solid #BDD7EE; padding-left: 7pt;
+      }
+      h4 { font-size: 11pt; font-weight: bold; color: #1F3864; margin: 8pt 0 4pt; }
+      p { margin: 5pt 0; text-align: justify; }
+      table { border-collapse: collapse; width: 100%; margin: 10pt 0; font-size: 10pt; }
+      thead tr { background-color: #2E74B5; color: #ffffff; }
+      th {
+        padding: 6pt 8pt; font-weight: bold; text-align: left; color: #ffffff;
+        border: 1pt solid #1F3864; font-size: 10pt;
+      }
+      td { padding: 5pt 8pt; border: 1pt solid #BDD7EE; vertical-align: top; }
+      tr.even-row td { background-color: #EBF3FB; }
+      blockquote {
+        border-left: 4pt solid #2E74B5; background: #F4F9FD;
+        padding: 8pt 12pt; margin: 8pt 0; color: #333;
+        font-size: 10.5pt; font-style: normal;
+      }
+      hr { border: none; border-top: 1pt solid #BDD7EE; margin: 14pt 0; }
+      ul { margin: 4pt 0 6pt 0; padding-left: 18pt; }
+      ol { margin: 4pt 0 6pt 0; padding-left: 18pt; }
+      li { margin-bottom: 4pt; }
+      strong { font-weight: bold; color: #1F3864; }
+      code {
+        font-family: Consolas, monospace; background: #f0f0f0;
+        padding: 1pt 4pt; font-size: 9.5pt; border-radius: 2pt;
+      }
+      .footer {
+        margin-top: 30pt; border-top: 1pt solid #BDD7EE;
+        padding-top: 8pt; text-align: center; color: #999; font-size: 9pt;
+      }
+      .disclaimer {
+        background: #FFF8E1; border-left: 4pt solid #FFC107;
+        padding: 8pt 12pt; margin: 12pt 0; font-size: 10pt; color: #555;
+      }
+    `
+
     const doc = `<html xmlns:o='urn:schemas-microsoft-com:office:office'
       xmlns:w='urn:schemas-microsoft-com:office:word'
       xmlns='http://www.w3.org/TR/REC-html40'>
       <head>
         <meta charset='utf-8'>
         <title>${escapeXml(title)}</title>
-        <style>
-          body { font-family: "宋体", SimSun, serif; font-size: 12pt; margin: 2cm; }
-          h1 { font-size: 18pt; font-weight: bold; margin-top: 18pt; }
-          h2 { font-size: 14pt; font-weight: bold; margin-top: 14pt; }
-          h3 { font-size: 12pt; font-weight: bold; margin-top: 12pt; }
-          table { border-collapse: collapse; width: 100%; margin: 8pt 0; }
-          th, td { border: 1pt solid #999; padding: 4pt 6pt; font-size: 10pt; }
-          th { background: #f2f2f2; font-weight: bold; }
-          p { line-height: 1.6; margin: 6pt 0; }
-          ul, ol { margin: 6pt 0 6pt 20pt; }
-          li { margin-bottom: 3pt; }
-          strong { font-weight: bold; }
-        </style>
+        <!--[if gte mso 9]><xml>
+          <w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument>
+        </xml><![endif]-->
+        <style>${css}</style>
       </head>
-      <body>${bodyHtml}</body>
+      <body>
+        <p class="cover-title">${escapeXml(title)}</p>
+        <p class="cover-sub">${escapeXml(subjectLine)}</p>
+        <p class="cover-meta">编制日期：${escapeXml(dateStr)} &nbsp;|&nbsp; AI 研究员自动生成 &nbsp;|&nbsp; 仅供内部参考</p>
+        ${bodyHtml}
+        <div class="disclaimer">
+          <strong>免责声明：</strong>本报告由 AI 研究员系统依据结构化数据库与知识库文档自动生成，未经人工审核。所有存疑数据均已标注，投资决策请以经审计的净值报告、托管行确认函及管理人正式披露文件为最终依据，本报告不构成投资建议。
+        </div>
+        <div class="footer">编制机构：私募基金策略研究部 &nbsp;·&nbsp; AI 研究员系统 &nbsp;·&nbsp; ${escapeXml(dateStr)}</div>
+      </body>
     </html>`
+
     triggerDownload(new Blob(["\uFEFF" + doc], { type: "application/msword;charset=utf-8" }), baseFilename() + ".doc")
   }
 
   async function handleDownloadPDF() {
-    if (!reportContainerRef.current || !activeTask?.reportText) return
+    if (!reportContainerRef.current || !activeTask?.reportText || pdfDownloading) return
+    setPdfDownloading(true)
     try {
-      const [html2canvasModule, { jsPDF }] = await Promise.all([
-        import("html2canvas"),
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+        import("html2canvas-pro"),
         import("jspdf"),
       ])
-      const html2canvas = html2canvasModule.default
       const canvas = await html2canvas(reportContainerRef.current, {
         scale: 2,
         useCORS: true,
         backgroundColor: "#ffffff",
         logging: false,
       })
-      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
-      const pageW = pdf.internal.pageSize.getWidth()
-      const pageH = pdf.internal.pageSize.getHeight()
-      const margin = 10
-      const contentW = pageW - margin * 2
-      const contentH = (canvas.height * contentW) / canvas.width
-      let remaining = contentH
-      let yOffset = 0
-      while (remaining > 0) {
-        const sliceH = Math.min(remaining, pageH - margin * 2)
-        const sliceCanvas = document.createElement("canvas")
-        sliceCanvas.width = canvas.width
-        sliceCanvas.height = Math.ceil((sliceH * canvas.width) / contentW)
-        const ctx = sliceCanvas.getContext("2d")!
-        ctx.drawImage(canvas, 0, Math.ceil((yOffset * canvas.width) / contentW), canvas.width, sliceCanvas.height, 0, 0, canvas.width, sliceCanvas.height)
-        pdf.addImage(sliceCanvas.toDataURL("image/png"), "PNG", margin, margin, contentW, sliceH)
-        remaining -= sliceH
-        yOffset += sliceH
-        if (remaining > 0) pdf.addPage()
-      }
+      const imgData = canvas.toDataURL("image/png")
+      // Single tall page — avoids content being cut at page boundaries
+      const a4W = 210 // mm
+      const imgH = (canvas.height * a4W) / canvas.width
+      const pdf = new jsPDF({ orientation: "p", unit: "mm", format: [a4W, imgH] })
+      pdf.addImage(imgData, "PNG", 0, 0, a4W, imgH, undefined, "FAST")
       pdf.save(baseFilename() + ".pdf")
     } catch (err) {
       console.error("[handleDownloadPDF]", err)
+    } finally {
+      setPdfDownloading(false)
     }
   }
 
@@ -657,9 +715,17 @@ export function AIResearcherPage() {
     const lines = md.replace(/\r\n/g, "\n").split("\n")
     const out: string[] = []
     let i = 0
+    let rowIndex = 0
+
     while (i < lines.length) {
       const trimmed = lines[i].trim()
       if (!trimmed) { i++; continue }
+
+      // Horizontal rule ---
+      if (/^[-*_]{3,}$/.test(trimmed)) {
+        out.push("<hr>")
+        i++; continue
+      }
 
       // Headings
       const hm = trimmed.match(/^(#{1,6})\s+(.+)$/)
@@ -669,61 +735,103 @@ export function AIResearcherPage() {
         i++; continue
       }
 
-      // Tables
+      // Blockquote (> text) — render as styled callout box
+      if (/^>\s?/.test(trimmed)) {
+        const bqLines: string[] = []
+        while (i < lines.length && /^>\s?/.test(lines[i].trim())) {
+          bqLines.push(lines[i].trim().replace(/^>\s?/, ""))
+          i++
+        }
+        // Filter out empty separator lines within the blockquote
+        const filtered = bqLines.filter(l => l.trim() !== "-" && l.trim() !== "")
+        if (filtered.length > 0) {
+          out.push(`<blockquote>${filtered.map(l => inlineMd(l)).join("<br>")}</blockquote>`)
+        }
+        continue
+      }
+
+      // Pipe tables
       if (/^\|.+\|$/.test(trimmed)) {
         const rows: string[] = []
         while (i < lines.length && /^\|.+\|$/.test(lines[i].trim())) {
           rows.push(lines[i].trim()); i++
         }
-        const headerCells = rows[0].replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim())
+        const headerCells = splitTableRow(rows[0])
         const bodyRows = rows.slice(1).filter(r => !/^\|[\s|:-]+\|$/.test(r))
-        out.push("<table><thead><tr>" + headerCells.map(c => `<th>${inlineMd(c)}</th>`).join("") + "</tr></thead><tbody>")
+        out.push(`<table><thead><tr>${headerCells.map(c => `<th>${inlineMd(c)}</th>`).join("")}</tr></thead><tbody>`)
+        rowIndex = 0
         for (const row of bodyRows) {
-          const cells = row.replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim())
-          out.push("<tr>" + cells.map(c => `<td>${inlineMd(c)}</td>`).join("") + "</tr>")
+          const cls = rowIndex % 2 === 1 ? ' class="even-row"' : ""
+          const cells = splitTableRow(row)
+          out.push(`<tr${cls}>${cells.map(c => `<td>${inlineMd(c)}</td>`).join("")}</tr>`)
+          rowIndex++
         }
         out.push("</tbody></table>")
         continue
       }
 
-      // Unordered list
+      // Unordered list – collect contiguous items into one <ul>
       if (/^[-*+]\s+/.test(trimmed)) {
         out.push("<ul>")
         while (i < lines.length && /^[-*+]\s+/.test(lines[i].trim())) {
-          out.push(`<li>${inlineMd(lines[i].trim().replace(/^[-*+]\s+/, ""))}</li>`)
+          const text = lines[i].trim().replace(/^[-*+]\s+/, "")
+          out.push(`<li>${inlineMd(text)}</li>`)
           i++
         }
         out.push("</ul>")
         continue
       }
 
-      // Ordered list
+      // Ordered list – consecutive numbered items stay inside one <ol>
       if (/^\d+\.\s+/.test(trimmed)) {
         out.push("<ol>")
-        while (i < lines.length && /^\d+\.\s+/.test(lines[i].trim())) {
-          out.push(`<li>${inlineMd(lines[i].trim().replace(/^\d+\.\s+/, ""))}</li>`)
-          i++
+        while (i < lines.length) {
+          const cur = lines[i].trim()
+          if (/^\d+\.\s+/.test(cur)) {
+            out.push(`<li>${inlineMd(cur.replace(/^\d+\.\s+/, ""))}</li>`)
+            i++
+          } else if (/^[-*+]\s+/.test(cur)) {
+            // Indented bullets following a numbered item stay inside the list
+            out.push(`<li style="list-style-type:disc;margin-left:14pt">${inlineMd(cur.replace(/^[-*+]\s+/, ""))}</li>`)
+            i++
+          } else {
+            break
+          }
         }
         out.push("</ol>")
         continue
       }
 
-      // Paragraph
+      // Regular paragraph
       const pLines: string[] = []
-      while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\|.+\||[-*+]\s|\d+\.\s)/.test(lines[i].trim())) {
-        pLines.push(lines[i].trim()); i++
+      while (i < lines.length) {
+        const cur = lines[i].trim()
+        if (!cur) break
+        if (/^(#{1,6}\s|[-*_]{3,}$|>\s?|\|.+\||[-*+]\s|\d+\.\s)/.test(cur)) break
+        pLines.push(cur); i++
       }
-      out.push(`<p>${inlineMd(pLines.join(" "))}</p>`)
+      if (pLines.length > 0) {
+        out.push(`<p>${inlineMd(pLines.join(" "))}</p>`)
+      }
     }
     return out.join("\n")
   }
 
+  function splitTableRow(row: string): string[] {
+    return row.replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim())
+  }
+
+  // Escapes HTML but preserves literal <br> tags the LLM may emit inside table cells.
   function inlineMd(text: string): string {
+    // Save <br> before escaping, restore after
+    const BR = "\x00BR\x00"
     return text
+      .replace(/<br\s*\/?>/gi, BR)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/\*([^*]+)\*/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(new RegExp(BR, "g"), "<br>")
   }
 
   return (
@@ -965,9 +1073,13 @@ export function AIResearcherPage() {
                       <Download className="h-3.5 w-3.5" />
                       Word
                     </Button>
-                    <Button variant="outline" size="sm" onClick={handleDownloadPDF} className="gap-1.5 h-7 text-xs">
-                      <Download className="h-3.5 w-3.5" />
-                      PDF
+                    <Button variant="outline" size="sm" onClick={handleDownloadPDF} disabled={pdfDownloading} className="gap-1.5 h-7 text-xs">
+                      {pdfDownloading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5" />
+                      )}
+                      {pdfDownloading ? "生成中…" : "PDF"}
                     </Button>
                   </>
                 )}
