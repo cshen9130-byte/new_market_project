@@ -1,0 +1,8 @@
+# Python deps for scripts/ma nightly ETL (PCA / regime / money-credit / EmQuant helpers)
+psycopg2-binary>=2.9
+pandas>=2.0
+numpy>=1.24
+joblib>=1.3
+scikit-learn>=1.7,<1.9
+akshare>=1.14
+tushare>=1.4

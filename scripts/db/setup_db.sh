@@ -29,8 +29,16 @@ DB_PORT="${DB_PORT:-5432}"
 # Absolute path to this project on the server
 PROJECT_ROOT="${PROJECT_ROOT:-/root/new_market_project}"
 
-# Python executable used to run the project scripts (should match PYTHON_EXE in .env)
-PYTHON_EXE="${PYTHON_EXE:-python3}"
+# Prefer project venv (has joblib/sklearn for PCA predict steps)
+if [[ -z "${PYTHON_EXE:-}" ]]; then
+  if [[ -x "$PROJECT_ROOT/.venv/bin/python3" ]]; then
+    PYTHON_EXE="$PROJECT_ROOT/.venv/bin/python3"
+  elif [[ -x "$PROJECT_ROOT/.venv/bin/python" ]]; then
+    PYTHON_EXE="$PROJECT_ROOT/.venv/bin/python"
+  else
+    PYTHON_EXE="python3"
+  fi
+fi
 
 # Cron job time (hour minute in server local time)
 CRON_HOUR="${CRON_HOUR:-1}"
@@ -86,13 +94,27 @@ sudo -u postgres psql -d "$DB_NAME" \
   -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES    TO $DB_USER;" \
   -c "ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO $DB_USER;"
 
-# ---- 5. Install psycopg2 into project Python env ----------------------
-echo "[setup_db] Installing psycopg2-binary …"
-$PYTHON_EXE -m pip install --quiet psycopg2-binary
-echo "[setup_db]   psycopg2-binary installed."
+# ---- 5. Install Python deps into project Python env ----------------------
+echo "[setup_db] Installing Python deps for nightly ETL …"
+REQ_FILE="$PROJECT_ROOT/scripts/ma/requirements.txt"
+if [[ -f "$REQ_FILE" ]]; then
+  $PYTHON_EXE -m pip install --quiet -r "$REQ_FILE"
+else
+  $PYTHON_EXE -m pip install --quiet psycopg2-binary joblib scikit-learn pandas numpy
+fi
+echo "[setup_db]   Python deps installed via $PYTHON_EXE."
+
+# Persist PYTHON_EXE so nightly_etl child scripts use the same interpreter
+ENV_FILE="$PROJECT_ROOT/.env"
+if grep -q "^PYTHON_EXE=" "$ENV_FILE" 2>/dev/null; then
+  echo "[setup_db] PYTHON_EXE already in $ENV_FILE, skipping."
+else
+  echo "" >> "$ENV_FILE"
+  echo "PYTHON_EXE=$PYTHON_EXE" >> "$ENV_FILE"
+  echo "[setup_db] PYTHON_EXE written to $ENV_FILE."
+fi
 
 # ---- 6. Add DATABASE_URL to the project .env if not already present ---
-ENV_FILE="$PROJECT_ROOT/.env"
 DB_URL="postgresql://$DB_USER:$DB_PASS@localhost:$DB_PORT/$DB_NAME"
 if grep -q "DATABASE_URL" "$ENV_FILE" 2>/dev/null; then
   echo "[setup_db] DATABASE_URL already in $ENV_FILE, skipping."
@@ -113,8 +135,9 @@ chmod 644 "$MOM_ETL_LOG"
 echo "[setup_db] Log file: $MOM_ETL_LOG"
 
 # ---- 8. Set up cron job -----------------------------------------------
-CRON_CMD="$CRON_MIN $CRON_HOUR * * * cd $PROJECT_ROOT && $PYTHON_EXE $ETL_SCRIPT >> $ETL_LOG 2>&1"
-MOM_CRON_CMD="$MOM_CRON_MIN $MOM_CRON_HOUR * * * cd $PROJECT_ROOT && $PYTHON_EXE $MOM_ETL_SCRIPT >> $MOM_ETL_LOG 2>&1"
+# Source Choice env (EmQuant + PYTHON_EXE) when present so PCA predict has joblib.
+CRON_CMD="$CRON_MIN $CRON_HOUR * * * cd $PROJECT_ROOT && (test -f .choice_env.sh && . ./.choice_env.sh; exec $PYTHON_EXE $ETL_SCRIPT) >> $ETL_LOG 2>&1"
+MOM_CRON_CMD="$MOM_CRON_MIN $MOM_CRON_HOUR * * * cd $PROJECT_ROOT && (test -f .choice_env.sh && . ./.choice_env.sh; exec $PYTHON_EXE $MOM_ETL_SCRIPT) >> $MOM_ETL_LOG 2>&1"
 
 # Check if cron entry already exists
 EXISTING=$(crontab -l 2>/dev/null || true)

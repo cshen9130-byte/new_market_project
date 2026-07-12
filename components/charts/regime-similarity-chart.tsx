@@ -44,6 +44,8 @@ type ApiResponse = {
   current_zscores: ZScores | null
   top20: Top20Item[]
   all_distances: DistItem[]
+  data_note?: string | null
+  blocking_indicators?: string[]
 }
 
 // ── ERA colour coding (mirrors Python plot) ───────────────────────────────────
@@ -338,6 +340,9 @@ export default function RegimeSimilarityChart() {
           </p>
           {lastUpdated && (
             <p className="text-xs text-muted-foreground">最近刷新：{lastUpdated}</p>
+          )}
+          {data.data_note && (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">{data.data_note}</p>
           )}
         </div>
         <div className="flex items-center gap-2">

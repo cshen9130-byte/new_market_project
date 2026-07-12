@@ -5,7 +5,7 @@ Reference for debugging "the chart is not updating" issues on the
 DB table / file it reads, the script that produces that data, and the upstream
 data source (akshare / Choice-EmQuant / Tushare).
 
-Last updated: 2026-06-28.
+Last updated: 2026-07-12.
 
 ---
 
@@ -61,11 +61,11 @@ Model inputs for `predict_market_cluster.py`:
 | `cpi` | CPI同比 | akshare | `ak.macro_china_cpi()` |
 | `yield_10y` / `spread_10y1y` | 10Y收益率 / 10Y-1Y利差 | akshare | `ak.bond_china_yield()` |
 | `nhci` | 南华工业品指数 | akshare | `ak.spot_hist_nhci_em(...)` (fallback: `raw_nhci_daily`) |
-| **`afre`** | **社融存量同比** | **Choice/EmQuant** | **`c.edb("EMM00191807", "IsLatest=0,StartDate=...,EndDate=...")`** |
+| **`afre`** | **社融存量同比** | **Choice/EmQuant** | **`c.edb("EMM00191807", ...)` via nightly `afre` step** |
 
-⚠️ `afre` is loaded from a **CSV** (`similar_regime/data/china_afre_stock_yoy_monthly.csv`),
-which is written by `similar_regime/fetch_china_afre_stock_yoy_monthly.py` (Choice).
-`fetch_regime_indicators.py` only *reads* that CSV — it does **not** refresh it.
+`scripts/ma/fetch_afre_monthly.py` refreshes
+`similar_regime/data/china_afre_stock_yoy_monthly.csv` (and the money-credit copy).
+`fetch_regime_indicators.py` then loads that CSV into `macro_indicators_monthly`.
 
 > The regime model picks `current_month` = the latest month where **all 7 indicators**
 > are non-null. So if any single indicator lags (historically `afre`), the whole chart
@@ -90,16 +90,17 @@ Orchestrator: `scripts/ma/nightly_etl.py`. Relevant steps (run via `--step <name
 | Step name | Function | Output |
 |---|---|---|
 | `nhci` | `get_nanhua_index.py` (Choice) | `raw_nhci_daily` |
-| `etf_prices` | `get_etf_prices.py` (Choice) | `raw_etf_daily` |
+| `etf_prices` | `get_etf_prices.py` (Choice) — **gap-fills** from last PCA-ETF max → trade_date | `raw_etf_daily` |
 | `predict_market_cluster` / `_weekly` / `_monthly` | `predict_market_cluster.py` | `current_market_prediction` |
+| `afre` | `fetch_afre_monthly.py` (Choice EDB) | AFRE CSVs under `similar_regime/data/` + `money_credit/data/` |
 | `regime_indicators` | `fetch_regime_indicators.py` (akshare + AFRE CSV) | `macro_indicators_monthly` |
 | `regime_similarity` | `calc_regime_similarity.py` | `regime_*` tables |
 | `shibor_3m` | `fetch_shibor_3m.py` (akshare) | `shibor_3m_monthly` |
 | `money_credit` | `calc_money_credit.py` | `money_credit_cycle` |
 
-⚠️ **Gap:** `similar_regime/fetch_china_afre_stock_yoy_monthly.py` (the Choice AFRE fetch)
-is **NOT wired into `nightly_etl.py`**. The AFRE CSV must be refreshed manually (or a step
-should be added). This was the root cause of incident #1 below.
+**Python interpreter:** child scripts use `_resolve_python_exe()` — `PYTHON_EXE` env,
+else project `.venv`, else system python. Cron should source `.choice_env.sh` and/or set
+`PYTHON_EXE` to the venv that has `joblib` + `scikit-learn` (see `scripts/ma/requirements.txt`).
 
 ---
 
@@ -111,43 +112,67 @@ should be added). This was the root cause of incident #1 below.
 
 **Root cause:** `afre` (社融存量同比) was the only stale indicator in
 `macro_indicators_monthly` (latest `2026-02`; all others `2026-05`/`2026-06`). Source is
-**Choice** `c.edb("EMM00191807", ...)`. The function itself was fine — the AFRE CSV simply
-was never refreshed (no nightly step), so it was frozen since ~early March.
-- Regime model froze because it needs all 7 indicators present → capped at 2026-02.
-- Money-credit froze because it reads `macro_indicators_monthly.afre`.
+**Choice** `c.edb("EMM00191807", ...)`. The AFRE CSV simply was never refreshed (no nightly
+step), so it was frozen since ~early March.
 
-**Fix (commands run, in order):**
+**Fix:** wired nightly step `afre` → `fetch_afre_monthly.py`. Manual catch-up:
 ```bash
-py -3 similar_regime/fetch_china_afre_stock_yoy_monthly.py   # Choice → CSV (→ 2026-05)
-py -3 scripts/ma/fetch_regime_indicators.py                  # CSV + akshare → macro_indicators_monthly
-py -3 scripts/ma/calc_regime_similarity.py                   # → current_month 2026-05
-py -3 scripts/ma/calc_money_credit.py                        # → latest 2026-05
+py -3 scripts/ma/fetch_afre_monthly.py
+py -3 scripts/ma/fetch_regime_indicators.py
+py -3 scripts/ma/calc_regime_similarity.py
+py -3 scripts/ma/calc_money_credit.py
 ```
-Also copied the CSV to `money_credit/data/` for the standalone plot scripts.
 
 ### Incident #2 (2026-06-28) — PCA cluster charts frozen at 2026-06-18
 
 **Symptom:** 当前市场状态预测 / 经济象限 / PCA双标图 (cluster-based) stuck at `2026-06-18`.
 (资产收益 chart was fine — it reads raw prices directly.)
 
-**Root cause:** NOT a data-source issue. Raw inputs `raw_etf_daily` and `raw_nhci_daily`
-were fresh through `2026-06-26` (Choice). But the derived table `current_market_prediction`
-was stale at `2026-06-18` for all 3 freqs — the `predict_market_cluster.py` step had simply
-not run since 06-18.
+**Root cause:** Raw inputs fresh; derived `current_market_prediction` stale — predict step
+had not run.
 
-**Fix (commands run):**
+**Fix:**
 ```bash
 py -3 -u scripts/ma/predict_market_cluster.py --freq daily   2026-06-17 2026-06-27
 py -3 -u scripts/ma/predict_market_cluster.py --freq weekly  2026-06-01 2026-06-27
 py -3 -u scripts/ma/predict_market_cluster.py --freq monthly 2026-06-01 2026-06-27
 ```
-(Running `predict_market_cluster.py` WITHOUT `--no-save` upserts to DB. With explicit
-start/end it predicts that date range; with no args + save it recomputes ALL dates.)
 
-⚠️ Noted but not fixed: sklearn version mismatch warning — models in `economy/models/*.joblib`
-were trained with scikit-learn **1.8.0**, environment runs **1.7.2**
-(`InconsistentVersionWarning`). Can silently distort PCA/GMM output. Recommend pinning
-scikit-learn to the training version or re-saving the models.
+### Incident #3 (2026-07-12) — PCA charts frozen at 2026-07-03
+
+**Symptom:** PCA scatter / 经济象限 / biplot scores / timeseries stuck at `2026-07-03`
+while today was 2026-07-12. Asset returns already showed through `2026-07-10`.
+
+**Root cause:** Nightly cron used system `python3` **without `joblib`**. Every night since
+~2026-07-05, `predict_market_cluster*` failed with
+`{'error': 'joblib not installed. Run: pip install joblib'}` while `nhci` / `etf_prices`
+still succeeded. Raw tables were current; derived table was not.
+
+**Fix (code):**
+1. `_resolve_python_exe()` prefers project `.venv` for child scripts
+2. `scripts/ma/requirements.txt` + `setup_db.sh` installs joblib/sklearn and writes
+   `PYTHON_EXE` / cron that sources `.choice_env.sh`
+3. `etf_prices` gap-fills missed days (not single-day only)
+4. `afre` step added for regime / money-credit
+
+**Immediate catch-up (already run):**
+```bash
+py -3 -u scripts/ma/predict_market_cluster.py --freq daily   2026-07-04 2026-07-10
+py -3 -u scripts/ma/predict_market_cluster.py --freq weekly  2026-07-01 2026-07-10
+py -3 -u scripts/ma/predict_market_cluster.py --freq monthly 2026-07-01 2026-07-10
+```
+
+**Server follow-up (required for durable nightly):**
+```bash
+# on the Linux host
+cd /root/new_market_project   # or PROJECT_ROOT
+.venv/bin/python3 -m pip install -r scripts/ma/requirements.txt
+# ensure crontab uses .venv and sources .choice_env.sh (re-run setup_db.sh or edit cron)
+grep PYTHON_EXE .env .choice_env.sh
+```
+
+⚠️ sklearn version: models trained with **1.8.0**; pin close to that in the ETL venv
+(`scikit-learn>=1.7,<1.9` in requirements).
 
 ---
 
@@ -165,24 +190,23 @@ scikit-learn to the training version or re-saving the models.
    SELECT freq, max(trade_date) FROM current_market_prediction GROUP BY freq;
    SELECT ticker, max(trade_date) FROM raw_etf_daily WHERE field='ORIGINALUNIT' GROUP BY ticker;
    SELECT max(trade_date) FROM raw_nhci_daily;
+   -- ETL health
+   SELECT step_name, status, finished_at, error_message
+   FROM pipeline_runs
+   WHERE job_name='nightly_etl' AND step_name LIKE 'predict_market_cluster%'
+   ORDER BY finished_at DESC LIMIT 20;
    ```
 3. **Classify the failure:**
-   - **Raw table stale** → upstream fetch failed. Identify source from §2:
-     - **Choice/EmQuant** (`c.csd` ETF/NHCI, `c.edb` AFRE) → run the fetch script directly
-       and read the `[Em_*]` log lines / `ErrorCode`/`ErrorMsg`. Note the exact function +
-       code (e.g. `c.edb("EMM00191807", ...)`) so you can check Choice docs for API changes.
-     - **akshare** (PMI/M1/CPI/bond/SHIBOR) → run the matching fetcher; akshare endpoints
-       break often (e.g. SSL on mofcom). Check the function name in §2.
-     - **Tushare** → spot index closes (`get_spot_indices_close_tushare.py`).
-   - **Raw table fresh but derived table stale** → the compute/predict step didn't run.
-     Re-run the derived step (`predict_market_cluster.py`, `calc_regime_similarity.py`,
-     `calc_money_credit.py`).
-4. **Re-run the dependent derived steps** (predictions/similarity/cycle) after refreshing raw data.
+   - **Raw table stale** → upstream fetch failed. Identify source from §2.
+   - **Raw table fresh but derived table stale** → predict/compute step failed
+     (check `pipeline_runs.error_message` — often missing `joblib` / wrong Python).
+   - **Regime/money-credit stuck** → check **`afre`** first, then akshare indicators.
+4. **Re-run the dependent derived steps** after refreshing raw data.
 5. **Refresh the page** — `no-store` APIs will serve the new data immediately.
 
 ### Quick "which source failed" cheat sheet
-- Charts stuck but raw `raw_etf_daily`/`raw_nhci_daily` fresh → **predict step** (derived).
+- Charts stuck but raw `raw_etf_daily`/`raw_nhci_daily` fresh → **predict step** (derived / joblib).
 - Regime/money-credit stuck at an old month → check **`afre`** first (Choice `c.edb` `EMM00191807`),
   then the akshare indicators.
 - Everything stuck on the same recent date → likely the **whole nightly ETL** stopped
-  (check the scheduler / `etl_run_log` table / ETL logs).
+  (check the scheduler / `pipeline_runs` / `/var/log/market_etl.log`).

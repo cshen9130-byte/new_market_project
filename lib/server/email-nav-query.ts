@@ -129,8 +129,14 @@ export function isPlausibleEmailUnitNav(
 }
 
 /**
- * Recover unit NAV when parsers store 基金资产净值 (total AUM) in `nav` but
- * `cumulative_nav` holds the true per-unit value (SQU767 / BAH99A-style column bleed).
+ * Recover unit NAV when parsers store 基金资产净值 (total AUM) in `nav`.
+ *
+ * Priority when raw nav is implausible:
+ * 1. Subject hint (e.g. SBPC20 净值信息: nav=AUM, cum=true 累计, subject has 单位净值)
+ * 2. cumulative_nav as unit (SQU767 / BAH99A-style: cum column holds true per-unit NAV)
+ *
+ * Preferring subject before cum-as-unit is required so SBPC20 attachments keep
+ * post-dividend 累计 (cum > unit) instead of collapsing unit to cum.
  */
 export function recoverPlausibleEmailUnitNav(
   nav: number | null | undefined,
@@ -138,9 +144,11 @@ export function recoverPlausibleEmailUnitNav(
   subject?: string | null,
 ): number | null {
   if (nav != null && isPlausibleEmailUnitNav(nav, cumulativeNav)) return nav
+  const subjectHint = extractSubjectUnitNavHint(subject)
+  if (subjectHint != null) return subjectHint
   const cum = cumulativeNav ?? null
   if (cum != null && isPlausibleEmailUnitNav(cum, cum)) return cum
-  return extractSubjectUnitNavHint(subject)
+  return null
 }
 
 /** Parse unit NAV embedded in email subject (e.g. 单位净值为1.1386). */
@@ -174,13 +182,22 @@ function embeddedCodeMatchesBeian(code: string, beian: string): boolean {
   return code === beian || shareClassProductCodesMatch(code, beian)
 }
 
+function emailRowEffectiveUnitNav(row: EmailNavRawRow): number | null {
+  return recoverPlausibleEmailUnitNav(
+    parseOptionalNav(row.nav),
+    parseOptionalNav(row.cumulative_nav),
+    row.subject,
+  )
+}
+
 function emailRowHasAttachmentDividendOffset(row: EmailNavRawRow): boolean {
-  const nav = parseOptionalNav(row.nav)
+  const nav = emailRowEffectiveUnitNav(row)
   const cum = parseOptionalNav(row.cumulative_nav)
   return (
     nav != null
     && cum != null
     && isPlausibleEmailUnitNav(nav, cum)
+    && isPlausibleEmailCumulativeNav(nav, cum)
     && hasDividendOffset(nav, cum)
   )
 }
@@ -207,14 +224,14 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
     return candidateTier < currentTier ? candidate : current
   }
 
-  const currentPlausible = isPlausibleEmailUnitNav(
-    parseOptionalNav(current.nav),
-    parseOptionalNav(current.cumulative_nav),
-  )
-  const candidatePlausible = isPlausibleEmailUnitNav(
-    parseOptionalNav(candidate.nav),
-    parseOptionalNav(candidate.cumulative_nav),
-  )
+  const currentPlausible = (() => {
+    const unit = emailRowEffectiveUnitNav(current)
+    return unit != null && isPlausibleEmailUnitNav(unit, parseOptionalNav(current.cumulative_nav))
+  })()
+  const candidatePlausible = (() => {
+    const unit = emailRowEffectiveUnitNav(candidate)
+    return unit != null && isPlausibleEmailUnitNav(unit, parseOptionalNav(candidate.cumulative_nav))
+  })()
   if (currentPlausible !== candidatePlausible) {
     return candidatePlausible ? candidate : current
   }
@@ -224,9 +241,9 @@ export function preferEmailNavRow(current: EmailNavRawRow, candidate: EmailNavRa
   // This causes correction emails ("返账更正重发：净值更新") that supply the correct
   // ex-dividend unit + cum to win over earlier same-tier rows where nav == cum
   // (the original, pre-correction attachment data).
-  const currNav = parseOptionalNav(current.nav)
+  const currNav = emailRowEffectiveUnitNav(current)
   const currCumField = parseOptionalNav(current.cumulative_nav)
-  const candNav = parseOptionalNav(candidate.nav)
+  const candNav = emailRowEffectiveUnitNav(candidate)
   const candCumField = parseOptionalNav(candidate.cumulative_nav)
   const currentDistinct = currNav != null && currCumField != null
     && isPlausibleEmailUnitNav(currNav, currCumField)
@@ -483,12 +500,12 @@ function collectMultiShareClassNavRows(dayRows: EmailNavRawRow[], beian: string)
     return code === beianU || shareClassProductCodesMatch(code, beianU)
   })
   const plausible = related.filter((row) => {
-    const nav = parseOptionalNav(row.nav)
+    const nav = emailRowEffectiveUnitNav(row)
     return nav != null && isPlausibleEmailUnitNav(nav, parseOptionalNav(row.cumulative_nav))
   })
   if (plausible.length <= 1) return plausible
   const navs = plausible
-    .map((row) => parseOptionalNav(row.nav))
+    .map((row) => emailRowEffectiveUnitNav(row))
     .filter((nav): nav is number => nav != null)
     .sort((a, b) => a - b)
   if (navs.length <= 1) return plausible
@@ -504,32 +521,36 @@ function pickEmailNavRowWithContinuity(
   prevNav: number | null,
   aClass: boolean,
 ): EmailNavRawRow {
+  // Attachment with real post-dividend 累计 must not lose to virtual fee rows whose
+  // unit looks continuous but cum is wrong (SBPC20 AUM-as-nav attachments).
+  if (emailRowHasAttachmentDividendOffset(tierBest)) return tierBest
+
   const plausible = collectMultiShareClassNavRows(dayRows, beian)
   if (plausible.length <= 1) return tierBest
 
   if (prevNav == null || prevNav <= 0) {
     const navs = plausible
-      .map((row) => parseOptionalNav(row.nav))
+      .map((row) => emailRowEffectiveUnitNav(row))
       .filter((nav): nav is number => nav != null)
       .sort((a, b) => a - b)
     if (navs.length > 1 && navs[navs.length - 1] / navs[0] > 1.05) {
       const targetNav = aClass ? navs[0] : navs[navs.length - 1]
-      return plausible.find((row) => Math.abs(parseOptionalNav(row.nav)! - targetNav) < 0.000001) ?? tierBest
+      return plausible.find((row) => Math.abs(emailRowEffectiveUnitNav(row)! - targetNav) < 0.000001) ?? tierBest
     }
     const shareLetter = beian.slice(-1)
     if (!/[ABC]/.test(shareLetter)) return tierBest
     const targetNav = shareLetter === "A" ? navs[0] : navs[navs.length - 1]
-    return plausible.find((row) => Math.abs(parseOptionalNav(row.nav)! - targetNav) < 0.000001) ?? tierBest
+    return plausible.find((row) => Math.abs(emailRowEffectiveUnitNav(row)! - targetNav) < 0.000001) ?? tierBest
   }
 
   const continuityPick = plausible.reduce((best, row) => {
-    const nav = parseOptionalNav(row.nav)!
-    const bestNav = parseOptionalNav(best.nav)!
+    const nav = emailRowEffectiveUnitNav(row)!
+    const bestNav = emailRowEffectiveUnitNav(best)!
     return Math.abs(nav / prevNav - 1) < Math.abs(bestNav / prevNav - 1) ? row : best
   })
 
-  const tierNav = parseOptionalNav(tierBest.nav)
-  const contNav = parseOptionalNav(continuityPick.nav)
+  const tierNav = emailRowEffectiveUnitNav(tierBest)
+  const contNav = emailRowEffectiveUnitNav(continuityPick)
   if (tierNav == null || contNav == null) return tierBest
 
   const tierMove = Math.abs(tierNav / prevNav - 1)
@@ -625,24 +646,24 @@ function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): 
   let latestRatio: number | null = null
   return rows.map((row) => {
     let working = row
-    const unit = parseOptionalNav(working.nav)
+    let unit = parseOptionalNav(working.nav)
     let cum = parseOptionalNav(working.cumulative_nav)
+
+    // Recover AUM / wrong-column unit BEFORE judging 累计. Otherwise SBPC20-style rows
+    // (nav=基金资产净值, cum=true 累计) strip the good cum because cum << AUM.
+    if (unit != null && !isPlausibleEmailUnitNav(unit, cum)) {
+      const recovered = recoverPlausibleEmailUnitNav(unit, cum, working.subject)
+      if (recovered != null) {
+        working = { ...working, nav: String(+recovered.toFixed(6)) }
+        unit = recovered
+      }
+    }
+
     if (unit != null && cum != null && !isPlausibleEmailCumulativeNav(unit, cum)) {
       working = { ...working, cumulative_nav: null }
       cum = null
     }
-    if (unit != null && !isPlausibleEmailUnitNav(unit, cum)) {
-      const recovered = recoverPlausibleEmailUnitNav(unit, cum, working.subject)
-      if (recovered != null) {
-        if (
-          cum != null && cum - recovered > 0.05 && !isParentCodeEmailRow(working, beian)
-          && isPlausibleEmailCumulativeNav(recovered, cum)
-        ) {
-          latestRatio = recovered / cum
-        }
-        return { ...working, nav: String(+recovered.toFixed(6)) }
-      }
-    }
+
     if (
       unit != null && cum != null && cum - unit > 0.05 && !isParentCodeEmailRow(working, beian)
       && isPlausibleEmailCumulativeNav(unit, cum)
@@ -1314,11 +1335,21 @@ function isLikelyDividendExDate(
   const unitDrop = (prevUnit - unit) / prevUnit
   if (unitDrop < 0.015) return false
   const cumRef = currCum ?? unit
-  // Ex-div: unit drops sharply while cumulative NAV stays near its prior level (not down with unit).
+  if (!(unit < prevUnit * 0.985)) return false
+
+  // Classic: unit drops sharply while cumulative NAV stays near its prior level.
+  if (cumRef >= prevCum * 0.995 && cumRef <= prevCum * 1.05) return true
+
+  // Soft first ex-div (SBPC20 2026-06-11): unit collapses (~20%) while cum only dips a little
+  // and a post-dividend gap (cum > unit) appears. Without this, daily change uses the unit
+  // ratio (−19%) and syncExDivAdjustedNav never seeds adj > cum.
+  if (currCum == null) return false
+  const cumDrop = (prevCum - cumRef) / prevCum
   return (
-    unit < prevUnit * 0.985 &&
-    cumRef >= prevCum * 0.995 &&
-    cumRef <= prevCum * 1.05
+    unitDrop >= 0.10
+    && cumDrop < unitDrop * 0.35
+    && cumRef >= unit - 0.001
+    && hasDividendOffset(unit, cumRef)
   )
 }
 
@@ -1388,9 +1419,19 @@ function rechainDerivedFromPrev(
     const cumUnitGap = prevCumW - prevUnit
     // Prefer the already-known currCum; fall back to estimation only when absent.
     const cum = currCum ?? (cumUnitGap > 0.01 ? unit + cumUnitGap : prevCumW * unitRatio)
-    // Grow adj at the cumulative rate so the adj/cum ratio is preserved (≥ 1).
-    const adj = prevCumW > 0 ? prevAdj * cum / prevCumW : prevAdj * unitRatio
-    if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null
+    if (!isReasonableNav(cum)) return null
+    // Match syncExDivAdjustedNav: on first ex-div use unit-drop D so adj keeps a
+    // reinvestment premium above cum (gap-only D collapses adj to cum when cum dipped).
+    const gapD = (cum - unit) - (prevCumW - prevUnit)
+    const unitDropD = prevUnit - unit
+    const D_new =
+      !hasDividendOffset(prevUnit, prevCumW) && unitDropD > gapD + 0.001
+        ? unitDropD
+        : gapD
+    const adjFromReinvest = prevAdj * (unit + D_new) / prevUnit
+    const adjFromCumRatio = prevCumW > 0 ? prevAdj * cum / prevCumW : prevAdj * unitRatio
+    const adj = Math.max(adjFromReinvest, adjFromCumRatio, cum)
+    if (!isReasonableNav(adj)) return null
     return { cum: String(+cum.toFixed(6)), adj: String(+adj.toFixed(6)) }
   }
 
@@ -1466,11 +1507,21 @@ function syncExDivAdjustedNav(rows: LegacyNavRow[]): LegacyNavRow[] {
     ) {
       continue
     }
-    // Skip if adj is already valid (correctly above cum) — trust seed/email values.
+    // Skip only when adj already has a true reinvestment premium above cum.
+    // Email often copies cum into adj (adj == cum) — that must not block the formula.
     const existingAdj = parseOptionalNav(curr.cumulative_nav)
-    if (existingAdj != null && existingAdj >= cum) continue
-    // D_new = newly distributed dividend per unit = increase in (cum - unit) gap
-    const D_new = (cum - unit) - (prevCum - prevUnit)
+    if (existingAdj != null && existingAdj > cum + 0.001) continue
+
+    // D_new = newly distributed dividend per unit = increase in (cum - unit) gap.
+    // On the *first* ex-div (prev had unit ≈ cum), gap-based D understates the cash
+    // dividend when cum also dips slightly — use the unit drop so adj stays near prevAdj
+    // (reinvested), producing adj > cum (SBPC20 Jun 11 → reference adj/cum ≈ 1.025).
+    const gapD = (cum - unit) - (prevCum - prevUnit)
+    const unitDropD = prevUnit - unit
+    const D_new =
+      !hasDividendOffset(prevUnit, prevCum) && unitDropD > gapD + 0.001
+        ? unitDropD
+        : gapD
     const newAdj = +(prevAdj * (unit + D_new) / prevUnit).toFixed(6)
     if (isReasonableNav(newAdj) && newAdj >= cum) {
       curr.cumulative_nav = String(newAdj)
@@ -1638,6 +1689,19 @@ export function sanitizeMisassignedUnitNavRows(rows: LegacyNavRow[]): LegacyNavR
     const nextAdj = parseOptionalNav(next.cumulative_nav)
     if (prevUnit == null || prevUnit <= 0 || nextUnit == null || nextUnit <= 0 || nextCum == null) continue
 
+    // Post-dividend neighbors with a mild unit bridge and no middle spike —
+    // middle row needs cum rechain, not unit reassignment (SBPC20 Jul 2 regression).
+    if (
+      prevCum != null &&
+      hasDividendOffset(prevUnit, prevCum) &&
+      hasDividendOffset(nextUnit, nextCum) &&
+      Math.abs(nextUnit / prevUnit - 1) <= 0.02 &&
+      Math.abs(currUnit / prevUnit - 1) < 0.05 &&
+      Math.abs(currUnit / nextUnit - 1) < 0.05
+    ) {
+      continue
+    }
+
     const nextRatio = nextAdj != null && nextAdj > nextUnit * 1.001
       ? nextAdj / nextUnit
       : nextCum / nextUnit
@@ -1687,6 +1751,8 @@ function sanitizeVShapeNavOutliers(rows: LegacyNavRow[]): LegacyNavRow[] {
 
     const prevCum = parseOptionalNav(prev.cum_nav_withdrawal) ?? parseOptionalNav(prev.cumulative_nav)
     const currCum = parseOptionalNav(curr.cum_nav_withdrawal) ?? parseOptionalNav(curr.cumulative_nav)
+    const nextCum = parseOptionalNav(next.cum_nav_withdrawal) ?? parseOptionalNav(next.cumulative_nav)
+    const unitBridge = Math.abs(nextUnit / prevUnit - 1)
     if (
       prevCum != null && currCum != null &&
       isLikelyDividendExDate(prevUnit, currUnit, prevCum, currCum)
@@ -1694,7 +1760,23 @@ function sanitizeVShapeNavOutliers(rows: LegacyNavRow[]): LegacyNavRow[] {
       continue
     }
 
-    const unitBridge = Math.abs(nextUnit / prevUnit - 1)
+    const isCollapsedCumBetweenPostDiv =
+      prevCum != null && currCum != null && nextCum != null &&
+      hasDividendOffset(prevUnit, prevCum) &&
+      hasDividendOffset(nextUnit, nextCum) &&
+      !hasDividendOffset(currUnit, currCum) &&
+      unitBridge <= 0.02 &&
+      Math.abs(currUnit / prevUnit - 1) < OUTLIER_THRESHOLD &&
+      Math.abs(currUnit / nextUnit - 1) < OUTLIER_THRESHOLD
+    if (isCollapsedCumBetweenPostDiv) {
+      const rechained = rechainDerivedFromPrev(prev, currUnit, currCum)
+      if (rechained) {
+        curr.cum_nav_withdrawal = rechained.cum
+        curr.cumulative_nav = rechained.adj
+      }
+      continue
+    }
+
     const unitDevPrev = Math.abs(currUnit / prevUnit - 1)
     const unitDevNext = Math.abs(currUnit / nextUnit - 1)
     const isUnitVShape =
@@ -1893,6 +1975,15 @@ function refreshStaleDerivedFields(rows: LegacyNavRow[]): LegacyNavRow[] {
       continue
     }
 
+    // Ex-div with adj already carrying a reinvestment premium — do not treat flat adj as stale.
+    if (
+      prevCum != null && cum != null &&
+      isLikelyDividendExDate(prevUnit, unit, prevCum, cum) &&
+      adj != null && adj > cum + 0.001
+    ) {
+      continue
+    }
+
     // Pass cum_nav_withdrawal as currCum so that on ex-dividend dates (unit dropped while
     // cumulative correctly stayed flat) isLikelyDividendExDate detects the event and preserves
     // the cumulative NAV instead of overwriting it with the dropped unit NAV.
@@ -2059,6 +2150,18 @@ function finalizeNavSeries(
   return recomputeNavPriceChanges(out)
 }
 
+function legacyCumCollapsedButAdjShowsPostDiv(
+  unit: number,
+  cumNavWithdrawal: number | null,
+  cumulativeNav: number | null,
+): boolean {
+  if (cumNavWithdrawal == null || cumulativeNav == null) return false
+  if (!isReasonableNav(unit) || !isReasonableNav(cumNavWithdrawal) || !isReasonableNav(cumulativeNav)) {
+    return false
+  }
+  return !hasDistinctCumulative(unit, cumNavWithdrawal) && hasDividendOffset(unit, cumulativeNav)
+}
+
 function emailUnitOnlyNeedsRechain(
   existing: LegacyNavRow,
   resolvedUnitNav: number,
@@ -2073,6 +2176,10 @@ function emailUnitOnlyNeedsRechain(
 
   const existingCum = parseOptionalNav(existing.cum_nav_withdrawal)
   const existingAdj = parseOptionalNav(existing.cumulative_nav)
+  if (legacyCumCollapsedButAdjShowsPostDiv(resolvedUnitNav, existingCum, existingAdj)) {
+    return true
+  }
+
   const expected = rechainDerivedFromPrev(prevRow, resolvedUnitNav)
   if (!expected) return false
 
@@ -2164,7 +2271,26 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
         updated.cum_nav_withdrawal = ""
         updated.cumulative_nav = ""
         unitOnlyEmailDates.add(row.price_date)
+      } else if (
+        resolvedCum == null
+        && prevRow != null
+        && (() => {
+          const prevUnit = parseOptionalNav(prevRow.nav)
+          const prevCum = parseOptionalNav(prevRow.cum_nav_withdrawal) ?? parseOptionalNav(prevRow.cumulative_nav)
+          return prevUnit != null && prevCum != null && hasDividendOffset(prevUnit, prevCum)
+        })()
+      ) {
+        // Post-dividend email confirmed unit only — legacy cum/adj may be collapsed or stale.
+        updated.cumulative_nav = ""
+        unitOnlyEmailDates.add(row.price_date)
       } else if (emailUnitOnlyNeedsRechain(existing, resolvedUnitNav, prevRow)) {
+        if (legacyCumCollapsedButAdjShowsPostDiv(
+          resolvedUnitNav,
+          parseOptionalNav(updated.cum_nav_withdrawal),
+          parseOptionalNav(updated.cumulative_nav),
+        )) {
+          updated.cumulative_nav = ""
+        }
         unitOnlyEmailDates.add(row.price_date)
       }
       byDate.set(row.price_date, updated)

@@ -50,6 +50,7 @@ type ApiResponse = {
   distribution: DistributionRow[]
   recent36: Recent36Row[]
   stateSpace: StateSpaceRow[]
+  data_note?: string | null
 }
 
 // ── Colours ───────────────────────────────────────────────────────────────────
@@ -369,6 +370,9 @@ export default function MoneyCreditChart() {
             </span>
           </div>
         </div>
+      )}
+      {data.data_note && (
+        <p className="-mt-3 text-xs text-amber-700 dark:text-amber-400">{data.data_note}</p>
       )}
 
       {/* Tab selector */}

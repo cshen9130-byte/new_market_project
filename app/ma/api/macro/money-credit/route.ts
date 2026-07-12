@@ -29,6 +29,21 @@ export async function GET() {
        ORDER BY month ASC`
     )
 
+    const freshness = await query<{
+      afre: Date | string | null
+      shibor: Date | string | null
+    }>(`
+      SELECT
+        (SELECT MAX(month) FROM macro_indicators_monthly WHERE afre IS NOT NULL) AS afre,
+        (SELECT MAX(month) FROM shibor_3m_monthly) AS shibor
+    `)
+    const afreYm = freshness[0]?.afre
+      ? String(freshness[0].afre).slice(0, 7)
+      : null
+    const shiborYm = freshness[0]?.shibor
+      ? String(freshness[0].shibor).slice(0, 7)
+      : null
+
     if (rows.length === 0) {
       return NextResponse.json({
         current: null,
@@ -36,6 +51,8 @@ export async function GET() {
         distribution: [],
         recent36: [],
         stateSpace: [],
+        data_note: null,
+        indicator_latest: { afre: afreYm, shibor: shiborYm },
       })
     }
 
@@ -95,12 +112,19 @@ export async function GET() {
         quadrant: r.quadrant,
       }))
 
+    const dataNote =
+      current && afreYm && shiborYm && afreYm < shiborYm
+        ? `当期停在 ${current.date}：等待社融存量同比官方更新（SHIBOR 已到 ${shiborYm}；Choice 社融最新 ${afreYm}）`
+        : null
+
     return NextResponse.json({
       current,
       timeseries,
       distribution,
       recent36,
       stateSpace,
+      data_note: dataNote,
+      indicator_latest: { afre: afreYm, shibor: shiborYm },
     })
   } catch (err) {
     console.error("[money-credit API]", err)

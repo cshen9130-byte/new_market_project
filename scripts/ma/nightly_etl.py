@@ -101,6 +101,51 @@ def get_conn():
 # ── Script runner ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
+
+# Model-input ETFs for PCA / GMM market prediction
+PCA_ETF_TICKERS = [
+    "510300.SH",
+    "510500.SH",
+    "511010.SH",
+    "511220.SH",
+    "511880.SH",
+    "518880.SH",
+]
+
+
+def _resolve_python_exe() -> str:
+    """Prefer PYTHON_EXE, then project .venv, then platform default.
+
+    Nightly cron historically used system python3 (no joblib/sklearn), which
+    silently broke predict_market_cluster while EmQuant fetch steps still worked.
+    """
+    env_exe = (os.environ.get("PYTHON_EXE") or "").strip()
+    if env_exe and env_exe not in ("py", "python", "python3"):
+        return env_exe
+    if env_exe in ("py", "python", "python3"):
+        # Explicit bare name — still prefer venv if present
+        pass
+
+    if sys.platform == "win32":
+        venv_candidates = [
+            PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
+            PROJECT_ROOT / "venv" / "Scripts" / "python.exe",
+        ]
+    else:
+        venv_candidates = [
+            PROJECT_ROOT / ".venv" / "bin" / "python3",
+            PROJECT_ROOT / ".venv" / "bin" / "python",
+            PROJECT_ROOT / "venv" / "bin" / "python3",
+            PROJECT_ROOT / "venv" / "bin" / "python",
+        ]
+    for cand in venv_candidates:
+        if cand.is_file():
+            return str(cand)
+
+    if env_exe:
+        return env_exe
+    return "py" if sys.platform == "win32" else "python3"
 
 
 def run_script(
@@ -116,9 +161,7 @@ def run_script(
     if extra_env:
         env.update(extra_env)
 
-    python_exe = os.environ.get("PYTHON_EXE") or (
-        "py" if sys.platform == "win32" else "python3"
-    )
+    python_exe = _resolve_python_exe()
     prefix = ["py", "-3"] if sys.platform == "win32" and python_exe == "py" else [python_exe]
     cmd = prefix + [str(script_path)] + (extra_args or [])
 
@@ -1866,26 +1909,57 @@ def step_compute_basis_cont_daily(conn, *, force: bool = False) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def step_etf_prices(conn, trade_date: date, *, force: bool = False) -> int:
-    """Fetch ORIGINALUNIT prices for the 6 model-input ETFs for one trade_date."""
+    """Fetch ORIGINALUNIT prices for the 6 model-input ETFs through trade_date.
+
+    Gap-fills from the day after the oldest PCA-ETF max date so a missed nightly
+    run does not leave multi-day holes that block predict_market_cluster.
+    """
     if not force:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT COUNT(DISTINCT ticker) FROM raw_etf_daily WHERE trade_date = %s",
-                (trade_date,),
+                """
+                SELECT COUNT(DISTINCT ticker) FROM raw_etf_daily
+                WHERE trade_date = %s AND field = 'ORIGINALUNIT'
+                  AND ticker = ANY(%s)
+                """,
+                (trade_date, PCA_ETF_TICKERS),
             )
             count = cur.fetchone()[0]
         if count >= 6:
-            log.info("ETF prices for %s already in DB (%d tickers), skipping.", trade_date, count)
+            log.info("ETF prices for %s already in DB (%d PCA tickers), skipping.", trade_date, count)
             return 0
 
-    log.info("Fetching ETF prices for %s …", trade_date)
-    out = run_script("get_etf_prices.py", extra_args=[iso(trade_date), iso(trade_date)])
+    start = trade_date
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MIN(max_d) FROM (
+                SELECT ticker, MAX(trade_date) AS max_d
+                FROM raw_etf_daily
+                WHERE field = 'ORIGINALUNIT' AND ticker = ANY(%s)
+                GROUP BY ticker
+            ) t
+            """,
+            (PCA_ETF_TICKERS,),
+        )
+        row = cur.fetchone()
+        cur_max = row[0] if row else None
+    if cur_max and cur_max < trade_date and not force:
+        # Catch up multi-day gaps after a missed/failed nightly run
+        start = cur_max + timedelta(days=1)
+
+    log.info("Fetching ETF prices %s → %s …", start, trade_date)
+    out = run_script(
+        "get_etf_prices.py",
+        extra_args=[iso(start), iso(trade_date)],
+        timeout=300,
+    )
     if not out or out.get("error"):
         raise RuntimeError(f"ETF price fetch failed: {out}")
 
     items = out.get("data") or []
     if not items:
-        log.warning("ETF prices: no data returned for %s.", trade_date)
+        log.warning("ETF prices: no data returned for %s → %s.", start, trade_date)
         return 0
 
     records = [
@@ -1905,7 +1979,7 @@ def step_etf_prices(conn, trade_date: date, *, force: bool = False) -> int:
             records,
         )
     conn.commit()
-    log.info("ETF prices: upserted %d rows for %s.", len(records), trade_date)
+    log.info("ETF prices: upserted %d rows (%s → %s).", len(records), start, trade_date)
     return len(records)
 
 
@@ -2089,6 +2163,17 @@ def latest_trade_date() -> date:
 
 
 JOB_NAME = "nightly_etl"
+
+def step_afre(conn, *, force: bool = False) -> int:
+    """Refresh 社融存量同比 CSV via Choice EDB (feeds regime + money-credit)."""
+    log.info("Fetching AFRE (社融存量同比) …")
+    result = run_script("fetch_afre_monthly.py", timeout=180)
+    if not result or result.get("error"):
+        raise RuntimeError(f"AFRE fetch failed: {result}")
+    count = int(result.get("count") or 0)
+    log.info("AFRE: wrote %d rows (latest=%s).", count, result.get("latest"))
+    return count
+
 
 def step_regime_indicators(conn, *, force: bool = False) -> int:
     """Fetch monthly macro indicators (PMI, M1, CPI, bond yields, NHCI) into DB."""
@@ -2698,11 +2783,12 @@ ORDERED_STEPS = [
     "derive_basis",
     "derive_basis_cont",
     "repair_settle_returns",
-    "etf_prices",                    # nightly: today only
+    "etf_prices",                    # nightly: gap-fill PCA ETF prices → trade_date
     "etf_extended_backfill",         # on-demand: re-fetch 2 years of ETF history
     "predict_market_cluster",        # daily
     "predict_market_cluster_weekly",
     "predict_market_cluster_monthly",
+    "afre",                          # Choice EDB 社融存量同比 → CSV (regime + money-credit)
     "regime_indicators",             # monthly macro indicators for regime model
     "regime_similarity",             # compute economic regime similarity
     "shibor_3m",                     # monthly SHIBOR 3M data
@@ -2778,6 +2864,7 @@ def main():
 
     log.info("=" * 60)
     log.info("Nightly ETL starting  (pid=%d)", os.getpid())
+    log.info("Python for child scripts: %s", _resolve_python_exe())
     log.info("=" * 60)
 
     if args.date:
@@ -2823,6 +2910,7 @@ def main():
         "predict_market_cluster":          lambda: step_predict_market_cluster(conn, None, freq="daily",   force=force),
         "predict_market_cluster_weekly":   lambda: step_predict_market_cluster(conn, None, freq="weekly",  force=force),
         "predict_market_cluster_monthly":  lambda: step_predict_market_cluster(conn, None, freq="monthly", force=force),
+        "afre":                            lambda: step_afre(conn, force=force),
         "regime_indicators":               lambda: step_regime_indicators(conn, force=force),
         "regime_similarity":               lambda: step_regime_similarity(conn),
         "shibor_3m":                       lambda: step_shibor_3m(conn, force=force),

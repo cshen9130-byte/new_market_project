@@ -399,6 +399,206 @@ const sbpc708le = sbpcLegacyEmail.find((r) => r.price_date === "2026-07-08")
 assert("SBPC20 legacy+email 0708 cum ~1.3696", Math.abs(parseFloat(sbpc708le.cum_nav_withdrawal) - 1.3696) < 0.001)
 assert("SBPC20 legacy+email 0708 cum > unit", parseFloat(sbpc708le.cum_nav_withdrawal) > parseFloat(sbpc708le.nav) + 0.05)
 
+// SBPC20 Jul 2-3: attachment unit=cum must rechain 累计; Jul 3 must not show +15% cliff
+const sbpc20Jul2Rows = [
+  {
+    nav_date: "2026-07-02",
+    nav: "1.185500",
+    cumulative_nav: "1.185500",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20_六妙星九紫一号_20260702.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-02，单位净值为1.1855",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-02",
+    nav: "1.185500",
+    cumulative_nav: "1.095400",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_衡颐海泰1号私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-02.xls",
+    source: "body_table",
+  },
+]
+const sbpc20Jul3Rows = [
+  {
+    nav_date: "2026-07-03",
+    nav: "1.160600",
+    cumulative_nav: "1.373700",
+    adjusted_nav: "1.373700",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20_六妙星九紫一号_20260703.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-03，单位净值为1.1606",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-03",
+    nav: "1.160600",
+    cumulative_nav: "1.095400",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_衡颐海泰1号私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-03.xls",
+    source: "body_table",
+  },
+]
+const sbpcJul1Email = { price_date: "2026-07-01", nav: "1.180500", cumulative_nav: "1.393600", adjusted_nav: "1.393600" }
+const sbpcJul2Email = { price_date: "2026-07-02", nav: "1.185500", cumulative_nav: "1.185500", adjusted_nav: null }
+const sbpcJul3Email = { price_date: "2026-07-03", nav: "1.160600", cumulative_nav: "1.373700", adjusted_nav: "1.373700" }
+const sbpcJul2Legacy = [
+  { price_date: "2026-07-01", nav: "1.1805", cum_nav_withdrawal: "1.3936", cumulative_nav: "1.3936", price_change: "" },
+  { price_date: "2026-07-02", nav: "1.1855", cum_nav_withdrawal: "1.1855", cumulative_nav: "1.1855", price_change: "" },
+]
+const sbpcJul23Merged = mergeNavSeriesWithEmail(sbpcJul2Legacy, [sbpcJul1Email, sbpcJul2Email, sbpcJul3Email])
+const sbpc702 = sbpcJul23Merged.find((r) => r.price_date === "2026-07-02")
+const sbpc703 = sbpcJul23Merged.find((r) => r.price_date === "2026-07-03")
+assert("SBPC20 merged 0702 cum > unit", parseFloat(sbpc702.cum_nav_withdrawal) > parseFloat(sbpc702.nav) + 0.05)
+assert("SBPC20 merged 0702 cum ~1.3986", Math.abs(parseFloat(sbpc702.cum_nav_withdrawal) - 1.3986) < 0.002)
+const sbpc703Chg = parseFloat(sbpc703.price_change)
+assert("SBPC20 merged 0703 daily change sane", Math.abs(sbpc703Chg + 1.8) < 0.5)
+
+// SBPC20 live: attachment stores AUM as nav + correct 累计; subject has unit; virtual has wrong cum
+const sbpc20AumJul2Rows = [
+  {
+    nav_date: "2026-07-02",
+    nav: "4650928.290000",
+    cumulative_nav: "1.398600",
+    adjusted_nav: "1.398600",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20_六妙星九紫一号_20260702.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-02，单位净值：1.1855",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-02",
+    nav: "1805869.070000",
+    cumulative_nav: "1.398600",
+    adjusted_nav: "1.398600",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20_六妙星九紫一号_20260702.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-02，单位净值：1.1855",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-02",
+    nav: "1.185500",
+    cumulative_nav: "1.155300",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_国泰海通金舆基石一号私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-02.xls",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-07-02",
+    nav: "1.185500",
+    cumulative_nav: "1.113000",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_衡颐海泰1号私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-02.xls",
+    source: "body_table",
+  },
+  {
+    nav_date: "2026-07-02",
+    nav: "1.185500",
+    cumulative_nav: "1.119600",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_荣熙共赢私募证券投资基金_SBPC20_六妙星九紫一号私募证券投资基金_2026-07-02.xls",
+    source: "body_table",
+  },
+]
+const sbpc20AumSelected = selectEmailNavSeriesRows(sbpc20AumJul2Rows, "SBPC20", ["六妙星九紫一号"])
+const sbpcAum702 = sbpc20AumSelected.find((r) => r.nav_date === "2026-07-02")
+assert("SBPC20 AUM attachment recovers unit ~1.1855", Math.abs(parseFloat(sbpcAum702.nav) - 1.1855) < 0.001)
+assert("SBPC20 AUM attachment keeps cum ~1.3986", Math.abs(parseFloat(sbpcAum702.cumulative_nav) - 1.3986) < 0.001)
+
+const sbpc20AumSeries = [
+  {
+    nav_date: "2026-07-01",
+    nav: "4650928.290000",
+    cumulative_nav: "1.393600",
+    adjusted_nav: "1.393600",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-01，单位净值：1.1805",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-01",
+    nav: "1.180500",
+    cumulative_nav: "1.109900",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_衡颐海泰1号_SBPC20_六妙星九紫一号_2026-07-01.xls",
+    source: "body_table",
+  },
+  ...sbpc20AumJul2Rows,
+  {
+    nav_date: "2026-07-03",
+    nav: "1.160600",
+    cumulative_nav: "1.373700",
+    adjusted_nav: "1.373700",
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: "SBPC20.xls",
+    subject: "【净值信息】SBPC20_六妙星九紫一号私募证券投资基金_2026-07-03，单位净值：1.1606",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-03",
+    nav: "1.160600",
+    cumulative_nav: "1.098300",
+    adjusted_nav: null,
+    product_code: "SBPC20",
+    fund_name: "六妙星九紫一号私募证券投资基金",
+    attachment_filename: null,
+    subject: "虚拟业绩报酬_衡颐海泰1号_SBPC20_六妙星九紫一号_2026-07-03.xls",
+    source: "body_table",
+  },
+]
+const sbpcAumLiveSelected = selectEmailNavSeriesRows(sbpc20AumSeries, "SBPC20", ["六妙星九紫一号"])
+const sbpcAumLiveMerged = mergeNavSeriesWithEmail([], sbpcAumLiveSelected.map((r) => ({
+  price_date: r.nav_date,
+  nav: r.nav,
+  cumulative_nav: r.cumulative_nav,
+  adjusted_nav: r.adjusted_nav,
+})))
+const sbpcLive702 = sbpcAumLiveMerged.find((r) => r.price_date === "2026-07-02")
+const sbpcLive703 = sbpcAumLiveMerged.find((r) => r.price_date === "2026-07-03")
+assert("SBPC20 live AUM Jul2 cum ~1.3986", Math.abs(parseFloat(sbpcLive702.cum_nav_withdrawal) - 1.3986) < 0.002)
+assert("SBPC20 live AUM Jul2 cum > unit", parseFloat(sbpcLive702.cum_nav_withdrawal) > parseFloat(sbpcLive702.nav) + 0.05)
+assert("SBPC20 live AUM Jul3 change not +15%", Math.abs(parseFloat(sbpcLive703.price_change)) < 5)
+
+// SBPC20 Jun 11 first ex-div: cum dips slightly with unit collapse — must seed adj > cum and soft daily change
+const sbpcExDivLegacy = [
+  { price_date: "2026-06-10", nav: "1.2419", cum_nav_withdrawal: "1.2419", cumulative_nav: "1.2419", price_change: "" },
+  { price_date: "2026-06-11", nav: "1.0000", cum_nav_withdrawal: "1.2131", cumulative_nav: "1.2131", price_change: "" },
+  { price_date: "2026-06-12", nav: "1.0160", cum_nav_withdrawal: "1.2291", cumulative_nav: "1.2291", price_change: "" },
+]
+const sbpcExDivOut = mergeNavSeriesWithEmail(sbpcExDivLegacy, [])
+const sbpc0611 = sbpcExDivOut.find((r) => r.price_date === "2026-06-11")
+const sbpc0612 = sbpcExDivOut.find((r) => r.price_date === "2026-06-12")
+assert("SBPC20 Jun11 daily not unit cliff", Math.abs(parseFloat(sbpc0611.price_change)) < 5)
+assert("SBPC20 Jun11 adj > cum", parseFloat(sbpc0611.cumulative_nav) > parseFloat(sbpc0611.cum_nav_withdrawal) + 0.01)
+assert("SBPC20 Jun12 keeps adj/cum premium", parseFloat(sbpc0612.cumulative_nav) / parseFloat(sbpc0612.cum_nav_withdrawal) > 1.01)
+
 // BDW42B: parent SBDW42 attachment publishes A/B share-class NAVs on the same date (~1.09 vs ~1.45).
 const bdw42bRows = [
   {

@@ -83,9 +83,62 @@ export async function GET() {
     const cur = currentRows[0]
     const top20Set = new Set(top20Rows.map((r) => fmtIso(r.similar_month).slice(0, 7)))
 
+    // Per-indicator freshness — current_month is the latest month where ALL are non-null
+    const freshnessRows = await query<{
+      pmi: Date | string | null
+      m1: Date | string | null
+      cpi: Date | string | null
+      afre: Date | string | null
+      nhci: Date | string | null
+      yield_10y: Date | string | null
+      spread_10y1y: Date | string | null
+    }>(`
+      SELECT
+        MAX(month) FILTER (WHERE pmi IS NOT NULL) AS pmi,
+        MAX(month) FILTER (WHERE m1 IS NOT NULL) AS m1,
+        MAX(month) FILTER (WHERE cpi IS NOT NULL) AS cpi,
+        MAX(month) FILTER (WHERE afre IS NOT NULL) AS afre,
+        MAX(month) FILTER (WHERE nhci IS NOT NULL) AS nhci,
+        MAX(month) FILTER (WHERE yield_10y IS NOT NULL) AS yield_10y,
+        MAX(month) FILTER (WHERE spread_10y1y IS NOT NULL) AS spread_10y1y
+      FROM macro_indicators_monthly
+    `)
+    const fr = freshnessRows[0]
+    const ym = (d: Date | string | null | undefined) =>
+      d == null ? null : fmtIso(d).slice(0, 7)
+    const currentMonth = cur ? fmtIso(cur.current_month).slice(0, 7) : null
+    const indicatorLatest = {
+      pmi: ym(fr?.pmi),
+      m1: ym(fr?.m1),
+      cpi: ym(fr?.cpi),
+      afre: ym(fr?.afre),
+      nhci: ym(fr?.nhci),
+      yield_10y: ym(fr?.yield_10y),
+      spread_10y1y: ym(fr?.spread_10y1y),
+    }
+    const newestAmong = Object.values(indicatorLatest).filter(Boolean).sort().at(-1) ?? null
+    const nameMap: Record<string, string> = {
+      afre: "社融存量同比",
+      m1: "M1同比",
+      pmi: "PMI",
+      cpi: "CPI",
+      nhci: "南华工业品",
+      yield_10y: "10Y收益率",
+      spread_10y1y: "期限利差",
+    }
+    const blocking = Object.entries(indicatorLatest)
+      .filter(([, m]) => m && newestAmong && m < newestAmong)
+      .map(([k]) => k)
+
     return NextResponse.json({
       run_date: runDate,
-      current_month: cur ? fmtIso(cur.current_month).slice(0, 7) : null,
+      current_month: currentMonth,
+      indicator_latest: indicatorLatest,
+      blocking_indicators: blocking,
+      data_note:
+        blocking.length && newestAmong && currentMonth && currentMonth < newestAmong
+          ? `当期停在 ${currentMonth}：等待 ${blocking.map((k) => nameMap[k] ?? k).join("、")} 官方更新（其他指标已到 ${newestAmong}）`
+          : null,
       current_zscores: cur
         ? {
             pmi_chg:    n(cur.pmi_chg_z),

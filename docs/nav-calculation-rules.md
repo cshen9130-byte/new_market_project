@@ -1610,6 +1610,116 @@ npx tsx scripts/ma/_fix_sbfm35.ts
 
 ---
 
+## What Was Fixed (六妙星九紫一号 — SBPC20, 2026-07-12 — Jul 2 unit=cum collapse + Jul 3 +15% cliff regression)
+
+### The Problem
+
+Fund detail for **六妙星九紫一号 (SBPC20)** regressed after the **SBFM35** fix:
+
+| Date | Shown (wrong) | Expected |
+|---|---|---|
+| 2026-07-02 | unit **1.1855**, cum **1.1855**, adj **1.1855** | unit **1.1855**, cum **~1.3986**, adj **~1.3986** |
+| 2026-07-03 | daily change **+15.88%** | daily change **~-2%** (cum-on-cum) |
+
+The Jul 2 cliff appeared only when **Jul 3** email was present (3-row series); Jul 2 alone merged correctly.
+
+### Root Cause
+
+Not the SBFM35 `emailNavLooksLikeCumulativeNotUnit` threshold (`0.995` → `1.05`) — that change is safe for SBPC20.
+
+The regression was in **`sanitizeMisassignedUnitNavRows`** inside `finalizeNavSeries`:
+
+1. Jul 2 legacy row had **collapsed** `cum_nav_withdrawal` (= unit) while email confirmed unit **1.1855** without distinct cum → `unitOnlyEmailDates` correctly set.
+2. With Jul 3 present, `sanitizeMisassignedUnitNavRows` treated Jul 2 (unit=cum) as a misassigned ex-div row and rewrote unit to `currCum / (nextCum/nextUnit)` ≈ **1.0017**.
+3. `sanitizeVShapeNavOutliers` then saw a V-shaped **unit** dip and restored unit to **prevUnit = 1.1805** (Jul 1 level).
+4. `refreshDerivedForEmailRows` rechained cum from unit **1.1805**, producing cum **1.3936** (Jul 1 cum, not Jul 2's correct **~1.3986**).
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Skip misassigned-unit fix on mild post-div middle rows | `sanitizeMisassignedUnitNavRows` | When neighbors both carry post-div cum>unit and middle unit moves mildly (<5% vs each neighbor), skip ratio-based unit fix — let cum rechain handle it |
+| Collapsed cum between post-div neighbors | `sanitizeVShapeNavOutliers` | Detect middle row with unit≈cum sandwiched between post-div rows; rechain cum/adj from prev |
+| Force unit-only rechain after ex-div anchor | `mergeNavSeriesWithEmail` | When email supplies unit only and prior row has dividend offset, always add `unitOnlyEmailDates` and clear stale legacy 复权 |
+| Split-field legacy detection | `emailUnitOnlyNeedsRechain`, `legacyCumCollapsedButAdjShowsPostDiv` | When `cum_nav_withdrawal` collapsed but `cumulative_nav` still shows post-div, always rechain |
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 | 涨跌幅 |
+|---|---|---|---|---|
+| 2026-07-02 | 1.1855 | ~1.3986 | ~1.3986 | ~+0.42% |
+| 2026-07-03 | 1.1606 | 1.3737 | 1.3737 | ~-2.1% (cum ratio) |
+
+### Follow-up (2026-07-12 live DB — AUM-as-nav attachments)
+
+**Still wrong on production UI after the finalize-path fix** because live email rows for Jun–Jul store **基金资产净值 (AUM)** in `nav` (e.g. `4650928.29`) while subject carries `单位净值：1.1855` and `cumulative_nav` is the true 累计 (`1.3986`).
+
+Additional root causes:
+
+1. **`emailRowHasAttachmentDividendOffset` used raw AUM nav** → attachment never counted as post-div → virtual `虚拟业绩报酬` (tier −1) won.
+2. **`applyEmailUnitNavCorrection` stripped cum before recovering unit** → `cum << AUM` looked implausible → good 累计 wiped.
+3. **`pickEmailNavRowWithContinuity` saw AUM as a >15% jump** vs prior unit → replaced attachment with continuous virtual (wrong cum).
+
+| Area | Change |
+|---|---|
+| `recoverPlausibleEmailUnitNav` | Prefer **subject unit hint** before treating cum as unit (keeps SBPC20 dividend offset; SQU767 still recovers from cum when subject has no hint) |
+| `emailRowHasAttachmentDividendOffset` / `preferEmailNavRow` | Evaluate dividend offset on **recovered** unit |
+| `applyEmailUnitNavCorrection` | Recover unit **before** stripping implausible cum |
+| `pickEmailNavRowWithContinuity` | Never override attachment that already has post-div cum; use recovered unit for continuity |
+
+**Live verified (SSH tunnel → DB):**
+
+| Date | unit | cum | daily |
+|---|---|---|---|
+| 2026-07-02 | 1.1855 | **1.3986** | +0.42% |
+| 2026-07-03 | 1.1606 | 1.3737 | **−2.10%** (was +15.88%) |
+
+### Follow-up (2026-07-12 — chart 复权 cliff / missing adj premium)
+
+Even with correct unit/cum, the **收益曲线 (复权净值)** still looked wrong vs reference:
+
+| Field | Ours (wrong chart) | Reference |
+|---|---|---|
+| 2026-06-11 daily | **−19.48%** (unit cliff) | soft ex-div (~cum move) |
+| 2026-07-09 复权 | **1.3774** (= cum) | **~1.4124** |
+| 成立以来收益 | **35.73%** | **~39.18%** |
+
+**Root cause:** Jun 11 first ex-div has unit collapse (1.24→1.00) while cum only dips (1.24→1.21). Classic `isLikelyDividendExDate` required flat cum, so:
+1. Daily change used **unit ratio** (−19%)
+2. `syncExDivAdjustedNav` never seeded **adj > cum**
+3. Gap-only `D_new` on first ex-div collapses adj to cum when cum dipped; `refreshStaleDerivedFields` then wiped any premium
+
+| Area | Change |
+|---|---|
+| `isLikelyDividendExDate` | Soft first-ex-div: large unit drop + much smaller cum drop + post-div gap |
+| `syncExDivAdjustedNav` | On first ex-div use **unit-drop D** so adj stays near prevAdj (reinvested); don't skip when email set adj==cum |
+| `rechainDerivedFromPrev` | Same first-ex-div D so stale refresh cannot collapse adj to cum |
+| `refreshStaleDerivedFields` | Skip ex-div rows that already have adj > cum |
+
+**Live after fix:** Jun 11 daily **−2.32%**, Jul 9 adj **~1.410**, 成立以来 **~38.95%** (reference ~39.18% / adj ~1.4124).
+
+**Deploy note:** Fund detail computes NAV in process — production must rebuild/restart after updating `email-nav-query.ts` or the UI keeps serving the old cliff.
+
+No email ETL rewrite needed — selection/merge fix is enough. Deploy code, then hard-refresh fund detail.
+
+### What This Fix Does NOT Change
+
+- SBFM35 / BFM35A corrupt-cum and ratio-bleed fixes — unchanged
+- SNF018 virtual-first, SBAH99 dividend formulas — unchanged
+- SBPC20 attachment-wins-over-virtual — unchanged
+- SLA033 V-shape outlier restoration — unchanged
+- SQU767 AUM→cum recovery — unchanged (subject has no unit hint)
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+# with tunnel: npx tsx scripts/ma/_diag_sbpc20_chart.ts
+```
+
+---
+
 ## What Was Fixed (笃熙禀泰多资产轮动策略2号 — SNG210, wrong pool name, 2026-07-10)
 
 ### The Problem
