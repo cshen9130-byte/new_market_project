@@ -63,6 +63,8 @@ export type EmailParseFetchResult = {
   managedProductsValuationSynced: number
   fofUnderlyingMarketSynced: number
   navLatestRefreshed: number
+  /** Product codes / names touched by this parse (for light cache patches). */
+  touchedFunds: { productCode: string; fundName: string }[]
   errors: string[]
   /** True when no explicit --days lookback was passed (checkpoint-based scan). */
   incremental: boolean
@@ -517,9 +519,15 @@ export async function fetchEmailParseRecords(options?: {
   days?: number
   /** Skip precomputed managed-product refresh (caller may run it in background). */
   skipNavLatestRefresh?: boolean
+  /**
+   * Intraday / 3h mode: upsert NAV + 估值表 only.
+   * Skips full rebuilds of holdings/metrics/FOF underlying (~thousands of funds).
+   */
+  light?: boolean
 }): Promise<EmailParseFetchResult> {
   const errors: string[] = []
   const incremental = options?.days == null
+  const light = options?.light === true
 
   const accounts: CrawlEmailAccount[] = []
   if (options?.crawlEmailId) {
@@ -615,65 +623,81 @@ export async function fetchEmailParseRecords(options?: {
     errors.push(`保存估值表数据失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
+  // Scoped custody NAV backfill: recent window for light/intraday, full history otherwise.
   try {
     const { backfillCustodyValuationNavFromRecords } = await import(
       "@/lib/server/email-valuation-nav-backfill"
     )
-    const backfill = await backfillCustodyValuationNavFromRecords()
+    const lookbackDays = light
+      ? Math.max(options?.days ?? 3, 3)
+      : undefined
+    const sinceDate = lookbackDays != null
+      ? (() => {
+          const d = new Date()
+          d.setUTCHours(0, 0, 0, 0)
+          d.setUTCDate(d.getUTCDate() - lookbackDays)
+          return d.toISOString().slice(0, 10)
+        })()
+      : undefined
+    const backfill = await backfillCustodyValuationNavFromRecords(
+      sinceDate ? { sinceDate } : undefined,
+    )
     custodyValuationNavBackfilled = backfill.navBackfilled
   } catch (e) {
     errors.push(`估值表净值回填失败: ${e instanceof Error ? e.message : String(e)}`)
   }
 
-  try {
-    const { refreshFundLatestValuationHoldings } = await import(
-      "@/lib/server/email-valuation-holdings-pg"
-    )
-    valuationLatestHoldingsRefreshed = await refreshFundLatestValuationHoldings()
-  } catch (e) {
-    errors.push(`刷新最新估值持仓失败: ${e instanceof Error ? e.message : String(e)}`)
-  }
+  if (!light) {
+    try {
+      const { refreshFundLatestValuationHoldings } = await import(
+        "@/lib/server/email-valuation-holdings-pg"
+      )
+      valuationLatestHoldingsRefreshed = await refreshFundLatestValuationHoldings()
+    } catch (e) {
+      errors.push(`刷新最新估值持仓失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
 
-  try {
-    const { refreshEmailValuationMetricsLatest } = await import(
-      "@/lib/server/email-valuation-metrics-pg"
-    )
-    const metrics = await refreshEmailValuationMetricsLatest()
-    valuationMetricsRefreshed = metrics.fundMetricsRefreshed
-    underlyingMarketRefreshed = metrics.underlyingMarketRefreshed
-  } catch (e) {
-    errors.push(`刷新估值指标快照失败: ${e instanceof Error ? e.message : String(e)}`)
-  }
+    try {
+      const { refreshEmailValuationMetricsLatest } = await import(
+        "@/lib/server/email-valuation-metrics-pg"
+      )
+      const metrics = await refreshEmailValuationMetricsLatest()
+      valuationMetricsRefreshed = metrics.fundMetricsRefreshed
+      underlyingMarketRefreshed = metrics.underlyingMarketRefreshed
+    } catch (e) {
+      errors.push(`刷新估值指标快照失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
 
-  try {
-    const { refreshManagedFofUnderlying } = await import("@/lib/server/managed-fof-underlying-pg")
-    managedFofUnderlyingRefreshed = await refreshManagedFofUnderlying()
-  } catch (e) {
-    errors.push(`刷新在管产品FOF底层持仓失败: ${e instanceof Error ? e.message : String(e)}`)
-  }
+    try {
+      const { refreshManagedFofUnderlying } = await import("@/lib/server/managed-fof-underlying-pg")
+      managedFofUnderlyingRefreshed = await refreshManagedFofUnderlying()
+    } catch (e) {
+      errors.push(`刷新在管产品FOF底层持仓失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
 
-  try {
-    const { autoAddFofUnderlyingToTables } = await import(
-      "@/lib/server/fof-underlying-auto-add-pg"
-    )
-    const autoAddResult = await autoAddFofUnderlyingToTables()
-    opsFofUnderlyingAdded = autoAddResult.opsFofUnderlyingAdded
-    detailFofUnderlyingAdded = autoAddResult.detailFofUnderlyingAdded
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    // Permission errors are expected until the DB grants are applied — don't surface
-    // this as a user-visible failure since all core parsing steps have already completed.
-    if (!msg.includes("permission denied")) {
-      errors.push(`自动补充FOF底层产品失败: ${msg}`)
-    } else {
-      console.warn("[autoAddFofUnderlying] skipped — missing INSERT grant on FOF tables:", msg)
+    try {
+      const { autoAddFofUnderlyingToTables } = await import(
+        "@/lib/server/fof-underlying-auto-add-pg"
+      )
+      const autoAddResult = await autoAddFofUnderlyingToTables()
+      opsFofUnderlyingAdded = autoAddResult.opsFofUnderlyingAdded
+      detailFofUnderlyingAdded = autoAddResult.detailFofUnderlyingAdded
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      // Permission errors are expected until the DB grants are applied — don't surface
+      // this as a user-visible failure since all core parsing steps have already completed.
+      if (!msg.includes("permission denied")) {
+        errors.push(`自动补充FOF底层产品失败: ${msg}`)
+      } else {
+        console.warn("[autoAddFofUnderlying] skipped — missing INSERT grant on FOF tables:", msg)
+      }
     }
   }
 
   let navLatestRefreshed = 0
   let managedProductsValuationSynced = 0
   let fofUnderlyingMarketSynced = 0
-  if (!options?.skipNavLatestRefresh) {
+  if (!options?.skipNavLatestRefresh && !light) {
     try {
       const { listCache, managedProductsValuationSynced: mpSync, fofUnderlyingMarketSynced: fofSync } =
         await refreshManagedProductsNavAndListCache()
@@ -682,6 +706,17 @@ export async function fetchEmailParseRecords(options?: {
       fofUnderlyingMarketSynced = fofSync
     } catch (e) {
       errors.push(`刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  const touchedByCode = new Map<string, { productCode: string; fundName: string }>()
+  for (const row of [...allNavRecords, ...allValuationRecords]) {
+    const productCode = (row.productCode ?? "").trim().toUpperCase()
+    const fundName = (row.fundName ?? "").trim()
+    if (!productCode && !fundName) continue
+    const key = productCode || `name:${fundName}`
+    if (!touchedByCode.has(key)) {
+      touchedByCode.set(key, { productCode, fundName })
     }
   }
 
@@ -701,6 +736,7 @@ export async function fetchEmailParseRecords(options?: {
     managedProductsValuationSynced,
     fofUnderlyingMarketSynced,
     navLatestRefreshed,
+    touchedFunds: [...touchedByCode.values()],
     errors,
     incremental,
     scanByAccount,

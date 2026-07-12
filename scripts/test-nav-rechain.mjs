@@ -879,6 +879,14 @@ assert(
   ) === "SQQ300",
 )
 
+{
+  const jinyouVirtual =
+    "金舆基石一号私募证券投资基金【SXN097-古曲祥辰5号私募证券投资基金】虚拟净值20260709"
+  const meta = extractNavMetadata(jinyouVirtual, "")
+  assert("FOF bracket virtual NAV uses underlying code SXN097", meta.productCode === "SXN097")
+  assert("FOF bracket virtual NAV uses underlying name 古曲祥辰5号", meta.fundName === "古曲祥辰5号")
+}
+
 const excelPath = process.env.NAV_TEST_XLSX ?? "c:/Users/13904/Downloads/荣熙恒盈2号净值20260624.xlsx"
 if (fs.existsSync(excelPath)) {
   const buf = fs.readFileSync(excelPath)

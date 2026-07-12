@@ -2,7 +2,10 @@ import {
   fetchEmailParseRecords,
   type EmailParseFetchResult,
 } from "@/lib/server/email-parse-fetch"
-import { refreshManagedProductsNavAndListCache } from "@/lib/server/email-nav-latest-pg"
+import {
+  refreshManagedProductsListCacheLight,
+  refreshManagedProductsNavAndListCache,
+} from "@/lib/server/email-nav-latest-pg"
 
 export type EmailParseFetchJobStatus = {
   status: "queued" | "running" | "done" | "error"
@@ -10,6 +13,7 @@ export type EmailParseFetchJobStatus = {
   startedAt: number
   finishedAt?: number
   days?: number
+  light?: boolean
   result?: EmailParseFetchResult
 }
 
@@ -30,6 +34,11 @@ export function getEmailParseFetchJobStatus(): EmailParseFetchJobStatus | null {
 export function startEmailParseFetchJob(options?: {
   crawlEmailId?: string
   days?: number
+  /**
+   * Intraday mode (3h cron): parse + upsert only, then patch touched funds /
+   * rebuild 在管产品 cache. Skips full FOF / tracking / metrics rebuilds.
+   */
+  light?: boolean
 }): { ok: true } | { ok: false; reason: "already_running" } {
   const jobs = getJobMap()
   const existing = jobs.get(JOB_KEY)
@@ -37,37 +46,96 @@ export function startEmailParseFetchJob(options?: {
     return { ok: false, reason: "already_running" }
   }
 
+  const light = options?.light === true
   const job: EmailParseFetchJobStatus = {
     status: "queued",
     message: "准备扫描邮箱…",
     startedAt: Date.now(),
     days: options?.days,
+    light,
   }
   jobs.set(JOB_KEY, job)
 
   void (async () => {
     job.status = "running"
-    job.message = "正在扫描并解析邮件…"
+    job.message = light ? "正在增量扫描并解析邮件…" : "正在扫描并解析邮件…"
     try {
       const result = await fetchEmailParseRecords({
         crawlEmailId: options?.crawlEmailId,
         days: options?.days,
         skipNavLatestRefresh: true,
+        light,
       })
 
-      job.message = "正在刷新在管产品指标…"
-      try {
-        await refreshManagedProductsNavAndListCache()
-      } catch (e) {
-        result.errors.push(
-          `刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`,
-        )
+      if (light) {
+        job.message = "正在同步邮箱运维池…"
+        try {
+          const { syncEmailTrackingPool } = await import("@/lib/server/email-tracking-pool-sync")
+          await syncEmailTrackingPool()
+        } catch (e) {
+          result.errors.push(
+            `同步邮箱运维池失败: ${e instanceof Error ? e.message : String(e)}`,
+          )
+        }
+
+        job.message = "正在刷新触及产品缓存…"
+        try {
+          const { upsertTrackingFundListCacheEntry } = await import(
+            "@/lib/server/tracking-funds-list-cache-pg"
+          )
+          for (const fund of result.touchedFunds) {
+            if (!fund.productCode) continue
+            try {
+              await upsertTrackingFundListCacheEntry(
+                fund.productCode,
+                fund.fundName || fund.productCode,
+              )
+            } catch (err) {
+              console.warn(
+                "[email-parse-fetch-job] touched fund cache upsert failed",
+                fund.productCode,
+                err,
+              )
+            }
+          }
+        } catch (e) {
+          result.errors.push(
+            `刷新触及产品缓存失败: ${e instanceof Error ? e.message : String(e)}`,
+          )
+        }
+
+        job.message = "正在刷新在管产品列表缓存…"
+        try {
+          const lightCache = await refreshManagedProductsListCacheLight()
+          result.navLatestRefreshed = lightCache.listCache
+        } catch (e) {
+          result.errors.push(
+            `刷新在管产品列表缓存失败: ${e instanceof Error ? e.message : String(e)}`,
+          )
+        }
+      } else {
+        job.message = "正在刷新在管产品指标…"
+        try {
+          await refreshManagedProductsNavAndListCache()
+        } catch (e) {
+          result.errors.push(
+            `刷新在管产品邮件净值失败: ${e instanceof Error ? e.message : String(e)}`,
+          )
+        }
       }
 
       job.status = "done"
       job.finishedAt = Date.now()
       job.result = result
-      job.message = "解析完成"
+      const elapsedSec = ((job.finishedAt - job.startedAt) / 1000).toFixed(1)
+      job.message = light
+        ? `增量解析完成（${elapsedSec}s，触及 ${result.touchedFunds.length} 只产品）`
+        : "解析完成"
+      console.log(
+        `[email-parse-fetch-job] ${light ? "light" : "full"} done in ${elapsedSec}s` +
+          ` emails=${result.emailsScanned} nav=${result.navSaved}` +
+          ` valuation=${result.valuationSaved} touched=${result.touchedFunds.length}`,
+      )
       setTimeout(() => {
         if (jobs.get(JOB_KEY) === job) jobs.delete(JOB_KEY)
       }, 60_000)

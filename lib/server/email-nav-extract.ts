@@ -83,6 +83,7 @@ function parseCiticsFundNavSubject(text: string): { code: string; fundName: stri
 /** Prefer fund names from the subject line, ignoring investor names in 【】. */
 function extractFundNameFromSubject(subject: string): string | null {
   for (const parser of [
+    parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
     parseVirtualEstSubject,
@@ -135,6 +136,7 @@ function parseGuosenCustodyNavSubject(text: string): { code: string; fundName: s
 
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
+    parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
     parseGuosenCustodyNavSubject,
@@ -161,6 +163,19 @@ function parseVirtualEstSubject(text: string): { code: string; fundName: string 
 function parseVirtualPerfSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
     new RegExp(`([A-Z0-9]{4,8})_(${FUND_NAME_RE.source})_(\\d{4}-\\d{2}-\\d{2})`),
+  )
+  if (!m) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
+/**
+ * FOF virtual-NAV mail: outer investor/FOF name + bracket underlying code/name.
+ * Example: 金舆基石一号私募证券投资基金【SXN097-古曲祥辰5号私募证券投资基金】虚拟净值20260709
+ * NAV belongs to the bracket product (SXN097 / 古曲祥辰5号), not the outer FOF name.
+ */
+function parseFofBracketVirtualNavSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    new RegExp(`【([A-Z0-9]{4,10})[-－](${FUND_NAME_RE.source})】[^】]*虚拟净值`, "u"),
   )
   if (!m) return null
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }

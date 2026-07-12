@@ -12,6 +12,10 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   衡颐承和FOF1号: "SBTX45",
   木莲安澜1号A类: "ATL22A",
   锐耐稳健对冲11号: "SBDF95",
+  // Auto-resolution sometimes maps 金舆基石一号 → SXN097 (古曲祥辰5号).
+  // Custody emails use SAVW72_金舆基石一号…估值表.
+  金舆基石一号: "SAVW72",
+  古曲祥辰5号: "SXN097",
 }
 
 /** Known 托管券商 for 在管产品 when registration tables are incomplete. */

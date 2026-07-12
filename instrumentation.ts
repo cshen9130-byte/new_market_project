@@ -10,20 +10,22 @@ export async function register() {
       runDueSettlementFetch().catch((e) => console.error("[settlement-email] scheduler error:", e))
     })
 
-    // Every 3 hours: fetch the last 1 day of fund emails and refresh
-    // 在管产品 + FOF底层 list caches so intraday NAV updates are picked up.
-    cron.schedule("0 */3 * * *", () => {
+    // Every hour: light incremental fetch (last 1 day of mail only).
+    // Upserts NAV/估值表, syncs 邮箱运维池, patches touched tracking rows +
+    // rebuilds 在管产品 list cache. Skips full FOF/tracking/metrics rebuilds
+    // (those stay on nightly ETL).
+    cron.schedule("0 * * * *", () => {
       void (async () => {
         try {
           const { startEmailParseFetchJob } = await import("./lib/server/email-parse-fetch-job")
-          const result = startEmailParseFetchJob({ days: 1 })
+          const result = startEmailParseFetchJob({ days: 1, light: true })
           if (!result.ok) {
-            console.log("[3h-etl] skipped: an email parse job is already running")
+            console.log("[1h-etl] skipped: an email parse job is already running")
           } else {
-            console.log("[3h-etl] incremental 1-day fetch + cache refresh started")
+            console.log("[1h-etl] light 1-day fetch started (no full FOF/tracking rebuild)")
           }
         } catch (e) {
-          console.error("[3h-etl] scheduler error:", e)
+          console.error("[1h-etl] scheduler error:", e)
         }
       })()
     })

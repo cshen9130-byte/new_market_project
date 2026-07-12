@@ -313,6 +313,7 @@ function buildExtractedValuation(
   headerScanDate: string | null = null,
   senderEmail: string | null = null,
   bodyText: string | null = null,
+  headerScanUnit: number | null = null,
 ): ExtractedValuationData | null {
   if (!isSuccessfulValuation(analysis)) return null
 
@@ -331,10 +332,14 @@ function buildExtractedValuation(
 
   if (!valuationDate) return null
 
+  // Prefer workbook header 单位净值 — same source we trust in repair scripts.
+  // Do not leave unit_nav null when the header has a plausible value (backfill
+  // only copies non-null unit_nav into ops_email_nav_records).
   const unitNav =
-    (enriched.unit_nav > 0 ? enriched.unit_nav : null) ??
-    portfolioScan.unit ??
-    (enriched.nav > 0 && isPlausibleUnitNav(enriched.nav) ? enriched.nav : null)
+    (headerScanUnit != null && isPlausibleUnitNav(headerScanUnit) ? headerScanUnit : null)
+    ?? (enriched.unit_nav > 0 ? enriched.unit_nav : null)
+    ?? portfolioScan.unit
+    ?? (enriched.nav > 0 && isPlausibleUnitNav(enriched.nav) ? enriched.nav : null)
 
   const netAssetValue =
     enriched.net_asset_value > 0
@@ -364,7 +369,11 @@ function buildExtractedValuation(
   })
   analysis = {
     ...analysis,
-    summary: { ...analysis.summary, custodian },
+    summary: {
+      ...analysis.summary,
+      custodian,
+      ...(unitNav != null ? { unit_nav: unitNav } : {}),
+    },
   }
 
   return {
@@ -464,6 +473,8 @@ export function extractValuationFromBuffer(
       "attachment_valuation_table",
       headerScan.date,
       senderEmail,
+      null,
+      headerScan.unit,
     )
   } catch {
     return null
