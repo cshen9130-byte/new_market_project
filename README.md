@@ -165,7 +165,7 @@ Notes:
 - If EmQuant native library deps are missing, the script will warn/fail; install required system libraries (e.g., `libstdc++`, `libgcc`, etc.).
 - On low-memory Linux servers, the deploy script now auto-creates a temporary swap file during `next build` if RAM is small and swap is missing.
 - The `build:lowmem` script intentionally uses `next build --webpack` instead of the Next 16 default Turbopack build, because Webpack is more stable on very small servers.
-- If you need live diagnostics in the same SSH session, pass `--debug-build` and the script will print periodic memory, swap, process, and `.next` size heartbeats during the build, while also writing the full build output to `build-debug.log`.
+- If you need live diagnostics in the same SSH session, pass `--debug-build` and the script will print periodic memory, swap, process, and `.next` size heartbeats during the build, while also writing the full build output to `build-debug.log`. On servers under ~4.5 GiB RAM, `--debug-build` keeps the Node heap at 1024 MB automatically.
 - You can override build memory and temporary swap size if needed:
 
 ```bash
@@ -179,7 +179,7 @@ bash scripts/deploy/setup-choice-emquant.sh \
 	--temp-swap-gb 4
 ```
 
-To enable build diagnostics on a very small server:
+To enable build diagnostics on a very small server (no extra flags needed — heap stays 1024 MB):
 
 ```bash
 bash scripts/deploy/setup-choice-emquant.sh \
@@ -187,8 +187,6 @@ bash scripts/deploy/setup-choice-emquant.sh \
 	--emq-username "<EMQ_USERNAME>" \
 	--emq-password "<EMQ_PASSWORD>" \
 	--pm2-app-name new_market_project \
-	--build-memory-mb 1024 \
-	--temp-swap-gb 4 \
 	--debug-build \
 	--build-debug-interval-sec 30
 ```

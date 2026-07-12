@@ -215,28 +215,26 @@ ensure_temp_swap() {
 
 auto_tune_build_settings() {
   local mem_total_kb="0"
-  local swap_total_kb="0"
 
   if [[ -r /proc/meminfo ]]; then
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
-    swap_total_kb=$(awk '/SwapTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # Only auto-tune when the user left the default. Size the heap from physical
-  # RAM only — swap is a safety net for OS paging, not a license to raise the
-  # V8 heap. Setting heap ≈ RAM (e.g. 3072 MB on a 3.4 GiB box) fills physical
-  # memory and thrashes even when swap is available.
+  # Only bump heap when the user left the default. Stay conservative below ~4.5 GiB:
+  # on a 3.4 GiB deploy box, 1024 MB + NEXT_BUILD_LOW_MEMORY keeps builds near ~3 min.
+  # Raising the heap into the 1.5–3 GiB range on these hosts fills physical RAM and
+  # thrashes (swap is a paging safety net, not a license to grow the V8 heap).
   if [[ "$BUILD_MEMORY_MB" == "1024" && -n "$mem_total_kb" ]]; then
     if   [[ "$mem_total_kb" -ge 6000000 ]]; then
-      BUILD_MEMORY_MB="4096"
-    elif [[ "$mem_total_kb" -ge 4500000 ]]; then
       BUILD_MEMORY_MB="2048"
-    elif [[ "$mem_total_kb" -ge 3000000 ]]; then
-      # ~3–4 GiB RAM: enough headroom to avoid the 1024 MB OOM without starving the OS
+    elif [[ "$mem_total_kb" -ge 4500000 ]]; then
       BUILD_MEMORY_MB="1536"
-    elif [[ "$mem_total_kb" -ge 2000000 && -n "$swap_total_kb" && "$swap_total_kb" -ge 1000000 ]]; then
-      BUILD_MEMORY_MB="1280"
     fi
+  fi
+
+  # --debug-build adds heartbeats + build-debug.log, not a larger webpack heap.
+  if [[ "$DEBUG_BUILD" == "1" && -n "$mem_total_kb" && "$mem_total_kb" -lt 4500000 ]]; then
+    BUILD_MEMORY_MB="1024"
   fi
 
   echo "Build settings: memory=${BUILD_MEMORY_MB}MB, temp_swap=${TEMP_SWAP_GB}G, debug=${DEBUG_BUILD}, interval=${BUILD_DEBUG_INTERVAL_SEC}s"
@@ -274,8 +272,9 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
   set +e
   (
     set -o pipefail
+    # Heartbeats come from monitor_build_progress; skip webpack --debug (much slower).
     CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
-      pnpm exec next build --webpack --debug 2>&1 | tee "$BUILD_LOG_FILE"
+      pnpm exec next build --webpack 2>&1 | tee "$BUILD_LOG_FILE"
   ) &
   BUILD_PID=$!
   monitor_build_progress "$BUILD_PID" &
