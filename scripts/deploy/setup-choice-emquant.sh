@@ -163,6 +163,15 @@ pkill -f "next build" || true
 pkill -f "pnpm build" || true
 pkill -f "node .*next" || true
 
+# Wait for stopped processes to release memory back to the OS, then flush the
+# page cache. Without this, the former Next.js server (1–1.5 GiB) still occupies
+# physical RAM when webpack starts, pushing the build past 3.2 GiB on 3.4 GiB hosts.
+sleep 5
+sync
+echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+echo "Memory after stop + cache drop:"
+free -h || true
+
 TEMP_SWAP_FILE="/swapfile.market-dashboard"
 TEMP_SWAP_CREATED="0"
 
@@ -262,7 +271,7 @@ monitor_build_progress() {
 
 # Install node deps and build with low memory
 # Use --no-frozen-lockfile to avoid failures when package.json changes but lockfile is not yet updated
-NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm install --no-frozen-lockfile
+MALLOC_ARENA_MAX=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm install --no-frozen-lockfile
 
 if [[ "$DEBUG_BUILD" == "1" ]]; then
   BUILD_LOG_FILE="$PROJECT_ROOT/build-debug.log"
@@ -273,6 +282,8 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
   (
     set -o pipefail
     # Heartbeats come from monitor_build_progress; skip webpack --debug (much slower).
+    # MALLOC_ARENA_MAX=1 reduces glibc arena fragmentation across webpack child processes.
+    FORCE_COLOR=0 MALLOC_ARENA_MAX=1 \
     CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
       pnpm exec next build --webpack 2>&1 | tee "$BUILD_LOG_FILE"
   ) &
@@ -289,6 +300,7 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
     exit "$BUILD_RC"
   fi
 else
+  MALLOC_ARENA_MAX=1 \
   CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
     pnpm exec next build --webpack
 fi
