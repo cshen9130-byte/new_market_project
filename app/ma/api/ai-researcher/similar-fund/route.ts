@@ -84,7 +84,8 @@ async function fetchFundByName(subject: string): Promise<FundInfo | null> {
 }
 
 async function fetchCandidatePool(target: FundInfo, limit = 80): Promise<FundInfo[]> {
-  // Same strategy_l1 (or strategy_l2 if available), excluding target
+  // Same strategy_l1 (or strategy_l2 if available), excluding target.
+  // Cast parameters to text explicitly so PostgreSQL can infer their types.
   const rows = await query<FundInfo>(
     `SELECT beian_hao, product_name, manager, strategy_l1, strategy_l2,
             inception_date::text AS inception_date,
@@ -92,13 +93,13 @@ async function fetchCandidatePool(target: FundInfo, limit = 80): Promise<FundInf
             sharpe_1y::text, calmar_1y::text,
             latest_nav::text, latest_nav_date::text AS latest_nav_date
      FROM private_fund_info
-     WHERE beian_hao <> $1
+     WHERE beian_hao <> $1::text
        AND (
-         ($2 IS NOT NULL AND strategy_l1 = $2)
-         OR ($3 IS NOT NULL AND strategy_l2 = $3)
+         ($2::text IS NOT NULL AND strategy_l1 = $2::text)
+         OR ($3::text IS NOT NULL AND strategy_l2 = $3::text)
        )
      ORDER BY
-       CASE WHEN strategy_l2 = $3 AND $3 IS NOT NULL THEN 0 ELSE 1 END,
+       CASE WHEN $3::text IS NOT NULL AND strategy_l2 = $3::text THEN 0 ELSE 1 END,
        latest_nav_date DESC NULLS LAST
      LIMIT $4`,
     [target.beian_hao, target.strategy_l1, target.strategy_l2, limit],
