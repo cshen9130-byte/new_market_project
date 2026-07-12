@@ -27,6 +27,7 @@ import {
   BarChart3,
   Cpu,
   Sparkles,
+  ScanSearch,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -68,6 +69,12 @@ interface ResearchTask {
   errorMessage?: string
 }
 
+interface SkillColors {
+  bg: string        // CSS background (gradient)
+  border: string    // CSS border-color
+  icon: string      // text color for icon
+}
+
 interface Skill {
   id: string
   name: string
@@ -75,8 +82,12 @@ interface Skill {
   icon: React.ReactNode
   badge?: string
   locked?: boolean
-  color: string
+  colors: SkillColors
   steps: string[]
+  /** When true, fund picker limits to exactly 1 selection */
+  singleFund?: boolean
+  /** API route path (relative to /ma/api/ai-researcher/) */
+  apiPath?: string
 }
 
 // ── Skills catalog ─────────────────────────────────────────────────────────────
@@ -88,8 +99,28 @@ const SKILLS: Skill[] = [
     description: "输入多只私募基金或管理人名称，自动获取净值、绩效指标、管理人背景，结合知识库信息，生成深度对比研究报告。",
     icon: <GitCompareArrows className="h-5 w-5" />,
     badge: "可用",
-    color: "from-blue-500/20 to-indigo-500/20 border-blue-500/30",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(59 130 246 / 0.18), rgb(99 102 241 / 0.18))",
+      border: "rgb(59 130 246 / 0.35)",
+      icon: "#3b82f6",
+    },
     steps: ["搜索匹配基金/管理人", "获取净值历史数据", "获取管理人背景", "查询知识库文档", "生成对比分析报告"],
+    apiPath: "compare-analysis",
+  },
+  {
+    id: "similar-fund",
+    name: "相似基金匹配",
+    description: "输入一只基金，AI自动从数据库中计算净值相关性与绩效指标相似度，找出策略最接近的同类产品，并深度分析相似原因与差异点。",
+    icon: <ScanSearch className="h-5 w-5" />,
+    badge: "可用",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(20 184 166 / 0.18), rgb(6 182 212 / 0.18))",
+      border: "rgb(20 184 166 / 0.35)",
+      icon: "#14b8a6",
+    },
+    steps: ["获取目标基金信息", "构建同类候选池", "计算净值相关性与指标相似度", "查询知识库补充信息", "生成相似度分析报告"],
+    singleFund: true,
+    apiPath: "similar-fund",
   },
   {
     id: "trend-research",
@@ -97,7 +128,11 @@ const SKILLS: Skill[] = [
     description: "基于宏观数据、行业数据和知识库，自动生成市场趋势研究报告。",
     icon: <TrendingUp className="h-5 w-5" />,
     locked: true,
-    color: "from-emerald-500/10 to-teal-500/10 border-emerald-500/20",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(16 185 129 / 0.08), rgb(20 184 166 / 0.08))",
+      border: "rgb(16 185 129 / 0.18)",
+      icon: "#10b981",
+    },
     steps: [],
   },
   {
@@ -106,7 +141,11 @@ const SKILLS: Skill[] = [
     description: "对指定私募管理人进行全方位尽职调查，生成管理人画像报告。",
     icon: <Users className="h-5 w-5" />,
     locked: true,
-    color: "from-violet-500/10 to-purple-500/10 border-violet-500/20",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(139 92 246 / 0.08), rgb(168 85 247 / 0.08))",
+      border: "rgb(139 92 246 / 0.18)",
+      icon: "#8b5cf6",
+    },
     steps: [],
   },
   {
@@ -115,7 +154,11 @@ const SKILLS: Skill[] = [
     description: "对现有投资组合进行收益归因、风险归因和优化建议。",
     icon: <BarChart3 className="h-5 w-5" />,
     locked: true,
-    color: "from-orange-500/10 to-amber-500/10 border-orange-500/20",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(249 115 22 / 0.08), rgb(245 158 11 / 0.08))",
+      border: "rgb(249 115 22 / 0.18)",
+      icon: "#f97316",
+    },
     steps: [],
   },
 ]
@@ -125,9 +168,13 @@ const SKILLS: Skill[] = [
 function FundPicker({
   selected,
   onChange,
+  maxSelect = 10,
+  placeholder,
 }: {
   selected: FundSearchResult[]
   onChange: (funds: FundSearchResult[]) => void
+  maxSelect?: number
+  placeholder?: string
 }) {
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<FundSearchResult[]>([])
@@ -180,9 +227,13 @@ function FundPicker({
   function handleAddManual() {
     const q = query.trim()
     if (!q) return
+    if (selected.length >= maxSelect) return
     const already = selected.some((s) => s.product_name === q || s.beian_hao === q)
     if (!already) {
-      onChange([...selected, { beian_hao: q, product_name: q, manager: "", strategy_l1: null, strategy_l2: null, inception_date: null, latest_nav: null, ret_1y: null }])
+      const next = maxSelect === 1
+        ? [{ beian_hao: q, product_name: q, manager: "", strategy_l1: null, strategy_l2: null, inception_date: null, latest_nav: null, ret_1y: null }]
+        : [...selected, { beian_hao: q, product_name: q, manager: "", strategy_l1: null, strategy_l2: null, inception_date: null, latest_nav: null, ret_1y: null }]
+      onChange(next)
     }
     setQuery("")
     setResults([])
@@ -190,8 +241,12 @@ function FundPicker({
   }
 
   function addFund(fund: FundSearchResult) {
+    if (selected.length >= maxSelect) return
     const already = selected.some((s) => s.beian_hao === fund.beian_hao)
-    if (!already) onChange([...selected, fund])
+    if (!already) {
+      const next = maxSelect === 1 ? [fund] : [...selected, fund]
+      onChange(next)
+    }
     setQuery("")
     setResults([])
     setOpen(false)
@@ -237,7 +292,7 @@ function FundPicker({
                 if (e.key === "Enter") handleAddManual()
                 if (e.key === "Escape") setOpen(false)
               }}
-              placeholder="输入基金名称、备案号或管理人名称搜索..."
+              placeholder={placeholder ?? "输入基金名称、备案号或管理人名称搜索..."}
               className="pl-9"
             />
             {loading && (
@@ -471,11 +526,17 @@ export function AIResearcherPage() {
     const ctrl = new AbortController()
     abortRef.current = ctrl
 
+    const apiPath = skill.apiPath ?? "compare-analysis"
+    const payload =
+      skill.singleFund
+        ? { subject: subjects[0], kbPath }
+        : { subjects, kbPath }
+
     try {
-      const res = await fetch("/ma/api/ai-researcher/compare-analysis", {
+      const res = await fetch(`/ma/api/ai-researcher/${apiPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subjects, kbPath }),
+        body: JSON.stringify(payload),
         signal: ctrl.signal,
       })
 
@@ -563,7 +624,8 @@ export function AIResearcherPage() {
   }
 
   function baseFilename() {
-    return `对比分析报告_${activeTask?.subjects.slice(0, 2).join("_") ?? "报告"}_${new Date().toISOString().slice(0, 10)}`
+    const prefix = activeTask?.skillId === "similar-fund" ? "相似基金分析" : "对比分析报告"
+    return `${prefix}_${activeTask?.subjects.slice(0, 2).join("_") ?? "报告"}_${new Date().toISOString().slice(0, 10)}`
   }
 
   function handleDownloadReport() {
@@ -869,10 +931,9 @@ export function AIResearcherPage() {
                 key={skill.id}
                 onClick={() => handleSelectSkill(skill)}
                 disabled={skill.locked}
+                style={{ background: skill.colors.bg, borderColor: skill.colors.border }}
                 className={cn(
                   "w-full rounded-lg border p-3 text-left transition-all",
-                  "bg-gradient-to-br",
-                  skill.color,
                   skill.locked
                     ? "opacity-50 cursor-not-allowed"
                     : selectedSkillId === skill.id
@@ -881,8 +942,11 @@ export function AIResearcherPage() {
                 )}
               >
                 <div className="flex items-start gap-2.5">
-                  <div className={cn("mt-0.5 shrink-0", skill.locked ? "text-muted-foreground" : "text-primary")}>
-                    {skill.locked ? <Lock className="h-4 w-4" /> : skill.icon}
+                  <div
+                    className="mt-0.5 shrink-0"
+                    style={{ color: skill.locked ? undefined : skill.colors.icon }}
+                  >
+                    {skill.locked ? <Lock className="h-4 w-4 text-muted-foreground" /> : skill.icon}
                   </div>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5 flex-wrap">
@@ -957,11 +1021,20 @@ export function AIResearcherPage() {
               <div className="space-y-4">
                 <div>
                   <label className="text-sm font-medium mb-1.5 block">
-                    分析对象
+                    {selectedSkill.singleFund ? "目标基金" : "分析对象"}
                     <span className="text-destructive ml-1">*</span>
-                    <span className="text-xs text-muted-foreground ml-2 font-normal">输入基金名称或备案号，可添加多个进行对比</span>
+                    <span className="text-xs text-muted-foreground ml-2 font-normal">
+                      {selectedSkill.singleFund
+                        ? "输入一只基金名称或备案号，AI将自动搜索相似基金"
+                        : "输入基金名称或备案号，可添加多个进行对比"}
+                    </span>
                   </label>
-                  <FundPicker selected={selectedFunds} onChange={setSelectedFunds} />
+                  <FundPicker
+                    selected={selectedFunds}
+                    onChange={setSelectedFunds}
+                    maxSelect={selectedSkill.singleFund ? 1 : 10}
+                    placeholder={selectedSkill.singleFund ? "输入目标基金名称或备案号..." : undefined}
+                  />
                 </div>
 
                 <div>
@@ -992,7 +1065,7 @@ export function AIResearcherPage() {
                     开始分析
                     {selectedFunds.length > 0 && (
                       <Badge variant="secondary" className="ml-1 text-xs">
-                        {selectedFunds.length}个对象
+                        {selectedSkill.singleFund ? selectedFunds[0].product_name : `${selectedFunds.length}个对象`}
                       </Badge>
                     )}
                   </Button>
