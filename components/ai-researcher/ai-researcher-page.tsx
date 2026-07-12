@@ -89,7 +89,7 @@ const SKILLS: Skill[] = [
     icon: <GitCompareArrows className="h-5 w-5" />,
     badge: "可用",
     color: "from-blue-500/20 to-indigo-500/20 border-blue-500/30",
-    steps: ["搜索匹配基金", "获取净值历史", "获取管理人背景", "查询知识库", "生成分析报告"],
+    steps: ["搜索匹配基金/管理人", "获取净值历史数据", "获取管理人背景", "查询知识库文档", "生成对比分析报告"],
   },
   {
     id: "trend-research",
