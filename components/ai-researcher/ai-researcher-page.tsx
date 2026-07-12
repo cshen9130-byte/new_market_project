@@ -28,6 +28,7 @@ import {
   Cpu,
   Sparkles,
   ScanSearch,
+  ArrowLeftRight,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -121,6 +122,21 @@ const SKILLS: Skill[] = [
     steps: ["获取目标基金信息", "构建同类候选池", "计算净值相关性与指标相似度", "查询知识库补充信息", "生成相似度分析报告"],
     singleFund: true,
     apiPath: "similar-fund",
+  },
+  {
+    id: "opposite-fund",
+    name: "相反基金匹配",
+    description: "输入一只基金，AI跨全库计算净值负相关性，找出走势最相反的产品（目标基金涨时它跌），分析对冲逻辑并给出组合配比建议。",
+    icon: <ArrowLeftRight className="h-5 w-5" />,
+    badge: "可用",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(239 68 68 / 0.15), rgb(249 115 22 / 0.15))",
+      border: "rgb(239 68 68 / 0.30)",
+      icon: "#ef4444",
+    },
+    steps: ["获取目标基金信息", "构建全库候选池", "计算净值负相关性", "查询知识库补充信息", "生成对冲匹配分析报告"],
+    singleFund: true,
+    apiPath: "opposite-fund",
   },
   {
     id: "trend-research",
@@ -624,7 +640,10 @@ export function AIResearcherPage() {
   }
 
   function baseFilename() {
-    const prefix = activeTask?.skillId === "similar-fund" ? "相似基金分析" : "对比分析报告"
+    const prefix =
+      activeTask?.skillId === "similar-fund" ? "相似基金分析" :
+      activeTask?.skillId === "opposite-fund" ? "相反基金分析" :
+      "对比分析报告"
     return `${prefix}_${activeTask?.subjects.slice(0, 2).join("_") ?? "报告"}_${new Date().toISOString().slice(0, 10)}`
   }
 
