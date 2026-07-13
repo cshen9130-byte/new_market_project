@@ -102,6 +102,46 @@ CREATE INDEX IF NOT EXISTS raw_commodity_amount_daily_date_idx
     ON raw_commodity_amount_daily (trade_date DESC);
 
 
+-- A-share stock daily OHLCV + volume + amount + turnover
+-- Source: Choice / EmQuant c.csd()  (fetch_ashare_daily.py)
+CREATE TABLE IF NOT EXISTS raw_ashare_daily (
+    trade_date  DATE          NOT NULL,
+    ts_code     VARCHAR(20)   NOT NULL,
+    open        NUMERIC(12,4),
+    close       NUMERIC(12,4),
+    high        NUMERIC(12,4),
+    low         NUMERIC(12,4),
+    volume      BIGINT,
+    amount      NUMERIC(20,2),
+    turn        NUMERIC(12,6),
+    source      VARCHAR(30)   NOT NULL DEFAULT 'choice',
+    fetched_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    CONSTRAINT raw_ashare_daily_uq UNIQUE (trade_date, ts_code)
+);
+CREATE INDEX IF NOT EXISTS raw_ashare_daily_date_idx
+    ON raw_ashare_daily (trade_date DESC);
+CREATE INDEX IF NOT EXISTS raw_ashare_daily_code_date_idx
+    ON raw_ashare_daily (ts_code, trade_date DESC);
+
+
+-- A-share market crowding metrics (成交额集中度 / 板块占比)
+-- Computed from raw_ashare_daily by nightly_etl step_compute_ashare_crowding
+CREATE TABLE IF NOT EXISTS derived_ashare_crowding_daily (
+    trade_date       DATE          PRIMARY KEY,
+    total_amount     NUMERIC(20,2),
+    hhi              NUMERIC(12,8),
+    top3_share       NUMERIC(8,4),
+    top10_share      NUMERIC(8,4),
+    crowding_pct     NUMERIC(6,2),
+    top_board        VARCHAR(30),
+    top_board_share  NUMERIC(8,4),
+    board_shares     JSONB,
+    computed_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS derived_ashare_crowding_daily_date_idx
+    ON derived_ashare_crowding_daily (trade_date DESC);
+
+
 -- =============================================================
 -- DERIVED LAYER  (computed from raw tables)
 -- =============================================================

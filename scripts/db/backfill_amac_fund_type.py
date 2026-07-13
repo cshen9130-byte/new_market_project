@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import http.client
 import os
 import sys
 import time
@@ -82,13 +83,23 @@ def _ensure_column(cur) -> None:
     )
 
 
-def _fetch_html(url: str) -> str | None:
+def _fetch_html(url: str, *, retries: int = 3) -> str | None:
     req = urllib.request.Request(url, headers=HEADERS, method="GET")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
-        return None
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read().decode("utf-8", errors="replace")
+        except (
+            urllib.error.URLError,
+            urllib.error.HTTPError,
+            http.client.IncompleteRead,
+            TimeoutError,
+            OSError,
+        ):
+            if attempt + 1 >= retries:
+                return None
+            time.sleep(1.5 * (attempt + 1))
+    return None
 
 
 def run(*, batch_size: int, max_batches: int, delay: float) -> dict:
@@ -120,18 +131,21 @@ def run(*, batch_size: int, max_batches: int, delay: float) -> dict:
 
                 for fund_no, detail_url in rows:
                     scanned += 1
-                    html = _fetch_html(detail_url)
-                    fund_type = parse_fund_type(html or "")
-                    if fund_type:
-                        cur.execute(
-                            """
-                            UPDATE amac_private_funds
-                            SET fund_type = %s, updated_at = NOW()
-                            WHERE fund_no = %s
-                            """,
-                            (fund_type, fund_no),
-                        )
-                        updated += 1
+                    try:
+                        html = _fetch_html(detail_url)
+                        fund_type = parse_fund_type(html or "")
+                        if fund_type:
+                            cur.execute(
+                                """
+                                UPDATE amac_private_funds
+                                SET fund_type = %s, updated_at = NOW()
+                                WHERE fund_no = %s
+                                """,
+                                (fund_type, fund_no),
+                            )
+                            updated += 1
+                    except Exception as exc:
+                        print(f"skip {fund_no}: {exc}", file=sys.stderr, flush=True)
                     if delay > 0:
                         time.sleep(delay)
 

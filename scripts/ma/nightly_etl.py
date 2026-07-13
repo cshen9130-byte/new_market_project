@@ -167,7 +167,8 @@ def run_script(
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, env=env
+            cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, env=env
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
@@ -1671,6 +1672,550 @@ def step_commodity_amounts(conn, trade_date: date, *, force: bool = False) -> in
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# STEP — A-share daily OHLCV + amount + turnover  (Choice c.csd)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ASHARE_BACKFILL_MONTHS = int(os.environ.get("ASHARE_BACKFILL_MONTHS", "3"))
+
+
+def _ashare_backfill_start(today: date) -> date:
+    """Resolve backfill start: ASHARE_BACKFILL_START env, else last N months."""
+    fixed = os.environ.get("ASHARE_BACKFILL_START", "").strip()
+    if fixed:
+        parsed = to_date(fixed.replace("-", ""))
+        if parsed:
+            return parsed
+    return today - timedelta(days=_ASHARE_BACKFILL_MONTHS * 31)
+
+
+def _ashare_fetch_chunks(start: date, end: date) -> list[tuple[date, date]]:
+    """Split long backfills into monthly chunks to limit JSON payload size."""
+    chunk_days = int(os.environ.get("ASHARE_CHUNK_DAYS", "31"))
+    if (end - start).days <= chunk_days:
+        return [(start, end)]
+    chunks: list[tuple[date, date]] = []
+    cur = start
+    while cur <= end:
+        chunk_end = min(cur + timedelta(days=chunk_days - 1), end)
+        chunks.append((cur, chunk_end))
+        cur = chunk_end + timedelta(days=1)
+    return chunks
+
+
+def _ashare_data_source() -> str:
+    return os.environ.get("ASHARE_DATA_SOURCE", "akshare").strip().lower()
+
+
+def _ashare_daily_script() -> str:
+    src = _ashare_data_source()
+    if src == "choice":
+        return "fetch_ashare_daily.py"
+    if src == "tushare":
+        return "fetch_ashare_daily_tushare.py"
+    return "fetch_ashare_daily_akshare.py"
+
+
+def _ashare_index_script() -> str:
+    src = _ashare_data_source()
+    if src == "choice":
+        return "fetch_ashare_index.py"
+    return "fetch_ashare_index_akshare.py"
+
+
+def _upsert_ashare_rows(conn, rows_raw: list) -> int:
+    records = []
+    for r in rows_raw:
+        d = to_date(str(r.get("date", "")).replace("-", ""))
+        ts_code = (r.get("ts_code") or "").strip()
+        if not d or not ts_code:
+            continue
+        vol = safe_float(r.get("volume"))
+        source = (r.get("source") or _ashare_data_source()).strip() or "akshare"
+        records.append((
+            d,
+            ts_code,
+            safe_float(r.get("open")),
+            safe_float(r.get("close")),
+            safe_float(r.get("high")),
+            safe_float(r.get("low")),
+            int(vol) if vol is not None else None,
+            safe_float(r.get("amount")),
+            safe_float(r.get("turn")),
+            source,
+        ))
+
+    if not records:
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_ashare_daily
+                (trade_date, ts_code, open, close, high, low, volume, amount, turn, source)
+            VALUES %s
+            ON CONFLICT (trade_date, ts_code) DO UPDATE
+                SET open = EXCLUDED.open,
+                    close = EXCLUDED.close,
+                    high = EXCLUDED.high,
+                    low = EXCLUDED.low,
+                    volume = EXCLUDED.volume,
+                    amount = EXCLUDED.amount,
+                    turn = EXCLUDED.turn,
+                    fetched_at = NOW()
+            """,
+            records,
+            page_size=5000,
+        )
+    conn.commit()
+    return len(records)
+
+
+def step_ashare_daily(conn, *, force: bool = False) -> int:
+    """Fetch A-share daily quotes (AkShare by default; Choice if ASHARE_DATA_SOURCE=choice).
+
+    Target table : raw_ashare_daily  (trade_date, ts_code) PK
+    First run    : backfills from ASHARE_BACKFILL_START (or last 3 months) → today
+    Subsequent   : incremental from last stored date + 1 day
+    Force        : re-fetch from ASHARE_BACKFILL_START (or last 3 months) → today
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_ashare_daily (
+                trade_date  DATE          NOT NULL,
+                ts_code     VARCHAR(20)   NOT NULL,
+                open        NUMERIC(12,4),
+                close       NUMERIC(12,4),
+                high        NUMERIC(12,4),
+                low         NUMERIC(12,4),
+                volume      BIGINT,
+                amount      NUMERIC(20,2),
+                turn        NUMERIC(12,6),
+                source      VARCHAR(30)   NOT NULL DEFAULT 'choice',
+                fetched_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+                CONSTRAINT raw_ashare_daily_uq UNIQUE (trade_date, ts_code)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS raw_ashare_daily_date_idx
+              ON raw_ashare_daily (trade_date DESC)
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS raw_ashare_daily_code_date_idx
+              ON raw_ashare_daily (ts_code, trade_date DESC)
+        """)
+    conn.commit()
+
+    today = date.today()
+    cur_max = max_date(conn, "raw_ashare_daily")
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("A-share daily up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    if cur_max is None or force:
+        start = _ashare_backfill_start(today)
+        log.info(
+            "A-share daily: %s, backfilling from %s …",
+            "forced" if force else "first run",
+            start,
+        )
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("A-share daily: incremental fetch %s → %s …", start, today)
+
+    if start > today:
+        log.info("A-share daily: already up-to-date.")
+        return 0
+
+    chunks = _ashare_fetch_chunks(start, today)
+    total_upserted = 0
+    timeout = int(os.environ.get("ASHARE_ETL_TIMEOUT", "7200"))
+    script = _ashare_daily_script()
+    source = _ashare_data_source()
+    log.info("A-share daily: source=%s script=%s", source, script)
+
+    for idx, (chunk_start, chunk_end) in enumerate(chunks, 1):
+        log.info(
+            "A-share daily: chunk %d/%d  %s → %s …",
+            idx, len(chunks), chunk_start, chunk_end,
+        )
+        extra_env = {}
+        if source == "akshare":
+            # Single-day chunks use fast spot snapshot; multi-day uses per-stock hist.
+            extra_env["ASHARE_AK_MODE"] = "spot" if chunk_start == chunk_end else "hist"
+        out = run_script(
+            script,
+            extra_args=[iso(chunk_start), iso(chunk_end)],
+            extra_env=extra_env,
+            timeout=timeout,
+            log_stderr=True,
+        )
+        if not out or out.get("error"):
+            if out and out.get("quota_exceeded"):
+                log.warning(
+                    "A-share daily: API quota hit at chunk %d/%d (%s→%s). "
+                    "Stopping backfill; %d rows saved so far.",
+                    idx, len(chunks), chunk_start, chunk_end, total_upserted,
+                )
+                if total_upserted > 0:
+                    return total_upserted
+                return 0
+            raise RuntimeError(f"A-share daily fetch failed ({chunk_start}→{chunk_end}): {out}")
+
+        rows_raw = out.get("data") or []
+        codes_found = out.get("codes") or []
+        log.info(
+            "A-share daily: chunk %d/%d — %d codes, %d raw rows",
+            idx, len(chunks), len(codes_found), len(rows_raw),
+        )
+        if not rows_raw:
+            log.warning(
+                "A-share daily: empty data for %s → %s (likely quota); stopping backfill.",
+                chunk_start, chunk_end,
+            )
+            if total_upserted > 0:
+                log.info("A-share daily: partial backfill done, %d rows saved.", total_upserted)
+                return total_upserted
+            return 0
+
+        n = _upsert_ashare_rows(conn, rows_raw)
+        total_upserted += n
+        log.info("A-share daily: chunk %d/%d upserted %d rows.", idx, len(chunks), n)
+
+    if total_upserted == 0:
+        log.warning("A-share daily: no rows upserted.")
+        return 0
+
+    log.info("A-share daily: done, %d total rows upserted.", total_upserted)
+    return total_upserted
+
+
+def _ashare_board(ts_code: str) -> str:
+    base, _, suffix = ts_code.partition(".")
+    if suffix == "BJ" or base.startswith("920"):
+        return "北交所"
+    if base.startswith("688"):
+        return "科创板"
+    if base.startswith("300"):
+        return "创业板"
+    if base.startswith(("600", "601", "603", "605")):
+        return "上证主板"
+    if base.startswith(("000", "001", "002", "003")):
+        return "深证主板"
+    return "其他"
+
+
+def _pct_rank_series(values: list[float], lookback: int) -> list[float]:
+    out: list[float] = []
+    for i, v in enumerate(values):
+        window = values[max(0, i - lookback + 1): i + 1]
+        rank = sum(1 for x in window if x <= v)
+        out.append(round(rank / len(window) * 100, 2))
+    return out
+
+
+def _sma_series(values: list[float | None], window: int) -> list[float | None]:
+    out: list[float | None] = []
+    for i in range(len(values)):
+        sl = [x for x in values[max(0, i - window + 1): i + 1] if x is not None]
+        out.append(round(sum(sl) / len(sl), 2) if sl else None)
+    return out
+
+
+def step_ashare_index(conn, *, force: bool = False) -> int:
+    """Fetch 全A benchmark index close via AkShare (default) or Choice."""
+    index_code = os.environ.get("ASHARE_INDEX_CODE", "000300.SH")
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_ashare_index_daily (
+                trade_date  DATE          NOT NULL,
+                ts_code     VARCHAR(20)   NOT NULL,
+                close       NUMERIC(12,4) NOT NULL,
+                source      VARCHAR(30)   NOT NULL DEFAULT 'choice',
+                fetched_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+                CONSTRAINT raw_ashare_index_daily_uq UNIQUE (trade_date, ts_code)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS raw_ashare_index_daily_code_date_idx
+              ON raw_ashare_index_daily (ts_code, trade_date DESC)
+        """)
+    conn.commit()
+
+    today = date.today()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(trade_date) FROM raw_ashare_index_daily WHERE ts_code = %s",
+            (index_code,),
+        )
+        cur_max = cur.fetchone()[0]
+
+    if not force and cur_max and cur_max >= today - timedelta(days=1):
+        log.info("A-share index %s up-to-date (%s), skipping.", index_code, cur_max)
+        return 0
+
+    if cur_max is None or force:
+        start = _ashare_backfill_start(today)
+        log.info(
+            "A-share index %s: %s, backfilling from %s …",
+            index_code,
+            "forced" if force else "first run",
+            start,
+        )
+    else:
+        start = cur_max + timedelta(days=1)
+        log.info("A-share index %s: incremental fetch %s → %s …", index_code, start, today)
+
+    if start > today:
+        log.info("A-share index: already up-to-date.")
+        return 0
+
+    out = run_script(
+        _ashare_index_script(),
+        extra_args=[iso(start), iso(today)],
+        timeout=int(os.environ.get("ASHARE_ETL_TIMEOUT", "300")),
+    )
+    if not out or out.get("error"):
+        log.warning(
+            "A-share index fetch failed for %s (%s); charts will use synthetic 全A from stock data.",
+            index_code,
+            out.get("error") if out else "no output",
+        )
+        return 0
+
+    rows_raw = out.get("data") or []
+    records = []
+    for r in rows_raw:
+        d = to_date(str(r.get("date", "")).replace("-", ""))
+        cl = safe_float(r.get("close"))
+        code = (r.get("ts_code") or index_code).strip()
+        src = (r.get("source") or _ashare_data_source()).strip() or "akshare"
+        if d and cl is not None:
+            records.append((d, code, cl, src))
+
+    if not records:
+        log.warning("A-share index: no rows returned for %s → %s.", start, today)
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_ashare_index_daily (trade_date, ts_code, close, source)
+            VALUES %s
+            ON CONFLICT (trade_date, ts_code) DO UPDATE
+                SET close = EXCLUDED.close, fetched_at = NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    log.info("A-share index %s: upserted %d rows.", index_code, len(records))
+    return len(records)
+
+
+def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
+    """Compute daily A-share crowding metrics from raw_ashare_daily.
+
+    Primary crowding signal (reference-style):
+      - market_turn: amount-weighted average turnover (%)
+      - crowding_pct: percentile of market_turn vs prior N trading days (default 250)
+      - crowding_smooth: N-day SMA of crowding_pct (default 20) — used in charts
+
+    Auxiliary concentration metrics:
+      - hhi, top3_share, top10_share, board_shares
+    """
+    lookback = int(os.environ.get("ASHARE_CROWDING_LOOKBACK", "250"))
+    smooth_window = int(os.environ.get("ASHARE_CROWDING_SMOOTH", "20"))
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_ashare_crowding_daily (
+                trade_date       DATE          PRIMARY KEY,
+                total_amount     NUMERIC(20,2),
+                market_turn      NUMERIC(10,4),
+                hhi              NUMERIC(12,8),
+                top3_share       NUMERIC(8,4),
+                top10_share      NUMERIC(8,4),
+                crowding_pct     NUMERIC(6,2),
+                crowding_smooth  NUMERIC(6,2),
+                top_board        VARCHAR(30),
+                top_board_share  NUMERIC(8,4),
+                board_shares     JSONB,
+                computed_at      TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS derived_ashare_crowding_daily_date_idx
+              ON derived_ashare_crowding_daily (trade_date DESC)
+        """)
+        cur.execute(
+            "ALTER TABLE derived_ashare_crowding_daily "
+            "ADD COLUMN IF NOT EXISTS market_turn NUMERIC(10,4)"
+        )
+        cur.execute(
+            "ALTER TABLE derived_ashare_crowding_daily "
+            "ADD COLUMN IF NOT EXISTS crowding_smooth NUMERIC(6,2)"
+        )
+    conn.commit()
+
+    with conn.cursor() as cur:
+        if force:
+            cur.execute(
+                "SELECT DISTINCT trade_date FROM raw_ashare_daily ORDER BY trade_date"
+            )
+        else:
+            cur.execute("""
+                SELECT DISTINCT r.trade_date
+                FROM raw_ashare_daily r
+                LEFT JOIN derived_ashare_crowding_daily d
+                  ON d.trade_date = r.trade_date
+                WHERE d.trade_date IS NULL
+                   OR d.market_turn IS NULL
+                   OR d.crowding_smooth IS NULL
+                ORDER BY r.trade_date
+            """)
+        dates_to_compute = [row[0] for row in cur.fetchall()]
+
+    if not dates_to_compute:
+        log.info("A-share crowding: up-to-date, skipping.")
+        return 0
+
+    log.info("A-share crowding: computing %d dates …", len(dates_to_compute))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trade_date, ts_code, amount, turn
+            FROM raw_ashare_daily
+            WHERE trade_date = ANY(%s) AND amount > 0
+            """,
+            (dates_to_compute,),
+        )
+        raw_rows = cur.fetchall()
+
+    by_date: dict[date, list[tuple[str, float, float | None]]] = {}
+    for td, code, amt, turn in raw_rows:
+        if amt is None:
+            continue
+        by_date.setdefault(td, []).append((code, float(amt), safe_float(turn)))
+
+    pending: list[tuple] = []
+
+    for td in sorted(by_date.keys()):
+        stocks = by_date[td]
+        total = sum(a for _, a, _ in stocks)
+        if total <= 0:
+            continue
+
+        hhi = sum((a / total) ** 2 for _, a, _ in stocks)
+        sorted_amts = sorted((a for _, a, _ in stocks), reverse=True)
+        top3_share = sum(sorted_amts[:3]) / total * 100
+        top10_share = sum(sorted_amts[:10]) / total * 100
+
+        turn_amt = sum(a for _, a, t in stocks if t is not None and t > 0)
+        if turn_amt > 0:
+            market_turn = sum(a * t for _, a, t in stocks if t is not None and t > 0) / turn_amt
+        else:
+            market_turn = None
+
+        board_totals: dict[str, float] = {}
+        for code, amt, _ in stocks:
+            board = _ashare_board(code)
+            board_totals[board] = board_totals.get(board, 0.0) + amt
+        board_shares = {
+            b: round(amt / total * 100, 2) for b, amt in board_totals.items()
+        }
+        top_board = max(board_shares, key=board_shares.get)
+        top_board_share = board_shares[top_board]
+
+        pending.append((
+            td,
+            total,
+            round(market_turn, 4) if market_turn is not None else None,
+            hhi,
+            round(top3_share, 4),
+            round(top10_share, 4),
+            top_board,
+            top_board_share,
+            json.dumps(board_shares, ensure_ascii=False),
+        ))
+
+    if not pending:
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO derived_ashare_crowding_daily
+                (trade_date, total_amount, market_turn, hhi, top3_share, top10_share,
+                 top_board, top_board_share, board_shares)
+            VALUES %s
+            ON CONFLICT (trade_date) DO UPDATE
+                SET total_amount = EXCLUDED.total_amount,
+                    market_turn = EXCLUDED.market_turn,
+                    hhi = EXCLUDED.hhi,
+                    top3_share = EXCLUDED.top3_share,
+                    top10_share = EXCLUDED.top10_share,
+                    top_board = EXCLUDED.top_board,
+                    top_board_share = EXCLUDED.top_board_share,
+                    board_shares = EXCLUDED.board_shares,
+                    computed_at = NOW()
+            """,
+            pending,
+        )
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT trade_date, market_turn
+            FROM derived_ashare_crowding_daily
+            WHERE market_turn IS NOT NULL
+            ORDER BY trade_date
+        """)
+        hist_rows = cur.fetchall()
+
+    if not hist_rows:
+        return 0
+
+    all_dates = [row[0] for row in hist_rows]
+    turns = [float(row[1]) for row in hist_rows]
+    pct_series = _pct_rank_series(turns, lookback)
+    smooth_series = _sma_series(pct_series, smooth_window)
+
+    score_rows = [
+        (all_dates[i], pct_series[i], smooth_series[i])
+        for i in range(len(all_dates))
+        if smooth_series[i] is not None
+    ]
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            UPDATE derived_ashare_crowding_daily AS d
+               SET crowding_pct = v.crowding_pct::numeric,
+                   crowding_smooth = v.crowding_smooth::numeric,
+                   computed_at = NOW()
+              FROM (VALUES %s) AS v(trade_date, crowding_pct, crowding_smooth)
+             WHERE d.trade_date = v.trade_date::date
+            """,
+            score_rows,
+        )
+    conn.commit()
+    log.info(
+        "A-share crowding: upserted %d rows, rescored %d dates (lookback=%d, smooth=%d).",
+        len(pending),
+        len(score_rows),
+        lookback,
+        smooth_window,
+    )
+    return len(pending)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # STEP 5 — Derived: basis_daily  (annualized basis for far/near L1/L)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2785,6 +3330,9 @@ ORDERED_STEPS = [
     "spot_closes",
     "futures_latest",
     "commodity_amounts",
+    "ashare_daily",
+    "ashare_index",
+    "ashare_crowding",
     "derive_basis",
     "derive_basis_cont",
     "repair_settle_returns",
@@ -2907,6 +3455,9 @@ def main():
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
+        "ashare_daily":        lambda: step_ashare_daily(conn, force=force),
+        "ashare_index":        lambda: step_ashare_index(conn, force=force),
+        "ashare_crowding":     lambda: step_compute_ashare_crowding(conn, force=force),
         "derive_basis":          lambda: step_compute_basis_daily(conn, force=force),
         "derive_basis_cont":     lambda: step_compute_basis_cont_daily(conn, force=force),
         "repair_settle_returns": lambda: step_repair_settle_returns(conn),
