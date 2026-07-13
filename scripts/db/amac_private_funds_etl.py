@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS amac_private_funds (
     establish_date      DATE,
     put_on_record_date  DATE,
     detail_url          TEXT,
+    fund_type           TEXT,
     source_file         TEXT NOT NULL DEFAULT 'amac_api',
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT amac_private_funds_fund_no_uq UNIQUE (fund_no)
@@ -124,6 +125,9 @@ CREATE INDEX IF NOT EXISTS idx_amac_private_funds_working_state
 
 CREATE INDEX IF NOT EXISTS idx_amac_private_funds_put_on_record_date
     ON amac_private_funds (put_on_record_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_amac_private_funds_fund_type
+    ON amac_private_funds (fund_type);
 
 CREATE TABLE IF NOT EXISTS amac_private_funds_sync_state (
     id                      TEXT PRIMARY KEY DEFAULT 'default',
