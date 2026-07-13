@@ -47,6 +47,7 @@ type ContractJob = {
   selectedFund: FundMatchCandidate | null
   currentElements: ExtractedFundElements | null
   loadingCurrent: boolean
+  currentLoadVersion: number
   selectedFields: Record<ElementKey, boolean>
   applyStatus: "idle" | "applying" | "done" | "error"
   applyMessage?: string
@@ -213,6 +214,7 @@ function FieldCompareRow({
 export function OperationsElementExtractView() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const currentLoadRef = useRef(0)
 
   const [files, setFiles] = useState<File[]>([])
   const [jobs, setJobs] = useState<ContractJob[]>([])
@@ -273,17 +275,39 @@ export function OperationsElementExtractView() {
     const beian = activeJob?.selectedFund?.beian_hao
     if (!jobId || !beian) return
 
+    const requestId = ++currentLoadRef.current
     updateJob(jobId, { loadingCurrent: true, currentElements: null })
     fetch(`/ma/api/ops/fund-elements?beian_hao=${encodeURIComponent(beian)}`)
       .then((r) => r.json())
       .then((data) => {
+        if (requestId !== currentLoadRef.current) return
         updateJob(jobId, {
           currentElements: data?.error ? null : (data as ExtractedFundElements),
           loadingCurrent: false,
         })
       })
-      .catch(() => updateJob(jobId, { currentElements: null, loadingCurrent: false }))
-  }, [activeJob?.id, activeJob?.selectedFund?.beian_hao])
+      .catch(() => {
+        if (requestId !== currentLoadRef.current) return
+        updateJob(jobId, { currentElements: null, loadingCurrent: false })
+      })
+  }, [activeJob?.id, activeJob?.selectedFund?.beian_hao, activeJob?.currentLoadVersion])
+
+  function selectTargetFund(jobId: string, fund: FundMatchCandidate) {
+    setJobs((prev) =>
+      prev.map((job) =>
+        job.id === jobId
+          ? {
+              ...job,
+              selectedFund: fund,
+              fundInput: fund.product_name,
+              currentElements: null,
+              loadingCurrent: true,
+              currentLoadVersion: job.currentLoadVersion + 1,
+            }
+          : job,
+      ),
+    )
+  }
 
   function updateJob(id: string, patch: Partial<ContractJob>) {
     setJobs((prev) => prev.map((job) => (job.id === id ? { ...job, ...patch } : job)))
@@ -353,6 +377,7 @@ export function OperationsElementExtractView() {
         selectedFund: null,
         currentElements: null,
         loadingCurrent: false,
+        currentLoadVersion: 0,
         selectedFields: buildDefaultSelection(null),
         applyStatus: "idle",
         contractSaveStatus: "idle",
@@ -374,6 +399,7 @@ export function OperationsElementExtractView() {
       selectedFund,
       currentElements: null,
       loadingCurrent: Boolean(selectedFund),
+      currentLoadVersion: selectedFund ? 1 : 0,
       selectedFields: buildDefaultSelection(extracted),
       applyStatus: "idle",
       contractSaveStatus: "idle",
@@ -414,6 +440,7 @@ export function OperationsElementExtractView() {
             selectedFund: null,
             currentElements: null,
             loadingCurrent: false,
+            currentLoadVersion: 0,
             selectedFields: buildDefaultSelection(null),
             applyStatus: "idle",
             contractSaveStatus: "idle",
@@ -755,7 +782,13 @@ export function OperationsElementExtractView() {
                 <input
                   value={activeJob.fundInput}
                   onChange={(e) => {
-                    updateJob(activeJob.id, { fundInput: e.target.value, selectedFund: null, currentElements: null, loadingCurrent: false })
+                    updateJob(activeJob.id, {
+                      fundInput: e.target.value,
+                      selectedFund: null,
+                      currentElements: null,
+                      loadingCurrent: false,
+                      currentLoadVersion: 0,
+                    })
                   }}
                   onFocus={() => setFundShowDropdown(true)}
                   placeholder="输入产品名称或备案号"
@@ -768,12 +801,7 @@ export function OperationsElementExtractView() {
                         key={opt.beian_hao}
                         type="button"
                         onClick={() => {
-                          updateJob(activeJob.id, {
-                            selectedFund: opt,
-                            fundInput: opt.product_name,
-                            currentElements: null,
-                            loadingCurrent: true,
-                          })
+                          selectTargetFund(activeJob.id, opt)
                           setFundShowDropdown(false)
                           setFundSearchError(null)
                         }}
@@ -799,14 +827,7 @@ export function OperationsElementExtractView() {
                       <button
                         key={fund.beian_hao}
                         type="button"
-                        onClick={() => {
-                          updateJob(activeJob.id, {
-                            selectedFund: fund,
-                            fundInput: fund.product_name,
-                            currentElements: null,
-                            loadingCurrent: true,
-                          })
-                        }}
+                        onClick={() => selectTargetFund(activeJob.id, fund)}
                         className={[
                           "rounded-full border px-3 py-1 text-xs transition-colors",
                           activeJob.selectedFund?.beian_hao === fund.beian_hao

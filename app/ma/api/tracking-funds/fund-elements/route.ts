@@ -49,7 +49,7 @@ export async function GET(req: Request) {
             fee_admin_service, fee_pay,
             updated_at::text
      FROM basicinfo_bfl_track
-     WHERE register_number = $1
+     WHERE register_number = $1 OR record_key = $1
      ORDER BY updated_at DESC NULLS LAST, id DESC
      LIMIT 1`,
     [beian_hao]

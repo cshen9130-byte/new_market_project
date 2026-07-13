@@ -12,47 +12,75 @@ const TEMP_OPEN_MAP: Record<number, string> = {
   3: "可临开回",
 }
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url)
-  const beian_hao = (searchParams.get("beian_hao") || "").trim()
-  if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
+type BasicinfoTrackRow = {
+  fund_name: string | null
+  register_number: string | null
+  advisor: string | null
+  inception_date: string | null
+  puton_date: string | null
+  mandator_name: string | null
+  open_day: string | null
+  is_temporary_open: number | null
+  fee_purchase: string | null
+  add_amount: string | null
+  fee_redeem: string | null
+  precautious_line: string | null
+  closed_period: string | null
+  stop_line: string | null
+  fee_manage_rate: string | null
+  fee_trust: string | null
+  fee_manage: string | null
+  fee_admin_service: string | null
+  fee_pay: string | null
+}
 
-  const [elementsRows, teamRows, pfiRows, bflRows] = await Promise.all([
-    query<{
-      fund_name: string | null
-      register_number: string | null
-      advisor: string | null
-      inception_date: string | null
-      operation_date: string | null
-      puton_date: string | null
-      mandator_name: string | null
-      open_day: string | null
-      is_temporary_open: number | null
-      fee_purchase: string | null
-      add_amount: string | null
-      fee_redeem: string | null
-      precautious_line: string | null
-      closed_period: string | null
-      stop_line: string | null
-      fee_manage_rate: string | null
-      fee_trust: string | null
-      fee_manage: string | null
-      fee_admin_service: string | null
-      fee_pay: string | null
-    }>(
+async function loadBasicinfoTrack(beian_hao: string): Promise<BasicinfoTrackRow[]> {
+  try {
+    return await query<BasicinfoTrackRow>(
       `SELECT fund_name, register_number, advisor,
-              inception_date::text, operation_date::text, puton_date::text, mandator_name,
+              inception_date::text, puton_date::text, mandator_name,
               open_day, is_temporary_open,
               fee_purchase, add_amount, fee_redeem,
               precautious_line, closed_period, stop_line,
               fee_manage_rate::text, fee_trust, fee_manage,
               fee_admin_service, fee_pay
        FROM basicinfo_bfl_track
-       WHERE register_number = $1
+       WHERE register_number = $1 OR record_key = $1
        ORDER BY updated_at DESC NULLS LAST, id DESC
        LIMIT 1`,
-      [beian_hao]
-    ).catch(() => []),
+      [beian_hao],
+    )
+  } catch (err) {
+    console.error("[ops/fund-elements GET] basicinfo_bfl_track", err)
+    return []
+  }
+}
+
+async function loadOperationDate(beian_hao: string): Promise<string | null> {
+  try {
+    const rows = await query<{ operation_date: string | null }>(
+      `SELECT operation_date::text AS operation_date
+       FROM basicinfo_bfl_track
+       WHERE register_number = $1 OR record_key = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [beian_hao],
+    )
+    const value = rows[0]?.operation_date
+    return value ? value.slice(0, 10) : null
+  } catch {
+    // operation_date column may not exist until migration 013 is applied
+    return null
+  }
+}
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url)
+  const beian_hao = (searchParams.get("beian_hao") || "").trim()
+  if (!beian_hao) return NextResponse.json({ error: "missing beian_hao" }, { status: 400 })
+
+  const [elementsRows, teamRows, pfiRows, bflRows, operation_date] = await Promise.all([
+    loadBasicinfoTrack(beian_hao),
 
     query<{
       platform_strategy_one: string | null
@@ -83,6 +111,8 @@ export async function GET(req: Request) {
        LIMIT 1`,
       [beian_hao]
     ).catch(() => []),
+
+    loadOperationDate(beian_hao),
   ])
 
   const el = elementsRows[0]
@@ -107,7 +137,7 @@ export async function GET(req: Request) {
     advisor: el?.advisor ?? null,
     fund_manager,
     inception_date: el?.inception_date ? el.inception_date.slice(0, 10) : null,
-    operation_date: el?.operation_date ? el.operation_date.slice(0, 10) : null,
+    operation_date,
     puton_date: el?.puton_date ? el.puton_date.slice(0, 10) : null,
     custodian: el?.mandator_name ?? null,
     platform_l1: team?.platform_strategy_one ?? null,
@@ -273,7 +303,7 @@ export async function PATCH(req: Request) {
   try {
     const existing = await query<{ id: number }>(
       `SELECT id FROM basicinfo_bfl_track
-       WHERE register_number = $1
+       WHERE register_number = $1 OR record_key = $1
        ORDER BY updated_at DESC NULLS LAST, id DESC
        LIMIT 1`,
       [beian_hao]
