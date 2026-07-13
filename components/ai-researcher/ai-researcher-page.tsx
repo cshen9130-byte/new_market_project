@@ -87,6 +87,8 @@ interface Skill {
   steps: string[]
   /** When true, fund picker limits to exactly 1 selection */
   singleFund?: boolean
+  /** When true, skip fund picker — use KB path as primary input */
+  noFundRequired?: boolean
   /** API route path (relative to /ma/api/ai-researcher/) */
   apiPath?: string
 }
@@ -137,6 +139,21 @@ const SKILLS: Skill[] = [
     steps: ["获取目标基金信息", "构建全库候选池", "计算净值负相关性", "查询知识库补充信息", "生成对冲匹配分析报告"],
     singleFund: true,
     apiPath: "opposite-fund",
+  },
+  {
+    id: "roadshow-analysis",
+    name: "路演漏洞扫描",
+    description: "选择知识库中的路演PPT、月报等材料，AI自动扫描策略矛盾、历史叙事不一致、容量陷阱、幸存者偏差、隐藏杠杆等22类逻辑漏洞，生成尽调风险报告。",
+    icon: <ScanSearch className="h-5 w-5" />,
+    badge: "可用",
+    colors: {
+      bg: "linear-gradient(to bottom right, rgb(239 68 68 / 0.12), rgb(168 85 247 / 0.12))",
+      border: "rgb(239 68 68 / 0.28)",
+      icon: "#ef4444",
+    },
+    steps: ["读取路演文档", "查询数据库基金指标", "分析策略与净值一致性", "检测历史叙事矛盾", "生成尽调风险报告"],
+    noFundRequired: true,
+    apiPath: "roadshow-analysis",
   },
   {
     id: "trend-research",
@@ -448,6 +465,7 @@ export function AIResearcherPage() {
   const [showTaskForm, setShowTaskForm] = useState(false)
   const [selectedFunds, setSelectedFunds] = useState<FundSearchResult[]>([])
   const [kbPath, setKbPath] = useState("")
+  const [roadshowBeianHao, setRoadshowBeianHao] = useState("")
   const [tasks, setTasks] = useState<ResearchTask[]>([])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [pdfDownloading, setPdfDownloading] = useState(false)
@@ -497,6 +515,7 @@ export function AIResearcherPage() {
     setShowTaskForm(true)
     setSelectedFunds([])
     setKbPath("")
+    setRoadshowBeianHao("")
   }
 
   function handleCancelForm() {
@@ -505,11 +524,15 @@ export function AIResearcherPage() {
   }
 
   async function handleRunTask() {
-    if (!selectedSkillId || selectedFunds.length === 0) return
+    if (!selectedSkillId) return
+    const skill = SKILLS.find((s) => s.id === selectedSkillId)!
+    if (!skill.noFundRequired && selectedFunds.length === 0) return
+    if (skill.noFundRequired && !kbPath.trim()) return
 
     const taskId = `task-${Date.now()}`
-    const skill = SKILLS.find((s) => s.id === selectedSkillId)!
-    const subjects = selectedFunds.map((f) => f.product_name)
+    const subjects = skill.noFundRequired
+      ? [kbPath.trim() || "全部知识库"]
+      : selectedFunds.map((f) => f.product_name)
 
     const initialSteps: TaskStep[] = skill.steps.map((title, i) => ({
       step: i + 1,
@@ -543,8 +566,9 @@ export function AIResearcherPage() {
     abortRef.current = ctrl
 
     const apiPath = skill.apiPath ?? "compare-analysis"
-    const payload =
-      skill.singleFund
+    const payload = skill.noFundRequired
+      ? { kbPath: kbPath.trim(), beianHao: roadshowBeianHao.trim() }
+      : skill.singleFund
         ? { subject: subjects[0], kbPath }
         : { subjects, kbPath }
 
@@ -937,14 +961,14 @@ export function AIResearcherPage() {
         </div>
 
         {/* Skills */}
-        <div className="px-3 pt-4 pb-2">
-          <div className="flex items-center justify-between mb-2.5 px-1">
+        <div className="flex flex-col min-h-0 shrink-0 max-h-[52%] px-3 pt-4 pb-2">
+          <div className="flex items-center justify-between mb-2.5 px-1 shrink-0">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">研究技能</span>
             <Badge variant="secondary" className="text-xs">
               {SKILLS.filter((s) => !s.locked).length}/{SKILLS.length}
             </Badge>
           </div>
-          <div className="space-y-2">
+          <div className="overflow-y-auto space-y-2 pr-0.5">
             {SKILLS.map((skill) => (
               <button
                 key={skill.id}
@@ -986,7 +1010,7 @@ export function AIResearcherPage() {
         </div>
 
         {/* Task History */}
-        <div className="flex-1 overflow-hidden flex flex-col border-t mt-2">
+        <div className="flex-1 min-h-[8rem] overflow-hidden flex flex-col border-t mt-2">
           <div className="px-4 pt-3 pb-2 flex items-center justify-between">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">任务历史</span>
             {tasks.length > 0 && (
@@ -1038,51 +1062,89 @@ export function AIResearcherPage() {
               </div>
 
               <div className="space-y-4">
-                <div>
-                  <label className="text-sm font-medium mb-1.5 block">
-                    {selectedSkill.singleFund ? "目标基金" : "分析对象"}
-                    <span className="text-destructive ml-1">*</span>
-                    <span className="text-xs text-muted-foreground ml-2 font-normal">
-                      {selectedSkill.singleFund
-                        ? "输入一只基金名称或备案号，AI将自动搜索相似基金"
-                        : "输入基金名称或备案号，可添加多个进行对比"}
-                    </span>
-                  </label>
-                  <FundPicker
-                    selected={selectedFunds}
-                    onChange={setSelectedFunds}
-                    maxSelect={selectedSkill.singleFund ? 1 : 10}
-                    placeholder={selectedSkill.singleFund ? "输入目标基金名称或备案号..." : undefined}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-sm font-medium mb-1.5 block">
-                    知识库路径
-                    <span className="text-xs text-muted-foreground ml-2 font-normal">
-                      留空则自动全库检索；填写路径可缩小范围提高准确性
-                    </span>
-                  </label>
-                  <div className="relative">
-                    <BookOpen className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      value={kbPath}
-                      onChange={(e) => setKbPath(e.target.value)}
-                      placeholder="留空自动全库检索，或填写路径如：私募基金/尽调资料"
-                      className="pl-9"
-                    />
-                  </div>
-                </div>
+                {selectedSkill.noFundRequired ? (
+                  <>
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        路演材料路径
+                        <span className="text-destructive ml-1">*</span>
+                        <span className="text-xs text-muted-foreground ml-2 font-normal">
+                          知识库中存放路演PPT、月报、产品说明书等文件的文件夹路径
+                        </span>
+                      </label>
+                      <div className="relative">
+                        <BookOpen className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          value={kbPath}
+                          onChange={(e) => setKbPath(e.target.value)}
+                          placeholder="如：路演材料/XX基金 或 私募/尽调/某管理人"
+                          className="pl-9"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">将读取该路径下所有可读文档（PDF、Word、PPT 转文字版等）</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        基金备案号
+                        <span className="text-xs text-muted-foreground ml-2 font-normal">
+                          可选 — 填写后 AI 将从数据库调取实际净值、回撤、相关性数据进行交叉验证
+                        </span>
+                      </label>
+                      <Input
+                        value={roadshowBeianHao}
+                        onChange={(e) => setRoadshowBeianHao(e.target.value)}
+                        placeholder="例：SXS123456（选填）"
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        {selectedSkill.singleFund ? "目标基金" : "分析对象"}
+                        <span className="text-destructive ml-1">*</span>
+                        <span className="text-xs text-muted-foreground ml-2 font-normal">
+                          {selectedSkill.singleFund
+                            ? "输入一只基金名称或备案号，AI将自动搜索相似基金"
+                            : "输入基金名称或备案号，可添加多个进行对比"}
+                        </span>
+                      </label>
+                      <FundPicker
+                        selected={selectedFunds}
+                        onChange={setSelectedFunds}
+                        maxSelect={selectedSkill.singleFund ? 1 : 10}
+                        placeholder={selectedSkill.singleFund ? "输入目标基金名称或备案号..." : undefined}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium mb-1.5 block">
+                        知识库路径
+                        <span className="text-xs text-muted-foreground ml-2 font-normal">
+                          留空则自动全库检索；填写路径可缩小范围提高准确性
+                        </span>
+                      </label>
+                      <div className="relative">
+                        <BookOpen className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          value={kbPath}
+                          onChange={(e) => setKbPath(e.target.value)}
+                          placeholder="留空自动全库检索，或填写路径如：私募基金/尽调资料"
+                          className="pl-9"
+                        />
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 <div className="pt-1 flex items-center gap-3">
                   <Button
                     onClick={handleRunTask}
-                    disabled={selectedFunds.length === 0}
+                    disabled={selectedSkill.noFundRequired ? !kbPath.trim() : selectedFunds.length === 0}
                     className="gap-2"
                   >
                     <Sparkles className="h-4 w-4" />
                     开始分析
-                    {selectedFunds.length > 0 && (
+                    {!selectedSkill.noFundRequired && selectedFunds.length > 0 && (
                       <Badge variant="secondary" className="ml-1 text-xs">
                         {selectedSkill.singleFund ? selectedFunds[0].product_name : `${selectedFunds.length}个对象`}
                       </Badge>
