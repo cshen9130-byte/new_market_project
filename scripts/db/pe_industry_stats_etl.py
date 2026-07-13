@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -38,20 +39,33 @@ SEC_MANAGER_FILTER = """
     )
 """
 
-# AMAC fund.manager_type is 受托管理/自我管理 (custody mode), NOT 证券/股权 classification.
-# Classify funds by joining to 私募证券类 managers.
-SEC_FUND_JOIN = """
-    INNER JOIN (
+# Classify funds by joining to a cached list of 私募证券类 manager names.
+SEC_FUND_JOIN = "INNER JOIN sec_manager_names sm ON f.manager_name = sm.manager_name"
+
+LIQUIDATION_STATES = ("提前清算", "正常清算", "延期清算")
+
+
+def _log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+def _prepare_sec_manager_names(cur) -> int:
+    """Materialize sec manager names once so fund joins stay indexed and fast."""
+    _log("Caching 私募证券类 manager names…")
+    cur.execute("DROP TABLE IF EXISTS sec_manager_names")
+    cur.execute(
+        f"""
+        CREATE TEMP TABLE sec_manager_names AS
         SELECT DISTINCT m.manager_name
-        FROM amac_managers m
-        LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
-        WHERE {sec_manager_filter}
-    ) sm ON (
-        f.manager_name = sm.manager_name
-        OR REPLACE(REPLACE(f.manager_name, ' ', ''), '　', '')
-           = REPLACE(REPLACE(sm.manager_name, ' ', ''), '　', '')
+        {_manager_from_clause()}
+        WHERE {SEC_MANAGER_FILTER}
+        """,
     )
-""".format(sec_manager_filter=SEC_MANAGER_FILTER.strip())
+    cur.execute("CREATE INDEX sec_manager_names_manager_name_idx ON sec_manager_names (manager_name)")
+    cur.execute("SELECT COUNT(*) FROM sec_manager_names")
+    count = int(cur.fetchone()[0])
+    _log(f"Cached {count:,} sec managers")
+    return count
 
 
 def _fund_stock_state_clause(month_end: date) -> tuple[str, tuple]:
@@ -70,7 +84,6 @@ def _fund_stock_state_clause(month_end: date) -> tuple[str, tuple]:
         (month_end, list(LIQUIDATION_STATES), month_end),
     )
 
-LIQUIDATION_STATES = ("提前清算", "正常清算", "延期清算")
 
 SCALE_BUCKETS = (
     "0-5亿元",
@@ -544,14 +557,18 @@ def _monthly_stock_scales(cur, months: list[date]) -> dict[str, float]:
 
 def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
     months = _month_range(months_back)
+    _log(f"Computing monthly stats for {len(months)} months…")
+    started = time.monotonic()
+
     monthly_scales = _monthly_stock_scales(cur, months)
     current_scale = _current_stock_scale(cur)
     latest_key = months[-1].strftime("%Y-%m") if months else ""
     if latest_key:
         monthly_scales[latest_key] = current_scale
 
+    latest_fund_count = _count_stock_funds(cur, _month_end(months[-1])) if months else 0
     rows: list[tuple] = []
-    for month_start in months:
+    for index, month_start in enumerate(months, start=1):
         month_end = _month_end(month_start)
         next_month = _add_months(month_start, 1)
         month_key = month_start.strftime("%Y-%m")
@@ -563,11 +580,8 @@ def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
         liquidation_count = _count_liquidations(cur, month_start, next_month)
 
         stock_fund_scale = monthly_scales.get(month_key, 0.0)
-        if stock_fund_scale <= 0 and stock_fund_count > 0 and current_scale > 0:
-            # Fallback when metrics history has no snapshot for this month yet.
-            latest_fund_count = _count_stock_funds(cur, _month_end(months[-1]))
-            if latest_fund_count > 0:
-                stock_fund_scale = round(current_scale * stock_fund_count / latest_fund_count, 2)
+        if stock_fund_scale <= 0 and stock_fund_count > 0 and current_scale > 0 and latest_fund_count > 0:
+            stock_fund_scale = round(current_scale * stock_fund_count / latest_fund_count, 2)
 
         avg_fund_scale = (
             round(stock_fund_scale / stock_fund_count, 4)
@@ -589,6 +603,13 @@ def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
                 0,
             )
         )
+        if index == 1 or index == len(months) or index % 6 == 0:
+            _log(
+                f"  month {index}/{len(months)} {month_key}: "
+                f"funds={stock_fund_count:,}, managers={stock_manager_count:,}, scale={stock_fund_scale:,.2f}"
+            )
+
+    _log(f"Monthly stats computed in {time.monotonic() - started:.1f}s")
     return rows
 
 
@@ -609,10 +630,12 @@ def run_etl(*, dry_run: bool = False, months_back: int = 24) -> dict:
             if not dry_run:
                 conn.commit()
 
+            _prepare_sec_manager_names(cur)
             monthly_rows = compute_monthly_stats(cur, months_back=months_back)
             if not monthly_rows:
                 raise RuntimeError("No monthly stats computed")
 
+            _log("Building snapshot aggregates…")
             latest = monthly_rows[-1]
             as_of = latest[0]
             stock_fund_count = latest[4]

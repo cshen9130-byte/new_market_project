@@ -2587,28 +2587,33 @@ def step_pe_industry_stats() -> int:
     cmd = prefix + [str(script_path)]
 
     log.info("pe_industry_stats: running pe_industry_stats_etl.py …")
-    result = subprocess.run(
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=1800,
         env={**os.environ},
         cwd=str(project_root),
     )
-    stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
-    if stdout:
-        for line in stdout.splitlines():
+    stdout_lines: list[str] = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        if line:
             log.info(line)
-    if stderr:
-        for line in stderr.splitlines():
-            log.info(line)
-    if result.returncode != 0:
+            stdout_lines.append(line)
+    try:
+        proc.wait(timeout=1800)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        raise RuntimeError("pe_industry_stats_etl.py timed out after 1800s") from exc
+    stdout = "\n".join(stdout_lines).strip()
+    if proc.returncode != 0:
         raise RuntimeError(
-            f"pe_industry_stats_etl.py failed (exit {result.returncode}): "
-            f"{stderr or stdout or 'no output'}"
+            f"pe_industry_stats_etl.py failed (exit {proc.returncode}): "
+            f"{stdout or 'no output'}"
         )
 
     summary = None
