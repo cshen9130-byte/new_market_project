@@ -29,10 +29,15 @@ import {
   Sparkles,
   ScanSearch,
   ArrowLeftRight,
+  Folder,
+  FolderOpen,
+  File as FileIcon,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { MarkdownNotePreview } from "@/components/markdown-note-preview"
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -458,6 +463,88 @@ function TaskHistoryItem({
   )
 }
 
+// ── KB browser types & tree component ────────────────────────────────────────
+
+type KbDoc = { name: string; relativePath: string; extension: string }
+type KbFolder = { name: string; relativePath: string; folders: KbFolder[]; documents: KbDoc[] }
+
+function KbBrowserNode({
+  node, depth, expanded, onToggle, onSelect, selectedPath,
+}: {
+  node: KbFolder
+  depth: number
+  expanded: Set<string>
+  onToggle: (path: string) => void
+  onSelect: (path: string) => void
+  selectedPath: string
+}) {
+  const isExpanded = expanded.has(node.relativePath)
+  const isSelected = selectedPath === node.relativePath
+  return (
+    <div>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => onToggle(node.relativePath)}
+        onKeyDown={(e) => e.key === "Enter" && onToggle(node.relativePath)}
+        style={{ paddingLeft: `${depth * 16 + 8}px` }}
+        className={cn(
+          "w-full flex items-center gap-2 rounded py-1.5 pr-2 text-left text-sm transition-colors cursor-pointer select-none",
+          isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted",
+        )}
+      >
+        <span className="shrink-0 w-3.5 flex items-center justify-center">
+          {isExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        </span>
+        {isExpanded
+          ? <FolderOpen className="h-3.5 w-3.5 shrink-0 text-amber-500" />
+          : <Folder className="h-3.5 w-3.5 shrink-0 text-amber-500" />}
+        <span className="truncate flex-1">{node.name}</span>
+        <button
+          onClick={(e) => { e.stopPropagation(); onSelect(node.relativePath) }}
+          className={cn(
+            "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+            isSelected
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
+          )}
+        >
+          选此文件夹
+        </button>
+      </div>
+      {isExpanded && (
+        <div>
+          {node.folders.map((child) => (
+            <KbBrowserNode
+              key={child.relativePath}
+              node={child}
+              depth={depth + 1}
+              expanded={expanded}
+              onToggle={onToggle}
+              onSelect={onSelect}
+              selectedPath={selectedPath}
+            />
+          ))}
+          {node.documents.map((doc) => (
+            <button
+              key={doc.relativePath}
+              onClick={() => onSelect(doc.relativePath)}
+              style={{ paddingLeft: `${(depth + 1) * 16 + 8 + 14}px` }}
+              className={cn(
+                "w-full flex items-center gap-2 rounded py-1.5 pr-2 text-left text-sm transition-colors",
+                selectedPath === doc.relativePath ? "bg-primary/10 text-primary" : "hover:bg-muted",
+              )}
+            >
+              <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{doc.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Main page component ────────────────────────────────────────────────────────
 
 export function AIResearcherPage() {
@@ -466,6 +553,43 @@ export function AIResearcherPage() {
   const [selectedFunds, setSelectedFunds] = useState<FundSearchResult[]>([])
   const [kbPath, setKbPath] = useState("")
   const [roadshowBeianHao, setRoadshowBeianHao] = useState("")
+  // ── KB folder browser ────────────────────────────────────────────────────
+  const [kbBrowserOpen, setKbBrowserOpen] = useState(false)
+  const [kbTree, setKbTree] = useState<KbFolder | null>(null)
+  const [kbTreeLoading, setKbTreeLoading] = useState(false)
+  const [kbBrowserExpanded, setKbBrowserExpanded] = useState<Set<string>>(new Set())
+
+  async function openKbBrowser() {
+    setKbBrowserOpen(true)
+    if (kbTree) return
+    setKbTreeLoading(true)
+    try {
+      const res = await fetch("/api/knowledge-base/tree")
+      const data = await res.json()
+      if (data.ok && data.tree) {
+        setKbTree(data.tree)
+        // Expand root folders by default
+        const rootPaths = new Set((data.tree.folders ?? []).map((f: KbFolder) => f.relativePath))
+        setKbBrowserExpanded(rootPaths as Set<string>)
+      }
+    } catch { /* ignore */ } finally {
+      setKbTreeLoading(false)
+    }
+  }
+
+  function toggleKbFolder(path: string) {
+    setKbBrowserExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  function selectKbPath(path: string) {
+    setKbPath(path)
+    setKbBrowserOpen(false)
+  }
   const [tasks, setTasks] = useState<ResearchTask[]>([])
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null)
   const [pdfDownloading, setPdfDownloading] = useState(false)
@@ -961,14 +1085,14 @@ export function AIResearcherPage() {
         </div>
 
         {/* Skills */}
-        <div className="flex flex-col min-h-0 shrink-0 max-h-[52%] px-3 pt-4 pb-2">
+        <div className="flex flex-col shrink-0 px-3 pt-4 pb-2" style={{ maxHeight: "calc(100% - 200px)", minHeight: 0 }}>
           <div className="flex items-center justify-between mb-2.5 px-1 shrink-0">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">研究技能</span>
             <Badge variant="secondary" className="text-xs">
               {SKILLS.filter((s) => !s.locked).length}/{SKILLS.length}
             </Badge>
           </div>
-          <div className="overflow-y-auto space-y-2 pr-0.5">
+          <div className="overflow-y-auto space-y-2 pr-0.5 min-h-0">
             {SKILLS.map((skill) => (
               <button
                 key={skill.id}
@@ -1010,7 +1134,7 @@ export function AIResearcherPage() {
         </div>
 
         {/* Task History */}
-        <div className="flex-1 min-h-[8rem] overflow-hidden flex flex-col border-t mt-2">
+        <div className="flex-1 overflow-hidden flex flex-col border-t" style={{ minHeight: "160px" }}>
           <div className="px-4 pt-3 pb-2 flex items-center justify-between">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">任务历史</span>
             {tasks.length > 0 && (
@@ -1066,28 +1190,38 @@ export function AIResearcherPage() {
                   <>
                     <div>
                       <label className="text-sm font-medium mb-1.5 block">
-                        路演材料路径
+                        路演材料
                         <span className="text-destructive ml-1">*</span>
                         <span className="text-xs text-muted-foreground ml-2 font-normal">
-                          知识库中存放路演PPT、月报、产品说明书等文件的文件夹路径
+                          从知识库中选择存放路演PPT、月报、产品说明书等文件的文件夹
                         </span>
                       </label>
-                      <div className="relative">
-                        <BookOpen className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                        <Input
-                          value={kbPath}
-                          onChange={(e) => setKbPath(e.target.value)}
-                          placeholder="如：路演材料/XX基金 或 私募/尽调/某管理人"
-                          className="pl-9"
-                        />
+                      <div className="flex gap-2">
+                        <div className="relative flex-1">
+                          <Folder className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                          <Input
+                            value={kbPath}
+                            onChange={(e) => setKbPath(e.target.value)}
+                            placeholder="点击「浏览」从知识库选择文件夹或文件"
+                            className="pl-9 pr-2"
+                          />
+                        </div>
+                        <Button type="button" variant="outline" onClick={openKbBrowser} className="shrink-0">
+                          <FolderOpen className="mr-1.5 h-4 w-4" />
+                          浏览
+                        </Button>
                       </div>
-                      <p className="text-xs text-muted-foreground mt-1">将读取该路径下所有可读文档（PDF、Word、PPT 转文字版等）</p>
+                      {kbPath && (
+                        <p className="text-xs text-muted-foreground mt-1">
+                          将读取「{kbPath}」下所有可读文档（PDF、Word 等）
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="text-sm font-medium mb-1.5 block">
                         基金备案号
                         <span className="text-xs text-muted-foreground ml-2 font-normal">
-                          可选 — 填写后 AI 将从数据库调取实际净值、回撤、相关性数据进行交叉验证
+                          可选 — 填写后 AI 将从数据库调取净值、回撤、相关性数据进行交叉验证
                         </span>
                       </label>
                       <Input
@@ -1351,6 +1485,59 @@ export function AIResearcherPage() {
           </div>
         )}
       </div>
+
+      {/* ── KB Folder Browser Dialog ── */}
+      <Dialog open={kbBrowserOpen} onOpenChange={setKbBrowserOpen}>
+        <DialogContent className="flex max-h-[70vh] max-w-md flex-col gap-0 p-0">
+          <DialogHeader className="px-4 pt-4 pb-3 border-b shrink-0">
+            <DialogTitle className="text-sm">选择路演材料文件夹或文件</DialogTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">点击文件夹或文件即可选中作为分析范围</p>
+          </DialogHeader>
+          <ScrollArea className="flex-1 overflow-auto px-2 py-2">
+            {kbTreeLoading ? (
+              <div className="flex items-center justify-center py-10 text-sm text-muted-foreground gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                加载知识库目录...
+              </div>
+            ) : kbTree ? (
+              <div className="space-y-0.5">
+                {(kbTree.folders ?? []).length === 0 && (kbTree.documents ?? []).length === 0 ? (
+                  <div className="py-8 text-center text-sm text-muted-foreground">知识库暂无文件</div>
+                ) : (
+                  <>
+                    {(kbTree.folders ?? []).map((folder) => (
+                      <KbBrowserNode
+                        key={folder.relativePath}
+                        node={folder}
+                        depth={0}
+                        expanded={kbBrowserExpanded}
+                        onToggle={toggleKbFolder}
+                        onSelect={selectKbPath}
+                        selectedPath={kbPath}
+                      />
+                    ))}
+                    {(kbTree.documents ?? []).map((doc) => (
+                      <button
+                        key={doc.relativePath}
+                        onClick={() => selectKbPath(doc.relativePath)}
+                        className={cn(
+                          "w-full flex items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors",
+                          kbPath === doc.relativePath ? "bg-primary/10 text-primary" : "hover:bg-muted",
+                        )}
+                      >
+                        <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{doc.name}</span>
+                      </button>
+                    ))}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="py-8 text-center text-sm text-muted-foreground">无法加载知识库目录</div>
+            )}
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
