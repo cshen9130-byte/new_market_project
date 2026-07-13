@@ -26,8 +26,43 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
+# 私募证券类 = 私募证券投资基金管理人 + 私募资产配置类基金管理人 (same scope as 火富牛)
 SEC_MANAGER_FILTER = """
-    (m.org_type LIKE '%%私募证券%%' OR m.org_type LIKE '%%私募资产配置%%')
+    (
+        m.org_type LIKE '%%私募证券%%'
+        OR m.org_type LIKE '%%私募资产配置%%'
+        OR d.org_type LIKE '%%私募证券%%'
+        OR d.org_type LIKE '%%私募资产配置%%'
+        OR d.business_type LIKE '%%私募证券%%'
+        OR d.business_type LIKE '%%私募资产配置%%'
+    )
+"""
+
+# Classify funds directly from AMAC fund list manager_type — avoids dropping rows
+# when manager_name does not exactly match amac_managers. Fall back to manager
+# org_type when manager_type is missing on the fund row.
+SEC_FUND_FILTER = """
+    (
+        f.manager_type LIKE '%%私募证券%%'
+        OR f.manager_type LIKE '%%私募资产配置%%'
+        OR (
+            (f.manager_type IS NULL OR TRIM(f.manager_type) = '' OR f.manager_type = '-')
+            AND EXISTS (
+                SELECT 1
+                FROM amac_managers m
+                LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
+                WHERE m.manager_name = f.manager_name
+                  AND (
+                      m.org_type LIKE '%%私募证券%%'
+                      OR m.org_type LIKE '%%私募资产配置%%'
+                      OR d.org_type LIKE '%%私募证券%%'
+                      OR d.org_type LIKE '%%私募资产配置%%'
+                      OR d.business_type LIKE '%%私募证券%%'
+                      OR d.business_type LIKE '%%私募资产配置%%'
+                  )
+            )
+        )
+    )
 """
 
 LIQUIDATION_STATES = ("提前清算", "正常清算", "延期清算")
@@ -144,13 +179,35 @@ def _month_range(months_back: int) -> list[date]:
     return months
 
 
+def _manager_from_clause() -> str:
+    return """
+        FROM amac_managers m
+        LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
+    """
+
+
+def _sum_scale_from_buckets(bucket_counts: dict[str, int], *, total_managers: int) -> float:
+    """Sum manager-scale midpoints; impute average for managers missing scale data."""
+    known_total = 0.0
+    known_count = 0
+    for scale_range, count in bucket_counts.items():
+        midpoint = SCALE_MIDPOINTS.get(scale_range)
+        if midpoint is None:
+            continue
+        known_total += midpoint * int(count)
+        known_count += int(count)
+    missing = max(total_managers - known_count, 0)
+    if known_count > 0 and missing > 0:
+        known_total += (known_total / known_count) * missing
+    return round(known_total, 2)
+
+
 def _count_new_filings(cur, month_start: date, month_end: date) -> int:
     cur.execute(
         f"""
         SELECT COUNT(*)
         FROM amac_private_funds f
-        JOIN amac_managers m ON m.manager_name = f.manager_name
-        WHERE {SEC_MANAGER_FILTER}
+        WHERE {SEC_FUND_FILTER}
           AND f.put_on_record_date >= %s
           AND f.put_on_record_date <= %s
         """,
@@ -164,19 +221,12 @@ def _count_stock_funds(cur, month_end: date) -> int:
         f"""
         SELECT COUNT(*)
         FROM amac_private_funds f
-        JOIN amac_managers m ON m.manager_name = f.manager_name
-        WHERE {SEC_MANAGER_FILTER}
+        WHERE {SEC_FUND_FILTER}
           AND f.put_on_record_date IS NOT NULL
           AND f.put_on_record_date <= %s
-          AND (
-            f.working_state = '正在运作'
-            OR (
-              f.working_state = ANY(%s)
-              AND f.updated_at::date > %s
-            )
-          )
+          AND f.working_state = '正在运作'
         """,
-        (month_end, list(LIQUIDATION_STATES), month_end),
+        (month_end,),
     )
     return int(cur.fetchone()[0])
 
@@ -185,7 +235,7 @@ def _count_new_managers(cur, month_start: date, month_end: date) -> int:
     cur.execute(
         f"""
         SELECT COUNT(*)
-        FROM amac_managers m
+        {_manager_from_clause()}
         WHERE {SEC_MANAGER_FILTER}
           AND m.registration_date >= %s
           AND m.registration_date <= %s
@@ -199,7 +249,7 @@ def _count_stock_managers(cur, month_end: date) -> int:
     cur.execute(
         f"""
         SELECT COUNT(*)
-        FROM amac_managers m
+        {_manager_from_clause()}
         WHERE {SEC_MANAGER_FILTER}
           AND m.registration_date IS NOT NULL
           AND m.registration_date <= %s
@@ -214,8 +264,7 @@ def _count_liquidations(cur, month_start: date, next_month_start: date) -> int:
         f"""
         SELECT COUNT(*)
         FROM amac_private_funds f
-        JOIN amac_managers m ON m.manager_name = f.manager_name
-        WHERE {SEC_MANAGER_FILTER}
+        WHERE {SEC_FUND_FILTER}
           AND f.working_state = ANY(%s)
           AND f.updated_at >= %s
           AND f.updated_at < %s
@@ -228,29 +277,32 @@ def _count_liquidations(cur, month_start: date, next_month_start: date) -> int:
 def _current_stock_scale(cur) -> float:
     cur.execute(
         f"""
+        SELECT COUNT(*)
+        {_manager_from_clause()}
+        WHERE {SEC_MANAGER_FILTER}
+        """,
+    )
+    total_managers = int(cur.fetchone()[0])
+
+    cur.execute(
+        f"""
         SELECT d.mgmt_scale_range, COUNT(*) AS cnt
-        FROM amac_managers m
-        JOIN amac_manager_details d ON d.registration_no = m.registration_no
+        {_manager_from_clause()}
         WHERE {SEC_MANAGER_FILTER}
           AND d.mgmt_scale_range IS NOT NULL
           AND d.mgmt_scale_range <> '-'
         GROUP BY d.mgmt_scale_range
         """,
     )
-    total = 0.0
-    for scale_range, count in cur.fetchall():
-        midpoint = SCALE_MIDPOINTS.get(scale_range)
-        if midpoint is not None:
-            total += midpoint * int(count)
-    return round(total, 2)
+    bucket_counts = {row[0]: int(row[1]) for row in cur.fetchall()}
+    return _sum_scale_from_buckets(bucket_counts, total_managers=total_managers)
 
 
 def _scale_distribution(cur) -> list[dict]:
     cur.execute(
         f"""
         SELECT d.mgmt_scale_range, COUNT(*) AS cnt
-        FROM amac_managers m
-        JOIN amac_manager_details d ON d.registration_no = m.registration_no
+        {_manager_from_clause()}
         WHERE {SEC_MANAGER_FILTER}
           AND d.mgmt_scale_range IS NOT NULL
           AND d.mgmt_scale_range <> '-'
@@ -270,14 +322,13 @@ def _region_stats(cur) -> list[dict]:
         WITH sec_mgr AS (
             SELECT m.registration_no, m.manager_name,
                    COALESCE(NULLIF(TRIM(m.reg_province), ''), '未知') AS region
-            FROM amac_managers m
+            {_manager_from_clause()}
             WHERE {SEC_MANAGER_FILTER}
         ),
         active_funds AS (
             SELECT f.manager_name, COUNT(*) AS active_count
             FROM amac_private_funds f
-            JOIN amac_managers m ON m.manager_name = f.manager_name
-            WHERE {SEC_MANAGER_FILTER}
+            WHERE {SEC_FUND_FILTER}
               AND f.working_state = '正在运作'
             GROUP BY f.manager_name
         )
@@ -330,6 +381,7 @@ def _scale_trend(cur) -> list[dict]:
                COUNT(DISTINCT h.registration_no) AS cnt
         FROM amac_manager_metrics_history h
         JOIN amac_managers m ON m.registration_no = h.registration_no
+        LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
         WHERE {SEC_MANAGER_FILTER}
           AND h.mgmt_scale_range IS NOT NULL
           AND h.mgmt_scale_range <> '-'
@@ -382,6 +434,7 @@ def _scale_changes(cur) -> dict:
                 h.mgmt_scale_range
             FROM amac_manager_metrics_history h
             JOIN amac_managers m ON m.registration_no = h.registration_no
+            LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
             WHERE {SEC_MANAGER_FILTER}
               AND h.snapshot_date = %s
               AND h.mgmt_scale_range IS NOT NULL
@@ -394,6 +447,7 @@ def _scale_changes(cur) -> dict:
                 h.mgmt_scale_range
             FROM amac_manager_metrics_history h
             JOIN amac_managers m ON m.registration_no = h.registration_no
+            LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
             WHERE {SEC_MANAGER_FILTER}
               AND h.snapshot_date = %s
               AND h.mgmt_scale_range IS NOT NULL
@@ -437,24 +491,65 @@ def _scale_changes(cur) -> dict:
     return {"updatedAt": latest.strftime("%Y-%m"), "rows": rows}
 
 
-def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
-    current_scale = _current_stock_scale(cur)
+def _monthly_stock_scales(cur, months: list[date]) -> dict[str, float]:
+    """Per-month industry scale from manager metrics snapshots (with imputation)."""
+    if not months:
+        return {}
+
     cur.execute(
         f"""
-        SELECT COUNT(*)
-        FROM amac_private_funds f
-        JOIN amac_managers m ON m.manager_name = f.manager_name
+        SELECT to_char(date_trunc('month', h.snapshot_date), 'YYYY-MM') AS month,
+               h.mgmt_scale_range,
+               COUNT(DISTINCT h.registration_no) AS cnt
+        FROM amac_manager_metrics_history h
+        JOIN amac_managers m ON m.registration_no = h.registration_no
+        LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
         WHERE {SEC_MANAGER_FILTER}
-          AND f.working_state = '正在运作'
+          AND h.mgmt_scale_range IS NOT NULL
+          AND h.mgmt_scale_range <> '-'
+        GROUP BY 1, 2
+        ORDER BY 1 ASC
         """,
     )
-    active_funds = max(int(cur.fetchone()[0]), 1)
-    avg_fund_scale = current_scale / active_funds
+    buckets_by_month: dict[str, dict[str, int]] = {}
+    for month, scale_range, count in cur.fetchall():
+        buckets_by_month.setdefault(month, {})[scale_range] = int(count)
+
+    month_keys = {m.strftime("%Y-%m") for m in months}
+    scales: dict[str, float] = {}
+    for month_key in sorted(month_keys):
+        bucket_counts = buckets_by_month.get(month_key, {})
+        if not bucket_counts:
+            continue
+        cur.execute(
+            f"""
+            SELECT COUNT(DISTINCT m.registration_no)
+            {_manager_from_clause()}
+            WHERE {SEC_MANAGER_FILTER}
+              AND m.registration_date IS NOT NULL
+              AND m.registration_date <= %s
+            """,
+            (_month_end(_month_start(int(month_key[:4]), int(month_key[5:7]))),),
+        )
+        total_managers = int(cur.fetchone()[0])
+        scales[month_key] = _sum_scale_from_buckets(bucket_counts, total_managers=total_managers)
+
+    return scales
+
+
+def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
+    months = _month_range(months_back)
+    monthly_scales = _monthly_stock_scales(cur, months)
+    current_scale = _current_stock_scale(cur)
+    latest_key = months[-1].strftime("%Y-%m") if months else ""
+    if latest_key:
+        monthly_scales[latest_key] = current_scale
 
     rows: list[tuple] = []
-    for month_start in _month_range(months_back):
+    for month_start in months:
         month_end = _month_end(month_start)
         next_month = _add_months(month_start, 1)
+        month_key = month_start.strftime("%Y-%m")
 
         new_filing_count = _count_new_filings(cur, month_start, month_end)
         stock_fund_count = _count_stock_funds(cur, month_end)
@@ -462,8 +557,19 @@ def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
         stock_manager_count = _count_stock_managers(cur, month_end)
         liquidation_count = _count_liquidations(cur, month_start, next_month)
 
-        new_filing_scale = round(new_filing_count * avg_fund_scale, 2)
-        stock_fund_scale = round(stock_fund_count * avg_fund_scale, 2)
+        stock_fund_scale = monthly_scales.get(month_key, 0.0)
+        if stock_fund_scale <= 0 and stock_fund_count > 0 and current_scale > 0:
+            # Fallback when metrics history has no snapshot for this month yet.
+            latest_fund_count = _count_stock_funds(cur, _month_end(months[-1]))
+            if latest_fund_count > 0:
+                stock_fund_scale = round(current_scale * stock_fund_count / latest_fund_count, 2)
+
+        avg_fund_scale = (
+            round(stock_fund_scale / stock_fund_count, 4)
+            if stock_fund_count > 0 and stock_fund_scale > 0
+            else 0.0
+        )
+        new_filing_scale = round(new_filing_count * avg_fund_scale, 2) if avg_fund_scale > 0 else 0.0
 
         rows.append(
             (
