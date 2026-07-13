@@ -1891,6 +1891,77 @@ def step_ashare_daily(conn, *, force: bool = False) -> int:
     return total_upserted
 
 
+def _to_ts_code(code: str) -> str:
+    c = str(code).strip().zfill(6)
+    if c.startswith("92") or c.startswith(("83", "87", "43", "82", "88")):
+        return f"{c}.BJ"
+    if c.startswith("6"):
+        return f"{c}.SH"
+    return f"{c}.SZ"
+
+
+def step_ashare_stock_names(conn, *, force: bool = False) -> int:
+    """Sync A-share ts_code → Chinese name from AkShare stock_info_a_code_name()."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS dim_ashare_stock (
+                ts_code     VARCHAR(20)   PRIMARY KEY,
+                name        VARCHAR(100)  NOT NULL,
+                updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+            )
+        """)
+    conn.commit()
+
+    if not force:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM dim_ashare_stock")
+            row = cur.fetchone()
+            if row and row[0] and int(row[0]) > 4000:
+                log.info("A-share stock names: %d rows, skipping.", row[0])
+                return 0
+
+    try:
+        import akshare as ak
+    except ImportError:
+        log.warning("A-share stock names: akshare not installed, skipping.")
+        return 0
+
+    log.info("A-share stock names: fetching from AkShare …")
+    df = ak.stock_info_a_code_name()
+    if df is None or df.empty:
+        log.warning("A-share stock names: empty response.")
+        return 0
+
+    records: list[tuple[str, str]] = []
+    for _, row in df.iterrows():
+        code = str(row.get("code", "")).strip()
+        name = str(row.get("name", "")).strip()
+        if not code or not name:
+            continue
+        records.append((_to_ts_code(code), name[:100]))
+
+    if not records:
+        return 0
+
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO dim_ashare_stock (ts_code, name, updated_at)
+            VALUES %s
+            ON CONFLICT (ts_code) DO UPDATE
+                SET name = EXCLUDED.name,
+                    updated_at = NOW()
+            """,
+            records,
+            template="(%s, %s, NOW())",
+            page_size=2000,
+        )
+    conn.commit()
+    log.info("A-share stock names: upserted %d rows.", len(records))
+    return len(records)
+
+
 def _ashare_board(ts_code: str) -> str:
     base, _, suffix = ts_code.partition(".")
     if suffix == "BJ" or base.startswith("920"):
@@ -3331,6 +3402,7 @@ ORDERED_STEPS = [
     "futures_latest",
     "commodity_amounts",
     "ashare_daily",
+    "ashare_stock_names",
     "ashare_index",
     "ashare_crowding",
     "derive_basis",
@@ -3456,6 +3528,7 @@ def main():
         "futures_latest":   lambda: step_futures_latest(conn, td, force=force),
         "commodity_amounts":lambda: step_commodity_amounts(conn, td, force=force),
         "ashare_daily":        lambda: step_ashare_daily(conn, force=force),
+        "ashare_stock_names":  lambda: step_ashare_stock_names(conn, force=force),
         "ashare_index":        lambda: step_ashare_index(conn, force=force),
         "ashare_crowding":     lambda: step_compute_ashare_crowding(conn, force=force),
         "derive_basis":          lambda: step_compute_basis_daily(conn, force=force),

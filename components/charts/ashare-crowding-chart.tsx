@@ -4,7 +4,10 @@ import { useCallback, useMemo, useState } from "react"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
-import AshareCrowdingSentimentChart from "@/components/charts/ashare-crowding-sentiment-chart"
+import { buildAshareCrowdingSentimentOption } from "@/components/charts/ashare-crowding-sentiment-chart"
+import { cn } from "@/lib/utils"
+
+type ChartView = "sentiment" | "crowding"
 
 type SeriesPoint = {
   date: string
@@ -17,7 +20,7 @@ type SeriesPoint = {
 }
 
 type BoardItem = { name: string; share: number }
-type TopStock = { ts_code: string; amount: number | null; share: number | null }
+type TopStock = { ts_code: string; name: string | null; amount: number | null; share: number | null }
 
 type CrowdingPayload = {
   series: SeriesPoint[]
@@ -53,6 +56,7 @@ export default function AshareCrowdingChart() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showHelp, setShowHelp] = useState(false)
+  const [chartView, setChartView] = useState<ChartView>("sentiment")
 
   const load = useCallback(async (showLoading: boolean) => {
     if (showLoading) setLoading(true)
@@ -143,6 +147,14 @@ export default function AshareCrowdingChart() {
     }
   }, [series])
 
+  const sentimentOption = useMemo(
+    () => buildAshareCrowdingSentimentOption(series, indexSeries, latest?.trade_date),
+    [series, indexSeries, latest?.trade_date],
+  )
+
+  const mainChartOption = chartView === "sentiment" ? sentimentOption : lineOption
+  const mainChartHeight = chartView === "sentiment" ? 420 : 360
+
   const boardOption = useMemo(() => {
     const boards = latest?.boards ?? []
     if (!boards.length) return {}
@@ -173,23 +185,28 @@ export default function AshareCrowdingChart() {
   const stockOption = useMemo(() => {
     const stocks = latest?.top_stocks ?? []
     if (!stocks.length) return {}
-    const labels = stocks.map((s) => s.ts_code)
+    const labels = stocks.map((s) => s.name || s.ts_code)
     const shares = stocks.map((s) => s.share ?? 0)
     return {
       backgroundColor: "transparent",
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
-        formatter: (p: Array<{ name: string; value: number }>) =>
-          `${p[0]?.name}<br/>成交额占比: ${p[0]?.value?.toFixed(2)}%`,
+        formatter: (p: Array<{ name: string; value: number; dataIndex?: number }>) => {
+          const idx = p[0]?.dataIndex ?? 0
+          const stock = stocks[idx]
+          const label = stock?.name || stock?.ts_code || p[0]?.name || ""
+          const code = stock?.ts_code ? `<br/>${stock.ts_code}` : ""
+          return `${label}${code}<br/>成交额占比: ${p[0]?.value?.toFixed(2)}%`
+        },
       },
-      grid: { left: 88, right: 40, top: 8, bottom: 8 },
+      grid: { left: 112, right: 40, top: 8, bottom: 8 },
       xAxis: { type: "value", axisLabel: { formatter: "{value}%", fontSize: 10 } },
       yAxis: {
         type: "category",
         data: labels,
         inverse: true,
-        axisLabel: { fontSize: 10 },
+        axisLabel: { fontSize: 11 },
       },
       series: [{
         type: "bar",
@@ -211,7 +228,9 @@ export default function AshareCrowdingChart() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-base">A股拥挤度指标：计算方法</h3>
+              <h3 className="font-semibold text-base">
+                {chartView === "sentiment" ? "全A拥挤度 vs 全A走势：图表说明" : "A股拥挤度指标：计算方法"}
+              </h3>
               <button
                 type="button"
                 onClick={() => setShowHelp(false)}
@@ -220,7 +239,75 @@ export default function AshareCrowdingChart() {
                 ×
               </button>
             </div>
-            <div className="space-y-4 text-muted-foreground leading-relaxed">
+            {chartView === "sentiment" ? (
+              <div className="space-y-4 text-muted-foreground leading-relaxed">
+                <p className="text-xs">
+                  下图每条线均基于图表窗口内数据（默认近 365 个交易日）计算；拥挤度本身由夜间 ETL 在全历史上先算好再取子集展示。
+                </p>
+
+                <div className="space-y-1.5">
+                  <p className="font-semibold text-foreground">① 全A拥挤度指标（深蓝实线，左轴）</p>
+                  <p>先算当日全 A 成交额加权换手率，再与过去 250 个交易日比较得到分位数，最后做 20 日平滑：</p>
+                  <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                    <div>Turn<sub>d</sub> = Σ<sub>i</sub>(Amount<sub>i,d</sub> × Turnover<sub>i,d</sub>) / Σ<sub>i</sub> Amount<sub>i,d</sub></div>
+                    <div>Pct<sub>d</sub> = |&#123;k ∈ W<sub>d</sub> : Turn<sub>k</sub> ≤ Turn<sub>d</sub>&#125;| / |W<sub>d</sub>| × 100%</div>
+                    <div>W<sub>d</sub> = 最近 min(d, 250) 个交易日</div>
+                    <div>C<sub>d</sub> = (1/20) Σ<sub>j=d−19</sub><sup>d</sup> Pct<sub>j</sub></div>
+                  </div>
+                  <p className="text-xs">图表取 <code className="bg-muted px-1 rounded">crowding_smooth</code>（即 C<sub>d</sub>）。</p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="font-semibold text-foreground">② 均值（灰色虚线，左轴）</p>
+                  <p>对图表窗口内的拥挤度序列 C<sub>t</sub> 做<strong className="text-foreground">扩展窗口</strong>均值（从窗口首日至当日累计）：</p>
+                  <div className="bg-muted rounded px-3 py-2 font-mono text-xs">
+                    μ<sub>t</sub> = (1/t) Σ<sub>k=1</sub><sup>t</sup> C<sub>k</sub>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="font-semibold text-foreground">③ 均值 ± 1 倍标准差（浅灰虚线，左轴）</p>
+                  <p>同一扩展窗口下的样本标准差（总体标准差，除以 t 而非 t−1）：</p>
+                  <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                    <div>σ<sub>t</sub> = √[ (1/t) Σ<sub>k=1</sub><sup>t</sup> (C<sub>k</sub> − μ<sub>t</sub>)² ]</div>
+                    <div>上沿<sub>t</sub> = μ<sub>t</sub> + σ<sub>t</sub></div>
+                    <div>下沿<sub>t</sub> = μ<sub>t</sub> − σ<sub>t</sub></div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="font-semibold text-foreground">④ 均值 ± 1.5 倍标准差（浅蓝虚线，左轴）</p>
+                  <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                    <div>上沿<sub>t</sub> = μ<sub>t</sub> + 1.5 × σ<sub>t</sub></div>
+                    <div>下沿<sub>t</sub> = μ<sub>t</sub> − 1.5 × σ<sub>t</sub></div>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="font-semibold text-foreground">⑤ 全A（红色实线，右轴）</p>
+                  <p>优先取基准指数（默认沪深300，<code className="bg-muted px-1 rounded">000300.SH</code>）收盘价；若无指数数据，则链式合成全 A 价格指数：</p>
+                  <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                    <div>MktPx<sub>d</sub> = Σ<sub>i</sub>(Close<sub>i,d</sub> × Amount<sub>i,d</sub>) / Σ<sub>i</sub> Amount<sub>i,d</sub></div>
+                    <div>R<sub>d</sub> = MktPx<sub>d</sub> / MktPx<sub>d−1</sub></div>
+                    <div>AllA<sub>d</sub> = 5000 × exp( Σ<sub>k</sub> ln(R<sub>k</sub>) )</div>
+                  </div>
+                  <p className="text-xs">首有效交易日归一化为 5000，之后按连乘收益累积；右轴自动缩放（scale）。</p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <p className="font-semibold text-foreground">⑥ 情绪底部（粉色圆点，左轴）</p>
+                  <p>在图表窗口内，当日同时满足局部低点且跌破 1.5σ 下沿时标记：</p>
+                  <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                    <div>C<sub>d</sub> ≤ C<sub>d−1</sub> 且 C<sub>d</sub> ≤ C<sub>d+1</sub></div>
+                    <div>C<sub>d</sub> ≤ μ<sub>d</sub> − 1.5 × σ<sub>d</sub></div>
+                  </div>
+                  <p className="text-xs">
+                    若最新交易日满足 C<sub>T</sub> ≤ μ<sub>T</sub> − 1.5σ<sub>T</sub>，图表顶部显示「全A拥挤度指标再度提示短期情绪底部」。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4 text-muted-foreground leading-relaxed">
               <div className="space-y-1.5">
                 <p className="font-semibold text-foreground">数据来源</p>
                 <p>
@@ -291,6 +378,7 @@ export default function AshareCrowdingChart() {
                 由夜间 ETL 步骤 <code className="bg-muted px-1 rounded">ashare_crowding</code> 在原始数据更新后自动计算。
               </p>
             </div>
+            )}
           </div>
         </div>
       )}
@@ -298,33 +386,84 @@ export default function AshareCrowdingChart() {
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-2">
           <div className="space-y-1.5">
-            <CardTitle>A股拥挤度指标</CardTitle>
+            <CardTitle>
+              {chartView === "sentiment" ? "全A拥挤度 vs 全A走势" : "A股拥挤度指标"}
+            </CardTitle>
             <CardDescription>
-              全 A 成交额加权换手率的历史分位数（250 日窗口、20 日平滑），反映市场交易情绪
-              {latest
-                ? ` · 最新 ${latest.trade_date}：${crowdingLabel(latest.crowding_pct)}（${latest.crowding_pct?.toFixed(1) ?? "—"}%）`
-                : ""}
-              {latest?.total_amount != null ? ` · 全市场成交额 ${formatAmountYi(latest.total_amount)}` : ""}
+              {chartView === "sentiment"
+                ? "拥挤度（左轴，250 日换手率分位 + 20 日平滑）叠加均值与标准差通道；红色为全 A 价格指数（首日=5000，链式收益合成）；粉色标记为拥挤度跌破均值-1.5σ的局部低点"
+                : `全 A 成交额加权换手率的历史分位数（250 日窗口、20 日平滑），反映市场交易情绪${
+                    latest
+                      ? ` · 最新 ${latest.trade_date}：${crowdingLabel(latest.crowding_pct)}（${latest.crowding_pct?.toFixed(1) ?? "—"}%）`
+                      : ""
+                  }${latest?.total_amount != null ? ` · 全市场成交额 ${formatAmountYi(latest.total_amount)}` : ""}`}
             </CardDescription>
           </div>
-          <button
-            type="button"
-            onClick={() => setShowHelp(true)}
-            className="w-5 h-5 rounded-full border border-border text-muted-foreground hover:text-foreground text-xs leading-none flex items-center justify-center flex-shrink-0 mt-0.5"
-            title="计算方法说明"
-          >
-            ?
-          </button>
+          <div className="flex shrink-0 items-start gap-2 mt-0.5">
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setChartView("sentiment")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  chartView === "sentiment"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                全A走势
+              </button>
+              <button
+                type="button"
+                onClick={() => setChartView("crowding")}
+                className={cn(
+                  "px-2 py-0.5 rounded text-xs font-medium transition-colors",
+                  chartView === "crowding"
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                拥挤度指标
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowHelp(true)}
+              className="w-5 h-5 rounded-full border border-border text-muted-foreground hover:text-foreground text-xs leading-none flex items-center justify-center flex-shrink-0"
+              title="图表说明"
+            >
+              ?
+            </button>
+          </div>
         </CardHeader>
         <CardContent>
           {loading ? (
-            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">加载中...</div>
+            <div
+              className="flex items-center justify-center text-sm text-muted-foreground"
+              style={{ height: mainChartHeight }}
+            >
+              加载中...
+            </div>
           ) : error ? (
-            <div className="h-[360px] flex items-center justify-center text-sm text-destructive">{error}</div>
+            <div
+              className="flex items-center justify-center text-sm text-destructive"
+              style={{ height: mainChartHeight }}
+            >
+              {error}
+            </div>
           ) : !series.length ? (
-            <div className="h-[360px] flex items-center justify-center text-sm text-muted-foreground">暂无数据</div>
+            <div
+              className="flex items-center justify-center text-sm text-muted-foreground"
+              style={{ height: mainChartHeight }}
+            >
+              暂无数据
+            </div>
           ) : (
-            <ReactECharts option={lineOption} style={{ height: "360px", width: "100%" }} />
+            <ReactECharts
+              option={mainChartOption}
+              style={{ height: mainChartHeight, width: "100%" }}
+              notMerge={chartView === "sentiment"}
+            />
           )}
         </CardContent>
       </Card>
@@ -368,14 +507,6 @@ export default function AshareCrowdingChart() {
           </CardContent>
         </Card>
       </div>
-
-      <AshareCrowdingSentimentChart
-        series={series}
-        indexSeries={indexSeries}
-        latestDate={latest?.trade_date}
-        loading={loading}
-        error={error}
-      />
     </div>
   )
 }

@@ -124,6 +124,15 @@ CREATE INDEX IF NOT EXISTS raw_ashare_daily_code_date_idx
     ON raw_ashare_daily (ts_code, trade_date DESC);
 
 
+-- A-share stock code → Chinese name lookup
+-- Source: AkShare stock_info_a_code_name()  (nightly_etl step_ashare_stock_names)
+CREATE TABLE IF NOT EXISTS dim_ashare_stock (
+    ts_code     VARCHAR(20)   PRIMARY KEY,
+    name        VARCHAR(100)  NOT NULL,
+    updated_at  TIMESTAMPTZ   NOT NULL DEFAULT NOW()
+);
+
+
 -- A-share market crowding metrics (成交额集中度 / 板块占比)
 -- Computed from raw_ashare_daily by nightly_etl step_compute_ashare_crowding
 CREATE TABLE IF NOT EXISTS derived_ashare_crowding_daily (

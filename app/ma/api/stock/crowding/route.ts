@@ -22,6 +22,7 @@ interface CrowdingRow {
 
 interface TopStockRow {
   ts_code: string
+  name: string | null
   amount: string | number | null
   share: string | number | null
 }
@@ -78,8 +79,7 @@ export async function GET(req: Request) {
 
     const latest = series[series.length - 1]
 
-    const topStocks = await query<TopStockRow>(
-      `WITH latest AS (
+    const topStocksSqlWithNames = `WITH latest AS (
          SELECT MAX(trade_date) AS d FROM raw_ashare_daily
        ),
        tot AS (
@@ -88,6 +88,27 @@ export async function GET(req: Request) {
          WHERE trade_date = (SELECT d FROM latest)
        )
        SELECT r.ts_code,
+              s.name,
+              r.amount,
+              ROUND((r.amount / NULLIF(tot.t, 0) * 100)::numeric, 2) AS share
+       FROM raw_ashare_daily r
+       LEFT JOIN dim_ashare_stock s ON s.ts_code = r.ts_code
+       CROSS JOIN tot
+       WHERE r.trade_date = (SELECT d FROM latest)
+         AND r.amount > 0
+       ORDER BY r.amount DESC
+       LIMIT 15`
+
+    const topStocksSqlCodesOnly = `WITH latest AS (
+         SELECT MAX(trade_date) AS d FROM raw_ashare_daily
+       ),
+       tot AS (
+         SELECT COALESCE(SUM(amount), 0) AS t
+         FROM raw_ashare_daily
+         WHERE trade_date = (SELECT d FROM latest)
+       )
+       SELECT r.ts_code,
+              NULL::text AS name,
               r.amount,
               ROUND((r.amount / NULLIF(tot.t, 0) * 100)::numeric, 2) AS share
        FROM raw_ashare_daily r
@@ -95,8 +116,14 @@ export async function GET(req: Request) {
        WHERE r.trade_date = (SELECT d FROM latest)
          AND r.amount > 0
        ORDER BY r.amount DESC
-       LIMIT 15`,
-    )
+       LIMIT 15`
+
+    let topStocks: TopStockRow[]
+    try {
+      topStocks = await query<TopStockRow>(topStocksSqlWithNames)
+    } catch {
+      topStocks = await query<TopStockRow>(topStocksSqlCodesOnly)
+    }
 
     const boards = Object.entries(latest.board_shares || {})
       .map(([name, share]) => ({ name, share }))
@@ -174,6 +201,7 @@ export async function GET(req: Request) {
         boards,
         top_stocks: topStocks.map((r) => ({
           ts_code: r.ts_code,
+          name: r.name?.trim() || null,
           amount: n(r.amount),
           share: n(r.share),
         })),
