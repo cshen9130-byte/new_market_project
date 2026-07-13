@@ -39,8 +39,8 @@ SEC_MANAGER_FILTER = """
     )
 """
 
-# Classify funds by joining to a cached list of 私募证券类 manager names.
-SEC_FUND_JOIN = "INNER JOIN sec_manager_names sm ON f.manager_name = sm.manager_name"
+# Classify funds via materialized sec_managers / sec_funds temp tables.
+SEC_FUND_JOIN = "INNER JOIN sec_managers sm ON f.manager_name = sm.manager_name"
 
 LIQUIDATION_STATES = ("提前清算", "正常清算", "延期清算")
 
@@ -49,23 +49,37 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def _prepare_sec_manager_names(cur) -> int:
-    """Materialize sec manager names once so fund joins stay indexed and fast."""
-    _log("Caching 私募证券类 manager names…")
-    cur.execute("DROP TABLE IF EXISTS sec_manager_names")
+def _prepare_workspace(cur) -> tuple[int, int]:
+    """Materialize sec managers + their funds once for all downstream aggregations."""
+    _log("Caching 私募证券类 managers and funds…")
+    cur.execute("DROP TABLE IF EXISTS sec_funds")
+    cur.execute("DROP TABLE IF EXISTS sec_managers")
     cur.execute(
         f"""
-        CREATE TEMP TABLE sec_manager_names AS
-        SELECT DISTINCT m.manager_name
+        CREATE TEMP TABLE sec_managers AS
+        SELECT DISTINCT m.manager_name, m.registration_no, m.registration_date
         {_manager_from_clause()}
         WHERE {SEC_MANAGER_FILTER}
         """,
     )
-    cur.execute("CREATE INDEX sec_manager_names_manager_name_idx ON sec_manager_names (manager_name)")
-    cur.execute("SELECT COUNT(*) FROM sec_manager_names")
-    count = int(cur.fetchone()[0])
-    _log(f"Cached {count:,} sec managers")
-    return count
+    cur.execute("CREATE INDEX sec_managers_name_idx ON sec_managers (manager_name)")
+    cur.execute("CREATE INDEX sec_managers_reg_date_idx ON sec_managers (registration_date)")
+    cur.execute(
+        """
+        CREATE TEMP TABLE sec_funds AS
+        SELECT f.manager_name, f.put_on_record_date, f.working_state, f.updated_at
+        FROM amac_private_funds f
+        INNER JOIN sec_managers sm ON f.manager_name = sm.manager_name
+        """,
+    )
+    cur.execute("CREATE INDEX sec_funds_put_on_record_date_idx ON sec_funds (put_on_record_date)")
+    cur.execute("CREATE INDEX sec_funds_updated_at_idx ON sec_funds (updated_at)")
+    cur.execute("SELECT COUNT(*) FROM sec_managers")
+    manager_count = int(cur.fetchone()[0])
+    cur.execute("SELECT COUNT(*) FROM sec_funds")
+    fund_count = int(cur.fetchone()[0])
+    _log(f"Cached {manager_count:,} sec managers and {fund_count:,} sec funds")
+    return manager_count, fund_count
 
 
 def _fund_stock_state_clause(month_end: date) -> tuple[str, tuple]:
@@ -293,21 +307,15 @@ def _count_liquidations(cur, month_start: date, next_month_start: date) -> int:
 
 
 def _current_stock_scale(cur) -> float:
-    cur.execute(
-        f"""
-        SELECT COUNT(*)
-        {_manager_from_clause()}
-        WHERE {SEC_MANAGER_FILTER}
-        """,
-    )
+    cur.execute("SELECT COUNT(*) FROM sec_managers")
     total_managers = int(cur.fetchone()[0])
 
     cur.execute(
         f"""
         SELECT d.mgmt_scale_range, COUNT(*) AS cnt
-        {_manager_from_clause()}
-        WHERE {SEC_MANAGER_FILTER}
-          AND d.mgmt_scale_range IS NOT NULL
+        FROM sec_managers sm
+        JOIN amac_manager_details d ON d.registration_no = sm.registration_no
+        WHERE d.mgmt_scale_range IS NOT NULL
           AND d.mgmt_scale_range <> '-'
         GROUP BY d.mgmt_scale_range
         """,
@@ -318,11 +326,11 @@ def _current_stock_scale(cur) -> float:
 
 def _scale_distribution(cur) -> list[dict]:
     cur.execute(
-        f"""
+        """
         SELECT d.mgmt_scale_range, COUNT(*) AS cnt
-        {_manager_from_clause()}
-        WHERE {SEC_MANAGER_FILTER}
-          AND d.mgmt_scale_range IS NOT NULL
+        FROM sec_managers sm
+        JOIN amac_manager_details d ON d.registration_no = sm.registration_no
+        WHERE d.mgmt_scale_range IS NOT NULL
           AND d.mgmt_scale_range <> '-'
         GROUP BY d.mgmt_scale_range
         """,
@@ -338,17 +346,16 @@ def _region_stats(cur) -> list[dict]:
     cur.execute(
         f"""
         WITH sec_mgr AS (
-            SELECT m.registration_no, m.manager_name,
+            SELECT sm.registration_no, sm.manager_name,
                    COALESCE(NULLIF(TRIM(m.reg_province), ''), '未知') AS region
-            {_manager_from_clause()}
-            WHERE {SEC_MANAGER_FILTER}
+            FROM sec_managers sm
+            JOIN amac_managers m ON m.registration_no = sm.registration_no
         ),
         active_funds AS (
-            SELECT f.manager_name, COUNT(*) AS active_count
-            FROM amac_private_funds f
-            {SEC_FUND_JOIN}
-            WHERE f.working_state = '正在运作'
-            GROUP BY f.manager_name
+            SELECT sf.manager_name, COUNT(*) AS active_count
+            FROM sec_funds sf
+            WHERE sf.working_state = '正在运作'
+            GROUP BY sf.manager_name
         )
         SELECT s.region,
                COUNT(*) AS manager_count,
@@ -509,7 +516,7 @@ def _scale_changes(cur) -> dict:
     return {"updatedAt": latest.strftime("%Y-%m"), "rows": rows}
 
 
-def _monthly_stock_scales(cur, months: list[date]) -> dict[str, float]:
+def _monthly_stock_scales(cur, months: list[date], manager_counts: dict[str, int]) -> dict[str, float]:
     """Per-month industry scale from manager metrics snapshots (with imputation)."""
     if not months:
         return {}
@@ -520,10 +527,8 @@ def _monthly_stock_scales(cur, months: list[date]) -> dict[str, float]:
                h.mgmt_scale_range,
                COUNT(DISTINCT h.registration_no) AS cnt
         FROM amac_manager_metrics_history h
-        JOIN amac_managers m ON m.registration_no = h.registration_no
-        LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
-        WHERE {SEC_MANAGER_FILTER}
-          AND h.mgmt_scale_range IS NOT NULL
+        JOIN sec_managers sm ON sm.registration_no = h.registration_no
+        WHERE h.mgmt_scale_range IS NOT NULL
           AND h.mgmt_scale_range <> '-'
         GROUP BY 1, 2
         ORDER BY 1 ASC
@@ -533,51 +538,122 @@ def _monthly_stock_scales(cur, months: list[date]) -> dict[str, float]:
     for month, scale_range, count in cur.fetchall():
         buckets_by_month.setdefault(month, {})[scale_range] = int(count)
 
-    month_keys = {m.strftime("%Y-%m") for m in months}
     scales: dict[str, float] = {}
-    for month_key in sorted(month_keys):
-        bucket_counts = buckets_by_month.get(month_key, {})
+    for month_start in months:
+        month_key = month_start.strftime("%Y-%m")
+        bucket_counts = buckets_by_month.get(month_key)
         if not bucket_counts:
             continue
-        cur.execute(
-            f"""
-            SELECT COUNT(DISTINCT m.registration_no)
-            {_manager_from_clause()}
-            WHERE {SEC_MANAGER_FILTER}
-              AND m.registration_date IS NOT NULL
-              AND m.registration_date <= %s
-            """,
-            (_month_end(_month_start(int(month_key[:4]), int(month_key[5:7]))),),
-        )
-        total_managers = int(cur.fetchone()[0])
+        total_managers = manager_counts.get(month_key, 0)
         scales[month_key] = _sum_scale_from_buckets(bucket_counts, total_managers=total_managers)
 
     return scales
 
 
+def _compute_monthly_counts_bulk(cur, months: list[date]) -> list[dict]:
+    if not months:
+        return []
+
+    start_month = months[0]
+    end_month = months[-1]
+    liquidation_states = list(LIQUIDATION_STATES)
+    cur.execute(
+        """
+        WITH months AS (
+            SELECT d::date AS month_start,
+                   (date_trunc('month', d::timestamp) + interval '1 month' - interval '1 day')::date AS month_end,
+                   (date_trunc('month', d::timestamp) + interval '1 month')::date AS next_month_start
+            FROM generate_series(%s::date, %s::date, interval '1 month') AS d
+        ),
+        fund_by_month AS (
+            SELECT m.month_start,
+                   COUNT(*) FILTER (
+                       WHERE sf.put_on_record_date >= m.month_start
+                         AND sf.put_on_record_date <= m.month_end
+                   ) AS new_filing_count,
+                   COUNT(*) FILTER (
+                       WHERE sf.put_on_record_date IS NOT NULL
+                         AND sf.put_on_record_date <= m.month_end
+                         AND (
+                           sf.working_state = '正在运作'
+                           OR (
+                             sf.working_state = ANY(%s)
+                             AND sf.updated_at::date > m.month_end
+                           )
+                         )
+                   ) AS stock_fund_count,
+                   COUNT(*) FILTER (
+                       WHERE sf.working_state = ANY(%s)
+                         AND sf.updated_at >= m.month_start
+                         AND sf.updated_at < m.next_month_start
+                   ) AS liquidation_count
+            FROM months m
+            CROSS JOIN sec_funds sf
+            GROUP BY m.month_start
+        ),
+        mgr_by_month AS (
+            SELECT m.month_start,
+                   COUNT(*) FILTER (
+                       WHERE sm.registration_date >= m.month_start
+                         AND sm.registration_date <= m.month_end
+                   ) AS new_manager_count,
+                   COUNT(*) FILTER (
+                       WHERE sm.registration_date IS NOT NULL
+                         AND sm.registration_date <= m.month_end
+                   ) AS stock_manager_count
+            FROM months m
+            CROSS JOIN sec_managers sm
+            GROUP BY m.month_start
+        )
+        SELECT f.month_start,
+               f.new_filing_count,
+               f.stock_fund_count,
+               f.liquidation_count,
+               mg.new_manager_count,
+               mg.stock_manager_count
+        FROM fund_by_month f
+        JOIN mgr_by_month mg USING (month_start)
+        ORDER BY f.month_start
+        """,
+        (start_month, end_month, liquidation_states, liquidation_states),
+    )
+    columns = (
+        "month_start",
+        "new_filing_count",
+        "stock_fund_count",
+        "liquidation_count",
+        "new_manager_count",
+        "stock_manager_count",
+    )
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
     months = _month_range(months_back)
-    _log(f"Computing monthly stats for {len(months)} months…")
+    _log(f"Computing monthly stats for {len(months)} months (bulk SQL)…")
     started = time.monotonic()
 
-    monthly_scales = _monthly_stock_scales(cur, months)
+    bulk_rows = _compute_monthly_counts_bulk(cur, months)
+    manager_counts = {
+        row["month_start"].strftime("%Y-%m"): int(row["stock_manager_count"])
+        for row in bulk_rows
+    }
+    monthly_scales = _monthly_stock_scales(cur, months, manager_counts)
     current_scale = _current_stock_scale(cur)
     latest_key = months[-1].strftime("%Y-%m") if months else ""
     if latest_key:
         monthly_scales[latest_key] = current_scale
 
-    latest_fund_count = _count_stock_funds(cur, _month_end(months[-1])) if months else 0
+    latest_fund_count = int(bulk_rows[-1]["stock_fund_count"]) if bulk_rows else 0
     rows: list[tuple] = []
-    for index, month_start in enumerate(months, start=1):
-        month_end = _month_end(month_start)
-        next_month = _add_months(month_start, 1)
+    for index, row in enumerate(bulk_rows, start=1):
+        month_start = row["month_start"]
         month_key = month_start.strftime("%Y-%m")
-
-        new_filing_count = _count_new_filings(cur, month_start, month_end)
-        stock_fund_count = _count_stock_funds(cur, month_end)
-        new_manager_count = _count_new_managers(cur, month_start, month_end)
-        stock_manager_count = _count_stock_managers(cur, month_end)
-        liquidation_count = _count_liquidations(cur, month_start, next_month)
+        new_filing_count = int(row["new_filing_count"])
+        stock_fund_count = int(row["stock_fund_count"])
+        new_manager_count = int(row["new_manager_count"])
+        stock_manager_count = int(row["stock_manager_count"])
+        liquidation_count = int(row["liquidation_count"])
 
         stock_fund_scale = monthly_scales.get(month_key, 0.0)
         if stock_fund_scale <= 0 and stock_fund_count > 0 and current_scale > 0 and latest_fund_count > 0:
@@ -603,9 +679,9 @@ def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
                 0,
             )
         )
-        if index == 1 or index == len(months) or index % 6 == 0:
+        if index == 1 or index == len(bulk_rows) or index % 6 == 0:
             _log(
-                f"  month {index}/{len(months)} {month_key}: "
+                f"  month {index}/{len(bulk_rows)} {month_key}: "
                 f"funds={stock_fund_count:,}, managers={stock_manager_count:,}, scale={stock_fund_scale:,.2f}"
             )
 
@@ -630,7 +706,7 @@ def run_etl(*, dry_run: bool = False, months_back: int = 24) -> dict:
             if not dry_run:
                 conn.commit()
 
-            _prepare_sec_manager_names(cur)
+            _prepare_workspace(cur)
             monthly_rows = compute_monthly_stats(cur, months_back=months_back)
             if not monthly_rows:
                 raise RuntimeError("No monthly stats computed")
