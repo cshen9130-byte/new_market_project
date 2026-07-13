@@ -1084,15 +1084,15 @@ export function AIResearcherPage() {
           </div>
         </div>
 
-        {/* Skills */}
-        <div className="flex flex-col shrink-0 px-3 pt-4 pb-2" style={{ maxHeight: "calc(100% - 200px)", minHeight: 0 }}>
+        {/* Skills — takes remaining space after header, scrolls internally, never pushes history out */}
+        <div className="flex flex-1 flex-col min-h-0 px-3 pt-4 pb-2">
           <div className="flex items-center justify-between mb-2.5 px-1 shrink-0">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">研究技能</span>
             <Badge variant="secondary" className="text-xs">
               {SKILLS.filter((s) => !s.locked).length}/{SKILLS.length}
             </Badge>
           </div>
-          <div className="overflow-y-auto space-y-2 pr-0.5 min-h-0">
+          <div className="flex-1 overflow-y-auto space-y-2 pr-0.5 min-h-0">
             {SKILLS.map((skill) => (
               <button
                 key={skill.id}
@@ -1133,8 +1133,8 @@ export function AIResearcherPage() {
           </div>
         </div>
 
-        {/* Task History */}
-        <div className="flex-1 overflow-hidden flex flex-col border-t" style={{ minHeight: "160px" }}>
+        {/* Task History — fixed proportion of sidebar height, guaranteed visible regardless of skills count */}
+        <div className="shrink-0 overflow-hidden flex flex-col border-t" style={{ height: "38%", minHeight: "200px" }}>
           <div className="px-4 pt-3 pb-2 flex items-center justify-between">
             <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">任务历史</span>
             {tasks.length > 0 && (
