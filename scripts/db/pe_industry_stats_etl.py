@@ -38,32 +38,37 @@ SEC_MANAGER_FILTER = """
     )
 """
 
-# Classify funds directly from AMAC fund list manager_type — avoids dropping rows
-# when manager_name does not exactly match amac_managers. Fall back to manager
-# org_type when manager_type is missing on the fund row.
-SEC_FUND_FILTER = """
-    (
-        f.manager_type LIKE '%%私募证券%%'
-        OR f.manager_type LIKE '%%私募资产配置%%'
-        OR (
-            (f.manager_type IS NULL OR TRIM(f.manager_type) = '' OR f.manager_type = '-')
-            AND EXISTS (
-                SELECT 1
-                FROM amac_managers m
-                LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
-                WHERE m.manager_name = f.manager_name
-                  AND (
-                      m.org_type LIKE '%%私募证券%%'
-                      OR m.org_type LIKE '%%私募资产配置%%'
-                      OR d.org_type LIKE '%%私募证券%%'
-                      OR d.org_type LIKE '%%私募资产配置%%'
-                      OR d.business_type LIKE '%%私募证券%%'
-                      OR d.business_type LIKE '%%私募资产配置%%'
-                  )
-            )
-        )
+# AMAC fund.manager_type is 受托管理/自我管理 (custody mode), NOT 证券/股权 classification.
+# Classify funds by joining to 私募证券类 managers.
+SEC_FUND_JOIN = """
+    INNER JOIN (
+        SELECT DISTINCT m.manager_name
+        FROM amac_managers m
+        LEFT JOIN amac_manager_details d ON d.registration_no = m.registration_no
+        WHERE {sec_manager_filter}
+    ) sm ON (
+        f.manager_name = sm.manager_name
+        OR REPLACE(REPLACE(f.manager_name, ' ', ''), '　', '')
+           = REPLACE(REPLACE(sm.manager_name, ' ', ''), '　', '')
     )
-"""
+""".format(sec_manager_filter=SEC_MANAGER_FILTER.strip())
+
+
+def _fund_stock_state_clause(month_end: date) -> tuple[str, tuple]:
+    return (
+        """
+          AND f.put_on_record_date IS NOT NULL
+          AND f.put_on_record_date <= %s
+          AND (
+            f.working_state = '正在运作'
+            OR (
+              f.working_state = ANY(%s)
+              AND f.updated_at::date > %s
+            )
+          )
+        """,
+        (month_end, list(LIQUIDATION_STATES), month_end),
+    )
 
 LIQUIDATION_STATES = ("提前清算", "正常清算", "延期清算")
 
@@ -207,8 +212,8 @@ def _count_new_filings(cur, month_start: date, month_end: date) -> int:
         f"""
         SELECT COUNT(*)
         FROM amac_private_funds f
-        WHERE {SEC_FUND_FILTER}
-          AND f.put_on_record_date >= %s
+        {SEC_FUND_JOIN}
+        WHERE f.put_on_record_date >= %s
           AND f.put_on_record_date <= %s
         """,
         (month_start, month_end),
@@ -217,16 +222,16 @@ def _count_new_filings(cur, month_start: date, month_end: date) -> int:
 
 
 def _count_stock_funds(cur, month_end: date) -> int:
+    state_clause, state_params = _fund_stock_state_clause(month_end)
     cur.execute(
         f"""
         SELECT COUNT(*)
         FROM amac_private_funds f
-        WHERE {SEC_FUND_FILTER}
-          AND f.put_on_record_date IS NOT NULL
-          AND f.put_on_record_date <= %s
-          AND f.working_state = '正在运作'
+        {SEC_FUND_JOIN}
+        WHERE 1=1
+        {state_clause}
         """,
-        (month_end,),
+        state_params,
     )
     return int(cur.fetchone()[0])
 
@@ -264,8 +269,8 @@ def _count_liquidations(cur, month_start: date, next_month_start: date) -> int:
         f"""
         SELECT COUNT(*)
         FROM amac_private_funds f
-        WHERE {SEC_FUND_FILTER}
-          AND f.working_state = ANY(%s)
+        {SEC_FUND_JOIN}
+        WHERE f.working_state = ANY(%s)
           AND f.updated_at >= %s
           AND f.updated_at < %s
         """,
@@ -328,8 +333,8 @@ def _region_stats(cur) -> list[dict]:
         active_funds AS (
             SELECT f.manager_name, COUNT(*) AS active_count
             FROM amac_private_funds f
-            WHERE {SEC_FUND_FILTER}
-              AND f.working_state = '正在运作'
+            {SEC_FUND_JOIN}
+            WHERE f.working_state = '正在运作'
             GROUP BY f.manager_name
         )
         SELECT s.region,
