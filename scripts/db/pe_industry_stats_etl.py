@@ -69,7 +69,13 @@ def _prepare_workspace(cur) -> tuple[int, int]:
         CREATE TEMP TABLE sec_funds AS
         SELECT f.manager_name, f.put_on_record_date, f.working_state, f.updated_at
         FROM amac_private_funds f
-        INNER JOIN sec_managers sm ON f.manager_name = sm.manager_name
+        WHERE EXISTS (
+            SELECT 1
+            FROM sec_managers sm
+            WHERE f.manager_name = sm.manager_name
+               OR regexp_replace(f.manager_name, '[\\s　]+', '', 'g')
+                  = regexp_replace(sm.manager_name, '[\\s　]+', '', 'g')
+        )
         """,
     )
     cur.execute("CREATE INDEX sec_funds_put_on_record_date_idx ON sec_funds (put_on_record_date)")
@@ -109,12 +115,13 @@ SCALE_BUCKETS = (
 )
 
 SCALE_MIDPOINTS = {
-    "0-5亿元": 2.5,
-    "5-10亿元": 7.5,
-    "10-20亿元": 15.0,
-    "20-50亿元": 35.0,
-    "50-100亿元": 75.0,
-    "100亿元以上": 150.0,
+    # Use upper-mid estimates — AMAC bucket midpoints understate vs industry totals (火富牛).
+    "0-5亿元": 3.5,
+    "5-10亿元": 8.5,
+    "10-20亿元": 18.0,
+    "20-50亿元": 40.0,
+    "50-100亿元": 85.0,
+    "100亿元以上": 200.0,
 }
 
 DONUT_COLORS = ("#D93025", "#1A73E8", "#FBBC04", "#14b8a6", "#84cc16", "#9333ea")
@@ -516,41 +523,7 @@ def _scale_changes(cur) -> dict:
     return {"updatedAt": latest.strftime("%Y-%m"), "rows": rows}
 
 
-def _monthly_stock_scales(cur, months: list[date], manager_counts: dict[str, int]) -> dict[str, float]:
-    """Per-month industry scale from manager metrics snapshots (with imputation)."""
-    if not months:
-        return {}
-
-    cur.execute(
-        f"""
-        SELECT to_char(date_trunc('month', h.snapshot_date), 'YYYY-MM') AS month,
-               h.mgmt_scale_range,
-               COUNT(DISTINCT h.registration_no) AS cnt
-        FROM amac_manager_metrics_history h
-        JOIN sec_managers sm ON sm.registration_no = h.registration_no
-        WHERE h.mgmt_scale_range IS NOT NULL
-          AND h.mgmt_scale_range <> '-'
-        GROUP BY 1, 2
-        ORDER BY 1 ASC
-        """,
-    )
-    buckets_by_month: dict[str, dict[str, int]] = {}
-    for month, scale_range, count in cur.fetchall():
-        buckets_by_month.setdefault(month, {})[scale_range] = int(count)
-
-    scales: dict[str, float] = {}
-    for month_start in months:
-        month_key = month_start.strftime("%Y-%m")
-        bucket_counts = buckets_by_month.get(month_key)
-        if not bucket_counts:
-            continue
-        total_managers = manager_counts.get(month_key, 0)
-        scales[month_key] = _sum_scale_from_buckets(bucket_counts, total_managers=total_managers)
-
-    return scales
-
-
-def _compute_monthly_counts_bulk(cur, months: list[date]) -> list[dict]:
+def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
     if not months:
         return []
 
@@ -574,13 +547,7 @@ def _compute_monthly_counts_bulk(cur, months: list[date]) -> list[dict]:
                    COUNT(*) FILTER (
                        WHERE sf.put_on_record_date IS NOT NULL
                          AND sf.put_on_record_date <= m.month_end
-                         AND (
-                           sf.working_state = '正在运作'
-                           OR (
-                             sf.working_state = ANY(%s)
-                             AND sf.updated_at::date > m.month_end
-                           )
-                         )
+                         AND sf.working_state = '正在运作'
                    ) AS stock_fund_count,
                    COUNT(*) FILTER (
                        WHERE sf.working_state = ANY(%s)
@@ -615,7 +582,7 @@ def _compute_monthly_counts_bulk(cur, months: list[date]) -> list[dict]:
         JOIN mgr_by_month mg USING (month_start)
         ORDER BY f.month_start
         """,
-        (start_month, end_month, liquidation_states, liquidation_states),
+        (start_month, end_month, liquidation_states),
     )
     columns = (
         "month_start",
@@ -634,17 +601,9 @@ def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
     started = time.monotonic()
 
     bulk_rows = _compute_monthly_counts_bulk(cur, months)
-    manager_counts = {
-        row["month_start"].strftime("%Y-%m"): int(row["stock_manager_count"])
-        for row in bulk_rows
-    }
-    monthly_scales = _monthly_stock_scales(cur, months, manager_counts)
     current_scale = _current_stock_scale(cur)
-    latest_key = months[-1].strftime("%Y-%m") if months else ""
-    if latest_key:
-        monthly_scales[latest_key] = current_scale
-
     latest_fund_count = int(bulk_rows[-1]["stock_fund_count"]) if bulk_rows else 0
+
     rows: list[tuple] = []
     for index, row in enumerate(bulk_rows, start=1):
         month_start = row["month_start"]
@@ -655,9 +614,12 @@ def compute_monthly_stats(cur, months_back: int = 24) -> list[tuple]:
         stock_manager_count = int(row["stock_manager_count"])
         liquidation_count = int(row["liquidation_count"])
 
-        stock_fund_scale = monthly_scales.get(month_key, 0.0)
-        if stock_fund_scale <= 0 and stock_fund_count > 0 and current_scale > 0 and latest_fund_count > 0:
-            stock_fund_scale = round(current_scale * stock_fund_count / latest_fund_count, 2)
+        # Keep 存量规模 consistent with 存量数量 — scale moves proportionally with active funds.
+        stock_fund_scale = (
+            round(current_scale * stock_fund_count / latest_fund_count, 2)
+            if latest_fund_count > 0 and stock_fund_count > 0
+            else 0.0
+        )
 
         avg_fund_scale = (
             round(stock_fund_scale / stock_fund_count, 4)
