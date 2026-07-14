@@ -9,6 +9,7 @@ import { loadManagedProductEmailPoints, loadManagedProductNavSeries, loadManualT
 import { addDays } from "@/lib/server/list-cache-nav-batch"
 import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
+import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
 
 export const dynamic = "force-dynamic"
 
@@ -220,6 +221,12 @@ export async function GET(
     shortName = bflNameRows[0].short_name
   }
 
+  const fundNavContext = {
+    beian_hao: routeBeianHao,
+    product_name: productName,
+    short_name: shortName || null,
+  }
+
   const bflTrackRows = await query<{
     scale: string | null
     manager_names: string | null
@@ -320,7 +327,7 @@ export async function GET(
       ? { beian_hao: routeBeianHao, product_name: productName }
       : null)
 
-  let nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
+  let nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows, fundNavContext)
   if (effectiveManagedOverride) {
     try {
       const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
@@ -360,11 +367,11 @@ export async function GET(
         )
         const firstTeamDate = teamSeries[0]?.price_date ?? ""
         const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
-        let base = mergeNavSeriesWithEmail(legacyNoType6, [])
+        let base = mergeNavSeriesWithEmail(legacyNoType6, [], fundNavContext)
         if (seedBackfill.length > 0) {
-          base = mergeLegacyWithTeamNav(base, seedBackfill)
+          base = mergeLegacyWithTeamNav(base, seedBackfill, fundNavContext)
         }
-        nav_series = mergeLegacyWithTeamNav(base, teamSeries)
+        nav_series = mergeLegacyWithTeamNav(base, teamSeries, fundNavContext)
       } else {
         const legacyNoType6 = await loadPrivateFundLegacyNavRows(
           routeBeianHao,
@@ -372,18 +379,18 @@ export async function GET(
           shortName,
           { excludeType6: true },
         )
-        nav_series = mergeNavSeriesWithEmail(legacyNoType6, emailNavRows)
+        nav_series = mergeNavSeriesWithEmail(legacyNoType6, emailNavRows, fundNavContext)
       }
     } catch (err) {
       console.error("[private-funds/detail] managed product nav query failed:", err)
     }
   } else if (emailNavRows.length > 0) {
-    nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows)
+    nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows, fundNavContext)
   } else {
     const seedRows = loadManagedProductNavSeed(routeBeianHao)
     if (seedRows.length > 0) {
       collectPriceDates(seedRows, teamNavDates)
-      nav_series = mergeNavSeriesWithEmail(seedRows, [])
+      nav_series = mergeNavSeriesWithEmail(seedRows, [], fundNavContext)
     }
   }
 
@@ -392,12 +399,14 @@ export async function GET(
     try {
       const fallbackPoints = await valuationFallbackPromise
       if (fallbackPoints.length > 0) {
-        nav_series = mergeNavSeriesWithEmail([], fallbackPoints)
+        nav_series = mergeNavSeriesWithEmail([], fallbackPoints, fundNavContext)
       }
     } catch (err) {
       console.error("[private-funds/detail] valuation nav fallback failed:", err)
     }
   }
+
+  nav_series = applyFundNavCorrectionToLegacyRows(nav_series, fundNavContext)
 
   const first = nav_series[0]
   const latest = nav_series[nav_series.length - 1]

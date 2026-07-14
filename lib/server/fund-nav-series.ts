@@ -66,7 +66,11 @@ async function loadMergedNavRows(
     loadEmailNavSeries(beian_hao, product_name, short_name || null, extraNames),
   ])
 
-  let navSeries = mergeNavSeriesWithEmail(legacyRows, emailRows)
+  let navSeries = mergeNavSeriesWithEmail(legacyRows, emailRows, {
+    beian_hao,
+    product_name,
+    short_name,
+  })
 
   const managedOverride =
     lookupManagedProductOverride(beian_hao)

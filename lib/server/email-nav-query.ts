@@ -9,6 +9,13 @@ import {
   sqlFundNameMatch,
   sqlShareClassParentCodeMatch,
 } from "@/lib/server/fund-name-match"
+import type { FundNavSeriesContext } from "@/lib/server/fund-nav-correction-rules"
+import {
+  applyFundNavCorrectionToLegacyRows,
+  shouldSkipReturnIndexSanitize,
+} from "@/lib/server/fund-nav-correction-rules"
+
+export type { FundNavSeriesContext }
 
 export type EmailNavPoint = {
   price_date: string
@@ -2128,16 +2135,30 @@ function repairSwappedCumAdjRows(rows: LegacyNavRow[]): LegacyNavRow[] {
   })
 }
 
+/** Strip return-index spikes/tails for list-cache batch paths (no full finalize pipeline). */
+export function sanitizeReturnIndexNavSeries(
+  rows: LegacyNavRow[],
+  fundContext?: FundNavSeriesContext | null,
+): LegacyNavRow[] {
+  if (shouldSkipReturnIndexSanitize(fundContext)) return rows
+  let out = sanitizeIsolatedNavSpikes(rows)
+  out = sanitizeReturnIndexTail(out)
+  return out
+}
+
 function finalizeNavSeries(
   rows: LegacyNavRow[],
   unitOnlyEmailDates: Set<string> = new Set(),
   adjOnlyEmailDates: Set<string> = new Set(),
+  fundContext?: FundNavSeriesContext | null,
 ): LegacyNavRow[] {
   let out = sanitizeMisassignedUnitNavRows(rows)
   out = repairSwappedCumAdjRows(out)
   out = sanitizeVShapeNavOutliers(out)
-  out = sanitizeIsolatedNavSpikes(out)
-  out = sanitizeReturnIndexTail(out)
+  if (!shouldSkipReturnIndexSanitize(fundContext)) {
+    out = sanitizeIsolatedNavSpikes(out)
+    out = sanitizeReturnIndexTail(out)
+  }
   out = repairCorruptUnitNavRows(out)
   out = syncExDivAdjustedNav(out)
   out = propagateMissingAdjRows(out)
@@ -2147,6 +2168,7 @@ function finalizeNavSeries(
   out = repairAdjCollapsedToUnitRows(out)
   out = repairAdjBelowCumRows(out)
   out = alignPreDividendNavRows(out)
+  out = applyFundNavCorrectionToLegacyRows(out, fundContext)
   return recomputeNavPriceChanges(out)
 }
 
@@ -2204,8 +2226,12 @@ function emailUnitOnlyNeedsRechain(
 }
 
 /** Email NAV wins on overlapping dates; chain cumulative NAV to stay consistent with legacy series. */
-export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: EmailNavPoint[]): LegacyNavRow[] {
-  if (emailRows.length === 0) return finalizeNavSeries(legacyRows)
+export function mergeNavSeriesWithEmail(
+  legacyRows: LegacyNavRow[],
+  emailRows: EmailNavPoint[],
+  fundContext?: FundNavSeriesContext | null,
+): LegacyNavRow[] {
+  if (emailRows.length === 0) return finalizeNavSeries(legacyRows, new Set(), new Set(), fundContext)
 
   const byDate = new Map<string, LegacyNavRow>()
   for (const row of legacyRows) {
@@ -2310,7 +2336,7 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
   }
 
   const merged = Array.from(byDate.values()).sort((a, b) => a.price_date.localeCompare(b.price_date))
-  return finalizeNavSeries(merged, unitOnlyEmailDates, adjOnlyEmailDates)
+  return finalizeNavSeries(merged, unitOnlyEmailDates, adjOnlyEmailDates, fundContext)
 }
 
 /**
@@ -2320,15 +2346,16 @@ export function mergeNavSeriesWithEmail(legacyRows: LegacyNavRow[], emailRows: E
 export function mergeLegacyWithTeamNav(
   legacyRows: LegacyNavRow[],
   teamRows: LegacyNavRow[],
+  fundContext?: FundNavSeriesContext | null,
 ): LegacyNavRow[] {
-  if (teamRows.length === 0) return finalizeNavSeries(legacyRows)
+  if (teamRows.length === 0) return finalizeNavSeries(legacyRows, new Set(), new Set(), fundContext)
   const teamDates = new Set(teamRows.map((row) => row.price_date))
   const legacyFill = legacyRows.filter((row) => !teamDates.has(row.price_date))
   const merged = [
     ...legacyFill,
     ...teamRows.map((row) => ({ ...row })),
   ].sort((a, b) => a.price_date.localeCompare(b.price_date))
-  return finalizeNavSeries(merged)
+  return finalizeNavSeries(merged, new Set(), new Set(), fundContext)
 }
 
 /** Return rows where adj >= cum >= unit is violated (empty = OK). */

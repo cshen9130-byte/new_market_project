@@ -1,5 +1,6 @@
 import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate } from "../lib/server/email-nav-query.ts"
-import { enrichReturnNavSeries, capPeriodReturnByDrawdown, calcReturn } from "../lib/server/list-cache-nav-batch.ts"
+import { enrichReturnNavSeries, capPeriodReturnByDrawdown, calcReturn, sanitizeNavPointSeries } from "../lib/server/list-cache-nav-batch.ts"
+import { lookupFundNavCorrectionRule } from "../lib/server/fund-nav-correction-rules.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
 import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio, loadManagedProductNavSeed, mergeManagedProductDetailNav } from "../lib/server/managed-product-nav-seed.ts"
@@ -719,6 +720,22 @@ const sbdf95EmailOnly = [
 const sbdf95EmailOut = mergeNavSeriesWithEmail([], sbdf95EmailOnly)
 assert("SBDF95 email-only corrupt cluster removed", !sbdf95EmailOut.some((r) => r.price_date >= "2026-07-03"))
 assert("SBDF95 email-only latest ~1.0214", Math.abs(parseFloat(sbdf95EmailOut.at(-1).nav) - 1.0214) < 0.001)
+
+const sbdf95Batch = sanitizeNavPointSeries([
+  { nav_date: "2026-07-01", nav: 1.0214 },
+  { nav_date: "2026-07-03", nav: 4.6587 },
+  { nav_date: "2026-07-08", nav: 4.6627 },
+], { beian_hao: "SBDF95" })
+assert("SBDF95 batch with correction rule keeps ~4 tail", sbdf95Batch.length === 2)
+assert("SBDF95 batch correction drops pre-07-03", !sbdf95Batch.some((p) => p.nav_date < "2026-07-03"))
+assert("SBDF95 batch correction latest ~4.66", Math.abs(sbdf95Batch[0].nav - 4.6627) < 0.01)
+
+const sbdf95Rule = lookupFundNavCorrectionRule("SBDF95", "锐耐稳健对冲11号")
+assert("SBDF95 correction rule loaded", sbdf95Rule?.series_start_date === "2026-07-03")
+assert("SBDF95 preserve high nav", sbdf95Rule?.preserve_high_nav_scale === true)
+
+const bdp99aRule = lookupFundNavCorrectionRule("BDP99A", "锐耐稳健对冲11号A类")
+assert("BDP99A correction rule loaded", bdp99aRule?.series_start_date === "2026-07-09")
 
 // AVM354 笃熙泰渊流1号A类: platform stored 单位 in 复权 while 累计 is correct (post-dividend)
 const avm354Legacy = [

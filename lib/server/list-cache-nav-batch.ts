@@ -15,6 +15,7 @@ import {
   preferEmailNavRow,
   isPlausibleEmailUnitNav,
   recoverPlausibleEmailUnitNav,
+  sanitizeReturnIndexNavSeries,
   selectEmailNavSeriesRows,
   type LegacyNavRow,
   type LegacyNavRowWithPri,
@@ -27,6 +28,10 @@ import {
   sqlFundNameMatch,
 } from "@/lib/server/fund-name-match"
 import { fofUnderlyingNavLookupKeys } from "@/lib/server/fund-holding-code"
+import {
+  lookupFundNavCorrectionRule,
+  type FundNavSeriesContext,
+} from "@/lib/server/fund-nav-correction-rules"
 
 export type NavPoint = {
   nav: number
@@ -146,15 +151,73 @@ function legacyRowToNavPoint(row: LegacyNavRow): NavPoint | null {
   }
 }
 
-function dedupeLegacyBatchRows(rows: LegacyNavRowWithPri[]): NavPoint[] {
+function navPointToLegacyRow(point: NavPoint): LegacyNavRow {
+  const nav = String(point.nav)
+  const ret = point.return_nav != null ? String(point.return_nav) : nav
+  return {
+    price_date: point.nav_date,
+    nav,
+    cumulative_nav: ret,
+    cum_nav_withdrawal: ret,
+    price_change: "",
+  }
+}
+
+/** Remove return-index spikes/tails unless fund has a preserve_high_nav_scale rule. */
+export function sanitizeNavPointSeries(
+  points: NavPoint[],
+  context?: FundNavSeriesContext | null,
+): NavPoint[] {
+  if (points.length < 2) return applyNavPointSeriesStartTrim(points, context)
+  if (lookupFundNavCorrectionRule(context?.beian_hao, context?.product_name, context?.short_name)?.preserve_high_nav_scale) {
+    return applyNavPointSeriesStartTrim(points, context)
+  }
+  const asc = [...points].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+  const legacy = asc.map(navPointToLegacyRow)
+  const cleaned = sanitizeReturnIndexNavSeries(legacy, context)
+  const byDate = new Map(cleaned.map((row) => [row.price_date.slice(0, 10), row]))
+  const out: NavPoint[] = []
+  for (const point of asc) {
+    const row = byDate.get(point.nav_date)
+    if (!row) continue
+    const p = legacyRowToNavPoint(row)
+    if (p) {
+      out.push({
+        ...p,
+        source: point.source,
+        subject: point.subject,
+      })
+    }
+  }
+  out.sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+  return applyNavPointSeriesStartTrim(out, context)
+}
+
+function applyNavPointSeriesStartTrim(
+  points: NavPoint[],
+  context?: FundNavSeriesContext | null,
+): NavPoint[] {
+  const rule = lookupFundNavCorrectionRule(
+    context?.beian_hao,
+    context?.product_name,
+    context?.short_name,
+  )
+  if (!rule?.series_start_date) return points
+  const start = rule.series_start_date
+  return points.filter((p) => p.nav_date >= start)
+}
+
+function dedupeLegacyBatchRows(
+  rows: LegacyNavRowWithPri[],
+  context?: FundNavSeriesContext | null,
+): NavPoint[] {
   const deduped = dedupeLegacyNavRowsByDate(rows)
   const points: NavPoint[] = []
   for (const row of deduped) {
     const p = legacyRowToNavPoint(row)
     if (p) points.push(p)
   }
-  points.sort((a, b) => b.nav_date.localeCompare(a.nav_date))
-  return points
+  return sanitizeNavPointSeries(points, context)
 }
 
 function isPrimaryEmailNavPoint(p: NavPoint): boolean {
@@ -406,6 +469,9 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
       subject: row.subject,
     })
   }
+  for (const [code, points] of out) {
+    out.set(code, sanitizeNavPointSeries(points, { beian_hao: code }))
+  }
   sortNavMapsDesc([out])
   return out
 }
@@ -510,6 +576,9 @@ async function loadEmailNavByNameBatch(
       })
     }
   }
+  for (const [name, points] of out) {
+    out.set(name, sanitizeNavPointSeries(points, { product_name: name }))
+  }
   sortNavMapsDesc([out])
   return out
 }
@@ -587,10 +656,10 @@ async function loadLegacyNavBatch(
   }
 
   for (const [beian, groupRows] of beianGroups) {
-    byBeian.set(beian, dedupeLegacyBatchRows(groupRows))
+    byBeian.set(beian, dedupeLegacyBatchRows(groupRows, { beian_hao: beian }))
   }
   for (const [product, groupRows] of productGroups) {
-    byProduct.set(product, dedupeLegacyBatchRows(groupRows))
+    byProduct.set(product, dedupeLegacyBatchRows(groupRows, { product_name: product }))
   }
 
   return { byBeian, byProduct }
@@ -1286,7 +1355,12 @@ export class BatchNavResolver {
       seedLayer()
     }
 
-    return [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, p]) => p)
+    const merged = [...byDate.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, p]) => p)
+    return applyNavPointSeriesStartTrim(merged, {
+      beian_hao: beian || null,
+      product_name: identity.product_name,
+      short_name: short || null,
+    })
   }
 }
 
@@ -1378,12 +1452,24 @@ export type TrackFundMetricsFields = {
   calmar_1y: string | null
 }
 
-/** Fill NAV / return metrics for list rows whose cache entry is empty (stale platform NAV). */
+function needsNavMetricsRecompute(row: TrackFundMetricsFields): boolean {
+  if (!row.latest_nav) return true
+  const rule = lookupFundNavCorrectionRule(row.beian_hao, row.product_name, row.short_name)
+  if (rule?.preserve_high_nav_scale) return false
+  const nav = parseFloat(row.latest_nav)
+  if (!Number.isFinite(nav)) return true
+  if (nav > 2.5) return true
+  const change = parseFloat(row.latest_price_change ?? "")
+  if (Number.isFinite(change) && Math.abs(change) > 100) return true
+  return false
+}
+
+/** Fill NAV / return metrics for list rows whose cache entry is empty or corrupt. */
 export async function enrichTrackFundMetricsRows<T extends TrackFundMetricsFields>(
   rows: T[],
   asOfDate: string,
 ): Promise<T[]> {
-  const needs = rows.filter((row) => !row.latest_nav)
+  const needs = rows.filter((row) => needsNavMetricsRecompute(row))
   if (needs.length === 0) return rows
 
   const identities = needs.map((row) => ({

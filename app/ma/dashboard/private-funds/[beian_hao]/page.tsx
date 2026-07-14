@@ -17,6 +17,7 @@ import {
 import { ArrowLeft, Camera, Database, Download, Files, Heart, HelpCircle, Menu, Plus, Send, Siren, X } from "lucide-react"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTeamTrackingDialog } from "@/components/ma/add-to-team-tracking-dialog"
+import { FundNavCorrectionRulesDialog } from "@/components/ma/fund-nav-correction-rules-dialog"
 import { invalidateTrackingListCache } from "@/lib/client/tracking-list-cache"
 import { Tooltip as UiTooltip, TooltipContent, TooltipTrigger } from "@/components/ma/ui/tooltip"
 import {
@@ -847,6 +848,7 @@ export default function PrivateFundDetailPage() {
   const [trackedTeam, setTrackedTeam] = useState(false)
   const [showMyTrackingDialog, setShowMyTrackingDialog] = useState(false)
   const [showTeamTrackingDialog, setShowTeamTrackingDialog] = useState(false)
+  const [showNavCorrectionDialog, setShowNavCorrectionDialog] = useState(false)
   const [managerRegistrationNo, setManagerRegistrationNo] = useState<string | null>(null)
 
   // ─── 编辑要素 modal ─────────────────────────────────────────────────────────
@@ -1054,6 +1056,19 @@ export default function PrivateFundDetailPage() {
       .then((d) => Array.isArray(d) ? setAvailTeamTags(d.map((t: { name: string }) => t.name)) : null)
       .catch(() => {})
     refreshTrackedIds()
+  }, [beian_hao])
+
+  const reloadFundDetail = useCallback(() => {
+    if (!beian_hao) return
+    setLoading(true)
+    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`, { headers: userFetchHeaders() })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.json() as Promise<DetailData>
+      })
+      .then(setData)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false))
   }, [beian_hao])
 
   // Fetch peer monthly stats once the main fund data (and its resolved strategy) is available
@@ -1843,6 +1858,15 @@ export default function PrivateFundDetailPage() {
                 className="p-1.5 rounded text-red-500 hover:text-red-600 hover:bg-red-50 transition-colors"
               >
                 <ValuationPieChartIcon className="h-[18px] w-[18px]" />
+              </button>
+            </FundHeaderActionTip>
+            <FundHeaderActionTip label="净值修正规则">
+              <button
+                type="button"
+                onClick={() => setShowNavCorrectionDialog(true)}
+                className="p-1.5 rounded text-zinc-500 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+              >
+                <Database className="h-[18px] w-[18px]" />
               </button>
             </FundHeaderActionTip>
             <FundHeaderActionTip label="添加预警">
@@ -3031,6 +3055,13 @@ export default function PrivateFundDetailPage() {
         onSaved={refreshTrackedIds}
       />
     )}
+    <FundNavCorrectionRulesDialog
+      open={showNavCorrectionDialog}
+      onClose={() => setShowNavCorrectionDialog(false)}
+      beianHao={beian_hao}
+      productName={info.product_name}
+      onSaved={reloadFundDetail}
+    />
     </>
   )
 }

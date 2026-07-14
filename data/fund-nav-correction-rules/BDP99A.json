@@ -1,0 +1,10 @@
+{
+  "beian_hao": "BDP99A",
+  "product_names": [
+    "锐耐稳健对冲11号A类",
+    "锐耐稳健对冲11号私募证券投资基金A类"
+  ],
+  "series_start_date": "2026-07-09",
+  "preserve_high_nav_scale": true,
+  "note": "Discard wrong ~1 scale history before 2026-07-09; A-class NAV scale is ~4 from Citics rebased series"
+}

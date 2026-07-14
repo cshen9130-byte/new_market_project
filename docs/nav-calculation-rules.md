@@ -920,6 +920,37 @@ npx tsx scripts/test-nav-rechain.mjs
 npx tsx scripts/ma/check_fof_nav_invariant.ts
 ---
 
+---
+
+## Fund-specific NAV correction rules (per-fund overrides)
+
+When upstream data has **wrong early history** for one fund only, add a JSON rule under `data/fund-nav-correction-rules/<备案号>.json` (or save via fund detail → **净值修正规则** UI). Other funds are unaffected.
+
+| Field | Meaning |
+|---|---|
+| `series_start_date` | Drop all NAV rows strictly before this date |
+| `preserve_high_nav_scale` | Skip return-index spike/tail sanitization (~4 NAV is correct) |
+| `product_names` | Extra name aliases for list-cache / tracking pool matching |
+
+**Preconfigured examples:**
+
+| Fund | 备案号 | Start date | Note |
+|---|---|---|---|
+| 锐耐稳健对冲11号 | SBDF95 | 2026-07-03 | Discard wrong ~1 history; ~4 scale from Citics rebased series |
+| 锐耐稳健对冲11号A类 | BDP99A | 2026-07-09 | Same for A-class share |
+
+API: `GET /ma/api/fund-nav-correction-rules?code=SBDF95`, `POST /ma/api/fund-nav-correction-rules/save`
+
+After rule change, refresh tracking list cache for affected funds:
+
+```bash
+npx tsx scripts/ma/_fix_tracking_sbdf95.ts
+# or full refresh:
+npx tsx scripts/ma/email_nav_etl.ts --refresh-only --cache-only
+```
+
+---
+
 ## What Was Fixed (锐耐稳健对冲11号 — SBDF95, 2026-07-03)
 
 ### The Problem
