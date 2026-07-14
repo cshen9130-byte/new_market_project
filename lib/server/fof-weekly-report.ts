@@ -150,15 +150,27 @@ async function appendPathPythonCandidates(out: PythonInvocation[]): Promise<void
   }
 }
 
+/** Cold import of akshare+matplotlib often exceeds 15s on the server under load. */
+const PYTHON_DEPS_PROBE_TIMEOUT_MS = 60_000
+
+let cachedPython: PythonInvocation | null = null
+
 async function pythonHasReportDeps(invocation: PythonInvocation): Promise<boolean> {
   try {
     await execFileAsync(
       invocation.executable,
-      [...invocation.prefixArgs, "-c", "import pandas, matplotlib, akshare, openpyxl"],
-      { timeout: 15_000 },
+      [...invocation.prefixArgs, "-c", "import pandas, matplotlib, openpyxl, akshare"],
+      { timeout: PYTHON_DEPS_PROBE_TIMEOUT_MS },
     )
     return true
-  } catch {
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    const stderr = typeof (err as { stderr?: string }).stderr === "string" ? (err as { stderr: string }).stderr : ""
+    console.warn(
+      "[fof-weekly-report] Python deps probe failed:",
+      invocation.executable,
+      (stderr || msg).slice(0, 500),
+    )
     return false
   }
 }
@@ -171,13 +183,19 @@ function pythonDepsInstallHint(): string {
 }
 
 async function findPython(scriptDir: string): Promise<PythonInvocation> {
+  // Reuse a successful probe for this process — cold akshare imports are expensive.
+  if (cachedPython) return cachedPython
+
   const candidates = listPythonCandidates(scriptDir)
   await appendPathPythonCandidates(candidates)
 
   const tried: string[] = []
   for (const candidate of candidates) {
     tried.push(candidate.executable)
-    if (await pythonHasReportDeps(candidate)) return candidate
+    if (await pythonHasReportDeps(candidate)) {
+      cachedPython = candidate
+      return candidate
+    }
   }
 
   if (process.platform !== "win32") {
@@ -188,7 +206,10 @@ async function findPython(scriptDir: string): Promise<PythonInvocation> {
   const fallback = candidates.at(-1)
   if (fallback) {
     tried.push(fallback.executable)
-    if (await pythonHasReportDeps(fallback)) return fallback
+    if (await pythonHasReportDeps(fallback)) {
+      cachedPython = fallback
+      return fallback
+    }
   }
 
   throw new Error(
