@@ -360,10 +360,9 @@ function getDefaultFilterRange(data: DetailData, todayStr: string): { from: stri
   const to = data.nav_series.length
     ? data.nav_series[data.nav_series.length - 1].price_date
     : todayStr
-  const from =
-    data.info.inception_date?.slice(0, 10) ??
-    data.nav_series[0]?.price_date ??
-    to
+  const seriesStart = data.nav_series[0]?.price_date
+  const inception = data.info.inception_date?.slice(0, 10)
+  const from = seriesStart ?? inception ?? to
   return { from, to }
 }
 

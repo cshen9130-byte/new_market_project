@@ -24,4 +24,7 @@ pm2 save
 echo "==> SLA063 cache patch"
 DB_STATEMENT_TIMEOUT=120000 npx tsx scripts/ma/_fix_sla063_cache.ts
 
+echo "==> ruinai tracking cache patch (SBDF95 / BDF95A)"
+DB_STATEMENT_TIMEOUT=120000 npx tsx scripts/ma/_fix_tracking_ruinai.ts
+
 echo "==> done"

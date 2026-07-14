@@ -40,3 +40,27 @@ export function configureEtlDbTimeout(): void {
     process.env.DB_STATEMENT_TIMEOUT = "600000"
   }
 }
+
+function databaseUrlHasPassword(url: string): boolean {
+  return /:\/\/[^/:@]+:[^@]+@/.test(url)
+}
+
+/**
+ * Load `.env.local` / `.env` and ensure `DATABASE_URL` has a string password before `lib/db` imports.
+ * Server scripts often set `DB_HOST` / `DB_USER` / `DB_PASSWORD` without `DATABASE_URL`; pg SCRAM fails
+ * when the parsed password is `undefined`.
+ */
+export function ensureScriptDatabaseEnv(): void {
+  loadProjectEnvFiles()
+
+  const existing = process.env.DATABASE_URL?.trim()
+  if (existing && databaseUrlHasPassword(existing)) return
+
+  const password = process.env.DB_PASSWORD != null ? String(process.env.DB_PASSWORD) : ""
+  const host = process.env.DB_HOST?.trim() || "127.0.0.1"
+  const port = process.env.DB_PORT?.trim() || "5432"
+  const database = process.env.DB_NAME?.trim() || "market_data"
+  const user = process.env.DB_USER?.trim() || "market_user"
+
+  process.env.DATABASE_URL = `postgresql://${user}:${encodeURIComponent(password)}@${host}:${port}/${database}`
+}
