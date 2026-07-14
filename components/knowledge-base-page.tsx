@@ -52,6 +52,7 @@ import {
   ZoomOut,
   Table2,
   StopCircle,
+  LayoutTemplate,
 } from "lucide-react"
 import { authService, type User } from "@/lib/auth"
 import { Button } from "@/components/ui/button"
@@ -303,6 +304,93 @@ function normalizeUploadErrorMessage(errorLike: unknown) {
   }
   return text
 }
+
+const TABLE_FILL_ROW_TEMPLATES = [
+  {
+    name: "打板策略",
+    title: "打板策略横向比较表",
+    rows: [
+      "代表产品",
+      "基金经理",
+      "细分策略",
+      "团队背景",
+      "策略原理",
+      "策略演进史",
+      "历年收益（21/20/19/18）",
+      "回撤情况",
+      "胜率/赔率",
+      "仓位变化",
+      "选股范围",
+      "选股因子模型",
+      "平均持仓数/单票上限",
+      "非10%涨跌幅处理",
+      "开仓点",
+      "报撤单",
+      "平仓点",
+      "交易速度",
+      "容量规模",
+      "换手率",
+      "极端不适行情",
+    ],
+  },
+  {
+    name: "CTA策略",
+    title: "CTA策略横向比较表",
+    rows: [
+      "策略风格",
+      "适应市场环境",
+      "星级排序",
+      "管理人",
+      "代表产品",
+      "净值表现",
+      "2024/2023/2022/2021/2020 历年业绩表现",
+      "策略标签",
+      "管理人介绍",
+      "因子情况",
+      "组合模型",
+      "优化器",
+      "特点",
+      "风险点",
+      "交易品种差异",
+      "频段特征",
+      "风险控制",
+    ],
+  },
+  {
+    name: "不同市场特征节点盈亏表现",
+    title: "不同市场特征节点盈亏表现",
+    rows: [
+      "2021.5月假期后的大涨（2021/4/30-2021/5/14）",
+      "2021.5月监管干预后的回撤（2021/5/14-2021/5/21）",
+      "第二波煤炭暴涨（2021/9/24-2021/10/15）",
+      "2022俄乌冲突（2022/12/31-2023/3/11）",
+      "原油高位震荡（2023/3/11-2023/6/17）",
+      "经济衰退预期（2022/06/17-2022/7/15）",
+      "低波震荡阶段（2022/7/15-2023/12/30）",
+      "宏观资金驱动行情（2023/6/1-2023/9/15）",
+      "2023全年机器学习大年",
+      "商品破位出方向（2024/3/4-2024/3/15）",
+    ],
+  },
+] as const
+
+const TABLE_FILL_COLUMN_TEMPLATE_FALLBACKS = [
+  {
+    name: "打板策略",
+    title: "打板策略横向比较表",
+    columns: ["量桥", "量道", "六妙星", "鉴拾", "衍复", "均成", "致诚", "阜力", "矩融"],
+  },
+  {
+    name: "强势股策略",
+    title: "强势股策略横向比较表",
+    columns: ["务扬", "凯瑞", "青钱", "臻选", "波克", "古曲", "古木", "趣时"],
+  },
+  {
+    name: "CTA策略",
+    title: "CTA策略横向比较表",
+    columns: ["艾方", "黑玺", "智领", "爱凡哲", "蜂起", "泓湖", "坤复", "奥创"],
+  },
+] as const
 
 function truncateMiddle(value: string, maxLength = 44) {
   if (value.length <= maxLength) {
@@ -781,6 +869,11 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   const [tableFillRowLengths, setTableFillRowLengths] = useState<Record<string, "long" | "short" | "options">>({})
   const [tableFillRowOptions, setTableFillRowOptions] = useState<Record<string, string>>({})
   const tableFillAbortRef = useRef(false)
+  type TableFillColumnTemplate = { name: string; title: string; columns: string[]; source?: string }
+  const [tableFillColumnTemplates, setTableFillColumnTemplates] = useState<TableFillColumnTemplate[]>(
+    () => TABLE_FILL_COLUMN_TEMPLATE_FALLBACKS.map((t) => ({ ...t })),
+  )
+  const [tableFillColumnTemplatesLoading, setTableFillColumnTemplatesLoading] = useState(false)
 
   useEffect(() => {
     authService.init()
@@ -3077,6 +3170,28 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
   function parseTableNames(raw: string): string[] {
     return raw.split(/[\n\t,，]+/).map((s) => s.trim()).filter(Boolean)
   }
+
+  useEffect(() => {
+    if (!showTableFillSetup) return
+    const headers = getKnowledgeBaseAuthHeaders()
+    if (!headers) return
+
+    let cancelled = false
+    setTableFillColumnTemplatesLoading(true)
+    void fetch("/api/knowledge-base/table-fill-column-templates", { headers })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { templates?: TableFillColumnTemplate[] } | null) => {
+        if (!cancelled && data?.templates?.length) {
+          setTableFillColumnTemplates(data.templates)
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setTableFillColumnTemplatesLoading(false)
+      })
+
+    return () => { cancelled = true }
+  }, [showTableFillSetup, currentUser?.id])
 
   function normalizeTableCellValue(raw: string): string {
     const trimmed = raw.replace(/\r/g, "").trim()
@@ -5875,11 +5990,49 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 />
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium">列名（每行一个，或用逗号/Tab分隔）</label>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <label className="text-sm font-medium">列名（每行一个，或用逗号/Tab分隔）</label>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 shrink-0 gap-1.5 text-xs"
+                        disabled={tableFillColumnTemplatesLoading}
+                      >
+                        <LayoutTemplate className="h-3.5 w-3.5" />
+                        {tableFillColumnTemplatesLoading ? "加载中…" : "选择模板"}
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      {tableFillColumnTemplates.length === 0 && !tableFillColumnTemplatesLoading && (
+                        <DropdownMenuItem disabled>暂无模板</DropdownMenuItem>
+                      )}
+                      {tableFillColumnTemplates.map((template) => (
+                        <DropdownMenuItem
+                          key={template.name}
+                          onClick={() => {
+                            setTableFillColumnsInput(template.columns.join("\n"))
+                            setTableFillTitleInput(template.title)
+                          }}
+                        >
+                          <div className="flex flex-col gap-0.5">
+                            <span>{template.name}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {template.columns.length} 列
+                              {template.source === "knowledge-base" ? " · 来自知识库" : ""}
+                            </span>
+                          </div>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
                 <Textarea
                   value={tableFillColumnsInput}
                   onChange={(e) => setTableFillColumnsInput(e.target.value)}
-                  placeholder={"量桥\n量道\n六妙星\n瀛岳\n衡颐\n均泰\n致燧\n具力\n钜融"}
+                  placeholder={"量桥\n量道\n六妙星\n鉴拾\n衍复\n均成\n致诚\n阜力\n矩融"}
                   className="min-h-24 font-mono text-xs"
                 />
                 <p className="mt-1 text-xs text-muted-foreground">
@@ -5887,7 +6040,33 @@ export function KnowledgeBasePage({ backHref, backLabel, variant = "cyber" }: Kn
                 </p>
               </div>
               <div>
-                <label className="mb-1.5 block text-sm font-medium">行名（每行一个，或用逗号/Tab分隔）</label>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <label className="text-sm font-medium">行名（每行一个，或用逗号/Tab分隔）</label>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" size="sm" className="h-7 shrink-0 gap-1.5 text-xs">
+                        <LayoutTemplate className="h-3.5 w-3.5" />
+                        选择模板
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56">
+                      {TABLE_FILL_ROW_TEMPLATES.map((template) => (
+                        <DropdownMenuItem
+                          key={template.name}
+                          onClick={() => {
+                            setTableFillRowsInput(template.rows.join("\n"))
+                            setTableFillTitleInput(template.title)
+                          }}
+                        >
+                          <div className="flex flex-col gap-0.5">
+                            <span>{template.name}</span>
+                            <span className="text-xs text-muted-foreground">{template.rows.length} 行</span>
+                          </div>
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
                 <Textarea
                   value={tableFillRowsInput}
                   onChange={(e) => setTableFillRowsInput(e.target.value)}

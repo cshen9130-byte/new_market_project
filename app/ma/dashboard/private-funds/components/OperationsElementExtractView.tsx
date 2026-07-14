@@ -123,6 +123,38 @@ const SUPPORTED_FORMATS_TEXT =
 const MAX_FILES = 20
 const EXTRACT_CONCURRENCY = 2
 
+function shareClassFromName(name: string): "A" | "B" | "C" | null {
+  const m = name.match(/([ABC])类/u)
+  return m ? (m[1] as "A" | "B" | "C") : null
+}
+
+function shareClassesAgree(productName: string, extractedName: string): boolean {
+  const wanted = shareClassFromName(extractedName)
+  const found = shareClassFromName(productName)
+  if (wanted) return found === wanted
+  return !found
+}
+
+function pickAutoSelectedFund(
+  extracted: ExtractedFundElements,
+  matchedFunds: FundMatchCandidate[],
+): FundMatchCandidate | null {
+  if (!matchedFunds.length) return null
+  const extractedName = extracted.fund_name?.trim() ?? ""
+  if (extractedName) {
+    const exact = matchedFunds.find((fund) => fund.product_name.trim() === extractedName)
+    if (exact) return exact
+    const classMatch = matchedFunds.find((fund) => shareClassesAgree(fund.product_name, extractedName))
+    if (classMatch) return classMatch
+  }
+  const register = extracted.register_number?.trim().toUpperCase()
+  if (register) {
+    const byRegister = matchedFunds.find((fund) => fund.beian_hao.toUpperCase() === register)
+    if (byRegister) return byRegister
+  }
+  return matchedFunds[0] ?? null
+}
+
 function isAcceptedContractFile(file: File): boolean {
   const name = file.name.toLowerCase()
   return ACCEPTED_EXTENSIONS.some((ext) => name.endsWith(ext))
@@ -386,7 +418,7 @@ export function OperationsElementExtractView() {
 
     const extracted = json.extracted as ExtractedFundElements
     const matchedFunds = Array.isArray(json.matched_funds) ? json.matched_funds as FundMatchCandidate[] : []
-    const selectedFund = matchedFunds[0] ?? null
+    const selectedFund = pickAutoSelectedFund(extracted, matchedFunds)
 
     return {
       fileName: file.name,
@@ -395,7 +427,7 @@ export function OperationsElementExtractView() {
       extracted,
       matchedFunds,
       textPreview: String(json.text_preview || ""),
-      fundInput: selectedFund?.product_name ?? extracted.fund_name ?? "",
+      fundInput: extracted.fund_name?.trim() || selectedFund?.product_name || "",
       selectedFund,
       currentElements: null,
       loadingCurrent: Boolean(selectedFund),

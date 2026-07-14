@@ -68,8 +68,9 @@ function passesShareClassFilters(
     if (!shareClassProductNamesMatch(name, originalQuery)) return false
     return shareClassCodeMatchesProduct(beian, name)
   }
-  if (shareClassFromProductName(name)) return false
-  if (shareClassFromRegisterCode(beian)) return false
+  if (shareClassFromProductName(name) || shareClassFromRegisterCode(beian)) {
+    return baseNamesMatch(name, originalQuery)
+  }
   return true
 }
 
@@ -92,6 +93,13 @@ async function searchProductsByRegister(codes: string[], limit = 10): Promise<Pr
               company_strategy_one AS strategy_one
        FROM type6_ops_team_full
        WHERE register_number = ANY($1::text[])
+       UNION
+       SELECT COALESCE(NULLIF(BTRIM(register_number), ''), record_key) AS beian_hao,
+              fund_name AS product_name,
+              NULL::text AS short_name,
+              NULL::text AS strategy_one
+       FROM basicinfo_bfl_track
+       WHERE register_number = ANY($1::text[]) OR record_key = ANY($1::text[])
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY product_name ASC
@@ -119,6 +127,9 @@ async function searchProductsByName(
     : "TRUE"
   const type6ShareClassGuard = usesShareClassGuard
     ? sqlShareClassProductNameGuard("COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name)", "$5")
+    : "TRUE"
+  const basicinfoShareClassGuard = usesShareClassGuard
+    ? sqlShareClassProductNameGuard("fund_name", "$5")
     : "TRUE"
 
   return query<PrivateFundPickerResult>(
@@ -165,6 +176,21 @@ async function searchProductsByName(
            OR register_number ILIKE $2
          )
          AND ${type6ShareClassGuard}
+       UNION
+       SELECT COALESCE(NULLIF(BTRIM(register_number), ''), record_key) AS beian_hao,
+              fund_name AS product_name,
+              NULL::text AS short_name,
+              NULL::text AS strategy_one
+       FROM basicinfo_bfl_track
+       WHERE TRIM(fund_name) <> ''
+         AND (
+           ${sqlFundNameMatch("fund_name", "$1")}
+           OR fund_name ILIKE $2
+           OR fund_name ILIKE $3
+           OR register_number ILIKE $2
+           OR record_key ILIKE $2
+         )
+         AND ${basicinfoShareClassGuard}
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY ${sqlFundNameMatchPriority("product_name", "$1")}, product_name ASC
@@ -204,6 +230,15 @@ async function searchProductsBroad(name: string, limit = 10): Promise<PrivateFun
           OR fund_name ILIKE $1
           OR fund_short_name ILIKE $1
           OR register_number ILIKE $1
+       UNION
+       SELECT COALESCE(NULLIF(BTRIM(register_number), ''), record_key) AS beian_hao,
+              fund_name AS product_name,
+              NULL::text AS short_name,
+              NULL::text AS strategy_one
+       FROM basicinfo_bfl_track
+       WHERE fund_name ILIKE $1
+          OR register_number ILIKE $1
+          OR record_key ILIKE $1
      ) t
      WHERE beian_hao IS NOT NULL AND product_name IS NOT NULL
      ORDER BY
@@ -318,6 +353,23 @@ export async function searchPrivateFundProductsForPicker(
             continue
           }
           addRow(synthesizeShareClass(row, queryShareClass), 30)
+        }
+      }
+    }
+  }
+
+  if (!queryShareClass) {
+    const baseRows = Array.from(scored.values()).filter(({ row }) => isBaseProduct(row))
+    for (const { row: base, score: baseScore } of baseRows) {
+      for (const letter of ["A", "B", "C"] as ShareClassLetter[]) {
+        const alreadyHas = Array.from(scored.values()).some(
+          ({ row }) =>
+            (shareClassFromProductName(row.product_name) === letter
+              || shareClassFromRegisterCode(row.beian_hao) === letter)
+            && baseNamesMatch(row.product_name, base.product_name),
+        )
+        if (!alreadyHas) {
+          addRow(synthesizeShareClass(base, letter), baseScore + 8)
         }
       }
     }

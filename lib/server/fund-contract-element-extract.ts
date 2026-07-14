@@ -5,9 +5,13 @@ import { readFileDocumentText } from "@/lib/server/knowledge-base"
 import {
   fundNameCore,
   normalizeRegisterCode,
-  searchFundsByName,
   searchFundsByRegister,
+  searchTrackingFunds,
 } from "@/lib/server/fund-picker-search"
+import {
+  shareClassProductNamesMatch,
+} from "@/lib/server/fund-name-match"
+import { shareClassFromProductName } from "@/lib/server/share-class-product"
 import { getServerStoragePath } from "@/lib/server/storage"
 
 const MAX_FILE_BYTES = 5 * 1024 * 1024
@@ -404,23 +408,43 @@ function rankMatchedFunds(
   nameCandidates: string[],
   registerCandidates: string[],
 ): FundMatchCandidate[] {
+  const primaryName = nameCandidates[0]?.trim() ?? ""
+  const wantedShareClass = primaryName ? shareClassFromProductName(primaryName) : null
+
   return matches
     .map((row) => {
       let score = row.score
       const registerHit = registerCandidates.includes(row.beian_hao.toUpperCase())
       let nameHit = false
       for (const candidate of nameCandidates) {
-        if (row.product_name.trim() === candidate.trim()) {
+        const trimmedCandidate = candidate.trim()
+        if (row.product_name.trim() === trimmedCandidate) {
           score -= 15
           nameHit = true
-        } else if (namesLooselyMatch(row.product_name, candidate)) {
-          score -= 10
-          nameHit = true
-        } else if (row.short_name && namesLooselyMatch(row.short_name, candidate)) {
-          score -= 8
-          nameHit = true
+        } else if (namesLooselyMatch(row.product_name, trimmedCandidate)) {
+          if (shareClassProductNamesMatch(row.product_name, trimmedCandidate)) {
+            score -= 10
+            nameHit = true
+          } else {
+            score += 12
+          }
+        } else if (row.short_name && namesLooselyMatch(row.short_name, trimmedCandidate)) {
+          if (shareClassProductNamesMatch(row.short_name, trimmedCandidate)) {
+            score -= 8
+            nameHit = true
+          } else {
+            score += 10
+          }
         }
       }
+
+      if (wantedShareClass) {
+        const rowShareClass = shareClassFromProductName(row.product_name)
+        if (rowShareClass === wantedShareClass) score -= 8
+        else if (!rowShareClass) score += 10
+        else if (rowShareClass !== wantedShareClass) score += 15
+      }
+
       if (registerHit && nameHit) score -= 10
       else if (registerHit && !nameHit && nameCandidates.length > 0) score += 15
       return { ...row, score }
@@ -444,14 +468,14 @@ export async function matchFundsFromExtracted(
   }
 
   for (const name of nameCandidates) {
-    addMatches(scored, await searchFundsByName(name), 5)
+    addMatches(scored, await searchTrackingFunds(name, 10), 5)
   }
 
   if (scored.size === 0 && nameCandidates.length) {
     for (const name of nameCandidates) {
       const core = fundNameCore(name)
       if (!core || core === name) continue
-      addMatches(scored, await searchFundsByName(core), 8)
+      addMatches(scored, await searchTrackingFunds(core, 10), 8)
     }
   }
 

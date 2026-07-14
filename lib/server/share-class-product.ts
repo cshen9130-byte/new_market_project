@@ -60,8 +60,12 @@ export function buildTieredShortName(
 export function buildTieredBeianCode(baseCode: string, letter: ShareClassLetter): string {
   let code = String(baseCode ?? "").trim().toUpperCase()
   code = code.replace(/[ABC]$/u, "")
-  if (code.startsWith("S") && code.length > 1 && /^S[A-Z]{1,2}\d/u.test(code)) {
-    code = code.slice(1)
+  // S-prefixed AMAC codes (e.g. SBCU82) tier to BCU82B, not SBCU82B.
+  if (code.startsWith("S") && code.length > 1) {
+    const withoutS = code.slice(1)
+    if (/^[A-Z][A-Z0-9]{4,7}$/u.test(withoutS)) {
+      code = withoutS
+    }
   }
   return `${code}${letter}`
 }

@@ -15326,7 +15326,7 @@ function OperationsTeamDataView() {
                           setAddTeamFundFieldError(false)
                         }}
                         onFocus={() => { if (addTeamFundResults.length > 0) setAddTeamFundShowDropdown(true) }}
-                        placeholder="搜索并选择基金，支持基金名称/备案编号"
+                        placeholder="搜索并选择基金，支持基金名称/备案编号（如 澜熙星瀚1号B类）"
                         className="flex-1 text-sm bg-transparent outline-none placeholder:text-muted-foreground/50"
                       />
                       {addTeamFundLoading
@@ -15354,9 +15354,12 @@ function OperationsTeamDataView() {
                           className="w-full text-left px-3 py-2 hover:bg-muted transition-colors flex items-center justify-between gap-3"
                         >
                           <div className="flex flex-col min-w-0">
-                            <span className="text-sm truncate">{r.product_name}</span>
+                            <span className="text-sm truncate">
+                              {r.short_name && /[ABC]类/u.test(r.short_name) ? r.short_name : r.product_name}
+                            </span>
                             <span className="text-xs text-muted-foreground truncate">
-                              {r.beian_hao}{r.short_name ? ` · ${r.short_name}` : ""}
+                              {r.beian_hao}
+                              {r.short_name && r.short_name !== r.product_name ? ` · ${r.product_name}` : ""}
                             </span>
                           </div>
                           {r.strategy_one && (

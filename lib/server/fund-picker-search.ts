@@ -99,9 +99,11 @@ export async function searchFundsByRegister(
        FROM private_fund_info
        WHERE beian_hao = ANY($1::text[])
        UNION
-       SELECT register_number AS beian_hao, fund_name AS product_name, NULL::text AS short_name
+       SELECT COALESCE(NULLIF(BTRIM(register_number), ''), record_key) AS beian_hao,
+              fund_name AS product_name,
+              NULL::text AS short_name
        FROM basicinfo_bfl_track
-       WHERE register_number = ANY($1::text[])
+       WHERE register_number = ANY($1::text[]) OR record_key = ANY($1::text[])
        UNION
        SELECT register_number AS beian_hao,
               COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
@@ -159,8 +161,9 @@ function passesShareClassFilters(
     if (!shareClassProductNamesMatch(name, originalQuery)) return false
     return shareClassCodeMatchesProduct(beian, name)
   }
-  if (shareClassFromProductName(name)) return false
-  if (shareClassFromRegisterCode(beian)) return false
+  if (shareClassFromProductName(name) || shareClassFromRegisterCode(beian)) {
+    return baseNamesMatch(name, originalQuery)
+  }
   return true
 }
 
@@ -203,11 +206,15 @@ export async function searchFundsByName(
           OR product_name ILIKE $3)
          AND ${shareClassGuard}
        UNION
-       SELECT register_number AS beian_hao, fund_name AS product_name, NULL::text AS short_name
+       SELECT COALESCE(NULLIF(BTRIM(register_number), ''), record_key) AS beian_hao,
+              fund_name AS product_name,
+              NULL::text AS short_name
        FROM basicinfo_bfl_track
        WHERE (${sqlFundNameMatch("fund_name", "$1")}
           OR fund_name ILIKE $2
-          OR fund_name ILIKE $3)
+          OR fund_name ILIKE $3
+          OR register_number ILIKE $2
+          OR record_key ILIKE $2)
          AND ${shareClassGuard}
        UNION
        SELECT register_number AS beian_hao,
@@ -253,9 +260,13 @@ async function searchFundsBroad(name: string, limit = 10): Promise<FundPickerSea
        FROM private_fund_info
        WHERE product_name ILIKE $1 OR beian_hao ILIKE $1
        UNION
-       SELECT register_number AS beian_hao, fund_name AS product_name, NULL::text AS short_name
+       SELECT COALESCE(NULLIF(BTRIM(register_number), ''), record_key) AS beian_hao,
+              fund_name AS product_name,
+              NULL::text AS short_name
        FROM basicinfo_bfl_track
-       WHERE fund_name ILIKE $1 OR register_number ILIKE $1
+       WHERE fund_name ILIKE $1
+          OR register_number ILIKE $1
+          OR record_key ILIKE $1
        UNION
        SELECT register_number AS beian_hao,
               COALESCE(NULLIF(BTRIM(fund_short_name), ''), fund_name) AS product_name,
@@ -403,6 +414,23 @@ export async function searchTrackingFunds(q: string, limit = 20): Promise<FundPi
             continue
           }
           addScoredRow(scored, synthesizeShareClass(row, queryShareClass), 30, queryShareClass, trimmed)
+        }
+      }
+    }
+  }
+
+  if (!queryShareClass) {
+    const baseRows = Array.from(scored.values()).filter(({ row }) => isBaseProduct(row))
+    for (const { row: base, score: baseScore } of baseRows) {
+      for (const letter of ["A", "B", "C"] as ShareClassLetter[]) {
+        const alreadyHas = Array.from(scored.values()).some(
+          ({ row }) =>
+            (shareClassFromProductName(row.product_name) === letter
+              || shareClassFromRegisterCode(row.beian_hao) === letter)
+            && baseNamesMatch(row.product_name, base.product_name),
+        )
+        if (!alreadyHas) {
+          addScoredRow(scored, synthesizeShareClass(base, letter), baseScore + 8, queryShareClass, trimmed)
         }
       }
     }
