@@ -734,8 +734,8 @@ const sbdf95Rule = lookupFundNavCorrectionRule("SBDF95", "锐耐稳健对冲11�
 assert("SBDF95 correction rule loaded", sbdf95Rule?.series_start_date === "2026-07-03")
 assert("SBDF95 preserve high nav", sbdf95Rule?.preserve_high_nav_scale === true)
 
-const bdp99aRule = lookupFundNavCorrectionRule("BDP99A", "锐耐稳健对冲11号A类")
-assert("BDP99A correction rule loaded", bdp99aRule?.series_start_date === "2026-07-09")
+const bdp99aRule = lookupFundNavCorrectionRule("BDF95A", "锐耐稳健对冲11号A类")
+assert("BDF95A correction rule loaded", bdp99aRule?.series_start_date === "2026-07-09")
 
 // AVM354 笃熙泰渊流1号A类: platform stored 单位 in 复权 while 累计 is correct (post-dividend)
 const avm354Legacy = [

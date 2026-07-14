@@ -9,7 +9,7 @@ import { loadManagedProductEmailPoints, loadManagedProductNavSeries, loadManualT
 import { addDays } from "@/lib/server/list-cache-nav-batch"
 import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
-import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
+import { applyFundNavCorrectionToLegacyRows, lookupFundNavCorrectionRule } from "@/lib/server/fund-nav-correction-rules"
 
 export const dynamic = "force-dynamic"
 
@@ -328,7 +328,8 @@ export async function GET(
       : null)
 
   let nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows, fundNavContext)
-  if (effectiveManagedOverride) {
+  const navCorrectionRule = lookupFundNavCorrectionRule(routeBeianHao, productName, shortName || null)
+  if (!navCorrectionRule?.preserve_high_nav_scale && effectiveManagedOverride) {
     try {
       const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
         loadManagedProductEmailPoints({

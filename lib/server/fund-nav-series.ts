@@ -7,6 +7,7 @@ import {
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
+import { applyFundNavCorrectionToLegacyRows, lookupFundNavCorrectionRule } from "@/lib/server/fund-nav-correction-rules"
 import {
   loadManagedProductNavSeed,
   mergeManagedProductDetailNav,
@@ -58,6 +59,7 @@ async function loadMergedNavRows(
   product_name: string,
   short_name: string,
 ): Promise<LegacyNavRow[]> {
+  const fundContext = { beian_hao, product_name, short_name }
   const bfl = await loadBflNames(beian_hao)
   const extraNames = [bfl?.product_name, bfl?.short_name, product_name, short_name]
 
@@ -66,11 +68,12 @@ async function loadMergedNavRows(
     loadEmailNavSeries(beian_hao, product_name, short_name || null, extraNames),
   ])
 
-  let navSeries = mergeNavSeriesWithEmail(legacyRows, emailRows, {
-    beian_hao,
-    product_name,
-    short_name,
-  })
+  let navSeries = mergeNavSeriesWithEmail(legacyRows, emailRows, fundContext)
+
+  const correctionRule = lookupFundNavCorrectionRule(beian_hao, product_name, short_name)
+  if (correctionRule?.preserve_high_nav_scale) {
+    return applyFundNavCorrectionToLegacyRows(navSeries, fundContext)
+  }
 
   const managedOverride =
     lookupManagedProductOverride(beian_hao)
@@ -83,7 +86,9 @@ async function loadMergedNavRows(
       ? { beian_hao, product_name }
       : null)
 
-  if (!effectiveManagedOverride) return navSeries
+  if (!effectiveManagedOverride) {
+    return applyFundNavCorrectionToLegacyRows(navSeries, fundContext)
+  }
 
   try {
     const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
@@ -109,7 +114,10 @@ async function loadMergedNavRows(
         short_name,
         { excludeType6: true },
       )
-      return mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyNoType6)
+      return applyFundNavCorrectionToLegacyRows(
+        mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyNoType6),
+        fundContext,
+      )
     }
 
     if (teamSeries.length > 0) {
@@ -121,17 +129,23 @@ async function loadMergedNavRows(
       )
       const firstTeamDate = teamSeries[0]?.price_date ?? ""
       const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
-      let base = mergeNavSeriesWithEmail(legacyNoType6, [])
+      let base = mergeNavSeriesWithEmail(legacyNoType6, [], fundContext)
       if (seedBackfill.length > 0) {
-        base = mergeLegacyWithTeamNav(base, seedBackfill)
+        base = mergeLegacyWithTeamNav(base, seedBackfill, fundContext)
       }
-      return mergeLegacyWithTeamNav(base, teamSeries)
+      return applyFundNavCorrectionToLegacyRows(
+        mergeLegacyWithTeamNav(base, teamSeries, fundContext),
+        fundContext,
+      )
     }
 
     if (seedRows.length > 0) {
       const seedLatest = seedRows[seedRows.length - 1].price_date
       const emailAfterSeed = emailRows.filter((row) => row.price_date > seedLatest)
-      return mergeNavSeriesWithEmail(seedRows, emailAfterSeed)
+      return applyFundNavCorrectionToLegacyRows(
+        mergeNavSeriesWithEmail(seedRows, emailAfterSeed, fundContext),
+        fundContext,
+      )
     }
 
     const legacyNoType6 = await loadPrivateFundLegacyNavRows(
@@ -140,10 +154,13 @@ async function loadMergedNavRows(
       short_name,
       { excludeType6: true },
     )
-    return mergeNavSeriesWithEmail(legacyNoType6, emailRows)
+    return applyFundNavCorrectionToLegacyRows(
+      mergeNavSeriesWithEmail(legacyNoType6, emailRows, fundContext),
+      fundContext,
+    )
   } catch (err) {
     console.error("[loadMergedNavRows] managed product nav failed:", err)
-    return navSeries
+    return applyFundNavCorrectionToLegacyRows(navSeries, fundContext)
   }
 }
 

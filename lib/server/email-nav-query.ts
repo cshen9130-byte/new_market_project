@@ -12,6 +12,7 @@ import {
 import type { FundNavSeriesContext } from "@/lib/server/fund-nav-correction-rules"
 import {
   applyFundNavCorrectionToLegacyRows,
+  lookupFundNavCorrectionRule,
   shouldSkipReturnIndexSanitize,
 } from "@/lib/server/fund-nav-correction-rules"
 
@@ -579,6 +580,9 @@ export function selectEmailNavSeriesRows(
 
   const aClass = isAClassFund(beianHao, aliases)
   const beian = beianHao.trim().toUpperCase()
+  const correctionRule = lookupFundNavCorrectionRule(beianHao, aliases[0], aliases[1])
+  const allowLargeNavJumps = correctionRule?.preserve_high_nav_scale === true
+  const seriesStartDate = correctionRule?.series_start_date ?? null
 
   const filteredByDate = new Map<string, EmailNavRawRow[]>()
   for (const row of filtered) {
@@ -631,13 +635,28 @@ export function selectEmailNavSeriesRows(
       best = { ...best, nav: String(+recovered.toFixed(6)) }
     }
     const bestNav = recovered
-    if (
-      prevNav != null && bestNav != null && prevNav > 0 &&
-      Math.abs(bestNav / prevNav - 1) > 0.15 &&
-      collectMultiShareClassNavRows(dayRows, beian).length <= 1
-    ) {
+    const skipLargeJump =
+      !allowLargeNavJumps
+      && prevNav != null
+      && bestNav != null
+      && prevNav > 0
+      && Math.abs(bestNav / prevNav - 1) > 0.15
+      && collectMultiShareClassNavRows(dayRows, beian).length <= 1
+    if (skipLargeJump) {
       // Missing share-class row in email (e.g. SBDW42 B-class absent on 2026-07-09) — keep prior date.
       continue
+    }
+    if (
+      allowLargeNavJumps
+      && seriesStartDate
+      && date >= seriesStartDate
+      && prevNav != null
+      && bestNav != null
+      && prevNav > 0
+      && bestNav / prevNav >= 2
+    ) {
+      // Rebased NAV scale at correction-rule start — do not chain returns from old ~1 history.
+      prevNav = null
     }
     selected.push(best)
     if (!usingShareClassFallback) {

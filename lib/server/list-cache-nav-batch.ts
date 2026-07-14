@@ -3,7 +3,7 @@
  * Preloads email + legacy NAV once, then resolves in memory (no per-row DB round-trips).
  */
 
-import { query } from "@/lib/db"
+import { query, queryUnbounded } from "@/lib/db"
 import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   collectFundNameAliases,
@@ -428,7 +428,7 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
   const out = new Map<string, NavPoint[]>()
   if (beians.length === 0) return out
 
-  const rows = await query<EmailNavBatchRow>(
+  const rows = await queryUnbounded<EmailNavBatchRow>(
     `SELECT BTRIM(product_code) AS code, nav_date::text AS nav_date, nav::text AS nav,
             cumulative_nav::text, source,
             COALESCE(subject, '') AS subject, product_code, fund_name, attachment_filename
@@ -490,7 +490,7 @@ async function loadEmailNavByNameBatch(
   const validNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
   if (validNames.length === 0) return out
 
-  const rows = await query<EmailNavBatchRow & { matched_name: string }>(
+  const rows = await queryUnbounded<EmailNavBatchRow & { matched_name: string }>(
     `SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav,
             e.cumulative_nav::text, e.source,
             COALESCE(e.subject, '') AS subject, e.product_code, e.fund_name, e.attachment_filename,
@@ -621,7 +621,7 @@ async function loadLegacyNavBatch(
   const byProduct = new Map<string, NavPoint[]>()
   if (beians.length === 0 && names.length === 0) return { byBeian, byProduct }
 
-  const rows = await query<LegacyBatchRow>(
+  const rows = await queryUnbounded<LegacyBatchRow>(
     `SELECT beian_hao, product_name, price_date::text AS price_date, nav::text AS nav,
             cumulative_nav::text, cum_nav_withdrawal::text, pri
      FROM (
@@ -681,7 +681,7 @@ async function loadType6NavBatch(
   const byProduct = new Map<string, NavPoint[]>()
   if (beians.length === 0 && names.length === 0) return { byBeian, byProduct }
 
-  const rows = await query<Type6BatchRow>(
+  const rows = await queryUnbounded<Type6BatchRow>(
     `SELECT beian_hao, product_name, price_date::text AS price_date, nav::text AS nav, 0 AS pri
      FROM private_fund_nav_group_type6
      WHERE price_date >= $3::date
@@ -807,7 +807,7 @@ async function loadLatestNavDateHints(
   }
 
   if (beians.length > 0) {
-    const emailRows = await query<{ code: string; latest_date: string }>(
+    const emailRows = await queryUnbounded<{ code: string; latest_date: string }>(
       `SELECT BTRIM(product_code) AS code, MAX(nav_date)::text AS latest_date
        FROM ops_email_nav_records
        WHERE BTRIM(product_code) = ANY($1) AND nav IS NOT NULL
