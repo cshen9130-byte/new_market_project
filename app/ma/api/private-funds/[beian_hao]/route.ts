@@ -13,6 +13,10 @@ import { applyFundNavCorrectionToLegacyRows, lookupFundNavCorrectionRule } from 
 
 export const dynamic = "force-dynamic"
 
+// Minimum elapsed days of NAV history before annualizing "since inception" return/Sharpe.
+// Below this, compounding amplifies short-window noise into misleading figures.
+const MIN_DAYS_FOR_ANNUALIZATION = 30
+
 function collectPriceDates(rows: Array<{ price_date: string }>, into: Set<string>) {
   for (const row of rows) into.add(row.price_date)
 }
@@ -429,9 +433,12 @@ export async function GET(
       ? (latestDate.getTime() - inceptionDate.getTime()) / 86_400_000
       : null
 
-  // Annualized since inception
+  // Annualized since inception — require at least a month of history; compounding a
+  // multi-day return out to 365 days otherwise produces wildly misleading figures
+  // (e.g. a -1% move over 4 days would annualize to -60%). Matches the >= 20-point
+  // floor used for the 1-year Sharpe/Calmar elsewhere (list-cache-nav-batch.ts).
   const ann_ret =
-    ret_since_inception !== null && days && days > 0
+    ret_since_inception !== null && days && days >= MIN_DAYS_FOR_ANNUALIZATION
       ? Math.pow(1 + ret_since_inception, 365 / days) - 1
       : null
 
@@ -464,7 +471,7 @@ export async function GET(
   // Since-inception Sharpe = annualised return / annualised volatility (rf = 0)
   // Use actual records-per-year so weekly/daily funds both annualise correctly
   let sharpe_since_inception: string | null = null
-  if (ann_ret !== null && dailyReturns.length > 1 && days && days > 0) {
+  if (ann_ret !== null && dailyReturns.length > 1 && days && days >= MIN_DAYS_FOR_ANNUALIZATION) {
     const totalYears = days / 365
     const recordsPerYear = dailyReturns.length / totalYears
     const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
