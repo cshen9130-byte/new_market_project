@@ -17,7 +17,6 @@ import {
 } from "@/lib/server/fof-weekly-benchmark"
 import { loadFundNavRange, loadMergedFundNavRows, resolveFundNames } from "@/lib/server/fund-nav-series"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
-import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
 import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
 
 const execFileAsync = promisify(execFile)
@@ -28,7 +27,6 @@ const BUNDLED_CN_FONT = path.join(SCRIPT_DIR, "fonts", "NotoSansSC-Regular.otf")
 const BUNDLED_FOF_NAV_BY_BEIAN: Record<string, string> = {
   SBPU97: "低波稳健FOF 1号合并净值.xlsx",
 }
-const MANAGED_NAV_SEED_DIR = path.join(process.cwd(), "data", "managed-product-nav")
 
 function isLikelyValidFontFile(filePath: string): boolean {
   try {
@@ -281,24 +279,6 @@ function resolveBundledFofWeeklyNavPath(
   return null
 }
 
-function loadFullManagedSeedRows(beian_hao: string): LegacyNavRow[] | null {
-  const key = (beian_hao ?? "").trim().toUpperCase()
-  if (!key) return null
-
-  const seedPath = path.join(MANAGED_NAV_SEED_DIR, `${key}.json`)
-  if (!existsSync(seedPath)) return null
-
-  try {
-    const raw = JSON.parse(readFileSync(seedPath, "utf8")) as { before_date?: string | null }
-    if (raw.before_date != null) return null
-  } catch {
-    return null
-  }
-
-  const rows = loadManagedProductNavSeed(key)
-  return rows.length > 0 ? rows : null
-}
-
 function legacyRowsToNavCsvInput(rows: LegacyNavRow[]): Array<{
   date: string
   unit: string
@@ -548,11 +528,8 @@ export async function buildFofWeeklyNavCsv(
     )
   }
 
-  const seedRows = loadFullManagedSeedRows(beian_hao)
-  if (seedRows) {
-    return buildNavRowsWithBenchmark(legacyRowsToNavCsvInput(seedRows), benchmarkKey)
-  }
-
+  // Same merge path as the fund detail page: managed seed + team/email after seed end.
+  // Do not return seed-only — that caps the series at the xlsx rebuild date (e.g. SBPU97 → 2026-06-23).
   const legacyRows = await loadMergedFundNavRows(beian_hao, product_name, short_name)
   return buildNavRowsWithBenchmark(legacyRowsToNavCsvInput(legacyRows), benchmarkKey)
 }
@@ -603,16 +580,7 @@ export async function resolveFofWeeklyProductNavRange(
   }
 
   const names = await resolveFundNames(resolvedBeian, product_name)
-  const seedRows = loadFullManagedSeedRows(resolvedBeian)
-  if (seedRows) {
-    return {
-      beian_hao: resolvedBeian,
-      product_name: names.product_name,
-      nav_start_date: seedRows[0].price_date.slice(0, 10),
-      latest_nav_date: seedRows.at(-1)!.price_date.slice(0, 10),
-    }
-  }
-
+  // Match fund detail: seed + live team/email (not seed end date alone).
   const range = await loadFundNavRange(resolvedBeian, names.product_name, names.short_name)
   return {
     beian_hao: resolvedBeian,
