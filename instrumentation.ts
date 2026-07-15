@@ -10,11 +10,15 @@ export async function register() {
       runDueSettlementFetch().catch((e) => console.error("[settlement-email] scheduler error:", e))
     })
 
-    // Every hour: light incremental fetch (last 1 day of mail only).
+    // Every 2 hours: light incremental fetch (last 1 day of mail only).
     // Upserts NAV/估值表, syncs 邮箱运维池, patches touched tracking rows +
     // rebuilds 在管产品 list cache. Skips full FOF/tracking/metrics rebuilds
     // (those stay on nightly ETL).
-    cron.schedule("0 * * * *", () => {
+    // Was hourly ("0 * * * *") — a stuck run (slow IMAP server / DB lock wait)
+    // could wedge the site for up to an hour with no way to recover until a
+    // manual restart. Lowered frequency + added a hard watchdog timeout in
+    // startEmailParseFetchJob() so a stuck run self-aborts instead of hanging.
+    cron.schedule("0 */2 * * *", () => {
       void (async () => {
         try {
           const { startEmailParseFetchJob } = await import("./lib/server/email-parse-fetch-job")

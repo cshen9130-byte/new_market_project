@@ -63,39 +63,46 @@ export async function syncEmailTrackingPool(): Promise<EmailTrackingPoolSyncResu
   let updated = 0
 
   for (const fund of funds) {
-    const hash = rowHash(EMAIL_OPS_POOL_KEY, fund.beian_hao, fund.product_name)
-    const rows = await query<{ inserted: boolean }>(
-      `INSERT INTO user_custom_pool
-         (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
-       SELECT $1,
-              COALESCE((SELECT MAX(source_row_number) FROM user_custom_pool WHERE pool_key = $1), 0) + 1,
-              $3, $2, $4, 'email_nav_etl', NOW(), NOW()
-       WHERE NOT EXISTS (
-         SELECT 1 FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2
-       )
-       RETURNING true AS inserted`,
-      [EMAIL_OPS_POOL_KEY, fund.beian_hao, fund.product_name, hash],
-    )
+    // Guard each fund individually: with 100+ funds processed sequentially,
+    // one blocked/failing query (e.g. a lock wait that hits statement_timeout)
+    // would otherwise throw and abort the entire sync for every remaining fund.
+    try {
+      const hash = rowHash(EMAIL_OPS_POOL_KEY, fund.beian_hao, fund.product_name)
+      const rows = await query<{ inserted: boolean }>(
+        `INSERT INTO user_custom_pool
+           (pool_key, source_row_number, product_name, register_number, row_hash, source_file, imported_at, updated_at)
+         SELECT $1,
+                COALESCE((SELECT MAX(source_row_number) FROM user_custom_pool WHERE pool_key = $1), 0) + 1,
+                $3, $2, $4, 'email_nav_etl', NOW(), NOW()
+         WHERE NOT EXISTS (
+           SELECT 1 FROM user_custom_pool WHERE pool_key = $1 AND register_number = $2
+         )
+         RETURNING true AS inserted`,
+        [EMAIL_OPS_POOL_KEY, fund.beian_hao, fund.product_name, hash],
+      )
 
-    if (rows.length > 0) {
-      inserted++
-      try {
-        await upsertTrackingFundListCacheEntry(fund.beian_hao, fund.product_name)
-      } catch (err) {
-        console.warn("[email-tracking-pool-sync] cache upsert failed", fund.beian_hao, err)
+      if (rows.length > 0) {
+        inserted++
+        try {
+          await upsertTrackingFundListCacheEntry(fund.beian_hao, fund.product_name)
+        } catch (err) {
+          console.warn("[email-tracking-pool-sync] cache upsert failed", fund.beian_hao, err)
+        }
+        continue
       }
-      continue
-    }
 
-    const nameUpdate = await query<{ ok: number }>(
-      `UPDATE user_custom_pool
-       SET product_name = $3, row_hash = $4, source_file = 'email_nav_etl', updated_at = NOW()
-       WHERE pool_key = $1 AND register_number = $2
-         AND (product_name IS DISTINCT FROM $3 OR source_file IS DISTINCT FROM 'email_nav_etl')
-       RETURNING 1 AS ok`,
-      [EMAIL_OPS_POOL_KEY, fund.beian_hao, fund.product_name, hash],
-    )
-    if (nameUpdate.length > 0) updated++
+      const nameUpdate = await query<{ ok: number }>(
+        `UPDATE user_custom_pool
+         SET product_name = $3, row_hash = $4, source_file = 'email_nav_etl', updated_at = NOW()
+         WHERE pool_key = $1 AND register_number = $2
+           AND (product_name IS DISTINCT FROM $3 OR source_file IS DISTINCT FROM 'email_nav_etl')
+         RETURNING 1 AS ok`,
+        [EMAIL_OPS_POOL_KEY, fund.beian_hao, fund.product_name, hash],
+      )
+      if (nameUpdate.length > 0) updated++
+    } catch (err) {
+      console.warn("[email-tracking-pool-sync] fund sync failed, skipping", fund.beian_hao, err)
+    }
   }
 
   let removed = 0
