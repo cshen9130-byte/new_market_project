@@ -6,7 +6,8 @@
  *   cd ~/new_market_project
  *   npx tsx scripts/ma/_backfill_sqx078_gap.ts
  *
- * Scans only ch_c7h8@163.com by default (~1–3 min). Set SQX078_GAP_ACCOUNT=all to scan every mailbox.
+ * Scans preferred mailboxes (ch_c7h8, cwsj, custodiandata) by default.
+ * Set SQX078_GAP_ACCOUNT=ch_c7h8@163.com to limit to one mailbox.
  */
 import { loadProjectEnvFiles, configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
 
@@ -18,7 +19,8 @@ const BEIAN = "SQX078"
 const GAP_START = "2026-05-30"
 const GAP_END = "2026-06-14"
 const SINCE = new Date("2026-05-29T00:00:00+08:00")
-const SUBJECT_RE = /【虚拟净值】\s*SQX078_/u
+/** Underscore or space after code — GJDF uses both. */
+const SUBJECT_RE = /【虚拟净值】\s*SQX078(?:[\s_])/u
 
 const PREFERRED_ACCOUNTS = ["ch_c7h8@163.com", "cwsj@hengyifund.cn", "custodiandata@citics.com"]
 
@@ -45,6 +47,7 @@ type CrawlEmailAccount = {
   pass: string
   imapHost: string
   imapPort: number
+  imapFolders?: string[]
 }
 
 function stripHtml(html: string): string {
@@ -114,7 +117,7 @@ function inGap(navDate: string | null | undefined): boolean {
 
 async function resolveAccounts(): Promise<CrawlEmailAccount[]> {
   const { getCrawlEmailByAccount, listCrawlEmails } = await import("@/lib/server/crawl-emails")
-  const mode = (process.env.SQX078_GAP_ACCOUNT ?? "ch_c7h8@163.com").trim()
+  const mode = (process.env.SQX078_GAP_ACCOUNT ?? "all").trim()
   if (mode.toLowerCase() === "all") {
     const out: CrawlEmailAccount[] = []
     const seen = new Set<string>()
@@ -158,7 +161,11 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
     logger: false,
     connectionTimeout: 20_000,
     greetingTimeout: 10_000,
-    socketTimeout: 60_000,
+    socketTimeout: 180_000,
+  })
+
+  client.on("error", (err: Error) => {
+    console.error(`[${account.account}] IMAP socket:`, err.message)
   })
 
   const navRecords: EmailNavInsert[] = []
@@ -176,13 +183,19 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
     for (const folder of getImapFolders(account)) {
       await client.mailboxOpen(folder)
       const uids = (await client.search({ since: SINCE }, { uid: true })) || []
+      console.log(`[${account.account}/${folder}] since ${SINCE.toISOString().slice(0, 10)}: ${uids.length} uids`)
       if (uids.length === 0) continue
 
-      for await (const msg of client.fetch(
-        uids,
-        { uid: true, envelope: true, bodyStructure: true, internalDate: true },
-        { uid: true },
-      )) {
+      // Phase 1: envelope-only scan — avoid downloading bodyStructure for thousands of emails.
+      type MatchMeta = {
+        uid: number
+        subject: string
+        sentAt: Date
+        senderEmail: string
+      }
+      const matches: MatchMeta[] = []
+
+      for await (const msg of client.fetch(uids, { uid: true, envelope: true, internalDate: true }, { uid: true })) {
         const envelope = (msg as { envelope?: { subject?: string; date?: Date; from?: { address?: string }[] } }).envelope
         const subject = envelope?.subject ?? ""
         if (!SUBJECT_RE.test(subject)) continue
@@ -192,15 +205,43 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
 
         matchedSubjects++
         const uid = (msg as { uid?: number }).uid ?? 0
-        const structure = (msg as { bodyStructure?: unknown }).bodyStructure
-        if (!structure) continue
-
         const sentAt = (msg as { internalDate?: Date }).internalDate ?? envelope?.date ?? new Date()
         const senderEmail = envelope?.from?.[0]?.address?.trim() ?? ""
+        matches.push({ uid, subject, sentAt, senderEmail })
+      }
+
+      console.log(`[${account.account}/${folder}] gap subject matches: ${matches.length}`)
+      if (matches.length === 0) continue
+
+      // Phase 2: download body + attachments one UID at a time (avoids batch socket timeout).
+      for (const meta of matches) {
+        let structure: unknown
+        try {
+          for await (const msg of client.fetch(
+            meta.uid,
+            { uid: true, bodyStructure: true },
+            { uid: true },
+          )) {
+            structure = (msg as { bodyStructure?: unknown }).bodyStructure
+          }
+        } catch (err) {
+          console.error(`[${account.account}] UID ${meta.uid} fetch failed:`, err instanceof Error ? err.message : err)
+          continue
+        }
+        if (!structure) continue
+
+        const uid = meta.uid
         const attachments = collectAttachments(structure)
         const textParts = collectTextParts(structure)
+        const emailMeta = {
+          crawlEmailAccount: account.account,
+          emailUid: String(uid),
+          sentAt: meta.sentAt.toISOString(),
+          subject: meta.subject,
+          senderEmail: meta.senderEmail,
+        }
 
-        const chunks: string[] = [subject]
+        const chunks: string[] = [meta.subject]
         for (const { part, mime } of textParts) {
           try {
             const buf = await downloadPart(uid, part)
@@ -212,19 +253,11 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
         }
         const bodyText = chunks.join("\n")
 
-        const emailMeta = {
-          crawlEmailAccount: account.account,
-          emailUid: String(uid),
-          sentAt: sentAt.toISOString(),
-          subject,
-          senderEmail,
-        }
-
         const navDates = new Set<string>()
-        for (const att of selectNavTableAttachments(subject, attachments)) {
+        for (const att of selectNavTableAttachments(meta.subject, attachments)) {
           try {
             const buf = await downloadPart(uid, att.part)
-            for (const row of extractNavTableFromBuffer(buf, att.filename, subject)) {
+            for (const row of extractNavTableFromBuffer(buf, att.filename, meta.subject)) {
               if (!row.navDate || !inGap(row.navDate)) continue
               navDates.add(row.navDate)
               navRecords.push({
@@ -244,7 +277,7 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
           }
         }
 
-        const bodyNav = extractNavData(subject, bodyText)
+        const bodyNav = extractNavData(meta.subject, bodyText)
         if (bodyNav?.navDate && inGap(bodyNav.navDate) && !navDates.has(bodyNav.navDate)) {
           navRecords.push({
             ...emailMeta,
@@ -268,7 +301,7 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
     }
   }
 
-  console.log(`[${account.account}] matched SQX078 virtual subjects: ${matchedSubjects}`)
+  console.log(`[${account.account}] matched SQX078 virtual subjects: ${matchedSubjects}, parsed rows: ${navRecords.length}`)
   return navRecords
 }
 
@@ -293,12 +326,17 @@ async function main() {
 
   const accounts = await resolveAccounts()
   if (accounts.length === 0) throw new Error("No crawl mailboxes with passwords configured")
+  console.log("mailboxes:", accounts.map((a) => a.account).join(", "))
 
   const allRows: EmailNavInsert[] = []
   for (const account of accounts) {
-    console.log(`scanning ${account.account} since ${SINCE.toISOString().slice(0, 10)}…`)
-    const rows = await fetchSqx078GapFromMailbox(account)
-    allRows.push(...rows)
+    console.log(`\nscanning ${account.account}…`)
+    try {
+      const rows = await fetchSqx078GapFromMailbox(account)
+      allRows.push(...rows)
+    } catch (err) {
+      console.error(`[${account.account}] IMAP error:`, err instanceof Error ? err.message : err)
+    }
   }
 
   const byDate = new Map<string, EmailNavInsert>()
@@ -308,14 +346,14 @@ async function main() {
     byDate.set(row.navDate, row)
   }
   const deduped = [...byDate.values()].sort((a, b) => a.navDate.localeCompare(b.navDate))
-  console.log(`parsed ${deduped.length} gap rows:`, deduped.map((r) => ({
+  console.log(`\nparsed ${deduped.length} gap rows:`, deduped.map((r) => ({
     date: r.navDate,
     unit: r.nav,
     cum: r.cumulativeNav,
   })))
 
   if (deduped.length === 0) {
-    console.log("No gap emails found in mailbox — nothing to insert.")
+    console.log("No gap emails found — nothing to insert.")
     return
   }
 

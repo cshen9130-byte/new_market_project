@@ -96,7 +96,7 @@ function extractFundNameFromSubject(subject: string): string | null {
   }
 
   const bracketVirtualSubj = subject.match(
-    /【虚拟净值】[A-Z0-9]+_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
+    /【虚拟净值】[A-Z0-9]+[\s_]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
   )
   if (bracketVirtualSubj) return normalizeFundDisplayName(bracketVirtualSubj[1])
 
@@ -224,7 +224,7 @@ export function extractProductCodeFromText(text: string): string | null {
   const virtualSubj = text.match(/】([A-Z]{1,6}\d{2,6}[A-Z]?)(?:\([总]\))?_/)
   if (virtualSubj) return virtualSubj[1]
 
-  const bracketVirtualSubj = text.match(/【虚拟净值】([A-Z0-9]+)_/)
+  const bracketVirtualSubj = text.match(/【虚拟净值】([A-Z0-9]+)[\s_]/)
   if (bracketVirtualSubj) return bracketVirtualSubj[1]
 
   // Typical codes: SBPC20, ASX73A, BSJ74B — allow underscore-delimited codes
@@ -341,7 +341,7 @@ function matchCumulativeUnitNav(bodyText: string): RegExpMatchArray | null {
 
 function parseVirtualBracketSubject(text: string): { code: string; fundName: string } | null {
   const m = text.match(
-    /【虚拟净值】([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/u,
+    /【虚拟净值】([A-Z0-9]+)[\s_]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/u,
   )
   if (!m) return null
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
