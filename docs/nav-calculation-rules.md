@@ -918,7 +918,53 @@ Some legacy platform ingest rows stored **累计净值 in `cum_nav_withdrawal`**
 ```bash
 npx tsx scripts/test-nav-rechain.mjs
 npx tsx scripts/ma/check_fof_nav_invariant.ts
+```
+
 ---
+
+## What Was Fixed (特夫郁金香全量化 — SQX078, 2026-07-16 — 复权净值 understated on email tail)
+
+### The Problem
+
+Fund detail **收益曲线 (复权净值)** and headline 成立以来收益 for **特夫郁金香全量化 (SQX078)** were ~0.7% below reference platforms (e.g. adj **2.8351** vs **2.8544** on 2026-07-15 with matching unit/cum). The chart shape on the post-2026-06 email tail looked compressed vs reference.
+
+| Date | 单位净值 | 累计净值 | 复权净值 (wrong) | 复权净值 (reference) |
+|---|---|---|---|---|
+| 2026-07-15 | 1.1130 | 2.2767 | **2.8351** | **2.8544** |
+| 2026-07-14 | 1.1142 | 2.2779 | **2.8366** | **2.8574** |
+
+### Root Causes
+
+1. **`applyEmailUnitNavCorrection` stripped email 累计** — SQX078 post-investment virtual emails carry cum/unit ≈ **2.04**, above `MAX_PLAUSIBLE_EMAIL_CUM_UNIT_RATIO` (2). The pipeline treated good 累计 as corrupt and merged unit-only, forcing rechain.
+2. **Cum-ratio adj rechain on email tail** — After 2026-06-04, `rechainDerivedFromPrev` grew 复权 at the **累计** rate (`prevAdj × cum/prevCum`). For large dividend gaps (cum − unit ≈ 1.16), cum % moves are smaller than unit % moves, so adj lagged reference platforms that grow 复权 at the **unit** return on normal post-div days.
+
+### The Correct Fixes Applied
+
+| Area | File / function | What changed |
+|---|---|---|
+| Keep high-ratio virtual cum | `applyEmailUnitNavCorrection` | Post-investment **虚拟净值** emails keep 累计 when cum/unit > 2 and cum has a real dividend offset (SQX078 pattern only — other sources still capped at 2×) |
+| Unit-rate adj on email-confirmed cum | `rechainDerivedFromPrev` | When email supplies 累计 matching the constant post-div gap (`unit + prevGap`) on a non-ex-div day, grow 复权 at **unit/prevUnit** instead of cum/prevCum |
+
+### Verified Correct Values (after fix)
+
+| Date | 单位净值 | 累计净值 | 复权净值 |
+|---|---|---|---|
+| 2026-07-14 | 1.1142 | 2.2779 | **~2.8574** |
+| 2026-07-15 | 1.1130 | 2.2767 | **~2.8544** |
+
+### What This Fix Does NOT Change
+
+- SBAH99 cum-ratio rechain when email cum drifts from the constant gap — unchanged (regression test `adj/cum ratio preserved after rechain` still passes).
+- `repairSwappedCumAdjRows`, SNF018 virtual-first, SSG947 seed merge, SBPC20 attachment-wins-over-virtual — unchanged.
+- `syncExDivAdjustedNav` ex-div formulas — unchanged.
+
+### Regression Checks
+
+```bash
+npx tsx scripts/test-nav-rechain.mjs
+npx tsx scripts/ma/check_fof_nav_invariant.ts
+npx tsx scripts/ma/_diag_sqx078_full.ts
+```
 
 ---
 

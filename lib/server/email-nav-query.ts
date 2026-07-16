@@ -686,8 +686,18 @@ function applyEmailUnitNavCorrection(rows: EmailNavRawRow[], beianHao: string): 
     }
 
     if (unit != null && cum != null && !isPlausibleEmailCumulativeNav(unit, cum)) {
-      working = { ...working, cumulative_nav: null }
-      cum = null
+      // Dividend-paying underlyings in post-investment virtual emails can legitimately
+      // carry cum/unit > MAX_PLAUSIBLE (SQX078 ~2.04). Stripping cum forces unit-only
+      // rechain and understates 复权 on the email tail.
+      const keepHighRatioVirtualCum =
+        isPostInvestmentVirtualNavEmail(working.subject)
+        && hasDistinctCumulative(unit, cum)
+        && isReasonableNav(cum)
+        && cum >= unit - 0.001
+      if (!keepHighRatioVirtualCum) {
+        working = { ...working, cumulative_nav: null }
+        cum = null
+      }
     }
 
     if (
@@ -1468,6 +1478,22 @@ function rechainDerivedFromPrev(
 
   const cumUnitGap = prevCum - prevUnit
   const cum = cumUnitGap > 0.01 ? unit + cumUnitGap : prevCum * unitRatio
+  // Email-confirmed 累计 on a normal post-div day (constant cum-unit gap): grow 复权 at
+  // the unit return. Cum-ratio adj understates returns when the dividend gap is large
+  // (SQX078). SBAH99-style rows where currCum drifts from the gap keep cum-ratio adj.
+  if (
+    currCum != null
+    && cumUnitGap > 0.05
+    && !isLikelyDividendExDate(prevUnit, unit, prevCumW, currCum)
+  ) {
+    const emailGapCum = unit + (prevCumW - prevUnit)
+    if (Math.abs(currCum - emailGapCum) < 0.003) {
+      const adjFromUnit = prevAdj * unitRatio
+      if (isReasonableNav(adjFromUnit) && adjFromUnit >= currCum - 0.001) {
+        return { cum: String(+currCum.toFixed(6)), adj: String(+adjFromUnit.toFixed(6)) }
+      }
+    }
+  }
   // Grow adj at the cumulative rate to maintain adj/cum ratio constant (≥ 1 after ex-div).
   const adj = prevCum > 0 ? prevAdj * cum / prevCum : prevAdj * unitRatio
   if (!isReasonableNav(adj) || !isReasonableNav(cum)) return null

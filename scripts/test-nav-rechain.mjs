@@ -867,6 +867,57 @@ assert(
     && sqx078Nav?.productCode === "SQX078",
 )
 
+// SQX078: virtual email cum/unit > 2 must not be stripped; 复权 grows at unit rate on email tail
+const sqx078LegacyTail = [
+  { price_date: "2026-05-29", nav: "1.098400", cumulative_nav: "2.816912", cum_nav_withdrawal: "2.262100", price_change: "" },
+]
+const sqx078VirtualEmail = [
+  {
+    nav_date: "2026-06-04",
+    nav: "1.101100",
+    cumulative_nav: "2.264800",
+    adjusted_nav: "2.264800",
+    product_code: "SQX078",
+    subject: "【虚拟净值】SQX078_特夫郁金香全量化私募证券投资基金_衡颐海泰1号_2026-06-04",
+    source: "attachment_nav_table",
+  },
+  {
+    nav_date: "2026-07-15",
+    nav: "1.113000",
+    cumulative_nav: "2.276700",
+    adjusted_nav: "2.276700",
+    product_code: "SQX078",
+    subject: "【虚拟净值】SQX078_特夫郁金香全量化私募证券投资基金_衡颐海泰1号_2026-07-15",
+    source: "attachment_nav_table",
+  },
+]
+const sqx078EmailSelected = selectEmailNavSeriesRows(sqx078VirtualEmail, "SQX078", ["特夫郁金香全量化"])
+const sqx078Jul15Email = sqx078EmailSelected.find((r) => r.nav_date === "2026-07-15")
+assert(
+  "SQX078 virtual email keeps cum when cum/unit > 2",
+  sqx078Jul15Email != null && Math.abs(parseFloat(sqx078Jul15Email.cumulative_nav) - 2.2767) < 0.001,
+)
+const sqx078EmailPoints = sqx078EmailSelected.map((r) => ({
+  price_date: r.nav_date,
+  nav: r.nav,
+  cumulative_nav: r.cumulative_nav,
+  adjusted_nav: r.adjusted_nav,
+}))
+const sqx078EmailMerged = mergeNavSeriesWithEmail(sqx078LegacyTail, sqx078EmailPoints)
+const sqx078Jul15Merged = sqx078EmailMerged.find((r) => r.price_date === "2026-07-15")
+assert(
+  "SQX078 email tail adj uses unit rate not cum rate",
+  sqx078Jul15Merged != null && parseFloat(sqx078Jul15Merged.cumulative_nav) > 2.845,
+)
+assert(
+  "SQX078 Jul15 adj >= cum",
+  parseFloat(sqx078Jul15Merged.cumulative_nav) >= parseFloat(sqx078Jul15Merged.cum_nav_withdrawal) - 0.001,
+)
+assert(
+  "SQX078 Jul15 cum from email",
+  Math.abs(parseFloat(sqx078Jul15Merged.cum_nav_withdrawal) - 2.2767) < 0.001,
+)
+
 const sbhk26History = [
   {
     nav_date: "2026-06-12",
