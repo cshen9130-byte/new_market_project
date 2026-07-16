@@ -8,20 +8,7 @@
  *
  * Scans only ch_c7h8@163.com by default (~1–3 min). Set SQX078_GAP_ACCOUNT=all to scan every mailbox.
  */
-import { ImapFlow } from "imapflow"
 import { loadProjectEnvFiles, configureEtlDbTimeout, ensureScriptDatabaseEnv } from "@/lib/server/load-project-env"
-import {
-  getCrawlEmailByAccount,
-  getImapFolders,
-  listCrawlEmails,
-  type CrawlEmailAccount,
-} from "@/lib/server/crawl-emails"
-import { extractNavData } from "@/lib/server/email-nav-extract"
-import {
-  extractNavTableFromBuffer,
-  selectNavTableAttachments,
-} from "@/lib/server/email-nav-attachment"
-import { upsertEmailNavRecords, type EmailNavInsert } from "@/lib/server/email-nav-pg"
 
 loadProjectEnvFiles()
 ensureScriptDatabaseEnv()
@@ -36,6 +23,29 @@ const SUBJECT_RE = /【虚拟净值】\s*SQX078_/u
 const PREFERRED_ACCOUNTS = ["ch_c7h8@163.com", "cwsj@hengyifund.cn", "custodiandata@citics.com"]
 
 type AttachmentInfo = { filename: string; part: string }
+
+type EmailNavInsert = {
+  crawlEmailAccount: string
+  emailUid: string
+  sentAt: string
+  subject: string
+  senderEmail: string
+  navDate: string
+  nav: number | null
+  cumulativeNav: number | null
+  adjustedNav: number | null
+  productCode: string
+  fundName: string
+  source: string
+  attachmentFilename: string
+}
+
+type CrawlEmailAccount = {
+  account: string
+  pass: string
+  imapHost: string
+  imapPort: number
+}
 
 function stripHtml(html: string): string {
   return html
@@ -102,7 +112,8 @@ function inGap(navDate: string | null | undefined): boolean {
   return navDate >= GAP_START && navDate <= GAP_END
 }
 
-function resolveAccounts(): CrawlEmailAccount[] {
+async function resolveAccounts(): Promise<CrawlEmailAccount[]> {
+  const { getCrawlEmailByAccount, listCrawlEmails } = await import("@/lib/server/crawl-emails")
   const mode = (process.env.SQX078_GAP_ACCOUNT ?? "ch_c7h8@163.com").trim()
   if (mode.toLowerCase() === "all") {
     const out: CrawlEmailAccount[] = []
@@ -131,14 +142,14 @@ function resolveAccounts(): CrawlEmailAccount[] {
   throw new Error(`Mailbox not configured: ${mode}`)
 }
 
-async function downloadPart(client: ImapFlow, uid: number, part: string): Promise<Buffer> {
-  const dl = await client.download(String(uid), part, { uid: true })
-  const bufs: Buffer[] = []
-  for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
-  return Buffer.concat(bufs)
-}
-
 async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<EmailNavInsert[]> {
+  const { ImapFlow } = await import("imapflow")
+  const { getImapFolders } = await import("@/lib/server/crawl-emails")
+  const { extractNavData } = await import("@/lib/server/email-nav-extract")
+  const { extractNavTableFromBuffer, selectNavTableAttachments } = await import(
+    "@/lib/server/email-nav-attachment"
+  )
+
   const client = new ImapFlow({
     host: account.imapHost,
     port: account.imapPort || 993,
@@ -152,6 +163,13 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
 
   const navRecords: EmailNavInsert[] = []
   let matchedSubjects = 0
+
+  const downloadPart = async (uid: number, part: string): Promise<Buffer> => {
+    const dl = await client.download(String(uid), part, { uid: true })
+    const bufs: Buffer[] = []
+    for await (const chunk of dl.content) bufs.push(Buffer.from(chunk))
+    return Buffer.concat(bufs)
+  }
 
   await client.connect()
   try {
@@ -185,7 +203,7 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
         const chunks: string[] = [subject]
         for (const { part, mime } of textParts) {
           try {
-            const buf = await downloadPart(client, uid, part)
+            const buf = await downloadPart(uid, part)
             const text = buf.toString("utf-8")
             chunks.push(mime.includes("text/html") ? stripHtml(text) : text)
           } catch {
@@ -205,7 +223,7 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
         const navDates = new Set<string>()
         for (const att of selectNavTableAttachments(subject, attachments)) {
           try {
-            const buf = await downloadPart(client, uid, att.part)
+            const buf = await downloadPart(uid, att.part)
             for (const row of extractNavTableFromBuffer(buf, att.filename, subject)) {
               if (!row.navDate || !inGap(row.navDate)) continue
               navDates.add(row.navDate)
@@ -256,6 +274,7 @@ async function fetchSqx078GapFromMailbox(account: CrawlEmailAccount): Promise<Em
 
 async function main() {
   const { query } = await import("@/lib/db")
+  const { upsertEmailNavRecords } = await import("@/lib/server/email-nav-pg")
   const {
     loadPrivateFundLegacyNavRows,
     loadEmailNavSeries,
@@ -272,7 +291,7 @@ async function main() {
   )
   console.log("existing gap rows:", before)
 
-  const accounts = resolveAccounts()
+  const accounts = await resolveAccounts()
   if (accounts.length === 0) throw new Error("No crawl mailboxes with passwords configured")
 
   const allRows: EmailNavInsert[] = []
@@ -288,7 +307,7 @@ async function main() {
     if (row.nav == null || row.nav <= 0) continue
     byDate.set(row.navDate, row)
   }
-  const deduped = [...byDate.values()].sort((a, b) => a.navDate!.localeCompare(b.navDate!))
+  const deduped = [...byDate.values()].sort((a, b) => a.navDate.localeCompare(b.navDate))
   console.log(`parsed ${deduped.length} gap rows:`, deduped.map((r) => ({
     date: r.navDate,
     unit: r.nav,
