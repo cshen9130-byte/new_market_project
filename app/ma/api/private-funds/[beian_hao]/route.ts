@@ -399,22 +399,12 @@ export async function GET(
     }
   }
 
-  // Extend stale 平台 legacy with fresher FOF 估值表 / custody valuation NAV (same sources as FOF底层 list).
-  if (!usesManagedTeamSeries) {
+  // Custody-only funds (估值表 but no 净值表) — same fallback as FOF底层 list cache.
+  if (nav_series.length === 0) {
     try {
       const fallbackPoints = await valuationFallbackPromise
-      const latestSeriesDate = nav_series[nav_series.length - 1]?.price_date ?? ""
-      const fallbackLatest = fallbackPoints[fallbackPoints.length - 1]?.price_date ?? ""
-      if (nav_series.length === 0 && fallbackPoints.length > 0) {
+      if (fallbackPoints.length > 0) {
         nav_series = mergeNavSeriesWithEmail([], fallbackPoints, fundNavContext)
-      } else if (
-        fallbackLatest > latestSeriesDate
-        && emailNavRows.every((row) => row.price_date <= latestSeriesDate)
-      ) {
-        const extension = fallbackPoints.filter((p) => p.price_date > latestSeriesDate)
-        if (extension.length > 0) {
-          nav_series = mergeNavSeriesWithEmail(nav_series, extension, fundNavContext)
-        }
       }
     } catch (err) {
       console.error("[private-funds/detail] valuation nav fallback failed:", err)

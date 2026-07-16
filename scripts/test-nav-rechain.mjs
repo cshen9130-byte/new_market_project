@@ -848,6 +848,25 @@ assert(
   zhufengNav?.navDate === "2026-07-09" && zhufengNav?.nav === 1.0 && zhufengNav?.productCode === "SB969A",
 )
 
+const sqx078Subject =
+  "【虚拟净值】SQX078_特夫郁金香全量化私募证券投资基金_衡颐海泰1号私募证券投资基金_2026-07-15"
+const sqx078Body =
+  "净值日期 客户名称 基金账号 证件号码 基金代码 基金名称 份额 单位净值 累计单位净值 业绩计提金额 虚拟单位净值 " +
+  "2026-07-15 衡颐海泰1号私募证券投资基金 NB8003591509 SBPU97 SQX078 特夫郁金香全量化私募证券投资基金 951,112.80 1.1130 2.2767 17,576.56 1.0945"
+const sqx078Meta = extractNavMetadata(sqx078Subject, sqx078Body)
+assert(
+  "SQX078 virtual bracket subject extracts code",
+  sqx078Meta.productCode === "SQX078" && sqx078Meta.fundName?.includes("郁金香"),
+)
+const sqx078Nav = extractNavData(sqx078Subject, sqx078Body)
+assert(
+  "SQX078 virtual email uses actual unit not virtual unit",
+  sqx078Nav?.navDate === "2026-07-15"
+    && sqx078Nav?.nav === 1.113
+    && sqx078Nav?.cumulativeNav === 2.2767
+    && sqx078Nav?.productCode === "SQX078",
+)
+
 const sbhk26History = [
   {
     nav_date: "2026-06-12",

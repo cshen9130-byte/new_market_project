@@ -136,6 +136,7 @@ function parseGuosenCustodyNavSubject(text: string): { code: string; fundName: s
 
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
+    parseVirtualBracketSubject,
     parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
     parseCiticsFundNavSubject,
@@ -322,6 +323,30 @@ export function extractNavMetadata(subject: string, bodyText: string) {
 
 // ── date candidates from subject ──────────────────────────────────────────────
 
+/** Match 单位净值 but not 虚拟单位净值 (GJDF 【虚拟净值】 tables list both). */
+function matchActualUnitNav(bodyText: string): RegExpMatchArray | null {
+  return (
+    bodyText.match(/(?<!虚拟)单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/(?<!虚拟)单位净值\s+(\d+\.\d{3,8})/u)
+  )
+}
+
+function matchCumulativeUnitNav(bodyText: string): RegExpMatchArray | null {
+  return (
+    bodyText.match(/累计单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/累计单位净值\s+(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/(?<!虚拟)累计净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+  )
+}
+
+function parseVirtualBracketSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    /【虚拟净值】([A-Z0-9]+)_([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/u,
+  )
+  if (!m) return null
+  return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
+}
+
 function subjectDate(subject: string): string | null {
   // YYYY-MM-DD
   const iso = subject.match(/(\d{4}-\d{2}-\d{2})/)
@@ -360,13 +385,27 @@ export function extractNavData(
     }
   }
 
+  // ── 2a. Body: 【虚拟净值】GJDF table (单位净值 + 累计单位净值 + 虚拟单位净值) ─
+  if (/【虚拟净值】/.test(subject) && /净值日期/.test(bodyText)) {
+    const bracketRowM = bodyText.match(
+      /(\d{4}-\d{2}-\d{2})\s+[\s\S]*?\b([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))\s+[\d,]+(?:\.\d+)?\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s+[\d,.]+\s+(\d+\.\d{3,8})/u,
+    )
+    if (bracketRowM) {
+      return {
+        nav: parseFloat(bracketRowM[4]),
+        navDate: bracketRowM[1],
+        cumulativeNav: parseFloat(bracketRowM[5]),
+        adjustedNav: null,
+        productCode: shared.productCode ?? bracketRowM[2],
+        fundName: shared.fundName ?? normalizeFundDisplayName(bracketRowM[3]),
+        source: "body_table",
+      }
+    }
+  }
+
   // ── 2. Body: colon-label or table-header style ─────────────────────────────
-  const unitNavM =
-    bodyText.match(/单位净值\s*[：:]\s*(\d+\.\d{3,8})/) ||
-    bodyText.match(/单位净值\s+(\d+\.\d+)/)
-  const cumNavM =
-    bodyText.match(/累计(?:单位)?净值\s*[：:]\s*(\d+\.\d{3,8})/) ||
-    bodyText.match(/累计单位净值\s+(\d+\.\d+)/)
+  const unitNavM = matchActualUnitNav(bodyText)
+  const cumNavM = matchCumulativeUnitNav(bodyText)
 
   if (unitNavM || cumNavM) {
     const bodyDateM =
@@ -394,7 +433,10 @@ export function extractNavData(
   // TA891A 瀛岳核心...A类 20260326 S18852474004 荣熙共赢... 996412.91 2.0085 <unit> <cum>
   // AVH67B 倍致灵泰...B类 20260529 S18852498101 上海荣熙... - 荣熙共赢... 2000000 0.9506 <unit> <cum>
   // Groups: [6]=VIRTUAL_NAV  [7]=UNIT_NAV  [8]=CUM_NAV (same three-decimal order as section 4)
-  if (/虚拟业绩报酬/.test(subject) || /虚拟单位净值/.test(bodyText)) {
+  if (
+    !/【虚拟净值】/.test(subject)
+    && (/虚拟业绩报酬/.test(subject) || /虚拟单位净值/.test(bodyText))
+  ) {
     const perfRowM = bodyText.match(
       /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{8})\s+S[A-Z0-9]+\s+(.+?)\s+([\d,]+(?:\.\d+)?)\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
     )
