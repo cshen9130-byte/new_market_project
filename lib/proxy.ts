@@ -1,6 +1,19 @@
+import { recordInteractiveUserTraffic } from "@/lib/server/user-activity-priority"
+import { abortScheduledEmailParseForUserPriority } from "@/lib/server/scheduled-job-yield-registry"
 import { updateSession } from "./supabase/proxy"
 
 export default async function proxy(request: Request) {
+  try {
+    const url = new URL(request.url)
+    const method = request.method
+    recordInteractiveUserTraffic(url.pathname, method)
+    const m = method.toUpperCase()
+    if (m !== "GET" && m !== "HEAD" && m !== "OPTIONS") {
+      abortScheduledEmailParseForUserPriority()
+    }
+  } catch {
+    // never block requests for activity tracking
+  }
   return await updateSession(request as any)
 }
 

@@ -83,6 +83,12 @@ const IMAP_CONNECTION_TIMEOUT_MS = 20_000
 const IMAP_GREETING_TIMEOUT_MS = 10_000
 const IMAP_SOCKET_TIMEOUT_MS = 60_000
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new DOMException("Aborted", "AbortError")
+  }
+}
+
 type AttachmentInfo = { filename: string; part: string }
 
 function collectAttachments(
@@ -249,7 +255,9 @@ async function fetchMailbox(
   account: CrawlEmailAccount,
   since: Date,
   errors: string[],
+  signal?: AbortSignal,
 ): Promise<FetchMailboxResult> {
+  throwIfAborted(signal)
   if (!account.pass?.trim()) {
     errors.push(`${account.account}: 未配置授权码`)
     return { parseRecords: [], navRecords: [], valuationRecords: [] }
@@ -275,6 +283,7 @@ async function fetchMailbox(
   await client.connect()
   try {
     for (const folder of folders) {
+      throwIfAborted(signal)
       await client.mailboxOpen(folder)
       const uids = (await client.search({ since }, { uid: true })) || []
       if (uids.length === 0) continue
@@ -319,6 +328,7 @@ async function fetchMailbox(
 
       // ── Step 2: download body text only for fund-related emails ──
       for (const { uid, subject, sentAt, senderEmail, attachments, textParts } of candidates) {
+        throwIfAborted(signal)
         const chunks: string[] = [subject]
         for (const { part, mime } of textParts) {
           try {
@@ -516,7 +526,11 @@ async function fetchMailbox(
     } // end for folder
   } finally {
     try {
-      await client.logout()
+      if (signal?.aborted) {
+        await client.close()
+      } else {
+        await client.logout()
+      }
     } catch {
       // ignore
     }
@@ -536,10 +550,15 @@ export async function fetchEmailParseRecords(options?: {
    * Skips full rebuilds of holdings/metrics/FOF underlying (~thousands of funds).
    */
   light?: boolean
+  /** When aborted, stop IMAP/DB work promptly (scheduled ETL yield). */
+  signal?: AbortSignal
 }): Promise<EmailParseFetchResult> {
   const errors: string[] = []
   const incremental = options?.days == null
   const light = options?.light === true
+  const signal = options?.signal
+
+  throwIfAborted(signal)
 
   const accounts: CrawlEmailAccount[] = []
   if (options?.crawlEmailId) {
@@ -580,6 +599,7 @@ export async function fetchEmailParseRecords(options?: {
   }
 
   for (const account of accounts) {
+    throwIfAborted(signal)
     const acctKey = account.account.trim().toLowerCase()
     if (!account.pass?.trim()) {
       errors.push(`${account.account}: 未配置授权码`)
@@ -591,7 +611,12 @@ export async function fetchEmailParseRecords(options?: {
     scanByAccount[account.account] = { since: since.toISOString().slice(0, 10), mode }
 
     try {
-      const { parseRecords, navRecords, valuationRecords } = await fetchMailbox(account, since, errors)
+      const { parseRecords, navRecords, valuationRecords } = await fetchMailbox(
+        account,
+        since,
+        errors,
+        signal,
+      )
       emailsScanned += parseRecords.length
       allParseRecords.push(...parseRecords)
       allNavRecords.push(...navRecords)
@@ -609,10 +634,12 @@ export async function fetchEmailParseRecords(options?: {
     }
   }
 
+  throwIfAborted(signal)
   replaceEmailParseRecords(allParseRecords, scannedAccounts, scanSinceByAccount)
 
   let navSaved = 0
   try {
+    throwIfAborted(signal)
     navSaved = await upsertEmailNavRecords(allNavRecords)
   } catch (e) {
     errors.push(`保存净值数据失败: ${e instanceof Error ? e.message : String(e)}`)
