@@ -12,7 +12,7 @@ import { getAllEmailParseRecords } from "@/lib/server/email-parse-records"
 import { EMAIL_NAV_SOURCE_PRIORITY } from "@/lib/server/email-nav-query"
 import { ensureEmailValuationMetricsTables } from "@/lib/server/email-valuation-metrics-pg"
 import { shareClassFromFundName } from "@/lib/server/fund-holding-code"
-import { shareClassProductCodesMatch } from "@/lib/server/fund-name-match"
+import { shareClassProductCodesMatch, sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 
@@ -114,6 +114,60 @@ type ManualTeamDataProduct = {
 export function invalidateTeamDataListCaches(): void {
   emailFundsCache = null
   identityCache = null
+}
+
+/** Resolve manually added 团队数据 products for fund detail API fallback. */
+export async function lookupTeamDataProductFundInfo(identifier: string): Promise<{
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  strategy_l2: string | null
+  strategy_l3: string | null
+} | null> {
+  const id = identifier.trim()
+  if (!id) return null
+
+  await ensureTeamDataProductsTable()
+
+  const rows = await query<{ beian_hao: string; product_name: string }>(
+    `SELECT beian_hao, product_name
+     FROM ops_team_data_products
+     WHERE UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($1))
+        OR ${sqlFundNameMatch("product_name", "$1")}
+     ORDER BY CASE WHEN UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($1)) THEN 0 ELSE 1 END
+     LIMIT 1`,
+    [id],
+  )
+  const row = rows[0]
+  if (!row?.beian_hao?.trim()) return null
+
+  const beian_hao = row.beian_hao.trim()
+  const product_name = row.product_name.trim()
+
+  let strategy_l1: string | null = null
+  let strategy_l2: string | null = null
+  let strategy_l3: string | null = null
+  let short_name: string | null = product_name
+  try {
+    const { indexes } = await loadIdentityTables()
+    const bfl = indexes.bflByBeian.get(beian_hao)
+    const t6 = indexes.t6ByRegister.get(beian_hao)
+    const fromT6 = strategiesFromRow(t6 ?? null, "company")
+    const fromBfl = strategiesFromRow(bfl ?? null, "company")
+    strategy_l1 = fromT6.l1 ?? fromBfl.l1
+    strategy_l2 = fromT6.l2 ?? fromBfl.l2
+    strategy_l3 = fromT6.l3 ?? fromBfl.l3
+    short_name = displayProductName(
+      bfl?.product_name ?? null,
+      bfl?.short_name ?? t6?.fund_short_name ?? null,
+      product_name,
+    )
+  } catch {
+    // optional metadata
+  }
+
+  return { beian_hao, product_name, short_name, strategy_l1, strategy_l2, strategy_l3 }
 }
 
 async function ensureTeamDataProductsTable(): Promise<void> {
@@ -681,9 +735,6 @@ function canonicalEmailPoolProductName(
     return displayProductName(bfl.product_name, bfl.short_name, bfl.product_name)
   }
   if (t6?.fund_short_name?.trim()) return t6.fund_short_name.trim()
-  if (t6?.fund_name?.trim()) {
-    return normalizeFundDisplayName(t6.fund_name) ?? t6.fund_name.trim()
-  }
 
   const name = resolvedName.trim()
   const suffix = upper.match(/([ABC])$/)?.[1]

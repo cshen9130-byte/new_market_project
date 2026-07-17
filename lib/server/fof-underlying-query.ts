@@ -10,6 +10,7 @@ import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import { resolveManagedProductBeian, lookupManagedProductOverride, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
 import { shareClassProductNamesMatch } from "@/lib/server/fund-name-match"
+import { lookupTeamDataProductFundInfo } from "@/lib/server/team-data-query-pg"
 
 function decodeFundIdentifier(raw: string): string {
   try {
@@ -747,6 +748,18 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
 
   const fromFof = await lookupFofUnderlyingFundInfo(id)
   if (fromFof) return fromFof
+
+  try {
+    const fromTeamData = await lookupTeamDataProductFundInfo(id)
+    if (fromTeamData) {
+      return {
+        ...fromTeamData,
+        ...EMPTY_FUND_METRICS,
+      }
+    }
+  } catch (e) {
+    console.error("[lookupFundInfoFallback] ops_team_data_products", e)
+  }
 
   return null
 }
