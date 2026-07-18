@@ -44,6 +44,8 @@ import {
   DD_TABLE_COLUMNS,
   TABLE_ACTION_WIDTH,
   TABLE_INDEX_WIDTH,
+  buildDdTimeOptions,
+  DD_METHOD_OPTIONS,
   cellFormatKey,
   clearCellFormat,
   createDueDiligenceTableRow,
@@ -1548,6 +1550,8 @@ export function DueDiligenceTableView() {
     if (e.button !== 0) return
     const skipPreventDefault =
       colKey === "ddDate" ||
+      colKey === "ddTime" ||
+      colKey === "ddMethod" ||
       colKey === "strategyLevel1" ||
       colKey === "strategyLevel2" ||
       colKey === "strategyLevel3" ||
@@ -1627,6 +1631,8 @@ export function DueDiligenceTableView() {
       const colKey = drag.anchor.colKey
       const skipAutoFocus =
         colKey === "ddDate" ||
+        colKey === "ddTime" ||
+        colKey === "ddMethod" ||
         colKey === "strategyLevel1" ||
         colKey === "strategyLevel2" ||
         colKey === "strategyLevel3"
@@ -2187,6 +2193,46 @@ export function DueDiligenceTableView() {
                               format={fmt}
                               isActive={isActive}
                               isSelected={isSelected}
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleCellChange(row.id, col.key, value)}
+                            />
+                          ) : col.key === "ddTime" ? (
+                            <StrategySelectCell
+                              cellId={cellId}
+                              value={row.ddTime}
+                              width={col.width}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              options={buildDdTimeOptions(row.ddTime)}
+                              placeholder="时间"
+                              onActivate={() => {
+                                setFocusCell({ rowId: row.id, colKey: col.key })
+                                setSelection({
+                                  kind: "range",
+                                  anchor: { rowId: row.id, colKey: col.key },
+                                  focus: { rowId: row.id, colKey: col.key },
+                                })
+                              }}
+                              onChange={(value) => handleCellChange(row.id, col.key, value)}
+                            />
+                          ) : col.key === "ddMethod" ? (
+                            <StrategySelectCell
+                              cellId={cellId}
+                              value={row.ddMethod}
+                              width={col.width}
+                              format={fmt}
+                              isActive={isActive}
+                              isSelected={isSelected}
+                              options={[...DD_METHOD_OPTIONS]}
+                              placeholder="尽调形式"
                               onActivate={() => {
                                 setFocusCell({ rowId: row.id, colKey: col.key })
                                 setSelection({

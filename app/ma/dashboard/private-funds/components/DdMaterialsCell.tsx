@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react"
 import { createPortal } from "react-dom"
-import { Bot, CheckCircle2, ExternalLink, FileText, FolderInput, GripVertical, Loader2, Pencil, X, XCircle } from "lucide-react"
+import { Bot, CheckCircle2, ExternalLink, FileText, FolderInput, GripVertical, Link2, Loader2, Pencil, X, XCircle } from "lucide-react"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsLinkStatus } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsDocument } from "@/lib/ma/due-diligence-materials"
@@ -158,6 +158,7 @@ export function DdMaterialsCell({
 }) {
   const [open, setOpen] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [linkMode, setLinkMode] = useState(false)
   const [selectedFilePaths, setSelectedFilePaths] = useState<Set<string>>(new Set())
   const [mounted, setMounted] = useState(false)
   const [previewDoc, setPreviewDoc] = useState<DdMaterialsDocument | null>(null)
@@ -194,7 +195,10 @@ export function DdMaterialsCell({
   const allFilesSelected = documents.length > 0 && selectedCount === documents.length
 
   useEffect(() => {
-    if (!open) setSelectedFilePaths(new Set())
+    if (!open) {
+      setSelectedFilePaths(new Set())
+      setLinkMode(false)
+    }
   }, [open])
 
   useEffect(() => {
@@ -307,7 +311,16 @@ export function DdMaterialsCell({
     suppressOpenUntilRef.current = Date.now() + 400
     setPreviewDoc(null)
     setEditingDoc(null)
+    setLinkMode(false)
+    setSelectedFilePaths(new Set())
     setOpen(false)
+  }
+
+  function toggleLinkMode() {
+    setLinkMode((current) => {
+      if (current) setSelectedFilePaths(new Set())
+      return !current
+    })
   }
 
   function selectPreviewDoc(doc: DdMaterialsDocument) {
@@ -436,13 +449,33 @@ export function DdMaterialsCell({
                   <p className="text-xs text-muted-foreground mt-1 truncate">
                     {folderName || folderPath || "未匹配到知识库文件夹"}
                   </p>
-                  {canManageLink && (
+                  {canManageLink && linkMode && (
                     <p className="text-[11px] text-muted-foreground mt-0.5">
                       关联状态：{statusLabel}
                     </p>
                   )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {canManageLink && (
+                    <button
+                      type="button"
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        toggleLinkMode()
+                      }}
+                      className={[
+                        "inline-flex items-center gap-1.5 px-3 py-1.5 rounded border text-xs transition-colors",
+                        linkMode
+                          ? "border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100"
+                          : "bg-background hover:bg-muted",
+                      ].join(" ")}
+                      title={linkMode ? "退出关联模式" : "管理资料关联"}
+                    >
+                      <Link2 className="h-3.5 w-3.5" />
+                      关联
+                    </button>
+                  )}
                   {previewDoc && isDdMaterialsEditable(previewDoc) && !editingDoc && (
                     <button
                       type="button"
@@ -498,7 +531,7 @@ export function DdMaterialsCell({
                 </div>
               </div>
 
-              {canManageLink && (
+              {canManageLink && linkMode && (
                 <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/10 px-4 py-2">
                   <button
                     type="button"
@@ -558,8 +591,15 @@ export function DdMaterialsCell({
               )}
 
               <div className="flex min-h-0 flex-1">
-                <div className="w-[38%] min-w-[280px] max-w-[420px] border-r overflow-y-auto flex flex-col">
-                  {documents.length > 0 && canManageLink && (
+                <div
+                  className={[
+                    "border-r overflow-y-auto flex flex-col shrink-0",
+                    linkMode
+                      ? "w-[38%] min-w-[280px] max-w-[420px]"
+                      : "w-[28%] min-w-[200px] max-w-[300px]",
+                  ].join(" ")}
+                >
+                  {documents.length > 0 && canManageLink && linkMode && (
                     <label className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground shrink-0">
                       <input
                         type="checkbox"
@@ -577,10 +617,43 @@ export function DdMaterialsCell({
                         : "未能根据尽调日期和基金公司匹配到知识库文件夹。请确认资料已上传至「内部尽调资料」。"}
                     </div>
                   ) : (
-                    <div className="divide-y flex-1 overflow-y-auto">
+                    <div className={linkMode ? "divide-y flex-1 overflow-y-auto" : "divide-y"}>
                       {documents.map((doc) => {
                         const active = previewDoc?.relativePath === doc.relativePath
                         const checked = selectedFilePaths.has(doc.relativePath)
+
+                        if (!linkMode) {
+                          return (
+                            <button
+                              key={doc.relativePath}
+                              type="button"
+                              draggable
+                              onDragStart={(event) => onDocumentDragStart(event, doc)}
+                              onMouseDown={(event) => event.stopPropagation()}
+                              onClick={() => selectPreviewDoc(doc)}
+                              className={[
+                                "w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors cursor-grab active:cursor-grabbing",
+                                active ? "bg-blue-50/70" : "",
+                              ].join(" ")}
+                              title="点击预览，拖入 AI 助手资料区"
+                            >
+                              <div className="flex items-start gap-2 min-w-0">
+                                <GripVertical className="h-4 w-4 text-zinc-300 shrink-0 mt-0.5" />
+                                <FileText className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium truncate" title={doc.name}>
+                                    {doc.name}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground mt-1">
+                                    {formatFileSize(doc.size)}
+                                    {doc.updatedAt ? ` · ${formatDate(doc.updatedAt)}` : ""}
+                                  </div>
+                                </div>
+                              </div>
+                            </button>
+                          )
+                        }
+
                         return (
                           <div
                             key={doc.relativePath}
@@ -589,7 +662,7 @@ export function DdMaterialsCell({
                               active ? "bg-blue-50/70" : "",
                             ].join(" ")}
                           >
-                            {canManageLink && (
+                            {canManageLink && linkMode && (
                               <input
                                 type="checkbox"
                                 checked={checked}
@@ -614,7 +687,7 @@ export function DdMaterialsCell({
                                   <div className="text-sm font-medium truncate" title={doc.name}>
                                     {doc.name}
                                   </div>
-                                  {canManageLink && fileStatusBadge(doc.relativePath)}
+                                  {linkMode && fileStatusBadge(doc.relativePath)}
                                 </div>
                                 <div className="text-xs text-muted-foreground mt-1">
                                   {formatFileSize(doc.size)}

@@ -83,6 +83,24 @@ export const DD_TABLE_COLUMNS: DueDiligenceTableColumn[] = [
 export const TABLE_INDEX_WIDTH = 36
 export const TABLE_ACTION_WIDTH = 64
 
+export const DD_METHOD_OPTIONS = ["线上尽调", "线下尽调"] as const
+
+/** 15-minute slots for 尽调时间; includes the current cell value when non-standard. */
+export function buildDdTimeOptions(currentValue?: string): string[] {
+  const slots: string[] = []
+  for (let hour = 8; hour <= 21; hour++) {
+    for (const minute of [0, 15, 30, 45]) {
+      if (hour === 21 && minute > 45) continue
+      slots.push(`${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`)
+    }
+  }
+  const trimmed = currentValue?.trim() ?? ""
+  if (trimmed && !slots.includes(trimmed)) {
+    return [trimmed, ...slots]
+  }
+  return slots
+}
+
 /** Total natural width of all columns at 1× zoom. */
 export function getDueDiligenceTableNaturalWidth(): number {
   return (
