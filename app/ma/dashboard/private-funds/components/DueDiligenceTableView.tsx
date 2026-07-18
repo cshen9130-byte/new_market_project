@@ -86,6 +86,7 @@ import { RepresentativeProductCell } from "./RepresentativeProductCell"
 import { StrategySelectCell } from "./StrategySelectCell"
 import { StrategyMultiSelectCell } from "./StrategyMultiSelectCell"
 import { DdDateCell } from "./DdDateCell"
+import { DdSelectCell } from "./DdSelectCell"
 import { DdMaterialsCell } from "./DdMaterialsCell"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card"
 import {
@@ -2204,7 +2205,7 @@ export function DueDiligenceTableView() {
                               onChange={(value) => handleCellChange(row.id, col.key, value)}
                             />
                           ) : col.key === "ddTime" ? (
-                            <StrategySelectCell
+                            <DdSelectCell
                               cellId={cellId}
                               value={row.ddTime}
                               width={col.width}
@@ -2224,7 +2225,7 @@ export function DueDiligenceTableView() {
                               onChange={(value) => handleCellChange(row.id, col.key, value)}
                             />
                           ) : col.key === "ddMethod" ? (
-                            <StrategySelectCell
+                            <DdSelectCell
                               cellId={cellId}
                               value={row.ddMethod}
                               width={col.width}

@@ -229,6 +229,16 @@ export function DdMaterialsCell({
 
   useEffect(() => {
     if (!open) return
+    setPreviewDoc((current) => {
+      if (current && documents.some((doc) => doc.relativePath === current.relativePath)) {
+        return current
+      }
+      return documents[0] ?? null
+    })
+  }, [documents, open])
+
+  useEffect(() => {
+    if (!open) return
     function onResize() {
       setDialogSize((size) => {
         const next = {
@@ -590,13 +600,11 @@ export function DdMaterialsCell({
                 </div>
               )}
 
-              <div className="flex min-h-0 flex-1">
+              <div className="flex min-h-0 flex-1 overflow-hidden">
                 <div
                   className={[
                     "border-r overflow-y-auto flex flex-col shrink-0",
-                    linkMode
-                      ? "w-[38%] min-w-[280px] max-w-[420px]"
-                      : "w-[28%] min-w-[200px] max-w-[300px]",
+                    linkMode ? "w-[240px]" : "w-[200px]",
                   ].join(" ")}
                 >
                   {documents.length > 0 && canManageLink && linkMode && (
@@ -702,7 +710,7 @@ export function DdMaterialsCell({
                   )}
                 </div>
 
-                <div className="flex-1 min-w-0 flex flex-col bg-zinc-50">
+                <div className="flex min-w-0 flex-1 flex-col bg-zinc-50">
                   {editingDoc ? (
                     <DdMaterialsFileEditor
                       document={editingDoc}
