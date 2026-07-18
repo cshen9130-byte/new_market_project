@@ -601,14 +601,17 @@ export function DdMaterialsCell({
               )}
 
               <div className="flex min-h-0 flex-1 overflow-hidden">
-                <div
-                  className={[
-                    "border-r overflow-y-auto flex flex-col shrink-0",
-                    linkMode ? "w-[240px]" : "w-[200px]",
-                  ].join(" ")}
+                <aside
+                  className="border-r overflow-y-auto overflow-x-hidden flex flex-col bg-white"
+                  style={{
+                    width: linkMode ? 220 : 180,
+                    minWidth: linkMode ? 220 : 180,
+                    maxWidth: linkMode ? 220 : 180,
+                    flex: "0 0 auto",
+                  }}
                 >
                   {documents.length > 0 && canManageLink && linkMode && (
-                    <label className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground shrink-0">
+                    <label className="flex items-center gap-2 border-b px-3 py-2 text-xs text-muted-foreground shrink-0">
                       <input
                         type="checkbox"
                         checked={allFilesSelected}
@@ -619,13 +622,13 @@ export function DdMaterialsCell({
                     </label>
                   )}
                   {documents.length === 0 ? (
-                    <div className="p-5 text-sm text-muted-foreground">
+                    <div className="p-4 text-sm text-muted-foreground">
                       {folderPath
                         ? "该文件夹暂无文件，或您暂无访问权限。"
                         : "未能根据尽调日期和基金公司匹配到知识库文件夹。请确认资料已上传至「内部尽调资料」。"}
                     </div>
                   ) : (
-                    <div className={linkMode ? "divide-y flex-1 overflow-y-auto" : "divide-y"}>
+                    <div className="divide-y">
                       {documents.map((doc) => {
                         const active = previewDoc?.relativePath === doc.relativePath
                         const checked = selectedFilePaths.has(doc.relativePath)
@@ -640,19 +643,19 @@ export function DdMaterialsCell({
                               onMouseDown={(event) => event.stopPropagation()}
                               onClick={() => selectPreviewDoc(doc)}
                               className={[
-                                "w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors cursor-grab active:cursor-grabbing",
+                                "w-full max-w-full overflow-hidden text-left px-3 py-2.5 hover:bg-muted/40 transition-colors cursor-grab active:cursor-grabbing",
                                 active ? "bg-blue-50/70" : "",
                               ].join(" ")}
                               title="点击预览，拖入 AI 助手资料区"
                             >
-                              <div className="flex items-start gap-2 min-w-0">
-                                <GripVertical className="h-4 w-4 text-zinc-300 shrink-0 mt-0.5" />
-                                <FileText className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-                                <div className="min-w-0">
-                                  <div className="text-sm font-medium truncate" title={doc.name}>
+                              <div className="flex items-start gap-1.5 min-w-0 max-w-full">
+                                <GripVertical className="h-3.5 w-3.5 text-zinc-300 shrink-0 mt-0.5" />
+                                <FileText className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
+                                <div className="min-w-0 flex-1 overflow-hidden">
+                                  <div className="text-xs font-medium truncate" title={doc.name}>
                                     {doc.name}
                                   </div>
-                                  <div className="text-xs text-muted-foreground mt-1">
+                                  <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                                     {formatFileSize(doc.size)}
                                     {doc.updatedAt ? ` · ${formatDate(doc.updatedAt)}` : ""}
                                   </div>
@@ -666,7 +669,7 @@ export function DdMaterialsCell({
                           <div
                             key={doc.relativePath}
                             className={[
-                              "flex items-start gap-2 px-3 py-3 hover:bg-muted/40 transition-colors",
+                              "flex items-start gap-1.5 px-2 py-2.5 hover:bg-muted/40 transition-colors max-w-full overflow-hidden",
                               active ? "bg-blue-50/70" : "",
                             ].join(" ")}
                           >
@@ -685,19 +688,18 @@ export function DdMaterialsCell({
                               onDragStart={(event) => onDocumentDragStart(event, doc)}
                               onMouseDown={(event) => event.stopPropagation()}
                               onClick={() => selectPreviewDoc(doc)}
-                              className="flex min-w-0 flex-1 items-start gap-2 text-left cursor-grab active:cursor-grabbing"
+                              className="flex min-w-0 flex-1 overflow-hidden items-start gap-1.5 text-left cursor-grab active:cursor-grabbing"
                               title="点击预览，拖入 AI 助手资料区"
                             >
-                              <GripVertical className="h-4 w-4 text-zinc-300 shrink-0 mt-0.5" />
-                              <FileText className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5 min-w-0">
-                                  <div className="text-sm font-medium truncate" title={doc.name}>
+                              <FileText className="h-3.5 w-3.5 text-red-500 shrink-0 mt-0.5" />
+                              <div className="min-w-0 flex-1 overflow-hidden">
+                                <div className="flex items-center gap-1 min-w-0">
+                                  <div className="text-xs font-medium truncate" title={doc.name}>
                                     {doc.name}
                                   </div>
                                   {linkMode && fileStatusBadge(doc.relativePath)}
                                 </div>
-                                <div className="text-xs text-muted-foreground mt-1">
+                                <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
                                   {formatFileSize(doc.size)}
                                   {doc.updatedAt ? ` · ${formatDate(doc.updatedAt)}` : ""}
                                 </div>
@@ -708,9 +710,12 @@ export function DdMaterialsCell({
                       })}
                     </div>
                   )}
-                </div>
+                </aside>
 
-                <div className="flex min-w-0 flex-1 flex-col bg-zinc-50">
+                <section
+                  className="flex flex-col bg-zinc-50 overflow-hidden"
+                  style={{ flex: "1 1 0%", minWidth: 0 }}
+                >
                   {editingDoc ? (
                     <DdMaterialsFileEditor
                       document={editingDoc}
@@ -754,7 +759,7 @@ export function DdMaterialsCell({
                       {documents.length > 0 ? "点击左侧文件进行预览" : "暂无可预览的资料"}
                     </div>
                   )}
-                </div>
+                </section>
               </div>
 
               <div
