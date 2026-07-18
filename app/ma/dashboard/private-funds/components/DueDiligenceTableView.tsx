@@ -1069,7 +1069,9 @@ export function DueDiligenceTableView() {
     const map = new Map<string, { folderPath: string | null; folderName: string | null; documents: DdMaterialsDocument[] }>()
     for (const row of rows) {
       const folderPath = resolveDdMaterialsFolderPath(row, materialsIndex)
-      const folderName = folderPath ? materialsIndex.folders.get(folderPath)?.name ?? null : null
+      const folderName = folderPath
+        ? materialsIndex.folders.get(folderPath)?.name ?? folderPath.split("/").pop() ?? null
+        : null
       map.set(row.id, {
         folderPath,
         folderName,
@@ -1674,6 +1676,14 @@ export function DueDiligenceTableView() {
 
   function handleCellChange(rowId: string, key: DueDiligenceTableColumn["key"], value: string) {
     const next = updateDueDiligenceTableRow(rows, rowId, { [key]: value })
+    persistRows(rows, next, formats)
+  }
+
+  function handleDdMaterialsLinkPatch(
+    rowId: string,
+    patch: Parameters<typeof updateDueDiligenceTableRow>[2],
+  ) {
+    const next = updateDueDiligenceTableRow(rows, rowId, patch)
     persistRows(rows, next, formats)
   }
 
@@ -2320,6 +2330,7 @@ export function DueDiligenceTableView() {
                                   folderName={materials?.folderName ?? null}
                                   documents={materials?.documents ?? []}
                                   materialsLoading={materialsLoading}
+                                  linkStatus={row.ddMaterialsLinkStatus}
                                   onActivate={() => {
                                     setFocusCell({ rowId: row.id, colKey: col.key })
                                     setSelection({
@@ -2329,6 +2340,26 @@ export function DueDiligenceTableView() {
                                     })
                                   }}
                                   onChange={(value) => handleCellChange(row.id, col.key, value)}
+                                  onManualLink={(kbPath) => {
+                                    handleDdMaterialsLinkPatch(row.id, {
+                                      ddMaterials: "已上传",
+                                      ddMaterialsKbPath: kbPath,
+                                      ddMaterialsLinkStatus: "manual",
+                                    })
+                                  }}
+                                  onApproveLink={() => {
+                                    handleDdMaterialsLinkPatch(row.id, {
+                                      ddMaterials: "已上传",
+                                      ddMaterialsLinkStatus: "approved",
+                                    })
+                                  }}
+                                  onRejectLink={() => {
+                                    handleDdMaterialsLinkPatch(row.id, {
+                                      ddMaterials: "",
+                                      ddMaterialsKbPath: null,
+                                      ddMaterialsLinkStatus: "rejected",
+                                    })
+                                  }}
                                 />
                               )
                             })()

@@ -1,7 +1,32 @@
-import type { DueDiligenceTableRow } from "./due-diligence-table"
+import type { DueDiligenceTableRow, DdMaterialsLinkStatus } from "./due-diligence-table"
 
 /** Root folder in AI knowledge base for internal due diligence uploads. */
 export const DD_MATERIALS_KB_ROOT = "内部尽调资料"
+
+export function isDdMaterialsLinkLocked(
+  row: Pick<DueDiligenceTableRow, "ddMaterialsLinkStatus">,
+): boolean {
+  return row.ddMaterialsLinkStatus === "approved" || row.ddMaterialsLinkStatus === "manual"
+}
+
+export function isDdMaterialsAutoLinkDisabled(
+  row: Pick<DueDiligenceTableRow, "ddMaterialsLinkStatus">,
+): boolean {
+  return row.ddMaterialsLinkStatus === "rejected"
+}
+
+export function ddMaterialsLinkStatusLabel(status: DdMaterialsLinkStatus | undefined): string {
+  switch (status) {
+    case "approved":
+      return "已确认"
+    case "manual":
+      return "手动关联"
+    case "rejected":
+      return "已排除自动关联"
+    default:
+      return "自动关联"
+  }
+}
 
 export type DdMaterialsDocument = {
   name: string
@@ -622,9 +647,15 @@ export function resolveDdMaterialsFolderPath(
     | "otherInfo"
     | "ddConclusion"
     | "ddMaterialsKbPath"
+    | "ddMaterialsLinkStatus"
   >,
   index: DdMaterialsFolderIndex,
 ): string | null {
+  if (isDdMaterialsAutoLinkDisabled(row)) {
+    const explicit = row.ddMaterialsKbPath?.trim()
+    return explicit && index.folders.has(explicit) ? explicit : null
+  }
+
   if (!shouldAutoLinkDdMaterials(row)) return null
 
   const slug = buildExpectedFolderSlug(row)
@@ -633,14 +664,19 @@ export function resolveDdMaterialsFolderPath(
   const secondaryLabels = collectSecondaryMatchLabels(row)
 
   const explicit = row.ddMaterialsKbPath?.trim()
-  if (explicit && index.folders.has(explicit)) {
-    const folder = index.folders.get(explicit)!
-    if (isPlausibleDdMaterialsFolderMatch(folder, row)) return explicit
-    if (
-      datePart
-      && scoreFolderAlternateMatch(folder.name, datePart, secondaryLabels) >= DD_MATERIALS_MIN_MATCH_SCORE
-    ) {
-      return explicit
+  if (explicit) {
+    if (isDdMaterialsLinkLocked(row)) {
+      return index.folders.has(explicit) ? explicit : explicit
+    }
+    if (index.folders.has(explicit)) {
+      const folder = index.folders.get(explicit)!
+      if (isPlausibleDdMaterialsFolderMatch(folder, row)) return explicit
+      if (
+        datePart
+        && scoreFolderAlternateMatch(folder.name, datePart, secondaryLabels) >= DD_MATERIALS_MIN_MATCH_SCORE
+      ) {
+        return explicit
+      }
     }
   }
 
@@ -734,7 +770,14 @@ export function getDdMaterialsDocuments(
   index: DdMaterialsFolderIndex,
 ): DdMaterialsDocument[] {
   if (!folderPath) return []
-  return index.folders.get(folderPath)?.documents ?? []
+  const direct = index.folders.get(folderPath)
+  if (direct) return direct.documents
+
+  for (const folder of index.folders.values()) {
+    const match = folder.documents.find((doc) => doc.relativePath === folderPath)
+    if (match) return [match]
+  }
+  return []
 }
 
 const DD_MATERIALS_NEUTRAL_FILENAME_TOKENS = new Set([
@@ -931,6 +974,7 @@ export function getDdMaterialsDocumentsForRow(
     | "otherInfo"
     | "ddConclusion"
     | "ddMaterialsKbPath"
+    | "ddMaterialsLinkStatus"
   >,
   index: DdMaterialsFolderIndex,
 ): DdMaterialsDocument[] {
@@ -940,6 +984,9 @@ export function getDdMaterialsDocumentsForRow(
 
   const folderEntry = index.folders.get(folderPath)
   if (folderEntry && isLooseFileEntry(folderEntry)) {
+    return documents
+  }
+  if (isDdMaterialsLinkLocked(row)) {
     return documents
   }
 
@@ -965,11 +1012,22 @@ export function buildDdMaterialsAutoFillPatch(
   row: DueDiligenceTableRow,
   index: DdMaterialsFolderIndex,
 ): Partial<DueDiligenceTableRow> | null {
+  if (isDdMaterialsAutoLinkDisabled(row)) return null
+
   const storedPath = row.ddMaterialsKbPath?.trim() || null
+
+  if (isDdMaterialsLinkLocked(row)) {
+    if (!storedPath) return null
+    const documents = getDdMaterialsDocuments(storedPath, index)
+    if (documents.length > 0 && row.ddMaterials.trim() !== "已上传") {
+      return { ddMaterials: "已上传" }
+    }
+    return null
+  }
 
   if (!shouldAutoLinkDdMaterials(row)) {
     if (storedPath || row.ddMaterials.trim() === "已上传") {
-      return { ddMaterials: "", ddMaterialsKbPath: null }
+      return { ddMaterials: "", ddMaterialsKbPath: null, ddMaterialsLinkStatus: null }
     }
     return null
   }
@@ -979,7 +1037,7 @@ export function buildDdMaterialsAutoFillPatch(
 
   if (!folderPath || documents.length === 0) {
     if (storedPath || row.ddMaterials.trim() === "已上传") {
-      return { ddMaterials: "", ddMaterialsKbPath: null }
+      return { ddMaterials: "", ddMaterialsKbPath: null, ddMaterialsLinkStatus: null }
     }
     return null
   }

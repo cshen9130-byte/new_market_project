@@ -1,5 +1,8 @@
 import seedRows from "./due-diligence-table-seed.json"
 
+/** How the 尽调材料 KB link was set and whether auto-link may change it. */
+export type DdMaterialsLinkStatus = "auto" | "approved" | "manual" | "rejected"
+
 export type DueDiligenceTableRowData = {
   ddPersonnel: string
   ddDate: string
@@ -30,11 +33,14 @@ export type DueDiligenceTableRow = DueDiligenceTableRowData & {
   representativeProductBeianHao?: string
   /** Linked AI knowledge base folder for 尽调材料, e.g. 内部尽调资料/2026.6.26-标准定律 */
   ddMaterialsKbPath?: string
+  /** User override for auto-linking: approved/manual locks path; rejected skips auto-link. */
+  ddMaterialsLinkStatus?: DdMaterialsLinkStatus
 }
 
 export type DueDiligenceTableRowPatch = Partial<DueDiligenceTableRowData> & {
   representativeProductBeianHao?: string | null
   ddMaterialsKbPath?: string | null
+  ddMaterialsLinkStatus?: DdMaterialsLinkStatus | null
 }
 
 export function privateFundProductHref(beianHao: string): string {
@@ -264,7 +270,7 @@ export function updateDueDiligenceTableRow(
   const now = new Date().toISOString()
   return rows.map((row) => {
     if (row.id !== id) return row
-    const { representativeProductBeianHao, ddMaterialsKbPath, ...dataPatch } = patch
+    const { representativeProductBeianHao, ddMaterialsKbPath, ddMaterialsLinkStatus, ...dataPatch } = patch
     const next: DueDiligenceTableRow = { ...row, ...dataPatch, updatedAt: now }
     if (representativeProductBeianHao === null || representativeProductBeianHao === "") {
       delete next.representativeProductBeianHao
@@ -275,6 +281,11 @@ export function updateDueDiligenceTableRow(
       delete next.ddMaterialsKbPath
     } else if (typeof ddMaterialsKbPath === "string") {
       next.ddMaterialsKbPath = ddMaterialsKbPath
+    }
+    if (ddMaterialsLinkStatus === null || ddMaterialsLinkStatus === "") {
+      delete next.ddMaterialsLinkStatus
+    } else if (typeof ddMaterialsLinkStatus === "string") {
+      next.ddMaterialsLinkStatus = ddMaterialsLinkStatus
     }
     return next
   })

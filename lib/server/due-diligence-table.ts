@@ -63,6 +63,13 @@ function sanitizeRow(row: unknown): DueDiligenceTableRow | null {
       typeof r.ddMaterialsKbPath === "string" && r.ddMaterialsKbPath.trim()
         ? r.ddMaterialsKbPath.trim()
         : undefined,
+    ddMaterialsLinkStatus:
+      r.ddMaterialsLinkStatus === "approved"
+      || r.ddMaterialsLinkStatus === "manual"
+      || r.ddMaterialsLinkStatus === "rejected"
+      || r.ddMaterialsLinkStatus === "auto"
+        ? r.ddMaterialsLinkStatus
+        : undefined,
   }
 }
 

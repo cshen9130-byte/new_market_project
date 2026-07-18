@@ -2,17 +2,22 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from "react"
 import { createPortal } from "react-dom"
-import { Bot, ExternalLink, FileText, GripVertical, Loader2, Pencil, X } from "lucide-react"
+import { Bot, CheckCircle2, ExternalLink, FileText, FolderInput, GripVertical, Loader2, Pencil, X, XCircle } from "lucide-react"
 import type { CellFormat } from "@/lib/ma/due-diligence-table"
+import type { DdMaterialsLinkStatus } from "@/lib/ma/due-diligence-table"
 import type { DdMaterialsDocument } from "@/lib/ma/due-diligence-materials"
 import {
   buildDdMaterialsFileUrl,
   buildDdMaterialsKbUrl,
   buildDdMaterialsPreviewUrl,
+  ddMaterialsLinkStatusLabel,
+  isDdMaterialsLinkLocked,
+  isDdMaterialsAutoLinkDisabled,
   isDdMaterialsEditable,
 } from "@/lib/ma/due-diligence-materials"
 import { dispatchMaChatOpenDocuments, MA_CHAT_DOCUMENT_MIME, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
 import { DdMaterialsFileEditor } from "./DdMaterialsFileEditor"
+import { DdMaterialsLinkPickerDialog } from "./DdMaterialsLinkPickerDialog"
 
 const FRAME_PREVIEW_EXTENSIONS = new Set([".pdf", ".html", ".htm"])
 const IMAGE_PREVIEW_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"])
@@ -120,8 +125,12 @@ export function DdMaterialsCell({
   folderName,
   documents,
   materialsLoading,
+  linkStatus,
   onActivate,
   onChange,
+  onApproveLink,
+  onRejectLink,
+  onManualLink,
 }: {
   cellId: string
   value: string
@@ -133,10 +142,15 @@ export function DdMaterialsCell({
   folderName: string | null
   documents: DdMaterialsDocument[]
   materialsLoading: boolean
+  linkStatus?: DdMaterialsLinkStatus
   onActivate: () => void
   onChange: (next: string) => void
+  onApproveLink?: () => void
+  onRejectLink?: () => void
+  onManualLink?: (kbPath: string) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
   const [previewDoc, setPreviewDoc] = useState<DdMaterialsDocument | null>(null)
   const [editingDoc, setEditingDoc] = useState<DdMaterialsDocument | null>(null)
@@ -164,6 +178,10 @@ export function DdMaterialsCell({
   ].join(" ")
 
   const hasMaterials = documents.length > 0 || Boolean(folderPath)
+  const canManageLink = Boolean(onManualLink)
+  const linkLocked = isDdMaterialsLinkLocked({ ddMaterialsLinkStatus: linkStatus })
+  const linkRejected = isDdMaterialsAutoLinkDisabled({ ddMaterialsLinkStatus: linkStatus })
+  const statusLabel = ddMaterialsLinkStatusLabel(linkStatus)
   const displayLabel = useMemo(() => {
     if (materialsLoading) return "…"
     if (documents.length > 0) return `已上传 (${documents.length})`
@@ -281,20 +299,26 @@ export function DdMaterialsCell({
     setEditingDoc(previewDoc)
   }
 
-  function openModal(event: MouseEvent) {
-    if (Date.now() < suppressOpenUntilRef.current) {
+  function openPanel(event?: MouseEvent) {
+    if (event) {
+      if (Date.now() < suppressOpenUntilRef.current) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       event.preventDefault()
       event.stopPropagation()
-      return
     }
-    event.preventDefault()
-    event.stopPropagation()
-    if (!hasMaterials && !folderPath) return
     const size = defaultDialogSize()
     setDialogSize(size)
     setDialogPos(defaultDialogPosition(size))
     setPreviewDoc(documents[0] ?? null)
     setOpen(true)
+  }
+
+  function openModal(event: MouseEvent) {
+    if (!hasMaterials && !folderPath) return
+    openPanel(event)
   }
 
   function handleOpenMouseDown(event: MouseEvent) {
@@ -356,6 +380,11 @@ export function DdMaterialsCell({
                   <p className="text-xs text-muted-foreground mt-1 truncate">
                     {folderName || folderPath || "未匹配到知识库文件夹"}
                   </p>
+                  {canManageLink && (
+                    <p className="text-[11px] text-muted-foreground mt-0.5">
+                      关联状态：{statusLabel}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   {previewDoc && isDdMaterialsEditable(previewDoc) && !editingDoc && (
@@ -412,6 +441,51 @@ export function DdMaterialsCell({
                   </button>
                 </div>
               </div>
+
+              {canManageLink && (
+                <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/10 px-4 py-2">
+                  <button
+                    type="button"
+                    onPointerDown={(event) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setPickerOpen(true)
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded border bg-background px-2.5 py-1 text-xs hover:bg-muted transition-colors"
+                  >
+                    <FolderInput className="h-3.5 w-3.5" />
+                    手动关联
+                  </button>
+                  {folderPath && !linkLocked && !linkRejected && onApproveLink && (
+                    <button
+                      type="button"
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        onApproveLink()
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs text-emerald-800 hover:bg-emerald-100 transition-colors"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      确认关联正确
+                    </button>
+                  )}
+                  {folderPath && !linkRejected && onRejectLink && (
+                    <button
+                      type="button"
+                      onPointerDown={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        onRejectLink()
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded border border-red-200 bg-red-50 px-2.5 py-1 text-xs text-red-700 hover:bg-red-100 transition-colors"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      标记关联错误
+                    </button>
+                  )}
+                </div>
+              )}
 
               <div className="flex min-h-0 flex-1">
                 <div className="w-[34%] min-w-[220px] max-w-[360px] border-r overflow-y-auto">
@@ -525,19 +599,51 @@ export function DdMaterialsCell({
         )
       : null
 
+  const picker =
+    canManageLink && onManualLink
+      ? (
+          <DdMaterialsLinkPickerDialog
+            open={pickerOpen}
+            onOpenChange={setPickerOpen}
+            initialPath={folderPath}
+            onConfirm={(kbPath) => {
+              onManualLink(kbPath)
+              if (!open) openPanel()
+            }}
+          />
+        )
+      : null
+
   if (isActive) {
     return (
       <>
-        <input
-          type="text"
-          data-cell={cellId}
-          value={value}
-          style={style}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={onActivate}
-          className={baseClass}
-        />
+        <div className="flex items-center gap-0.5" style={{ width: width - 4 }}>
+          <input
+            type="text"
+            data-cell={cellId}
+            value={value}
+            style={{ ...style, width: canManageLink ? width - 22 : width - 4 }}
+            onChange={(e) => onChange(e.target.value)}
+            onFocus={onActivate}
+            className={baseClass}
+          />
+          {canManageLink && (
+            <button
+              type="button"
+              title="管理尽调资料关联"
+              onMouseDown={(event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                openPanel()
+              }}
+              className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-100 hover:text-blue-600"
+            >
+              <FolderInput className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
         {panel}
+        {picker}
       </>
     )
   }
@@ -561,6 +667,7 @@ export function DdMaterialsCell({
           {displayLabel}
         </button>
         {panel}
+        {picker}
       </>
     )
   }
@@ -579,16 +686,33 @@ export function DdMaterialsCell({
 
   return (
     <>
-      <input
-        type="text"
-        data-cell={cellId}
-        value={value}
-        style={style}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={onActivate}
-        className={baseClass}
-      />
+      <div className="flex items-center gap-0.5" style={{ width: width - 4 }}>
+        <input
+          type="text"
+          data-cell={cellId}
+          value={value}
+          style={{ ...style, width: canManageLink ? width - 22 : width - 4 }}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={onActivate}
+          className={baseClass}
+        />
+        {canManageLink && (
+          <button
+            type="button"
+            title="手动关联尽调资料"
+            onMouseDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setPickerOpen(true)
+            }}
+            className="shrink-0 rounded p-0.5 text-zinc-500 hover:bg-zinc-100 hover:text-blue-600"
+          >
+            <FolderInput className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
       {panel}
+      {picker}
     </>
   )
 }
