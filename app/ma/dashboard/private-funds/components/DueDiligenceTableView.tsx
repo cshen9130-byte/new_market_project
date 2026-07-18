@@ -2331,6 +2331,7 @@ export function DueDiligenceTableView() {
                                   documents={materials?.documents ?? []}
                                   materialsLoading={materialsLoading}
                                   linkStatus={row.ddMaterialsLinkStatus}
+                                  fileLinks={row.ddMaterialsFileLinks}
                                   onActivate={() => {
                                     setFocusCell({ rowId: row.id, colKey: col.key })
                                     setSelection({
@@ -2345,6 +2346,7 @@ export function DueDiligenceTableView() {
                                       ddMaterials: "已上传",
                                       ddMaterialsKbPath: kbPath,
                                       ddMaterialsLinkStatus: "manual",
+                                      ddMaterialsFileLinks: null,
                                     })
                                   }}
                                   onApproveLink={() => {
@@ -2358,7 +2360,18 @@ export function DueDiligenceTableView() {
                                       ddMaterials: "",
                                       ddMaterialsKbPath: null,
                                       ddMaterialsLinkStatus: "rejected",
+                                      ddMaterialsFileLinks: null,
                                     })
+                                  }}
+                                  onApproveFiles={(paths) => {
+                                    const patch: Partial<Record<string, "approved" | "rejected">> = {}
+                                    for (const path of paths) patch[path] = "approved"
+                                    handleDdMaterialsLinkPatch(row.id, { ddMaterialsFileLinks: patch })
+                                  }}
+                                  onRejectFiles={(paths) => {
+                                    const patch: Partial<Record<string, "approved" | "rejected">> = {}
+                                    for (const path of paths) patch[path] = "rejected"
+                                    handleDdMaterialsLinkPatch(row.id, { ddMaterialsFileLinks: patch })
                                   }}
                                 />
                               )

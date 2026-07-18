@@ -28,6 +28,38 @@ export function ddMaterialsLinkStatusLabel(status: DdMaterialsLinkStatus | undef
   }
 }
 
+export function ddMaterialsFileLinkStatusLabel(
+  relativePath: string,
+  fileLinks: Partial<Record<string, "approved" | "rejected">> | undefined,
+  rowLinkStatus: DdMaterialsLinkStatus | undefined,
+): { label: string; tone: "auto" | "approved" | "rejected" } {
+  const fileStatus = fileLinks?.[relativePath]
+  if (fileStatus === "rejected") return { label: "已排除", tone: "rejected" }
+  if (fileStatus === "approved") return { label: "已确认", tone: "approved" }
+  if (rowLinkStatus === "approved" || rowLinkStatus === "manual") {
+    return { label: "已确认", tone: "approved" }
+  }
+  if (rowLinkStatus === "rejected") return { label: "已排除", tone: "rejected" }
+  return { label: "自动", tone: "auto" }
+}
+
+export function applyDdMaterialsFileLinkFilters(
+  allDocuments: DdMaterialsDocument[],
+  autoDocuments: DdMaterialsDocument[],
+  fileLinks?: Partial<Record<string, "approved" | "rejected">>,
+): DdMaterialsDocument[] {
+  if (!fileLinks || Object.keys(fileLinks).length === 0) return autoDocuments
+
+  const visible = new Set<string>()
+  for (const doc of autoDocuments) {
+    if (fileLinks[doc.relativePath] !== "rejected") visible.add(doc.relativePath)
+  }
+  for (const doc of allDocuments) {
+    if (fileLinks[doc.relativePath] === "approved") visible.add(doc.relativePath)
+  }
+  return allDocuments.filter((doc) => visible.has(doc.relativePath))
+}
+
 export type DdMaterialsDocument = {
   name: string
   relativePath: string
@@ -975,27 +1007,30 @@ export function getDdMaterialsDocumentsForRow(
     | "ddConclusion"
     | "ddMaterialsKbPath"
     | "ddMaterialsLinkStatus"
+    | "ddMaterialsFileLinks"
   >,
   index: DdMaterialsFolderIndex,
 ): DdMaterialsDocument[] {
   const folderPath = resolveDdMaterialsFolderPath(row, index)
-  const documents = getDdMaterialsDocuments(folderPath, index)
-  if (!folderPath || documents.length === 0) return documents
+  const allDocuments = getDdMaterialsDocuments(folderPath, index)
+  if (!folderPath || allDocuments.length === 0) return allDocuments
 
   const folderEntry = index.folders.get(folderPath)
   if (folderEntry && isLooseFileEntry(folderEntry)) {
-    return documents
-  }
-  if (isDdMaterialsLinkLocked(row)) {
-    return documents
+    return applyDdMaterialsFileLinkFilters(allDocuments, allDocuments, row.ddMaterialsFileLinks)
   }
 
-  const folderName = folderEntry?.name ?? ""
-  const folderLabel = extractFolderLabel(folderName)
-  const fundHint =
-    extractFundNameFromStrategyFolderLabel(folderLabel, getRowStrategyPrefixes(row))
-    ?? (folderLabel.length >= 2 ? folderLabel : "")
-  return filterDdMaterialsDocumentsForRow(row, documents, fundHint)
+  let autoDocuments = allDocuments
+  if (!isDdMaterialsLinkLocked(row)) {
+    const folderName = folderEntry?.name ?? ""
+    const folderLabel = extractFolderLabel(folderName)
+    const fundHint =
+      extractFundNameFromStrategyFolderLabel(folderLabel, getRowStrategyPrefixes(row))
+      ?? (folderLabel.length >= 2 ? folderLabel : "")
+    autoDocuments = filterDdMaterialsDocumentsForRow(row, allDocuments, fundHint)
+  }
+
+  return applyDdMaterialsFileLinkFilters(allDocuments, autoDocuments, row.ddMaterialsFileLinks)
 }
 
 export function rowHasDdMaterials(

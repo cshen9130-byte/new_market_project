@@ -70,7 +70,21 @@ function sanitizeRow(row: unknown): DueDiligenceTableRow | null {
       || r.ddMaterialsLinkStatus === "auto"
         ? r.ddMaterialsLinkStatus
         : undefined,
+    ddMaterialsFileLinks: sanitizeDdMaterialsFileLinks(r.ddMaterialsFileLinks),
   }
+}
+
+function sanitizeDdMaterialsFileLinks(
+  value: unknown,
+): Partial<Record<string, "approved" | "rejected">> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const out: Partial<Record<string, "approved" | "rejected">> = {}
+  for (const [path, status] of Object.entries(value as Record<string, unknown>)) {
+    const key = path.trim()
+    if (!key) continue
+    if (status === "approved" || status === "rejected") out[key] = status
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function sanitizeRows(value: unknown): DueDiligenceTableRow[] {

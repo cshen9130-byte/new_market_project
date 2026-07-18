@@ -35,12 +35,15 @@ export type DueDiligenceTableRow = DueDiligenceTableRowData & {
   ddMaterialsKbPath?: string
   /** User override for auto-linking: approved/manual locks path; rejected skips auto-link. */
   ddMaterialsLinkStatus?: DdMaterialsLinkStatus
+  /** Per-file link overrides keyed by KB relativePath. */
+  ddMaterialsFileLinks?: Partial<Record<string, "approved" | "rejected">>
 }
 
 export type DueDiligenceTableRowPatch = Partial<DueDiligenceTableRowData> & {
   representativeProductBeianHao?: string | null
   ddMaterialsKbPath?: string | null
   ddMaterialsLinkStatus?: DdMaterialsLinkStatus | null
+  ddMaterialsFileLinks?: Partial<Record<string, "approved" | "rejected">> | null
 }
 
 export function privateFundProductHref(beianHao: string): string {
@@ -270,7 +273,7 @@ export function updateDueDiligenceTableRow(
   const now = new Date().toISOString()
   return rows.map((row) => {
     if (row.id !== id) return row
-    const { representativeProductBeianHao, ddMaterialsKbPath, ddMaterialsLinkStatus, ...dataPatch } = patch
+    const { representativeProductBeianHao, ddMaterialsKbPath, ddMaterialsLinkStatus, ddMaterialsFileLinks, ...dataPatch } = patch
     const next: DueDiligenceTableRow = { ...row, ...dataPatch, updatedAt: now }
     if (representativeProductBeianHao === null || representativeProductBeianHao === "") {
       delete next.representativeProductBeianHao
@@ -286,6 +289,16 @@ export function updateDueDiligenceTableRow(
       delete next.ddMaterialsLinkStatus
     } else if (typeof ddMaterialsLinkStatus === "string") {
       next.ddMaterialsLinkStatus = ddMaterialsLinkStatus
+    }
+    if (ddMaterialsFileLinks === null) {
+      delete next.ddMaterialsFileLinks
+    } else if (ddMaterialsFileLinks && typeof ddMaterialsFileLinks === "object") {
+      const merged = { ...(next.ddMaterialsFileLinks ?? {}), ...ddMaterialsFileLinks }
+      for (const [path, status] of Object.entries(merged)) {
+        if (!status) delete merged[path]
+      }
+      if (Object.keys(merged).length === 0) delete next.ddMaterialsFileLinks
+      else next.ddMaterialsFileLinks = merged
     }
     return next
   })
