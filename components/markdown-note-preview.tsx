@@ -3,14 +3,6 @@
 import { useMemo, type ReactNode } from "react"
 import { cn } from "@/lib/utils"
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-}
-
 const IMAGE_LINE_RE = /^!\[([^\]]*)\]\(([^)]+)\)\s*$/
 const HEADING_RE = /^(#{1,6})\s+(.+)$/
 const UL_RE = /^[-*+]\s+(.+)$/
@@ -18,6 +10,18 @@ const OL_RE = /^\d+\.\s+(.+)$/
 const BLOCKQUOTE_RE = /^>\s?(.*)$/
 const TABLE_ROW_RE = /^\|.+\|$/
 const TABLE_SEP_RE = /^\|[\s|:-]+\|$/
+/** Split plain text on <br> / &lt;br&gt; into React text + real line breaks. */
+function formatPlainTextWithBreaks(text: string, keyPrefix: string): ReactNode[] {
+  // Fresh regex each call — avoids lastIndex reuse on a shared /g pattern.
+  const parts = text.split(/(?:<br\s*\/?>|&lt;br\s*\/?&gt;)/gi)
+  if (parts.length === 1) return [text]
+  const nodes: ReactNode[] = []
+  parts.forEach((part, i) => {
+    if (i > 0) nodes.push(<br key={`${keyPrefix}-br-${i}`} />)
+    if (part) nodes.push(<span key={`${keyPrefix}-t-${i}`}>{part}</span>)
+  })
+  return nodes
+}
 
 function formatInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = []
@@ -29,9 +33,10 @@ function formatInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > lastIndex) {
       nodes.push(
-        <span key={`${keyPrefix}-text-${partIndex++}`}>
-          {escapeHtml(text.slice(lastIndex, match.index))}
-        </span>,
+        ...formatPlainTextWithBreaks(
+          text.slice(lastIndex, match.index),
+          `${keyPrefix}-text-${partIndex++}`,
+        ),
       )
     }
 
@@ -53,16 +58,20 @@ function formatInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
           rel="noopener noreferrer"
           className="text-primary underline underline-offset-2"
         >
-          {escapeHtml(match[3])}
+          {match[3]}
         </a>,
       )
     } else if (match[5] !== undefined) {
       nodes.push(
-        <strong key={`${keyPrefix}-bold-${partIndex++}`}>{escapeHtml(match[5])}</strong>,
+        <strong key={`${keyPrefix}-bold-${partIndex++}`}>
+          {formatPlainTextWithBreaks(match[5], `${keyPrefix}-bold-${partIndex}`)}
+        </strong>,
       )
     } else if (match[6] !== undefined) {
       nodes.push(
-        <em key={`${keyPrefix}-em-${partIndex++}`}>{escapeHtml(match[6])}</em>,
+        <em key={`${keyPrefix}-em-${partIndex++}`}>
+          {formatPlainTextWithBreaks(match[6], `${keyPrefix}-em-${partIndex}`)}
+        </em>,
       )
     } else if (match[7] !== undefined) {
       nodes.push(
@@ -70,7 +79,7 @@ function formatInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
           key={`${keyPrefix}-code-${partIndex++}`}
           className="rounded bg-muted px-1 py-0.5 font-mono text-[0.9em]"
         >
-          {escapeHtml(match[7])}
+          {match[7]}
         </code>,
       )
     }
@@ -80,11 +89,11 @@ function formatInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
 
   if (lastIndex < text.length) {
     nodes.push(
-      <span key={`${keyPrefix}-text-${partIndex++}`}>{escapeHtml(text.slice(lastIndex))}</span>,
+      ...formatPlainTextWithBreaks(text.slice(lastIndex), `${keyPrefix}-text-${partIndex++}`),
     )
   }
 
-  return nodes.length > 0 ? nodes : [escapeHtml(text)]
+  return nodes.length > 0 ? nodes : formatPlainTextWithBreaks(text, keyPrefix)
 }
 
 function parseTableRow(line: string): string[] {
@@ -202,7 +211,7 @@ function renderMarkdownBlocks(content: string): ReactNode[] {
                 {headers.map((cell, ci) => (
                   <th
                     key={ci}
-                    className="whitespace-nowrap px-3 py-2 text-left text-xs font-semibold text-foreground"
+                    className="px-3 py-2 text-left text-xs font-semibold text-foreground align-bottom"
                   >
                     {formatInlineMarkdown(cell, `th-${key}-${ci}`)}
                   </th>

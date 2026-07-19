@@ -1050,12 +1050,12 @@ export function AIResearcherPage() {
     return row.replace(/^\|/, "").replace(/\|$/, "").split("|").map(c => c.trim())
   }
 
-  // Escapes HTML but preserves literal <br> tags the LLM may emit inside table cells.
+  // Escapes HTML but preserves <br> / &lt;br&gt; the LLM may emit inside table cells.
   function inlineMd(text: string): string {
-    // Save <br> before escaping, restore after
     const BR = "\x00BR\x00"
     return text
       .replace(/<br\s*\/?>/gi, BR)
+      .replace(/&lt;br\s*\/?&gt;/gi, BR)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/\*([^*]+)\*/g, "<em>$1</em>")

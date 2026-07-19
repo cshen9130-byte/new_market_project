@@ -2,6 +2,7 @@ import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { ChatOpenAI } from "@langchain/openai"
 import { HumanMessage, SystemMessage } from "@langchain/core/messages"
+import { loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -94,9 +95,9 @@ async function fetchFundsBySubjects(subjects: string[]): Promise<FundBasicInfo[]
   return rows
 }
 
-// Mirrors the multi-table query used by the fund detail page so that funds
-// stored in private_fund_nav_group / private_fund_nav_group_hy are also found.
-// Matches by beian_hao; the result is keyed by beian_hao for easy lookup.
+// Same merged NAV path as the fund detail page / due-diligence table
+// (type6 + legacy + email + team). Platform-only tables miss funds like
+// 古曲祥辰1号 whose series only exists after that merge.
 async function fetchNavHistoryRaw(
   funds: Pick<FundBasicInfo, "beian_hao" | "product_name">[],
   months = 36,
@@ -105,64 +106,27 @@ async function fetchNavHistoryRaw(
   const cutoff = new Date()
   cutoff.setMonth(cutoff.getMonth() - months)
   const cutoffStr = cutoff.toISOString().slice(0, 10)
+  const toStr = new Date().toISOString().slice(0, 10)
 
-  // Run one query per fund so we can key results back by beian_hao.
-  // Each query tries nav_group → nav_group_hy → nav in priority order.
   const perFundPromises = funds.map(async (f) => {
-    const rows = await query<{ price_date: string; nav: string; cumulative_nav: string | null }>(
-      `SELECT price_date::text AS price_date,
-              nav::text        AS nav,
-              cumulative_nav::text AS cumulative_nav
-       FROM (
-         SELECT price_date, nav, cumulative_nav, 1 AS pri
-         FROM private_fund_nav_group
-         WHERE beian_hao = $1 AND price_date >= $3::date
-
-         UNION ALL
-
-         SELECT price_date, nav, cumulative_nav, 2 AS pri
-         FROM private_fund_nav_group_hy
-         WHERE beian_hao = $1 AND price_date >= $3::date
-
-         UNION ALL
-
-         SELECT price_date, nav, cumulative_nav, 3 AS pri
-         FROM private_fund_nav
-         WHERE beian_hao = $1 AND price_date >= $3::date
-
-         UNION ALL
-
-         -- product_name fallback (handles beian_hao mismatch across tables)
-         SELECT price_date, nav, cumulative_nav, 4 AS pri
-         FROM private_fund_nav_group
-         WHERE $2 <> '' AND product_name = $2 AND price_date >= $3::date
-
-         UNION ALL
-
-         SELECT price_date, nav, cumulative_nav, 5 AS pri
-         FROM private_fund_nav_group_hy
-         WHERE $2 <> '' AND product_name = $2 AND price_date >= $3::date
-
-         UNION ALL
-
-         SELECT price_date, nav, cumulative_nav, 6 AS pri
-         FROM private_fund_nav
-         WHERE $2 <> '' AND product_name = $2 AND price_date >= $3::date
-       ) nav_union
-       WHERE nav IS NOT NULL
-       ORDER BY price_date ASC, pri ASC`,
-      [f.beian_hao, f.product_name, cutoffStr],
-    )
-    // Deduplicate by date (keep lowest pri)
-    const seen = new Set<string>()
-    const deduped: NavPoint[] = []
-    for (const r of rows) {
-      if (!seen.has(r.price_date)) {
-        seen.add(r.price_date)
-        deduped.push({ price_date: r.price_date, nav: r.nav, cumulative_nav: r.cumulative_nav })
-      }
+    try {
+      const names = await resolveFundNames(f.beian_hao, f.product_name)
+      const series = await loadFundNavSeries(
+        f.beian_hao,
+        names.product_name,
+        names.short_name ?? "",
+        { from: cutoffStr, to: toStr },
+      )
+      const points: NavPoint[] = series.map((p) => ({
+        price_date: p.price_date,
+        nav: p.level,
+        cumulative_nav: p.level,
+      }))
+      return { beian_hao: f.beian_hao, points }
+    } catch (err) {
+      console.error(`[ai-researcher] fetchNavHistory ${f.beian_hao}`, err)
+      return { beian_hao: f.beian_hao, points: [] as NavPoint[] }
     }
-    return { beian_hao: f.beian_hao, points: deduped }
   })
 
   const settled = await Promise.allSettled(perFundPromises)
@@ -175,8 +139,7 @@ async function fetchNavHistoryRaw(
   return result
 }
 
-// Wraps the NAV fetch with a 15-second timeout so a slow/empty table scan
-// never blocks the rest of the pipeline.
+// Wraps the NAV fetch with a timeout so a slow merge never blocks the pipeline.
 async function fetchNavHistory(
   funds: Pick<FundBasicInfo, "beian_hao" | "product_name">[],
 ): Promise<{ navMap: Record<string, NavPoint[]>; timedOut: boolean }> {
@@ -188,7 +151,7 @@ async function fetchNavHistory(
       setTimeout(() => {
         timedOut = true
         resolve({})
-      }, 15_000),
+      }, 30_000),
     ),
   ])
   return { navMap, timedOut }
@@ -451,6 +414,7 @@ ${hasKbNav ? "4. 知识库提取的业绩/净值信息（来自路演材料、�
 报告要求：
 - 语言：中文，专业严谨，逻辑清晰
 - 格式：Markdown（#/##/### 标题，- 列表，**粗体**强调关键数字）
+- 表格单元格内禁止使用 HTML 标签（不要写 <br> 或 <br/>）；换行请用空格或「名称（备案号）」同一行写法
 - 内容：深度分析而非数据堆砌，给出有判断力的结论
 - 数据缺失时：明确标注"数据不足"，不编造数字，但可基于可用信息进行定性分析
 - 年化/年度指标（ret_1y、sharpe_1y 等）为 N/A 仅表示该基金成立不足一年，**不代表无净值数据**；请直接使用已有的 latest_nav、近1月/近3月/近6月收益和净值序列进行分析
