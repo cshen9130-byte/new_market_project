@@ -63,6 +63,7 @@ export function RepresentativeProductCell({
   const [mounted, setMounted] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const blurRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -131,27 +132,36 @@ export function RepresentativeProductCell({
 
     if (searchRef.current) clearTimeout(searchRef.current)
     searchRef.current = setTimeout(async () => {
+      abortRef.current?.abort()
+      const controller = new AbortController()
+      abortRef.current = controller
       setLoading(true)
       try {
         const res = await fetch(
           `/ma/api/private-funds/products/search?q=${encodeURIComponent(query)}&format=picker`,
+          { signal: controller.signal },
         )
         const json = await res.json()
+        if (controller.signal.aborted) return
         if (Array.isArray(json)) {
           setResults(json)
         } else {
           setResults([])
         }
-      } catch {
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return
         setResults([])
       } finally {
-        setLoading(false)
-        updateDropdownPos()
+        if (!controller.signal.aborted) {
+          setLoading(false)
+          updateDropdownPos()
+        }
       }
-    }, 200)
+    }, 150)
 
     return () => {
       if (searchRef.current) clearTimeout(searchRef.current)
+      abortRef.current?.abort()
     }
   }, [query, editing, updateDropdownPos])
 

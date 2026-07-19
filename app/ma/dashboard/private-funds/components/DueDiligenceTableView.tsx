@@ -18,7 +18,9 @@ import {
   Bold,
   CalendarDays,
   Download,
+  ChevronDown,
   Expand,
+  Filter,
   Italic,
   Maximize2,
   Minimize2,
@@ -112,6 +114,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { splitFundPoolMemberships } from "@/lib/client/tracking-pools"
 import {
   loadTeamStrategyTree,
@@ -840,12 +849,75 @@ function DdConclusionCellContextMenu({
   )
 }
 
+type PerformanceFilterKind = "post-dd-up" | "post-dd-down" | "period-up" | "period-down"
+type PerformanceFilter = {
+  kind: PerformanceFilterKind
+  periodStart?: string
+  periodEnd?: string
+} | null
+
+function isoDateDaysAgo(days: number): string {
+  const d = new Date()
+  d.setDate(d.getDate() - days)
+  return d.toISOString().slice(0, 10)
+}
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function performanceFilterLabel(filter: PerformanceFilter): string {
+  if (!filter) return "业绩筛选"
+  switch (filter.kind) {
+    case "post-dd-up":
+      return "尽调后上涨"
+    case "post-dd-down":
+      return "尽调后下跌"
+    case "period-up":
+      return `${filter.periodStart}~${filter.periodEnd} 上涨`
+    case "period-down":
+      return `${filter.periodStart}~${filter.periodEnd} 下跌`
+  }
+}
+
+function rowMatchesPerformanceFilter(
+  rowId: string,
+  filter: PerformanceFilter,
+  returns: Record<string, number | null>,
+): boolean {
+  if (!filter) return true
+  const ret = returns[rowId]
+  if (ret == null) return false
+  if (filter.kind === "post-dd-up" || filter.kind === "period-up") return ret > 0
+  return ret < 0
+}
+
+function ddTableUserHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" }
+  try {
+    const raw = localStorage.getItem("currentUser")
+    if (raw) {
+      const user = JSON.parse(raw) as { id?: string; name?: string }
+      if (user.id?.trim()) headers["x-market-user-id"] = user.id.trim()
+      if (user.name?.trim()) headers["x-market-user-name"] = user.name.trim()
+    }
+  } catch {
+    // ignore
+  }
+  return headers
+}
+
 // ── Main view ──────────────────────────────────────────────────────────────
 
 export function DueDiligenceTableView() {
   const [rows, setRows] = useState<DueDiligenceTableRow[]>([])
   const [formats, setFormats] = useState<TableCellFormats>({})
   const [keyword, setKeyword] = useState("")
+  const [performanceFilter, setPerformanceFilter] = useState<PerformanceFilter>(null)
+  const [periodStartInput, setPeriodStartInput] = useState(() => isoDateDaysAgo(30))
+  const [periodEndInput, setPeriodEndInput] = useState(() => todayIsoDate())
+  const [rowReturns, setRowReturns] = useState<Record<string, number | null>>({})
+  const [returnsLoading, setReturnsLoading] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -1284,12 +1356,80 @@ export function DueDiligenceTableView() {
     return () => ro.disconnect()
   }, [hydrated, applyFitZoom])
 
+  useEffect(() => {
+    if (!performanceFilter) {
+      setRowReturns({})
+      setReturnsLoading(false)
+      return
+    }
+
+    let cancelled = false
+    setReturnsLoading(true)
+
+    const isPeriodFilter =
+      performanceFilter.kind === "period-up"
+      || performanceFilter.kind === "period-down"
+
+    const items = rows.flatMap((row) => {
+      const beian_hao = row.representativeProductBeianHao?.trim()
+      if (!beian_hao) return []
+      const dd_date = parseTableDate(row.ddDate)
+      if (!isPeriodFilter && !dd_date) return []
+      return [{
+        row_id: row.id,
+        beian_hao,
+        product_name: row.representativeProduct.trim() || beian_hao,
+        ...(dd_date ? { dd_date } : {}),
+      }]
+    })
+
+    void (async () => {
+      try {
+        const body: Record<string, unknown> = { items }
+        if (isPeriodFilter) {
+          body.period_start = performanceFilter.periodStart
+          body.period_end = performanceFilter.periodEnd
+        }
+        const res = await fetch("/ma/api/due-diligence-table/post-dd-returns", {
+          method: "POST",
+          headers: ddTableUserHeaders(),
+          body: JSON.stringify(body),
+        })
+        const data = await res.json()
+        if (cancelled) return
+        if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
+        setRowReturns(data.returns ?? {})
+      } catch {
+        if (!cancelled) setRowReturns({})
+      } finally {
+        if (!cancelled) setReturnsLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [rows, performanceFilter])
+
+  function applyPeriodPerformanceFilter(kind: "period-up" | "period-down") {
+    const periodStart = periodStartInput.trim()
+    const periodEnd = periodEndInput.trim()
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart) || !/^\d{4}-\d{2}-\d{2}$/.test(periodEnd)) return
+    if (periodStart > periodEnd) return
+    setPerformanceFilter({ kind, periodStart, periodEnd })
+  }
+
   // ── Filtered rows ──
 
   const filteredRows = useMemo(() => {
-    const filtered = rows.filter((row) => rowMatchesKeyword(row, keyword))
+    let filtered = rows.filter((row) => rowMatchesKeyword(row, keyword))
+    if (performanceFilter) {
+      filtered = filtered.filter((row) =>
+        rowMatchesPerformanceFilter(row.id, performanceFilter, rowReturns),
+      )
+    }
     return sortDueDiligenceTableRowsByDateAsc(filtered)
-  }, [rows, keyword])
+  }, [rows, keyword, performanceFilter, rowReturns])
 
   const selectedCellSet = useMemo(
     () => buildSelectionCellSet(selection, filteredRows),
@@ -1989,11 +2129,106 @@ export function DueDiligenceTableView() {
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="relative max-w-xs flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
-            <input type="search" value={keyword} onChange={(e) => setKeyword(e.target.value)}
-              placeholder="搜索基金公司、经理、策略、结论…"
-              className="h-8 w-full rounded-md border border-zinc-200 bg-white pl-8 pr-3 text-xs outline-none focus:border-red-300 focus:ring-2 focus:ring-red-100" />
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <div className="relative max-w-xs flex-1">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400" />
+              <input type="search" value={keyword} onChange={(e) => setKeyword(e.target.value)}
+                placeholder="搜索基金公司、经理、策略、结论…"
+                className="h-8 w-full rounded-md border border-zinc-200 bg-white pl-8 pr-3 text-xs outline-none focus:border-red-300 focus:ring-2 focus:ring-red-100" />
+            </div>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className={[
+                    "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors whitespace-nowrap",
+                    performanceFilter
+                      ? "border-red-300 bg-red-50 text-red-700 hover:bg-red-100"
+                      : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50",
+                  ].join(" ")}
+                >
+                  <Filter className="h-3.5 w-3.5" />
+                  {performanceFilter ? performanceFilterLabel(performanceFilter) : "业绩筛选"}
+                  {returnsLoading && <span className="text-zinc-400">…</span>}
+                  <ChevronDown className="h-3 w-3 opacity-60" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-72 text-xs">
+                <DropdownMenuItem
+                  onClick={() => setPerformanceFilter(null)}
+                  className={!performanceFilter ? "font-medium text-red-600" : ""}
+                >
+                  全部
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => setPerformanceFilter({ kind: "post-dd-up" })}
+                  className={performanceFilter?.kind === "post-dd-up" ? "font-medium text-red-600" : ""}
+                >
+                  尽调后上涨
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setPerformanceFilter({ kind: "post-dd-down" })}
+                  className={performanceFilter?.kind === "post-dd-down" ? "font-medium text-red-600" : ""}
+                >
+                  尽调后下跌
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <div
+                  className="px-2 py-1.5"
+                  onPointerDown={(e) => e.preventDefault()}
+                >
+                  <div className="mb-1.5 text-[11px] text-zinc-500">指定区间</div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-8 shrink-0 text-zinc-500">起始</span>
+                      <input
+                        type="date"
+                        value={periodStartInput}
+                        onChange={(e) => setPeriodStartInput(e.target.value)}
+                        className="h-7 min-w-0 flex-1 rounded border border-zinc-200 bg-white px-2 text-xs outline-none focus:border-red-300 focus:ring-1 focus:ring-red-100"
+                      />
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-8 shrink-0 text-zinc-500">结束</span>
+                      <input
+                        type="date"
+                        value={periodEndInput}
+                        onChange={(e) => setPeriodEndInput(e.target.value)}
+                        className="h-7 min-w-0 flex-1 rounded border border-zinc-200 bg-white px-2 text-xs outline-none focus:border-red-300 focus:ring-1 focus:ring-red-100"
+                      />
+                    </div>
+                  </div>
+                  <div className="mt-1.5 flex gap-1">
+                    <button
+                      type="button"
+                      onClick={() => applyPeriodPerformanceFilter("period-up")}
+                      className={[
+                        "flex-1 rounded border px-2 py-1 text-xs transition-colors",
+                        performanceFilter?.kind === "period-up"
+                          ? "border-red-300 bg-red-50 text-red-700"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50",
+                      ].join(" ")}
+                    >
+                      区间上涨
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyPeriodPerformanceFilter("period-down")}
+                      className={[
+                        "flex-1 rounded border px-2 py-1 text-xs transition-colors",
+                        performanceFilter?.kind === "period-down"
+                          ? "border-red-300 bg-red-50 text-red-700"
+                          : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50",
+                      ].join(" ")}
+                    >
+                      区间下跌
+                    </button>
+                  </div>
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           <div className="flex items-center gap-2">
@@ -2017,7 +2252,9 @@ export function DueDiligenceTableView() {
               </button>
             </div>
             <span className="text-xs text-zinc-500 tabular-nums whitespace-nowrap">
-              共 {filteredRows.length} 条{keyword.trim() ? ` / ${rows.length} 总计` : ""}
+              共 {filteredRows.length} 条
+              {(keyword.trim() || performanceFilter) ? ` / ${rows.length} 总计` : ""}
+              {returnsLoading ? " · 计算业绩中…" : ""}
             </span>
           </div>
         </div>
