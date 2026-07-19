@@ -256,41 +256,51 @@ async function searchProductsBroad(name: string, limit = 10): Promise<PrivateFun
   })
 }
 
-/** Fast prefix search — same query shape as fund keyword autocomplete. */
-export async function searchPrivateFundProductsPrefix(
+/**
+ * Autocomplete for UI pickers — same speed as fund keyword search.
+ * Single-table prefix match only; never runs the multi-table fuzzy path.
+ */
+export async function searchPrivateFundProductsForAutocomplete(
   q: string,
   limit = 20,
 ): Promise<PrivateFundPickerResult[]> {
   const trimmed = q.trim()
   if (!trimmed) return []
-  const prefix = `${trimmed}%`
 
+  const registerCode = normalizeRegisterCode(trimmed)
+  if (registerCode) {
+    return query<PrivateFundPickerResult>(
+      `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1 AS strategy_one
+       FROM private_fund_info
+       WHERE beian_hao = $1 OR beian_hao ILIKE $2
+       ORDER BY product_name ASC
+       LIMIT $3`,
+      [registerCode, `${registerCode}%`, limit],
+    ).catch((err) => {
+      console.error("[private-fund-product-search] autocomplete by register", err)
+      return []
+    })
+  }
+
+  // Match fund keyword autocomplete exactly (prefix on private_fund_info).
+  const prefix = `${trimmed}%`
   return query<PrivateFundPickerResult>(
     `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1 AS strategy_one
      FROM private_fund_info
-     WHERE TRIM(product_name) <> ''
-       AND (product_name ILIKE $1 OR beian_hao ILIKE $1)
+     WHERE product_name ILIKE $1 OR beian_hao ILIKE $1
      ORDER BY product_name ASC
      LIMIT $2`,
     [prefix, limit],
   ).catch((err) => {
-    console.error("[private-fund-product-search] searchPrivateFundProductsPrefix", err)
+    console.error("[private-fund-product-search] autocomplete by name", err)
     return []
   })
-}
-
-function canUsePrefixFastPath(q: string): boolean {
-  const trimmed = q.trim()
-  if (!trimmed) return false
-  if (normalizeRegisterCode(trimmed)) return false
-  if (shareClassFromProductName(trimmed)) return false
-  if (/[-－—–]/.test(trimmed)) return false
-  return true
 }
 
 /**
  * Picker search for private fund products.
  * Keeps A/B/C share classes separate; synthesizes tiered variants when only the base fund exists.
+ * Prefer searchPrivateFundProductsForAutocomplete for typing UIs.
  */
 export async function searchPrivateFundProductsForPicker(
   q: string,
@@ -298,11 +308,6 @@ export async function searchPrivateFundProductsForPicker(
 ): Promise<PrivateFundPickerResult[]> {
   const trimmed = q.trim()
   if (!trimmed) return []
-
-  if (canUsePrefixFastPath(trimmed)) {
-    const fast = await searchPrivateFundProductsPrefix(trimmed, limit)
-    if (fast.length > 0) return fast
-  }
 
   const queryShareClass = shareClassFromProductName(trimmed)
   const baseGuardQuery = queryShareClass ? stripShareClassSuffix(trimmed) : trimmed

@@ -907,6 +907,53 @@ function ddTableUserHeaders(): Record<string, string> {
   return headers
 }
 
+type PerformanceFetchItem = {
+  row_id: string
+  beian_hao?: string
+  product_name: string
+  dd_date?: string
+}
+
+type PerformanceFetchPayload = {
+  key: string
+  items: PerformanceFetchItem[]
+  periodStart?: string
+  periodEnd?: string
+}
+
+function buildPerformanceFetchPayload(
+  rows: DueDiligenceTableRow[],
+  filter: PerformanceFilter,
+): PerformanceFetchPayload | null {
+  if (!filter) return null
+
+  const isPeriodFilter =
+    filter.kind === "period-up"
+    || filter.kind === "period-down"
+
+  const items = rows.flatMap((row) => {
+    const beian_hao = row.representativeProductBeianHao?.trim()
+    const product_name = row.representativeProduct.trim()
+    if (!beian_hao && !product_name) return []
+    const dd_date = parseTableDate(row.ddDate)
+    if (!isPeriodFilter && !dd_date) return []
+    return [{
+      row_id: row.id,
+      ...(beian_hao ? { beian_hao } : {}),
+      product_name: product_name || beian_hao || "",
+      ...(dd_date ? { dd_date } : {}),
+    }]
+  }).sort((a, b) => a.row_id.localeCompare(b.row_id))
+
+  return {
+    key: JSON.stringify({ filter, items }),
+    items,
+    ...(isPeriodFilter
+      ? { periodStart: filter.periodStart, periodEnd: filter.periodEnd }
+      : {}),
+  }
+}
+
 // ── Main view ──────────────────────────────────────────────────────────────
 
 export function DueDiligenceTableView() {
@@ -918,6 +965,9 @@ export function DueDiligenceTableView() {
   const [periodEndInput, setPeriodEndInput] = useState(() => todayIsoDate())
   const [rowReturns, setRowReturns] = useState<Record<string, number | null>>({})
   const [returnsLoading, setReturnsLoading] = useState(false)
+  const [returnsError, setReturnsError] = useState<string | null>(null)
+  const [returnsReady, setReturnsReady] = useState(false)
+  const [returnsItemCount, setReturnsItemCount] = useState(0)
   const [hydrated, setHydrated] = useState(false)
   const [zoom, setZoom] = useState(1)
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -966,6 +1016,8 @@ export function DueDiligenceTableView() {
   const pendingSaveRef = useRef<{ rows: DueDiligenceTableRow[]; formats: TableCellFormats } | null>(null)
   const serverUpdatedAtRef = useRef<string | null>(null)
   const isSavingRef = useRef(false)
+  const returnsCacheRef = useRef<Map<string, Record<string, number | null>>>(new Map())
+  const performanceFetchAbortRef = useRef<AbortController | null>(null)
 
   // ── Snapshot / undo-redo ──
 
@@ -1356,60 +1408,96 @@ export function DueDiligenceTableView() {
     return () => ro.disconnect()
   }, [hydrated, applyFitZoom])
 
+  const performanceFetchPayload = useMemo(
+    () => buildPerformanceFetchPayload(rows, performanceFilter),
+    [rows, performanceFilter],
+  )
+
   useEffect(() => {
-    if (!performanceFilter) {
+    performanceFetchAbortRef.current?.abort()
+    performanceFetchAbortRef.current = null
+
+    if (!performanceFetchPayload) {
       setRowReturns({})
       setReturnsLoading(false)
+      setReturnsError(null)
+      setReturnsReady(false)
+      setReturnsItemCount(0)
       return
     }
 
-    let cancelled = false
+    const { key, items, periodStart, periodEnd } = performanceFetchPayload
+    setReturnsItemCount(items.length)
+
+    const cached = returnsCacheRef.current.get(key)
+    if (cached) {
+      setRowReturns(cached)
+      setReturnsLoading(false)
+      setReturnsReady(true)
+      setReturnsError(
+        items.length > 0 && Object.keys(cached).length === 0
+          ? "未能匹配代表产品净值数据"
+          : null,
+      )
+      return
+    }
+
+    if (items.length === 0) {
+      setRowReturns({})
+      setReturnsError("没有可计算业绩的记录（需填写代表产品和尽调日期）")
+      setReturnsLoading(false)
+      setReturnsReady(true)
+      return
+    }
+
+    const controller = new AbortController()
+    performanceFetchAbortRef.current = controller
     setReturnsLoading(true)
-
-    const isPeriodFilter =
-      performanceFilter.kind === "period-up"
-      || performanceFilter.kind === "period-down"
-
-    const items = rows.flatMap((row) => {
-      const beian_hao = row.representativeProductBeianHao?.trim()
-      if (!beian_hao) return []
-      const dd_date = parseTableDate(row.ddDate)
-      if (!isPeriodFilter && !dd_date) return []
-      return [{
-        row_id: row.id,
-        beian_hao,
-        product_name: row.representativeProduct.trim() || beian_hao,
-        ...(dd_date ? { dd_date } : {}),
-      }]
-    })
+    setReturnsError(null)
+    setReturnsReady(false)
 
     void (async () => {
       try {
         const body: Record<string, unknown> = { items }
-        if (isPeriodFilter) {
-          body.period_start = performanceFilter.periodStart
-          body.period_end = performanceFilter.periodEnd
+        if (periodStart && periodEnd) {
+          body.period_start = periodStart
+          body.period_end = periodEnd
         }
         const res = await fetch("/ma/api/due-diligence-table/post-dd-returns", {
           method: "POST",
           headers: ddTableUserHeaders(),
           body: JSON.stringify(body),
+          signal: controller.signal,
         })
         const data = await res.json()
-        if (cancelled) return
+        if (controller.signal.aborted) return
         if (!res.ok || !data?.ok) throw new Error(data?.error || res.statusText)
-        setRowReturns(data.returns ?? {})
-      } catch {
-        if (!cancelled) setRowReturns({})
+        const returns = data.returns ?? {}
+        returnsCacheRef.current.set(key, returns)
+        if (returnsCacheRef.current.size > 12) {
+          const oldest = returnsCacheRef.current.keys().next().value
+          if (oldest) returnsCacheRef.current.delete(oldest)
+        }
+        setRowReturns(returns)
+        setReturnsError(
+          Object.keys(returns).length === 0 ? "未能匹配代表产品净值数据" : null,
+        )
+      } catch (err) {
+        if (controller.signal.aborted) return
+        setRowReturns({})
+        setReturnsError(err instanceof Error ? err.message : "业绩计算失败")
       } finally {
-        if (!cancelled) setReturnsLoading(false)
+        if (!controller.signal.aborted) {
+          setReturnsLoading(false)
+          setReturnsReady(true)
+        }
       }
     })()
 
     return () => {
-      cancelled = true
+      controller.abort()
     }
-  }, [rows, performanceFilter])
+  }, [performanceFetchPayload])
 
   function applyPeriodPerformanceFilter(kind: "period-up" | "period-down") {
     const periodStart = periodStartInput.trim()
@@ -1421,15 +1509,22 @@ export function DueDiligenceTableView() {
 
   // ── Filtered rows ──
 
+  const performanceFilterActive =
+    Boolean(performanceFilter)
+    && returnsReady
+    && !returnsLoading
+    && !returnsError
+    && (returnsItemCount === 0 || Object.keys(rowReturns).length > 0)
+
   const filteredRows = useMemo(() => {
     let filtered = rows.filter((row) => rowMatchesKeyword(row, keyword))
-    if (performanceFilter) {
+    if (performanceFilter && performanceFilterActive) {
       filtered = filtered.filter((row) =>
         rowMatchesPerformanceFilter(row.id, performanceFilter, rowReturns),
       )
     }
     return sortDueDiligenceTableRowsByDateAsc(filtered)
-  }, [rows, keyword, performanceFilter, rowReturns])
+  }, [rows, keyword, performanceFilter, performanceFilterActive, rowReturns])
 
   const selectedCellSet = useMemo(
     () => buildSelectionCellSet(selection, filteredRows),
@@ -2253,8 +2348,11 @@ export function DueDiligenceTableView() {
             </div>
             <span className="text-xs text-zinc-500 tabular-nums whitespace-nowrap">
               共 {filteredRows.length} 条
-              {(keyword.trim() || performanceFilter) ? ` / ${rows.length} 总计` : ""}
+              {(keyword.trim() || (performanceFilter && returnsReady && !returnsLoading))
+                ? ` / ${rows.length} 总计`
+                : ""}
               {returnsLoading ? " · 计算业绩中…" : ""}
+              {returnsError ? ` · ${returnsError}` : ""}
             </span>
           </div>
         </div>

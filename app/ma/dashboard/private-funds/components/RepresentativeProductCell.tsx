@@ -56,6 +56,8 @@ export function RepresentativeProductCell({
   onActivate: () => void
   onChange: (value: string, link?: { beianHao: string } | null) => void
 }) {
+  // Keep keystrokes local so typing doesn't re-render / persist the whole table.
+  const [draft, setDraft] = useState(value)
   const [results, setResults] = useState<FundSearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [showDropdown, setShowDropdown] = useState(false)
@@ -67,6 +69,13 @@ export function RepresentativeProductCell({
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const blurRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const draftRef = useRef(draft)
+  const valueRef = useRef(value)
+  const linkedRef = useRef(linkedBeianHao)
+
+  draftRef.current = draft
+  valueRef.current = value
+  linkedRef.current = linkedBeianHao
 
   const style: CSSProperties = {
     width: width - 4,
@@ -86,7 +95,7 @@ export function RepresentativeProductCell({
   const isLinked = Boolean(linkedBeianHao && value.trim())
   const productHref = linkedBeianHao ? privateFundProductHref(linkedBeianHao) : null
   const markerDate = parseTableDate(ddDate ?? "")
-  const query = value.trim()
+  const query = draft.trim()
   const editing = isActive || isEditing
   const shouldShowDropdown = editing && showDropdown && query.length > 0
 
@@ -101,9 +110,28 @@ export function RepresentativeProductCell({
     })
   }, [])
 
+  const commitDraft = useCallback(
+    (next: string, link?: { beianHao: string } | null) => {
+      if (link !== undefined) {
+        onChange(next, link)
+        return
+      }
+      // Text unchanged: keep existing link as-is.
+      if (next === valueRef.current) return
+      // Text edited while linked → drop the link; otherwise just save text.
+      onChange(next, linkedRef.current ? null : undefined)
+    },
+    [onChange],
+  )
+
   useEffect(() => {
     setMounted(true)
   }, [])
+
+  // Sync from parent only when not editing (avoid overwriting keystrokes).
+  useEffect(() => {
+    if (!editing) setDraft(value)
+  }, [value, editing])
 
   useEffect(() => {
     if (isActive) setIsEditing(true)
@@ -143,11 +171,7 @@ export function RepresentativeProductCell({
         )
         const json = await res.json()
         if (controller.signal.aborted) return
-        if (Array.isArray(json)) {
-          setResults(json)
-        } else {
-          setResults([])
-        }
+        setResults(Array.isArray(json) ? json : [])
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return
         setResults([])
@@ -157,7 +181,7 @@ export function RepresentativeProductCell({
           updateDropdownPos()
         }
       }
-    }, 150)
+    }, 120)
 
     return () => {
       if (searchRef.current) clearTimeout(searchRef.current)
@@ -195,31 +219,41 @@ export function RepresentativeProductCell({
   function handleFocus() {
     if (blurRef.current) clearTimeout(blurRef.current)
     setIsEditing(true)
+    setDraft(valueRef.current)
     onActivate()
   }
 
   function handleBlur() {
-    blurRef.current = setTimeout(() => setIsEditing(false), 150)
+    blurRef.current = setTimeout(() => {
+      commitDraft(draftRef.current)
+      setIsEditing(false)
+      setShowDropdown(false)
+    }, 150)
   }
 
   function handleInputChange(next: string) {
-    if (linkedBeianHao) {
-      onChange(next, null)
-      return
-    }
-    onChange(next)
+    setDraft(next)
   }
 
   function handlePick(result: FundSearchResult) {
     if (blurRef.current) clearTimeout(blurRef.current)
+    setDraft(result.product_name)
     onChange(result.product_name, { beianHao: result.beian_hao })
     setShowDropdown(false)
     setIsEditing(false)
   }
 
   function handleUnlink() {
-    onChange(value, null)
+    if (blurRef.current) clearTimeout(blurRef.current)
+    onChange(draftRef.current, null)
     setShowDropdown(false)
+  }
+
+  function handleSaveTextOnly() {
+    if (blurRef.current) clearTimeout(blurRef.current)
+    commitDraft(draftRef.current, linkedRef.current ? null : undefined)
+    setShowDropdown(false)
+    setIsEditing(false)
   }
 
   const dropdownPanel = shouldShowDropdown && dropdownPos && mounted ? (
@@ -232,14 +266,8 @@ export function RepresentativeProductCell({
         width: dropdownPos.width,
       }}
     >
-      {loading && (
-        <div className="px-3 py-2 text-xs text-zinc-500">搜索中…</div>
-      )}
-      {!loading && results.length === 0 && (
-        <div className="px-3 py-2 text-xs text-zinc-500">未找到匹配产品，可直接保存文本</div>
-      )}
-      {!loading && results.length > 0 && (
-        <ul className="max-h-52 overflow-auto py-1">
+      {results.length > 0 ? (
+        <ul className={`max-h-52 overflow-auto py-1 ${loading ? "opacity-60" : ""}`}>
           {results.map((result) => (
             <li key={result.beian_hao}>
               <button
@@ -258,6 +286,10 @@ export function RepresentativeProductCell({
             </li>
           ))}
         </ul>
+      ) : loading ? (
+        <div className="px-3 py-2 text-xs text-zinc-500">搜索中…</div>
+      ) : (
+        <div className="px-3 py-2 text-xs text-zinc-500">未找到匹配产品，可直接保存文本</div>
       )}
       {isLinked && (
         <button
@@ -274,7 +306,7 @@ export function RepresentativeProductCell({
         <button
           type="button"
           onMouseDown={(e) => e.preventDefault()}
-          onClick={() => setShowDropdown(false)}
+          onClick={handleSaveTextOnly}
           className="flex w-full items-center gap-1.5 border-t border-zinc-100 px-3 py-2 text-left text-xs text-zinc-600 hover:bg-zinc-50"
         >
           仅保存文本，不关联产品
@@ -339,7 +371,7 @@ export function RepresentativeProductCell({
             ref={inputRef}
             type="text"
             data-cell={cellId}
-            value={value}
+            value={draft}
             style={style}
             onChange={(e) => handleInputChange(e.target.value)}
             onFocus={handleFocus}

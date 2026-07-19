@@ -34,8 +34,13 @@ function parseItems(raw: unknown): PostDdReturnItem[] {
     const beian_hao = String(row.beian_hao ?? "").trim()
     const product_name = String(row.product_name ?? "").trim()
     const dd_date = parseIsoDate(row.dd_date)
-    if (!row_id || !beian_hao) continue
-    out.push({ row_id, beian_hao, product_name, dd_date })
+    if (!row_id || (!beian_hao && !product_name)) continue
+    out.push({
+      row_id,
+      ...(beian_hao ? { beian_hao } : {}),
+      product_name,
+      dd_date,
+    })
   }
   return out
 }
