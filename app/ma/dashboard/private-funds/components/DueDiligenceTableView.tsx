@@ -1018,6 +1018,7 @@ export function DueDiligenceTableView() {
   const isSavingRef = useRef(false)
   const returnsCacheRef = useRef<Map<string, Record<string, number | null>>>(new Map())
   const performanceFetchAbortRef = useRef<AbortController | null>(null)
+  const performanceFetchKeyRef = useRef<string | null>(null)
 
   // ── Snapshot / undo-redo ──
 
@@ -1412,12 +1413,13 @@ export function DueDiligenceTableView() {
     () => buildPerformanceFetchPayload(rows, performanceFilter),
     [rows, performanceFilter],
   )
+  const performanceFetchKey = performanceFetchPayload?.key ?? null
 
   useEffect(() => {
-    performanceFetchAbortRef.current?.abort()
-    performanceFetchAbortRef.current = null
-
-    if (!performanceFetchPayload) {
+    if (!performanceFetchPayload || !performanceFetchKey) {
+      performanceFetchAbortRef.current?.abort()
+      performanceFetchAbortRef.current = null
+      performanceFetchKeyRef.current = null
       setRowReturns({})
       setReturnsLoading(false)
       setReturnsError(null)
@@ -1431,6 +1433,7 @@ export function DueDiligenceTableView() {
 
     const cached = returnsCacheRef.current.get(key)
     if (cached) {
+      performanceFetchKeyRef.current = performanceFetchKey
       setRowReturns(cached)
       setReturnsLoading(false)
       setReturnsReady(true)
@@ -1441,6 +1444,16 @@ export function DueDiligenceTableView() {
       )
       return
     }
+
+    // Table auto-reload refreshes `rows` every 30s. Skip if filter inputs are unchanged
+    // so we don't abort / restart a request mid-flight.
+    if (performanceFetchKeyRef.current === performanceFetchKey) {
+      return
+    }
+
+    performanceFetchAbortRef.current?.abort()
+    performanceFetchAbortRef.current = null
+    performanceFetchKeyRef.current = performanceFetchKey
 
     if (items.length === 0) {
       setRowReturns({})
@@ -1484,6 +1497,10 @@ export function DueDiligenceTableView() {
         )
       } catch (err) {
         if (controller.signal.aborted) return
+        // Allow retrying the same filter after a failure.
+        if (performanceFetchKeyRef.current === key) {
+          performanceFetchKeyRef.current = null
+        }
         setRowReturns({})
         setReturnsError(err instanceof Error ? err.message : "业绩计算失败")
       } finally {
@@ -1495,9 +1512,11 @@ export function DueDiligenceTableView() {
     })()
 
     return () => {
-      controller.abort()
+      // Only abort when this effect instance is replaced by a different key
+      // (handled at the top of the next run). Do not abort on unrelated unmounts
+      // of the same key caused by Strict Mode remounts — use key ref instead.
     }
-  }, [performanceFetchPayload])
+  }, [performanceFetchPayload, performanceFetchKey])
 
   function applyPeriodPerformanceFilter(kind: "period-up" | "period-down") {
     const periodStart = periodStartInput.trim()
