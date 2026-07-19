@@ -1,6 +1,7 @@
 import { query } from "@/lib/db"
 import { fundNameCore } from "@/lib/server/fund-picker-search"
-import { calcReturn } from "@/lib/server/list-cache-nav-batch"
+import { loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
+import { addDays, calcReturn } from "@/lib/server/list-cache-nav-batch"
 
 export type PostDdReturnItem = {
   row_id: string
@@ -20,7 +21,6 @@ function normalizeProductName(name: string): string {
   return name.trim().split(/[、,，(（]/)[0]?.trim() ?? ""
 }
 
-/** Normalize Chinese digits so 一号 ≈ 1号 for matching. */
 function normalizeChineseDigits(name: string): string {
   return name
     .replace(/十/g, "10")
@@ -47,15 +47,40 @@ function nameVariants(name: string): string[] {
   return [...out]
 }
 
-function parseNav(raw: string | null | undefined): number | null {
-  if (raw == null) return null
-  const nav = parseFloat(raw)
-  return Number.isFinite(nav) && nav > 0 ? nav : null
+function navAtOrBefore(
+  series: Array<{ price_date: string; level: string }>,
+  date: string,
+): number | null {
+  let best: number | null = null
+  for (const row of series) {
+    const d = row.price_date.slice(0, 10)
+    if (d > date) break
+    const nav = parseFloat(row.level)
+    if (Number.isFinite(nav) && nav > 0) best = nav
+  }
+  return best
+}
+
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  async function worker() {
+    while (next < items.length) {
+      const i = next++
+      results[i] = await fn(items[i])
+    }
+  }
+  const n = Math.max(1, Math.min(concurrency, items.length))
+  await Promise.all(Array.from({ length: n }, () => worker()))
+  return results
 }
 
 /**
- * Fast 备案号 resolve: prefix match only (uses indexes), with 一号↔1号 variants.
- * Avoids full-table fuzzy JOINs that hang for minutes.
+ * Fast 备案号 resolve: prefix match + 一号↔1号 variants.
  */
 async function resolveBeianHaoBatch(productNames: string[]): Promise<Map<string, string>> {
   const names = [...new Set(productNames.map((name) => normalizeProductName(name)).filter(Boolean))]
@@ -73,26 +98,9 @@ async function resolveBeianHaoBatch(productNames: string[]): Promise<Map<string,
   }
   if (uncached.length === 0) return resolved
 
-  // One row per input with its preferred search variant (digit-normalized core first).
-  const inputs: Array<{ input_name: string; variant: string }> = []
-  for (const name of uncached) {
-    const variants = nameVariants(name)
-    // Prefer digit-normalized core: 务扬赤壁一号 → 务扬赤壁1号
-    const preferred =
-      variants.find((v) => v === normalizeChineseDigits(fundNameCore(name)))
-      ?? variants.find((v) => /[0-9]/.test(v))
-      ?? variants[0]
-    if (preferred) inputs.push({ input_name: name, variant: preferred })
-    // Also try original short form if different
-    for (const v of variants) {
-      if (v !== preferred) inputs.push({ input_name: name, variant: v })
-    }
-  }
-
-  const uniqueVariants = [...new Set(inputs.map((i) => i.variant))]
+  const uniqueVariants = [...new Set(uncached.flatMap((name) => nameVariants(name)))]
   if (uniqueVariants.length === 0) return resolved
 
-  // Indexed prefix search across product tables — one query, no full scan JOIN.
   const prefixPatterns = uniqueVariants.map((v) => `${v}%`)
   const candidates = await query<{
     beian_hao: string
@@ -148,9 +156,7 @@ async function resolveBeianHaoBatch(productNames: string[]): Promise<Map<string,
           c.short_name ? scoreCandidate(variant, c.short_name, null) : 99,
         )
         if (score >= 99) continue
-        if (!best || score < best.score) {
-          best = { beian: c.beian_hao.trim(), score }
-        }
+        if (!best || score < best.score) best = { beian: c.beian_hao.trim(), score }
       }
     }
     if (best) {
@@ -179,151 +185,80 @@ async function enrichItemsWithBeianHao(items: PostDdReturnItem[]): Promise<PostD
   })
 }
 
-type NavRequest = {
-  key: string
-  beian_hao: string
-  at_date: string
-}
-
-/** Fast NAV at-or-before date, keyed only by 备案号 (indexed). */
-async function loadNavAtOrBeforeBatch(requests: NavRequest[]): Promise<Map<string, number>> {
-  const unique = new Map<string, NavRequest>()
-  for (const req of requests) {
-    const beian = req.beian_hao.trim()
-    if (!req.key || !beian || !isIsoDate(req.at_date)) continue
-    unique.set(req.key, { ...req, beian_hao: beian })
-  }
-  const pairs = [...unique.values()]
-  const out = new Map<string, number>()
-  if (pairs.length === 0) return out
-
-  const beians = [...new Set(pairs.map((p) => p.beian_hao))]
-  const minDate = pairs.reduce((min, p) => (p.at_date < min ? p.at_date : min), pairs[0].at_date)
-  const maxDate = pairs.reduce((max, p) => (p.at_date > max ? p.at_date : max), pairs[0].at_date)
-
-  // Pull a compact NAV window for all 备案号 once, then pick points in JS.
-  const rows = await query<{
+/**
+ * Use the same merged NAV series as the hover chart (type6 + legacy + email + team).
+ * Fast type6-only lookups miss funds like 古曲祥辰1号 whose post-DD NAV only exists in the merge.
+ */
+async function loadReturnsViaFundNavSeries(
+  items: Array<{
+    row_id: string
     beian_hao: string
-    price_date: string
-    nav: string
-    pri: number
-  }>(
-    // Prefer beian_hao = ANY(...) without BTRIM so indexes can be used.
-    `SELECT beian_hao, price_date::text AS price_date, nav::text AS nav, pri
-     FROM (
-       SELECT beian_hao, price_date, nav::text AS nav, 0 AS pri
-       FROM private_fund_nav_group_type6
-       WHERE beian_hao = ANY($1::text[])
-         AND price_date >= ($2::date - INTERVAL '400 days')
-         AND price_date <= $3::date
-         AND nav IS NOT NULL AND nav > 0
-       UNION ALL
-       SELECT beian_hao, price_date,
-              COALESCE(NULLIF(cum_nav_withdrawal, 0), NULLIF(cumulative_nav, 0), NULLIF(nav, 0))::text,
-              1
-       FROM private_fund_nav_group
-       WHERE beian_hao = ANY($1::text[])
-         AND price_date >= ($2::date - INTERVAL '400 days')
-         AND price_date <= $3::date
-       UNION ALL
-       SELECT beian_hao, price_date,
-              COALESCE(NULLIF(cum_nav_withdrawal, 0), NULLIF(cumulative_nav, 0), NULLIF(nav, 0))::text,
-              2
-       FROM private_fund_nav
-       WHERE beian_hao = ANY($1::text[])
-         AND price_date >= ($2::date - INTERVAL '400 days')
-         AND price_date <= $3::date
-     ) t
-     WHERE nav IS NOT NULL
-     ORDER BY beian_hao, price_date DESC, pri ASC`,
-    [beians, minDate, maxDate],
-  ).catch((err) => {
-    console.error("[due-diligence-table-performance] platform nav", err)
-    return []
-  })
-
-  // Best NAV on-or-before each date: first matching row in DESC date order.
-  const byBeian = new Map<string, Array<{ d: string; nav: number; pri: number }>>()
-  for (const row of rows) {
-    const nav = parseNav(row.nav)
-    if (nav == null) continue
-    const beian = row.beian_hao.trim()
-    const d = row.price_date.slice(0, 10)
-    let list = byBeian.get(beian)
-    if (!list) {
-      list = []
-      byBeian.set(beian, list)
-    }
-    // Keep first (best pri) per date
-    if (list.length > 0 && list[list.length - 1].d === d) continue
-    list.push({ d, nav, pri: row.pri })
+    product_name: string
+    base_date: string
+    end_date: string
+  }>,
+): Promise<Record<string, number | null>> {
+  // Dedupe by beian so 37 rows with ~30 unique products don't reload the same series.
+  type Group = {
+    beian_hao: string
+    product_name: string
+    from: string
+    to: string
+    members: Array<{ row_id: string; base_date: string; end_date: string }>
   }
-
-  for (const req of pairs) {
-    const series = byBeian.get(req.beian_hao)
-    if (!series?.length) continue
-    // series is date DESC
-    for (const point of series) {
-      if (point.d <= req.at_date) {
-        out.set(req.key, point.nav)
-        break
-      }
+  const groups = new Map<string, Group>()
+  for (const item of items) {
+    const key = item.beian_hao
+    const existing = groups.get(key)
+    if (!existing) {
+      groups.set(key, {
+        beian_hao: item.beian_hao,
+        product_name: item.product_name,
+        from: item.base_date,
+        to: item.end_date,
+        members: [{ row_id: item.row_id, base_date: item.base_date, end_date: item.end_date }],
+      })
+      continue
     }
-  }
-
-  // Email fallback for still-missing keys
-  const missing = pairs.filter((p) => !out.has(p.key))
-  if (missing.length > 0) {
-    const emailRows = await query<{
-      beian_hao: string
-      nav_date: string
-      nav: string
-    }>(
-      `SELECT product_code AS beian_hao,
-              nav_date::text AS nav_date,
-              nav::text AS nav
-       FROM ops_email_nav_records
-       WHERE product_code = ANY($1::text[])
-         AND nav IS NOT NULL AND nav > 0
-         AND nav_date >= ($2::date - INTERVAL '400 days')
-         AND nav_date <= $3::date
-       ORDER BY product_code, nav_date DESC, id DESC`,
-      [
-        [...new Set(missing.map((m) => m.beian_hao))],
-        minDate,
-        maxDate,
-      ],
-    ).catch((err) => {
-      console.error("[due-diligence-table-performance] email nav", err)
-      return []
+    if (item.base_date < existing.from) existing.from = item.base_date
+    if (item.end_date > existing.to) existing.to = item.end_date
+    if (!existing.product_name && item.product_name) existing.product_name = item.product_name
+    existing.members.push({
+      row_id: item.row_id,
+      base_date: item.base_date,
+      end_date: item.end_date,
     })
-
-    const emailByBeian = new Map<string, Array<{ d: string; nav: number }>>()
-    for (const row of emailRows) {
-      const nav = parseNav(row.nav)
-      if (nav == null) continue
-      const beian = row.beian_hao.trim()
-      const d = row.nav_date.slice(0, 10)
-      let list = emailByBeian.get(beian)
-      if (!list) {
-        list = []
-        emailByBeian.set(beian, list)
-      }
-      if (list.length > 0 && list[list.length - 1].d === d) continue
-      list.push({ d, nav })
-    }
-
-    for (const req of missing) {
-      const series = emailByBeian.get(req.beian_hao)
-      if (!series?.length) continue
-      for (const point of series) {
-        if (point.d <= req.at_date) {
-          out.set(req.key, point.nav)
-          break
-        }
-      }
-    }
   }
+
+  const out: Record<string, number | null> = {}
+  const groupList = [...groups.values()]
+
+  await mapPool(groupList, 6, async (group) => {
+    try {
+      const names = await resolveFundNames(group.beian_hao, group.product_name)
+      // Pad lookback so "NAV on or before base date" has a nearby point.
+      const from = addDays(group.from, 60)
+      const to = group.to
+      const series = await loadFundNavSeries(
+        group.beian_hao,
+        names.product_name,
+        names.short_name ?? "",
+        { from, to },
+      )
+      // series is ascending by date
+      for (const member of group.members) {
+        const baseNav = navAtOrBefore(series, member.base_date)
+        const endNav = navAtOrBefore(series, member.end_date)
+        out[member.row_id] = endNav != null ? calcReturn(endNav, baseNav) : null
+      }
+    } catch (err) {
+      console.error(
+        `[due-diligence-table-performance] nav series ${group.beian_hao}`,
+        err,
+      )
+      for (const member of group.members) out[member.row_id] = null
+    }
+  })
 
   return out
 }
@@ -342,54 +277,50 @@ export async function computePostDdReturns(
     && periodStart <= periodEnd
 
   const enrichedItems = await enrichItemsWithBeianHao(items)
-  const validItems = enrichedItems.filter((item) => {
-    if (!item.row_id.trim() || !item.beian_hao?.trim()) return false
-    if (usePeriodRange) return true
-    return isIsoDate(item.dd_date)
-  })
-  if (validItems.length === 0) {
+  const workItems: Array<{
+    row_id: string
+    beian_hao: string
+    product_name: string
+    base_date: string
+    end_date: string
+  }> = []
+
+  for (const item of enrichedItems) {
+    const beian = item.beian_hao?.trim()
+    if (!item.row_id.trim() || !beian) continue
+    const baseDate = usePeriodRange ? periodStart : item.dd_date
+    if (!isIsoDate(baseDate)) continue
+    let endDate = usePeriodRange ? periodEnd : asOfDate
+    if (!isIsoDate(endDate)) continue
+    if (endDate > asOfDate) endDate = asOfDate
+    if (baseDate > endDate) continue
+    workItems.push({
+      row_id: item.row_id,
+      beian_hao: beian,
+      product_name: normalizeProductName(item.product_name) || beian,
+      base_date: baseDate,
+      end_date: endDate,
+    })
+  }
+
+  if (workItems.length === 0) {
     console.log(
       `[post-dd-returns] 0 valid of ${items.length} (resolved ${enrichedItems.filter((i) => i.beian_hao).length}) in ${Date.now() - t0}ms`,
     )
     return {}
   }
 
-  const navRequests: NavRequest[] = []
-  for (const item of validItems) {
-    const beian = item.beian_hao!.trim()
-    const baseDate = usePeriodRange ? periodStart : item.dd_date!
-    let endDate = usePeriodRange ? periodEnd : asOfDate
-    if (endDate > asOfDate) endDate = asOfDate
-    if (baseDate > endDate) continue
-    navRequests.push({ key: `${item.row_id}|base`, beian_hao: beian, at_date: baseDate })
-    navRequests.push({ key: `${item.row_id}|end`, beian_hao: beian, at_date: endDate })
-  }
-
-  const navMap = await loadNavAtOrBeforeBatch(navRequests)
-  const out: Record<string, number | null> = {}
+  const out = await loadReturnsViaFundNavSeries(workItems)
   let matched = 0
   let up = 0
-
-  for (const item of validItems) {
-    const baseDate = usePeriodRange ? periodStart : item.dd_date!
-    let endDate = usePeriodRange ? periodEnd : asOfDate
-    if (endDate > asOfDate) endDate = asOfDate
-    if (baseDate > endDate) {
-      out[item.row_id] = null
-      continue
-    }
-    const baseNav = navMap.get(`${item.row_id}|base`) ?? null
-    const endNav = navMap.get(`${item.row_id}|end`) ?? null
-    const ret = endNav != null ? calcReturn(endNav, baseNav) : null
-    out[item.row_id] = ret
-    if (ret != null) {
-      matched += 1
-      if (ret > 0) up += 1
-    }
+  for (const ret of Object.values(out)) {
+    if (ret == null) continue
+    matched += 1
+    if (ret > 0) up += 1
   }
 
   console.log(
-    `[post-dd-returns] items=${validItems.length} matched=${matched} up=${up} ${Date.now() - t0}ms`,
+    `[post-dd-returns] items=${workItems.length} unique=${new Set(workItems.map((i) => i.beian_hao)).size} matched=${matched} up=${up} ${Date.now() - t0}ms`,
   )
   return out
 }

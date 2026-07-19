@@ -948,7 +948,7 @@ function buildPerformanceFetchPayload(
 
   return {
     // Bump version when server matching logic changes so stale client caches are ignored.
-    key: JSON.stringify({ v: 3, filter, items }),
+    key: JSON.stringify({ v: 4, filter, items }),
     items,
     ...(isPeriodFilter
       ? { periodStart: filter.periodStart, periodEnd: filter.periodEnd }
