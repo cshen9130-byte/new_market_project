@@ -948,7 +948,7 @@ function buildPerformanceFetchPayload(
 
   return {
     // Bump version when server matching logic changes so stale client caches are ignored.
-    key: JSON.stringify({ v: 2, filter, items }),
+    key: JSON.stringify({ v: 3, filter, items }),
     items,
     ...(isPeriodFilter
       ? { periodStart: filter.periodStart, periodEnd: filter.periodEnd }
@@ -1467,6 +1467,7 @@ export function DueDiligenceTableView() {
 
     const controller = new AbortController()
     performanceFetchAbortRef.current = controller
+    const timeoutId = window.setTimeout(() => controller.abort(), 45_000)
     setReturnsLoading(true)
     setReturnsError(null)
     setReturnsReady(false)
@@ -1498,7 +1499,17 @@ export function DueDiligenceTableView() {
           Object.keys(returns).length === 0 ? "未能匹配代表产品净值数据" : null,
         )
       } catch (err) {
-        if (controller.signal.aborted) return
+        if (controller.signal.aborted) {
+          // Distinguish timeout vs intentional cancel of a superseded request.
+          if (performanceFetchKeyRef.current === key) {
+            performanceFetchKeyRef.current = null
+            setRowReturns({})
+            setReturnsError("业绩计算超时，请重试")
+            setReturnsLoading(false)
+            setReturnsReady(true)
+          }
+          return
+        }
         // Allow retrying the same filter after a failure.
         if (performanceFetchKeyRef.current === key) {
           performanceFetchKeyRef.current = null
@@ -1506,6 +1517,7 @@ export function DueDiligenceTableView() {
         setRowReturns({})
         setReturnsError(err instanceof Error ? err.message : "业绩计算失败")
       } finally {
+        window.clearTimeout(timeoutId)
         if (!controller.signal.aborted) {
           setReturnsLoading(false)
           setReturnsReady(true)
