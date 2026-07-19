@@ -22,6 +22,7 @@ import {
   Expand,
   Filter,
   Italic,
+  Loader2,
   Maximize2,
   Minimize2,
   Pencil,
@@ -946,7 +947,8 @@ function buildPerformanceFetchPayload(
   }).sort((a, b) => a.row_id.localeCompare(b.row_id))
 
   return {
-    key: JSON.stringify({ filter, items }),
+    // Bump version when server matching logic changes so stale client caches are ignored.
+    key: JSON.stringify({ v: 2, filter, items }),
     items,
     ...(isPeriodFilter
       ? { periodStart: filter.periodStart, periodEnd: filter.periodEnd }
@@ -2262,9 +2264,10 @@ export function DueDiligenceTableView() {
                       : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50",
                   ].join(" ")}
                 >
-                  <Filter className="h-3.5 w-3.5" />
+                  {returnsLoading
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <Filter className="h-3.5 w-3.5" />}
                   {performanceFilter ? performanceFilterLabel(performanceFilter) : "业绩筛选"}
-                  {returnsLoading && <span className="text-zinc-400">…</span>}
                   <ChevronDown className="h-3 w-3 opacity-60" />
                 </button>
               </DropdownMenuTrigger>
@@ -2370,11 +2373,44 @@ export function DueDiligenceTableView() {
               {(keyword.trim() || (performanceFilter && returnsReady && !returnsLoading))
                 ? ` / ${rows.length} 总计`
                 : ""}
-              {returnsLoading ? " · 计算业绩中…" : ""}
               {returnsError ? ` · ${returnsError}` : ""}
             </span>
           </div>
         </div>
+
+        {returnsLoading && (
+          <div className="mt-2 flex items-center gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-amber-600" />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-2 text-xs font-medium text-amber-800">
+                <span>
+                  正在计算业绩筛选…
+                  {returnsItemCount > 0 ? `（${returnsItemCount} 条产品）` : ""}
+                </span>
+                <span className="shrink-0 font-normal text-amber-600/80">请稍候</span>
+              </div>
+              <div className="relative mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-amber-100">
+                <div
+                  className="absolute inset-y-0 w-2/5 rounded-full bg-amber-500"
+                  style={{
+                    animation: "dd-perf-indet 1.1s ease-in-out infinite",
+                  }}
+                />
+              </div>
+              <style>{`
+                @keyframes dd-perf-indet {
+                  0% { left: -40%; }
+                  100% { left: 100%; }
+                }
+              `}</style>
+            </div>
+          </div>
+        )}
+        {returnsError && performanceFilter && !returnsLoading && (
+          <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            {returnsError}
+          </div>
+        )}
       </div>
 
       {/* ── Formatting toolbar (Excel-like) ── */}
