@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, Suspense, type CSSPr
 import { createPortal } from "react-dom"
 import { useSearchParams, useRouter } from "next/navigation"
 import Link from "next/link"
-import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info } from "lucide-react"
+import { LineChart, Heart, Send, ChevronUp, ChevronDown, ChevronsUpDown, ChevronRight, Search, CalendarDays, LayoutTemplate, PlusCircle, Download, RefreshCw, Settings2, ClipboardList, FileSearch, Tag, Layers, StickyNote, BarChart2, Star, MinusCircle, Briefcase, Inbox, Database, Key, TrendingUp, Filter, Pencil, Trash2, Eye, EyeOff, FileText, CircleCheck, CircleX, HandCoins, Info, MoreVertical } from "lucide-react"
 import { deletePortfolio, loadLocalPortfolioRows, sortPortfolioRows } from "@/lib/ma-portfolio-storage"
 import { AddMyTrackingDialog } from "@/components/ma/add-my-tracking-dialog"
 import { AddToTrackingButton } from "@/components/ma/add-to-tracking-button"
@@ -10559,9 +10559,10 @@ function InvestmentManagedProductRowMenu({
       <button
         type="button"
         onClick={handleToggle}
-        className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors text-base leading-none tracking-widest"
+        aria-label="更多操作"
+        className="inline-flex shrink-0 items-center justify-center p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
       >
-        ···
+        <MoreVertical className="h-3.5 w-3.5" />
       </button>
       {mounted && open && pos && createPortal(
         <>
@@ -17115,12 +17116,13 @@ function InvestmentManagedProductsView() {
   const invStickyLeftShadow = "shadow-[4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[4px_0_8px_-4px_rgba(0,0,0,0.35)]"
   const invStickyRightShadow = "shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.08)] dark:shadow-[-4px_0_8px_-4px_rgba(0,0,0,0.35)]"
   const invStickyRightColW = 64
-  const invStickyRight = { ops: 0, docs: invStickyRightColW, trend: invStickyRightColW * 2 }
-  const invStickyRightColStyle = (right: number): CSSProperties => ({
+  const invStickyOpsColW = 88
+  const invStickyRight = { ops: 0, docs: invStickyOpsColW, trend: invStickyOpsColW + invStickyRightColW }
+  const invStickyRightColStyle = (right: number, width = invStickyRightColW): CSSProperties => ({
     right,
-    width: invStickyRightColW,
-    minWidth: invStickyRightColW,
-    maxWidth: invStickyRightColW,
+    width,
+    minWidth: width,
+    maxWidth: width,
   })
   const invStickyRightTh = `sticky top-0 ${invStickyHeadZ} ${invStickyHeadBg} text-center text-xs font-semibold text-zinc-500 dark:text-zinc-400 whitespace-nowrap select-none px-2 py-3 overflow-hidden`
   const invStickyRightTd = `sticky ${invStickyBodyZ} text-center px-2 overflow-hidden box-border`
@@ -17476,7 +17478,7 @@ function InvestmentManagedProductsView() {
               ))}
               <th style={invStickyRightColStyle(invStickyRight.trend)} className={`${invStickyRightTh} border-l border-zinc-200 dark:border-zinc-700 ${invStickyRightShadow}`}>走势</th>
               <th style={invStickyRightColStyle(invStickyRight.docs)} className={invStickyRightTh}>资料</th>
-              <th style={invStickyRightColStyle(invStickyRight.ops)} className={invStickyRightTh}>操作</th>
+              <th style={invStickyRightColStyle(invStickyRight.ops, invStickyOpsColW)} className={invStickyRightTh}>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -17584,9 +17586,13 @@ function InvestmentManagedProductsView() {
                         </div>
                       </td>
                       <td style={invStickyRightColStyle(invStickyRight.docs)} className={stickyRightDocs}>—</td>
-                      <td style={invStickyRightColStyle(invStickyRight.ops)} className={stickyRightOps}>
-                        <div className="flex items-center justify-center gap-1">
-                          {row.beian_hao && <ValuationAnalysisButton beian_hao={row.beian_hao} />}
+                      <td style={invStickyRightColStyle(invStickyRight.ops, invStickyOpsColW)} className={stickyRightOps}>
+                        <div className="flex items-center justify-center gap-0.5">
+                          {row.beian_hao && (
+                            <span className="inline-flex shrink-0">
+                              <ValuationAnalysisButton beian_hao={row.beian_hao} />
+                            </span>
+                          )}
                           <InvestmentManagedProductRowMenu
                             onQueryElements={() => openInvElementsDialog(row.beian_hao, row.product_name)}
                             onEditTags={() => openInvTagDialog(row.beian_hao, row.product_name)}
@@ -17613,7 +17619,7 @@ function InvestmentManagedProductsView() {
                   ))}
                   <td style={invStickyRightColStyle(invStickyRight.trend)} className={`border-b py-2 ${invStickyBodyZ} bg-muted border-l border-zinc-200 dark:border-zinc-700 ${invStickyRightShadow}`} />
                   <td style={invStickyRightColStyle(invStickyRight.docs)} className={`border-b py-2 ${invStickyBodyZ} bg-muted`} />
-                  <td style={invStickyRightColStyle(invStickyRight.ops)} className={`border-b py-2 ${invStickyBodyZ} bg-muted`} />
+                  <td style={invStickyRightColStyle(invStickyRight.ops, invStickyOpsColW)} className={`border-b py-2 ${invStickyBodyZ} bg-muted`} />
                 </tr>
               </>
             )}
@@ -18690,7 +18696,7 @@ function InvestmentFofOverviewView() {
   const fofStickyLeftSeq = fofStickyChkW
   const fofStickyLeftName = fofStickyChkW + fofStickySeqW
   const fofStickyRightColW = 64
-  const fofStickyOpsColW = 80
+  const fofStickyOpsColW = 96
   const fofStickyRight = { ops: 0, docs: fofStickyOpsColW, trend: fofStickyOpsColW + fofStickyRightColW }
   const fofStickyRightColStyle = (right: number, width = fofStickyRightColW): CSSProperties => ({
     right,
@@ -19320,11 +19326,11 @@ function InvestmentFofOverviewView() {
                       <td style={fofStickyRightColStyle(fofStickyRight.docs)} className={stickyRightDocs}>—</td>
                       <td style={fofStickyRightColStyle(fofStickyRight.ops, fofStickyOpsColW)} className={stickyRightOps}>
                         <div className="flex items-center justify-center gap-0.5">
-                          <div className="relative group/holdings">
+                          <div className="relative group/holdings shrink-0">
                             <button
                               type="button"
                               onClick={() => openFofHoldingsDialog(row.beian_hao, row.product_name)}
-                              className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
+                              className="inline-flex items-center justify-center p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors"
                             >
                               <HandCoins className="h-3.5 w-3.5" />
                             </button>
@@ -19337,7 +19343,7 @@ function InvestmentFofOverviewView() {
                             type="button"
                             disabled={!row.beian_hao}
                             onClick={() => openFofElementsDialog(row.beian_hao, row.product_name)}
-                            className="p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            className="inline-flex shrink-0 items-center justify-center p-1 rounded hover:bg-muted/60 text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             <FileSearch className="h-3.5 w-3.5" />
                           </button>
