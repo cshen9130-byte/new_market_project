@@ -16,21 +16,10 @@
  *   npx tsx scripts/ma/precompute_valuation_cache.ts [--limit=N] [--beian=XXX]
  */
 
-import { loadProjectEnvFiles } from "@/lib/server/load-project-env"
+import { ensureScriptDatabaseEnv, loadProjectEnvFiles } from "@/lib/server/load-project-env"
 
+ensureScriptDatabaseEnv()
 loadProjectEnvFiles()
-
-import { query } from "@/lib/db"
-import {
-  ensureValuationCacheTable,
-  writeValuationCache,
-} from "@/lib/server/valuation-precomputed-cache"
-import {
-  getFundValuationAllocation,
-  getFundValuationTrendAnalysis,
-} from "@/lib/server/fund-valuation-allocation"
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function subtractOneYear(dateStr: string): string {
   const d = new Date(`${dateStr}T12:00:00`)
@@ -53,14 +42,18 @@ function parseArgs(argv: string[]): { limit: number | null; beian: string | null
   return { limit, beian }
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
-
 async function main(): Promise<void> {
+  const { query } = await import("@/lib/db")
+  const { ensureValuationCacheTable, writeValuationCache } = await import(
+    "@/lib/server/valuation-precomputed-cache"
+  )
+  const { getFundValuationAllocation, getFundValuationTrendAnalysis } = await import(
+    "@/lib/server/fund-valuation-allocation"
+  )
+
   const { limit, beian: targetBeian } = parseArgs(process.argv.slice(2))
   await ensureValuationCacheTable()
 
-  // Collect all funds with at least one 估值表 record.
-  // We join managed_products to get the canonical beian_hao used in the URL.
   const fundRows = await query<{
     beian_hao: string
     valuation_date: string
@@ -75,7 +68,6 @@ async function main(): Promise<void> {
      WHERE COALESCE(mp.beian_hao, m.product_code) IS NOT NULL
      ORDER BY beian_hao`,
   ).catch(async () => {
-    // Fallback: managed_products may not exist; use metrics table directly
     return query<{ beian_hao: string; valuation_date: string }>(
       `SELECT DISTINCT
           product_code AS beian_hao,
@@ -112,7 +104,6 @@ async function main(): Promise<void> {
     }
     const fromDate = subtractOneYear(toDate)
 
-    // ── 1. Snapshot ──────────────────────────────────────────────────────────
     try {
       const snapshot = await getFundValuationAllocation(beian_hao, "major")
       await writeValuationCache(beian_hao, "snapshot", snapshot)
@@ -124,7 +115,6 @@ async function main(): Promise<void> {
       continue
     }
 
-    // ── 2. Trend analysis (1-year window) ────────────────────────────────────
     try {
       const trend = await getFundValuationTrendAnalysis(beian_hao, fromDate, toDate)
       await writeValuationCache(beian_hao, "trend", trend, { fromDate, toDate })
@@ -132,10 +122,8 @@ async function main(): Promise<void> {
       const msg = err instanceof Error ? err.message : String(err)
       console.error(`[precompute_valuation_cache] trend ${beian_hao}: ${msg}`)
       errors.push(`trend:${beian_hao}: ${msg}`)
-      // Non-fatal — snapshot was written; continue to curves
     }
 
-    // ── 3. Return curves (1-year window, FOF only) ───────────────────────────
     try {
       const withCurves = await getFundValuationAllocation(beian_hao, "major", {
         includeReturnCurves: true,
@@ -152,24 +140,20 @@ async function main(): Promise<void> {
       const msg = err instanceof Error ? err.message : String(err)
       console.error(`[precompute_valuation_cache] curves ${beian_hao}: ${msg}`)
       errors.push(`curves:${beian_hao}: ${msg}`)
-      // Non-fatal
     }
 
     ok++
     console.error(`[precompute_valuation_cache] ✓ ${beian_hao} (${toDate})`)
   }
 
-  const result = {
+  console.log(JSON.stringify({
     ok,
     failed,
     skipped,
     total: funds.length,
     errorCount: errors.length,
     errors: errors.slice(0, 20),
-  }
-
-  // Print JSON for nightly_etl.py to consume
-  console.log(JSON.stringify(result))
+  }))
 }
 
 main().catch((e) => {

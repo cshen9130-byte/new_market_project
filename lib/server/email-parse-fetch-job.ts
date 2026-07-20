@@ -217,6 +217,28 @@ export function startEmailParseFetchJob(options?: {
             `刷新在管产品列表缓存失败: ${e instanceof Error ? e.message : String(e)}`,
           )
         }
+
+        if (result.valuationSaved > 0 && result.touchedFunds.length > 0) {
+          if (abort.signal.aborted) {
+            throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+          }
+          job.message = "正在同步估值表页面缓存…"
+          try {
+            const { refreshValuationPipelineForTouchedFunds } = await import(
+              "@/lib/server/valuation-cache-refresh"
+            )
+            const valuationSync = await refreshValuationPipelineForTouchedFunds(result.touchedFunds)
+            console.log(
+              `[email-parse-fetch-job] valuation cache sync touched=${valuationSync.cacheInvalidated}` +
+                ` metrics=${valuationSync.metricsUpserted}`,
+            )
+          } catch (e) {
+            if (isAbortError(e)) throw e
+            result.errors.push(
+              `同步估值表页面缓存失败: ${e instanceof Error ? e.message : String(e)}`,
+            )
+          }
+        }
       } else {
         job.message = "正在刷新在管产品指标…"
         try {

@@ -11,9 +11,9 @@ export async function register() {
     })
 
     // Every 2 hours: light incremental fetch (last 1 day of mail only).
-    // Upserts NAV/估值表, syncs 邮箱运维池, patches touched tracking rows +
-    // rebuilds 在管产品 list cache. Skips full FOF/tracking/metrics rebuilds
-    // (those stay on nightly ETL).
+    // Upserts NAV/估值表, syncs 邮箱运维池, patches touched tracking rows,
+    // rebuilds 在管产品 list cache, and refreshes 估值表 page cache for touched funds.
+    // Full FOF/tracking/metrics rebuilds stay on nightly ETL.
     // Defers or aborts when users are browsing/uploading so the site stays responsive.
     cron.schedule("0 */2 * * *", () => {
       void (async () => {

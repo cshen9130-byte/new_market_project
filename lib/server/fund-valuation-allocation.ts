@@ -34,7 +34,10 @@ import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/li
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { lookupManagedProductOverride, lookupManagedProductCustodian, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
-import { readValuationCache } from "@/lib/server/valuation-precomputed-cache"
+import {
+  cacheFreshValuationSnapshot,
+  readValuationCacheIfFresh,
+} from "@/lib/server/valuation-cache-refresh"
 
 export type AllocationMode = "major" | "all"
 
@@ -1737,7 +1740,7 @@ export async function getFundValuationAllocation(
   // ── Serve from pre-computed cache when possible ───────────────────────────
   if (mode === "major") {
     if (!includeReturnCurves) {
-      const cached = await readValuationCache<FundValuationAllocationResult>(
+      const cached = await readValuationCacheIfFresh<FundValuationAllocationResult>(
         rawBeianHao,
         "snapshot",
       )
@@ -1745,8 +1748,8 @@ export async function getFundValuationAllocation(
     } else if (curvesFrom && curvesTo) {
       // Curves request: try combining cached snapshot + cached curves
       const [snapshot, curves] = await Promise.all([
-        readValuationCache<FundValuationAllocationResult>(rawBeianHao, "snapshot"),
-        readValuationCache<ReturnCurveSeries[]>(rawBeianHao, "curves", {
+        readValuationCacheIfFresh<FundValuationAllocationResult>(rawBeianHao, "snapshot"),
+        readValuationCacheIfFresh<ReturnCurveSeries[]>(rawBeianHao, "curves", {
           fromDate: curvesFrom,
           toDate: curvesTo,
         }),
@@ -1947,7 +1950,7 @@ export async function getFundValuationAllocation(
     ? (resolveValuationCustodian(metrics.custodian) ?? normalizeRegistrationCustodian(metrics.custodian))
     : null
 
-  return {
+  const result = {
     beian_hao,
     product_name: product_name ?? fundMeta.product_name ?? lookupManagedProductOverride(beian_hao)?.product_name ?? null,
     product_code: matchedCode,
@@ -1991,6 +1994,12 @@ export async function getFundValuationAllocation(
       || derivatives.length > 0,
     match_method,
   }
+
+  if (mode === "major" && !includeReturnCurves && result.has_data) {
+    void cacheFreshValuationSnapshot(rawBeianHao, result)
+  }
+
+  return result
 }
 
 export type AllocationTrendSeries = {
@@ -2847,7 +2856,7 @@ export async function getFundValuationTrendAnalysis(
 ): Promise<ValuationTrendAnalysisResult> {
   // ── Serve from pre-computed cache when possible ───────────────────────────
   if (mode === "major") {
-    const cached = await readValuationCache<ValuationTrendAnalysisResult>(
+    const cached = await readValuationCacheIfFresh<ValuationTrendAnalysisResult>(
       rawBeianHao,
       "trend",
       { fromDate, toDate },
