@@ -20,9 +20,12 @@ const nextConfig = {
   outputFileTracingRoot: process.cwd(),
   webpack: (config) => {
     if (isLowMemBuild) {
-      // Cap concurrent module builds so parent + jest-worker fit in ~3.4 GiB RAM.
-      // Keep the default filesystem cache — disabling it made builds feel "stuck".
+      // Cap concurrent module builds so peak RSS fits a ~3.4 GiB host.
       config.parallelism = 1
+      // Keep disk cache for speed, but do not retain cache generations in RAM.
+      if (config.cache && typeof config.cache === "object") {
+        config.cache.maxMemoryGenerations = 0
+      }
     }
     return config
   },

@@ -230,13 +230,14 @@ auto_tune_build_settings() {
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # On ~3.4 GiB hosts, 1024 MB heap OOMs but 1536 MB is enough headroom (~3 min builds).
-  # Do not jump to 2048 — that thrashes swap and makes webpack sit silent for 10+ min.
+  # On ~3.4 GiB hosts: 1024 MB hits V8 OOM, 1536 MB lets RSS fill physical RAM
+  # (Available→~90Mi) while 8G swap sits idle — build looks "stuck". 1280 MB is the
+  # middle ground: enough heap to finish, enough headroom for native/webpack RSS.
   if [[ "$BUILD_MEMORY_USER_SET" == "0" && -n "$mem_total_kb" ]]; then
     if   [[ "$mem_total_kb" -ge 6000000 ]]; then
       BUILD_MEMORY_MB="2048"
     elif [[ "$mem_total_kb" -ge 3000000 ]]; then
-      BUILD_MEMORY_MB="1536"
+      BUILD_MEMORY_MB="1280"
     fi
   fi
 
@@ -282,6 +283,13 @@ run_next_build() {
   fi
   # Clear any inherited NODE_OPTIONS so jest-worker children do not each get a 1.5G heap.
   unset NODE_OPTIONS
+  # Prefer paging to the existing 8G swap before Available collapses to <100Mi
+  # (that state makes webpack look frozen even while CPU is high).
+  sysctl -w vm.swappiness=80 >/dev/null 2>&1 || true
+  sync
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+  echo "Memory immediately before next build:"
+  free -h || true
   FORCE_COLOR=0 MALLOC_ARENA_MAX=1 UV_THREADPOOL_SIZE=1 \
   CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 \
   node --max-old-space-size="${BUILD_MEMORY_MB}" "$next_bin" build --webpack
