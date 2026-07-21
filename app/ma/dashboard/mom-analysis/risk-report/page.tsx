@@ -7255,6 +7255,19 @@ const BRIEFING_CAPTURE_LIGHT_MODE_CSS = `
 `
 
 export default function RiskReportNewPage() {
+  // The module-level fetch caches above exist to dedupe concurrent requests for
+  // the same endpoint across the many chart components mounted on one visit.
+  // They must NOT survive across visits — otherwise re-entering this page after
+  // running the ETL on another page (client-side nav, no full reload) would keep
+  // serving pre-ETL data forever. Clear them once per fresh mount, synchronously
+  // during render so it happens before any child's mount-time fetch.
+  const cacheResetRef = useRef(false)
+  if (!cacheResetRef.current) {
+    jsonResponseCache.clear()
+    inflightJsonRequests.clear()
+    cacheResetRef.current = true
+  }
+
   const [activeTab, setActiveTab] = useState<TabKey>("overview")
   const activeItem = subNavItems.find((i) => i.key === activeTab)!
 
