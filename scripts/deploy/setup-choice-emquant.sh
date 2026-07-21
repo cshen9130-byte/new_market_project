@@ -230,14 +230,16 @@ auto_tune_build_settings() {
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # On ~3.4 GiB hosts: 1024 MB hits V8 OOM, 1536 MB lets RSS fill physical RAM
-  # (Available→~90Mi) while 8G swap sits idle — build looks "stuck". 1280 MB is the
-  # middle ground: enough heap to finish, enough headroom for native/webpack RSS.
+  # On ~3.4 GiB hosts the build's V8 heap genuinely needs >1280 MB (1024/1280 both
+  # hit "heap out of memory" while RAM+swap were still free). 1536 avoided the V8
+  # OOM but let RSS fill physical RAM with swap idle, so it looked stuck. Use 2048
+  # here and rely on swap (see run_next_build: swappiness bumped) to absorb the RSS
+  # overflow — slower than the old 3 min, but it completes instead of crashing.
   if [[ "$BUILD_MEMORY_USER_SET" == "0" && -n "$mem_total_kb" ]]; then
     if   [[ "$mem_total_kb" -ge 6000000 ]]; then
-      BUILD_MEMORY_MB="2048"
+      BUILD_MEMORY_MB="3072"
     elif [[ "$mem_total_kb" -ge 3000000 ]]; then
-      BUILD_MEMORY_MB="1280"
+      BUILD_MEMORY_MB="2048"
     fi
   fi
 
@@ -281,15 +283,19 @@ run_next_build() {
   if [[ ! -f "$next_bin" ]]; then
     next_bin="$PROJECT_ROOT/node_modules/.bin/next"
   fi
-  # Clear any inherited NODE_OPTIONS so jest-worker children do not each get a 1.5G heap.
+  # Clear any inherited NODE_OPTIONS so jest-worker children do not each get a big heap.
   unset NODE_OPTIONS
-  # Prefer paging to the existing 8G swap before Available collapses to <100Mi
-  # (that state makes webpack look frozen even while CPU is high).
-  sysctl -w vm.swappiness=80 >/dev/null 2>&1 || true
+  # A 2G+ V8 heap on a 3.4G box will exceed physical RAM; page the overflow to the
+  # existing swap aggressively instead of letting Available collapse to <100Mi (which
+  # makes webpack look frozen even while CPU is high). Also raise the OverCommit so
+  # large sparse allocations succeed and get backed by swap on demand.
+  sysctl -w vm.swappiness=100 >/dev/null 2>&1 || true
+  sysctl -w vm.overcommit_memory=1 >/dev/null 2>&1 || true
   sync
   echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
   echo "Memory immediately before next build:"
   free -h || true
+  swapon --show || true
   FORCE_COLOR=0 MALLOC_ARENA_MAX=1 UV_THREADPOOL_SIZE=1 \
   CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 \
   node --max-old-space-size="${BUILD_MEMORY_MB}" "$next_bin" build --webpack

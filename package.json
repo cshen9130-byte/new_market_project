@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "build": "next build",
-    "build:lowmem": "NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 node --max-old-space-size=1280 node_modules/next/dist/bin/next build --webpack",
+    "build:lowmem": "NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 node --max-old-space-size=2048 node_modules/next/dist/bin/next build --webpack",
     "dev": "next dev",
     "lint": "eslint .",
     "start": "next start",
