@@ -1355,7 +1355,15 @@ def ensure_tables(conn) -> None:
     conn.commit()
 
 
-def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[datetime, int]]:
+def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[datetime, int, str, int]]:
+    """Return per-file processing state keyed by relative path.
+
+    Value tuple is (mtime, size, status, ingested_rows) where ingested_rows is
+    the total number of rows written across every detail/position/report table
+    for that file. This lets the change detector re-process files that either
+    failed or produced no data on a previous run, instead of skipping them
+    forever just because their mtime/size are unchanged.
+    """
     rels = [str(p.relative_to(base_dir)).replace("\\", "/") for p in files]
     if not rels:
         return {}
@@ -1363,7 +1371,12 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT source_file_rel, source_mtime, source_size
+            SELECT source_file_rel, source_mtime, source_size, status,
+                   (COALESCE(row_count, 0) + COALESCE(futures_row_count, 0)
+                    + COALESCE(options_row_count, 0) + COALESCE(close_row_count, 0)
+                    + COALESCE(position_row_count, 0) + COALESCE(options_position_row_count, 0)
+                    + COALESCE(futures_position_row_count, 0) + COALESCE(order_row_count, 0)
+                    + COALESCE(summary_row_count, 0) + COALESCE(daily_report_count, 0)) AS ingested_rows
             FROM mom_trade_detail_file_state
             WHERE source_file_rel = ANY(%s)
             """,
@@ -1371,9 +1384,9 @@ def load_file_state(conn, files: List[Path], base_dir: Path) -> Dict[str, Tuple[
         )
         rows = cur.fetchall()
 
-    state: Dict[str, Tuple[datetime, int]] = {}
-    for file_rel, mtime, size in rows:
-        state[file_rel] = (mtime, int(size))
+    state: Dict[str, Tuple[datetime, int, str, int]] = {}
+    for file_rel, mtime, size, status, ingested_rows in rows:
+        state[file_rel] = (mtime, int(size), status or "", int(ingested_rows or 0))
     return state
 
 
@@ -1931,8 +1944,17 @@ def run(base_dir: Path, reset: bool = False, skip_market_data: bool = False, ski
             if not old:
                 changed.append(p)
                 continue
-            old_mtime, old_size = old
-            if int(old_mtime.timestamp()) != int(mtime_dt.timestamp()) or int(old_size) != size:
+            old_mtime, old_size, old_status, old_rows = old
+            file_changed = (
+                int(old_mtime.timestamp()) != int(mtime_dt.timestamp())
+                or int(old_size) != size
+            )
+            # Retry files that never succeeded (status != 'ok') or that were
+            # marked ok yet ingested zero rows — those earlier runs left nothing
+            # in the DB, so skipping them on mtime/size match would hide the file
+            # (and its trade date) from every downstream chart forever.
+            needs_retry = old_status != "ok" or old_rows == 0
+            if file_changed or needs_retry:
                 changed.append(p)
 
         ok_count = 0
