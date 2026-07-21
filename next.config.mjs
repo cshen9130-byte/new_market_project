@@ -18,6 +18,14 @@ const nextConfig = {
   },
   // Constrain output tracing to the workspace root
   outputFileTracingRoot: process.cwd(),
+  webpack: (config) => {
+    if (isLowMemBuild) {
+      // Cap concurrent module builds so parent + jest-worker fit in ~3.4 GiB RAM.
+      // Keep the default filesystem cache — disabling it made builds feel "stuck".
+      config.parallelism = 1
+    }
+    return config
+  },
 }
 
 export default nextConfig

@@ -268,7 +268,24 @@ monitor_build_progress() {
 
 # Install node deps and build with low memory
 # Use --no-frozen-lockfile to avoid failures when package.json changes but lockfile is not yet updated
-MALLOC_ARENA_MAX=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" pnpm install --no-frozen-lockfile
+# Do NOT put --max-old-space-size in NODE_OPTIONS for the build: jest-worker children inherit
+# NODE_OPTIONS, so parent+worker each get a 1.5G heap and exhaust a 3.4G box (looks "stuck").
+# Pass the heap limit only on the parent `node` argv instead.
+MALLOC_ARENA_MAX=1 pnpm install --no-frozen-lockfile
+
+run_next_build() {
+  echo "Starting Next.js build (parent heap=${BUILD_MEMORY_MB}MB via node argv; workers do not inherit)..."
+  # Prefer local next binary; fall back to pnpm if the path layout differs.
+  local next_bin="$PROJECT_ROOT/node_modules/next/dist/bin/next"
+  if [[ ! -f "$next_bin" ]]; then
+    next_bin="$PROJECT_ROOT/node_modules/.bin/next"
+  fi
+  # Clear any inherited NODE_OPTIONS so jest-worker children do not each get a 1.5G heap.
+  unset NODE_OPTIONS
+  FORCE_COLOR=0 MALLOC_ARENA_MAX=1 UV_THREADPOOL_SIZE=1 \
+  CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 \
+  node --max-old-space-size="${BUILD_MEMORY_MB}" "$next_bin" build --webpack
+}
 
 if [[ "$DEBUG_BUILD" == "1" ]]; then
   BUILD_LOG_FILE="$PROJECT_ROOT/build-debug.log"
@@ -279,10 +296,7 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
   (
     set -o pipefail
     # Heartbeats come from monitor_build_progress; skip webpack --debug (much slower).
-    # MALLOC_ARENA_MAX=1 reduces glibc arena fragmentation across webpack child processes.
-    FORCE_COLOR=0 MALLOC_ARENA_MAX=1 \
-    CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
-      pnpm exec next build --webpack 2>&1 | tee "$BUILD_LOG_FILE"
+    run_next_build 2>&1 | tee "$BUILD_LOG_FILE"
   ) &
   BUILD_PID=$!
   monitor_build_progress "$BUILD_PID" &
@@ -297,10 +311,7 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
     exit "$BUILD_RC"
   fi
 else
-  echo "Starting Next.js build (heap=${BUILD_MEMORY_MB}MB; expect ~3 min with little webpack output)..."
-  MALLOC_ARENA_MAX=1 \
-  CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
-    pnpm exec next build --webpack
+  run_next_build
 fi
 
 # 7) Persist credentials to .env so all Python scripts find them without PM2
