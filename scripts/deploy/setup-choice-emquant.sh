@@ -225,23 +225,15 @@ ensure_temp_swap() {
 
 auto_tune_build_settings() {
   local mem_total_kb="0"
-  local swap_total_kb="0"
 
   if [[ -r /proc/meminfo ]]; then
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
-    swap_total_kb=$(awk '/SwapTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # Only bump heap when the user left the default. Stay conservative below ~4.5 GiB
-  # unless swap is ample — without swap, a larger V8 heap just thrashes physical RAM.
-  # On ~3.4 GiB hosts with 4G+ swap, 1024 MB is too tight for the current webpack
-  # build and hits "JavaScript heap out of memory"; 2048 MB lets swap absorb overflow.
+  # On ~3.4 GiB hosts, 1024 MB heap OOMs but 1536 MB is enough headroom (~3 min builds).
+  # Do not jump to 2048 — that thrashes swap and makes webpack sit silent for 10+ min.
   if [[ "$BUILD_MEMORY_USER_SET" == "0" && -n "$mem_total_kb" ]]; then
     if   [[ "$mem_total_kb" -ge 6000000 ]]; then
-      BUILD_MEMORY_MB="2048"
-    elif [[ "$mem_total_kb" -ge 4500000 ]]; then
-      BUILD_MEMORY_MB="1536"
-    elif [[ "$mem_total_kb" -ge 3000000 && -n "$swap_total_kb" && "$swap_total_kb" -ge 4000000 ]]; then
       BUILD_MEMORY_MB="2048"
     elif [[ "$mem_total_kb" -ge 3000000 ]]; then
       BUILD_MEMORY_MB="1536"
@@ -305,6 +297,7 @@ if [[ "$DEBUG_BUILD" == "1" ]]; then
     exit "$BUILD_RC"
   fi
 else
+  echo "Starting Next.js build (heap=${BUILD_MEMORY_MB}MB; expect ~3 min with little webpack output)..."
   MALLOC_ARENA_MAX=1 \
   CI=1 NEXT_TELEMETRY_DISABLED=1 NEXT_BUILD_LOW_MEMORY=1 NODE_OPTIONS="--max-old-space-size=${BUILD_MEMORY_MB}" \
     pnpm exec next build --webpack

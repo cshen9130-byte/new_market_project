@@ -18,13 +18,6 @@ const nextConfig = {
   },
   // Constrain output tracing to the workspace root
   outputFileTracingRoot: process.cwd(),
-  webpack: (config) => {
-    if (isLowMemBuild) {
-      config.cache = false
-      config.parallelism = 1
-    }
-    return config
-  },
 }
 
 export default nextConfig
