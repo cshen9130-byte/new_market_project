@@ -33,6 +33,7 @@ DASHSCOPE_VISION_MODEL="${DASHSCOPE_VISION_MODEL:-qwen-vl-plus}"
 DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
 DATABASE_URL="${DATABASE_URL:-}"
 BUILD_MEMORY_MB="1024"
+BUILD_MEMORY_USER_SET="0"
 TEMP_SWAP_GB="4"
 DEBUG_BUILD="0"
 BUILD_DEBUG_INTERVAL_SEC="30"
@@ -53,7 +54,7 @@ while [[ $# -gt 0 ]]; do
     --dashscope-embedding-model) DASHSCOPE_EMBEDDING_MODEL="$2"; shift 2 ;;
     --dashscope-vision-model) DASHSCOPE_VISION_MODEL="$2"; shift 2 ;;
     --deepseek-api-key) DEEPSEEK_API_KEY="$2"; shift 2 ;;
-    --build-memory-mb) BUILD_MEMORY_MB="$2"; shift 2 ;;
+    --build-memory-mb) BUILD_MEMORY_MB="$2"; BUILD_MEMORY_USER_SET="1"; shift 2 ;;
     --temp-swap-gb) TEMP_SWAP_GB="$2"; shift 2 ;;
     --debug-build) DEBUG_BUILD="1"; shift ;;
     --build-debug-interval-sec) BUILD_DEBUG_INTERVAL_SEC="$2"; shift 2 ;;
@@ -224,27 +225,31 @@ ensure_temp_swap() {
 
 auto_tune_build_settings() {
   local mem_total_kb="0"
+  local swap_total_kb="0"
 
   if [[ -r /proc/meminfo ]]; then
     mem_total_kb=$(awk '/MemTotal/ { print $2 }' /proc/meminfo)
+    swap_total_kb=$(awk '/SwapTotal/ { print $2 }' /proc/meminfo)
   fi
 
-  # Only bump heap when the user left the default. Stay conservative below ~4.5 GiB:
-  # on a 3.4 GiB deploy box, 1024 MB + NEXT_BUILD_LOW_MEMORY keeps builds near ~3 min.
-  # Raising the heap into the 1.5–3 GiB range on these hosts fills physical RAM and
-  # thrashes (swap is a paging safety net, not a license to grow the V8 heap).
-  if [[ "$BUILD_MEMORY_MB" == "1024" && -n "$mem_total_kb" ]]; then
+  # Only bump heap when the user left the default. Stay conservative below ~4.5 GiB
+  # unless swap is ample — without swap, a larger V8 heap just thrashes physical RAM.
+  # On ~3.4 GiB hosts with 4G+ swap, 1024 MB is too tight for the current webpack
+  # build and hits "JavaScript heap out of memory"; 2048 MB lets swap absorb overflow.
+  if [[ "$BUILD_MEMORY_USER_SET" == "0" && -n "$mem_total_kb" ]]; then
     if   [[ "$mem_total_kb" -ge 6000000 ]]; then
       BUILD_MEMORY_MB="2048"
     elif [[ "$mem_total_kb" -ge 4500000 ]]; then
       BUILD_MEMORY_MB="1536"
+    elif [[ "$mem_total_kb" -ge 3000000 && -n "$swap_total_kb" && "$swap_total_kb" -ge 4000000 ]]; then
+      BUILD_MEMORY_MB="2048"
+    elif [[ "$mem_total_kb" -ge 3000000 ]]; then
+      BUILD_MEMORY_MB="1536"
     fi
   fi
 
-  # --debug-build adds heartbeats + build-debug.log, not a larger webpack heap.
-  if [[ "$DEBUG_BUILD" == "1" && -n "$mem_total_kb" && "$mem_total_kb" -lt 4500000 ]]; then
-    BUILD_MEMORY_MB="1024"
-  fi
+  # --debug-build adds heartbeats + build-debug.log only; never shrink the heap here
+  # (previously forced 1024 MB on <4.5 GiB hosts, overriding --build-memory-mb).
 
   echo "Build settings: memory=${BUILD_MEMORY_MB}MB, temp_swap=${TEMP_SWAP_GB}G, debug=${DEBUG_BUILD}, interval=${BUILD_DEBUG_INTERVAL_SEC}s"
 }

@@ -1,10 +1,13 @@
 /** @type {import('next').NextConfig} */
+const isLowMemBuild = process.env.NEXT_BUILD_LOW_MEMORY === "1"
+
 const nextConfig = {
+  productionBrowserSourceMaps: !isLowMemBuild,
   experimental: {
     // Reduce parallel page compilation on low-RAM deploy servers (see scripts/deploy/)
-    cpus: process.env.NEXT_BUILD_LOW_MEMORY === "1" ? 1 : undefined,
-    workerThreads: process.env.NEXT_BUILD_LOW_MEMORY === "1" ? false : undefined,
-    webpackMemoryOptimizations: process.env.NEXT_BUILD_LOW_MEMORY === "1" ? true : undefined,
+    cpus: isLowMemBuild ? 1 : undefined,
+    workerThreads: isLowMemBuild ? false : undefined,
+    webpackMemoryOptimizations: isLowMemBuild ? true : undefined,
   },
   typescript: {
     ignoreBuildErrors: true,
@@ -15,6 +18,13 @@ const nextConfig = {
   },
   // Constrain output tracing to the workspace root
   outputFileTracingRoot: process.cwd(),
+  webpack: (config) => {
+    if (isLowMemBuild) {
+      config.cache = false
+      config.parallelism = 1
+    }
+    return config
+  },
 }
 
 export default nextConfig
