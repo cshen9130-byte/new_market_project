@@ -269,12 +269,20 @@ monitor_build_progress() {
   done
 }
 
-# Install node deps and build with low memory
-# Use --no-frozen-lockfile to avoid failures when package.json changes but lockfile is not yet updated
-# Do NOT put --max-old-space-size in NODE_OPTIONS for the build: jest-worker children inherit
-# NODE_OPTIONS, so parent+worker each get a 1.5G heap and exhaust a 3.4G box (looks "stuck").
-# Pass the heap limit only on the parent `node` argv instead.
-MALLOC_ARENA_MAX=1 pnpm install --no-frozen-lockfile
+# Install node deps and build with low memory.
+# IMPORTANT: use --frozen-lockfile for reproducible builds. package.json pins several
+# heavy packages to "latest" (three, react-native, expo, @supabase/supabase-js), so
+# --no-frozen-lockfile silently re-resolves them to the newest release on each deploy.
+# That is how a build that ran in ~3 min at 1024 MB suddenly OOMs without any code
+# change: a newer/heavier dependency (e.g. three.js) inflates the webpack heap.
+# Fall back to --no-frozen-lockfile only if the lockfile is genuinely out of sync.
+# Do NOT put --max-old-space-size in NODE_OPTIONS for the build: jest-worker children
+# inherit NODE_OPTIONS, so parent+worker each get a large heap and exhaust a 3.4G box.
+if ! MALLOC_ARENA_MAX=1 pnpm install --frozen-lockfile; then
+  echo "WARNING: --frozen-lockfile failed (lockfile out of sync); retrying with --no-frozen-lockfile."
+  echo "         This may pull newer dependency versions and increase build memory."
+  MALLOC_ARENA_MAX=1 pnpm install --no-frozen-lockfile
+fi
 
 run_next_build() {
   echo "Starting Next.js build (parent heap=${BUILD_MEMORY_MB}MB via node argv; workers do not inherit)..."
