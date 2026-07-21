@@ -14,6 +14,32 @@ export function getMomDataBaseDir(): string {
   return process.env.MOM_DATA_DIR ?? path.join(process.cwd(), "..", "mom_data", "03.投顾逐日")
 }
 
+// Detail/position sheets whose data rows start after the header (row 11) and the
+// 合计 total row (row 12). Used to measure how much real data a workbook holds so
+// standardization never discards the richer file when two map to the same name.
+const DATA_SHEETS = [
+  "成交明细", "持仓明细", "期货成交明细", "期权成交明细",
+  "平仓明细", "期货持仓明细", "期权持仓明细", "委托明细",
+]
+const DATA_FIRST_ROW = 13 // 1-based: row 11 header, row 12 合计, row 13+ data
+
+/** Count real data rows across the detail/position sheets of a workbook. */
+function countDataRows(wb: XLSX.WorkBook): number {
+  let total = 0
+  for (const name of DATA_SHEETS) {
+    const ws = wb.Sheets[name]
+    const ref = ws?.["!ref"]
+    if (!ref) continue
+    try {
+      const endRow = XLSX.utils.decode_range(ref).e.r + 1 // decode_range is 0-based
+      if (endRow >= DATA_FIRST_ROW) total += endRow - (DATA_FIRST_ROW - 1)
+    } catch {
+      // ignore malformed ranges
+    }
+  }
+  return total
+}
+
 /**
  * Rename xlsx files and day folders under 03.投顾逐日 to the canonical format.
  * When filterFolders is omitted or empty, all folders are processed.
@@ -56,6 +82,7 @@ export function standardizeMomDataNames(filterFolders?: string[] | null): Standa
       const fpath = path.join(folderPath, fname)
       let account = ""
       let date = ""
+      let srcDataRows = 0
 
       try {
         const buf = fs.readFileSync(fpath)
@@ -67,6 +94,7 @@ export function standardizeMomDataNames(filterFolders?: string[] | null): Standa
         const ws = wb.Sheets["品种汇总"]
         account = String(ws["D6"]?.v ?? "").trim()
         date = String(ws["I6"]?.v ?? "").trim()
+        srcDataRows = countDataRows(wb)
       } catch (e) {
         result.errors.push(`读取失败: ${path.join(folder, fname)} — ${e instanceof Error ? e.message : e}`)
         continue
@@ -82,8 +110,32 @@ export function standardizeMomDataNames(filterFolders?: string[] | null): Standa
       if (fname !== expectedName) {
         const newPath = path.join(folderPath, expectedName)
         if (fs.existsSync(newPath)) {
-          fs.unlinkSync(fpath)
-          result.duplicates.push(`[${folder}] 已删除重复旧文件: ${fname}`)
+          // A file with the canonical name already exists. Never blindly delete
+          // the incoming file — it may hold real data while the existing one is
+          // an empty/preliminary export (this previously wiped good uploads).
+          // Keep whichever workbook has more data rows; tiebreak on newer mtime.
+          let keepIncoming: boolean
+          try {
+            const existingWb = XLSX.read(fs.readFileSync(newPath), { type: "buffer", cellDates: false })
+            const existingRows = countDataRows(existingWb)
+            if (srcDataRows !== existingRows) {
+              keepIncoming = srcDataRows > existingRows
+            } else {
+              keepIncoming = fs.statSync(fpath).mtimeMs > fs.statSync(newPath).mtimeMs
+            }
+          } catch {
+            // If the existing file can't be read, prefer the incoming one.
+            keepIncoming = true
+          }
+
+          if (keepIncoming) {
+            fs.rmSync(newPath, { force: true })
+            fs.renameSync(fpath, newPath)
+            result.renamedFiles.push(`[${folder}] ${fname} → ${expectedName} (替换数据较少的同名文件)`)
+          } else {
+            fs.unlinkSync(fpath)
+            result.duplicates.push(`[${folder}] 已删除数据较少的重复文件: ${fname}`)
+          }
         } else {
           fs.renameSync(fpath, newPath)
           result.renamedFiles.push(`[${folder}] ${fname} → ${expectedName}`)
