@@ -522,6 +522,12 @@ def compute_metrics(
     bench_total = float(bench.iloc[-1] / bench.iloc[0] - 1)
     excess_total = total_return - bench_total
 
+    week_high_nav = float(week_df["adj_nav"].max())
+    week_high_date = week_df.loc[week_df["adj_nav"].idxmax(), "date"]
+    prior_df = work[work["date"] < week_start]
+    prior_max_nav = float(prior_df["adj_nav"].max()) if not prior_df.empty else float("-inf")
+    is_week_all_time_high = week_high_nav > prior_max_nav + 1e-9
+
     return {
         "start_date": work["date"].iloc[0],
         "end_date": work["date"].iloc[-1],
@@ -548,6 +554,9 @@ def compute_metrics(
         "max_daily_loss": max_daily_loss,
         "annual_excess": annual_excess,
         "week_df": week_df,
+        "week_high_nav": week_high_nav,
+        "week_high_date": week_high_date,
+        "is_week_all_time_high": is_week_all_time_high,
     }
 
 
@@ -563,18 +572,23 @@ def build_highlights(metrics: dict, benchmark_label: str = "沪深300") -> list[
     we = metrics["week_excess"]
     tr = metrics["total_return"]
     md = metrics["max_drawdown"]
-    week_df = metrics["week_df"]
-
-    week_high_nav = week_df["adj_nav"].max()
-    week_high_date = week_df.loc[week_df["adj_nav"].idxmax(), "date"]
+    week_high_nav = metrics["week_high_nav"]
+    week_high_date = metrics["week_high_date"]
+    is_new_high = metrics["is_week_all_time_high"]
+    week_end = metrics["week_end"]
+    weekday = ["一", "二", "三", "四", "五", "六", "日"][week_high_date.weekday()]
 
     if wr >= 0:
         line1 = f"• 策略表现：本周净值累计上涨{wr * 100:.2f}%，"
     else:
         line1 = f"• 策略表现：本周净值累计下跌{abs(wr) * 100:.2f}%，"
 
-    peak_str = f"周{['一','二','三','四','五'][week_high_date.weekday()]}升至{week_high_nav:.4f}"
-    line2 = f"  {peak_str}，创运作以来阶段新高。"
+    if is_new_high:
+        line2 = f"  周{weekday}升至{week_high_nav:.4f}，创运作以来阶段新高。"
+    elif wr < 0 and pd.Timestamp(week_high_date).normalize() == pd.Timestamp(week_end).normalize():
+        line2 = f"  周{weekday}净值{week_high_nav:.4f}。"
+    else:
+        line2 = f"  周{weekday}升至{week_high_nav:.4f}（周内最高）。"
 
     if we >= 0:
         line3 = f"• 市场环境：{benchmark_label}本周{wb * 100:+.2f}%，"
