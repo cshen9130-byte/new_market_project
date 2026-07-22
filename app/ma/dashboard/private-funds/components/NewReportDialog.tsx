@@ -11,12 +11,13 @@ import {
 } from "@/components/ui/dialog"
 import { loadReportTemplates, normalizeTemplate, type ReportCustomTemplate } from "@/lib/ma/report-template-types"
 import { FofWeeklyReportDialog } from "./FofWeeklyReportDialog"
+import { FofMonthlyReportDialog } from "./FofMonthlyReportDialog"
 import { ProductMonthlyReportDialog } from "./ProductMonthlyReportDialog"
 import { ReportTemplateExampleDialog } from "./ReportTemplateExampleDialog"
 import { CustomReportGenerateDialog, CustomTemplateCard } from "./CustomReportGenerateDialog"
 
 type TemplateCategory = "weekly" | "monthly" | "custom" | "other"
-type ReportWizardStep = "pick" | "fof-weekly" | "product-monthly" | "custom-report"
+type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "custom-report"
 
 interface ReportTemplate {
   id: string
@@ -69,6 +70,13 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "other", ReportTempla
     },
   ],
   monthly: [
+    {
+      id: "monthly-track-curve",
+      title: "跟踪产品（通用曲线版）",
+      description: "显示产品指标和曲线",
+      badgeLabel: "月报",
+      exampleUrl: "/ma/api/reports/fof-monthly/example",
+    },
     {
       id: "monthly-pe-official",
       title: "私募基金月报-官方",
@@ -169,6 +177,10 @@ export function NewReportDialog({
   function handleUseOfficialTemplate(template: ReportTemplate) {
     if (template.id === "weekly-track-curve") {
       setStep("fof-weekly")
+      return
+    }
+    if (template.id === "monthly-track-curve") {
+      setStep("fof-monthly")
       return
     }
     if (template.id === "monthly-pe-official") {
@@ -275,6 +287,9 @@ export function NewReportDialog({
         )}
         {step === "fof-weekly" && (
           <FofWeeklyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+        )}
+        {step === "fof-monthly" && (
+          <FofMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
         )}
         {step === "product-monthly" && (
           <ProductMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />

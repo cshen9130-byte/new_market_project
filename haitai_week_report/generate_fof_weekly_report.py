@@ -45,6 +45,32 @@ PRODUCT_NAME = "海泰1号"
 REPORT_TITLE = "低波稳健FOF 1号"
 PRODUCT_TAGLINE = "低波动 · 稳健运作 · 强势股策略"
 
+REPORT_KIND_LABELS: dict[str, dict[str, str]] = {
+    "weekly": {
+        "kind_name": "产品周报",
+        "period_name": "本周",
+        "period_return": "本周收益",
+        "period_broadcast": "本周业绩播报",
+        "period_range_label": "本周区间",
+        "period_highlights": "本周要点",
+        "file_suffix": "周报",
+    },
+    "monthly": {
+        "kind_name": "产品月报",
+        "period_name": "本月",
+        "period_return": "本月收益",
+        "period_broadcast": "本月业绩播报",
+        "period_range_label": "本月区间",
+        "period_highlights": "本月要点",
+        "file_suffix": "月报",
+    },
+}
+
+
+def normalize_report_kind(kind: str | None) -> str:
+    normalized = (kind or "weekly").strip().lower()
+    return normalized if normalized in REPORT_KIND_LABELS else "weekly"
+
 _CN_TRADE_DATES: pd.DatetimeIndex | None = None
 
 
@@ -429,6 +455,7 @@ def compute_metrics(
     as_of_date: pd.Timestamp | None = None,
     nav_frequency: str | None = None,
     week_begin: pd.Timestamp | None = None,
+    report_kind: str | None = "weekly",
 ) -> dict:
     work = df.copy()
     if as_of_date is not None:
@@ -473,6 +500,7 @@ def compute_metrics(
     annual_excess = annual_return - bench_annual_return
 
     ref_date = pd.Timestamp(as_of_date).normalize() if as_of_date is not None else work["date"].iloc[-1]
+    kind = normalize_report_kind(report_kind)
     if week_begin is not None:
         week_begin = pd.Timestamp(week_begin).normalize()
         week_mask = (work["date"] >= week_begin) & (work["date"] <= ref_date)
@@ -482,6 +510,15 @@ def compute_metrics(
         week_start = week_begin
         week_end = ref_date
         print(f"[compute_metrics] explicit range: week_start={week_start.date()} week_end={week_end.date()} week_df_len={len(week_df)}")
+    elif kind == "monthly":
+        month_start = ref_date.replace(day=1)
+        week_mask = (work["date"] >= month_start) & (work["date"] <= ref_date)
+        week_df = work[week_mask]
+        if len(week_df) < 1:
+            week_df = work.tail(5)
+        week_start = month_start
+        week_end = ref_date
+        print(f"[compute_metrics] monthly default range: week_start={week_start.date()} week_end={week_end.date()} week_df_len={len(week_df)}")
     else:
         ref_iso_week = ref_date.isocalendar()[1]
         ref_iso_year = ref_date.isocalendar()[0]
@@ -566,7 +603,13 @@ def fmt_pct(val: float, signed: bool = True) -> str:
     return f"{val * 100:.2f}%"
 
 
-def build_highlights(metrics: dict, benchmark_label: str = "沪深300") -> list[str]:
+def build_highlights(
+    metrics: dict,
+    benchmark_label: str = "沪深300",
+    report_kind: str | None = "weekly",
+) -> list[str]:
+    labels = REPORT_KIND_LABELS[normalize_report_kind(report_kind)]
+    period_name = labels["period_name"]
     wr = metrics["week_return"]
     wb = metrics["week_bench"]
     we = metrics["week_excess"]
@@ -577,24 +620,26 @@ def build_highlights(metrics: dict, benchmark_label: str = "沪深300") -> list[
     is_new_high = metrics["is_week_all_time_high"]
     week_end = metrics["week_end"]
     weekday = ["一", "二", "三", "四", "五", "六", "日"][week_high_date.weekday()]
+    day_label = f"{week_high_date.day}日" if normalize_report_kind(report_kind) == "monthly" else f"周{weekday}"
+    range_label = "月内" if normalize_report_kind(report_kind) == "monthly" else "周内"
 
     if wr >= 0:
-        line1 = f"• 策略表现：本周净值累计上涨{wr * 100:.2f}%，"
+        line1 = f"• 策略表现：{period_name}净值累计上涨{wr * 100:.2f}%，"
     else:
-        line1 = f"• 策略表现：本周净值累计下跌{abs(wr) * 100:.2f}%，"
+        line1 = f"• 策略表现：{period_name}净值累计下跌{abs(wr) * 100:.2f}%，"
 
     if is_new_high:
-        line2 = f"  周{weekday}升至{week_high_nav:.4f}，创运作以来阶段新高。"
+        line2 = f"  {day_label}升至{week_high_nav:.4f}，创运作以来阶段新高。"
     elif wr < 0 and pd.Timestamp(week_high_date).normalize() == pd.Timestamp(week_end).normalize():
-        line2 = f"  周{weekday}净值{week_high_nav:.4f}。"
+        line2 = f"  {day_label}净值{week_high_nav:.4f}。"
     else:
-        line2 = f"  周{weekday}升至{week_high_nav:.4f}（周内最高）。"
+        line2 = f"  {day_label}升至{week_high_nav:.4f}（{range_label}最高）。"
 
     if we >= 0:
-        line3 = f"• 市场环境：{benchmark_label}本周{wb * 100:+.2f}%，"
+        line3 = f"• 市场环境：{benchmark_label}{period_name}{wb * 100:+.2f}%，"
         line4 = f"  策略跑赢基准{we * 100:.2f}个百分点，超额能力突出。"
     else:
-        line3 = f"• 市场环境：{benchmark_label}本周强势+{wb * 100:.2f}%，"
+        line3 = f"• 市场环境：{benchmark_label}{period_name}强势+{wb * 100:.2f}%，"
         line4 = f"  产品低beta特征显现，稳健参与上涨，控制波动。"
 
     line5 = f"• 运作情况：运作以来累计{tr * 100:+.2f}%，最大回撤"
@@ -765,8 +810,11 @@ def make_report(
     product_tagline: str = PRODUCT_TAGLINE,
     benchmark_label: str = "沪深300",
     nav_frequency: str | None = "weekly",
+    report_kind: str | None = "weekly",
 ) -> tuple[str, str]:
-    print(f"[make_report] week_begin={week_begin!r} week_end={week_end!r} nav_frequency={nav_frequency!r}")
+    kind = normalize_report_kind(report_kind)
+    labels = REPORT_KIND_LABELS[kind]
+    print(f"[make_report] week_begin={week_begin!r} week_end={week_end!r} nav_frequency={nav_frequency!r} report_kind={kind!r}")
     output_dir = output_dir or str(Path(nav_file).parent)
 
     raw_df = load_nav_data(nav_file)
@@ -796,7 +844,7 @@ def make_report(
     # so that monthly return figures are consistent across all frequency selections.
     daily_plot_df = raw_df[raw_df["date"] <= as_of].copy() if as_of is not None else raw_df.copy()
     interval_rows = compute_interval_returns(daily_plot_df, fund_name=product_name)
-    metrics = compute_metrics(df, as_of, nav_frequency, report_week_begin)
+    metrics = compute_metrics(df, as_of, nav_frequency, report_week_begin, report_kind=kind)
 
     # Override ytd_return with the daily-data-based annual return so 今年以来 KPI
     # matches the 2026 全年 figure in the 区间收益率 table.
@@ -849,7 +897,7 @@ def make_report(
         )
 
     draw_text(ax, 0.06, 0.962, report_title, fp_bold or fp, size=22, color="white", weight="bold")
-    draw_text(ax, 0.06, 0.932, "产品周报", fp, size=13, color="#FFCDD2")
+    draw_text(ax, 0.06, 0.932, labels["kind_name"], fp, size=13, color="#FFCDD2")
     draw_text(ax, 0.94, 0.962, report_date, fp, size=11, color="white", ha="right")
     draw_text(
         ax, 0.94, 0.932,
@@ -861,7 +909,7 @@ def make_report(
     ax.add_patch(Rectangle((0.04, 0.875), 0.92, 0.03, transform=ax.transAxes, facecolor="white", edgecolor=C_GOLD, linewidth=0.8, clip_on=False))
     ax.add_patch(Rectangle((0.04, 0.875), 0.008, 0.03, transform=ax.transAxes, color=C_PRIMARY, clip_on=False))
 
-    draw_text(ax, 0.06, 0.89, f"本周业绩播报（{week_range}）", fp_bold or fp, size=10, color=C_PRIMARY, weight="bold")
+    draw_text(ax, 0.06, 0.89, f"{labels['period_broadcast']}（{week_range}）", fp_bold or fp, size=10, color=C_PRIMARY, weight="bold")
     draw_text(ax, 0.94, 0.89, product_tagline, fp, size=10, color=C_TEXT_LIGHT, ha="right")
 
     kpi_row1_y = 0.795
@@ -871,7 +919,7 @@ def make_report(
     x0 = 0.04
 
     row1 = [
-        ("本周收益", fmt_pct(metrics["week_return"]), ret_color(metrics["week_return"])),
+        (labels["period_return"], fmt_pct(metrics["week_return"]), ret_color(metrics["week_return"])),
         ("今年以来", fmt_pct(metrics["ytd_return"]), ret_color(metrics["ytd_return"])),
         ("运作以来", fmt_pct(metrics["total_return"]), ret_color(metrics["total_return"])),
         ("最新净值", f"{metrics['end_nav']:.4f}", C_TEXT),
@@ -914,7 +962,7 @@ def make_report(
         bench_cum.index, bench_cum.values, color="#64748B", linewidth=1.5,
         linestyle="--", label=benchmark_label, zorder=1,
     )
-    chart_ax.axvspan(metrics["week_start"], metrics["week_end"], color=C_UP, alpha=0.12, label="本周区间", zorder=0)
+    chart_ax.axvspan(metrics["week_start"], metrics["week_end"], color=C_UP, alpha=0.12, label=labels["period_range_label"], zorder=0)
 
     last_date = fund_cum.index[-1]
     last_val = fund_cum.values[-1]
@@ -981,8 +1029,8 @@ def make_report(
     bottom_y = 0.095
     bottom_h = 0.14
 
-    draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, "本周要点", fp_bold, fp)
-    highlights = build_highlights(metrics, benchmark_label)
+    draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, labels["period_highlights"], fp_bold, fp)
+    highlights = build_highlights(metrics, benchmark_label, report_kind=kind)
     for i, line in enumerate(highlights):
         draw_text(ax, 0.06, bottom_y + bottom_h - 0.042 - i * 0.016, line, fp, size=8.5, color=C_TEXT)
 
@@ -1020,8 +1068,8 @@ def make_report(
 
     os.makedirs(output_dir, exist_ok=True)
     date_str = metrics["end_date"].strftime("%Y%m%d")
-    png_path = os.path.join(output_dir, f"{report_title}周报_{date_str}.png")
-    pdf_path = os.path.join(output_dir, f"{report_title}周报_{date_str}.pdf")
+    png_path = os.path.join(output_dir, f"{report_title}{labels['file_suffix']}_{date_str}.png")
+    pdf_path = os.path.join(output_dir, f"{report_title}{labels['file_suffix']}_{date_str}.pdf")
 
     fig.savefig(png_path, dpi=200, bbox_inches="tight", facecolor=C_BG, pad_inches=0.1)
     with PdfPages(pdf_path) as pdf:
@@ -1080,6 +1128,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=["daily", "weekly", "monthly"],
         help="净值频率：daily=日频, weekly=周频, monthly=月频",
     )
+    parser.add_argument(
+        "--report-kind",
+        default="weekly",
+        choices=["weekly", "monthly"],
+        help="报告类型：weekly=周报, monthly=月报",
+    )
     args = parser.parse_args(argv)
 
     nav_file = args.nav_file
@@ -1102,6 +1156,7 @@ def main(argv: list[str] | None = None) -> int:
             product_tagline=args.product_tagline,
             benchmark_label=args.benchmark_label,
             nav_frequency=args.nav_frequency,
+            report_kind=args.report_kind,
         )
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)
