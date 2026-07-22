@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic"
 const EXAMPLE_PATH = path.join(
   process.cwd(),
   "haitai_week_report",
-  "低波稳健FOF 1号周报_20260626.png",
+  "低波稳健FOF 1号月报_20260626.png",
 )
 
 export async function GET() {

@@ -196,16 +196,7 @@ function parseValuationTableSubject(text: string): { code: string; fundName: str
   return null
 }
 
-/** Short display name: 百奕小天鹅2号私募证券投资基金B → 百奕小天鹅2号B类 */
-export function normalizeFundDisplayName(raw: string): string {
-  const s = raw.trim()
-  const m = s.match(/^(.+?)(?:私募证券投资基金|私募基金|证券投资基金|投资基金)?([ABC]类|[ABC])?$/)
-  if (!m?.[1]) return s
-  const base = m[1].trim()
-  let shareClass = (m[2] ?? "").trim()
-  if (shareClass.length === 1 && /[ABC]/.test(shareClass)) shareClass += "类"
-  return `${base}${shareClass}`
-}
+export { normalizeFundDisplayName } from "@/lib/fund-display-name"
 
 export function extractProductCodeFromText(text: string): string | null {
   const labeled = text.match(/基金代码\s*[：:]\s*([A-Z0-9]+)/)

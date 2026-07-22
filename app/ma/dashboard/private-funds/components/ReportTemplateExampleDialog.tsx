@@ -26,7 +26,11 @@ export function ReportTemplateExampleDialog({
         <DialogHeader className="border-b px-6 py-4 text-left">
           <DialogTitle className="text-base font-semibold">{title} — 报告范例</DialogTitle>
           <p className="text-xs text-zinc-400">
-            {exampleKind === "pdf" ? "私募产品历史业绩 · 2026-06-18" : "低波稳健FOF 1号 · 2026-06-26"}
+            {exampleKind === "pdf"
+              ? "私募产品历史业绩 · 2026-06-18"
+              : exampleUrl.includes("/fof-monthly/")
+                ? "低波稳健FOF 1号 · 2026-06-26 · 月报"
+                : "低波稳健FOF 1号 · 2026-06-26"}
           </p>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto bg-zinc-50 p-4 dark:bg-zinc-900/40">

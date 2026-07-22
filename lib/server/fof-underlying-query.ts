@@ -130,11 +130,17 @@ export const FOF_UNDERLYING_BEIAN_EXPR = fofUnderlyingBeianExpr("f.product_name"
 /** Default beian expr for managed_products (alias m). */
 export const MANAGED_PRODUCTS_BEIAN_EXPR = fofUnderlyingBeianExpr("m.product_name")
 
+const FUND_LEGAL_SUFFIX_STRIP_RE = "(私募证券投资基金|私募基金|证券投资基金|投资基金)$"
+
 export function fofUnderlyingShortExpr(productNameExpr: string): string {
   return `CASE
     WHEN ${productNameExpr} ~ '[ABC]类'
     THEN ${productNameExpr}
-    ELSE COALESCE(b.short_name, o.fund_short_name, ${productNameExpr})
+    ELSE REGEXP_REPLACE(
+      COALESCE(NULLIF(BTRIM(b.short_name), ''), NULLIF(BTRIM(o.fund_short_name), ''), ${productNameExpr}),
+      '${FUND_LEGAL_SUFFIX_STRIP_RE}',
+      ''
+    )
   END`
 }
 

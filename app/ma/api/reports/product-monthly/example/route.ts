@@ -10,7 +10,7 @@ const EXAMPLE_PATH = path.join(
   process.cwd(),
   "product_ppt",
   "output",
-  "中低波私募产品历史业绩_20260618.pdf",
+  "私募产品历史业绩_20260618.pdf",
 )
 
 export async function GET() {

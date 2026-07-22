@@ -66,4 +66,25 @@ print("Imports OK")
 print("LibreOffice:", soffice)
 PY
 
+EXAMPLE_DIR="$ROOT/product_ppt/output"
+EXAMPLE_PDF="$EXAMPLE_DIR/私募产品历史业绩_20260618.pdf"
+EXAMPLE_CONFIG="$ROOT/product_ppt/report_config.example.json"
+SAMPLE_NAV="$ROOT/product_ppt/稳强8_净值.xlsx"
+HAITAI_NAV="$ROOT/haitai_week_report/低波稳健FOF 1号合并净值.xlsx"
+if [[ ! -f "$EXAMPLE_PDF" && -f "$EXAMPLE_CONFIG" ]]; then
+  mkdir -p "$EXAMPLE_DIR"
+  if [[ ! -f "$SAMPLE_NAV" && -f "$HAITAI_NAV" ]]; then
+    cp -f "$HAITAI_NAV" "$SAMPLE_NAV"
+  fi
+  if [[ -f "$SAMPLE_NAV" ]]; then
+    echo "Generating product monthly report example PDF..."
+    "$PY" "$ROOT/product_ppt/generate_product_report.py" \
+      --workspace "$ROOT/product_ppt" \
+      --config "$EXAMPLE_CONFIG" \
+      -o "$EXAMPLE_DIR" \
+      --pdf-name "私募产品历史业绩_20260618.pdf" \
+      --pptx-name "私募产品历史业绩_20260618.pptx" || true
+  fi
+fi
+
 echo "product_ppt setup complete."

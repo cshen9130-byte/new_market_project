@@ -1,0 +1,19 @@
+{
+  "end_date": "2026-06-18",
+  "section_order": {
+    "低波": ["博孚利稳强8号FOF"],
+    "中低波": [],
+    "中波": []
+  },
+  "products": {
+    "博孚利稳强8号FOF": {
+      "volatility_type": "低波",
+      "nav_file": "稳强8_净值.xlsx",
+      "filing_no": "STB102",
+      "manager": "厦门博孚利资管",
+      "inception_date": "2021-11-04",
+      "aum": "50-100亿元",
+      "fund_manager": "陈家本"
+    }
+  }
+}

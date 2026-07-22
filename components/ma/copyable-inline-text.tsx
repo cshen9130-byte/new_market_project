@@ -1,5 +1,6 @@
 "use client"
 
+import { resolveFundDisplayLabel } from "@/lib/fund-display-name"
 import { useState, type MouseEvent, type ReactNode } from "react"
 import { Copy, Check } from "lucide-react"
 
@@ -82,7 +83,7 @@ export function CopyableProductName({
   short_name?: string | null
   className?: string
 }) {
-  const displayName = short_name || product_name
+  const displayName = resolveFundDisplayLabel(short_name, product_name)
   return (
     <CopyableInlineText
       text={product_name}
@@ -133,7 +134,7 @@ export function FundProductNameLink({
   short_name?: string | null
   className?: string
 }) {
-  const label = short_name || product_name
+  const label = resolveFundDisplayLabel(short_name, product_name)
   const href = `/ma/dashboard/private-funds/${encodeURIComponent(beian_hao || product_name)}`
   return (
     <div className={className ?? "max-w-[200px]"}>

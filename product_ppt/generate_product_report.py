@@ -297,7 +297,10 @@ def load_nav_data(path: Path) -> pd.DataFrame:
         df = pd.read_csv(path, encoding="utf-8-sig")
     else:
         df = pd.read_excel(path, sheet_name=0, header=0)
-    df.columns = ["date", "unit_nav", "cum_nav", "adj_nav", "pct_change", "benchmark"]
+    expected_cols = ["date", "unit_nav", "cum_nav", "adj_nav", "pct_change", "benchmark"]
+    if len(df.columns) > len(expected_cols):
+        df = df.iloc[:, : len(expected_cols)]
+    df.columns = expected_cols
     df["date"] = pd.to_datetime(df["date"])
     for col in ["unit_nav", "cum_nav", "adj_nav", "benchmark"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")

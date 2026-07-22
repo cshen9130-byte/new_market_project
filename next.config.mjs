@@ -3,6 +3,10 @@ const isLowMemBuild = process.env.NEXT_BUILD_LOW_MEMORY === "1"
 
 const nextConfig = {
   productionBrowserSourceMaps: !isLowMemBuild,
+  // Next.js 16 enables Turbopack by default; an empty config acknowledges the
+  // custom webpack block below (used for low-memory deploy builds) so dev HMR
+  // does not hit "unexpected Turbopack error" from the config mismatch.
+  turbopack: {},
   experimental: {
     // Reduce parallel page compilation on low-RAM deploy servers (see scripts/deploy/)
     cpus: isLowMemBuild ? 1 : undefined,
