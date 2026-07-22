@@ -1226,18 +1226,49 @@ export function rowHasDdMaterials(
   return getDdMaterialsDocuments(folderPath, index).length > 0
 }
 
-/** UI label for 尽调材料; never show orphan 「已上传」 without a KB link. */
+/** UI label for 尽调材料; never show orphan 「已上传」 without a real KB link. */
 export function resolveDdMaterialsDisplayLabel(
   row: Pick<DueDiligenceTableRow, "ddMaterials">,
   folderPath: string | null,
   documentCount: number,
   materialsLoading: boolean,
+  linkLocked = false,
 ): string {
   if (materialsLoading) return "…"
   if (documentCount > 0) return `已上传 (${documentCount})`
-  if (folderPath) return "已上传"
+  if (folderPath && linkLocked) return "已上传"
   if (row.ddMaterials.trim() === "已上传") return ""
   return row.ddMaterials
+}
+
+export function buildDdMaterialsRowPresentation(
+  row: Pick<
+    DueDiligenceTableRow,
+    | "ddDate"
+    | "fundCompany"
+    | "investmentManager"
+    | "representativeProduct"
+    | "ddTarget"
+    | "strategyPreliminary"
+    | "otherInfo"
+    | "ddConclusion"
+    | "strategyLevel1"
+    | "strategyLevel2"
+    | "strategyLevel3"
+    | "ddMaterialsKbPath"
+    | "ddMaterialsLinkStatus"
+    | "ddMaterialsFileLinks"
+  >,
+  index: DdMaterialsFolderIndex,
+): { folderPath: string | null; folderName: string | null; documents: DdMaterialsDocument[] } {
+  const resolvedPath = resolveDdMaterialsFolderPath(row, index)
+  const documents = getDdMaterialsDocumentsForRow(row, index)
+  const linkLocked = isDdMaterialsLinkLocked(row)
+  const folderPath = documents.length > 0 || (linkLocked && resolvedPath) ? resolvedPath : null
+  const folderName = folderPath
+    ? index.folders.get(folderPath)?.name ?? folderPath.split("/").pop() ?? null
+    : null
+  return { folderPath, folderName, documents }
 }
 
 export function buildDdMaterialsAutoFillPatch(
@@ -1282,9 +1313,15 @@ export function buildDdMaterialsAutoFillPatch(
   }
 
   const folderPath = resolveDdMaterialsFolderPath(row, index)
-  const rawDocuments = folderPath ? getDdMaterialsDocuments(folderPath, index) : []
+  if (!folderPath) {
+    if (storedPath || row.ddMaterials.trim() === "已上传") {
+      return { ddMaterials: "", ddMaterialsKbPath: null, ddMaterialsLinkStatus: null }
+    }
+    return null
+  }
 
-  if (!folderPath || rawDocuments.length === 0) {
+  const visibleDocuments = getDdMaterialsDocumentsForRow({ ...row, ddMaterialsKbPath: folderPath }, index)
+  if (visibleDocuments.length === 0) {
     if (storedPath || row.ddMaterials.trim() === "已上传") {
       return { ddMaterials: "", ddMaterialsKbPath: null, ddMaterialsLinkStatus: null }
     }

@@ -147,8 +147,7 @@ import {
 import {
   buildDdMaterialsAutoFillPatch,
   buildDdMaterialsFolderIndex,
-  getDdMaterialsDocumentsForRow,
-  resolveDdMaterialsFolderPath,
+  buildDdMaterialsRowPresentation,
   type DdMaterialsDocument,
   type DdMaterialsFolderIndex,
 } from "@/lib/ma/due-diligence-materials"
@@ -1004,7 +1003,6 @@ export function DueDiligenceTableView() {
   const [ddConclusionDraft, setDdConclusionDraft] = useState("")
   const [materialsIndex, setMaterialsIndex] = useState<DdMaterialsFolderIndex | null>(null)
   const [materialsLoading, setMaterialsLoading] = useState(false)
-  const materialsAutoFillKeyRef = useRef("")
   const strategyMigrationRef = useRef(false)
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1198,24 +1196,13 @@ export function DueDiligenceTableView() {
     }
     const map = new Map<string, { folderPath: string | null; folderName: string | null; documents: DdMaterialsDocument[] }>()
     for (const row of rows) {
-      const folderPath = resolveDdMaterialsFolderPath(row, materialsIndex)
-      const folderName = folderPath
-        ? materialsIndex.folders.get(folderPath)?.name ?? folderPath.split("/").pop() ?? null
-        : null
-      map.set(row.id, {
-        folderPath,
-        folderName,
-        documents: getDdMaterialsDocumentsForRow(row, materialsIndex),
-      })
+      map.set(row.id, buildDdMaterialsRowPresentation(row, materialsIndex))
     }
     return map
   }, [materialsIndex, rows])
 
   useEffect(() => {
     if (!hydrated || !materialsIndex) return
-
-    const indexKey = `${materialsIndex.folders.size}:${rows.length}`
-    if (materialsAutoFillKeyRef.current === indexKey) return
 
     let changed = false
     const nextRows = rows.map((row) => {
@@ -1224,8 +1211,6 @@ export function DueDiligenceTableView() {
       changed = true
       return { ...row, ...patch }
     })
-
-    materialsAutoFillKeyRef.current = indexKey
     if (!changed) return
     persistRowsChange(rows, nextRows, formats)
   }, [hydrated, materialsIndex, rows, formats, persistRowsChange])

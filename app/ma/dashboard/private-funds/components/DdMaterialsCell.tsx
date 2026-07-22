@@ -187,9 +187,9 @@ export function DdMaterialsCell({
         : "border-transparent",
   ].join(" ")
 
-  const hasMaterials = documents.length > 0 || Boolean(folderPath)
   const canManageLink = Boolean(onManualLink)
   const linkLocked = isDdMaterialsLinkLocked({ ddMaterialsLinkStatus: linkStatus })
+  const hasMaterials = documents.length > 0 || (Boolean(folderPath) && linkLocked)
   const linkRejected = isDdMaterialsAutoLinkDisabled({ ddMaterialsLinkStatus: linkStatus })
   const statusLabel = ddMaterialsLinkStatusLabel(linkStatus)
   const selectedCount = selectedFilePaths.size
@@ -209,9 +209,16 @@ export function DdMaterialsCell({
     })
   }, [documents])
   const displayLabel = useMemo(
-    () => resolveDdMaterialsDisplayLabel({ ddMaterials: value }, folderPath, documents.length, materialsLoading),
-    [documents.length, folderPath, materialsLoading, value],
+    () => resolveDdMaterialsDisplayLabel(
+      { ddMaterials: value },
+      folderPath,
+      documents.length,
+      materialsLoading,
+      linkLocked,
+    ),
+    [documents.length, folderPath, linkLocked, materialsLoading, value],
   )
+  const inactiveValue = displayLabel
 
   const kbUrl = folderPath ? buildDdMaterialsKbUrl(folderPath) : null
 
@@ -805,7 +812,7 @@ export function DdMaterialsCell({
           <input
             type="text"
             data-cell={cellId}
-            value={value}
+            value={isActive ? value : inactiveValue}
             style={{ ...style, width: canManageLink ? width - 22 : width - 4 }}
             onChange={(e) => onChange(e.target.value)}
             onFocus={onActivate}
@@ -874,7 +881,7 @@ export function DdMaterialsCell({
         <input
           type="text"
           data-cell={cellId}
-          value={value}
+          value={inactiveValue}
           style={{ ...style, width: canManageLink ? width - 22 : width - 4 }}
           onChange={(e) => onChange(e.target.value)}
           onFocus={onActivate}
