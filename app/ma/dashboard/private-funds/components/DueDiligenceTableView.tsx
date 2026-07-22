@@ -1004,7 +1004,7 @@ export function DueDiligenceTableView() {
   const [ddConclusionDraft, setDdConclusionDraft] = useState("")
   const [materialsIndex, setMaterialsIndex] = useState<DdMaterialsFolderIndex | null>(null)
   const [materialsLoading, setMaterialsLoading] = useState(false)
-  const materialsAutoFillRef = useRef(false)
+  const materialsAutoFillKeyRef = useRef("")
   const strategyMigrationRef = useRef(false)
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1212,7 +1212,10 @@ export function DueDiligenceTableView() {
   }, [materialsIndex, rows])
 
   useEffect(() => {
-    if (!hydrated || !materialsIndex || materialsAutoFillRef.current) return
+    if (!hydrated || !materialsIndex) return
+
+    const indexKey = `${materialsIndex.folders.size}:${rows.length}`
+    if (materialsAutoFillKeyRef.current === indexKey) return
 
     let changed = false
     const nextRows = rows.map((row) => {
@@ -1221,11 +1224,9 @@ export function DueDiligenceTableView() {
       changed = true
       return { ...row, ...patch }
     })
-    if (!changed) {
-      materialsAutoFillRef.current = true
-      return
-    }
-    materialsAutoFillRef.current = true
+
+    materialsAutoFillKeyRef.current = indexKey
+    if (!changed) return
     persistRowsChange(rows, nextRows, formats)
   }, [hydrated, materialsIndex, rows, formats, persistRowsChange])
 

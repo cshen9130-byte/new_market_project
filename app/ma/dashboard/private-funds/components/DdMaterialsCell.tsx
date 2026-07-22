@@ -14,6 +14,7 @@ import {
   ddMaterialsLinkStatusLabel,
   isDdMaterialsLinkLocked,
   isDdMaterialsAutoLinkDisabled,
+  resolveDdMaterialsDisplayLabel,
   isDdMaterialsEditable,
 } from "@/lib/ma/due-diligence-materials"
 import { dispatchMaChatOpenDocuments, MA_CHAT_DOCUMENT_MIME, type MaChatKbDocumentPayload } from "@/lib/ma/chat-documents"
@@ -207,12 +208,10 @@ export function DdMaterialsCell({
       return next.size === prev.size ? prev : next
     })
   }, [documents])
-  const displayLabel = useMemo(() => {
-    if (materialsLoading) return "…"
-    if (documents.length > 0) return `已上传 (${documents.length})`
-    if (folderPath && value.trim() === "已上传") return "已上传"
-    return value
-  }, [documents.length, folderPath, materialsLoading, value])
+  const displayLabel = useMemo(
+    () => resolveDdMaterialsDisplayLabel({ ddMaterials: value }, folderPath, documents.length, materialsLoading),
+    [documents.length, folderPath, materialsLoading, value],
+  )
 
   const kbUrl = folderPath ? buildDdMaterialsKbUrl(folderPath) : null
 

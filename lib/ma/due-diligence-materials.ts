@@ -1222,23 +1222,53 @@ export function rowHasDdMaterials(
   folderPath: string | null,
   index: DdMaterialsFolderIndex,
 ): boolean {
-  if (row.ddMaterials.trim() === "已上传") return true
   if (!folderPath) return false
   return getDdMaterialsDocuments(folderPath, index).length > 0
+}
+
+/** UI label for 尽调材料; never show orphan 「已上传」 without a KB link. */
+export function resolveDdMaterialsDisplayLabel(
+  row: Pick<DueDiligenceTableRow, "ddMaterials">,
+  folderPath: string | null,
+  documentCount: number,
+  materialsLoading: boolean,
+): string {
+  if (materialsLoading) return "…"
+  if (documentCount > 0) return `已上传 (${documentCount})`
+  if (folderPath) return "已上传"
+  if (row.ddMaterials.trim() === "已上传") return ""
+  return row.ddMaterials
 }
 
 export function buildDdMaterialsAutoFillPatch(
   row: DueDiligenceTableRow,
   index: DdMaterialsFolderIndex,
 ): Partial<DueDiligenceTableRow> | null {
-  if (isDdMaterialsAutoLinkDisabled(row)) return null
-
   const storedPath = row.ddMaterialsKbPath?.trim() || null
+  const storedDocuments = storedPath ? getDdMaterialsDocuments(storedPath, index) : []
+
+  if (isDdMaterialsAutoLinkDisabled(row)) {
+    const hasStoredLink = Boolean(storedPath) && storedDocuments.length > 0
+    if (!hasStoredLink && (storedPath || row.ddMaterials.trim() === "已上传")) {
+      return { ddMaterials: "", ddMaterialsKbPath: null }
+    }
+    return null
+  }
 
   if (isDdMaterialsLinkLocked(row)) {
-    if (!storedPath) return null
-    const documents = getDdMaterialsDocuments(storedPath, index)
-    if (documents.length > 0 && row.ddMaterials.trim() !== "已上传") {
+    if (!storedPath) {
+      if (row.ddMaterials.trim() === "已上传" || row.ddMaterialsLinkStatus) {
+        return { ddMaterials: "", ddMaterialsKbPath: null, ddMaterialsLinkStatus: null }
+      }
+      return null
+    }
+    if (!index.folders.has(storedPath)) {
+      if (row.ddMaterials.trim() === "已上传" || row.ddMaterialsLinkStatus) {
+        return { ddMaterials: "", ddMaterialsKbPath: null, ddMaterialsLinkStatus: null }
+      }
+      return null
+    }
+    if (row.ddMaterials.trim() !== "已上传") {
       return { ddMaterials: "已上传" }
     }
     return null
