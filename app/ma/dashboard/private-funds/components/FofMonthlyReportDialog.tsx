@@ -327,11 +327,13 @@ export function FofMonthlyReportDialog({
   onClose,
   onBack,
   embedded = false,
+  layout = "review",
 }: {
   open: boolean
   onClose: () => void
   onBack: () => void
   embedded?: boolean
+  layout?: "curve" | "review"
 }) {
   const [productName, setProductName] = useState("")
   const [beianHao, setBeianHao] = useState<string | null>(null)
@@ -521,6 +523,7 @@ export function FofMonthlyReportDialog({
           report_title: reportTitle.trim() || productName.trim(),
           benchmark_key: benchmarkKey,
           nav_frequency: navFrequency,
+          report_layout: layout,
         }),
       })
       const json = await resp.json()
@@ -535,6 +538,12 @@ export function FofMonthlyReportDialog({
     }
   }
 
+  const isReviewLayout = layout === "review"
+  const dialogTitle = isReviewLayout ? "跟踪产品（月度回顾版）" : "跟踪产品（通用曲线版）"
+  const dialogSubtitle = isReviewLayout
+    ? "横版月报布局，含月度收益柱图与业绩回顾"
+    : "竖版月报布局，指标卡片与净值曲线"
+
   const dialogBody = (
     <DialogContent className="flex max-h-[90vh] w-[920px] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[920px]" showCloseButton>
         <DialogHeader className="border-b px-6 py-4 text-left">
@@ -547,8 +556,8 @@ export function FofMonthlyReportDialog({
               <ArrowLeft className="h-4 w-4" />
             </button>
             <div>
-              <DialogTitle className="text-base font-semibold">跟踪产品（通用曲线版）</DialogTitle>
-              <p className="mt-0.5 text-xs text-zinc-400">选择产品与报告月，生成 FOF 产品月报</p>
+              <DialogTitle className="text-base font-semibold">{dialogTitle}</DialogTitle>
+              <p className="mt-0.5 text-xs text-zinc-400">{dialogSubtitle}</p>
             </div>
           </div>
         </DialogHeader>

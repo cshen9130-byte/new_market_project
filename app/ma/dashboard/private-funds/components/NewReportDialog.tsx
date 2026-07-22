@@ -18,6 +18,7 @@ import { CustomReportGenerateDialog, CustomTemplateCard } from "./CustomReportGe
 
 type TemplateCategory = "weekly" | "monthly" | "custom" | "other"
 type ReportWizardStep = "pick" | "fof-weekly" | "fof-monthly" | "product-monthly" | "custom-report"
+type FofMonthlyLayout = "curve" | "review"
 
 interface ReportTemplate {
   id: string
@@ -26,6 +27,7 @@ interface ReportTemplate {
   badgeLabel: string
   exampleUrl?: string
   exampleKind?: "image" | "pdf"
+  exampleCaption?: string
 }
 
 const TEMPLATE_CATEGORIES: { key: TemplateCategory; label: string }[] = [
@@ -73,9 +75,18 @@ const TEMPLATES_BY_CATEGORY: Record<"weekly" | "monthly" | "other", ReportTempla
     {
       id: "monthly-track-curve",
       title: "跟踪产品（通用曲线版）",
-      description: "显示产品指标和曲线",
+      description: "竖版月报 · 指标卡片与净值曲线",
       badgeLabel: "月报",
-      exampleUrl: "/ma/api/reports/fof-monthly/example",
+      exampleUrl: "/ma/api/reports/fof-monthly/example?layout=curve",
+      exampleCaption: "低波稳健FOF 1号 · 2026-06-26 · 竖版曲线",
+    },
+    {
+      id: "monthly-review",
+      title: "跟踪产品（月度回顾版）",
+      description: "深色仪表盘 · 3D卡片 · 月度收益环形图",
+      badgeLabel: "月报",
+      exampleUrl: "/ma/api/reports/fof-monthly/example?layout=review",
+      exampleCaption: "低波稳健FOF 1号 · 2026-06-26 · 深色仪表盘版",
     },
     {
       id: "monthly-pe-official",
@@ -161,6 +172,7 @@ export function NewReportDialog({
   const [exampleTemplate, setExampleTemplate] = useState<ReportTemplate | null>(null)
   const [customTemplates, setCustomTemplates] = useState<ReportCustomTemplate[]>([])
   const [selectedCustom, setSelectedCustom] = useState<ReportCustomTemplate | null>(null)
+  const [monthlyLayout, setMonthlyLayout] = useState<FofMonthlyLayout>("review")
 
   useEffect(() => {
     if (open) {
@@ -168,6 +180,7 @@ export function NewReportDialog({
       setCategory("weekly")
       setExampleTemplate(null)
       setSelectedCustom(null)
+      setMonthlyLayout("review")
       setCustomTemplates(loadReportTemplates().map(normalizeTemplate))
     }
   }, [open])
@@ -180,6 +193,12 @@ export function NewReportDialog({
       return
     }
     if (template.id === "monthly-track-curve") {
+      setMonthlyLayout("curve")
+      setStep("fof-monthly")
+      return
+    }
+    if (template.id === "monthly-review") {
+      setMonthlyLayout("review")
       setStep("fof-monthly")
       return
     }
@@ -289,7 +308,13 @@ export function NewReportDialog({
           <FofWeeklyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
         )}
         {step === "fof-monthly" && (
-          <FofMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
+          <FofMonthlyReportDialog
+            embedded
+            open={open}
+            layout={monthlyLayout}
+            onClose={onClose}
+            onBack={() => setStep("pick")}
+          />
         )}
         {step === "product-monthly" && (
           <ProductMonthlyReportDialog embedded open={open} onClose={onClose} onBack={() => setStep("pick")} />
@@ -311,6 +336,7 @@ export function NewReportDialog({
           title={exampleTemplate.title}
           exampleUrl={exampleTemplate.exampleUrl}
           exampleKind={exampleTemplate.exampleKind}
+          exampleCaption={exampleTemplate.exampleCaption}
           onClose={() => setExampleTemplate(null)}
         />
       )}

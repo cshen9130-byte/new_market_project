@@ -14,6 +14,7 @@ Usage
   python scripts/ma/nightly_etl.py --step amac_extra
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
   python scripts/ma/nightly_etl.py --step dd_materials_links
+  python scripts/ma/nightly_etl.py --group macro   # macro-market charts only
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
@@ -1054,6 +1055,153 @@ def step_options_contracts_ohlcv(conn, *, force: bool = False) -> int:
     log.info("Options contracts OHLCV: upserted %d rows (max date %s).",
              len(records), max(r[0] for r in records))
     return len(records)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STEP 1c — China financial option IV (cross-section + QVIX)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def step_option_iv(conn, *, force: bool = False) -> int:
+    """Fetch financial option IV snapshot + QVIX history via AkShare.
+
+    Source script : fetch_option_iv_daily.py  (option_iv package)
+    Target tables :
+      raw_option_iv_qvix_daily      — QVIX time series per underlying
+      derived_option_iv_snapshot    — latest chart-ready JSON per underlying
+    """
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_option_iv_qvix_daily (
+                trade_date      DATE        NOT NULL,
+                underlying_key  TEXT        NOT NULL,
+                iv              NUMERIC,
+                open            NUMERIC,
+                high            NUMERIC,
+                low             NUMERIC,
+                fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, underlying_key)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_option_iv_snapshot (
+                trade_date      DATE        NOT NULL,
+                underlying_key  TEXT        NOT NULL,
+                label           TEXT        NOT NULL,
+                group_label     TEXT,
+                spot            NUMERIC,
+                current_iv      NUMERIC,
+                percentile_all  NUMERIC,
+                percentile_1y   NUMERIC,
+                chart_data      JSONB       NOT NULL,
+                fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, underlying_key)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_derived_option_iv_snapshot_key_date
+              ON derived_option_iv_snapshot (underlying_key, trade_date DESC)
+        """)
+    conn.commit()
+
+    today = date.today()
+    cur_max = max_date(conn, "derived_option_iv_snapshot")
+    if not force and cur_max and cur_max >= today:
+        log.info("Option IV snapshot up-to-date (%s), skipping.", cur_max)
+        return 0
+
+    log.info("Option IV: fetching cross-section + QVIX …")
+    out = run_script(
+        "fetch_option_iv_daily.py",
+        timeout=900,
+        log_stderr=True,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"Option IV fetch failed: {out}")
+
+    trade_date = to_date(out.get("trade_date")) or today
+    underlyings = out.get("underlyings") or {}
+    qvix_rows = out.get("qvix_rows") or []
+
+    qvix_records = [
+        (
+            to_date(r["trade_date"]),
+            r["underlying_key"],
+            r.get("iv"),
+            r.get("open"),
+            r.get("high"),
+            r.get("low"),
+        )
+        for r in qvix_rows
+        if r.get("trade_date") and r.get("underlying_key")
+    ]
+
+    snapshot_records = []
+    for key, payload in underlyings.items():
+        snapshot_records.append((
+            trade_date,
+            key,
+            payload.get("label") or key,
+            payload.get("group"),
+            payload.get("spot"),
+            payload.get("current_iv"),
+            payload.get("percentile_all"),
+            payload.get("percentile_1y"),
+            json.dumps(payload, ensure_ascii=False),
+        ))
+
+    total = 0
+    with conn.cursor() as cur:
+        if qvix_records:
+            execute_values(
+                cur,
+                """
+                INSERT INTO raw_option_iv_qvix_daily
+                    (trade_date, underlying_key, iv, open, high, low)
+                VALUES %s
+                ON CONFLICT (trade_date, underlying_key) DO UPDATE
+                    SET iv = EXCLUDED.iv,
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        fetched_at = NOW()
+                """,
+                qvix_records,
+            )
+            total += len(qvix_records)
+
+        if snapshot_records:
+            execute_values(
+                cur,
+                """
+                INSERT INTO derived_option_iv_snapshot
+                    (trade_date, underlying_key, label, group_label,
+                     spot, current_iv, percentile_all, percentile_1y, chart_data)
+                VALUES %s
+                ON CONFLICT (trade_date, underlying_key) DO UPDATE
+                    SET label = EXCLUDED.label,
+                        group_label = EXCLUDED.group_label,
+                        spot = EXCLUDED.spot,
+                        current_iv = EXCLUDED.current_iv,
+                        percentile_all = EXCLUDED.percentile_all,
+                        percentile_1y = EXCLUDED.percentile_1y,
+                        chart_data = EXCLUDED.chart_data,
+                        fetched_at = NOW()
+                """,
+                snapshot_records,
+            )
+            total += len(snapshot_records)
+
+    conn.commit()
+    log.info(
+        "Option IV: upserted %d QVIX rows + %d snapshot rows (trade_date=%s, underlyings=%d).",
+        len(qvix_records),
+        len(snapshot_records),
+        trade_date,
+        len(underlyings),
+    )
+    return total
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3388,6 +3536,20 @@ def step_warm_mom_cache() -> int:
         return 0
 
 
+# Steps that refresh /ma/dashboard/macro-market charts (PCA, regime, money-credit).
+MACRO_STEPS = [
+    "nhci",
+    "etf_prices",
+    "predict_market_cluster",
+    "predict_market_cluster_weekly",
+    "predict_market_cluster_monthly",
+    "afre",
+    "regime_indicators",
+    "regime_similarity",
+    "shibor_3m",
+    "money_credit",
+]
+
 ORDERED_STEPS = [
     "nhci",
     "nheci",
@@ -3396,6 +3558,7 @@ ORDERED_STEPS = [
     "futures_contracts_ohlcv",      # OHLCV for every futures contract MOM traded (EmQuant)
     "akshare_exchange_daily",       # per-contract volume+OI from exchange bulletins (free fallback)
     "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
+    "option_iv",                    # China financial option IV snapshot + QVIX (AkShare)
     "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
     "futures_rollover_dates",       # rollover dates from OI-dominant-contract tracking
     "spot_closes",
@@ -3482,10 +3645,18 @@ def main():
 
     parser = argparse.ArgumentParser(description="Nightly market data ETL")
     parser.add_argument("--step", choices=ORDERED_STEPS, help="Run a single step only")
+    parser.add_argument(
+        "--group",
+        choices=["macro"],
+        help="Run a predefined step group (e.g. macro = all macro-market chart steps)",
+    )
     parser.add_argument("--backfill", action="store_true", help="Force full history reload")
     parser.add_argument("--force", action="store_true", help="Re-fetch even if data already in DB")
     parser.add_argument("--date", help="Override target trade date (YYYY-MM-DD or YYYYMMDD)")
     args = parser.parse_args()
+
+    if args.step and args.group:
+        parser.error("Use only one of --step or --group")
 
     log.info("=" * 60)
     log.info("Nightly ETL starting  (pid=%d)", os.getpid())
@@ -3522,6 +3693,7 @@ def main():
         "futures_contracts_ohlcv":    lambda: step_futures_contracts_ohlcv(conn, force=force),
         "akshare_exchange_daily":      lambda: step_akshare_exchange_daily(conn, force=force),
         "options_contracts_ohlcv":    lambda: step_options_contracts_ohlcv(conn, force=force),
+        "option_iv":                  lambda: step_option_iv(conn, force=force),
         "akshare_futures_daily":      lambda: step_akshare_futures_daily(conn, force=force),
         "futures_rollover_dates":     lambda: step_futures_rollover_dates(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),
@@ -3558,7 +3730,13 @@ def main():
         "backfill_benchmarks":             lambda: step_backfill_benchmarks(conn, start=date(2020, 1, 1)),
     }
 
-    steps_to_run = [args.step] if args.step else ORDERED_STEPS
+    if args.step:
+        steps_to_run = [args.step]
+    elif args.group == "macro":
+        steps_to_run = MACRO_STEPS
+        log.info("Running macro-market step group (%d steps)", len(steps_to_run))
+    else:
+        steps_to_run = ORDERED_STEPS
     errors = []
 
     for step_name in steps_to_run:

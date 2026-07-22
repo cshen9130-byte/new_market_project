@@ -25,7 +25,8 @@ import numpy as np
 import pandas as pd
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.font_manager import FontProperties, fontManager
-from matplotlib.patches import FancyBboxPatch, Rectangle
+from matplotlib.patches import FancyBboxPatch, Polygon as MplPolygon, Rectangle, Wedge, Circle
+from matplotlib.lines import Line2D
 
 # ── 配色（中国基金惯例：红涨绿跌，融入高端金色与深红） ──────────────────────────
 C_PRIMARY = "#8C1D1D"
@@ -70,6 +71,23 @@ REPORT_KIND_LABELS: dict[str, dict[str, str]] = {
 def normalize_report_kind(kind: str | None) -> str:
     normalized = (kind or "weekly").strip().lower()
     return normalized if normalized in REPORT_KIND_LABELS else "weekly"
+
+
+def normalize_report_layout(layout: str | None, report_kind: str | None = "weekly") -> str:
+    normalized = (layout or "").strip().lower()
+    if normalized in ("curve", "review"):
+        return normalized
+    return "review" if normalize_report_kind(report_kind) == "monthly" else "curve"
+
+
+# Monthly report palette — landscape investor-letter style (distinct from weekly red portrait card)
+M_NAVY = "#1A365D"
+M_NAVY_MID = "#2C5282"
+M_GOLD = "#C9A227"
+M_GOLD_PALE = "#F0E6C8"
+M_BG_MONTHLY = "#EEF2F7"
+M_PANEL = "#FFFFFF"
+M_BORDER_M = "#CBD5E1"
 
 _CN_TRADE_DATES: pd.DatetimeIndex | None = None
 
@@ -799,28 +817,123 @@ def draw_container_card(ax, x, y, w, h, title, fp_bold, fp):
     )
 
 
-def make_report(
-    nav_file: str,
-    output_dir: str | None = None,
-    *,
-    week_begin: str | None = None,
-    week_end: str | None = None,
-    product_name: str = PRODUCT_NAME,
-    report_title: str = REPORT_TITLE,
-    product_tagline: str = PRODUCT_TAGLINE,
-    benchmark_label: str = "沪深300",
-    nav_frequency: str | None = "weekly",
-    report_kind: str | None = "weekly",
-) -> tuple[str, str]:
-    kind = normalize_report_kind(report_kind)
-    labels = REPORT_KIND_LABELS[kind]
-    print(f"[make_report] week_begin={week_begin!r} week_end={week_end!r} nav_frequency={nav_frequency!r} report_kind={kind!r}")
-    output_dir = output_dir or str(Path(nav_file).parent)
+def ensure_integrated_horse() -> str:
+    dst_path = Path(__file__).parent / "integrated_horse.png"
+    if dst_path.exists():
+        return str(dst_path)
+    
+    src_path = Path(__file__).parent / "generated_galloping_horse.png"
+    if not src_path.exists():
+        workspace_assets = Path(__file__).parent.parent / "assets"
+        for p in workspace_assets.glob("*generated_galloping_horse*.png"):
+            src_path = p
+            break
+            
+    if not src_path.exists():
+        return ""
+        
+    try:
+        from PIL import Image, ImageDraw, ImageFilter
+        img = Image.open(src_path).convert('RGBA')
+        w, h = img.size
+        horse_resized = img.resize((480, int(480 * h / w)), Image.Resampling.LANCZOS)
+        bw, bh = horse_resized.size
 
+        mask = Image.new('L', (bw, bh), 0)
+        draw = ImageDraw.Draw(mask)
+        pad = 8
+        draw.rounded_rectangle([pad, pad, bw - pad, bh - pad], radius=24, fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(8))
+
+        horse_resized.putalpha(mask)
+
+        border_layer = Image.new('RGBA', (bw, bh), (0, 0, 0, 0))
+        bdraw = ImageDraw.Draw(border_layer)
+        bdraw.rounded_rectangle([pad+3, pad+3, bw - pad - 3, bh - pad - 3], radius=20, outline=(250, 240, 137, 240), width=3)
+
+        horse_final = Image.alpha_composite(horse_resized, border_layer)
+        horse_final.save(dst_path)
+        return str(dst_path)
+    except Exception as exc:
+        print(f"[ensure_integrated_horse warning]: {exc}")
+        return ""
+
+
+def ensure_gold_header_seal() -> str:
+    art_path = Path(__file__).parent / "gold_header_seal.png"
+    if art_path.exists():
+        return str(art_path)
+    
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        W, H = 600, 200
+        img = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        GOLD_LIGHT = (250, 240, 137, 255)
+        GOLD_MAIN  = (212, 160, 23, 255)
+
+        sx, sy, sw, sh = 420, 30, 130, 130
+        draw.rounded_rectangle([sx, sy, sx+sw, sy+sh], radius=16, outline=GOLD_LIGHT, width=3)
+        draw.rounded_rectangle([sx+4, sy+4, sx+sw-4, sy+sh-4], radius=12, outline=GOLD_MAIN, width=1)
+
+        font_seal = None
+        font_sub = None
+        try:
+            font_seal = ImageFont.truetype('simhei.ttf', 44)
+            font_sub  = ImageFont.truetype('simhei.ttf', 20)
+        except:
+            pass
+
+        if font_seal:
+            draw.text((sx+18, sy+14), '丙', fill=GOLD_LIGHT, font=font_seal)
+            draw.text((sx+70, sy+14), '午', fill=GOLD_LIGHT, font=font_seal)
+            draw.text((sx+18, sy+66), '马', fill=GOLD_LIGHT, font=font_seal)
+            draw.text((sx+70, sy+66), '年', fill=GOLD_LIGHT, font=font_seal)
+
+        if font_sub:
+            draw.text((230, 60), '丙午马年 · 龙马精神', fill=GOLD_LIGHT, font=font_sub)
+            draw.text((230, 95), '岁在丙午 · 祥瑞开新', fill=(250, 240, 137, 200), font=font_sub)
+
+        img.save(art_path)
+        return str(art_path)
+    except Exception as exc:
+        print(f"[ensure_gold_header_seal] warning: {exc}")
+        return ""
+
+
+def _extract_recent_monthly_returns(interval_rows: list[dict], end_date: pd.Timestamp) -> list[tuple[str, float | None]]:
+    """Last 12 calendar months ending at end_date, for the monthly bar chart."""
+    by_ym: dict[tuple[int, int], float | None] = {}
+    for row in interval_rows:
+        year = int(row["year"])
+        for month in range(1, 13):
+            val = row.get(month)
+            by_ym[(year, month)] = float(val) if val is not None else None
+
+    out: list[tuple[str, float | None]] = []
+    cursor = pd.Timestamp(end_date.year, end_date.month, 1)
+    for _ in range(12):
+        key = (int(cursor.year), int(cursor.month))
+        label = cursor.strftime("%y/%m")
+        out.append((label, by_ym.get(key)))
+        cursor = cursor - pd.DateOffset(months=1)
+    out.reverse()
+    return out
+
+
+def _prepare_report_context(
+    nav_file: str,
+    *,
+    week_begin: str | None,
+    week_end: str | None,
+    product_name: str,
+    nav_frequency: str | None,
+    report_kind: str,
+) -> dict:
+    kind = normalize_report_kind(report_kind)
     raw_df = load_nav_data(nav_file)
-    # Normalize adj_nav so the series always starts at 1.0000.
-    # This makes 最新净值 display the cumulative performance index (e.g. 1.5848 means +58.48%)
-    # regardless of whether the underlying data starts at 1.0000 or some other base value.
     first_adj = float(raw_df["adj_nav"].iloc[0]) if len(raw_df) > 0 else 1.0
     if first_adj > 0 and abs(first_adj - 1.0) > 1e-6:
         raw_df = raw_df.copy()
@@ -836,22 +949,59 @@ def make_report(
             )
     if report_week_begin is not None and as_of is not None and report_week_begin > as_of:
         raise ValueError(
-            f"报告周开始日期 {report_week_begin.date()} 不能晚于结束日期 {as_of.date()}"
+            f"报告开始日期 {report_week_begin.date()} 不能晚于结束日期 {as_of.date()}"
         )
 
     plot_df = df[df["date"] <= as_of].copy() if as_of is not None else df
-    # 区间收益率 table always uses daily nav data regardless of the chosen frequency,
-    # so that monthly return figures are consistent across all frequency selections.
     daily_plot_df = raw_df[raw_df["date"] <= as_of].copy() if as_of is not None else raw_df.copy()
     interval_rows = compute_interval_returns(daily_plot_df, fund_name=product_name)
     metrics = compute_metrics(df, as_of, nav_frequency, report_week_begin, report_kind=kind)
 
-    # Override ytd_return with the daily-data-based annual return so 今年以来 KPI
-    # matches the 2026 全年 figure in the 区间收益率 table.
     cur_year = int(as_of.year) if as_of is not None else int(daily_plot_df["date"].dt.year.max())
     year_row = next((r for r in interval_rows if r["year"] == cur_year), None)
     if year_row and year_row.get("annual") is not None:
         metrics["ytd_return"] = float(year_row["annual"])
+
+    return {
+        "kind": kind,
+        "plot_df": plot_df,
+        "interval_rows": interval_rows,
+        "metrics": metrics,
+        "as_of": as_of,
+    }
+
+
+def _save_report_figure(
+    fig,
+    output_dir: str,
+    report_title: str,
+    end_date: pd.Timestamp,
+    file_suffix: str,
+) -> tuple[str, str]:
+    os.makedirs(output_dir, exist_ok=True)
+    date_str = end_date.strftime("%Y%m%d")
+    png_path = os.path.join(output_dir, f"{report_title}{file_suffix}_{date_str}.png")
+    pdf_path = os.path.join(output_dir, f"{report_title}{file_suffix}_{date_str}.pdf")
+    fig.savefig(png_path, dpi=200, bbox_inches="tight", facecolor=fig.get_facecolor(), pad_inches=0.08)
+    with PdfPages(pdf_path) as pdf:
+        pdf.savefig(fig, bbox_inches="tight", facecolor=fig.get_facecolor(), pad_inches=0.08)
+    plt.close(fig)
+    return png_path, pdf_path
+
+
+def _make_weekly_report(
+    ctx: dict,
+    *,
+    output_dir: str,
+    product_name: str,
+    report_title: str,
+    product_tagline: str,
+    benchmark_label: str,
+) -> tuple[str, str]:
+    labels = REPORT_KIND_LABELS[ctx["kind"]]
+    plot_df = ctx["plot_df"]
+    interval_rows = ctx["interval_rows"]
+    metrics = ctx["metrics"]
 
     fp, fp_bold = configure_cn_font()
     if fp is None:
@@ -1030,7 +1180,7 @@ def make_report(
     bottom_h = 0.14
 
     draw_container_card(ax, 0.04, bottom_y, 0.44, bottom_h, labels["period_highlights"], fp_bold, fp)
-    highlights = build_highlights(metrics, benchmark_label, report_kind=kind)
+    highlights = build_highlights(metrics, benchmark_label, report_kind=ctx["kind"])
     for i, line in enumerate(highlights):
         draw_text(ax, 0.06, bottom_y + bottom_h - 0.042 - i * 0.016, line, fp, size=8.5, color=C_TEXT)
 
@@ -1066,15 +1216,470 @@ def make_report(
     disclaimer = "本报告仅供合格投资者及合作渠道参考，不构成投资建议。过往业绩不代表未来表现，市场有风险，投资需谨慎。"
     draw_text(ax, 0.5, 0.03, disclaimer, fp, size=7.5, color="white", ha="center")
 
-    os.makedirs(output_dir, exist_ok=True)
-    date_str = metrics["end_date"].strftime("%Y%m%d")
-    png_path = os.path.join(output_dir, f"{report_title}{labels['file_suffix']}_{date_str}.png")
-    pdf_path = os.path.join(output_dir, f"{report_title}{labels['file_suffix']}_{date_str}.pdf")
+    return _save_report_figure(
+        fig, output_dir, report_title, metrics["end_date"],
+        "月报曲线版" if ctx["kind"] == "monthly" else labels["file_suffix"],
+    )
 
-    fig.savefig(png_path, dpi=200, bbox_inches="tight", facecolor=C_BG, pad_inches=0.1)
-    with PdfPages(pdf_path) as pdf:
-        pdf.savefig(fig, bbox_inches="tight", facecolor=C_BG, pad_inches=0.1)
-    plt.close(fig)
+
+def _make_monthly_report(
+    ctx: dict,
+    *,
+    output_dir: str,
+    product_name: str,
+    report_title: str,
+    product_tagline: str,
+    benchmark_label: str,
+) -> tuple[str, str]:
+    """Light Chinese-style monthly report — red accents, horse-year motif, seal stamp."""
+    labels = REPORT_KIND_LABELS["monthly"]
+    plot_df = ctx["plot_df"]
+    interval_rows = ctx["interval_rows"]
+    metrics = ctx["metrics"]
+    end_date = metrics["end_date"]
+    month_label = end_date.strftime("%Y年%m月")
+    period_range = (
+        f"{metrics['week_start'].strftime('%Y.%m.%d')} – {metrics['week_end'].strftime('%Y.%m.%d')}"
+    )
+
+    fp, fp_bold = configure_cn_font()
+    if fp is None:
+        raise RuntimeError(
+            "未找到可用的中文字体。请在服务器执行: bash scripts/deploy/setup-haitai-week-report.sh"
+        )
+
+    # ── Chinese New Year (Horse) palette ────────────────────────────────────
+    C_BG        = "#FEF9F7"   # warm paper white
+    C_WHITE     = "#FFFFFF"
+    C_RED       = "#C0282E"   # 朱砂红 Chinese vermillion
+    C_RED_DEEP  = "#7B1D1D"   # deep lacquer red (header)
+    C_RED_MID   = "#9B2C2C"
+    C_RED_LIGHT = "#FED7D7"   # blush
+    C_RED_PALE  = "#FFF5F5"   # near-white blush (tile bg)
+    C_GOLD      = "#B7791F"   # antique gold
+    C_GOLD_PALE = "#FAF089"   # pale gold
+    C_DOWN      = "#276749"   # forest green (negative; Chinese: green = down)
+    C_INK       = "#1A202C"   # near-black ink
+    C_DIM       = "#718096"
+    C_BORDER    = "#E2E8F0"
+
+    def ch_color(val: float) -> str:
+        return C_RED if val > 0 else (C_DOWN if val < 0 else C_INK)
+
+    month_ret = metrics["week_return"]
+
+    # Figure: 9×13 inches portrait
+    # x-units span 9"; y-units span 13"
+    FIG_W, FIG_H = 9.0, 13.0
+
+    fig = plt.figure(figsize=(FIG_W, FIG_H), facecolor=C_BG)
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    # ── Background: faint diagonal texture lines ────────────────────────────
+    for xi in np.arange(-0.3, 1.3, 0.055):
+        ax.plot([xi, xi + 1.0], [0.07, 0.88], color=C_RED,
+                alpha=0.025, linewidth=0.6, transform=ax.transAxes,
+                clip_on=True, zorder=0)
+
+    # ── Large "马" watermark ─────────────────────────────────────────────────
+    ax.text(
+        0.76, 0.48, "马",
+        transform=ax.transAxes,
+        fontsize=310, color=C_RED_LIGHT, alpha=0.18,
+        ha="center", va="center", weight="bold",
+        rotation=-12, zorder=0,
+        fontproperties=fp_bold or fp,
+    )
+
+    # ── HEADER: deep-red band with wavy bottom edge ──────────────────────────
+    wave_xs = np.linspace(0, 1, 200)
+    wave_ys = 0.875 - 0.008 * np.sin(wave_xs * 8 * np.pi + 0.3)
+    header_verts = (
+        [(0, 1.01), (1, 1.01), (1, wave_ys[-1])]
+        + list(zip(wave_xs[::-1], wave_ys[::-1]))
+    )
+    ax.add_patch(MplPolygon(header_verts, closed=True, transform=ax.transAxes,
+                            facecolor=C_RED_DEEP, edgecolor="none",
+                            clip_on=False, zorder=1))
+    ax.add_patch(Rectangle((0, 0.994), 1, 0.006, transform=ax.transAxes,
+                            color=C_GOLD, clip_on=False, zorder=2))
+    ax.plot(wave_xs, wave_ys, transform=ax.transAxes,
+            color=C_GOLD, linewidth=1.4, clip_on=False, zorder=2, alpha=0.7)
+    for xi in np.arange(0.03, 0.65, 0.040):
+        ax.text(xi, 0.978, "◆", transform=ax.transAxes,
+                color=C_GOLD_PALE, alpha=0.28, fontsize=4.5,
+                ha="center", va="center", clip_on=False, zorder=2)
+
+    # Header text (left side)
+    draw_text(ax, 0.05, 0.962, report_title,
+              fp_bold or fp, size=21, color="white", weight="bold")
+    draw_text(ax, 0.05, 0.910,
+              labels["kind_name"] + "  ·  " + month_label,
+              fp, size=11.5, color=C_GOLD_PALE)
+    draw_text(ax, 0.05, 0.886, f"数据截至 {end_date.strftime('%Y年%m月%d日')}",
+              fp, size=8.5, color="#FFCDD2")
+
+    # ── GENERATED HORSE ARTWORK (Integrated softly into top-right header) ───
+    horse_art_file = ensure_integrated_horse()
+    if horse_art_file and os.path.exists(horse_art_file):
+        try:
+            horse_img = plt.imread(horse_art_file)
+            ax.imshow(horse_img, extent=[0.76, 0.95, 0.880, 0.988], zorder=4, aspect='auto')
+        except Exception as e:
+            print(f"[imshow integrated horse warning]: {e}")
+
+    draw_text(ax, 0.68, 0.942, "丙午马年", fp_bold or fp, size=13, color=C_GOLD_PALE, ha="center", weight="bold")
+    draw_text(ax, 0.68, 0.910, "龙马精神 · 祥瑞开新", fp, size=8, color=C_GOLD_PALE, ha="center")
+
+    # ── HERO CARD: ring KPI + 6 stat tiles ──────────────────────────────────
+    ax.add_patch(FancyBboxPatch(
+        (0.04, 0.630), 0.92, 0.224,
+        boxstyle="round,pad=0.006,rounding_size=0.012",
+        facecolor=C_WHITE, edgecolor=C_BORDER, linewidth=0.8,
+        transform=ax.transAxes, clip_on=False, zorder=2,
+    ))
+    ax.add_patch(Rectangle((0.040, 0.630), 0.007, 0.224,
+                            transform=ax.transAxes, color=C_RED,
+                            clip_on=False, zorder=3))
+    ax.add_patch(Rectangle((0.040, 0.848), 0.920, 0.006,
+                            transform=ax.transAxes, color=C_RED,
+                            clip_on=False, zorder=3))
+
+    # Circular ring KPI (left column — labels kept inside ring only)
+    ring_cx, ring_cy, ring_r = 0.145, 0.748, 0.060
+    ax.add_patch(Wedge(
+        (ring_cx, ring_cy), ring_r, 0, 360, width=0.022,
+        transform=ax.transAxes, facecolor=C_RED_LIGHT,
+        edgecolor=C_BORDER, linewidth=0.4, clip_on=False, zorder=4,
+    ))
+    arc_pct = min(abs(month_ret) / 0.50, 1.0)
+    arc_deg = arc_pct * 270.0
+    arc_col = ch_color(month_ret)
+    if arc_deg > 1:
+        ax.add_patch(Wedge(
+            (ring_cx, ring_cy), ring_r, 90, 90 - arc_deg,
+            width=0.022, transform=ax.transAxes,
+            facecolor=arc_col, edgecolor="none", clip_on=False, zorder=5,
+        ))
+    draw_text(ax, ring_cx, ring_cy + 0.012, "本月收益",
+              fp, size=7.5, color=C_DIM, ha="center")
+    draw_text(ax, ring_cx, ring_cy - 0.014, fmt_pct(month_ret),
+              fp_bold or fp, size=13, color=arc_col, weight="bold", ha="center")
+    # Excess / benchmark below the ring (outside the wedge)
+    bench_line_y = ring_cy - ring_r - 0.022
+    draw_text(
+        ax, ring_cx, bench_line_y,
+        f"超额 {fmt_pct(metrics['week_excess'])} · {benchmark_label} {fmt_pct(metrics['week_bench'])}",
+        fp, size=6.5, color=C_DIM, ha="center",
+    )
+
+    # 6 stat tiles (2 rows × 3 cols) — span full width to the right of ring
+    tile_items = [
+        ("今年以来",   fmt_pct(metrics["ytd_return"]),              ch_color(metrics["ytd_return"])),
+        ("运作以来",   fmt_pct(metrics["total_return"]),            ch_color(metrics["total_return"])),
+        ("最新净值",   f"{metrics['end_nav']:.4f}",                C_INK),
+        ("夏普比率",   f"{metrics['sharpe']:.2f}",                 C_RED_MID),
+        ("最大回撤",   fmt_pct(metrics["max_drawdown"]),            ch_color(metrics["max_drawdown"])),
+        ("年化波动率", fmt_pct(metrics["volatility"], signed=False), C_DIM),
+    ]
+    tile_x0, tile_x1 = 0.265, 0.945
+    th, tgy = 0.081, 0.012
+    tgx = 0.014
+    tw = (tile_x1 - tile_x0 - 2 * tgx) / 3
+    row1_y, row2_y = 0.760, 0.760 - th - tgy
+    for i, (lbl, val, col) in enumerate(tile_items):
+        ci, ri = i % 3, i // 3
+        tx = tile_x0 + ci * (tw + tgx)
+        ty = row1_y if ri == 0 else row2_y
+        ax.add_patch(FancyBboxPatch(
+            (tx, ty), tw, th,
+            boxstyle="round,pad=0.003,rounding_size=0.006",
+            facecolor=C_RED_PALE, edgecolor=C_RED_LIGHT, linewidth=0.6,
+            transform=ax.transAxes, clip_on=False, zorder=3,
+        ))
+        ax.add_patch(Rectangle(
+            (tx, ty + th - 0.005), tw, 0.005,
+            transform=ax.transAxes, color=C_RED, clip_on=False, zorder=4,
+        ))
+        draw_text(ax, tx + tw / 2, ty + th - 0.024, lbl,
+                  fp, size=7.5, color=C_DIM, ha="center")
+        draw_text(ax, tx + tw / 2, ty + 0.027, val,
+                  fp_bold or fp, size=11.5, color=col, weight="bold", ha="center")
+
+    # ── 12-MONTH BAR CHART (left block) ─────────────────────────────────────
+    ax.add_patch(FancyBboxPatch(
+        (0.04, 0.420), 0.54, 0.188,
+        boxstyle="round,pad=0.006,rounding_size=0.012",
+        facecolor=C_WHITE, edgecolor=C_BORDER, linewidth=0.8,
+        transform=ax.transAxes, clip_on=False, zorder=2,
+    ))
+    ax.add_patch(Rectangle((0.040, 0.420), 0.007, 0.188,
+                            transform=ax.transAxes, color=C_RED,
+                            clip_on=False, zorder=3))
+    draw_text(ax, 0.076, 0.592, "近12个月月度收益",
+              fp_bold or fp, size=10, color=C_RED_DEEP, weight="bold")
+
+    bar_ax = fig.add_axes([0.073, 0.452, 0.490, 0.118])
+    bar_ax.set_facecolor(C_WHITE)
+    monthly_bars = _extract_recent_monthly_returns(interval_rows, end_date)
+    # Compact labels: "25/7" instead of "25/07" to reduce overlap
+    x_labels = []
+    for lbl, _ in monthly_bars:
+        if "/" in lbl:
+            yr, mo = lbl.split("/", 1)
+            x_labels.append(f"{yr}/{int(mo)}")
+        else:
+            x_labels.append(lbl)
+    y_vals   = [item[1] * 100 if item[1] is not None else 0 for item in monthly_bars]
+    bar_cols = [ch_color(v / 100) if item[1] is not None else C_BORDER
+                for v, item in zip(y_vals, monthly_bars)]
+    bar_ax.bar(range(len(x_labels)), y_vals, color=bar_cols,
+               width=0.68, edgecolor="none", zorder=3)
+    bar_ax.axhline(0, color=C_BORDER, linewidth=0.8, zorder=4)
+    bar_ax.set_xticks(range(len(x_labels)))
+    bar_ax.set_xticklabels(x_labels, fontsize=5, color=C_DIM, rotation=45, ha="right")
+    bar_ax.tick_params(axis="x", pad=1)
+    bar_ax.tick_params(axis="y", labelsize=6, colors=C_DIM)
+    for sp in bar_ax.spines.values():
+        sp.set_color(C_BORDER)
+        sp.set_alpha(0.5)
+    bar_ax.spines["top"].set_visible(False)
+    bar_ax.spines["right"].set_visible(False)
+    bar_ax.set_facecolor(C_WHITE)
+    bar_ax.grid(axis="y", alpha=0.12, linestyle=":", color=C_DIM)
+    for label in bar_ax.get_xticklabels():
+        if fp:
+            label.set_fontproperties(fp)
+
+    # ── REVIEW PANEL (right block) ───────────────────────────────────────────
+    ax.add_patch(FancyBboxPatch(
+        (0.60, 0.420), 0.36, 0.188,
+        boxstyle="round,pad=0.006,rounding_size=0.012",
+        facecolor=C_WHITE, edgecolor=C_RED, linewidth=1.0,
+        transform=ax.transAxes, clip_on=False, zorder=2,
+    ))
+    ax.add_patch(FancyBboxPatch(
+        (0.60, 0.570), 0.36, 0.038,
+        boxstyle="round,pad=0.004,rounding_size=0.008",
+        facecolor=C_RED, edgecolor="none",
+        transform=ax.transAxes, clip_on=False, zorder=3,
+    ))
+    draw_text(ax, 0.780, 0.590, f"{month_label}  回顾",
+              fp_bold or fp, size=10, color="white", weight="bold", ha="center")
+    draw_text(ax, 0.614, 0.560, period_range, fp, size=7, color=C_DIM)
+    highlights = build_highlights(metrics, benchmark_label, report_kind="monthly")
+    for i, line in enumerate(highlights[:5]):
+        txt_col = C_INK if i % 2 == 0 else C_DIM
+        draw_text(ax, 0.612, 0.546 - i * 0.027, line, fp, size=7.5, color=txt_col)
+
+    # ── CUMULATIVE CHART ─────────────────────────────────────────────────────
+    cum_card_bottom = 0.138
+    cum_card_h = 0.259
+    ax.add_patch(FancyBboxPatch(
+        (0.04, cum_card_bottom), 0.92, cum_card_h,
+        boxstyle="round,pad=0.006,rounding_size=0.012",
+        facecolor=C_WHITE, edgecolor=C_BORDER, linewidth=0.8,
+        transform=ax.transAxes, clip_on=False, zorder=2,
+    ))
+    ax.add_patch(Rectangle((0.040, cum_card_bottom), 0.007, cum_card_h,
+                            transform=ax.transAxes, color=C_RED,
+                            clip_on=False, zorder=3))
+    draw_text(ax, 0.076, 0.379,
+              f"累计收益率（{product_name}  vs  {benchmark_label}）",
+              fp_bold or fp, size=10, color=C_RED_DEEP, weight="bold")
+
+    cum_ax = fig.add_axes([0.078, 0.255, 0.868, 0.095])
+    cum_ax.set_facecolor(C_WHITE)
+    start_nav = float(plot_df["adj_nav"].iloc[0])
+    fund_cum  = (plot_df.set_index("date")["adj_nav"] / start_nav - 1) * 100
+    bench_cum = (plot_df.set_index("date")["csi300"] / plot_df["csi300"].iloc[0] - 1) * 100
+    cum_ax.fill_between(fund_cum.index, fund_cum.values, 0,
+                        color=C_RED, alpha=0.08, zorder=2)
+    cum_ax.plot(fund_cum.index, fund_cum.values,
+                color=C_RED, linewidth=2.2, label=product_name, zorder=3)
+    cum_ax.plot(bench_cum.index, bench_cum.values,
+                color=C_DIM, linewidth=1.4, linestyle="--",
+                label=benchmark_label, zorder=1, alpha=0.75)
+    cum_ax.axvspan(metrics["week_start"], metrics["week_end"],
+                   color=C_GOLD, alpha=0.12, zorder=0)
+    cum_ax.axhline(0, color=C_BORDER, linewidth=0.7)
+    last_y = fund_cum.values[-1]
+    last_x = fund_cum.index[-1]
+    cum_ax.annotate(
+        f"{last_y:+.1f}%", xy=(last_x, last_y),
+        xytext=(-42, 10), textcoords="offset points",
+        fontsize=9, color=C_RED, weight="bold", fontproperties=fp,
+        arrowprops=dict(arrowstyle="-", color=C_RED, alpha=0.45, lw=0.8),
+    )
+    # Trim x-axis to data range (avoid empty space past last date)
+    x_min = fund_cum.index.min()
+    x_max = fund_cum.index.max()
+    x_pad = pd.Timedelta(days=20)
+    cum_ax.set_xlim(x_min - x_pad, x_max + x_pad)
+    cum_ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+    cum_ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y/%m"))
+    cum_ax.tick_params(axis="both", labelsize=7, colors=C_DIM)
+    cum_ax.tick_params(axis="x", pad=2)
+    for sp in cum_ax.spines.values():
+        sp.set_color(C_BORDER)
+        sp.set_alpha(0.5)
+    cum_ax.spines["top"].set_visible(False)
+    cum_ax.spines["right"].set_visible(False)
+    cum_ax.set_facecolor(C_WHITE)
+    cum_ax.grid(alpha=0.10, linestyle=":", color=C_DIM)
+    for label in cum_ax.get_xticklabels():
+        if fp:
+            label.set_fontproperties(fp)
+    legend_elements = [
+        Line2D([0], [0], color=C_RED, lw=2, label=product_name),
+        Line2D([0], [0], color=C_DIM, lw=1.4, linestyle="--", label=benchmark_label),
+    ]
+    legend_kw = dict(handles=legend_elements, loc="upper left",
+                     fontsize=7, framealpha=0.9, facecolor=C_WHITE, edgecolor=C_BORDER)
+    if fp:
+        legend_kw["prop"] = fp
+    cum_ax.legend(**legend_kw)
+
+    # ── MONTHLY RETURN TABLE (below cumulative chart) ───────────────────────
+    draw_text(ax, 0.076, 0.228, "月度收益明细",
+              fp_bold or fp, size=8, color=C_RED_DEEP, weight="bold")
+
+    n = len(monthly_bars)
+    tbl_x0, tbl_y, tbl_w = 0.076, 0.175, 0.868
+    lbl_w = 0.048
+    row_h = 0.022
+    tbl_h = row_h * 2
+    col_w = (tbl_w - lbl_w) / n
+
+    # Outer table border
+    ax.add_patch(FancyBboxPatch(
+        (tbl_x0, tbl_y), tbl_w, tbl_h,
+        boxstyle="round,pad=0.002,rounding_size=0.004",
+        facecolor=C_WHITE, edgecolor=C_BORDER, linewidth=0.8,
+        transform=ax.transAxes, clip_on=False, zorder=3,
+    ))
+    # Horizontal divider between header & data rows
+    ax.add_patch(Rectangle(
+        (tbl_x0, tbl_y + row_h), tbl_w, 0.0012,
+        transform=ax.transAxes, color=C_BORDER, clip_on=False, zorder=4,
+    ))
+    # Vertical divider after label column
+    ax.add_patch(Rectangle(
+        (tbl_x0 + lbl_w, tbl_y), 0.0012, tbl_h,
+        transform=ax.transAxes, color=C_BORDER, clip_on=False, zorder=4,
+    ))
+
+    # Header row background (month labels)
+    ax.add_patch(Rectangle(
+        (tbl_x0 + lbl_w, tbl_y + row_h), tbl_w - lbl_w, row_h,
+        transform=ax.transAxes, facecolor=C_RED_PALE, edgecolor="none",
+        clip_on=False, zorder=3,
+    ))
+
+    # Row labels
+    draw_text(ax, tbl_x0 + lbl_w / 2, tbl_y + row_h + row_h / 2, "月份",
+              fp_bold or fp, size=6.5, color=C_RED_MID, ha="center", va="center", weight="bold")
+    draw_text(ax, tbl_x0 + lbl_w / 2, tbl_y + row_h / 2, "收益率",
+              fp_bold or fp, size=6.5, color=C_RED_MID, ha="center", va="center", weight="bold")
+
+    for i, (lbl, ret) in enumerate(monthly_bars):
+        cx = tbl_x0 + lbl_w + i * col_w
+        # Column divider
+        if i > 0:
+            ax.add_patch(Rectangle(
+                (cx, tbl_y), 0.0008, tbl_h,
+                transform=ax.transAxes, color=C_BORDER, clip_on=False, zorder=4, alpha=0.6,
+            ))
+        # Compact month label
+        if "/" in lbl:
+            yr, mo = lbl.split("/", 1)
+            month_lbl = f"{yr}/{int(mo)}"
+        else:
+            month_lbl = lbl
+        draw_text(ax, cx + col_w / 2, tbl_y + row_h + row_h / 2, month_lbl,
+                  fp, size=6, color=C_DIM, ha="center", va="center")
+        # Return value with Chinese color convention
+        if ret is not None:
+            val_txt = f"{ret * 100:+.1f}%"
+            val_col = ch_color(ret)
+        else:
+            val_txt = "--"
+            val_col = C_DIM
+        draw_text(ax, cx + col_w / 2, tbl_y + row_h / 2, val_txt,
+                  fp_bold or fp, size=6.5, color=val_col, ha="center", va="center", weight="bold")
+
+    # ── FOOTER ──────────────────────────────────────────────────────────────
+    ax.add_patch(Rectangle((0, 0), 1, 0.078, transform=ax.transAxes,
+                            color=C_RED_DEEP, clip_on=False, zorder=1))
+    ax.add_patch(Rectangle((0, 0.076), 1, 0.003, transform=ax.transAxes,
+                            color=C_GOLD, clip_on=False, zorder=2))
+    for xi in np.arange(0.03, 1.0, 0.040):
+        ax.text(xi, 0.056, "◆", transform=ax.transAxes,
+                color=C_GOLD_PALE, alpha=0.18, fontsize=4.5,
+                ha="center", va="center", clip_on=False, zorder=2)
+    disclaimer = (
+        "本报告仅供合格投资者及合作渠道参考，不构成投资建议。"
+        "过往业绩不代表未来表现，市场有风险，投资需谨慎。"
+    )
+    draw_text(ax, 0.50, 0.044, disclaimer, fp, size=7, color="#FFCDD2", ha="center")
+    draw_text(ax, 0.50, 0.022, product_tagline, fp, size=7.5, color=C_GOLD_PALE, ha="center")
+
+    return _save_report_figure(fig, output_dir, report_title, end_date, "月报回顾版")
+
+
+def make_report(
+    nav_file: str,
+    output_dir: str | None = None,
+    *,
+    week_begin: str | None = None,
+    week_end: str | None = None,
+    product_name: str = PRODUCT_NAME,
+    report_title: str = REPORT_TITLE,
+    product_tagline: str = PRODUCT_TAGLINE,
+    benchmark_label: str = "沪深300",
+    nav_frequency: str | None = "weekly",
+    report_kind: str | None = "weekly",
+    report_layout: str | None = None,
+) -> tuple[str, str]:
+    kind = normalize_report_kind(report_kind)
+    layout = normalize_report_layout(report_layout, kind)
+    print(
+        f"[make_report] week_begin={week_begin!r} week_end={week_end!r} "
+        f"nav_frequency={nav_frequency!r} report_kind={kind!r} report_layout={layout!r}"
+    )
+    output_dir = output_dir or str(Path(nav_file).parent)
+
+    ctx = _prepare_report_context(
+        nav_file,
+        week_begin=week_begin,
+        week_end=week_end,
+        product_name=product_name,
+        nav_frequency=nav_frequency,
+        report_kind=kind,
+    )
+    metrics = ctx["metrics"]
+
+    if kind == "monthly" and layout == "review":
+        png_path, pdf_path = _make_monthly_report(
+            ctx,
+            output_dir=output_dir,
+            product_name=product_name,
+            report_title=report_title,
+            product_tagline=product_tagline,
+            benchmark_label=benchmark_label,
+        )
+    else:
+        png_path, pdf_path = _make_weekly_report(
+            ctx,
+            output_dir=output_dir,
+            product_name=product_name,
+            report_title=report_title,
+            product_tagline=product_tagline,
+            benchmark_label=benchmark_label,
+        )
 
     print(f"净值文件: {os.path.basename(nav_file)}")
     print(f"数据区间: {metrics['start_date'].date()} ~ {metrics['end_date'].date()}")
@@ -1134,6 +1739,11 @@ def main(argv: list[str] | None = None) -> int:
         choices=["weekly", "monthly"],
         help="报告类型：weekly=周报, monthly=月报",
     )
+    parser.add_argument(
+        "--report-layout",
+        choices=["curve", "review"],
+        help="月报版式：curve=竖版曲线, review=横版回顾",
+    )
     args = parser.parse_args(argv)
 
     nav_file = args.nav_file
@@ -1157,6 +1767,7 @@ def main(argv: list[str] | None = None) -> int:
             benchmark_label=args.benchmark_label,
             nav_frequency=args.nav_frequency,
             report_kind=args.report_kind,
+            report_layout=args.report_layout,
         )
     except Exception as exc:
         print(f"错误: {exc}", file=sys.stderr)

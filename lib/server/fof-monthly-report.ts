@@ -23,6 +23,8 @@ const SCRIPT_PATH = path.join(SCRIPT_DIR, "generate_fof_weekly_report.py")
 
 export type FofMonthlyNavFrequency = FofWeeklyNavFrequency
 
+export type FofMonthlyReportLayout = "curve" | "review"
+
 export type FofMonthlyReportRequest = {
   product_name: string
   beian_hao?: string
@@ -32,6 +34,7 @@ export type FofMonthlyReportRequest = {
   product_tagline?: string
   benchmark_key?: string
   nav_frequency?: FofMonthlyNavFrequency
+  report_layout?: FofMonthlyReportLayout
 }
 
 export type FofMonthlyReportResult = {
@@ -157,6 +160,7 @@ export async function generateFofMonthlyReport(
   const productTagline = (input.product_tagline || "低波动 · 稳健运作 · 强势股策略").trim()
   const { executable: pythonExe, prefixArgs } = await findPython()
   const resolvedMonthBegin = month_begin || getMonthStart(month_end)
+  const reportLayout = input.report_layout === "curve" ? "curve" : "review"
 
   const args = [
     ...prefixArgs,
@@ -181,6 +185,8 @@ export async function generateFofMonthlyReport(
     navFrequency,
     "--report-kind",
     "monthly",
+    "--report-layout",
+    reportLayout,
   ]
 
   try {

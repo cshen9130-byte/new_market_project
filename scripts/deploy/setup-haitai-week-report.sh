@@ -205,16 +205,28 @@ print("Font family:", fp.get_name())
 print("Sample:", sample)
 PY
 
-MONTHLY_EXAMPLE="$ROOT/haitai_week_report/低波稳健FOF 1号月报_20260626.png"
+MONTHLY_REVIEW_EXAMPLE="$ROOT/haitai_week_report/低波稳健FOF 1号月报回顾版_20260626.png"
+MONTHLY_CURVE_EXAMPLE="$ROOT/haitai_week_report/低波稳健FOF 1号月报曲线版_20260626.png"
 NAV_FILE="$ROOT/haitai_week_report/低波稳健FOF 1号合并净值.xlsx"
-if [[ ! -f "$MONTHLY_EXAMPLE" && -f "$NAV_FILE" ]]; then
-  echo "Generating monthly report example PNG..."
-  "$PY" "$ROOT/haitai_week_report/generate_fof_weekly_report.py" "$NAV_FILE" \
-    -o "$ROOT/haitai_week_report" \
-    --week-end 2026-06-26 --week-begin 2026-06-01 \
-    --report-kind monthly \
-    --report-title "低波稳健FOF 1号" \
-    --product-name "海泰1号" || true
+if [[ -f "$NAV_FILE" ]]; then
+  if [[ ! -f "$MONTHLY_REVIEW_EXAMPLE" ]]; then
+    echo "Generating monthly review example PNG..."
+    "$PY" "$ROOT/haitai_week_report/generate_fof_weekly_report.py" "$NAV_FILE" \
+      -o "$ROOT/haitai_week_report" \
+      --week-end 2026-06-26 --week-begin 2026-06-01 \
+      --report-kind monthly --report-layout review \
+      --report-title "低波稳健FOF 1号" \
+      --product-name "海泰1号" || true
+  fi
+  if [[ ! -f "$MONTHLY_CURVE_EXAMPLE" ]]; then
+    echo "Generating monthly curve example PNG..."
+    "$PY" "$ROOT/haitai_week_report/generate_fof_weekly_report.py" "$NAV_FILE" \
+      -o "$ROOT/haitai_week_report" \
+      --week-end 2026-06-26 --week-begin 2026-06-01 \
+      --report-kind monthly --report-layout curve \
+      --report-title "低波稳健FOF 1号" \
+      --product-name "海泰1号" || true
+  fi
 fi
 
 echo "haitai_week_report setup complete."
