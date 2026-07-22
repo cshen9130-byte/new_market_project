@@ -88,9 +88,9 @@ type KbTreeFolder = {
   }>
 }
 
-/** `2026/6/26` → `2026.6.26` (matches KB folder naming). */
+/** `2026/6/26` or `2026.6.26` → `2026.6.26` (matches KB folder naming). */
 export function formatKbFolderDate(ddDate: string): string | null {
-  const match = ddDate.trim().match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/)
+  const match = ddDate.trim().match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})$/)
   if (!match) return null
   const [, year, month, day] = match
   return `${year}.${Number(month)}.${Number(day)}`
@@ -135,40 +135,92 @@ function isEventStyleFundCompany(value: string): boolean {
   return false
 }
 
+/** Strip meeting/event suffixes but keep the fund brand, e.g. 敦和芝诺系列半年度总结 → 敦和芝诺. */
+function stripFundCompanyEventNoise(name: string): string {
+  return name
+    .trim()
+    .replace(/^\d{4}\s*年/u, "")
+    .replace(/系列/gu, "")
+    .replace(/半年度|季度|年度|总结|策略会|交流会|线上会|会议|路演|观看方式|扫码/gu, "")
+    .trim()
+}
+
+/** Search tokens from 基金公司, longest first, e.g. 敦和芝诺系列半年度总结 → [敦和芝诺, 敦和]. */
+export function extractFundCompanyMatchTerms(fundCompany: string): string[] {
+  const raw = fundCompany.trim()
+  if (!raw) return []
+
+  const stripped = stripFundCompanyEventNoise(raw)
+  const normalized = normalizeLabel(stripped)
+  const source = normalized.length >= 2 ? normalized : stripped
+  if (source.length < 2) return []
+
+  const terms = new Set<string>()
+  terms.add(source.slice(0, Math.min(6, source.length)))
+  if (source.length >= 4) terms.add(source.slice(0, 4))
+  if (source.length >= 2) terms.add(source.slice(0, 2))
+
+  return [...terms]
+    .filter((term) => term.length >= 2)
+    .sort((left, right) => right.length - left.length)
+}
+
 function shouldAutoLinkDdMaterials(
   row: Pick<DueDiligenceTableRow, "fundCompany">,
 ): boolean {
-  return !isEventStyleFundCompany(row.fundCompany)
+  const fundCompany = row.fundCompany.trim()
+  if (!fundCompany) return true
+  if (!isEventStyleFundCompany(fundCompany)) return true
+  return extractFundCompanyMatchTerms(fundCompany).length > 0
+}
+
+/** Primary folder-name labels; 基金公司 always wins when it yields tokens. */
+function collectDdMaterialsPrimaryLabels(
+  row: Pick<DueDiligenceTableRow, "fundCompany" | "investmentManager" | "representativeProduct">,
+): string[] {
+  const labels: string[] = []
+  const seen = new Set<string>()
+  const add = (value: string) => {
+    const token = value.trim()
+    if (token.length < 2 || seen.has(token)) return
+    seen.add(token)
+    labels.push(token)
+  }
+
+  for (const term of extractFundCompanyMatchTerms(row.fundCompany)) add(term)
+  if (labels.length > 0) return labels
+
+  const manager = row.investmentManager.trim().split(/[、,，/]/u)[0]?.trim() ?? ""
+  if (manager.length >= 2) add(manager.slice(0, 4))
+
+  const productBrand = extractProductBrand(row.representativeProduct.trim())
+  if (productBrand) add(productBrand)
+  else {
+    const product = row.representativeProduct.trim()
+    if (product.length >= 2) add(product.slice(0, 4))
+  }
+
+  return labels
+}
+
+function scoreFolderPrimaryLabelMatches(
+  folderName: string,
+  datePart: string,
+  primaryLabels: string[],
+): number {
+  let best = 0
+  for (const label of primaryLabels) {
+    const slug = `${datePart}-${label}`
+    best = Math.max(best, scoreFolderMatch(folderName, slug, label, datePart))
+  }
+  return best
 }
 
 /** Brand / short name used in KB folder names, e.g. 标准定律科技 → 标准定律. */
 export function extractDdMaterialsLabel(
   row: Pick<DueDiligenceTableRow, "fundCompany" | "investmentManager" | "representativeProduct">,
 ): string {
-  const fundCompany = row.fundCompany.trim()
-  if (fundCompany && !isEventStyleFundCompany(fundCompany)) {
-    const normalized = normalizeLabel(fundCompany)
-    if (normalized.length >= 2) return normalized.slice(0, 4)
-    const brand = extractManagerBrand(fundCompany)
-    if (brand) return brand
-  }
-
-  if (fundCompany && isEventStyleFundCompany(fundCompany)) return ""
-
-  const manager = row.investmentManager.trim()
-  if (manager) {
-    const first = manager.split(/[、,，/]/)[0]?.trim() ?? ""
-    if (first.length >= 2) return first.slice(0, 4)
-  }
-
-  const product = row.representativeProduct.trim()
-  if (product) {
-    const brand = extractProductBrand(product)
-    if (brand) return brand
-    if (product.length >= 2) return product.slice(0, 4)
-  }
-
-  return ""
+  return collectDdMaterialsPrimaryLabels(row)[0] ?? ""
 }
 
 /** Expected folder name segment, e.g. `2026.6.26-标准定律`. */
@@ -342,6 +394,50 @@ function folderMatchesDate(folderName: string, datePart: string): boolean {
   return false
 }
 
+function folderMatchesExactDate(folderName: string, datePart: string): boolean {
+  const normalizedDate = normalizeKbDateParts(datePart)
+  if (!normalizedDate) return false
+
+  const { datePart: folderDate } = resolveFolderDateAndLabel(folderName, datePart)
+  if (folderDate === normalizedDate) return true
+
+  const name = folderName.trim()
+  return name === normalizedDate || name.startsWith(`${normalizedDate}-`) || name.startsWith(`${normalizedDate}.`)
+}
+
+/** Same month/day as the DD row, even when folder year differs (e.g. 2024.7.22 vs 2026/7/22). */
+function folderMatchesMonthDay(folderName: string, datePart: string): boolean {
+  const normalizedDate = normalizeKbDateParts(datePart)
+  if (!normalizedDate) return false
+
+  const [, month, day] = normalizedDate.split(".").map(Number)
+  const { datePart: folderDate } = resolveFolderDateAndLabel(folderName, datePart)
+  if (folderDate) {
+    const [, folderMonth, folderDay] = folderDate.split(".").map(Number)
+    return folderMonth === month && folderDay === day
+  }
+
+  const shortMatch = folderName.trim().match(/^(\d{1,2})[./](\d{1,2})\b/u)
+  if (shortMatch) {
+    return Number(shortMatch[1]) === month && Number(shortMatch[2]) === day
+  }
+
+  return false
+}
+
+function documentFilenameMatchesRowMonthDay(doc: DdMaterialsDocument, ddDate: string): boolean {
+  const normalizedDd = normalizeKbDateParts(formatKbFolderDate(ddDate) ?? "")
+  if (!normalizedDd) return false
+
+  const [, month, day] = normalizedDd.split(".").map(Number)
+  const embedded = doc.name.match(/(\d{4})[._-]?(\d{1,2})[._-]?(\d{1,2})/u)
+  if (embedded) {
+    return Number(embedded[2]) === month && Number(embedded[3]) === day
+  }
+
+  return documentUpdatedOnDdDate(doc, ddDate)
+}
+
 function extractFolderDateLabel(folderName: string, datePart: string): string {
   if (!folderMatchesDate(folderName, datePart)) return ""
 
@@ -418,6 +514,7 @@ function collectSecondaryMatchLabels(
   >,
 ): string[] {
   const labels = new Set<string>()
+  for (const term of extractFundCompanyMatchTerms(row.fundCompany)) labels.add(term)
   if (!isEventStyleFundCompany(row.fundCompany)) {
     addAlternateMatchLabel(labels, row.fundCompany)
   }
@@ -454,6 +551,7 @@ function collectRowIdentityTerms(
   >,
 ): string[] {
   const terms = new Set<string>()
+  for (const term of extractFundCompanyMatchTerms(row.fundCompany)) terms.add(term)
   if (!isEventStyleFundCompany(row.fundCompany)) {
     addAlternateMatchLabel(terms, row.fundCompany)
   }
@@ -510,7 +608,7 @@ function scoreFolderFundReuseMatch(
     | "strategyLevel3"
   >,
 ): number {
-  if (isEventStyleFundCompany(row.fundCompany)) return 0
+  if (isEventStyleFundCompany(row.fundCompany) && extractFundCompanyMatchTerms(row.fundCompany).length === 0) return 0
 
   const { datePart: folderDate, label: folderLabel } = resolveFolderDateAndLabel(folder.name, row.ddDate)
   const ddDatePart = formatKbFolderDate(row.ddDate)
@@ -574,16 +672,80 @@ function scoreFolderFundReuseMatch(
 }
 
 function scoreFolderAlternateMatch(folderName: string, datePart: string, alternateLabels: string[]): number {
-  if (!folderMatchesDate(folderName, datePart) && !folderName.trim().startsWith(datePart)) return 0
+  if (
+    !folderMatchesDate(folderName, datePart)
+    && !folderMatchesMonthDay(folderName, datePart)
+    && !folderName.trim().startsWith(datePart)
+  ) {
+    return 0
+  }
 
-  const folderLabel = extractFolderDateLabel(folderName, datePart)
+  const folderLabel =
+    extractFolderDateLabel(folderName, datePart)
+    || extractFolderLabel(folderName)
   if (!folderLabel) return 0
 
   let best = 0
   for (const label of alternateLabels) {
-    if (labelsOverlap(folderLabel, label)) best = Math.max(best, 75)
+    if (labelsOverlap(folderLabel, label) || brandsRelated(folderLabel, label)) {
+      best = Math.max(best, folderMatchesDate(folderName, datePart) ? 75 : 74)
+    }
   }
   return best
+}
+
+/** Match KB folders when month/day and fund identity align but folder year differs from the row. */
+function scoreFolderMonthDayIdentityMatch(
+  folder: { name: string; documents: DdMaterialsDocument[] },
+  row: Pick<
+    DueDiligenceTableRow,
+    | "ddDate"
+    | "fundCompany"
+    | "investmentManager"
+    | "representativeProduct"
+    | "ddTarget"
+    | "strategyPreliminary"
+    | "otherInfo"
+    | "ddConclusion"
+  >,
+): number {
+  if (isEventStyleFundCompany(row.fundCompany) && extractFundCompanyMatchTerms(row.fundCompany).length === 0) return 0
+
+  const datePart = formatKbFolderDate(row.ddDate)
+  if (!datePart || !folderMatchesMonthDay(folder.name, datePart)) return 0
+  if (folderMatchesExactDate(folder.name, datePart)) return 0
+
+  const folderLabel =
+    extractFolderLabel(folder.name)
+    || extractFolderDateLabel(folder.name, datePart)
+  if (!folderLabel) return 0
+
+  const identityTerms = collectRowIdentityTerms(row).filter(isStrongIdentityTerm)
+  const documentTerms = collectFolderDocumentTerms(folder.documents)
+  const fundCompanyTerms = extractFundCompanyMatchTerms(row.fundCompany)
+  const folderLabelInDocs = documentTerms.some((docTerm) => labelsOverlap(docTerm, folderLabel))
+
+  const identityHit = identityTerms.some(
+    (term) => labelsOverlap(folderLabel, term) || brandsRelated(folderLabel, term),
+  )
+  const fundCompanyHit = fundCompanyTerms.some(
+    (term) => labelsOverlap(folderLabel, term) || brandsRelated(folderLabel, term),
+  )
+  const productBrand = extractProductBrand(row.representativeProduct.trim())
+  const productHit =
+    fundCompanyTerms.length === 0
+    && Boolean(productBrand)
+    && (labelsOverlap(folderLabel, productBrand) || row.representativeProduct.trim().includes(folderLabel))
+  const docBrandHit =
+    folderLabelInDocs
+    && identityTerms.some((term) => documentTerms.some((docTerm) => labelsOverlap(docTerm, term) || brandsRelated(term, docTerm)))
+
+  if (!identityHit && !fundCompanyHit && !productHit && !docBrandHit) return 0
+
+  let score = fundCompanyHit || productHit || identityHit ? 84 : 78
+  if (folder.documents.some((doc) => documentFilenameMatchesRowMonthDay(doc, row.ddDate))) score += 4
+  if (folderLabelInDocs) score += 2
+  return score
 }
 
 function scoreFolderMatch(folderName: string, slug: string, label: string, datePart: string): number {
@@ -654,11 +816,17 @@ function isPlausibleDdMaterialsFolderMatch(
 
   const slug = buildExpectedFolderSlug(row)
   const datePart = formatKbFolderDate(row.ddDate)
-  const label = extractDdMaterialsLabel(row)
-  if (slug && datePart && label && scoreFolderMatch(folder.name, slug, label, datePart) >= DD_MATERIALS_MIN_MATCH_SCORE) {
+  const primaryLabels = collectDdMaterialsPrimaryLabels(row)
+  if (
+    slug
+    && datePart
+    && primaryLabels.length > 0
+    && scoreFolderPrimaryLabelMatches(folder.name, datePart, primaryLabels) >= DD_MATERIALS_MIN_MATCH_SCORE
+  ) {
     return true
   }
   if (scoreFolderFundReuseMatch(folder, row) >= DD_MATERIALS_MIN_MATCH_SCORE) return true
+  if (scoreFolderMonthDayIdentityMatch(folder, row) >= DD_MATERIALS_MIN_MATCH_SCORE) return true
   return scoreEtfCategoryFolderMatch(folder, row) >= DD_MATERIALS_MIN_MATCH_SCORE
 }
 
@@ -688,18 +856,21 @@ export function resolveDdMaterialsFolderPath(
     return explicit && index.folders.has(explicit) ? explicit : null
   }
 
-  if (!shouldAutoLinkDdMaterials(row)) return null
+  const explicit = row.ddMaterialsKbPath?.trim()
+  if (explicit && isDdMaterialsLinkLocked(row)) {
+    return explicit
+  }
+
+  if (!shouldAutoLinkDdMaterials(row)) {
+    return explicit && index.folders.has(explicit) ? explicit : null
+  }
 
   const slug = buildExpectedFolderSlug(row)
   const datePart = formatKbFolderDate(row.ddDate)
-  const label = extractDdMaterialsLabel(row)
+  const primaryLabels = collectDdMaterialsPrimaryLabels(row)
   const secondaryLabels = collectSecondaryMatchLabels(row)
 
-  const explicit = row.ddMaterialsKbPath?.trim()
   if (explicit) {
-    if (isDdMaterialsLinkLocked(row)) {
-      return index.folders.has(explicit) ? explicit : explicit
-    }
     if (index.folders.has(explicit)) {
       const folder = index.folders.get(explicit)!
       if (isPlausibleDdMaterialsFolderMatch(folder, row)) return explicit
@@ -717,14 +888,27 @@ export function resolveDdMaterialsFolderPath(
   let bestPath: string | null = null
   let bestScore = 0
 
-  if (slug && label) {
+  if (datePart && primaryLabels.length > 0) {
     for (const [path, folder] of index.folders) {
       if (isLooseFileEntry(folder)) continue
-      const score = scoreFolderMatch(folder.name, slug, label, datePart)
+      const score = scoreFolderPrimaryLabelMatches(folder.name, datePart, primaryLabels)
       if (score > bestScore) {
         bestScore = score
         bestPath = path
       }
+    }
+  }
+
+  if (bestScore >= DD_MATERIALS_MIN_MATCH_SCORE) return bestPath
+
+  bestPath = null
+  bestScore = 0
+  for (const [path, folder] of index.folders) {
+    if (isLooseFileEntry(folder)) continue
+    const score = scoreFolderMonthDayIdentityMatch(folder, row)
+    if (score > bestScore) {
+      bestScore = score
+      bestPath = path
     }
   }
 
@@ -942,7 +1126,7 @@ function scoreLooseFileMatch(
     | "strategyLevel3"
   >,
 ): number {
-  if (isEventStyleFundCompany(row.fundCompany)) return 0
+  if (isEventStyleFundCompany(row.fundCompany) && extractFundCompanyMatchTerms(row.fundCompany).length === 0) return 0
 
   const filename = doc.name.replace(/\.[^.]+$/u, "")
   const identityTerms = collectRowIdentityTerms(row).filter(isStrongIdentityTerm)
@@ -1068,9 +1252,9 @@ export function buildDdMaterialsAutoFillPatch(
   }
 
   const folderPath = resolveDdMaterialsFolderPath(row, index)
-  const documents = getDdMaterialsDocumentsForRow(row, index)
+  const rawDocuments = folderPath ? getDdMaterialsDocuments(folderPath, index) : []
 
-  if (!folderPath || documents.length === 0) {
+  if (!folderPath || rawDocuments.length === 0) {
     if (storedPath || row.ddMaterials.trim() === "已上传") {
       return { ddMaterials: "", ddMaterialsKbPath: null, ddMaterialsLinkStatus: null }
     }
