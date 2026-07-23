@@ -15,6 +15,7 @@ type SeriesPoint = {
   hhi: number | null
   top3_share: number | null
   top10_share: number | null
+  top5pct_share: number | null
   top_board: string | null
   top_board_share: number | null
 }
@@ -31,6 +32,7 @@ type CrowdingPayload = {
     hhi: number | null
     top3_share: number | null
     top10_share: number | null
+    top5pct_share: number | null
     top_board: string | null
     top_board_share: number | null
     total_amount: number | null
@@ -51,11 +53,35 @@ function formatAmountYi(v: number | null | undefined) {
   return `${(v / 1e8).toFixed(0)}亿`
 }
 
+function sma(values: (number | null)[], window: number): (number | null)[] {
+  return values.map((_, i) => {
+    if (i < window - 1) return null
+    const slice = values.slice(i - window + 1, i + 1).filter((v): v is number => v != null)
+    if (slice.length < window) return null
+    return slice.reduce((s, x) => s + x, 0) / window
+  })
+}
+
+function expandingMean(values: (number | null)[]): (number | null)[] {
+  const mean: (number | null)[] = []
+  const buf: number[] = []
+  for (const v of values) {
+    if (v == null) {
+      mean.push(null)
+      continue
+    }
+    buf.push(v)
+    mean.push(buf.reduce((s, x) => s + x, 0) / buf.length)
+  }
+  return mean
+}
+
 export default function AshareCrowdingChart() {
   const [payload, setPayload] = useState<CrowdingPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showHelp, setShowHelp] = useState(false)
+  const [showTop5Help, setShowTop5Help] = useState(false)
   const [chartView, setChartView] = useState<ChartView>("sentiment")
 
   const load = useCallback(async (showLoading: boolean) => {
@@ -215,6 +241,77 @@ export default function AshareCrowdingChart() {
       }],
     }
   }, [latest])
+
+  const top5pctStats = useMemo(() => {
+    const values = series.map((d) => d.top5pct_share)
+    const ma20 = sma(values, 20)
+    const mean = expandingMean(values)
+    const latestVal = values[values.length - 1]
+    const latestMa20 = ma20[ma20.length - 1]
+    const diffMa20 =
+      latestVal != null && latestMa20 != null ? latestVal - latestMa20 : null
+    return { values, ma20, mean, latestVal, latestMa20, diffMa20 }
+  }, [series])
+
+  const top5pctOption = useMemo(() => {
+    if (!series.length) return {}
+    const dates = series.map((d) => d.date)
+    const { values, ma20, mean } = top5pctStats
+
+    return {
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "axis",
+        formatter: (params: Array<{ axisValue: string; seriesName: string; value: number | null }>) => {
+          const date = params[0]?.axisValue ?? ""
+          const lines = params.map(
+            (p) =>
+              `${p.seriesName}: ${p.value != null ? p.value.toFixed(2) : "—"}%`,
+          )
+          return [date, ...lines].join("<br/>")
+        },
+      },
+      legend: {
+        data: ["Top 5%成交额占比", "20日均线", "窗口均值"],
+        bottom: 0,
+        textStyle: { fontSize: 11 },
+      },
+      grid: { left: 48, right: 24, top: 24, bottom: 48 },
+      xAxis: { type: "category", data: dates, axisLabel: { fontSize: 10 } },
+      yAxis: {
+        type: "value",
+        name: "占比 (%)",
+        axisLabel: { fontSize: 10, formatter: "{value}%" },
+        splitLine: { lineStyle: { opacity: 0.2 } },
+      },
+      series: [
+        {
+          name: "Top 5%成交额占比",
+          type: "line",
+          data: values,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 2 },
+        },
+        {
+          name: "20日均线",
+          type: "line",
+          data: ma20,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 1.5, type: "dashed" },
+        },
+        {
+          name: "窗口均值",
+          type: "line",
+          data: mean,
+          smooth: true,
+          symbol: "none",
+          lineStyle: { width: 1, type: "dotted", opacity: 0.6 },
+        },
+      ],
+    }
+  }, [series, top5pctStats])
 
   return (
     <div className="space-y-6">
@@ -383,6 +480,90 @@ export default function AshareCrowdingChart() {
         </div>
       )}
 
+      {showTop5Help && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+          onClick={() => setShowTop5Help(false)}
+        >
+          <div
+            className="bg-background border border-border rounded-lg shadow-xl p-5 max-w-xl w-full mx-4 text-sm max-h-[90vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-semibold text-base">Top 5% 成交额占比：计算方法</h3>
+              <button
+                type="button"
+                onClick={() => setShowTop5Help(false)}
+                className="text-muted-foreground hover:text-foreground text-xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="space-y-4 text-muted-foreground leading-relaxed">
+              <p className="text-xs">
+                衡量全 A 成交额向头部个股集中的程度。按<strong className="text-foreground">股票数量</strong>取前 5%（非按成交额阈值），
+                统计这些个股合计占当日全市场成交额的比例。数值越高，说明资金越集中在少数活跃个股。
+              </p>
+
+              <div className="space-y-1.5">
+                <p className="font-semibold text-foreground">数据来源</p>
+                <p>
+                  每日全部 A 股（约 5,500 只）成交额来自
+                  <code className="text-xs bg-muted px-1 rounded">raw_ashare_daily</code>，
+                  由夜间 ETL 步骤 <code className="text-xs bg-muted px-1 rounded">ashare_crowding</code> 汇总计算，
+                  结果写入 <code className="text-xs bg-muted px-1 rounded">derived_ashare_crowding_daily.top5pct_share</code>。
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="font-semibold text-foreground">第一步：确定 Top 5% 股票数量</p>
+                <p>对每个交易日，统计当日有成交的全部 A 股数量 N，向上取整得到前 5% 的股票数：</p>
+                <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                  <div>N<sub>d</sub> = |&#123;i : Amount<sub>i,d</sub> &gt; 0&#125;|</div>
+                  <div>K<sub>d</sub> = max(1, ⌈N<sub>d</sub> × 5%⌉)</div>
+                </div>
+                <p className="text-xs">例如 N = 5,500 时，K = 275 只；至少取 1 只。</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="font-semibold text-foreground">第二步：计算 Top 5% 成交额占比</p>
+                <p>按当日成交额降序排列，取前 K 只股票的成交额之和，除以全市场总成交额：</p>
+                <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                  <div>TotalAmount<sub>d</sub> = Σ<sub>i</sub> Amount<sub>i,d</sub></div>
+                  <div>Top5%Share<sub>d</sub> = ( Σ<sub>rank≤K</sub> Amount<sub>i,d</sub> ) / TotalAmount<sub>d</sub> × 100%</div>
+                </div>
+                <p className="text-xs">
+                  与 Top3 / Top10 占比（固定取前 3 / 10 只）不同，Top 5% 随市场扩容自动调整样本规模。
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="font-semibold text-foreground">图表线条说明</p>
+                <ul className="list-disc list-inside text-xs space-y-1">
+                  <li><strong className="text-foreground">Top 5% 成交额占比</strong>（实线）：上述 ETL 每日计算值</li>
+                  <li><strong className="text-foreground">20 日均线</strong>（虚线）：对占比序列取 20 交易日简单移动平均，平滑短期波动</li>
+                  <li><strong className="text-foreground">窗口均值</strong>（点线）：对图表窗口内（默认近 365 日）数据做扩展窗口均值，从窗口首日至当日的累计平均</li>
+                </ul>
+                <div className="bg-muted rounded px-3 py-2 font-mono text-xs space-y-1">
+                  <div>MA20<sub>d</sub> = (1/20) Σ<sub>j=d−19</sub><sup>d</sup> Top5%Share<sub>j</sub></div>
+                  <div>μ<sub>t</sub> = (1/t) Σ<sub>k=1</sub><sup>t</sup> Top5%Share<sub>k</sub></div>
+                </div>
+                <p className="text-xs">20 日均线与窗口均值在前端基于 API 返回的序列实时计算，不写入数据库。</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <p className="font-semibold text-foreground">解读参考</p>
+                <ul className="list-disc list-inside text-xs space-y-1">
+                  <li>占比持续上升 → 资金向头部个股集中，市场抱团加强</li>
+                  <li>占比持续下降 → 成交更分散，广度改善</li>
+                  <li>可与 Top3 占比、HHI 等指标交叉验证集中度结构</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <Card>
         <CardHeader className="flex flex-row items-start justify-between gap-2">
           <div className="space-y-1.5">
@@ -507,6 +688,38 @@ export default function AshareCrowdingChart() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="flex flex-row items-start justify-between gap-2">
+          <div className="space-y-1.5">
+            <CardTitle>Top 5% 成交额占比</CardTitle>
+            <CardDescription>
+              按股票数量取前 5% 个股的成交额占全 A 比例
+              {top5pctStats.latestVal != null ? ` · 最新 ${top5pctStats.latestVal.toFixed(1)}%` : ""}
+              {top5pctStats.diffMa20 != null
+                ? ` · 较20日均 ${top5pctStats.diffMa20 >= 0 ? "+" : ""}${top5pctStats.diffMa20.toFixed(1)}pp`
+                : ""}
+            </CardDescription>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowTop5Help(true)}
+            className="w-5 h-5 rounded-full border border-border text-muted-foreground hover:text-foreground text-xs leading-none flex items-center justify-center flex-shrink-0 mt-0.5"
+            title="计算方法说明"
+          >
+            ?
+          </button>
+        </CardHeader>
+        <CardContent>
+          {loading || error || !series.length || top5pctStats.values.every((v) => v == null) ? (
+            <div className="h-[300px] flex items-center justify-center text-sm text-muted-foreground">
+              {error || (loading ? "加载中..." : "暂无数据（需运行 ETL 回填 top5pct_share）")}
+            </div>
+          ) : (
+            <ReactECharts option={top5pctOption} style={{ height: "300px", width: "100%" }} />
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

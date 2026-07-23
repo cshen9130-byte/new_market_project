@@ -848,6 +848,23 @@ assert(
   zhufengNav?.navDate === "2026-07-09" && zhufengNav?.nav === 1.0 && zhufengNav?.productCode === "SB969A",
 )
 
+const jinyuZhuiTaSubject =
+  "国泰海通证券资产托管发送：金奥追风1号私募证券投资基金A【金舆追风1号私募证券投资基金】TA虚拟净值_2026-07-22"
+const jinyuZhuiTaBody = "净值日期 2026-07-22 单位净值 1.1800 累计单位净值 1.9290"
+const jinyuZhuiTaMeta = extractNavMetadata(jinyuZhuiTaSubject, jinyuZhuiTaBody)
+assert(
+  "guotai TA virtual metadata not mapped to SCJ536",
+  jinyuZhuiTaMeta.productCode !== "SCJ536" && jinyuZhuiTaMeta.fundName?.includes("金奥追风"),
+)
+assert("guotai TA virtual skips managed-product NAV ingest", extractNavData(jinyuZhuiTaSubject, jinyuZhuiTaBody) === null)
+
+const rongxiTaSubject =
+  "国泰海通证券资产托管发送：绵烁ETF套利3号私募证券投资基金A【荣熙共赢私募证券投资基金】TA虚拟净值_2026-07-20"
+assert(
+  "rongxi TA virtual skips managed NAV (gets 净值表 elsewhere)",
+  extractNavData(rongxiTaSubject, "单位净值 0.9912") === null,
+)
+
 const sqx078Subject =
   "【虚拟净值】SQX078_特夫郁金香全量化私募证券投资基金_衡颐海泰1号私募证券投资基金_2026-07-15"
 const sqx078Body =

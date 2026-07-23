@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS derived_ashare_crowding_daily (
     hhi              NUMERIC(12,8),
     top3_share       NUMERIC(8,4),
     top10_share      NUMERIC(8,4),
+    top5pct_share    NUMERIC(8,4),
     crowding_pct     NUMERIC(6,2),
     top_board        VARCHAR(30),
     top_board_share  NUMERIC(8,4),

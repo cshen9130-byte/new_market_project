@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from iv_analysis.charts.smile import MIN_IV_PCT, _spot_price, _trim_symmetric_wings
+from iv_analysis.charts.smile import MIN_IV_PCT, _select_smile_slice, _spot_price, _trim_symmetric_wings
 from iv_analysis.data import enrich_chain_open_interest
 from iv_analysis.plot_utils import save_figure
 
@@ -182,12 +182,46 @@ def _infer_strike_step(strikes: np.ndarray) -> float:
     return float(np.median(diffs)) if len(diffs) else 0.05
 
 
+def _leg_open_interest(group: pd.DataFrame, side: str) -> float:
+    legs = group[group["option_type"] == side]
+    if legs.empty:
+        return 0.0
+    oi = pd.to_numeric(legs.iloc[0].get("open_interest"), errors="coerce")
+    return float(oi) if pd.notna(oi) and oi > 0 else 0.0
+
+
 def _build_chain_table(
     expiry_df: pd.DataFrame,
     spot: float,
     *,
     apply_plateau: bool = True,
 ) -> pd.DataFrame:
+    """Build chain rows on OTM smile strikes with OI from the full expiry chain."""
+    otm_slice = _select_smile_slice(expiry_df, "otm", spot)
+    if not otm_slice.empty:
+        oi_df = enrich_chain_open_interest(
+            expiry_df.dropna(subset=["strike", "option_type"]).copy()
+        )
+        rows: list[dict] = []
+        for strike in sorted(otm_slice["strike"].unique()):
+            strike_f = float(strike)
+            iv = float(otm_slice.loc[otm_slice["strike"] == strike, "iv"].iloc[0])
+            grp = oi_df[np.isclose(oi_df["strike"].astype(float), strike_f)]
+            calls = grp[grp["option_type"] == "call"]
+            puts = grp[grp["option_type"] == "put"]
+            rows.append(
+                {
+                    "strike": strike_f,
+                    "iv": iv,
+                    "call_iv": float(calls.iloc[0]["iv"]) if not calls.empty else np.nan,
+                    "put_iv": float(puts.iloc[0]["iv"]) if not puts.empty else np.nan,
+                    "call_oi": _leg_open_interest(grp, "call"),
+                    "put_oi": _leg_open_interest(grp, "put"),
+                }
+            )
+        if rows:
+            return pd.DataFrame(rows).sort_values("strike").reset_index(drop=True)
+
     valid = enrich_chain_open_interest(_filter_chain_quotes(expiry_df, spot))
     rows: list[dict] = []
 
@@ -282,7 +316,7 @@ def plot_iv_smile_chain(df: pd.DataFrame, label: str, output_path: Path) -> Path
             strikes - bar_width / 2,
             table["put_oi"],
             width=bar_width,
-            color="#fca5a5",
+            color="#86efac",
             alpha=0.7,
             label="Put OI",
             zorder=1,
@@ -291,7 +325,7 @@ def plot_iv_smile_chain(df: pd.DataFrame, label: str, output_path: Path) -> Path
             strikes + bar_width / 2,
             table["call_oi"],
             width=bar_width,
-            color="#86efac",
+            color="#fca5a5",
             alpha=0.7,
             label="Call OI",
             zorder=1,

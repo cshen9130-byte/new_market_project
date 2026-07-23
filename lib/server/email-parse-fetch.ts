@@ -357,7 +357,9 @@ async function fetchMailbox(
         }
 
         const navDatesFromAttachments = new Set<string>()
+        let hasNavTableAttachment = false
         for (const att of selectNavTableAttachments(subject, attachments)) {
+          hasNavTableAttachment = true
           try {
             const buf = await downloadPart(client, String(uid), att.part)
             const rows = extractNavTableFromBuffer(buf, att.filename, subject)
@@ -434,7 +436,7 @@ async function fetchMailbox(
               }
 
               // When no 净值表 in this email, copy unit NAV from each 估值表 (including zip inner files).
-              if (navDatesFromAttachments.size === 0) {
+              if (!hasNavTableAttachment) {
                 const navRow =
                   extracted?.unitNav != null
                     ? {
@@ -446,7 +448,11 @@ async function fetchMailbox(
                         source: "attachment_valuation_table" as const,
                       }
                     : extractNavFromValuationBuffer(payload.buffer, payload.parseFilename, subject)
-                if (navRow?.navDate && navRow.nav != null) {
+                if (
+                  navRow?.navDate
+                  && navRow.nav != null
+                  && !navDatesFromAttachments.has(navRow.navDate)
+                ) {
                   navDatesFromAttachments.add(navRow.navDate)
                   navRecords.push({
                     ...emailMeta,

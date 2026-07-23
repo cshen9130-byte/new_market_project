@@ -42,12 +42,19 @@ def _month_codes(prefix: str, start: date, end: date) -> list[str]:
 
 
 def _fetch_spot_history(symbol: str, start: date, end: date) -> pd.Series:
-    df = ak.stock_zh_index_daily_em(symbol=symbol)
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-    mask = (df["date"] >= start) & (df["date"] <= end)
-    out = df.loc[mask, ["date", "close"]].dropna()
-    return out.set_index("date")["close"]
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            df = ak.stock_zh_index_daily_em(symbol=symbol)
+            df["date"] = pd.to_datetime(df["date"]).dt.date
+            df["close"] = pd.to_numeric(df["close"], errors="coerce")
+            mask = (df["date"] >= start) & (df["date"] <= end)
+            out = df.loc[mask, ["date", "close"]].dropna()
+            return out.set_index("date")["close"]
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            time.sleep(1.0 * (attempt + 1))
+    raise RuntimeError(f"Spot history fetch failed for {symbol}: {last_error}") from last_error
 
 
 _option_daily_cache: dict[str, pd.DataFrame] = {}
@@ -218,18 +225,25 @@ def merge_synthetic_qvix_gaps(
         return qvix
 
     target = end or latest_trade_date()
-    official_end = last_official_qvix_date(underlying_key)
+    qvix = qvix.sort_values("trade_date").reset_index(drop=True)
+
+    try:
+        official_end = last_official_qvix_date(underlying_key)
+    except Exception:  # noqa: BLE001
+        return qvix
     if official_end is None or official_end >= target:
-        return qvix.sort_values("trade_date").reset_index(drop=True)
+        return qvix
 
     _, spot_symbol, _, _ = _SYNTHETIC_CONFIG[underlying_key]
     fill_start = official_end + timedelta(days=1)
     if fill_start > target:
-        return qvix.sort_values("trade_date").reset_index(drop=True)
+        return qvix
 
-    qvix = qvix.sort_values("trade_date").reset_index(drop=True)
     existing_dates = set(pd.to_datetime(qvix["trade_date"]).dt.date)
-    spot_dates = _fetch_spot_history(spot_symbol, fill_start, target).index
+    try:
+        spot_dates = _fetch_spot_history(spot_symbol, fill_start, target).index
+    except Exception:  # noqa: BLE001
+        return qvix
     missing = [d for d in spot_dates if d not in existing_dates]
     if not missing:
         return qvix

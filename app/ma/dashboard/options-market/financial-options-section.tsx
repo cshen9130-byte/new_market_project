@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
 import { underlyingChartLabel, underlyingCnLabel } from "@/lib/option-iv-labels"
 import { cn } from "@/lib/utils"
+import { DeeperAnalysisPanels } from "./deeper-analysis-panels"
 
 const CHART_FONT = "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
 
@@ -17,10 +18,10 @@ const COLORS = {
   teal: "#0f766e",
   orange: "#ea580c",
   sky: "#0ea5e9",
-  call: "#22c55e",
-  put: "#ef4444",
-  callBar: "rgba(134,239,172,0.85)",
-  putBar: "rgba(252,165,165,0.85)",
+  call: "#ef4444",
+  put: "#22c55e",
+  callBar: "rgba(239,68,68,0.85)",
+  putBar: "rgba(34,197,94,0.85)",
   viridis: ["#440154", "#31688e", "#35b779", "#6ece58", "#fde725"],
 } as const
 
@@ -136,6 +137,11 @@ type UnderlyingPayload = {
     surface?: SurfaceData | null
     history?: ChartPoint[] | null
     percentile?: PercentileData | null
+    iv_rv?: Record<string, unknown> | null
+    skew?: Record<string, unknown> | null
+    pcr?: Record<string, unknown> | null
+    term_slope?: Record<string, unknown> | null
+    vol_cone?: Record<string, unknown> | null
   }
 }
 
@@ -159,15 +165,76 @@ type FinancialPayload = {
   underlyings: Record<string, UnderlyingPayload>
 }
 
-const GROUPS: Array<{ label: string; keys: string[] }> = [
-  { label: "上证50", keys: ["50etf", "50index"] },
-  { label: "沪深300", keys: ["300etf", "300etf_sz", "300index"] },
-  { label: "中证500", keys: ["500etf", "500etf_sz"] },
-  { label: "中证1000", keys: ["1000index"] },
-  { label: "创业板", keys: ["cyb"] },
-  { label: "科创50", keys: ["kcb", "kcb_efund"] },
-  { label: "深证100", keys: ["100etf"] },
+const SIZE_BUCKET_ORDER = ["小盘", "中盘", "大盘"] as const
+type SizeBucket = (typeof SIZE_BUCKET_ORDER)[number]
+
+const KEY_TO_SIZE_BUCKET: Record<string, SizeBucket> = {
+  "1000index": "小盘",
+  cyb: "小盘",
+  kcb: "小盘",
+  kcb_efund: "小盘",
+  "500etf": "中盘",
+  "500etf_sz": "中盘",
+  "100etf": "大盘",
+  "300etf": "大盘",
+  "300etf_sz": "大盘",
+  "300index": "大盘",
+  "50etf": "大盘",
+  "50index": "大盘",
+}
+
+const PRODUCT_GROUPS: Array<{ label: string; keys: string[]; bucket: SizeBucket; marketValueRank: number }> = [
+  // Ascending market value within each size bucket
+  { label: "中证1000", keys: ["1000index"], bucket: "小盘", marketValueRank: 10 },
+  { label: "创业板", keys: ["cyb"], bucket: "小盘", marketValueRank: 20 },
+  { label: "科创50", keys: ["kcb", "kcb_efund"], bucket: "小盘", marketValueRank: 30 },
+  { label: "中证500", keys: ["500etf", "500etf_sz"], bucket: "中盘", marketValueRank: 40 },
+  { label: "深证100", keys: ["100etf"], bucket: "大盘", marketValueRank: 50 },
+  { label: "沪深300", keys: ["300etf", "300etf_sz", "300index"], bucket: "大盘", marketValueRank: 60 },
+  { label: "上证50", keys: ["50etf", "50index"], bucket: "大盘", marketValueRank: 70 },
 ]
+
+function sizeBucketForKeys(keys: string[]): SizeBucket {
+  for (const key of keys) {
+    const bucket = KEY_TO_SIZE_BUCKET[key]
+    if (bucket) return bucket
+  }
+  return "大盘"
+}
+
+function sizeBucketForRow(row: SummaryRow): SizeBucket {
+  return sizeBucketForKeys(row.keys)
+}
+
+function marketValueRankForKeys(keys: string[]): number {
+  let best = Number.POSITIVE_INFINITY
+  for (const key of keys) {
+    const group = PRODUCT_GROUPS.find((g) => g.keys.includes(key))
+    if (group) best = Math.min(best, group.marketValueRank)
+  }
+  return Number.isFinite(best) ? best : 999
+}
+
+function orderedProductGroups(payload: FinancialPayload | null) {
+  return SIZE_BUCKET_ORDER.flatMap((bucket) =>
+    PRODUCT_GROUPS
+      .filter((g) => g.bucket === bucket)
+      .filter((g) => g.keys.some((k) => payload?.underlyings[k]))
+      .sort((a, b) => a.marketValueRank - b.marketValueRank),
+  )
+}
+
+const SIZE_BUCKET_BAND: Record<SizeBucket, string> = {
+  小盘: "rgba(239,68,68,0.10)",
+  中盘: "rgba(234,88,12,0.12)",
+  大盘: "rgba(37,99,235,0.10)",
+}
+
+const SIZE_BUCKET_ROW_CLASS: Record<SizeBucket, string> = {
+  小盘: "bg-red-500/5",
+  中盘: "bg-orange-500/5",
+  大盘: "bg-blue-500/5",
+}
 
 function pctLabel(v: number | null | undefined) {
   if (v == null) return "—"
@@ -185,6 +252,181 @@ function pctColor(v: number | null | undefined) {
   if (v >= 40) return "text-foreground"
   if (v >= 20) return "text-emerald-600"
   return "text-blue-600"
+}
+
+function pctBarColor(v: number | null | undefined) {
+  if (v == null) return "#94a3b8"
+  if (v >= 80) return "#dc2626"
+  if (v >= 60) return "#ea580c"
+  if (v >= 40) return "#64748b"
+  if (v >= 20) return "#059669"
+  return "#2563eb"
+}
+
+type SummaryChartEntry =
+  | { kind: "header"; bucket: SizeBucket; category: string }
+  | { kind: "row"; bucket: SizeBucket; category: string; row: SummaryRow }
+
+function organizeSummaryChartEntries(rows: SummaryRow[]): SummaryChartEntry[] {
+  const entries: SummaryChartEntry[] = []
+  for (const bucket of SIZE_BUCKET_ORDER) {
+    const bucketRows = rows
+      .filter((r) => sizeBucketForRow(r) === bucket)
+      .sort((a, b) => marketValueRankForKeys(a.keys) - marketValueRankForKeys(b.keys))
+    if (!bucketRows.length) continue
+    entries.push({ kind: "header", bucket, category: `__header__${bucket}` })
+    for (const row of bucketRows) {
+      entries.push({ kind: "row", bucket, category: row.group_label, row })
+    }
+  }
+  return entries
+}
+
+function summaryBarRowEntries(entries: SummaryChartEntry[]) {
+  return entries.filter((e): e is Extract<SummaryChartEntry, { kind: "row" }> => e.kind === "row")
+}
+
+function buildSummaryMarkAreaSections(entries: SummaryChartEntry[]) {
+  const markAreaData: Array<[{ yAxis: number; itemStyle: { color: string } }, { yAxis: number }]> = []
+  let sectionStart: number | null = null
+
+  for (let i = 0; i < entries.length; i++) {
+    if (entries[i].kind === "header") {
+      if (sectionStart != null) {
+        markAreaData.push([
+          {
+            yAxis: sectionStart,
+            itemStyle: { color: SIZE_BUCKET_BAND[entries[sectionStart].bucket] },
+          },
+          { yAxis: i - 1 },
+        ])
+      }
+      sectionStart = i
+    }
+  }
+  if (sectionStart != null && entries.length) {
+    markAreaData.push([
+      {
+        yAxis: sectionStart,
+        itemStyle: { color: SIZE_BUCKET_BAND[entries[sectionStart].bucket] },
+      },
+      { yAxis: entries.length - 1 },
+    ])
+  }
+  return markAreaData
+}
+
+function buildSummaryPercentileBarOption(entries: SummaryChartEntry[]) {
+  if (!entries.some((e) => e.kind === "row")) return null
+
+  const markAreaData = buildSummaryMarkAreaSections(entries)
+
+  return {
+    ...chartBase(),
+    tooltip: {
+      trigger: "axis",
+      axisPointer: { type: "shadow" },
+      textStyle: { fontFamily: CHART_FONT },
+      formatter: (params: unknown) => {
+        const items = (Array.isArray(params) ? params : [params]) as Array<{ dataIndex: number }>
+        const item = items[0]
+        if (!item) return ""
+        const entry = entries[item.dataIndex]
+        if (!entry || entry.kind !== "row") return ""
+        const { row } = entry
+        const pct = row.percentile
+        const pctText = row.percentile_display ?? (pct != null ? `${pct.toFixed(1)}%` : "—")
+        return [
+          `${entry.bucket} · ${row.group_label}`,
+          `当前 IV：${row.iv_display}`,
+          `历史分位：${pctText}`,
+          `评价：${pctLabel(pct)}`,
+        ].join("<br/>")
+      },
+    },
+    grid: {
+      left: 8,
+      right: 52,
+      top: 4,
+      bottom: 22,
+      containLabel: true,
+    },
+    xAxis: {
+      type: "value",
+      min: 0,
+      max: 100,
+      axisLabel: { fontSize: 10, fontFamily: CHART_FONT, formatter: "{value}%" },
+      splitLine: { lineStyle: { opacity: 0.12 } },
+    },
+    yAxis: {
+      type: "category",
+      data: entries.map((e) => e.category),
+      inverse: true,
+      axisLabel: {
+        fontSize: 10,
+        fontFamily: CHART_FONT,
+        width: 120,
+        overflow: "truncate",
+        rich: {
+          header: { fontWeight: 700, color: "#475569", fontSize: 12, padding: [2, 0, 2, 0] },
+          item: { color: "#334155", fontSize: 10, padding: [0, 0, 0, 8] },
+        },
+        formatter: (value: string) => {
+          if (value.startsWith("__header__")) {
+            return `{header|${value.slice("__header__".length)}}`
+          }
+          return `{item|${value}}`
+        },
+      },
+      axisTick: { show: false },
+      axisLine: { show: false },
+    },
+    series: [
+      {
+        name: "历史分位",
+        type: "bar",
+        data: entries.map((entry) => {
+          if (entry.kind === "header") {
+            return {
+              value: "-",
+              itemStyle: { color: "transparent", borderWidth: 0 },
+              emphasis: { disabled: true },
+              label: { show: false },
+              tooltip: { show: false },
+            }
+          }
+          const v = entry.row.percentile ?? null
+          return {
+            value: v,
+            itemStyle: { color: pctBarColor(v), borderRadius: [0, 3, 3, 0] },
+          }
+        }),
+        barMaxWidth: 18,
+        label: {
+          show: true,
+          position: "right",
+          fontSize: 10,
+          fontFamily: CHART_FONT,
+          formatter: (p: { value?: number | null | string }) =>
+            typeof p.value === "number" ? `${p.value.toFixed(0)}%` : "",
+        },
+        markArea: markAreaData.length
+          ? { silent: true, itemStyle: { borderWidth: 0 }, data: markAreaData }
+          : undefined,
+        markLine: {
+          silent: true,
+          symbol: "none",
+          lineStyle: { type: "dashed", opacity: 0.35, color: "#94a3b8" },
+          label: { fontSize: 9, fontFamily: CHART_FONT, color: "#94a3b8" },
+          data: [
+            { xAxis: 20, label: { formatter: "20" } },
+            { xAxis: 50, label: { formatter: "50" } },
+            { xAxis: 80, label: { formatter: "80" } },
+          ],
+        },
+      },
+    ],
+  }
 }
 
 function buildHistoryOption(series: ChartPoint[]) {
@@ -215,12 +457,32 @@ function buildHistoryOption(series: ChartPoint[]) {
   }
 }
 
+function lineSeriesWithLastDot(
+  values: Array<number | string | null | undefined>,
+  lastSymbolSize = 7,
+) {
+  const last = values.length - 1
+  return values.map((v, i) => ({
+    value: v,
+    symbol: i === last ? "circle" : "none",
+    symbolSize: i === last ? lastSymbolSize : 0,
+  }))
+}
+
 function buildPercentileOption(data: PercentileData) {
   const series = data.series ?? []
   const dates = series.map((d) => String(d.trade_date))
+  const lastDate = dates[dates.length - 1]
+  const lastIv = series.length ? Number(series[series.length - 1].iv) : null
+
   return {
     ...chartBase(),
-    tooltip: { trigger: "axis", textStyle: { fontFamily: CHART_FONT }, formatter: axisTooltipTwoDecimals },
+    tooltip: {
+      trigger: "axis",
+      textStyle: { fontFamily: CHART_FONT },
+      formatter: axisTooltipTwoDecimals,
+      axisPointer: { type: "line", snap: true },
+    },
     legend: {
       data: ["IV", "全历史分位", "1Y滚动分位"],
       top: 0,
@@ -229,8 +491,12 @@ function buildPercentileOption(data: PercentileData) {
       itemGap: 16,
       textStyle: { fontSize: 11, fontFamily: CHART_FONT },
     },
-    grid: { left: 48, right: 48, top: 36, bottom: 36 },
-    xAxis: timeSeriesXAxis(dates),
+    grid: { left: 48, right: 56, top: 36, bottom: 36 },
+    xAxis: {
+      ...timeSeriesXAxis(dates),
+      // Leave room past the last day so tooltip/hover can land on 最新点
+      boundaryGap: true,
+    },
     yAxis: [
       {
         type: "value",
@@ -253,19 +519,37 @@ function buildPercentileOption(data: PercentileData) {
       {
         name: "IV",
         type: "line",
-        data: series.map((d) => d.iv),
+        data: lineSeriesWithLastDot(series.map((d) => d.iv)),
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
         lineStyle: { width: 1.5, color: COLORS.teal },
         itemStyle: { color: COLORS.teal },
+        markPoint:
+          lastDate && lastIv != null && Number.isFinite(lastIv)
+            ? {
+                symbol: "circle",
+                symbolSize: 8,
+                itemStyle: { color: COLORS.teal },
+                label: {
+                  show: true,
+                  formatter: lastDate,
+                  position: "top",
+                  distance: 6,
+                  fontSize: 10,
+                  fontFamily: CHART_FONT,
+                  color: "#0f766e",
+                },
+                data: [{ coord: [lastDate, lastIv] }],
+              }
+            : undefined,
       },
       {
         name: "全历史分位",
         type: "line",
         yAxisIndex: 1,
-        data: series.map((d) => d.percentile_all),
+        data: lineSeriesWithLastDot(series.map((d) => d.percentile_all)),
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
         lineStyle: { width: 1.5, color: COLORS.blue },
         itemStyle: { color: COLORS.blue },
       },
@@ -273,9 +557,9 @@ function buildPercentileOption(data: PercentileData) {
         name: "1Y滚动分位",
         type: "line",
         yAxisIndex: 1,
-        data: series.map((d) => d.percentile_1y),
+        data: lineSeriesWithLastDot(series.map((d) => d.percentile_1y)),
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
         lineStyle: { width: 1.5, color: COLORS.orange, type: "dashed" },
         itemStyle: { color: COLORS.orange },
       },
@@ -538,7 +822,16 @@ function buildChainSmileOption(data: SmileData, axisRef?: SmileData | null) {
   const ivPoints = axisRef ? prepareOtmSmilePoints(axisRef) : chainPoints
   if (!ivPoints.length) return null
 
-  const oiPoints = chainPoints.filter((p) => (p.callOi ?? 0) > 0 || (p.putOi ?? 0) > 0)
+  const oiByStrike = new Map(
+    chainPoints.map((p) => [p.strike, { callOi: p.callOi ?? 0, putOi: p.putOi ?? 0 }]),
+  )
+  const oiPoints = ivPoints
+    .map((p) => ({
+      strike: p.strike,
+      callOi: oiByStrike.get(p.strike)?.callOi ?? 0,
+      putOi: oiByStrike.get(p.strike)?.putOi ?? 0,
+    }))
+    .filter((p) => p.callOi > 0 || p.putOi > 0)
   const hasOi = oiPoints.length > 0
   const ivStrikes = ivPoints.map((p) => p.strike)
   const ivs = ivPoints.map((p) => p.iv)
@@ -549,9 +842,6 @@ function buildChainSmileOption(data: SmileData, axisRef?: SmileData | null) {
   const oiStrikes = oiPoints.map((p) => p.strike)
   const step = inferStrikeStep(oiStrikes.length >= 2 ? oiStrikes : ivStrikes)
   const barOffset = step * 0.09
-  const oiByStrike = new Map(
-    oiPoints.map((p) => [p.strike, { callOi: p.callOi ?? 0, putOi: p.putOi ?? 0 }]),
-  )
 
   return {
     ...chartBase(),
@@ -674,8 +964,10 @@ export default function FinancialOptionsSection() {
   const [payload, setPayload] = useState<FinancialPayload | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [activeGroup, setActiveGroup] = useState(GROUPS[0].label)
+  const [activeGroup, setActiveGroup] = useState(PRODUCT_GROUPS[0].label)
   const [activeKey, setActiveKey] = useState<string | null>(null)
+  const [summaryChartHeight, setSummaryChartHeight] = useState(320)
+  const summaryTableRef = useRef<HTMLDivElement | null>(null)
 
   const load = useCallback(async (showLoading: boolean) => {
     if (showLoading) setLoading(true)
@@ -694,7 +986,8 @@ export default function FinancialOptionsSection() {
 
   useChartAutoRefresh(load, [])
 
-  const currentGroup = GROUPS.find((g) => g.label === activeGroup) ?? GROUPS[0]
+  const visibleGroups = useMemo(() => orderedProductGroups(payload), [payload])
+  const currentGroup = visibleGroups.find((g) => g.label === activeGroup) ?? visibleGroups[0] ?? PRODUCT_GROUPS[0]
   const availableKeys = useMemo(
     () => currentGroup.keys.filter((k) => payload?.underlyings[k]),
     [currentGroup.keys, payload],
@@ -740,6 +1033,28 @@ export default function FinancialOptionsSection() {
     () => (charts?.smile_chain ? buildChainSmileOption(charts.smile_chain, charts?.smile) : null),
     [charts?.smile_chain, charts?.smile],
   )
+  const summaryTableEntries = useMemo(
+    () => organizeSummaryChartEntries(payload?.summary ?? []),
+    [payload?.summary],
+  )
+  const summaryBarRows = useMemo(() => summaryBarRowEntries(summaryTableEntries), [summaryTableEntries])
+  const summaryPctOption = useMemo(
+    () => (summaryBarRows.length ? buildSummaryPercentileBarOption(summaryTableEntries) : null),
+    [summaryTableEntries, summaryBarRows.length],
+  )
+
+  useEffect(() => {
+    const el = summaryTableRef.current
+    if (!el) return
+    const sync = () => {
+      const h = Math.round(el.getBoundingClientRect().height)
+      if (h > 0) setSummaryChartHeight(h)
+    }
+    sync()
+    const ro = new ResizeObserver(sync)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [summaryTableEntries])
 
   if (loading && !payload) {
     return (
@@ -767,72 +1082,114 @@ export default function FinancialOptionsSection() {
         <p className="text-sm text-muted-foreground">数据日期：{dataTradeDate}</p>
       )}
 
-      {/* IV Summary Table */}
-      <Card>
-        <CardHeader>
-          <CardTitle>隐含波动率概览</CardTitle>
-          <CardDescription>各品种当前 IV 与历史分位（QVIX 指数）</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b text-left text-muted-foreground">
-                  <th className="py-3 pr-4 font-medium">品种</th>
-                  <th className="py-3 pr-4 font-medium text-right">当前 IV</th>
-                  <th className="py-3 pr-4 font-medium text-right">历史分位</th>
-                  <th className="py-3 font-medium">分位评价</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(payload?.summary ?? []).map((row) => (
-                  <tr key={row.group_label} className="border-b last:border-0">
-                    <td className="py-3 pr-4">
-                      <div className="font-medium">{row.group_label}</div>
-                      {row.products.length > 1 && (
-                        <div className="text-xs text-muted-foreground mt-0.5">
-                          {row.products
-                            .map((p) => {
-                              const name = underlyingCnLabel(p.key, p.label)
-                              const pct = p.percentile_all != null ? ` ${p.percentile_all.toFixed(0)}%` : ""
-                              return `${name}${pct}`
-                            })
-                            .join(" · ")}
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-3 pr-4 text-right font-mono">{row.iv_display}</td>
-                    <td className={cn("py-3 pr-4 text-right font-mono", pctColor(row.percentile))}>
-                      {row.percentile_display ?? (row.percentile != null ? `${row.percentile.toFixed(1)}%` : "—")}
-                    </td>
-                    <td className={cn("py-3", pctColor(row.percentile))}>
-                      {pctLabel(row.percentile)}
-                    </td>
+      {/* IV Summary Table + cross-product percentile chart */}
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle>隐含波动率概览</CardTitle>
+            <CardDescription>按小盘 / 中盘 / 大盘分组，各品种当前 IV 与历史分位</CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div ref={summaryTableRef} className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-3 pr-4 font-medium">品种</th>
+                    <th className="py-3 pr-4 font-medium text-right">当前 IV</th>
+                    <th className="py-3 pr-4 font-medium text-right">历史分位</th>
+                    <th className="py-3 font-medium">分位评价</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
+                </thead>
+                <tbody>
+                  {summaryTableEntries.map((entry) =>
+                    entry.kind === "header" ? (
+                      <tr key={entry.category} className={cn(SIZE_BUCKET_ROW_CLASS[entry.bucket], "border-b")}>
+                        <td colSpan={4} className="py-2 pr-4 text-xs font-semibold text-muted-foreground">
+                          {entry.bucket}
+                        </td>
+                      </tr>
+                    ) : (
+                      <tr key={entry.row.group_label} className="border-b last:border-0">
+                        <td className="py-3 pr-4">
+                          <div className="font-medium">{entry.row.group_label}</div>
+                          {entry.row.products.length > 1 && (
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                              {entry.row.products
+                                .map((p) => {
+                                  const name = underlyingCnLabel(p.key, p.label)
+                                  const pct = p.percentile_all != null ? ` ${p.percentile_all.toFixed(0)}%` : ""
+                                  return `${name}${pct}`
+                                })
+                                .join(" · ")}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 pr-4 text-right font-mono">{entry.row.iv_display}</td>
+                        <td className={cn("py-3 pr-4 text-right font-mono", pctColor(entry.row.percentile))}>
+                          {entry.row.percentile_display
+                            ?? (entry.row.percentile != null ? `${entry.row.percentile.toFixed(1)}%` : "—")}
+                        </td>
+                        <td className={cn("py-3", pctColor(entry.row.percentile))}>
+                          {pctLabel(entry.row.percentile)}
+                        </td>
+                      </tr>
+                    ),
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle>全市场 IV 分位对比</CardTitle>
+            <CardDescription>按小盘 / 中盘 / 大盘分组，比较全历史分位（虚线：20 / 50 / 80）</CardDescription>
+          </CardHeader>
+          <CardContent className="pt-0">
+            {summaryPctOption ? (
+              <ReactECharts
+                key={`summary-pct-${summaryTableEntries.length}`}
+                option={summaryPctOption}
+                style={{ height: summaryChartHeight, width: "100%" }}
+                notMerge
+              />
+            ) : (
+              <div
+                className="flex items-center justify-center text-sm text-muted-foreground"
+                style={{ height: summaryChartHeight }}
+              >
+                暂无分位数据
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Product Selector */}
       <div className="space-y-3">
-        <div className="flex flex-wrap gap-2">
-          {GROUPS.filter((g) => g.keys.some((k) => payload?.underlyings[k])).map((g) => (
-            <Button
-              key={g.label}
-              variant={activeGroup === g.label ? "default" : "outline"}
-              size="sm"
-              onClick={() => {
-                setActiveGroup(g.label)
-                setActiveKey(null)
-              }}
-            >
-              {g.label}
-            </Button>
-          ))}
-        </div>
+        {SIZE_BUCKET_ORDER.map((bucket) => {
+          const groups = visibleGroups.filter((g) => g.bucket === bucket)
+          if (!groups.length) return null
+          return (
+            <div key={bucket} className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-semibold text-muted-foreground w-10 shrink-0">{bucket}</span>
+              {groups.map((g) => (
+                <Button
+                  key={g.label}
+                  variant={activeGroup === g.label ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => {
+                    setActiveGroup(g.label)
+                    setActiveKey(null)
+                  }}
+                >
+                  {g.label}
+                </Button>
+              ))}
+            </div>
+          )
+        })}
 
         {availableKeys.length > 1 && (
           <div className="flex flex-wrap gap-2 pl-1">
@@ -907,11 +1264,18 @@ export default function FinancialOptionsSection() {
                   <CardTitle className="text-base">
                     {chartProductLabel ? `${chartProductLabel} QVIX 时序` : "QVIX 时序"}
                   </CardTitle>
-                  <CardDescription>ATM 隐含波动率指数（约 2 年）</CardDescription>
+                  <CardDescription>
+                    {chartAsOfDescription(latestSeriesTradeDate(charts?.history), "ATM 隐含波动率指数（约 2 年）")}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {historyOption ? (
-                    <ReactECharts option={historyOption} style={{ height: 300 }} notMerge lazyUpdate />
+                    <ReactECharts
+                      key={`hist-${selectedKey}-${latestSeriesTradeDate(charts?.history) ?? ""}`}
+                      option={historyOption}
+                      style={{ height: 300 }}
+                      notMerge
+                    />
                   ) : (
                     <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
@@ -922,11 +1286,21 @@ export default function FinancialOptionsSection() {
                   <CardTitle className="text-base">
                     {chartProductLabel ? `${chartProductLabel} IV 分位分析` : "IV 分位分析"}
                   </CardTitle>
-                  <CardDescription>全历史与 1 年滚动分位</CardDescription>
+                  <CardDescription>
+                    {chartAsOfDescription(
+                      latestSeriesTradeDate(charts?.percentile?.series),
+                      "全历史与 1 年滚动分位",
+                    )}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {percentileOption ? (
-                    <ReactECharts option={percentileOption} style={{ height: 300 }} notMerge lazyUpdate />
+                    <ReactECharts
+                      key={`pct-${selectedKey}-${latestSeriesTradeDate(charts?.percentile?.series) ?? ""}`}
+                      option={percentileOption}
+                      style={{ height: 300 }}
+                      notMerge
+                    />
                   ) : (
                     <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm">暂无数据</div>
                   )}
@@ -1027,6 +1401,13 @@ export default function FinancialOptionsSection() {
               </Card>
             </div>
           </div>
+
+          <DeeperAnalysisPanels
+            selectedKey={selectedKey}
+            productLabel={chartProductLabel}
+            charts={charts as never}
+            underlyings={payload?.underlyings ?? {}}
+          />
         </>
       )}
     </div>

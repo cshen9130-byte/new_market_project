@@ -10,6 +10,7 @@ import pandas as pd
 from scipy.interpolate import griddata
 
 from config import UNDERLYINGS
+from deeper_analysis import attach_deeper_charts
 from iv_analysis.charts.percentile import _percentile_rank
 from iv_analysis.charts.smile import (
     _select_smile_expiry,
@@ -24,11 +25,11 @@ from iv_analysis.data import filter_underlying
 
 
 GROUPS: list[tuple[str, list[str]]] = [
-    ("科创50 ETF期权", ["kcb", "kcb_efund"]),
-    ("创业板 ETF期权", ["cyb"]),
-    ("深证100 ETF期权", ["100etf"]),
-    ("中证500 ETF期权", ["500etf", "500etf_sz"]),
     ("中证1000 股指期权", ["1000index"]),
+    ("创业板 ETF期权", ["cyb"]),
+    ("科创50 ETF期权", ["kcb", "kcb_efund"]),
+    ("中证500 ETF期权", ["500etf", "500etf_sz"]),
+    ("深证100 ETF期权", ["100etf"]),
     ("沪深300 股指/ETF期权", ["300index", "300etf", "300etf_sz"]),
     ("上证50 ETF/股指期权", ["50etf", "50index"]),
 ]
@@ -133,18 +134,51 @@ def official_qvix_only(qvix: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _as_of_for_qvix(qvix: pd.DataFrame, as_of: date | None = None) -> date:
+    """Latest chart date = max(calendar last trade day, last QVIX row)."""
+    target = as_of or latest_trade_date()
+    if qvix.empty:
+        return target
+    last = pd.Timestamp(qvix.sort_values("trade_date").iloc[-1]["trade_date"]).date()
+    return max(target, last)
+
+
+def _sanitize_qvix_terminal_cliff(qvix: pd.DataFrame) -> pd.DataFrame:
+    """Replace a one-day terminal IV cliff (common synthetic/index feed glitch)."""
+    if qvix.empty or len(qvix) < 2:
+        return qvix
+    df = qvix.sort_values("trade_date").copy()
+    ivs = pd.to_numeric(df["iv"], errors="coerce")
+    last = float(ivs.iloc[-1]) if np.isfinite(ivs.iloc[-1]) else None
+    prev = float(ivs.iloc[-2]) if np.isfinite(ivs.iloc[-2]) else None
+    if last is None or prev is None:
+        return df
+    if last < prev - 3.0:
+        df.loc[df.index[-1], "iv"] = prev
+        for col in ("open", "high", "low"):
+            if col in df.columns:
+                df.loc[df.index[-1], col] = prev
+    return df
+
+
 def apply_qvix_charts(payload: dict[str, Any], qvix: pd.DataFrame) -> dict[str, Any]:
     """Rebuild history / percentile chart blocks from a QVIX dataframe."""
     saved_iv = payload.get("current_iv")
     charts = dict(payload.get("charts") or {})
-    charts["history"] = build_history(qvix)
-    pct = build_percentile_with_current(official_qvix_only(qvix), current_iv=saved_iv)
+    qvix_clean = _sanitize_qvix_terminal_cliff(qvix)
+    charts["history"] = build_history(qvix_clean)
+    pct = build_percentile_with_current(qvix_clean, current_iv=saved_iv)
     charts["percentile"] = pct
     payload["charts"] = charts
     if pct:
         payload["percentile_all"] = pct.get("percentile_all")
         payload["percentile_1y"] = pct.get("percentile_1y")
-    if saved_iv is not None:
+        headline_iv = pct.get("headline_iv")
+        if headline_iv is not None:
+            payload["current_iv"] = headline_iv
+        elif saved_iv is not None:
+            payload["current_iv"] = saved_iv
+    elif saved_iv is not None:
         payload["current_iv"] = saved_iv
     return payload
 
@@ -335,12 +369,37 @@ def build_percentile(qvix: pd.DataFrame) -> dict | None:
     }
 
 
-def _percentile_of_value(series: pd.Series, value: float) -> float | None:
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if s.empty or not np.isfinite(value):
-        return None
-    combined = pd.concat([s, pd.Series([value])], ignore_index=True)
-    return float(combined.rank(pct=True).iloc[-1] * 100)
+def _iv_for_percentile_rank(
+    qvix: pd.DataFrame,
+    current_iv: float | None,
+) -> float | None:
+    """Pick an IV comparable to the QVIX history scale (avoid snapshot / cliff outliers)."""
+    if qvix.empty:
+        return current_iv
+
+    ranked = official_qvix_only(qvix.sort_values("trade_date"))
+    ivs = pd.to_numeric(
+        ranked["iv"] if not ranked.empty else qvix["iv"],
+        errors="coerce",
+    ).dropna()
+    if ivs.empty:
+        return current_iv
+
+    last_qvix = float(ivs.iloc[-1])
+    rank_iv = current_iv if current_iv is not None and np.isfinite(current_iv) and current_iv > 0 else last_qvix
+
+    # When live snapshot diverges from QVIX, rank using QVIX (ETF feed stays aligned).
+    if current_iv is not None and np.isfinite(current_iv) and current_iv > 0 and last_qvix > 0:
+        if abs(current_iv - last_qvix) / last_qvix > 0.15:
+            rank_iv = last_qvix
+
+    # Drop a one-day downward cliff into a stale snapshot row (index QVIX feed stalls).
+    if len(ivs) >= 2:
+        prev_qvix = float(ivs.iloc[-2])
+        if last_qvix < prev_qvix - 3.0 and rank_iv <= last_qvix + 0.5:
+            rank_iv = prev_qvix
+
+    return rank_iv
 
 
 def build_percentile_with_current(
@@ -348,41 +407,41 @@ def build_percentile_with_current(
     current_iv: float | None = None,
     as_of: date | None = None,
 ) -> dict | None:
-    """Rank official QVIX history; overlay current IV when feed is stale or diverged."""
+    """Build percentile chart + headline KPIs from the same rolling-rank series."""
     if qvix.empty:
         return None
-    df = qvix.sort_values("trade_date").tail(PERCENTILE_DAYS).copy()
+    df = _sanitize_qvix_terminal_cliff(qvix).sort_values("trade_date").tail(PERCENTILE_DAYS).copy()
+    target = _as_of_for_qvix(df, as_of)
+    target_ts = pd.Timestamp(target)
+
+    rank_iv = _iv_for_percentile_rank(df, current_iv)
+    if rank_iv is None or not np.isfinite(rank_iv) or rank_iv <= 0:
+        return None
+
+    display_iv = current_iv if current_iv is not None and np.isfinite(current_iv) and current_iv > 0 else rank_iv
+    headline_iv = rank_iv
+    if current_iv is not None and np.isfinite(current_iv) and current_iv > 0 and rank_iv > 0:
+        if abs(current_iv - rank_iv) / rank_iv <= 0.15:
+            headline_iv = current_iv
+
+    same_day = pd.to_datetime(df["trade_date"]).dt.normalize() == target_ts.normalize()
+    if same_day.any():
+        df = df.loc[~same_day].copy()
+    df = pd.concat(
+        [df, pd.DataFrame([{"trade_date": target_ts, "iv": float(headline_iv)}])],
+        ignore_index=True,
+    )
+    df = df.sort_values("trade_date").reset_index(drop=True)
+
     df["percentile_all"] = _percentile_rank(df["iv"])
     df["percentile_1y"] = _percentile_rank(df["iv"], window=252)
-
-    latest_iv = _safe_float(df.iloc[-1]["iv"])
-    pct_all = _safe_float(df.iloc[-1]["percentile_all"])
-    pct_1y = _safe_float(df.iloc[-1]["percentile_1y"])
-
-    if current_iv is not None and np.isfinite(current_iv) and current_iv > 0:
-        target = as_of or latest_trade_date()
-        last_date = pd.Timestamp(df.iloc[-1]["trade_date"]).date()
-        stale = target > last_date
-        if stale:
-            ranked_all = _percentile_of_value(df["iv"], current_iv)
-            ranked_1y = _percentile_of_value(df["iv"].tail(252), current_iv)
-            if ranked_all is not None:
-                pct_all = ranked_all
-            if ranked_1y is not None:
-                pct_1y = ranked_1y
-            overlay = {
-                "trade_date": pd.Timestamp(target),
-                "iv": float(current_iv),
-                "percentile_all": pct_all,
-                "percentile_1y": pct_1y,
-            }
-            df = pd.concat([df, pd.DataFrame([overlay])], ignore_index=True)
-            latest_iv = current_iv
+    latest = df.iloc[-1]
 
     return {
-        "latest_iv": _safe_float(latest_iv),
-        "percentile_all": _safe_float(pct_all),
-        "percentile_1y": _safe_float(pct_1y),
+        "latest_iv": _safe_float(display_iv),
+        "percentile_all": _safe_float(latest["percentile_all"]),
+        "percentile_1y": _safe_float(latest["percentile_1y"]),
+        "headline_iv": _safe_float(headline_iv),
         "series": _df_records(df, ["trade_date", "iv", "percentile_all", "percentile_1y"]),
     }
 
@@ -455,18 +514,38 @@ def build_underlying_payload(
         qvix_iv = float(latest["iv"])
         qvix_date = pd.Timestamp(latest["trade_date"]).to_pydatetime()
         current_iv = _choose_iv(snapshot_iv, qvix_iv, qvix_date)
-        pct_series = build_percentile_with_current(q_official, current_iv=current_iv)
+        pct_series = build_percentile_with_current(q_history, current_iv=current_iv)
         if pct_series:
             percentile_all = pct_series["percentile_all"]
             percentile_1y = pct_series["percentile_1y"]
+            if pct_series.get("headline_iv") is not None:
+                current_iv = pct_series["headline_iv"]
     elif snapshot_iv is not None:
         current_iv = snapshot_iv
-        pct_series = build_percentile_with_current(q_official, current_iv=current_iv)
+        pct_series = build_percentile_with_current(q_history, current_iv=current_iv)
         if pct_series:
             percentile_all = pct_series["percentile_all"]
             percentile_1y = pct_series["percentile_1y"]
+            if pct_series.get("headline_iv") is not None:
+                current_iv = pct_series["headline_iv"]
 
     short_label = SHORT_LABELS.get(key, cfg.label)
+
+    charts: dict[str, Any] = {
+        "term_structure": build_term_structure(udf, em_udf)
+        if not udf.empty or (em_udf is not None and not em_udf.empty)
+        else None,
+        "smile": build_smile(udf) if not udf.empty else None,
+        "smile_chain": build_smile_chain(udf) if not udf.empty else None,
+        "surface": build_surface(udf) if not udf.empty else None,
+        "history": build_history(q_history),
+        "percentile": build_percentile_with_current(q_history, current_iv=current_iv),
+    }
+    try:
+        attach_deeper_charts(charts, key, current_iv, fetch_prices=True)
+    except Exception:  # noqa: BLE001
+        # Price/AkShare failures must not block the core IV payload.
+        attach_deeper_charts(charts, key, current_iv, fetch_prices=False)
 
     return {
         "key": key,
@@ -478,16 +557,7 @@ def build_underlying_payload(
         "percentile_all": percentile_all,
         "percentile_1y": percentile_1y,
         "contract_count": len(udf),
-        "charts": {
-            "term_structure": build_term_structure(udf, em_udf)
-            if not udf.empty or (em_udf is not None and not em_udf.empty)
-            else None,
-            "smile": build_smile(udf) if not udf.empty else None,
-            "smile_chain": build_smile_chain(udf) if not udf.empty else None,
-            "surface": build_surface(udf) if not udf.empty else None,
-            "history": build_history(q_history),
-            "percentile": build_percentile_with_current(q_official, current_iv=current_iv),
-        },
+        "charts": charts,
     }
 
 

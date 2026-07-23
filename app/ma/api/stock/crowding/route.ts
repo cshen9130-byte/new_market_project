@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { fmtIso, n, query } from "@/lib/db"
+import { fmtIso, n, query, rawQuery } from "@/lib/db"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -13,6 +13,7 @@ interface CrowdingRow {
   hhi: string | number | null
   top3_share: string | number | null
   top10_share: string | number | null
+  top5pct_share: string | number | null
   crowding_pct: string | number | null
   crowding_smooth: string | number | null
   top_board: string | null
@@ -37,9 +38,14 @@ export async function GET(req: Request) {
   const days = Math.min(365, Math.max(30, parseInt(searchParams.get("days") || "90", 10)))
 
   try {
+    await rawQuery(
+      `ALTER TABLE derived_ashare_crowding_daily
+       ADD COLUMN IF NOT EXISTS top5pct_share NUMERIC(8,4)`,
+    )
+
     const seriesRows = await query<CrowdingRow>(
       `SELECT trade_date, total_amount, market_turn, hhi, top3_share, top10_share,
-              crowding_pct, crowding_smooth, top_board, top_board_share, board_shares
+              top5pct_share, crowding_pct, crowding_smooth, top_board, top_board_share, board_shares
        FROM derived_ashare_crowding_daily
        ORDER BY trade_date DESC
        LIMIT $1`,
@@ -68,6 +74,7 @@ export async function GET(req: Request) {
           hhi: n(r.hhi),
           top3_share: n(r.top3_share),
           top10_share: n(r.top10_share),
+          top5pct_share: n(r.top5pct_share),
           crowding_pct: smooth ?? raw,
           crowding_raw: raw,
           crowding_smooth: smooth,
@@ -195,6 +202,7 @@ export async function GET(req: Request) {
         hhi: latest.hhi,
         top3_share: latest.top3_share,
         top10_share: latest.top10_share,
+        top5pct_share: latest.top5pct_share,
         top_board: latest.top_board,
         top_board_share: latest.top_board_share,
         total_amount: latest.total_amount,

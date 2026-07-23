@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS derived_ashare_crowding_daily (
     hhi              NUMERIC(12,8),
     top3_share       NUMERIC(8,4),
     top10_share      NUMERIC(8,4),
+    top5pct_share    NUMERIC(8,4),
     crowding_pct     NUMERIC(6,2),
     crowding_smooth  NUMERIC(6,2),
     top_board        VARCHAR(30),
@@ -62,6 +63,10 @@ def main() -> None:
     )
     cur = conn.cursor()
     cur.execute(DDL)
+    cur.execute(
+        "ALTER TABLE derived_ashare_crowding_daily "
+        "ADD COLUMN IF NOT EXISTS top5pct_share NUMERIC(8,4)"
+    )
     conn.commit()
     cur.close()
     conn.close()

@@ -103,7 +103,18 @@ function extractFundNameFromSubject(subject: string): string | null {
   const taVirtualInvestor = subject.match(
     /【([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)】TA虚拟净值/u,
   )
-  if (taVirtualInvestor) return normalizeFundDisplayName(taVirtualInvestor[1])
+  if (taVirtualInvestor) {
+    const investorName = normalizeFundDisplayName(taVirtualInvestor[1])
+    // Body NAV in these mails is the underlying fund outside 【】; return that name for metadata.
+    if (resolveManagedProductBeian(investorName)) {
+      const withoutInvestor = subject.replace(/【[^】]*】/g, " ")
+      const underlying = withoutInvestor.match(
+        /[\u4e00-\u9fff][\u4e00-\u9fff\d]{2,}(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?/,
+      )
+      if (underlying) return normalizeFundDisplayName(underlying[0])
+    }
+    return investorName
+  }
 
   const bracketVirtualSubj = subject.match(
     /【虚拟净值】[A-Z0-9]+[\s_]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
@@ -145,23 +156,21 @@ function parseGuosenCustodyNavSubject(text: string): { code: string; fundName: s
 }
 
 /**
- * Guotai Junan TA virtual NAV: underlying fund outside 【】, 在管产品 / investor inside 【】.
- * Example: …笃熙禀泰渊流1号…A【金舆追风1号私募证券投资基金】TA虚拟净值_2026-07-21
+ * Guotai Junan TA virtual NAV: underlying fund outside 【】, 在管 product / investor inside 【】.
+ * Example: …金奥追风1号…A【金舆追风1号私募证券投资基金】TA虚拟净值_2026-07-22
+ *
+ * Body/table NAV is always the underlying fund's — never ingest it under the managed product.
  */
-function parseGuotaiTaVirtualNavSubject(text: string): { code: string; fundName: string } | null {
-  const m = text.match(
+function isGuotaiTaVirtualManagedProductNavEmail(subject: string): boolean {
+  const m = subject.match(
     /【([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)】TA虚拟净值/u,
   )
-  if (!m) return null
-  const fundName = normalizeFundDisplayName(m[1])
-  const code = resolveManagedProductBeian(fundName)
-  if (!code) return null
-  return { code, fundName }
+  if (!m) return false
+  return resolveManagedProductBeian(normalizeFundDisplayName(m[1])) != null
 }
 
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
-    parseGuotaiTaVirtualNavSubject,
     parseVirtualBracketSubject,
     parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
@@ -385,6 +394,9 @@ export function extractNavData(
   subject: string,
   bodyText: string,
 ): ExtractedNavData | null {
+  // Guotai TA虚拟净值 with a 在管 product in 【】: body NAV is the underlying fund only.
+  if (isGuotaiTaVirtualManagedProductNavEmail(subject)) return null
+
   const shared = extractNavMetadata(subject, bodyText)
 
   // ── 1. Subject: 单位净值：1.2269 ──────────────────────────────────────────

@@ -16,6 +16,7 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   // Custody emails use SAVW72_金舆基石一号…估值表.
   金舆基石一号: "SAVW72",
   古曲祥辰5号: "SXN097",
+  荣熙共赢: "SBNX55",
   // Guotai TA虚拟净值 mails tag the 在管产品 in 【…】; underlying fund is outside the brackets.
   金舆追风1号: "SCJ536",
 }

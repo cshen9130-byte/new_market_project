@@ -1062,6 +1062,109 @@ def step_options_contracts_ohlcv(conn, *, force: bool = False) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _upsert_option_iv_structure_metrics(conn, underlyings: dict, trade_date) -> int:
+    """Persist daily skew / term-slope / PCR for historical charts."""
+    records = []
+    for key, payload in underlyings.items():
+        charts = (payload or {}).get("charts") or {}
+        skew = charts.get("skew") or {}
+        term = charts.get("term_slope") or {}
+        pcr = charts.get("pcr") or {}
+        records.append((
+            trade_date,
+            key,
+            skew.get("risk_reversal"),
+            skew.get("butterfly"),
+            skew.get("put_wing_5pct"),
+            skew.get("call_wing_5pct"),
+            term.get("slope"),
+            pcr.get("pcr_oi"),
+        ))
+    if not records:
+        return 0
+    with conn.cursor() as cur:
+        execute_values(
+            cur,
+            """
+            INSERT INTO raw_option_iv_structure_daily
+                (trade_date, underlying_key, risk_reversal, butterfly,
+                 put_wing_5pct, call_wing_5pct, term_slope, pcr_oi)
+            VALUES %s
+            ON CONFLICT (trade_date, underlying_key) DO UPDATE
+                SET risk_reversal = EXCLUDED.risk_reversal,
+                    butterfly = EXCLUDED.butterfly,
+                    put_wing_5pct = EXCLUDED.put_wing_5pct,
+                    call_wing_5pct = EXCLUDED.call_wing_5pct,
+                    term_slope = EXCLUDED.term_slope,
+                    pcr_oi = EXCLUDED.pcr_oi,
+                    fetched_at = NOW()
+            """,
+            records,
+        )
+    conn.commit()
+    return len(records)
+
+
+def _attach_option_iv_structure_history(conn, underlyings: dict) -> dict:
+    """Attach rolling structure history series onto chart payloads."""
+    if not underlyings:
+        return underlyings
+    with conn.cursor() as cur:
+        for key, payload in underlyings.items():
+            cur.execute(
+                """
+                SELECT trade_date, risk_reversal, butterfly, put_wing_5pct,
+                       call_wing_5pct, term_slope, pcr_oi
+                FROM raw_option_iv_structure_daily
+                WHERE underlying_key = %s
+                ORDER BY trade_date
+                """,
+                (key,),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                continue
+            skew_series = []
+            term_series = []
+            pcr_series = []
+            for r in rows:
+                td = r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0])[:10]
+                if r[1] is not None:
+                    skew_series.append({
+                        "trade_date": td,
+                        "risk_reversal": float(r[1]) if r[1] is not None else None,
+                        "butterfly": float(r[2]) if r[2] is not None else None,
+                        "put_wing_5pct": float(r[3]) if r[3] is not None else None,
+                        "call_wing_5pct": float(r[4]) if r[4] is not None else None,
+                    })
+                if r[5] is not None:
+                    term_series.append({
+                        "trade_date": td,
+                        "slope": float(r[5]),
+                    })
+                if r[6] is not None:
+                    pcr_series.append({
+                        "trade_date": td,
+                        "pcr_oi": float(r[6]),
+                    })
+            charts = dict(payload.get("charts") or {})
+            if skew_series:
+                skew = dict(charts.get("skew") or {})
+                skew["series"] = skew_series[-504:]
+                charts["skew"] = skew
+            if term_series:
+                term = dict(charts.get("term_slope") or {})
+                term["series"] = term_series[-504:]
+                charts["term_slope"] = term
+            if pcr_series:
+                pcr = dict(charts.get("pcr") or {})
+                pcr["series"] = pcr_series[-504:]
+                charts["pcr"] = pcr
+            payload["charts"] = charts
+            underlyings[key] = payload
+    return underlyings
+
+
 def _refresh_option_iv_payloads_from_db(conn, underlyings: dict) -> dict:
     """Rebuild QVIX history/percentile charts from DB (includes snapshot extensions)."""
     import pandas as pd
@@ -1127,7 +1230,11 @@ def _upsert_synthetic_qvix_gaps(conn) -> int:
             for col in ("iv", "open", "high", "low"):
                 df[col] = pd.to_numeric(df[col], errors="coerce")
             before_dates = set(df["trade_date"].dt.date)
-            merged = merge_synthetic_qvix_gaps(key, df)
+            try:
+                merged = merge_synthetic_qvix_gaps(key, df)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Synthetic QVIX gap fill skipped for %s: %s", key, exc)
+                continue
             new_rows = merged[~merged["trade_date"].dt.date.isin(before_dates)]
             if new_rows.empty:
                 continue
@@ -1202,8 +1309,22 @@ def step_option_iv(conn, *, force: bool = False) -> int:
             )
         """)
         cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_derived_option_iv_snapshot_key_date
-              ON derived_option_iv_snapshot (underlying_key, trade_date DESC)
+            CREATE TABLE IF NOT EXISTS raw_option_iv_structure_daily (
+                trade_date      DATE        NOT NULL,
+                underlying_key  TEXT        NOT NULL,
+                risk_reversal   NUMERIC,
+                butterfly       NUMERIC,
+                put_wing_5pct   NUMERIC,
+                call_wing_5pct  NUMERIC,
+                term_slope      NUMERIC,
+                pcr_oi          NUMERIC,
+                fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, underlying_key)
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_raw_option_iv_structure_key_date
+              ON raw_option_iv_structure_daily (underlying_key, trade_date DESC)
         """)
     conn.commit()
 
@@ -1273,6 +1394,8 @@ def step_option_iv(conn, *, force: bool = False) -> int:
     conn.commit()
     total += _upsert_synthetic_qvix_gaps(conn)
     underlyings = _refresh_option_iv_payloads_from_db(conn, underlyings)
+    total += _upsert_option_iv_structure_metrics(conn, underlyings, trade_date)
+    underlyings = _attach_option_iv_structure_history(conn, underlyings)
 
     snapshot_records = []
     for key, payload in underlyings.items():
@@ -2372,7 +2495,7 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
       - crowding_smooth: N-day SMA of crowding_pct (default 20) — used in charts
 
     Auxiliary concentration metrics:
-      - hhi, top3_share, top10_share, board_shares
+      - hhi, top3_share, top10_share, top5pct_share, board_shares
     """
     lookback = int(os.environ.get("ASHARE_CROWDING_LOOKBACK", "250"))
     smooth_window = int(os.environ.get("ASHARE_CROWDING_SMOOTH", "20"))
@@ -2386,6 +2509,7 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
                 hhi              NUMERIC(12,8),
                 top3_share       NUMERIC(8,4),
                 top10_share      NUMERIC(8,4),
+                top5pct_share    NUMERIC(8,4),
                 crowding_pct     NUMERIC(6,2),
                 crowding_smooth  NUMERIC(6,2),
                 top_board        VARCHAR(30),
@@ -2406,6 +2530,10 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
             "ALTER TABLE derived_ashare_crowding_daily "
             "ADD COLUMN IF NOT EXISTS crowding_smooth NUMERIC(6,2)"
         )
+        cur.execute(
+            "ALTER TABLE derived_ashare_crowding_daily "
+            "ADD COLUMN IF NOT EXISTS top5pct_share NUMERIC(8,4)"
+        )
     conn.commit()
 
     with conn.cursor() as cur:
@@ -2422,6 +2550,7 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
                 WHERE d.trade_date IS NULL
                    OR d.market_turn IS NULL
                    OR d.crowding_smooth IS NULL
+                   OR d.top5pct_share IS NULL
                 ORDER BY r.trade_date
             """)
         dates_to_compute = [row[0] for row in cur.fetchall()]
@@ -2461,6 +2590,8 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
         sorted_amts = sorted((a for _, a, _ in stocks), reverse=True)
         top3_share = sum(sorted_amts[:3]) / total * 100
         top10_share = sum(sorted_amts[:10]) / total * 100
+        top5pct_n = max(1, (len(sorted_amts) * 5 + 99) // 100)
+        top5pct_share = sum(sorted_amts[:top5pct_n]) / total * 100
 
         turn_amt = sum(a for _, a, t in stocks if t is not None and t > 0)
         if turn_amt > 0:
@@ -2485,6 +2616,7 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
             hhi,
             round(top3_share, 4),
             round(top10_share, 4),
+            round(top5pct_share, 4),
             top_board,
             top_board_share,
             json.dumps(board_shares, ensure_ascii=False),
@@ -2499,7 +2631,7 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
             """
             INSERT INTO derived_ashare_crowding_daily
                 (trade_date, total_amount, market_turn, hhi, top3_share, top10_share,
-                 top_board, top_board_share, board_shares)
+                 top5pct_share, top_board, top_board_share, board_shares)
             VALUES %s
             ON CONFLICT (trade_date) DO UPDATE
                 SET total_amount = EXCLUDED.total_amount,
@@ -2507,6 +2639,7 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
                     hhi = EXCLUDED.hhi,
                     top3_share = EXCLUDED.top3_share,
                     top10_share = EXCLUDED.top10_share,
+                    top5pct_share = EXCLUDED.top5pct_share,
                     top_board = EXCLUDED.top_board,
                     top_board_share = EXCLUDED.top_board_share,
                     board_shares = EXCLUDED.board_shares,
