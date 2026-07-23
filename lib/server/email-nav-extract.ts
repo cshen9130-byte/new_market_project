@@ -6,6 +6,11 @@
  *   3. body_table – date + decimal columns found in a table row
  */
 
+import { normalizeFundDisplayName } from "@/lib/fund-display-name"
+import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+
+export { normalizeFundDisplayName }
+
 export type NavExtractSource =
   | "subject"
   | "body_table"
@@ -95,6 +100,11 @@ function extractFundNameFromSubject(subject: string): string | null {
     if (parsed) return parsed.fundName
   }
 
+  const taVirtualInvestor = subject.match(
+    /【([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)】TA虚拟净值/u,
+  )
+  if (taVirtualInvestor) return normalizeFundDisplayName(taVirtualInvestor[1])
+
   const bracketVirtualSubj = subject.match(
     /【虚拟净值】[A-Z0-9]+[\s_]([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金))_/,
   )
@@ -134,8 +144,24 @@ function parseGuosenCustodyNavSubject(text: string): { code: string; fundName: s
   return { code: m[1], fundName: normalizeFundDisplayName(m[2]) }
 }
 
+/**
+ * Guotai Junan TA virtual NAV: underlying fund outside 【】, 在管产品 / investor inside 【】.
+ * Example: …笃熙禀泰渊流1号…A【金舆追风1号私募证券投资基金】TA虚拟净值_2026-07-21
+ */
+function parseGuotaiTaVirtualNavSubject(text: string): { code: string; fundName: string } | null {
+  const m = text.match(
+    /【([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)】TA虚拟净值/u,
+  )
+  if (!m) return null
+  const fundName = normalizeFundDisplayName(m[1])
+  const code = resolveManagedProductBeian(fundName)
+  if (!code) return null
+  return { code, fundName }
+}
+
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
+    parseGuotaiTaVirtualNavSubject,
     parseVirtualBracketSubject,
     parseFofBracketVirtualNavSubject,
     parseCmsCustodyNavSubject,
@@ -195,8 +221,6 @@ function parseValuationTableSubject(text: string): { code: string; fundName: str
   if (tail) return { code: tail[1], fundName: normalizeFundDisplayName(tail[2]) }
   return null
 }
-
-export { normalizeFundDisplayName } from "@/lib/fund-display-name"
 
 export function extractProductCodeFromText(text: string): string | null {
   const labeled = text.match(/基金代码\s*[：:]\s*([A-Z0-9]+)/)

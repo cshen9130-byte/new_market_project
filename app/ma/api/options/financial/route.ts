@@ -112,7 +112,7 @@ export async function GET(req: Request) {
 
   try {
     const latestRows = await query<{ trade_date: Date | string }>(
-      `SELECT MAX(trade_date) AS trade_date FROM derived_option_iv_snapshot`,
+      `SELECT MAX(trade_date) AS trade_date FROM raw_option_iv_qvix_daily`,
     )
     const latestDate = latestRows[0]?.trade_date
     if (!latestDate) {

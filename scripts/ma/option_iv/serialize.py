@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import numpy as np
@@ -54,6 +54,101 @@ HISTORY_DAYS = 504
 PERCENTILE_DAYS = 1260
 
 
+def latest_trade_date() -> date:
+    """Previous trading day (matches nightly_etl.latest_trade_date)."""
+    today = date.today()
+    wd = today.weekday()
+    if wd == 0:
+        return today - timedelta(days=3)
+    if wd == 5:
+        return today - timedelta(days=1)
+    if wd == 6:
+        return today - timedelta(days=2)
+    return today - timedelta(days=1)
+
+
+def extend_qvix_with_snapshot(
+    qvix: pd.DataFrame,
+    snapshot_iv: float | None,
+    as_of: date | None = None,
+) -> pd.DataFrame:
+    """Append live ATM IV when the official QVIX feed is stale (common for MO/IO/HO)."""
+    if snapshot_iv is None or not np.isfinite(snapshot_iv) or snapshot_iv <= 0:
+        return qvix
+
+    target = as_of or latest_trade_date()
+    if qvix.empty:
+        return pd.DataFrame([{
+            "trade_date": pd.Timestamp(target),
+            "iv": float(snapshot_iv),
+            "open": float(snapshot_iv),
+            "high": float(snapshot_iv),
+            "low": float(snapshot_iv),
+        }])
+
+    out = qvix.sort_values("trade_date").copy()
+    last = pd.Timestamp(out.iloc[-1]["trade_date"]).date()
+    if last >= target:
+        return out
+
+    extra = {
+        "trade_date": pd.Timestamp(target),
+        "iv": float(snapshot_iv),
+        "open": float(snapshot_iv),
+        "high": float(snapshot_iv),
+        "low": float(snapshot_iv),
+    }
+    for col in ("underlying_key", "underlying_label"):
+        if col in out.columns:
+            extra[col] = out.iloc[-1][col]
+    return pd.concat([out, pd.DataFrame([extra])], ignore_index=True)
+
+
+def _is_flat_snapshot_row(row: pd.Series) -> bool:
+    iv = pd.to_numeric(row.get("iv"), errors="coerce")
+    if not np.isfinite(iv):
+        return False
+    for col in ("open", "high", "low"):
+        val = pd.to_numeric(row.get(col), errors="coerce")
+        if not np.isfinite(val) or abs(val - iv) > 1e-6:
+            return False
+    return True
+
+
+def official_qvix_only(qvix: pd.DataFrame) -> pd.DataFrame:
+    """Drop snapshot-synthesized QVIX rows used to extend stale index feeds."""
+    if qvix.empty:
+        return qvix
+    out = qvix.sort_values("trade_date").reset_index(drop=True)
+    while len(out) >= 2:
+        last = out.iloc[-1]
+        prev = out.iloc[-2]
+        if not _is_flat_snapshot_row(last):
+            break
+        gap = (pd.Timestamp(last["trade_date"]) - pd.Timestamp(prev["trade_date"])).days
+        if gap > 10:
+            out = out.iloc[:-1].reset_index(drop=True)
+            continue
+        break
+    return out
+
+
+def apply_qvix_charts(payload: dict[str, Any], qvix: pd.DataFrame) -> dict[str, Any]:
+    """Rebuild history / percentile chart blocks from a QVIX dataframe."""
+    saved_iv = payload.get("current_iv")
+    charts = dict(payload.get("charts") or {})
+    charts["history"] = build_history(qvix)
+    pct = build_percentile_with_current(official_qvix_only(qvix), current_iv=saved_iv)
+    charts["percentile"] = pct
+    payload["charts"] = charts
+    if pct:
+        payload["percentile_all"] = pct.get("percentile_all")
+        payload["percentile_1y"] = pct.get("percentile_1y")
+    if saved_iv is not None:
+        payload["current_iv"] = saved_iv
+    return payload
+
+
 def _percentile_summary(pcts: list[float]) -> tuple[str | None, float | None]:
     """Format group percentile for the overview table (range when products diverge)."""
     if not pcts:
@@ -79,8 +174,8 @@ def _df_records(df: pd.DataFrame, cols: list[str]) -> list[dict]:
         return []
     out = df[cols].copy()
     for col in out.columns:
-        if pd.api.types.is_datetime64_any_dtype(out[col]):
-            out[col] = out[col].dt.strftime("%Y-%m-%d")
+        if col == "trade_date" or pd.api.types.is_datetime64_any_dtype(out[col]):
+            out[col] = pd.to_datetime(out[col], errors="coerce").dt.strftime("%Y-%m-%d")
     return out.replace({np.nan: None}).to_dict(orient="records")
 
 
@@ -240,6 +335,58 @@ def build_percentile(qvix: pd.DataFrame) -> dict | None:
     }
 
 
+def _percentile_of_value(series: pd.Series, value: float) -> float | None:
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty or not np.isfinite(value):
+        return None
+    combined = pd.concat([s, pd.Series([value])], ignore_index=True)
+    return float(combined.rank(pct=True).iloc[-1] * 100)
+
+
+def build_percentile_with_current(
+    qvix: pd.DataFrame,
+    current_iv: float | None = None,
+    as_of: date | None = None,
+) -> dict | None:
+    """Rank official QVIX history; overlay current IV when feed is stale or diverged."""
+    if qvix.empty:
+        return None
+    df = qvix.sort_values("trade_date").tail(PERCENTILE_DAYS).copy()
+    df["percentile_all"] = _percentile_rank(df["iv"])
+    df["percentile_1y"] = _percentile_rank(df["iv"], window=252)
+
+    latest_iv = _safe_float(df.iloc[-1]["iv"])
+    pct_all = _safe_float(df.iloc[-1]["percentile_all"])
+    pct_1y = _safe_float(df.iloc[-1]["percentile_1y"])
+
+    if current_iv is not None and np.isfinite(current_iv) and current_iv > 0:
+        target = as_of or latest_trade_date()
+        last_date = pd.Timestamp(df.iloc[-1]["trade_date"]).date()
+        stale = target > last_date
+        if stale:
+            ranked_all = _percentile_of_value(df["iv"], current_iv)
+            ranked_1y = _percentile_of_value(df["iv"].tail(252), current_iv)
+            if ranked_all is not None:
+                pct_all = ranked_all
+            if ranked_1y is not None:
+                pct_1y = ranked_1y
+            overlay = {
+                "trade_date": pd.Timestamp(target),
+                "iv": float(current_iv),
+                "percentile_all": pct_all,
+                "percentile_1y": pct_1y,
+            }
+            df = pd.concat([df, pd.DataFrame([overlay])], ignore_index=True)
+            latest_iv = current_iv
+
+    return {
+        "latest_iv": _safe_float(latest_iv),
+        "percentile_all": _safe_float(pct_all),
+        "percentile_1y": _safe_float(pct_1y),
+        "series": _df_records(df, ["trade_date", "iv", "percentile_all", "percentile_1y"]),
+    }
+
+
 def _nearest_atm_iv(udf: pd.DataFrame, em_udf: pd.DataFrame | None = None) -> float | None:
     if udf.empty or "iv" not in udf.columns:
         return None
@@ -262,6 +409,20 @@ def _choose_iv(snapshot_iv: float | None, qvix_iv: float, qvix_date: datetime) -
     return snapshot_iv
 
 
+def prepare_qvix_series(
+    key: str,
+    snapshot: pd.DataFrame,
+    qvix: pd.DataFrame,
+    em_snapshot: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    cfg = UNDERLYINGS[key]
+    udf = filter_underlying(snapshot, cfg)
+    em_udf = filter_underlying(em_snapshot, cfg) if em_snapshot is not None else None
+    snapshot_iv = _nearest_atm_iv(udf, em_udf) if not udf.empty or (em_udf is not None and not em_udf.empty) else None
+    q = qvix.sort_values("trade_date").copy() if not qvix.empty else pd.DataFrame()
+    return extend_qvix_with_snapshot(q, snapshot_iv)
+
+
 def build_underlying_payload(
     key: str,
     snapshot: pd.DataFrame,
@@ -274,8 +435,9 @@ def build_underlying_payload(
     if udf.empty and qvix.empty:
         return None
 
-    q = qvix.sort_values("trade_date").copy() if not qvix.empty else pd.DataFrame()
     snapshot_iv = _nearest_atm_iv(udf, em_udf) if not udf.empty or (em_udf is not None and not em_udf.empty) else None
+    q_official = qvix.sort_values("trade_date").copy() if not qvix.empty else pd.DataFrame()
+    q_history = extend_qvix_with_snapshot(q_official, snapshot_iv)
 
     current_iv = None
     percentile_all = None
@@ -288,17 +450,21 @@ def build_underlying_payload(
         if not prices.empty:
             spot = float(prices.median())
 
-    if not q.empty:
-        latest = q.iloc[-1]
+    if not q_official.empty:
+        latest = q_official.iloc[-1]
         qvix_iv = float(latest["iv"])
         qvix_date = pd.Timestamp(latest["trade_date"]).to_pydatetime()
         current_iv = _choose_iv(snapshot_iv, qvix_iv, qvix_date)
-        pct_series = build_percentile(qvix)
+        pct_series = build_percentile_with_current(q_official, current_iv=current_iv)
         if pct_series:
             percentile_all = pct_series["percentile_all"]
             percentile_1y = pct_series["percentile_1y"]
     elif snapshot_iv is not None:
         current_iv = snapshot_iv
+        pct_series = build_percentile_with_current(q_official, current_iv=current_iv)
+        if pct_series:
+            percentile_all = pct_series["percentile_all"]
+            percentile_1y = pct_series["percentile_1y"]
 
     short_label = SHORT_LABELS.get(key, cfg.label)
 
@@ -319,8 +485,8 @@ def build_underlying_payload(
             "smile": build_smile(udf) if not udf.empty else None,
             "smile_chain": build_smile_chain(udf) if not udf.empty else None,
             "surface": build_surface(udf) if not udf.empty else None,
-            "history": build_history(qvix),
-            "percentile": build_percentile(qvix),
+            "history": build_history(q_history),
+            "percentile": build_percentile_with_current(q_official, current_iv=current_iv),
         },
     }
 

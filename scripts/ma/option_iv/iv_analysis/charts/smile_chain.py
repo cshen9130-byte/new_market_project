@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from iv_analysis.charts.smile import MIN_IV_PCT, _spot_price
+from iv_analysis.charts.smile import MIN_IV_PCT, _spot_price, _trim_symmetric_wings
 from iv_analysis.data import enrich_chain_open_interest
 from iv_analysis.plot_utils import save_figure
 
@@ -22,13 +22,12 @@ CHAIN_MIN_PREMIUM_TO_SPOT = 0.00005  # 0.005% of spot
 
 # Chain-specific gates (ATM-focused, like commercial chain viewers).
 CHAIN_MAX_IV_PCT = 50.0
-CHAIN_MONEYNESS_BAND = 0.06  # keep strikes within ±6% of spot
 MIN_CHAIN_STRIKES = 4
 MAX_IV_JUMP_PCT = 12.0  # drop wing quotes with a cliff vs the next strike
 
 CHAIN_METHODOLOGY = (
     "Nearest expiry (>=4 strikes) | strict OTM IV | ATM plateau below spot | "
-    "ATM ±6% | linear curve | OI bars = call (green) / put (red)"
+    "symmetric wing trim (same window as OTM smile) | OI bars = call (green) / put (red)"
 )
 
 
@@ -99,9 +98,6 @@ def _filter_chain_quotes(df: pd.DataFrame, spot: float) -> pd.DataFrame:
 
     min_premium = spot * CHAIN_MIN_PREMIUM_TO_SPOT
     base = base[base["last_price"].notna() & (base["last_price"] >= min_premium)]
-
-    moneyness = base["strike"] / spot
-    base = base[moneyness.between(1.0 - CHAIN_MONEYNESS_BAND, 1.0 + CHAIN_MONEYNESS_BAND)]
     return base
 
 
@@ -231,6 +227,7 @@ def _build_chain_table(
     table = _drop_iv_cliffs(table)
     if apply_plateau:
         table = _apply_atm_plateau(table, spot)
+    table = _trim_symmetric_wings(table, spot)
     return table
 
 

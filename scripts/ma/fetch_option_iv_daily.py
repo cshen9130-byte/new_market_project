@@ -34,7 +34,7 @@ if str(_OPTION_IV_DIR) not in sys.path:
 
 from config import FINANCIAL_UNDERLYINGS  # noqa: E402
 from iv_analysis.data import fetch_option_snapshot, fetch_option_snapshot_em, fetch_qvix_history  # noqa: E402
-from serialize import build_summary_rows, build_underlying_payload  # noqa: E402
+from serialize import build_summary_rows, build_underlying_payload, prepare_qvix_series  # noqa: E402
 
 
 def _qvix_rows(key: str, qvix) -> list[dict]:
@@ -55,9 +55,14 @@ def _qvix_rows(key: str, qvix) -> list[dict]:
     return rows
 
 
-def main() -> int:
-    trade_date = date.today().isoformat()
+def _resolve_trade_date(qvix_rows: list[dict]) -> str:
+    dates = [row["trade_date"] for row in qvix_rows if row.get("trade_date")]
+    if dates:
+        return max(dates)
+    return date.today().isoformat()
 
+
+def main() -> int:
     print("Fetching option snapshot...", file=sys.stderr)
     snapshot = fetch_option_snapshot()
     print(f"  Loaded {len(snapshot)} contracts", file=sys.stderr)
@@ -78,9 +83,12 @@ def main() -> int:
         payload = build_underlying_payload(key, snapshot, qvix, em_snapshot)
         if payload:
             underlyings[key] = payload
-        all_qvix_rows.extend(_qvix_rows(key, qvix))
+            qvix_ext = prepare_qvix_series(key, snapshot, qvix, em_snapshot)
+            all_qvix_rows.extend(_qvix_rows(key, qvix_ext))
 
     summary = build_summary_rows(underlyings)
+
+    trade_date = _resolve_trade_date(all_qvix_rows)
 
     out = {
         "trade_date": trade_date,

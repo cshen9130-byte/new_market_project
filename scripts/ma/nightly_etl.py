@@ -1062,6 +1062,108 @@ def step_options_contracts_ohlcv(conn, *, force: bool = False) -> int:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+def _refresh_option_iv_payloads_from_db(conn, underlyings: dict) -> dict:
+    """Rebuild QVIX history/percentile charts from DB (includes snapshot extensions)."""
+    import pandas as pd
+
+    option_iv_dir = Path(__file__).resolve().parent / "option_iv"
+    if str(option_iv_dir) not in sys.path:
+        sys.path.insert(0, str(option_iv_dir))
+    from serialize import apply_qvix_charts  # noqa: WPS433
+    from synthetic_qvix import SYNTHETIC_QVIX_KEYS, merge_synthetic_qvix_gaps  # noqa: WPS433
+
+    refreshed: dict = {}
+    with conn.cursor() as cur:
+        for key, payload in underlyings.items():
+            cur.execute(
+                """
+                SELECT trade_date, iv, open, high, low
+                FROM raw_option_iv_qvix_daily
+                WHERE underlying_key = %s
+                ORDER BY trade_date
+                """,
+                (key,),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                refreshed[key] = payload
+                continue
+            df = pd.DataFrame(rows, columns=["trade_date", "iv", "open", "high", "low"])
+            df["trade_date"] = pd.to_datetime(df["trade_date"])
+            for col in ("iv", "open", "high", "low"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            if key in SYNTHETIC_QVIX_KEYS:
+                df = merge_synthetic_qvix_gaps(key, df)
+            refreshed[key] = apply_qvix_charts(dict(payload), df)
+    return refreshed
+
+
+def _upsert_synthetic_qvix_gaps(conn) -> int:
+    """Backfill CFFEX index QVIX gaps when the optbbs feed stops updating."""
+    import pandas as pd
+
+    option_iv_dir = Path(__file__).resolve().parent / "option_iv"
+    if str(option_iv_dir) not in sys.path:
+        sys.path.insert(0, str(option_iv_dir))
+    from synthetic_qvix import SYNTHETIC_QVIX_KEYS, merge_synthetic_qvix_gaps  # noqa: WPS433
+
+    inserted = 0
+    with conn.cursor() as cur:
+        for key in SYNTHETIC_QVIX_KEYS:
+            cur.execute(
+                """
+                SELECT trade_date, iv, open, high, low
+                FROM raw_option_iv_qvix_daily
+                WHERE underlying_key = %s
+                ORDER BY trade_date
+                """,
+                (key,),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                continue
+            df = pd.DataFrame(rows, columns=["trade_date", "iv", "open", "high", "low"])
+            df["trade_date"] = pd.to_datetime(df["trade_date"])
+            for col in ("iv", "open", "high", "low"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            before_dates = set(df["trade_date"].dt.date)
+            merged = merge_synthetic_qvix_gaps(key, df)
+            new_rows = merged[~merged["trade_date"].dt.date.isin(before_dates)]
+            if new_rows.empty:
+                continue
+            records = [
+                (
+                    row.trade_date.date(),
+                    key,
+                    float(row.iv) if pd.notna(row.iv) else None,
+                    float(row.open) if pd.notna(row.open) else None,
+                    float(row.high) if pd.notna(row.high) else None,
+                    float(row.low) if pd.notna(row.low) else None,
+                )
+                for row in new_rows.itertuples()
+            ]
+            execute_values(
+                cur,
+                """
+                INSERT INTO raw_option_iv_qvix_daily
+                    (trade_date, underlying_key, iv, open, high, low)
+                VALUES %s
+                ON CONFLICT (trade_date, underlying_key) DO UPDATE
+                    SET iv = EXCLUDED.iv,
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        fetched_at = NOW()
+                """,
+                records,
+            )
+            inserted += len(records)
+            log.info("Option IV: added %d synthetic QVIX row(s) for %s.", len(records), key)
+    if inserted:
+        conn.commit()
+    return inserted
+
+
 def step_option_iv(conn, *, force: bool = False) -> int:
     """Fetch financial option IV snapshot + QVIX history via AkShare.
 
@@ -1106,10 +1208,21 @@ def step_option_iv(conn, *, force: bool = False) -> int:
     conn.commit()
 
     today = date.today()
-    cur_max = max_date(conn, "derived_option_iv_snapshot")
-    if not force and cur_max and cur_max >= today:
-        log.info("Option IV snapshot up-to-date (%s), skipping.", cur_max)
-        return 0
+    target = latest_trade_date()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT underlying_key, MAX(trade_date) AS max_date
+            FROM raw_option_iv_qvix_daily
+            GROUP BY underlying_key
+        """)
+        qvix_by_key = {row[0]: row[1] for row in cur.fetchall()}
+
+    if not force and qvix_by_key:
+        stale = [k for k, d in qvix_by_key.items() if d < target]
+        if not stale:
+            log.info("Option IV QVIX up-to-date for all underlyings (>= %s), skipping.", target)
+            return 0
+        log.info("Option IV: refreshing stale underlyings (< %s): %s", target, ", ".join(stale))
 
     log.info("Option IV: fetching cross-section + QVIX …")
     out = run_script(
@@ -1137,20 +1250,6 @@ def step_option_iv(conn, *, force: bool = False) -> int:
         if r.get("trade_date") and r.get("underlying_key")
     ]
 
-    snapshot_records = []
-    for key, payload in underlyings.items():
-        snapshot_records.append((
-            trade_date,
-            key,
-            payload.get("label") or key,
-            payload.get("group"),
-            payload.get("spot"),
-            payload.get("current_iv"),
-            payload.get("percentile_all"),
-            payload.get("percentile_1y"),
-            json.dumps(payload, ensure_ascii=False),
-        ))
-
     total = 0
     with conn.cursor() as cur:
         if qvix_records:
@@ -1171,6 +1270,25 @@ def step_option_iv(conn, *, force: bool = False) -> int:
             )
             total += len(qvix_records)
 
+    conn.commit()
+    total += _upsert_synthetic_qvix_gaps(conn)
+    underlyings = _refresh_option_iv_payloads_from_db(conn, underlyings)
+
+    snapshot_records = []
+    for key, payload in underlyings.items():
+        snapshot_records.append((
+            trade_date,
+            key,
+            payload.get("label") or key,
+            payload.get("group"),
+            payload.get("spot"),
+            payload.get("current_iv"),
+            payload.get("percentile_all"),
+            payload.get("percentile_1y"),
+            json.dumps(payload, ensure_ascii=False),
+        ))
+
+    with conn.cursor() as cur:
         if snapshot_records:
             execute_values(
                 cur,
@@ -1193,6 +1311,17 @@ def step_option_iv(conn, *, force: bool = False) -> int:
             )
             total += len(snapshot_records)
 
+    conn.commit()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM derived_option_iv_snapshot
+            WHERE trade_date > %s
+            """,
+            (trade_date,),
+        )
+        if cur.rowcount:
+            log.info("Option IV: removed %d stale snapshot row(s) after %s.", cur.rowcount, trade_date)
     conn.commit()
     log.info(
         "Option IV: upserted %d QVIX rows + %d snapshot rows (trade_date=%s, underlyings=%d).",

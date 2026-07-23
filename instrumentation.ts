@@ -24,7 +24,7 @@ export async function register() {
       })()
     })
 
-    // Every 2 hours: light incremental fetch (last 1 day of mail only).
+    // Every 2 hours: light incremental fetch from per-mailbox checkpoint (plus overlap).
     // Upserts NAV/估值表, syncs 邮箱运维池, patches touched tracking rows,
     // rebuilds 在管产品 list cache, and refreshes 估值表 page cache for touched funds.
     // Full FOF/tracking/metrics rebuilds stay on nightly ETL.
@@ -43,14 +43,13 @@ export async function register() {
           }
           const { startEmailParseFetchJob } = await import("./lib/server/email-parse-fetch-job")
           const result = startEmailParseFetchJob({
-            days: 1,
             light: true,
             yieldToUserTraffic: true,
           })
           if (!result.ok) {
             console.log("[1h-etl] skipped: an email parse job is already running")
           } else {
-            console.log("[1h-etl] light 1-day fetch started (no full FOF/tracking rebuild)")
+            console.log("[1h-etl] light incremental fetch started (no full FOF/tracking rebuild)")
           }
         } catch (e) {
           console.error("[1h-etl] scheduler error:", e)

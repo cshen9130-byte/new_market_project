@@ -177,6 +177,23 @@ function alignNavSeriesStart(seriesList: FundSeries[], alignStart: boolean): Fun
   })
 }
 
+/** Chart display only: hold last known return/NAV flat until the next report date. */
+function alignCurveToCalendar(pts: CurvePoint[], calendarDates: string[]): (number | null)[] {
+  if (pts.length === 0) return calendarDates.map(() => null)
+  const byDate = new Map(pts.map((p) => [p.d, p.v]))
+  const firstDate = pts[0].d
+  let last: number | null = null
+  return calendarDates.map((d) => {
+    if (d < firstDate) return null
+    const exact = byDate.get(d)
+    if (exact != null) {
+      last = exact
+      return exact
+    }
+    return last
+  })
+}
+
 export function FundCompareDetailView({
   compare: initialCompare,
 }: {
@@ -343,12 +360,10 @@ export function FundCompareDetailView({
         yAxisIndex: 0,
         showSymbol: false,
         smooth: true,
+        connectNulls: true,
         lineStyle: { width: 2, color },
         itemStyle: { color },
-        data: sortedDates.map((d) => {
-          const pt = pts.find((p) => p.d === d)
-          return pt ? pt.v : null
-        }),
+        data: alignCurveToCalendar(pts, sortedDates),
       }
     })
 
@@ -362,12 +377,10 @@ export function FundCompareDetailView({
         yAxisIndex: isNavMode ? 1 : 0,
         showSymbol: false,
         smooth: true,
+        connectNulls: true,
         lineStyle: { width: 2, color: "#60a5fa" },
         itemStyle: { color: "#60a5fa" },
-        data: sortedDates.map((d) => {
-          const pt = benchPts.find((p) => p.d === d)
-          return pt ? pt.v : null
-        }),
+        data: alignCurveToCalendar(benchPts, sortedDates),
       })
     }
 

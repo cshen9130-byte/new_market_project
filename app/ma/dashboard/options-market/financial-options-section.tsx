@@ -6,7 +6,7 @@ import ReactECharts from "echarts-for-react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useChartAutoRefresh } from "@/hooks/use-chart-auto-refresh"
-import { underlyingCnLabel } from "@/lib/option-iv-labels"
+import { underlyingChartLabel, underlyingCnLabel } from "@/lib/option-iv-labels"
 import { cn } from "@/lib/utils"
 
 const CHART_FONT = "'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif"
@@ -29,6 +29,42 @@ function chartBase() {
     backgroundColor: "transparent",
     textStyle: { fontFamily: CHART_FONT, fontSize: 11 },
   }
+}
+
+function chartAsOfDescription(tradeDate: string | undefined, detail: string) {
+  return tradeDate ? `数据日期 ${tradeDate} · ${detail}` : detail
+}
+
+function fmtChartNum(value: unknown): string {
+  const n = Number(value)
+  return Number.isFinite(n) ? n.toFixed(2) : "—"
+}
+
+function axisTooltipTwoDecimals(params: unknown): string {
+  const items = (Array.isArray(params) ? params : [params]) as Array<{
+    axisValueLabel?: string
+    name?: string
+    seriesName?: string
+    value?: number | [number, number]
+    marker?: string
+  }>
+  if (!items.length) return ""
+  const header = items[0].axisValueLabel ?? items[0].name ?? ""
+  const lines = items.map((item) => {
+    const raw = Array.isArray(item.value) ? item.value[item.value.length - 1] : item.value
+    return `${item.marker ?? ""}${item.seriesName ?? ""}: ${fmtChartNum(raw)}`
+  })
+  return [header, ...lines].filter(Boolean).join("<br/>")
+}
+
+function latestSeriesTradeDate(points: ChartPoint[] | null | undefined): string | undefined {
+  if (!points?.length) return undefined
+  const raw = String(points[points.length - 1].trade_date ?? "")
+  return raw.slice(0, 10) || undefined
+}
+
+function latestChartTradeDate(charts: UnderlyingPayload["charts"] | undefined): string | undefined {
+  return latestSeriesTradeDate(charts?.history) ?? latestSeriesTradeDate(charts?.percentile?.series)
 }
 
 /** Sparse date ticks for long QVIX / percentile series (~5 years). */
@@ -156,7 +192,7 @@ function buildHistoryOption(series: ChartPoint[]) {
   const ivs = series.map((d) => d.iv as number | null)
   return {
     ...chartBase(),
-    tooltip: { trigger: "axis", textStyle: { fontFamily: CHART_FONT } },
+    tooltip: { trigger: "axis", textStyle: { fontFamily: CHART_FONT }, formatter: axisTooltipTwoDecimals },
     grid: { left: 48, right: 24, top: 24, bottom: 36 },
     xAxis: timeSeriesXAxis(dates),
     yAxis: {
@@ -184,7 +220,7 @@ function buildPercentileOption(data: PercentileData) {
   const dates = series.map((d) => String(d.trade_date))
   return {
     ...chartBase(),
-    tooltip: { trigger: "axis", textStyle: { fontFamily: CHART_FONT } },
+    tooltip: { trigger: "axis", textStyle: { fontFamily: CHART_FONT }, formatter: axisTooltipTwoDecimals },
     legend: {
       data: ["IV", "全历史分位", "1Y滚动分位"],
       top: 0,
@@ -327,6 +363,13 @@ function strikeAxisPadding(strikeMin: number, strikeMax: number, spot: number) {
   return Math.max(spot * 0.04, 0.05)
 }
 
+/** Center the strike axis on spot so left/right wings are visually comparable. */
+function symmetricStrikeAxisBounds(strikeMin: number, strikeMax: number, spot: number) {
+  const halfSpan = Math.max(spot - strikeMin, strikeMax - spot)
+  const pad = strikeAxisPadding(strikeMin, strikeMax, spot)
+  return { min: spot - halfSpan - pad, max: spot + halfSpan + pad }
+}
+
 function dropIvCliffs<T extends { strike: number; iv: number }>(points: T[], maxJump = 12): T[] {
   if (points.length < 3) return points
   const keep = points.map(() => true)
@@ -357,17 +400,58 @@ function niceIvAxisBounds(ivMin: number, ivMax: number) {
   return { min: lo, max: hi, decimals: step < 1 ? 1 : 0 }
 }
 
+/** Keep only strikes within the shorter wing span so skew is visually comparable. */
+function trimSmileToSymmetricWings<T extends { strike: number }>(points: T[], spot: number): T[] {
+  if (points.length < 2) return points
+  const strikes = points.map((p) => p.strike)
+  const halfSpan = Math.min(spot - Math.min(...strikes), Math.max(...strikes) - spot)
+  if (halfSpan <= 0) return points
+  return points.filter((p) => Math.abs(p.strike - spot) <= halfSpan + 1e-9)
+}
+
+type SmilePoint = {
+  strike: number
+  iv: number
+  optionType?: string
+  callOi?: number
+  putOi?: number
+}
+
+function parseSmilePoints(data: SmileData, includeOi = false): SmilePoint[] {
+  return data.points
+    .map((d) => ({
+      strike: Number(d.strike),
+      iv: Number(d.iv),
+      optionType: String(d.option_type ?? ""),
+      callOi: includeOi ? Number(d.call_oi ?? 0) : undefined,
+      putOi: includeOi ? Number(d.put_oi ?? 0) : undefined,
+    }))
+    .filter((p) => Number.isFinite(p.strike) && Number.isFinite(p.iv))
+    .sort((a, b) => a.strike - b.strike)
+}
+
+function prepareOtmSmilePoints(data: SmileData): SmilePoint[] {
+  return dropIvCliffs(trimSmileToSymmetricWings(parseSmilePoints(data), data.spot))
+}
+
+function otmSmileStrikeAxis(data: SmileData | null | undefined) {
+  if (!data) return null
+  const points = prepareOtmSmilePoints(data)
+  if (!points.length) return null
+  const strikes = points.map((p) => p.strike)
+  return symmetricStrikeAxisBounds(Math.min(...strikes), Math.max(...strikes), data.spot)
+}
+
+function inferStrikeStep(strikes: number[]) {
+  if (strikes.length < 2) return Math.max(strikes[0] * 0.02, 0.05)
+  const diffs = strikes.slice(1).map((s, i) => s - strikes[i]).filter((d) => d > 1e-6)
+  if (!diffs.length) return Math.max(strikes[0] * 0.02, 0.05)
+  diffs.sort((a, b) => a - b)
+  return diffs[Math.floor(diffs.length / 2)]
+}
+
 function buildSmileOption(data: SmileData) {
-  const points = dropIvCliffs(
-    data.points
-      .map((d) => ({
-        strike: Number(d.strike),
-        iv: Number(d.iv),
-        optionType: String(d.option_type ?? ""),
-      }))
-      .filter((p) => Number.isFinite(p.strike) && Number.isFinite(p.iv))
-      .sort((a, b) => a.strike - b.strike),
-  )
+  const points = prepareOtmSmilePoints(data)
 
   if (!points.length) return null
 
@@ -378,7 +462,7 @@ function buildSmileOption(data: SmileData) {
   const allIvs = points.map((p) => p.iv)
   const strikeMin = Math.min(...allStrikes)
   const strikeMax = Math.max(...allStrikes)
-  const strikePad = strikeAxisPadding(strikeMin, strikeMax, spot)
+  const strikeAxis = symmetricStrikeAxisBounds(strikeMin, strikeMax, spot)
   const ivBounds = niceIvAxisBounds(Math.min(...allIvs), Math.max(...allIvs))
   const strikeFmt = (value: number) => formatStrike(value, spot)
   const ivFmt = (value: number) => value.toFixed(ivBounds.decimals)
@@ -399,8 +483,8 @@ function buildSmileOption(data: SmileData) {
     xAxis: {
       type: "value",
       name: "行权价",
-      min: strikeMin - strikePad,
-      max: strikeMax + strikePad,
+      min: strikeAxis.min,
+      max: strikeAxis.max,
       nameLocation: "middle",
       nameGap: 28,
       nameTextStyle: { fontFamily: CHART_FONT, fontSize: 11 },
@@ -448,23 +532,84 @@ function buildSmileOption(data: SmileData) {
   }
 }
 
-function buildChainSmileOption(data: SmileData) {
-  const strikes = data.points.map((d) => d.strike as number)
-  const ivs = data.points.map((d) => d.iv as number)
-  const callOi = data.points.map((d) => (d.call_oi as number) ?? 0)
-  const putOi = data.points.map((d) => (d.put_oi as number) ?? 0)
-  const hasOi = callOi.some((v) => v > 0) || putOi.some((v) => v > 0)
+function buildChainSmileOption(data: SmileData, axisRef?: SmileData | null) {
+  const spot = data.spot
+  const chainPoints = trimSmileToSymmetricWings(parseSmilePoints(data, true), spot)
+  const ivPoints = axisRef ? prepareOtmSmilePoints(axisRef) : chainPoints
+  if (!ivPoints.length) return null
+
+  const oiPoints = chainPoints.filter((p) => (p.callOi ?? 0) > 0 || (p.putOi ?? 0) > 0)
+  const hasOi = oiPoints.length > 0
+  const ivStrikes = ivPoints.map((p) => p.strike)
+  const ivs = ivPoints.map((p) => p.iv)
+  const strikeAxis = otmSmileStrikeAxis(axisRef ?? data)
+    ?? symmetricStrikeAxisBounds(Math.min(...ivStrikes), Math.max(...ivStrikes), spot)
+  const strikeFmt = (value: number) => formatStrike(value, spot)
+  const ivBounds = niceIvAxisBounds(Math.min(...ivs), Math.max(...ivs))
+  const oiStrikes = oiPoints.map((p) => p.strike)
+  const step = inferStrikeStep(oiStrikes.length >= 2 ? oiStrikes : ivStrikes)
+  const barOffset = step * 0.09
+  const oiByStrike = new Map(
+    oiPoints.map((p) => [p.strike, { callOi: p.callOi ?? 0, putOi: p.putOi ?? 0 }]),
+  )
 
   return {
     ...chartBase(),
-    tooltip: { trigger: "axis", textStyle: { fontFamily: CHART_FONT } },
+    tooltip: {
+      trigger: "axis",
+      textStyle: { fontFamily: CHART_FONT },
+      formatter: (params: Array<{ seriesName?: string; data?: number | [number, number] }>) => {
+        if (!Array.isArray(params) || !params.length) return ""
+        const ivPoint = params.find((item) => item.seriesName === "IV")
+        const raw = ivPoint?.data
+        const strike = Array.isArray(raw) ? raw[0] : ivStrikes[0]
+        const iv = Array.isArray(raw) ? raw[1] : ivs[0]
+        const lines = [`K=${strikeFmt(strike)}`, `IV ${Number(iv).toFixed(2)}%`]
+        if (hasOi) {
+          let oi = oiByStrike.get(strike)
+          if (!oi) {
+            let best = oiPoints[0]?.strike
+            let bestDist = Infinity
+            for (const k of oiByStrike.keys()) {
+              const dist = Math.abs(k - strike)
+              if (dist < bestDist) {
+                bestDist = dist
+                best = k
+              }
+            }
+            if (best != null && bestDist <= step * 0.6) oi = oiByStrike.get(best)
+          }
+          if (oi) {
+            if (oi.putOi > 0) lines.push(`Put OI ${oi.putOi.toLocaleString()}`)
+            if (oi.callOi > 0) lines.push(`Call OI ${oi.callOi.toLocaleString()}`)
+          }
+        }
+        return lines.join("<br/>")
+      },
+    },
     legend: hasOi ? { data: ["IV", "Call OI", "Put OI"], bottom: 0, textStyle: { fontSize: 11, fontFamily: CHART_FONT } } : undefined,
-    grid: { left: 48, right: hasOi ? 56 : 24, top: 24, bottom: hasOi ? 56 : 48 },
-    xAxis: { type: "category", data: strikes.map(String), name: "行权价", nameTextStyle: { fontFamily: CHART_FONT }, axisLabel: { fontSize: 10, fontFamily: CHART_FONT } },
+    grid: { left: 52, right: hasOi ? 56 : 24, top: 24, bottom: hasOi ? 56 : 48 },
+    xAxis: {
+      type: "value",
+      name: "行权价",
+      min: strikeAxis.min,
+      max: strikeAxis.max,
+      nameLocation: "middle",
+      nameGap: 28,
+      nameTextStyle: { fontFamily: CHART_FONT, fontSize: 11 },
+      axisLabel: {
+        fontSize: 10,
+        fontFamily: CHART_FONT,
+        formatter: (value: number) => strikeFmt(value),
+      },
+      splitLine: { show: false },
+    },
     yAxis: [
       {
         type: "value",
         name: "IV (%)",
+        min: ivBounds.min,
+        max: ivBounds.max,
         nameTextStyle: { fontFamily: CHART_FONT },
         axisLabel: { fontSize: 10, fontFamily: CHART_FONT },
         splitLine: { lineStyle: { opacity: 0.15 } },
@@ -483,7 +628,7 @@ function buildChainSmileOption(data: SmileData) {
       {
         name: "IV",
         type: "line",
-        data: ivs,
+        data: ivPoints.map((p) => [p.strike, p.iv] as [number, number]),
         symbol: "circle",
         symbolSize: 6,
         lineStyle: { width: 2, color: COLORS.purple },
@@ -491,8 +636,14 @@ function buildChainSmileOption(data: SmileData) {
         markLine: {
           silent: true,
           symbol: "none",
-          lineStyle: { color: COLORS.sky, width: 1.5 },
-          data: [{ xAxis: strikes.reduce((best, s, i) => Math.abs(s - data.spot) < Math.abs(strikes[best] - data.spot) ? i : best, 0), label: { show: false } }],
+          lineStyle: { color: COLORS.sky, type: "solid", width: 1.5 },
+          label: {
+            fontFamily: CHART_FONT,
+            fontSize: 10,
+            position: "insideEndTop",
+            formatter: `Spot ${strikeFmt(spot)}`,
+          },
+          data: [{ xAxis: spot }],
         },
       },
       ...(hasOi
@@ -501,17 +652,17 @@ function buildChainSmileOption(data: SmileData) {
               name: "Put OI",
               type: "bar" as const,
               yAxisIndex: 1,
-              data: putOi,
+              data: oiPoints.map((p) => [p.strike - barOffset, p.putOi ?? 0] as [number, number]),
               itemStyle: { color: COLORS.putBar },
-              barMaxWidth: 16,
+              barMaxWidth: 14,
             },
             {
               name: "Call OI",
               type: "bar" as const,
               yAxisIndex: 1,
-              data: callOi,
+              data: oiPoints.map((p) => [p.strike + barOffset, p.callOi ?? 0] as [number, number]),
               itemStyle: { color: COLORS.callBar },
-              barMaxWidth: 16,
+              barMaxWidth: 14,
             },
           ]
         : []),
@@ -555,6 +706,19 @@ export default function FinancialOptionsSection() {
 
   const selected = selectedKey ? payload?.underlyings[selectedKey] : null
   const charts = selected?.charts
+  const chartProductLabel = selectedKey && selected
+    ? underlyingChartLabel(selectedKey, selected.short_label ?? selected.label)
+    : null
+  const crossSectionDate = latestChartTradeDate(charts)
+  const dataTradeDate = useMemo(() => {
+    if (!payload?.underlyings) return payload?.trade_date
+    let latest: string | undefined
+    for (const u of Object.values(payload.underlyings)) {
+      const d = latestChartTradeDate(u.charts as UnderlyingPayload["charts"])
+      if (d && (!latest || d > latest)) latest = d
+    }
+    return latest ?? payload.trade_date
+  }, [payload])
 
   const historyOption = useMemo(
     () => (charts?.history?.length ? buildHistoryOption(charts.history) : null),
@@ -573,8 +737,8 @@ export default function FinancialOptionsSection() {
     [charts?.smile],
   )
   const chainOption = useMemo(
-    () => (charts?.smile_chain ? buildChainSmileOption(charts.smile_chain) : null),
-    [charts?.smile_chain],
+    () => (charts?.smile_chain ? buildChainSmileOption(charts.smile_chain, charts?.smile) : null),
+    [charts?.smile_chain, charts?.smile],
   )
 
   if (loading && !payload) {
@@ -599,8 +763,8 @@ export default function FinancialOptionsSection() {
 
   return (
     <div className="space-y-6">
-      {payload?.trade_date && (
-        <p className="text-sm text-muted-foreground">数据日期：{payload.trade_date}</p>
+      {dataTradeDate && (
+        <p className="text-sm text-muted-foreground">数据日期：{dataTradeDate}</p>
       )}
 
       {/* IV Summary Table */}
@@ -740,7 +904,9 @@ export default function FinancialOptionsSection() {
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">QVIX 时序</CardTitle>
+                  <CardTitle className="text-base">
+                    {chartProductLabel ? `${chartProductLabel} QVIX 时序` : "QVIX 时序"}
+                  </CardTitle>
                   <CardDescription>ATM 隐含波动率指数（约 2 年）</CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -753,7 +919,9 @@ export default function FinancialOptionsSection() {
               </Card>
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">IV 分位分析</CardTitle>
+                  <CardTitle className="text-base">
+                    {chartProductLabel ? `${chartProductLabel} IV 分位分析` : "IV 分位分析"}
+                  </CardTitle>
                   <CardDescription>全历史与 1 年滚动分位</CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -773,8 +941,12 @@ export default function FinancialOptionsSection() {
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">IV 期限结构</CardTitle>
-                  <CardDescription>各到期月 ATM 隐含波动率</CardDescription>
+                  <CardTitle className="text-base">
+                    {chartProductLabel ? `${chartProductLabel} IV 期限结构` : "IV 期限结构"}
+                  </CardTitle>
+                  <CardDescription>
+                    {chartAsOfDescription(crossSectionDate, "各到期月 ATM 隐含波动率")}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {termOption ? (
@@ -786,11 +958,16 @@ export default function FinancialOptionsSection() {
               </Card>
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">波动率微笑</CardTitle>
+                  <CardTitle className="text-base">
+                    {chartProductLabel ? `${chartProductLabel} 波动率微笑` : "波动率微笑"}
+                  </CardTitle>
                   <CardDescription>
-                    {charts?.smile
-                      ? `${charts.smile.expiry_code} · ${charts.smile.days_to_expiry}D · OTM`
-                      : "近月 OTM IV vs 行权价"}
+                    {chartAsOfDescription(
+                      crossSectionDate,
+                      charts?.smile
+                        ? `${charts.smile.expiry_code} · ${charts.smile.days_to_expiry}D · OTM`
+                        : "近月 OTM IV vs 行权价",
+                    )}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -810,11 +987,16 @@ export default function FinancialOptionsSection() {
             <div className="grid gap-6 lg:grid-cols-2">
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">期权链微笑</CardTitle>
+                  <CardTitle className="text-base">
+                    {chartProductLabel ? `${chartProductLabel} 期权链微笑` : "期权链微笑"}
+                  </CardTitle>
                   <CardDescription>
-                    {charts?.smile_chain
-                      ? `${charts.smile_chain.expiry_code} · ${charts.smile_chain.days_to_expiry}D · IV + 持仓量`
-                      : "近月链 IV 与 OI 分布"}
+                    {chartAsOfDescription(
+                      crossSectionDate,
+                      charts?.smile_chain
+                        ? `${charts.smile_chain.expiry_code} · ${charts.smile_chain.days_to_expiry}D · IV + 持仓量`
+                        : "近月链 IV 与 OI 分布",
+                    )}
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -828,8 +1010,12 @@ export default function FinancialOptionsSection() {
 
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-base">IV 波动率曲面（3D）</CardTitle>
-                  <CardDescription>行权价 × 到期天数 × 隐含波动率</CardDescription>
+                  <CardTitle className="text-base">
+                    {chartProductLabel ? `${chartProductLabel} IV 波动率曲面（3D）` : "IV 波动率曲面（3D）"}
+                  </CardTitle>
+                  <CardDescription>
+                    {chartAsOfDescription(crossSectionDate, "行权价 × 到期天数 × 隐含波动率")}
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   {charts?.surface ? (

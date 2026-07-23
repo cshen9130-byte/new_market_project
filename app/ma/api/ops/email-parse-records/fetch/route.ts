@@ -24,9 +24,11 @@ export async function POST(req: Request) {
     const normalizedDays =
       Number.isFinite(days) && (days as number) > 0 ? (days as number) : undefined
 
+    // Ops "重新解析" is incremental parse + upsert (same as 2h cron), not the nightly full rebuild.
     const started = startEmailParseFetchJob({
       crawlEmailId,
       days: normalizedDays,
+      light: true,
     })
 
     if (!started.ok) {

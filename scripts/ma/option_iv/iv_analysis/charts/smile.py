@@ -28,7 +28,7 @@ MIN_SMILE_STRIKES = 5  # front expiry must have at least this many OTM points
 
 METHODOLOGY_NOTE = (
     "Front expiry with >=5 OTM strikes | strict OTM (put K<S, call K>S) | "
-    "live-price BS IV | premium >= 0.01% spot, IV 5-150%"
+    "symmetric wing trim around spot | live-price BS IV | premium >= 0.01% spot, IV 5-150%"
 )
 
 
@@ -140,10 +140,31 @@ def _merge_otm_by_strike(df: pd.DataFrame, spot: float) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("strike")
 
 
+def _trim_symmetric_wings(df: pd.DataFrame, spot: float) -> pd.DataFrame:
+    """Drop far-wing strikes so both sides span the same distance from spot (skew readability)."""
+    if df.empty or "strike" not in df.columns:
+        return df
+    strikes = pd.to_numeric(df["strike"], errors="coerce").dropna()
+    if strikes.empty:
+        return df
+    left_span = float(spot - strikes.min())
+    right_span = float(strikes.max() - spot)
+    half_span = min(left_span, right_span)
+    if half_span <= 0:
+        return df
+    out = df.copy()
+    out["strike"] = pd.to_numeric(out["strike"], errors="coerce")
+    return out[out["strike"].sub(spot).abs() <= half_span + 1e-9].sort_values("strike")
+
+
 def _select_smile_slice(df: pd.DataFrame, mode: SmileMode, spot: float) -> pd.DataFrame:
     if mode == "raw":
-        return _filter_valid_quotes(df, spot).sort_values(["strike", "option_type"])
-    return _merge_otm_by_strike(df, spot)
+        sliced = _filter_valid_quotes(df, spot).sort_values(["strike", "option_type"])
+    else:
+        sliced = _merge_otm_by_strike(df, spot)
+    if mode == "otm":
+        sliced = _trim_symmetric_wings(sliced, spot)
+    return sliced
 
 
 def _save_smile_table(slice_df: pd.DataFrame, output_path: Path, spot: float) -> None:

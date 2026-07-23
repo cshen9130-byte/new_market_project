@@ -23,8 +23,15 @@ export type EmailParseFetchJobStatus = {
 }
 
 const JOB_KEY = "__emailParseFetch"
-const JOB_TIMEOUT_MS = 10 * 60 * 1000
+/** Scheduled 2h cron (yields to user traffic): keep short so stuck IMAP cannot block the site. */
+const SCHEDULED_JOB_TIMEOUT_MS = 15 * 60 * 1000
+/** Manual ops re-parse can scan several days × multiple mailboxes; needs headroom beyond IMAP + cache. */
+const MANUAL_JOB_TIMEOUT_MS = 45 * 60 * 1000
 const YIELD_POLL_MS = 3_000
+
+function resolveJobTimeoutMs(yieldToUserTraffic: boolean): number {
+  return yieldToUserTraffic ? SCHEDULED_JOB_TIMEOUT_MS : MANUAL_JOB_TIMEOUT_MS
+}
 
 function getJobMap(): Map<string, EmailParseFetchJobStatus> {
   const g = globalThis as typeof globalThis & {
@@ -103,6 +110,7 @@ export function startEmailParseFetchJob(options?: {
 
   const light = options?.light === true
   const yieldToUserTraffic = options?.yieldToUserTraffic === true
+  const jobTimeoutMs = resolveJobTimeoutMs(yieldToUserTraffic)
   const job: EmailParseFetchJobStatus = {
     status: "queued",
     message: "准备扫描邮箱…",
@@ -122,17 +130,17 @@ export function startEmailParseFetchJob(options?: {
     if (settled) return
     settled = true
     console.error(
-      `[email-parse-fetch-job] watchdog: ${light ? "light" : "full"} job exceeded ${JOB_TIMEOUT_MS / 1000}s — marking as timed out (a stuck step may still be running in the background)`,
+      `[email-parse-fetch-job] watchdog: ${light ? "light" : "full"} job exceeded ${jobTimeoutMs / 1000}s — marking as timed out (a stuck step may still be running in the background)`,
     )
     abort.abort(new DOMException("job timeout", "AbortError"))
     job.status = "error"
     job.finishedAt = Date.now()
-    job.message = `任务超时（超过 ${JOB_TIMEOUT_MS / 1000}s 未完成，已中止）`
+    job.message = `任务超时（超过 ${Math.round(jobTimeoutMs / 60_000)} 分钟未完成，已中止）`
     stopActiveRun(activeRun)
     setTimeout(() => {
       if (jobs.get(JOB_KEY) === job) jobs.delete(JOB_KEY)
     }, 120_000)
-  }, JOB_TIMEOUT_MS)
+  }, jobTimeoutMs)
 
   void runJob().finally(() => {
     settled = true
