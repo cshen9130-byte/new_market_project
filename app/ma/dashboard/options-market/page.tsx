@@ -9,6 +9,11 @@ const FinancialOptionsSection = dynamic(
   { ssr: false, loading: () => <div className="py-24 text-center text-muted-foreground">加载金融期权…</div> },
 )
 
+const CommodityOptionsSection = dynamic(
+  () => import("./commodity-options-section"),
+  { ssr: false, loading: () => <div className="py-24 text-center text-muted-foreground">加载商品期权…</div> },
+)
+
 export default function OptionsMarketPage() {
   return (
     <div className="space-y-6 pt-6">
@@ -21,6 +26,7 @@ export default function OptionsMarketPage() {
         <TabsList>
           <TabsTrigger value="overview">市场概览</TabsTrigger>
           <TabsTrigger value="financial">金融期权</TabsTrigger>
+          <TabsTrigger value="commodity">商品期权</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
@@ -29,6 +35,10 @@ export default function OptionsMarketPage() {
 
         <TabsContent value="financial">
           <FinancialOptionsSection />
+        </TabsContent>
+
+        <TabsContent value="commodity">
+          <CommodityOptionsSection />
         </TabsContent>
       </Tabs>
     </div>
@@ -42,11 +52,11 @@ function OverviewPlaceholder() {
         <Card>
           <CardHeader>
             <CardTitle>波动率指数</CardTitle>
-            <CardDescription>VIX 与实现波动率</CardDescription>
+            <CardDescription>金融与商品期权波动率总览</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
-              商品期权波动率数据即将接入
+              跨市场波动率对比即将接入 · 可先查看「金融期权」「商品期权」分项
             </div>
           </CardContent>
         </Card>
@@ -57,7 +67,7 @@ function OverviewPlaceholder() {
           </CardHeader>
           <CardContent>
             <div className="h-[300px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
-              商品期权情绪数据即将接入
+              情绪指标数据即将接入
             </div>
           </CardContent>
         </Card>
@@ -70,7 +80,7 @@ function OverviewPlaceholder() {
         </CardHeader>
         <CardContent>
           <div className="h-[350px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
-            商品期权成交数据即将接入
+            成交分布数据即将接入
           </div>
         </CardContent>
       </Card>
@@ -82,7 +92,7 @@ function OverviewPlaceholder() {
         </CardHeader>
         <CardContent>
           <div className="h-[120px] flex items-center justify-center text-muted-foreground text-sm border border-dashed rounded-lg">
-            商品期权希腊值数据即将接入
+            希腊值汇总数据即将接入
           </div>
         </CardContent>
       </Card>

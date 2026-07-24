@@ -1208,6 +1208,7 @@ def _upsert_synthetic_qvix_gaps(conn) -> int:
     option_iv_dir = Path(__file__).resolve().parent / "option_iv"
     if str(option_iv_dir) not in sys.path:
         sys.path.insert(0, str(option_iv_dir))
+    from serialize import _is_flat_snapshot_row  # noqa: WPS433
     from synthetic_qvix import SYNTHETIC_QVIX_KEYS, merge_synthetic_qvix_gaps  # noqa: WPS433
 
     inserted = 0
@@ -1235,19 +1236,27 @@ def _upsert_synthetic_qvix_gaps(conn) -> int:
             except Exception as exc:  # noqa: BLE001
                 log.warning("Synthetic QVIX gap fill skipped for %s: %s", key, exc)
                 continue
-            new_rows = merged[~merged["trade_date"].dt.date.isin(before_dates)]
-            if new_rows.empty:
+            rows_to_upsert = []
+            for row in merged.itertuples():
+                trade_day = pd.Timestamp(row.trade_date).date()
+                if trade_day not in before_dates:
+                    rows_to_upsert.append(row)
+                    continue
+                existing = df.loc[df["trade_date"].dt.date == trade_day]
+                if not existing.empty and _is_flat_snapshot_row(existing.iloc[-1]):
+                    rows_to_upsert.append(row)
+            if not rows_to_upsert:
                 continue
             records = [
                 (
-                    row.trade_date.date(),
+                    pd.Timestamp(row.trade_date).date(),
                     key,
                     float(row.iv) if pd.notna(row.iv) else None,
                     float(row.open) if pd.notna(row.open) else None,
                     float(row.high) if pd.notna(row.high) else None,
                     float(row.low) if pd.notna(row.low) else None,
                 )
-                for row in new_rows.itertuples()
+                for row in rows_to_upsert
             ]
             execute_values(
                 cur,
@@ -1449,6 +1458,188 @@ def step_option_iv(conn, *, force: bool = False) -> int:
     log.info(
         "Option IV: upserted %d QVIX rows + %d snapshot rows (trade_date=%s, underlyings=%d).",
         len(qvix_records),
+        len(snapshot_records),
+        trade_date,
+        len(underlyings),
+    )
+    return total
+
+
+def step_commodity_option_iv(conn, *, force: bool = False) -> int:
+    """Fetch commodity option series/ATM IV via AkShare exchange feeds.
+
+    Source script : fetch_commodity_option_iv_daily.py
+    Target tables :
+      raw_commodity_option_iv_daily      — front-month IV time series
+      derived_commodity_option_iv_snapshot — latest chart-ready JSON
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS raw_commodity_option_iv_daily (
+                trade_date      DATE        NOT NULL,
+                underlying_key  TEXT        NOT NULL,
+                iv              NUMERIC,
+                fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, underlying_key)
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS derived_commodity_option_iv_snapshot (
+                trade_date      DATE        NOT NULL,
+                underlying_key  TEXT        NOT NULL,
+                label           TEXT        NOT NULL,
+                sector          TEXT,
+                current_iv      NUMERIC,
+                percentile_all  NUMERIC,
+                percentile_1y   NUMERIC,
+                chart_data      JSONB       NOT NULL,
+                fetched_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, underlying_key)
+            )
+        """)
+    conn.commit()
+
+    today = date.today()
+    target = latest_trade_date()
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT underlying_key, MAX(trade_date) AS max_date
+            FROM raw_commodity_option_iv_daily
+            GROUP BY underlying_key
+        """)
+        by_key = {row[0]: row[1] for row in cur.fetchall()}
+
+    if not force and by_key:
+        stale = [k for k, d in by_key.items() if d < target]
+        if not stale and len(by_key) >= 8:
+            log.info("Commodity option IV up-to-date (>= %s, %d keys), skipping.", target, len(by_key))
+            return 0
+
+    # First runs / sparse history: pull a shorter window for speed across ~50 products
+    hist_days = 8 if not by_key or force else 10
+    log.info("Commodity option IV: fetching (days=%d, universe=%d) …", hist_days, len(by_key) or 52)
+    out = run_script(
+        "fetch_commodity_option_iv_daily.py",
+        extra_args=["--days", str(hist_days)],
+        timeout=1800,
+        log_stderr=True,
+    )
+    if not out or out.get("error"):
+        raise RuntimeError(f"Commodity option IV fetch failed: {out}")
+
+    trade_date = to_date(out.get("trade_date")) or today
+    underlyings = out.get("underlyings") or {}
+    iv_rows = out.get("iv_rows") or []
+
+    iv_records = [
+        (to_date(r["trade_date"]), r["underlying_key"], r.get("iv"))
+        for r in iv_rows
+        if r.get("trade_date") and r.get("underlying_key")
+    ]
+
+    total = 0
+    with conn.cursor() as cur:
+        if iv_records:
+            execute_values(
+                cur,
+                """
+                INSERT INTO raw_commodity_option_iv_daily
+                    (trade_date, underlying_key, iv)
+                VALUES %s
+                ON CONFLICT (trade_date, underlying_key) DO UPDATE
+                    SET iv = EXCLUDED.iv,
+                        fetched_at = NOW()
+                """,
+                iv_records,
+            )
+            total += len(iv_records)
+    conn.commit()
+
+    # Rebuild history charts from accumulated DB series so percentiles deepen over time
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT trade_date, underlying_key, iv
+            FROM raw_commodity_option_iv_daily
+            ORDER BY underlying_key, trade_date
+        """)
+        db_hist: dict[str, list[dict]] = {}
+        for td, key, iv in cur.fetchall():
+            if iv is None:
+                continue
+            db_hist.setdefault(key, []).append({
+                "trade_date": iso(td) if isinstance(td, date) else str(td)[:10],
+                "iv": float(iv),
+            })
+
+    # Prefer in-process rebuild helpers when available
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent / "option_iv"))
+        from commodity_config import UNDERLYINGS as COMM_UNDERLYINGS  # type: ignore
+        from commodity_fetch import build_underlying_payload  # type: ignore
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Commodity option IV: rebuild helpers unavailable (%s), using fetch payloads.", exc)
+        COMM_UNDERLYINGS = {}
+        build_underlying_payload = None
+
+    rebuilt: dict[str, dict] = {}
+    if build_underlying_payload and COMM_UNDERLYINGS:
+        for key, hist in db_hist.items():
+            cfg = COMM_UNDERLYINGS.get(key)
+            if not cfg or len(hist) < 1:
+                continue
+            term = ((underlyings.get(key) or {}).get("charts") or {}).get("term_structure") or []
+            prior_charts = ((underlyings.get(key) or {}).get("charts") or {}) or None
+            payload = build_underlying_payload(cfg, hist, term, prior_charts=prior_charts)
+            if payload:
+                rebuilt[key] = payload
+    if rebuilt:
+        underlyings = {**underlyings, **rebuilt}
+
+    snapshot_records = []
+    for key, payload in underlyings.items():
+        snapshot_records.append((
+            trade_date,
+            key,
+            payload.get("label") or key,
+            payload.get("sector") or payload.get("group"),
+            payload.get("current_iv"),
+            payload.get("percentile_all"),
+            payload.get("percentile_1y"),
+            json.dumps(payload, ensure_ascii=True, allow_nan=True)
+                .replace(": NaN", ": null")
+                .replace(": Infinity", ": null")
+                .replace(": -Infinity", ": null"),
+        ))
+
+    with conn.cursor() as cur:
+        if snapshot_records:
+            execute_values(
+                cur,
+                """
+                INSERT INTO derived_commodity_option_iv_snapshot
+                    (trade_date, underlying_key, label, sector,
+                     current_iv, percentile_all, percentile_1y, chart_data)
+                VALUES %s
+                ON CONFLICT (trade_date, underlying_key) DO UPDATE
+                    SET label = EXCLUDED.label,
+                        sector = EXCLUDED.sector,
+                        current_iv = EXCLUDED.current_iv,
+                        percentile_all = EXCLUDED.percentile_all,
+                        percentile_1y = EXCLUDED.percentile_1y,
+                        chart_data = EXCLUDED.chart_data,
+                        fetched_at = NOW()
+                """,
+                snapshot_records,
+            )
+            total += len(snapshot_records)
+        cur.execute(
+            "DELETE FROM derived_commodity_option_iv_snapshot WHERE trade_date > %s",
+            (trade_date,),
+        )
+    conn.commit()
+    log.info(
+        "Commodity option IV: upserted %d IV rows + %d snapshots (trade_date=%s, underlyings=%d).",
+        len(iv_records),
         len(snapshot_records),
         trade_date,
         len(underlyings),
@@ -2283,6 +2474,14 @@ def step_ashare_daily(conn, *, force: bool = False) -> int:
         total_upserted += n
         log.info("A-share daily: chunk %d/%d upserted %d rows.", idx, len(chunks), n)
 
+    purged = _purge_thin_ashare_days(conn, start, today)
+    if purged:
+        log.warning(
+            "A-share daily: removed %d incomplete session(s) below %d codes.",
+            purged,
+            _ashare_min_daily_codes(),
+        )
+
     if total_upserted == 0:
         log.warning("A-share daily: no rows upserted.")
         return 0
@@ -2364,17 +2563,61 @@ def step_ashare_stock_names(conn, *, force: bool = False) -> int:
 
 def _ashare_board(ts_code: str) -> str:
     base, _, suffix = ts_code.partition(".")
-    if suffix == "BJ" or base.startswith("920"):
+    if suffix == "BJ" or base.startswith(("920", "83", "87", "43", "82", "88")):
         return "北交所"
-    if base.startswith("688"):
+    if base.startswith(("688", "689")):
         return "科创板"
-    if base.startswith("300"):
+    if base.startswith(("300", "301")):
         return "创业板"
     if base.startswith(("600", "601", "603", "605")):
         return "上证主板"
     if base.startswith(("000", "001", "002", "003")):
         return "深证主板"
     return "其他"
+
+
+def _ashare_min_daily_codes() -> int:
+    """Reject / skip sessions below this stock count (partial hist fetches)."""
+    return int(os.environ.get("ASHARE_MIN_DAILY_CODES", "3000"))
+
+
+def _purge_thin_ashare_days(conn, start: date, end: date) -> int:
+    """Delete trade dates whose stock coverage is clearly incomplete."""
+    min_codes = _ashare_min_daily_codes()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT trade_date, COUNT(*) AS n
+            FROM raw_ashare_daily
+            WHERE trade_date BETWEEN %s AND %s
+            GROUP BY trade_date
+            HAVING COUNT(*) < %s
+            ORDER BY trade_date
+            """,
+            (start, end, min_codes),
+        )
+        thin = cur.fetchall()
+        if not thin:
+            return 0
+        for td, n in thin:
+            log.warning(
+                "A-share daily: %s has only %d codes (< %d) — deleting incomplete session",
+                td, n, min_codes,
+            )
+            cur.execute("DELETE FROM raw_ashare_daily WHERE trade_date = %s", (td,))
+            cur.execute(
+                """
+                DELETE FROM derived_ashare_crowding_daily
+                WHERE trade_date = %s
+                  AND EXISTS (
+                    SELECT 1 FROM information_schema.tables
+                    WHERE table_name = 'derived_ashare_crowding_daily'
+                  )
+                """,
+                (td,),
+            )
+    conn.commit()
+    return len(thin)
 
 
 def _pct_rank_series(values: list[float], lookback: int) -> list[float]:
@@ -2580,8 +2823,15 @@ def step_compute_ashare_crowding(conn, *, force: bool = False) -> int:
 
     pending: list[tuple] = []
 
+    min_codes = _ashare_min_daily_codes()
     for td in sorted(by_date.keys()):
         stocks = by_date[td]
+        if len(stocks) < min_codes:
+            log.warning(
+                "A-share crowding: skip %s — only %d stocks (< %d)",
+                td, len(stocks), min_codes,
+            )
+            continue
         total = sum(a for _, a, _ in stocks)
         if total <= 0:
             continue
@@ -3821,6 +4071,7 @@ ORDERED_STEPS = [
     "akshare_exchange_daily",       # per-contract volume+OI from exchange bulletins (free fallback)
     "options_contracts_ohlcv",      # OHLCV + greeks for every options contract MOM traded
     "option_iv",                    # China financial option IV snapshot + QVIX (AkShare)
+    "commodity_option_iv",          # China commodity option series/ATM IV (AkShare exchanges)
     "akshare_futures_daily",        # 87 continuous contracts via AkShare/Sina (no auth)
     "futures_rollover_dates",       # rollover dates from OI-dominant-contract tracking
     "spot_closes",
@@ -3956,6 +4207,7 @@ def main():
         "akshare_exchange_daily":      lambda: step_akshare_exchange_daily(conn, force=force),
         "options_contracts_ohlcv":    lambda: step_options_contracts_ohlcv(conn, force=force),
         "option_iv":                  lambda: step_option_iv(conn, force=force),
+        "commodity_option_iv":        lambda: step_commodity_option_iv(conn, force=force),
         "akshare_futures_daily":      lambda: step_akshare_futures_daily(conn, force=force),
         "futures_rollover_dates":     lambda: step_futures_rollover_dates(conn, force=force),
         "spot_closes":      lambda: step_spot_closes(conn, td, force=force),

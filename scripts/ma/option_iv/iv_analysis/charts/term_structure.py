@@ -16,6 +16,30 @@ def _atm_by_expiry(df: pd.DataFrame) -> pd.DataFrame:
     if valid.empty:
         return valid
 
+    # When call/put IV diverge (common on CFFEX index chains), average both at the
+    # ATM strike instead of picking whichever leg happened to be closest to spot.
+    if "strike" in valid.columns:
+        rows: list[dict] = []
+        for expiry, grp in valid.groupby("expiry_date", sort=False):
+            grp = grp.copy()
+            grp["moneyness_dist"] = (grp["moneyness"] - 1.0).abs()
+            atm_strike = grp.loc[grp["moneyness_dist"].idxmin(), "strike"]
+            at_strike = grp[grp["strike"] == atm_strike]
+            if at_strike.empty:
+                continue
+            template = at_strike.iloc[0]
+            rows.append(
+                {
+                    "expiry_date": expiry,
+                    "days_to_expiry": template["days_to_expiry"],
+                    "strike": atm_strike,
+                    "moneyness": template["moneyness"],
+                    "iv": float(at_strike["iv"].mean()),
+                }
+            )
+        if rows:
+            return pd.DataFrame(rows).sort_values("days_to_expiry").reset_index(drop=True)
+
     valid["moneyness_dist"] = (valid["moneyness"] - 1.0).abs()
     idx = valid.groupby("expiry_date")["moneyness_dist"].idxmin()
     atm = valid.loc[idx].sort_values("days_to_expiry")

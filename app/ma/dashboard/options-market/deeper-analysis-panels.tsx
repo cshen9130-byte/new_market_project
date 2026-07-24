@@ -36,6 +36,24 @@ const KEY_TO_SIZE_BUCKET: Record<string, SizeBucket> = {
   "50index": "大盘",
 }
 
+const SIZE_BUCKET_ORDER: SizeBucket[] = ["小盘", "中盘", "大盘"]
+
+export type PeerGroupConfig = {
+  keyToGroup: Record<string, string>
+  groupOrder: string[]
+  compareTitle?: (group: string) => string
+  compareDescription?: string
+  heatDescription?: string
+}
+
+const DEFAULT_PEER_GROUP: PeerGroupConfig = {
+  keyToGroup: KEY_TO_SIZE_BUCKET,
+  groupOrder: SIZE_BUCKET_ORDER,
+  compareTitle: (group) => `${group} 同档 QVIX 对比`,
+  compareDescription: "同市值档品种近一年 ATM/QVIX 走势",
+  heatDescription: "各品种全历史 / 1Y 滚动分位一览（偏红越贵）",
+}
+
 type ChartPoint = Record<string, number | string | null | undefined>
 
 export type DeeperCharts = {
@@ -167,13 +185,13 @@ function historyLineStyle(n: number, color: string, opts?: { dashed?: boolean; w
   }
 }
 
-function Empty({ height = 280 }: { height?: number }) {
+function Empty({ height = 280, hint = "暂无数据" }: { height?: number; hint?: string }) {
   return (
     <div
-      className="flex items-center justify-center text-sm text-muted-foreground"
+      className="flex items-center justify-center text-sm text-muted-foreground border border-dashed rounded-lg"
       style={{ height }}
     >
-      暂无数据
+      {hint}
     </div>
   )
 }
@@ -278,20 +296,23 @@ function buildIvRvOption(series: ChartPoint[]) {
 function buildBucketCompareOption(
   selectedKey: string,
   underlyings: Record<string, UnderlyingLite>,
+  peerGroup: PeerGroupConfig = DEFAULT_PEER_GROUP,
 ) {
-  const bucket = KEY_TO_SIZE_BUCKET[selectedKey] ?? "大盘"
+  const bucket = peerGroup.keyToGroup[selectedKey] ?? peerGroup.groupOrder[0] ?? ""
   const peers = Object.values(underlyings).filter(
-    (u) => KEY_TO_SIZE_BUCKET[u.key] === bucket && (u.charts?.history?.length ?? 0) > 30,
+    (u) => peerGroup.keyToGroup[u.key] === bucket && (u.charts?.history?.length ?? 0) > 5,
   )
   if (peers.length < 1) return null
 
-  // Align on intersection of last ~252 dates from first peer
-  const baseDates = (peers[0].charts?.history ?? [])
+  // Align on intersection of last ~252 dates from richest peer history
+  const richest = [...peers].sort(
+    (a, b) => (b.charts?.history?.length ?? 0) - (a.charts?.history?.length ?? 0),
+  )[0]
+  const baseDates = (richest.charts?.history ?? [])
     .map((d) => String(d.trade_date))
     .slice(-252)
-  if (baseDates.length < 30) return null
+  if (baseDates.length < 5) return null
 
-  const dateSet = new Set(baseDates)
   const series = peers.map((u) => {
     const map = new Map(
       (u.charts?.history ?? []).map((d) => [String(d.trade_date), Number(d.iv)]),
@@ -299,9 +320,9 @@ function buildBucketCompareOption(
     return {
       name: underlyingCnLabel(u.key, u.short_label ?? u.label),
       type: "line" as const,
-      showSymbol: false,
+      showSymbol: baseDates.length < 8,
       lineStyle: { width: u.key === selectedKey ? 2.2 : 1.2 },
-      data: baseDates.map((d) => (dateSet.has(d) ? map.get(d) ?? null : null)),
+      data: baseDates.map((d) => map.get(d) ?? null),
     }
   })
 
@@ -734,18 +755,26 @@ function buildVolConeOption(bands: NonNullable<NonNullable<DeeperCharts["vol_con
   }
 }
 
-function buildPercentileHeatOption(underlyings: Record<string, UnderlyingLite>) {
+function buildPercentileHeatOption(
+  underlyings: Record<string, UnderlyingLite>,
+  peerGroup: PeerGroupConfig = DEFAULT_PEER_GROUP,
+) {
   const items = Object.values(underlyings).filter(
     (u) => u.percentile_all != null || u.percentile_1y != null,
   )
   if (!items.length) return null
 
-  const buckets: SizeBucket[] = ["小盘", "中盘", "大盘"]
-  const ordered = buckets.flatMap((b) =>
+  const ordered = peerGroup.groupOrder.flatMap((b) =>
     items
-      .filter((u) => KEY_TO_SIZE_BUCKET[u.key] === b)
+      .filter((u) => peerGroup.keyToGroup[u.key] === b)
       .sort((a, b2) => (b2.percentile_all ?? 0) - (a.percentile_all ?? 0)),
   )
+  // Include ungrouped leftovers
+  const grouped = new Set(ordered.map((u) => u.key))
+  for (const u of items) {
+    if (!grouped.has(u.key)) ordered.push(u)
+  }
+
   const yLabels = ordered.map((u) => underlyingCnLabel(u.key, u.short_label ?? u.label))
   const xLabels = ["全历史分位", "1Y滚动分位"]
   const data: Array<[number, number, number | null]> = []
@@ -818,22 +847,24 @@ export function DeeperAnalysisPanels({
   productLabel,
   charts,
   underlyings,
+  peerGroup = DEFAULT_PEER_GROUP,
 }: {
   selectedKey: string
   productLabel: string | null
   charts: DeeperCharts | undefined
   underlyings: Record<string, UnderlyingLite>
+  peerGroup?: PeerGroupConfig
 }) {
   const title = productLabel ?? "当前品种"
-  const bucket = KEY_TO_SIZE_BUCKET[selectedKey] ?? "大盘"
+  const bucket = peerGroup.keyToGroup[selectedKey] ?? peerGroup.groupOrder[0] ?? ""
 
   const ivRvOption = useMemo(
     () => (charts?.iv_rv?.series?.length ? buildIvRvOption(charts.iv_rv.series) : null),
     [charts?.iv_rv],
   )
   const bucketOption = useMemo(
-    () => buildBucketCompareOption(selectedKey, underlyings),
-    [selectedKey, underlyings],
+    () => buildBucketCompareOption(selectedKey, underlyings, peerGroup),
+    [selectedKey, underlyings, peerGroup],
   )
   const skewBarsOption = useMemo(
     () => (charts?.skew ? buildSkewBarsOption(charts.skew) : null),
@@ -865,7 +896,10 @@ export function DeeperAnalysisPanels({
     () => (charts?.vol_cone?.bands?.length ? buildVolConeOption(charts.vol_cone.bands) : null),
     [charts?.vol_cone],
   )
-  const heatOption = useMemo(() => buildPercentileHeatOption(underlyings), [underlyings])
+  const heatOption = useMemo(
+    () => buildPercentileHeatOption(underlyings, peerGroup),
+    [underlyings, peerGroup],
+  )
 
   const ivRv = charts?.iv_rv
   const skew = charts?.skew
@@ -879,7 +913,7 @@ export function DeeperAnalysisPanels({
         <div>
           <h2 className="text-lg font-semibold">相对价值分析</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            IV 相对实现波动是否偏贵，以及同档品种谁更贵
+            IV 相对实现波动是否偏贵，以及同组品种谁更贵
           </p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -913,7 +947,7 @@ export function DeeperAnalysisPanels({
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-base">{title} IV vs 实现波动率</CardTitle>
-              <CardDescription>QVIX / ATM IV 对比 20D·60D 实现波动，右轴为溢价</CardDescription>
+              <CardDescription>ATM / 系列 IV 对比 20D·60D 实现波动，右轴为溢价</CardDescription>
             </CardHeader>
             <CardContent>
               {ivRvOption ? (
@@ -925,8 +959,12 @@ export function DeeperAnalysisPanels({
           </Card>
           <Card>
             <CardHeader className="pb-2">
-              <CardTitle className="text-base">{bucket} 同档 QVIX 对比</CardTitle>
-              <CardDescription>同市值档品种近一年 ATM/QVIX 走势</CardDescription>
+              <CardTitle className="text-base">
+                {peerGroup.compareTitle?.(bucket) ?? `${bucket} 同组 IV 对比`}
+              </CardTitle>
+              <CardDescription>
+                {peerGroup.compareDescription ?? "同组品种 ATM / 系列 IV 走势"}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               {bucketOption ? (
@@ -1116,7 +1154,7 @@ export function DeeperAnalysisPanels({
         <div>
           <h2 className="text-lg font-semibold">全市场分位热力</h2>
           <p className="text-sm text-muted-foreground mt-1">
-            各品种全历史 / 1Y 滚动分位一览（偏红越贵）
+            {peerGroup.heatDescription ?? "各品种全历史 / 1Y 滚动分位一览（偏红越贵）"}
           </p>
         </div>
         <Card>
