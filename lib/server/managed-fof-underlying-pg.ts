@@ -232,7 +232,9 @@ export async function refreshManagedFofUnderlying(
 
   const inserted = parseInt(rows[0]?.n ?? "0", 10)
   if (inserted > 0) {
-    await backfillManagedFofUnderlyingNavFields()
+    await backfillManagedFofUnderlyingNavFields({
+      skipSymbolBackfill: options.skipSymbolBackfill,
+    })
   }
   return inserted
 }
@@ -267,7 +269,9 @@ export async function ensureManagedFofUnderlyingPopulated(): Promise<void> {
 let navBackfillInFlight: Promise<number> | null = null
 
 /** Populate precomputed NAV columns so list API avoids per-request BatchNavResolver. */
-export async function backfillManagedFofUnderlyingNavFields(): Promise<number> {
+export async function backfillManagedFofUnderlyingNavFields(
+  options: { skipSymbolBackfill?: boolean } = {},
+): Promise<number> {
   await ensureManagedFofUnderlyingTable()
 
   const rawRows = await query<DetailRawRow>(
@@ -294,7 +298,11 @@ export async function backfillManagedFofUnderlyingNavFields(): Promise<number> {
   }))
   const resolver = await BatchNavResolver.create(identities, asOfDate)
   const valuationNavSince = addDays(asOfDate, 400)
-  const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince)
+  // Without forwarding the flag this re-ran backfillFundHoldingSymbols() even when the
+  // caller had already asked to skip it, so a "skipped" refresh still paid for it once.
+  const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince, {
+    skipSymbolBackfill: options.skipSymbolBackfill,
+  })
   resolver.setValuationNavHistory(valuationNavHistory.byCode, valuationNavHistory.byName)
   const enriched = enrichDetailRows(rawRows, resolver)
 
@@ -603,6 +611,30 @@ export async function loadManagedUnderlyingMarketValueMap(): Promise<Map<string,
   return map
 }
 
+/**
+ * Same 市值 map, but reading 备案号 from the FOF overview cache instead of re-deriving it.
+ * Deriving it needs buildFofUnderlyingSummaryFrom, whose fuzzy joins scan private_fund_info
+ * (250k rows) per product; the matching itself only touches the ~80-row underlying snapshot.
+ * Intended for the intraday refresh, where product identity is unchanged by definition.
+ */
+export async function loadManagedUnderlyingMarketValueMapFromCache(): Promise<Map<string, number>> {
+  await ensureManagedFofUnderlyingTable()
+
+  const managedMv = managedUnderlyingMarketValueExpr("c.beian_hao", "c.product_name")
+  const rows = await query<{ id: string; market_value: string | null }>(
+    `SELECT c.fof_underlying_id::text AS id, (${managedMv})::text AS market_value
+     FROM ops_fof_overview_list_cache c
+     WHERE c.product_name <> '合计'`,
+  )
+
+  const map = new Map<string, number>()
+  for (const row of rows) {
+    const mv = row.market_value != null ? parseFloat(row.market_value) : NaN
+    if (Number.isFinite(mv) && mv > 0) map.set(row.id, mv)
+  }
+  return map
+}
+
 export type UnderlyingMarketAggregate = {
   market_value: number | null
 }
@@ -734,6 +766,420 @@ export async function loadManagedUnderlyingValuationNavLookup(): Promise<{
   }
 
   return { byProductCode, byName }
+}
+
+/**
+ * Persisted 估值表 NAV series for FOF underlyings.
+ * Full rebuilds rewrite the lookback window; the 15-minute tick reads this table and only
+ * rescans a short recent delta — avoiding the ~6 min 400-day holdings / JSONB fuzzy scan.
+ */
+const CREATE_VALUATION_NAV_HISTORY_SQL = `
+  CREATE TABLE IF NOT EXISTS ops_fof_underlying_valuation_nav_history (
+    product_name  TEXT           NOT NULL,
+    beian_hao     TEXT,
+    nav_date      DATE           NOT NULL,
+    unit_nav      NUMERIC(16,6)  NOT NULL,
+    refreshed_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (product_name, nav_date)
+  );
+  CREATE INDEX IF NOT EXISTS idx_fof_val_nav_hist_beian_date
+    ON ops_fof_underlying_valuation_nav_history (beian_hao, nav_date DESC);
+`
+
+/** Days of holdings re-scanned on each intraday tick (late-arriving 估值表 + overlap). */
+const VALUATION_NAV_HISTORY_DELTA_DAYS = 21
+
+let valuationNavHistoryTableEnsured = false
+
+async function ensureFofUnderlyingValuationNavHistoryTable(): Promise<void> {
+  if (valuationNavHistoryTableEnsured) return
+  await query(CREATE_VALUATION_NAV_HISTORY_SQL)
+  valuationNavHistoryTableEnsured = true
+}
+
+function emptyNavHistoryMaps(): {
+  byCode: Map<string, NavPoint[]>
+  byName: Map<string, NavPoint[]>
+} {
+  return { byCode: new Map(), byName: new Map() }
+}
+
+function makeNavHistoryIndexer(maps: {
+  byCode: Map<string, NavPoint[]>
+  byName: Map<string, NavPoint[]>
+}) {
+  return (
+    productName: string,
+    beian: string | null,
+    point: NavPoint,
+    replaceExisting = false,
+  ) => {
+    const push = (map: Map<string, NavPoint[]>, key: string) => {
+      const arr = map.get(key) ?? []
+      const idx = arr.findIndex((p) => p.nav_date === point.nav_date)
+      if (idx >= 0) {
+        if (replaceExisting) arr[idx] = point
+      } else {
+        arr.push(point)
+      }
+      map.set(key, arr)
+    }
+    for (const key of fofUnderlyingNavLookupKeys(productName, beian, null)) {
+      if (/^[A-Z0-9]+$/i.test(key)) push(maps.byCode, key.toUpperCase())
+      else push(maps.byName, key)
+    }
+  }
+}
+
+function sortNavHistoryMaps(maps: {
+  byCode: Map<string, NavPoint[]>
+  byName: Map<string, NavPoint[]>
+}): void {
+  for (const map of [maps.byCode, maps.byName]) {
+    for (const [key, arr] of map) {
+      arr.sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+      map.set(key, arr)
+    }
+  }
+}
+
+/** Collect per-product points from the lookup maps built by loadManagedUnderlyingNavHistory. */
+function collectProductNavHistory(
+  targets: UnderlyingNavTarget[],
+  byCode: Map<string, NavPoint[]>,
+  byName: Map<string, NavPoint[]>,
+): { product_name: string; beian_hao: string | null; nav_date: string; unit_nav: number }[] {
+  const out: { product_name: string; beian_hao: string | null; nav_date: string; unit_nav: number }[] = []
+  for (const target of targets) {
+    const byDate = new Map<string, number>()
+    for (const key of fofUnderlyingNavLookupKeys(target.product_name, target.beian_hao, null)) {
+      const codeKey = key.toUpperCase()
+      for (const p of byCode.get(codeKey) ?? []) {
+        if (Number.isFinite(p.nav) && p.nav > 0) byDate.set(p.nav_date, p.nav)
+      }
+      for (const p of byName.get(key) ?? []) {
+        if (Number.isFinite(p.nav) && p.nav > 0) byDate.set(p.nav_date, p.nav)
+      }
+    }
+    for (const [nav_date, unit_nav] of byDate) {
+      out.push({
+        product_name: target.product_name,
+        beian_hao: target.beian_hao,
+        nav_date,
+        unit_nav,
+      })
+    }
+  }
+  return out
+}
+
+async function persistManagedUnderlyingNavHistory(
+  targets: UnderlyingNavTarget[],
+  byCode: Map<string, NavPoint[]>,
+  byName: Map<string, NavPoint[]>,
+  sinceDate: string,
+  mode: "replace_window" | "upsert",
+): Promise<number> {
+  await ensureFofUnderlyingValuationNavHistoryTable()
+  const rows = collectProductNavHistory(targets, byCode, byName)
+    .filter((r) => r.nav_date >= sinceDate)
+  const names = [...new Set(targets.map((t) => t.product_name))]
+
+  if (mode === "replace_window" && names.length > 0) {
+    await query(
+      `DELETE FROM ops_fof_underlying_valuation_nav_history
+       WHERE product_name = ANY($1::text[])
+         AND nav_date >= $2::date`,
+      [names, sinceDate],
+    )
+  }
+  if (rows.length === 0) return 0
+
+  const values: unknown[] = []
+  const placeholders: string[] = []
+  let pi = 1
+  for (const row of rows) {
+    placeholders.push(`($${pi}, $${pi + 1}, $${pi + 2}::date, $${pi + 3}::numeric, NOW())`)
+    values.push(row.product_name, row.beian_hao, row.nav_date, row.unit_nav)
+    pi += 4
+  }
+
+  const chunkSize = 200
+  for (let i = 0; i < placeholders.length; i += chunkSize) {
+    const ph = placeholders.slice(i, i + chunkSize)
+    const vals = values.slice(i * 4, (i + ph.length) * 4)
+    // renumber
+    let p = 1
+    const renumbered = ph.map((tpl) =>
+      tpl.replace(/\$\d+/g, () => `$${p++}`),
+    )
+    await query(
+      `INSERT INTO ops_fof_underlying_valuation_nav_history
+         (product_name, beian_hao, nav_date, unit_nav, refreshed_at)
+       VALUES ${renumbered.join(", ")}
+       ON CONFLICT (product_name, nav_date) DO UPDATE SET
+         beian_hao = EXCLUDED.beian_hao,
+         unit_nav = EXCLUDED.unit_nav,
+         refreshed_at = NOW()`,
+      vals,
+    )
+  }
+  return rows.length
+}
+
+async function loadPersistedUnderlyingNavHistory(
+  sinceDate: string,
+  targets: UnderlyingNavTarget[],
+): Promise<{ byCode: Map<string, NavPoint[]>; byName: Map<string, NavPoint[]>; points: number }> {
+  await ensureFofUnderlyingValuationNavHistoryTable()
+  const maps = emptyNavHistoryMaps()
+  const indexPoint = makeNavHistoryIndexer(maps)
+  if (targets.length === 0) return { ...maps, points: 0 }
+
+  const names = targets.map((t) => t.product_name)
+  const rows = await query<{
+    product_name: string
+    beian_hao: string | null
+    nav_date: string
+    unit_nav: string
+  }>(
+    `SELECT product_name, beian_hao, nav_date::text AS nav_date, unit_nav::text
+     FROM ops_fof_underlying_valuation_nav_history
+     WHERE product_name = ANY($1::text[])
+       AND nav_date >= $2::date
+     ORDER BY product_name, nav_date DESC`,
+    [names, sinceDate],
+  )
+
+  const beianByName = new Map(
+    targets.map((t) => [t.product_name, t.beian_hao] as const),
+  )
+  for (const row of rows) {
+    const nav = parseFloat(row.unit_nav)
+    if (!Number.isFinite(nav) || nav <= 0) continue
+    indexPoint(
+      row.product_name,
+      beianByName.get(row.product_name) ?? row.beian_hao,
+      { nav, nav_date: row.nav_date.slice(0, 10) },
+    )
+  }
+  sortNavHistoryMaps(maps)
+  return { ...maps, points: rows.length }
+}
+
+/**
+ * Holdings for a short delta window, joining managed FOFs via the already-resolved
+ * 在管产品 cache 备案号 — no fuzzy private_fund_info scans.
+ */
+async function loadManagedFofValuationHoldingRowsFromCache(
+  sinceDate: string,
+  subjectCodes: string[] = [],
+): Promise<{
+  subject_name: string
+  subject_code: string
+  symbol: string | null
+  valuation_date: string
+  price: string | null
+  quantity: string | null
+  market_value: string | null
+}[]> {
+  const detailFilter = subjectCodes.length > 0
+    ? `(h.include_in_detail = TRUE OR h.subject_code = ANY($3::text[]))`
+    : `h.include_in_detail = TRUE`
+
+  return queryUnbounded(
+    `WITH managed_fof AS (
+       SELECT
+         m.id AS managed_product_id,
+         m.product_name,
+         c.beian_hao
+       FROM managed_products m
+       INNER JOIN ops_managed_products_list_cache c ON c.managed_product_id = m.id
+       WHERE m.product_name <> '合计'
+         AND m.product_name NOT ILIKE $2
+         AND BTRIM(m.product_name) = BTRIM(c.product_name)
+         AND NULLIF(BTRIM(c.beian_hao), '') IS NOT NULL
+     )
+     SELECT
+       TRIM(h.subject_name) AS subject_name,
+       h.subject_code,
+       h.symbol,
+       r.valuation_date::text AS valuation_date,
+       h.price, h.quantity, h.market_value
+     FROM managed_fof mf
+     INNER JOIN ops_email_valuation_records r
+       ON r.product_code = mf.beian_hao
+     INNER JOIN ops_email_valuation_holdings h ON h.valuation_record_id = r.id
+     WHERE r.valuation_date >= $1::date
+       AND ${detailFilter}
+       ${SQL_FOF_VALUATION_HOLDING_CORE_FILTERS}
+     ORDER BY r.valuation_date ASC`,
+    subjectCodes.length > 0
+      ? [sinceDate, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN, subjectCodes]
+      : [sinceDate, MANAGED_FOF_EXCLUDED_PRODUCT_PATTERN],
+  )
+}
+
+/**
+ * Intraday NAV history: read the persisted 400-day series, then merge only a short recent
+ * holdings + custody delta. Skips JSONB fuzzy scans and private_fund_info joins.
+ * Cold-starts with a full rebuild when the history table is empty.
+ */
+export async function loadManagedUnderlyingNavHistoryIncremental(
+  sinceDate: string,
+  targets: UnderlyingNavTarget[],
+): Promise<{
+  byCode: Map<string, NavPoint[]>
+  byName: Map<string, NavPoint[]>
+}> {
+  await ensureManagedFofUnderlyingTable()
+  await ensureEmailValuationHoldingsTables()
+  await ensureFofUnderlyingValuationNavHistoryTable()
+
+  if (targets.length === 0) return emptyNavHistoryMaps()
+
+  const names = targets.map((t) => t.product_name)
+  const existing = await query<{ n: string }>(
+    `SELECT COUNT(*)::text AS n
+     FROM ops_fof_underlying_valuation_nav_history
+     WHERE product_name = ANY($1::text[])
+       AND nav_date >= $2::date`,
+    [names, sinceDate],
+  )
+  if (parseInt(existing[0]?.n ?? "0", 10) === 0) {
+    console.error(
+      "[managed-fof-underlying] valuation NAV history cache empty — running full scan once to seed it",
+    )
+    return loadManagedUnderlyingNavHistory(sinceDate, {
+      skipSymbolBackfill: true,
+      targets,
+    })
+  }
+
+  const persisted = await loadPersistedUnderlyingNavHistory(sinceDate, targets)
+  const maps = { byCode: persisted.byCode, byName: persisted.byName }
+  const indexPoint = makeNavHistoryIndexer(maps)
+  console.error(
+    `[managed-fof-underlying] loaded ${persisted.points} cached 估值表 NAV points for ${targets.length} underlyings`,
+  )
+
+  // Dates already sealed by the last full rebuild — delta must not overwrite them or
+  // intraday matching (stricter product_code join, no JSONB) drifts from the full series.
+  const knownProductDates = new Set<string>()
+  const sealed = await query<{ product_name: string; nav_date: string }>(
+    `SELECT product_name, nav_date::text AS nav_date
+     FROM ops_fof_underlying_valuation_nav_history
+     WHERE product_name = ANY($1::text[])
+       AND nav_date >= $2::date`,
+    [names, sinceDate],
+  )
+  for (const row of sealed) {
+    knownProductDates.add(`${row.product_name}\0${row.nav_date.slice(0, 10)}`)
+  }
+
+  const asOfDate = new Date().toISOString().slice(0, 10)
+  // addDays(positive) already means lookback (subtract). Passing a negative would look forward.
+  const deltaSince = addDays(asOfDate, VALUATION_NAV_HISTORY_DELTA_DAYS)
+  const effectiveDeltaSince = deltaSince > sinceDate ? deltaSince : sinceDate
+
+  const targetIndexByCode = buildUnderlyingTargetCodeIndex(targets)
+  const subjectCodeHints = await loadUnderlyingSubjectCodeHints(targets)
+  const knownSubjectCodes = [...new Set(
+    [...subjectCodeHints.values()].flatMap((codes) => [...codes]),
+  )]
+
+  const holdingCandidates = await loadManagedFofValuationHoldingRowsFromCache(
+    effectiveDeltaSince,
+    knownSubjectCodes,
+  )
+  console.error(
+    `[managed-fof-underlying] delta-scanning ${holdingCandidates.length} holdings since ${effectiveDeltaSince}`,
+  )
+
+  const seenHoldings = new Set<string>()
+  let matchedHoldingRows = 0
+  let appendedNewDates = 0
+  for (const row of holdingCandidates) {
+    const name = row.subject_name
+    const code = resolveValuationHoldingCode(row)
+    if (!code && !/私募/u.test(name)) continue
+
+    const nav = resolveNavFromValuationTable(row.price, row.quantity, row.market_value)
+    if (nav == null || nav <= 0) continue
+
+    const navDate = row.valuation_date.slice(0, 10)
+    const matchedTargets = new Set<string>()
+
+    const attachTarget = (target: UnderlyingNavTarget) => {
+      if (matchedTargets.has(target.product_name)) return
+      if (!matchValuationHoldingToTarget(row, target, {
+        subject_codes: subjectCodeHints.get(target.product_name),
+      })) return
+      matchedTargets.add(target.product_name)
+      const dedupe = `${target.product_name}\0${navDate}`
+      if (seenHoldings.has(dedupe)) return
+      seenHoldings.add(dedupe)
+      matchedHoldingRows++
+      // Only append brand-new dates; leave full-rebuild points untouched.
+      if (knownProductDates.has(dedupe)) return
+      knownProductDates.add(dedupe)
+      appendedNewDates++
+      indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate })
+    }
+
+    if (code) {
+      for (const target of targetIndexByCode.get(code.toUpperCase()) ?? []) attachTarget(target)
+    }
+    if (matchedTargets.size === 0) {
+      for (const target of targets) attachTarget(target)
+    }
+  }
+  console.error(
+    `[managed-fof-underlying] delta matched ${matchedHoldingRows} rows, appended ${appendedNewDates} new dates since ${effectiveDeltaSince}`,
+  )
+
+  // Custody for new dates only (same append-if-missing rule). Full rebuild already baked
+  // custody-wins into the persisted series for older dates.
+  const { loadCustodyValuationNavHistory } = await import("@/lib/server/email-valuation-nav-backfill")
+  const custody = await loadCustodyValuationNavHistory(effectiveDeltaSince)
+  let custodyAppended = 0
+  const tryAppendCustody = (productName: string, beian: string | null, point: NavPoint) => {
+    const dedupe = `${productName}\0${point.nav_date}`
+    if (knownProductDates.has(dedupe)) return
+    // Only attach custody points that land on a known underlying target.
+    const target = targets.find((t) =>
+      fofUnderlyingNavLookupKeys(t.product_name, t.beian_hao, null)
+        .some((k) => k === productName || k.toUpperCase() === productName.toUpperCase()),
+    )
+    if (!target) return
+    knownProductDates.add(`${target.product_name}\0${point.nav_date}`)
+    custodyAppended++
+    indexPoint(target.product_name, target.beian_hao ?? beian, point)
+  }
+  for (const [code, points] of custody.byCode) {
+    for (const point of points) tryAppendCustody(code, code, point)
+  }
+  for (const [name, points] of custody.byName) {
+    for (const point of points) tryAppendCustody(name, null, point)
+  }
+  console.error(
+    `[managed-fof-underlying] delta custody appended ${custodyAppended} new dates`,
+  )
+
+  sortNavHistoryMaps(maps)
+  if (appendedNewDates + custodyAppended > 0) {
+    const upserted = await persistManagedUnderlyingNavHistory(
+      targets,
+      maps.byCode,
+      maps.byName,
+      effectiveDeltaSince,
+      "upsert",
+    )
+    console.error(
+      `[managed-fof-underlying] upserted ${upserted} delta NAV points into history cache`,
+    )
+  }
+  return maps
 }
 
 /**
@@ -874,6 +1320,22 @@ export async function loadManagedUnderlyingNavHistory(
       arr.sort((a, b) => b.nav_date.localeCompare(a.nav_date))
       map.set(key, arr)
     }
+  }
+
+  // Seed / refresh the intraday history cache so the 15-minute tick can skip this scan.
+  try {
+    const persisted = await persistManagedUnderlyingNavHistory(
+      targets,
+      byCode,
+      byName,
+      sinceDate,
+      "replace_window",
+    )
+    console.error(
+      `[managed-fof-underlying] persisted ${persisted} 估值表 NAV history points for intraday reuse`,
+    )
+  } catch (err) {
+    console.error("[managed-fof-underlying] failed to persist valuation NAV history cache:", err)
   }
 
   return { byCode, byName }

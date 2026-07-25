@@ -19,6 +19,9 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   荣熙共赢: "SBNX55",
   // Guotai TA虚拟净值 mails tag the 在管产品 in 【…】; underlying fund is outside the brackets.
   金舆追风1号: "SCJ536",
+  // FOF virtual-NAV mails like 金舆守安一号【SBYC86-峰云汇高山一号】… mis-link 守安 → SBYC86.
+  // Custody 估值表 use SBVC25_金舆守安一号….
+  金舆守安一号: "SBVC25",
 }
 
 /** Known 托管券商 for 在管产品 when registration tables are incomplete. */

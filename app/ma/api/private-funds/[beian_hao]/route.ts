@@ -178,7 +178,13 @@ export async function GET(
       })()
 
   let info = infoRows[0] ?? bflRows[0] ?? trackingRow
-  if (!info) {
+  const managedRouteOverride =
+    lookupManagedProductOverride(rawId)
+    ?? lookupManagedProductOverride(beian_hao)
+  if (managedRouteOverride) {
+    const overrideInfo = await lookupFundInfoFallback(managedRouteOverride.beian_hao)
+    if (overrideInfo) info = overrideInfo
+  } else if (!info) {
     info =
       (await lookupFundInfoFallback(beian_hao))
       ?? (rawId !== beian_hao ? await lookupFundInfoFallback(rawId) : null)

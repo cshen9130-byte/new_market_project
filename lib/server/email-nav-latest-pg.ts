@@ -113,12 +113,20 @@ async function syncEmailNavLatestFromManagedListCache(): Promise<number> {
 /**
  * Light intraday refresh: rebuild 在管产品 list cache only.
  * Skips FOF overview + tracking (~6k funds) full rebuilds and valuation sync.
+ *
+ * Pass `reuseResolvedIdentities` for the minutely cadence: it keeps the 备案号 already
+ * resolved in the cache and only recomputes NAV / 市值 / returns, which takes the rebuild
+ * from ~85s to a few seconds. Product add, delete and rename still need a full rebuild.
  */
-export async function refreshManagedProductsListCacheLight(): Promise<{
+export async function refreshManagedProductsListCacheLight(
+  options: { reuseResolvedIdentities?: boolean } = {},
+): Promise<{
   emailNavLatest: number
   listCache: number
 }> {
-  const listCache = await refreshManagedProductsListCache()
+  const listCache = await refreshManagedProductsListCache({
+    reuseResolvedIdentities: options.reuseResolvedIdentities,
+  })
   const emailNavLatest = await syncEmailNavLatestFromManagedListCache()
   return { emailNavLatest, listCache }
 }

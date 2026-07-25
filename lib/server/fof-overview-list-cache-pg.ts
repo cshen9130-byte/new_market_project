@@ -11,7 +11,7 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
-import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingValuationNavLookup, loadManagedUnderlyingNavHistory, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
+import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingMarketValueMapFromCache, loadManagedUnderlyingValuationNavLookup, loadManagedUnderlyingNavHistory, loadManagedUnderlyingNavHistoryIncremental, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   addDays,
@@ -96,12 +96,46 @@ type BaseProductRow = {
   fallback_return_pct: string | null
 }
 
+const FOF_CACHE_UPSERT_SUFFIX = `
+  ON CONFLICT (fof_underlying_id) DO UPDATE SET
+    product_name         = EXCLUDED.product_name,
+    beian_hao            = EXCLUDED.beian_hao,
+    short_name           = EXCLUDED.short_name,
+    unit_nav             = EXCLUDED.unit_nav,
+    nav_date             = EXCLUDED.nav_date,
+    return_pct           = EXCLUDED.return_pct,
+    ret_1w               = EXCLUDED.ret_1w,
+    ret_1m               = EXCLUDED.ret_1m,
+    ret_3m               = EXCLUDED.ret_3m,
+    ret_6m               = EXCLUDED.ret_6m,
+    ret_1y               = EXCLUDED.ret_1y,
+    sharpe_1y            = EXCLUDED.sharpe_1y,
+    calmar_1y            = EXCLUDED.calmar_1y,
+    company_strategy_l1  = EXCLUDED.company_strategy_l1,
+    platform_strategy_l1 = EXCLUDED.platform_strategy_l1,
+    team_tags            = EXCLUDED.team_tags,
+    market_value         = EXCLUDED.market_value,
+    as_of_date           = EXCLUDED.as_of_date,
+    refreshed_at         = NOW()`
+
+export type FofOverviewListCacheRefreshOptions = {
+  /**
+   * Intraday mode: refresh NAV / 市值 / returns for products already in the cache and skip
+   * every fuzzy fund-name join, including the one behind the 市值 map. Products missing from
+   * the cache are left for the next full rebuild rather than resolved on the spot.
+   */
+  reuseResolvedIdentities?: boolean
+}
+
 /** Rebuild precomputed list cache for all FOF概览 rows (as of CURRENT_DATE). */
-export async function refreshFofOverviewListCache(): Promise<number> {
+export async function refreshFofOverviewListCache(
+  options: FofOverviewListCacheRefreshOptions = {},
+): Promise<number> {
   const t0 = Date.now()
   await ensureEmailNavTable()
   await ensureFofOverviewListCacheTable()
 
+  const reuseIdentities = options.reuseResolvedIdentities === true
   const asOfDate = new Date().toISOString().slice(0, 10)
 
   // Fast path: reuse beian codes from yesterday's cache; only run expensive lateral
@@ -134,8 +168,11 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   )
   logProgress(`found ${baseRows.length} products`, t0)
 
-  // Products already in cache get beian without lateral joins.
-  const needBeianJoin = baseRows.filter((r) => !cachedBeian.has(r.product_name))
+  // Products already in cache get beian without lateral joins. Intraday runs never pay for
+  // the joins at all: an unseen product waits for the next full rebuild.
+  const needBeianJoin = reuseIdentities
+    ? []
+    : baseRows.filter((r) => !cachedBeian.has(r.product_name))
   logProgress(
     `${baseRows.length - needBeianJoin.length} beian from cache, ${needBeianJoin.length} need lateral join…`,
     t0,
@@ -158,16 +195,22 @@ export async function refreshFofOverviewListCache(): Promise<number> {
     logProgress(`lateral joins done`, t0)
   }
 
-  const products: BaseProductRow[] = baseRows.map((r) => {
-    const fromCache = cachedBeian.has(r.product_name)
-    const fromJoin = joinedBeian.get(r.fof_underlying_id)
-    const beian_hao = fromJoin?.beian_hao ?? (fromCache ? cachedBeian.get(r.product_name)! : null)
-    const short_name = fromJoin?.short_name ?? r.product_name
-    return { ...r, beian_hao, short_name }
-  })
+  const products: BaseProductRow[] = baseRows
+    // Intraday runs resolve nothing, so a product missing from the cache would be written with
+    // a null 备案号 and stay wrong until the nightly rebuild. Leave it out instead.
+    .filter((r) => !reuseIdentities || cachedBeian.has(r.product_name))
+    .map((r) => {
+      const fromCache = cachedBeian.has(r.product_name)
+      const fromJoin = joinedBeian.get(r.fof_underlying_id)
+      const beian_hao = fromJoin?.beian_hao ?? (fromCache ? cachedBeian.get(r.product_name)! : null)
+      const short_name = fromJoin?.short_name ?? r.product_name
+      return { ...r, beian_hao, short_name }
+    })
 
   logProgress("loading managed 市值 map…", t0)
-  const managedMarketById = await loadManagedUnderlyingMarketValueMap()
+  const managedMarketById = reuseIdentities
+    ? await loadManagedUnderlyingMarketValueMapFromCache()
+    : await loadManagedUnderlyingMarketValueMap()
   logProgress(`managed 市值 map loaded (${managedMarketById.size} ids)`, t0)
 
   logProgress("loading latest 估值表 NAV lookup…", t0)
@@ -184,11 +227,22 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   logProgress("BatchNavResolver ready", t0)
 
   const valuationNavSince = addDays(asOfDate, 400)
-  logProgress(`loading 估值表 NAV history since ${valuationNavSince}…`, t0)
-  const valuationNavHistory = await loadManagedUnderlyingNavHistory(valuationNavSince, {
-    skipSymbolBackfill: true,
-    targets: products.map((p) => ({ product_name: p.product_name, beian_hao: p.beian_hao })),
-  })
+  const historyTargets = products.map((p) => ({
+    product_name: p.product_name,
+    beian_hao: p.beian_hao,
+  }))
+  logProgress(
+    reuseIdentities
+      ? `loading 估值表 NAV history (cached series + recent delta) since ${valuationNavSince}…`
+      : `loading 估值表 NAV history since ${valuationNavSince}…`,
+    t0,
+  )
+  const valuationNavHistory = reuseIdentities
+    ? await loadManagedUnderlyingNavHistoryIncremental(valuationNavSince, historyTargets)
+    : await loadManagedUnderlyingNavHistory(valuationNavSince, {
+      skipSymbolBackfill: true,
+      targets: historyTargets,
+    })
   logProgress(
     `估值表 NAV history loaded (codes=${valuationNavHistory.byCode.size}, names=${valuationNavHistory.byName.size})`,
     t0,
@@ -204,7 +258,10 @@ export async function refreshFofOverviewListCache(): Promise<number> {
   ])
 
   logProgress("strategy & risk metadata loaded", t0)
-  await query(`DELETE FROM ops_fof_overview_list_cache`)
+  // Incremental mode upserts in place: a DELETE would drop the products filtered out above.
+  if (!reuseIdentities) {
+    await query(`DELETE FROM ops_fof_overview_list_cache`)
+  }
   if (products.length === 0) return 0
 
   const values: unknown[] = []
@@ -320,7 +377,7 @@ export async function refreshFofOverviewListCache(): Promise<number> {
        market_value,
        as_of_date, refreshed_at
      ) VALUES`,
-    "",
+    reuseIdentities ? FOF_CACHE_UPSERT_SUFFIX : "",
     placeholders,
     values,
     19,

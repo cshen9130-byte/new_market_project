@@ -100,26 +100,92 @@ type BaseProductRow = {
   fallback_return_pct: string | null
 }
 
+export type ManagedProductsListCacheRefreshOptions = {
+  /**
+   * Take 备案号 / 简称 from the existing cache rows instead of re-deriving them through the
+   * fuzzy fund-name joins. Those joins cost ~77s of the ~85s full rebuild because they scan
+   * private_fund_info (250k rows) re-evaluating regexes per row, yet they only change when a
+   * product is added, removed or renamed. Intended for the intraday NAV/市值 refresh; the
+   * nightly ETL and add/delete paths must still run a full rebuild.
+   */
+  reuseResolvedIdentities?: boolean
+}
+
+/**
+ * Identity rows for the intraday refresh, keyed on 备案号 already resolved by a full rebuild.
+ * Rows whose live product_name no longer matches the cached one are skipped: a rename means
+ * the cached 备案号 can no longer be trusted, so those wait for the next full rebuild.
+ */
+async function loadResolvedProductRows(): Promise<BaseProductRow[]> {
+  return await query<BaseProductRow>(
+    `SELECT
+       m.id::text            AS managed_product_id,
+       m.product_name,
+       c.beian_hao,
+       c.short_name,
+       m.latest_unit_nav::text   AS fallback_nav,
+       m.latest_nav_date         AS fallback_nav_date,
+       m.latest_return_pct::text AS fallback_return_pct
+     FROM ops_managed_products_list_cache c
+     JOIN managed_products m ON m.id = c.managed_product_id
+     WHERE m.product_name <> '合计'
+       AND BTRIM(m.product_name) = BTRIM(c.product_name)
+     ORDER BY m.id`,
+  )
+}
+
+const CACHE_UPSERT_SUFFIX = `
+  ON CONFLICT (managed_product_id) DO UPDATE SET
+    product_name         = EXCLUDED.product_name,
+    beian_hao            = EXCLUDED.beian_hao,
+    short_name           = EXCLUDED.short_name,
+    unit_nav             = EXCLUDED.unit_nav,
+    nav_date             = EXCLUDED.nav_date,
+    return_pct           = EXCLUDED.return_pct,
+    ret_1w               = EXCLUDED.ret_1w,
+    ret_1m               = EXCLUDED.ret_1m,
+    ret_3m               = EXCLUDED.ret_3m,
+    ret_6m               = EXCLUDED.ret_6m,
+    ret_1y               = EXCLUDED.ret_1y,
+    sharpe_1y            = EXCLUDED.sharpe_1y,
+    calmar_1y            = EXCLUDED.calmar_1y,
+    company_strategy_l1  = EXCLUDED.company_strategy_l1,
+    platform_strategy_l1 = EXCLUDED.platform_strategy_l1,
+    team_tags            = EXCLUDED.team_tags,
+    custody_balance      = EXCLUDED.custody_balance,
+    net_asset_value      = EXCLUDED.net_asset_value,
+    as_of_date           = EXCLUDED.as_of_date,
+    refreshed_at         = NOW()`
+
 /** Rebuild precomputed list cache for all 在管产品 rows (as of CURRENT_DATE). */
-export async function refreshManagedProductsListCache(): Promise<number> {
+export async function refreshManagedProductsListCache(
+  options: ManagedProductsListCacheRefreshOptions = {},
+): Promise<number> {
   await ensureEmailNavTable()
   await ensureManagedProductsListCacheTable()
 
+  const reuseIdentities = options.reuseResolvedIdentities === true
   const asOfDate = new Date().toISOString().slice(0, 10)
-  logProgress("resolving product identities (may take 1–3 min)…")
 
-  const products = await query<BaseProductRow>(
-    `SELECT
-       m.id::text AS managed_product_id,
-       m.product_name,
-       ${MANAGED_PRODUCTS_BEIAN_EXPR} AS beian_hao,
-       ${managedShortExpr("m.product_name")} AS short_name,
-       m.latest_unit_nav::text AS fallback_nav,
-       m.latest_nav_date AS fallback_nav_date,
-       m.latest_return_pct::text AS fallback_return_pct
-     ${buildManagedProductsFrom("m.product_name")}
-     WHERE m.product_name <> '合计'`,
-  )
+  let products: BaseProductRow[]
+  if (reuseIdentities) {
+    logProgress("reusing resolved identities from cache…")
+    products = await loadResolvedProductRows()
+  } else {
+    logProgress("resolving product identities (may take 1–3 min)…")
+    products = await query<BaseProductRow>(
+      `SELECT
+         m.id::text AS managed_product_id,
+         m.product_name,
+         ${MANAGED_PRODUCTS_BEIAN_EXPR} AS beian_hao,
+         ${managedShortExpr("m.product_name")} AS short_name,
+         m.latest_unit_nav::text AS fallback_nav,
+         m.latest_nav_date AS fallback_nav_date,
+         m.latest_return_pct::text AS fallback_return_pct
+       ${buildManagedProductsFrom("m.product_name")}
+       WHERE m.product_name <> '合计'`,
+    )
+  }
 
   logProgress(`found ${products.length} products — preloading NAV history…`)
 
@@ -153,7 +219,11 @@ export async function refreshManagedProductsListCache(): Promise<number> {
     loadBflStrategies(beianHaos),
   ])
 
-  await query(`DELETE FROM ops_managed_products_list_cache`)
+  // Incremental mode upserts in place. A DELETE would drop any product skipped above for
+  // identity drift, and any product added since the last full rebuild.
+  if (!reuseIdentities) {
+    await query(`DELETE FROM ops_managed_products_list_cache`)
+  }
   if (products.length === 0) return 0
 
   const values: unknown[] = []
@@ -300,7 +370,7 @@ export async function refreshManagedProductsListCache(): Promise<number> {
        custody_balance, net_asset_value,
        as_of_date, refreshed_at
      ) VALUES`,
-    "",
+    reuseIdentities ? CACHE_UPSERT_SUFFIX : "",
     placeholders,
     values,
     20,
