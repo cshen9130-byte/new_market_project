@@ -12,7 +12,7 @@ import pandas as pd
 
 from iv_analysis.data import fetch_qvix_history
 from iv_analysis.iv_calc import expiry_from_cffex_symbol, implied_volatility
-from serialize import latest_trade_date
+from serialize import latest_trade_date, _is_flat_snapshot_row
 
 SYNTHETIC_QVIX_KEYS = frozenset({"1000index", "300index", "50index"})
 
@@ -245,6 +245,13 @@ def merge_synthetic_qvix_gaps(
     except Exception:  # noqa: BLE001
         return qvix
     missing = [d for d in spot_dates if d not in existing_dates]
+    for trade_day in sorted(existing_dates):
+        if trade_day <= official_end or trade_day > target:
+            continue
+        row = qvix[pd.to_datetime(qvix["trade_date"]).dt.date == trade_day]
+        if not row.empty and _is_flat_snapshot_row(row.iloc[-1]):
+            missing.append(trade_day)
+    missing = sorted(set(missing))
     if not missing:
         return qvix
 
@@ -260,5 +267,8 @@ def merge_synthetic_qvix_gaps(
     if synthetic.empty:
         return qvix
 
+    qvix = qvix[
+        ~pd.to_datetime(qvix["trade_date"]).dt.date.isin(missing_set)
+    ].copy()
     combined = pd.concat([qvix, synthetic], ignore_index=True)
     return combined.sort_values("trade_date").reset_index(drop=True)

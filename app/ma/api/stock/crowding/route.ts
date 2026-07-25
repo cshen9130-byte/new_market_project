@@ -85,14 +85,12 @@ export async function GET(req: Request) {
       })
 
     const latest = series[series.length - 1]
+    const snapshotDate = latest.date
 
-    const topStocksSqlWithNames = `WITH latest AS (
-         SELECT MAX(trade_date) AS d FROM raw_ashare_daily
-       ),
-       tot AS (
+    const topStocksSqlWithNames = `WITH tot AS (
          SELECT COALESCE(SUM(amount), 0) AS t
          FROM raw_ashare_daily
-         WHERE trade_date = (SELECT d FROM latest)
+         WHERE trade_date = $1::date
        )
        SELECT r.ts_code,
               s.name,
@@ -101,18 +99,15 @@ export async function GET(req: Request) {
        FROM raw_ashare_daily r
        LEFT JOIN dim_ashare_stock s ON s.ts_code = r.ts_code
        CROSS JOIN tot
-       WHERE r.trade_date = (SELECT d FROM latest)
+       WHERE r.trade_date = $1::date
          AND r.amount > 0
        ORDER BY r.amount DESC
        LIMIT 15`
 
-    const topStocksSqlCodesOnly = `WITH latest AS (
-         SELECT MAX(trade_date) AS d FROM raw_ashare_daily
-       ),
-       tot AS (
+    const topStocksSqlCodesOnly = `WITH tot AS (
          SELECT COALESCE(SUM(amount), 0) AS t
          FROM raw_ashare_daily
-         WHERE trade_date = (SELECT d FROM latest)
+         WHERE trade_date = $1::date
        )
        SELECT r.ts_code,
               NULL::text AS name,
@@ -120,16 +115,16 @@ export async function GET(req: Request) {
               ROUND((r.amount / NULLIF(tot.t, 0) * 100)::numeric, 2) AS share
        FROM raw_ashare_daily r
        CROSS JOIN tot
-       WHERE r.trade_date = (SELECT d FROM latest)
+       WHERE r.trade_date = $1::date
          AND r.amount > 0
        ORDER BY r.amount DESC
        LIMIT 15`
 
     let topStocks: TopStockRow[]
     try {
-      topStocks = await query<TopStockRow>(topStocksSqlWithNames)
+      topStocks = await query<TopStockRow>(topStocksSqlWithNames, [snapshotDate])
     } catch {
-      topStocks = await query<TopStockRow>(topStocksSqlCodesOnly)
+      topStocks = await query<TopStockRow>(topStocksSqlCodesOnly, [snapshotDate])
     }
 
     const boards = Object.entries(latest.board_shares || {})

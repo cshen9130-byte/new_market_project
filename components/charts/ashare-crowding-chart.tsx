@@ -53,6 +53,11 @@ function formatAmountYi(v: number | null | undefined) {
   return `${(v / 1e8).toFixed(0)}亿`
 }
 
+function formatTradeDate(d: string | null | undefined) {
+  if (!d) return null
+  return d.slice(0, 10)
+}
+
 function sma(values: (number | null)[], window: number): (number | null)[] {
   return values.map((_, i) => {
     if (i < window - 1) return null
@@ -192,7 +197,7 @@ export default function AshareCrowdingChart() {
         formatter: (p: Array<{ name: string; value: number }>) =>
           `${p[0]?.name}<br/>成交额占比: ${p[0]?.value?.toFixed(2)}%`,
       },
-      grid: { left: 80, right: 16, top: 8, bottom: 8 },
+      grid: { left: 80, right: 52, top: 8, bottom: 28 },
       xAxis: { type: "value", max: 100, axisLabel: { formatter: "{value}%", fontSize: 10 } },
       yAxis: {
         type: "category",
@@ -203,7 +208,13 @@ export default function AshareCrowdingChart() {
         type: "bar",
         data: boards.map((b) => b.share),
         itemStyle: { borderRadius: [0, 4, 4, 0] },
-        label: { show: true, position: "right", formatter: "{c}%", fontSize: 10 },
+        label: {
+          show: true,
+          position: "right",
+          formatter: (p: { value?: number }) =>
+            p.value != null ? `${Number(p.value).toFixed(1)}%` : "",
+          fontSize: 10,
+        },
       }],
     }
   }, [latest])
@@ -456,9 +467,9 @@ export default function AshareCrowdingChart() {
                 <ul className="list-disc list-inside text-xs space-y-1">
                   <li>600/601/603/605 → 上证主板</li>
                   <li>000/001/002/003 → 深证主板</li>
-                  <li>300 → 创业板</li>
-                  <li>688 → 科创板</li>
-                  <li>920 或 .BJ → 北交所</li>
+                  <li>300/301 → 创业板</li>
+                  <li>688/689 → 科创板</li>
+                  <li>920/.BJ 等 → 北交所</li>
                 </ul>
                 <div className="bg-muted rounded px-3 py-2 font-mono text-xs">
                   BoardShare<sub>b,d</sub> = Σ<sub>i∈b</sub> Amount<sub>i,d</sub> / TotalAmount<sub>d</sub> × 100%
@@ -654,6 +665,7 @@ export default function AshareCrowdingChart() {
           <CardHeader>
             <CardTitle>板块成交额占比</CardTitle>
             <CardDescription>
+              {latest?.trade_date ? `截至 ${formatTradeDate(latest.trade_date)} · ` : ""}
               上证/深证/创业板/科创板/北交所
               {latest?.top_board ? ` · 主线 ${latest.top_board} ${latest.top_board_share?.toFixed(1)}%` : ""}
             </CardDescription>
@@ -673,7 +685,8 @@ export default function AshareCrowdingChart() {
           <CardHeader>
             <CardTitle>个股成交额 Top15</CardTitle>
             <CardDescription>
-              最新交易日成交额占比最高的个股
+              {latest?.trade_date ? `截至 ${formatTradeDate(latest.trade_date)} · ` : ""}
+              成交额占比最高的个股
               {latest?.top3_share != null ? ` · Top3合计 ${latest.top3_share.toFixed(1)}%` : ""}
             </CardDescription>
           </CardHeader>
@@ -694,6 +707,7 @@ export default function AshareCrowdingChart() {
           <div className="space-y-1.5">
             <CardTitle>Top 5% 成交额占比</CardTitle>
             <CardDescription>
+              {latest?.trade_date ? `截至 ${formatTradeDate(latest.trade_date)} · ` : ""}
               按股票数量取前 5% 个股的成交额占全 A 比例
               {top5pctStats.latestVal != null ? ` · 最新 ${top5pctStats.latestVal.toFixed(1)}%` : ""}
               {top5pctStats.diffMa20 != null
