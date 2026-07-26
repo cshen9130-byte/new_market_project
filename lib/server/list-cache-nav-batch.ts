@@ -248,6 +248,17 @@ function latestVirtualUnitRatioByCode(
   return out
 }
 
+/** Custody 估值表 must keep raw unit NAV — same rule as applyEmailUnitNavCorrection. */
+function isCustodyValuationBatchRow(row: {
+  source?: string | null
+  subject?: string | null
+  attachment_filename?: string | null
+}): boolean {
+  if (row.source === "attachment_valuation_table") return true
+  const meta = `${row.subject ?? ""} ${row.attachment_filename ?? ""}`
+  return /估值表/u.test(meta)
+}
+
 function resolveEmailNavAt(points: NavPoint[] | undefined, beforeDate: string): NavPoint | null {
   if (!points?.length) return null
   const primary = points.filter(isPrimaryEmailNavPoint)
@@ -481,7 +492,8 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
   for (const row of bestByCodeDate.values()) {
     const rawNav = parseNav(row.nav)
     if (rawNav == null) continue
-    const ratio = virtualRatioByCode.get(row.code) ?? null
+    // Do not apply A-class virtual unit/cum ratios onto custody 估值表 (SBHK26 → 0.9726 bug).
+    const ratio = isCustodyValuationBatchRow(row) ? null : (virtualRatioByCode.get(row.code) ?? null)
     const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
     let nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
     const recovered = recoverPlausibleEmailUnitNav(nav, cum, row.subject)
@@ -593,7 +605,9 @@ async function loadEmailNavByNameBatch(
         && !isPostInvestmentVirtualNavEmail(row.subject)
         && /虚拟/u.test(`${row.subject ?? ""}${row.fund_name ?? ""}`)
       ) continue
-      const ratio = virtualRatioByName.get(matchedName) ?? null
+      // selectEmailNavSeriesRows already corrected units; never re-apply virtual ratios
+      // onto custody 估值表 (same SBHK26 0.9726 failure mode as code batch).
+      const ratio = isCustodyValuationBatchRow(row) ? null : (virtualRatioByName.get(matchedName) ?? null)
       const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
       let nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
       const recovered = recoverPlausibleEmailUnitNav(nav, cum, row.subject)
@@ -1511,7 +1525,10 @@ export type TrackFundMetricsFields = {
   calmar_1y: string | null
 }
 
-function needsNavMetricsRecompute(row: TrackFundMetricsFields): boolean {
+/** List cache more than this many calendar days behind as-of → recompute on read. */
+const STALE_LIST_NAV_DAYS = 10
+
+function needsNavMetricsRecompute(row: TrackFundMetricsFields, asOfDate: string): boolean {
   if (!row.latest_nav) return true
   const rule = lookupFundNavCorrectionRule(row.beian_hao, row.product_name, row.short_name)
   if (rule?.preserve_high_nav_scale) return false
@@ -1531,6 +1548,11 @@ function needsNavMetricsRecompute(row: TrackFundMetricsFields): boolean {
   ) {
     return true
   }
+  // Stale list NAV while detail/platform already moved on (SBHK26 stuck at 2026-06-30).
+  const navDate = row.latest_nav_date?.slice(0, 10)
+  if (navDate && /^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) {
+    if (calendarDaysBetween(asOfDate, navDate) > STALE_LIST_NAV_DAYS) return true
+  }
   return false
 }
 
@@ -1539,7 +1561,7 @@ export async function enrichTrackFundMetricsRows<T extends TrackFundMetricsField
   rows: T[],
   asOfDate: string,
 ): Promise<T[]> {
-  const needs = rows.filter((row) => needsNavMetricsRecompute(row))
+  const needs = rows.filter((row) => needsNavMetricsRecompute(row, asOfDate))
   if (needs.length === 0) return rows
 
   const identities = needs.map((row) => ({
