@@ -1207,16 +1207,18 @@ export async function GET(req: Request) {
     ])
 
     const total = parseInt(countRow[0]?.total ?? "0")
-    let data = sanitizeTrackRows(rows)
+    // Historical cutoffs skip the precomputed cache — still recompute stale/corrupt NAV
+    // so parent funds (e.g. SBHK26) pick up share-class email dates like the detail page.
+    let data = await enrichTrackFundMetricsRows(rows, asOfDateForNav)
     if (navSource === "team") {
-      data = sanitizeTrackRows(await overlayTeamNavOnTrackRows(data, asOfDateForNav))
+      data = await overlayTeamNavOnTrackRows(data, asOfDateForNav)
     }
     return NextResponse.json({
       page,
       pageSize,
       total,
       totalPages: Math.ceil(total / pageSize),
-      data,
+      data: sanitizeTrackRows(data),
     })
   } catch (e: any) {
     return NextResponse.json({ error: e.message }, { status: 500 })

@@ -1,5 +1,12 @@
 import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate } from "../lib/server/email-nav-query.ts"
-import { enrichReturnNavSeries, capPeriodReturnByDrawdown, calcReturn, sanitizeNavPointSeries } from "../lib/server/list-cache-nav-batch.ts"
+import {
+  enrichReturnNavSeries,
+  capPeriodReturnByDrawdown,
+  calcReturn,
+  sanitizeNavPointSeries,
+  expandBeiansWithShareClassFamily,
+  backfillParentEmailFromShareClassSiblings,
+} from "../lib/server/list-cache-nav-batch.ts"
 import { lookupFundNavCorrectionRule } from "../lib/server/fund-nav-correction-rules.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
@@ -964,6 +971,24 @@ const sbhk26Jun29 = sbhk26Selected.find((r) => r.nav_date === "2026-06-29")
 assert(
   "SBHK26 custody valuation keeps unit 1.1227",
   sbhk26Jun29 != null && Math.abs(parseFloat(sbhk26Jun29.nav) - 1.1227) < 0.0001,
+)
+
+assert(
+  "share-class family expands SBHK26 to BHK26A",
+  expandBeiansWithShareClassFamily(["SBHK26"]).includes("BHK26A"),
+)
+const sbhk26ListMap = new Map([
+  ["SBHK26", [{ nav_date: "2026-06-30", nav: 1.1227, source: "attachment_valuation_table", subject: "【基金估值表】SBHK26" }]],
+  ["BHK26A", [
+    { nav_date: "2026-07-23", nav: 1.074, source: "body_table", subject: "【基金虚拟净值表现估算】BHK26A_荣熙共赢" },
+    { nav_date: "2026-07-22", nav: 1.0712, source: "body_table", subject: "【基金虚拟净值表现估算】BHK26A_荣熙共赢" },
+  ]],
+])
+backfillParentEmailFromShareClassSiblings(sbhk26ListMap, ["SBHK26"])
+const sbhk26Backfilled = sbhk26ListMap.get("SBHK26") ?? []
+assert(
+  "SBHK26 list parent gets BHK26A Jul-23 fallback",
+  sbhk26Backfilled.some((p) => p.nav_date === "2026-07-23" && Math.abs(p.nav - 1.074) < 0.0001),
 )
 
 const sbfm35History = [

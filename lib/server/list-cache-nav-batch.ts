@@ -26,6 +26,7 @@ import {
   shareClassProductCodesMatch,
   sqlEmailNavShareClassGuard,
   sqlFundNameBase,
+  stripShareClassFromProductCode,
 } from "@/lib/server/fund-name-match"
 import { fofUnderlyingNavLookupKeys } from "@/lib/server/fund-holding-code"
 import {
@@ -462,10 +463,99 @@ function expandBeiansWithParentCodes(codes: string[]): string[] {
   return [...out]
 }
 
+/**
+ * Expand to the S-prefixed / bare / A·B·C share-class family so list batch can load
+ * BHK26A rows when resolving parent SBHK26 (detail already does via name + share-class fallback).
+ */
+export function expandBeiansWithShareClassFamily(codes: string[]): string[] {
+  const out = new Set<string>()
+  for (const raw of codes) {
+    const code = raw.trim().toUpperCase()
+    if (!code) continue
+    out.add(code)
+    const stripped = stripShareClassFromProductCode(code)
+    if (!stripped) continue
+    const baseNoS = stripped.startsWith("S") ? stripped.slice(1) : stripped
+    const baseWithS = stripped.startsWith("S") ? stripped : `S${stripped}`
+    for (const base of [baseNoS, baseWithS]) {
+      if (!base) continue
+      out.add(base)
+      for (const letter of ["A", "B", "C"] as const) {
+        out.add(`${base}${letter}`)
+      }
+    }
+  }
+  return [...out]
+}
+
+/**
+ * Detail `selectEmailNavSeriesRows` uses A/B/C email on dates the parent has no row.
+ * List batch keys by exact product_code — copy sibling dates onto the parent series
+ * (continuity-gated) so SBHK26 advances past the last custody 估值表 with BHK26A virtual NAV.
+ */
+export function backfillParentEmailFromShareClassSiblings(
+  emailByBeian: Map<string, NavPoint[]>,
+  parentBeians: string[],
+): void {
+  for (const raw of parentBeians) {
+    const parent = raw.trim().toUpperCase()
+    if (!parent || /[ABC]$/u.test(parent)) continue
+
+    const parentPoints = [...(emailByBeian.get(parent) ?? [])]
+    const byDate = new Map(parentPoints.map((p) => [p.nav_date, p]))
+
+    const siblingByDate = new Map<string, NavPoint>()
+    for (const [code, points] of emailByBeian) {
+      const sibling = code.trim().toUpperCase()
+      if (!sibling || sibling === parent) continue
+      if (!/[ABC]$/u.test(sibling)) continue
+      if (!shareClassProductCodesMatch(sibling, parent)) continue
+      for (const point of points) {
+        if (byDate.has(point.nav_date)) continue
+        const prev = siblingByDate.get(point.nav_date)
+        if (!prev) {
+          siblingByDate.set(point.nav_date, point)
+          continue
+        }
+        // Prefer post-investment virtual / body_table over custody 估值表 for fallback dates.
+        if (isPrimaryEmailNavPoint(point) && !isPrimaryEmailNavPoint(prev)) {
+          siblingByDate.set(point.nav_date, point)
+        }
+      }
+    }
+    if (siblingByDate.size === 0) continue
+
+    const sortedSiblingDates = [...siblingByDate.keys()].sort((a, b) => a.localeCompare(b))
+    for (const date of sortedSiblingDates) {
+      if (byDate.has(date)) continue
+      const point = siblingByDate.get(date)!
+      const prior = navAtOrBefore(
+        [...byDate.values()].sort((a, b) => b.nav_date.localeCompare(a.nav_date)),
+        date,
+      )
+      if (
+        prior
+        && prior.nav > 0
+        && Math.abs(point.nav / prior.nav - 1) > 0.15
+      ) {
+        // Same continuity gate as selectEmailNavSeriesRows share-class gaps.
+        continue
+      }
+      byDate.set(date, point)
+    }
+
+    emailByBeian.set(
+      parent,
+      [...byDate.values()].sort((a, b) => b.nav_date.localeCompare(a.nav_date)),
+    )
+  }
+}
+
 async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<Map<string, NavPoint[]>> {
   const out = new Map<string, NavPoint[]>()
   if (beians.length === 0) return out
 
+  const queryCodes = expandBeiansWithShareClassFamily(beians)
   const rows = await queryUnbounded<EmailNavBatchRow>(
     `SELECT BTRIM(product_code) AS code, nav_date::text AS nav_date, nav::text AS nav,
             cumulative_nav::text, source,
@@ -475,7 +565,7 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
        AND nav IS NOT NULL
        AND nav_date >= $2::date
      ORDER BY nav_date DESC, id DESC`,
-    [beians, sinceDate],
+    [queryCodes, sinceDate],
   )
 
   const virtualRatioByCode = latestVirtualUnitRatioByCode(rows)
@@ -511,6 +601,9 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
   for (const [code, points] of out) {
     out.set(code, sanitizeNavPointSeries(points, { beian_hao: code }))
   }
+  // Parent funds (SBHK26) often stop receiving custody 估值表 while A-class virtual
+  // emails (BHK26A) continue — mirror detail share-class date fallback onto parent keys.
+  backfillParentEmailFromShareClassSiblings(out, beians)
   sortNavMapsDesc([out])
   return out
 }
@@ -1075,6 +1168,8 @@ export class BatchNavResolver {
       mergeNavPointMaps(type6.byProduct, staleType6.byProduct)
       mergeNavPointMaps(legacy.byBeian, staleLegacy.byBeian)
       mergeNavPointMaps(legacy.byProduct, staleLegacy.byProduct)
+      // Re-apply after merge so sibling dates from either window fill the parent.
+      backfillParentEmailFromShareClassSiblings(emailByBeian, beians)
     }
 
     return new BatchNavResolver(
@@ -1199,6 +1294,16 @@ export class BatchNavResolver {
       && isPlausibleEmailUnitNav(emailName.nav)
     ) {
       emailPoint = emailName
+    } else if (
+      !shareClassBeian
+      && emailName
+      && emailBeian
+      && isPlausibleEmailUnitNav(emailName.nav)
+      && isPlausibleEmailUnitNav(emailBeian.nav)
+      && emailBeian.nav_date > emailName.nav_date
+    ) {
+      // Parent name stream can lag while share-class backfill advances beian (SBHK26).
+      emailPoint = emailBeian
     }
     if (emailPoint && !isPlausibleEmailUnitNav(emailPoint.nav)) {
       emailPoint = null
