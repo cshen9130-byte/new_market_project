@@ -3,7 +3,7 @@ import {
   type EmailParseFetchResult,
 } from "@/lib/server/email-parse-fetch"
 import {
-  refreshManagedProductsListCacheLight,
+  refreshManagedAndFofListCachesIncremental,
   refreshManagedProductsNavAndListCache,
 } from "@/lib/server/email-nav-latest-pg"
 import { shouldYieldBackgroundWorkToUsers } from "@/lib/server/user-activity-priority"
@@ -23,8 +23,8 @@ export type EmailParseFetchJobStatus = {
 }
 
 const JOB_KEY = "__emailParseFetch"
-/** Scheduled 2h cron (yields to user traffic): keep short so stuck IMAP cannot block the site. */
-const SCHEDULED_JOB_TIMEOUT_MS = 15 * 60 * 1000
+/** Scheduled 5m checkpoint poll (yields to user traffic): keep short so stuck IMAP cannot block the site. */
+const SCHEDULED_JOB_TIMEOUT_MS = 12 * 60 * 1000
 /** Manual ops re-parse can scan several days × multiple mailboxes; needs headroom beyond IMAP + cache. */
 const MANUAL_JOB_TIMEOUT_MS = 45 * 60 * 1000
 const YIELD_POLL_MS = 3_000
@@ -72,7 +72,7 @@ function startYieldPoll(abort: AbortController, yieldToUserTraffic: boolean): Re
   return setInterval(() => {
     if (!shouldYieldBackgroundWorkToUsers()) return
     console.log(
-      "[email-parse-fetch-job] yielding to interactive user traffic — aborting scheduled ETL (next 2h cron will retry)",
+      "[email-parse-fetch-job] yielding to interactive user traffic — aborting scheduled ETL (next 5m cron will retry)",
     )
     abort.abort(new DOMException("yielded to user traffic", "AbortError"))
   }, YIELD_POLL_MS)
@@ -92,12 +92,12 @@ export function startEmailParseFetchJob(options?: {
   crawlEmailId?: string
   days?: number
   /**
-   * Intraday mode (3h cron): parse + upsert only, then patch touched funds /
-   * rebuild 在管产品 cache. Skips full FOF/tracking/metrics rebuilds.
+   * Intraday / 5m checkpoint poll: parse + upsert only, then incrementally refresh
+   * 在管产品 + FOF底层 caches when new NAV/估值表 landed. Skips full FOF/tracking rebuilds.
    */
   light?: boolean
   /**
-   * When true (2h cron only), abort promptly if users browse or upload so the
+   * When true (scheduled 5m poll), abort promptly if users browse or upload so the
    * site keeps CPU/DB/memory. Manual ops-triggered runs leave this false.
    */
   yieldToUserTraffic?: boolean
@@ -165,86 +165,105 @@ export function startEmailParseFetchJob(options?: {
       }
 
       if (light) {
-        if (abort.signal.aborted) {
-          throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
-        }
-        job.message = "正在同步邮箱运维池…"
-        try {
-          const { syncEmailTrackingPool } = await import("@/lib/server/email-tracking-pool-sync")
-          await syncEmailTrackingPool()
-        } catch (e) {
-          if (isAbortError(e)) throw e
-          result.errors.push(
-            `同步邮箱运维池失败: ${e instanceof Error ? e.message : String(e)}`,
-          )
-        }
+        // Only refresh caches when parse actually wrote NAV / 估值表 rows.
+        // A download that yields 0 saved rows (non-NAV fund mail) is not "new data".
+        const hasNewData =
+          result.navSaved > 0
+          || result.valuationSaved > 0
+          || result.valuationHoldingsSaved > 0
 
-        if (abort.signal.aborted) {
-          throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
-        }
-        job.message = "正在刷新触及产品缓存…"
-        try {
-          const { upsertTrackingFundListCacheEntry } = await import(
-            "@/lib/server/tracking-funds-list-cache-pg"
+        if (!hasNewData) {
+          job.message = "无新净值/估值表，跳过缓存刷新"
+          console.log(
+            `[email-parse-fetch-job] light idle — skipped=${result.emailsSkippedKnown}` +
+              ` downloaded=${result.emailsDownloaded} (no cache refresh)`,
           )
-          for (const fund of result.touchedFunds) {
-            if (abort.signal.aborted) {
-              throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
-            }
-            if (!fund.productCode) continue
-            try {
-              await upsertTrackingFundListCacheEntry(
-                fund.productCode,
-                fund.fundName || fund.productCode,
-              )
-            } catch (err) {
-              console.warn(
-                "[email-parse-fetch-job] touched fund cache upsert failed",
-                fund.productCode,
-                err,
-              )
-            }
-          }
-        } catch (e) {
-          if (isAbortError(e)) throw e
-          result.errors.push(
-            `刷新触及产品缓存失败: ${e instanceof Error ? e.message : String(e)}`,
-          )
-        }
-
-        if (abort.signal.aborted) {
-          throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
-        }
-        job.message = "正在刷新在管产品列表缓存…"
-        try {
-          const lightCache = await refreshManagedProductsListCacheLight()
-          result.navLatestRefreshed = lightCache.listCache
-        } catch (e) {
-          if (isAbortError(e)) throw e
-          result.errors.push(
-            `刷新在管产品列表缓存失败: ${e instanceof Error ? e.message : String(e)}`,
-          )
-        }
-
-        if (result.valuationSaved > 0 && result.touchedFunds.length > 0) {
+        } else {
           if (abort.signal.aborted) {
             throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
           }
-          job.message = "正在同步估值表页面缓存…"
+          job.message = "正在同步邮箱运维池…"
           try {
-            const { refreshValuationPipelineForTouchedFunds } = await import(
-              "@/lib/server/valuation-cache-refresh"
+            const { syncEmailTrackingPool } = await import("@/lib/server/email-tracking-pool-sync")
+            await syncEmailTrackingPool()
+          } catch (e) {
+            if (isAbortError(e)) throw e
+            result.errors.push(
+              `同步邮箱运维池失败: ${e instanceof Error ? e.message : String(e)}`,
             )
-            const valuationSync = await refreshValuationPipelineForTouchedFunds(result.touchedFunds)
+          }
+
+          if (abort.signal.aborted) {
+            throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+          }
+          job.message = "正在刷新触及产品缓存…"
+          try {
+            const { upsertTrackingFundListCacheEntry } = await import(
+              "@/lib/server/tracking-funds-list-cache-pg"
+            )
+            for (const fund of result.touchedFunds) {
+              if (abort.signal.aborted) {
+                throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+              }
+              if (!fund.productCode) continue
+              try {
+                await upsertTrackingFundListCacheEntry(
+                  fund.productCode,
+                  fund.fundName || fund.productCode,
+                )
+              } catch (err) {
+                console.warn(
+                  "[email-parse-fetch-job] touched fund cache upsert failed",
+                  fund.productCode,
+                  err,
+                )
+              }
+            }
+          } catch (e) {
+            if (isAbortError(e)) throw e
+            result.errors.push(
+              `刷新触及产品缓存失败: ${e instanceof Error ? e.message : String(e)}`,
+            )
+          }
+
+          if (abort.signal.aborted) {
+            throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+          }
+          job.message = "正在增量刷新在管产品与FOF底层缓存…"
+          try {
+            const incr = await refreshManagedAndFofListCachesIncremental()
+            result.navLatestRefreshed = incr.listCache
             console.log(
-              `[email-parse-fetch-job] valuation cache sync touched=${valuationSync.cacheInvalidated}` +
-                ` metrics=${valuationSync.metricsUpserted}`,
+              `[email-parse-fetch-job] incremental cache refresh` +
+                ` managed=${incr.listCache} fof=${incr.fofCache}`,
             )
           } catch (e) {
             if (isAbortError(e)) throw e
             result.errors.push(
-              `同步估值表页面缓存失败: ${e instanceof Error ? e.message : String(e)}`,
+              `增量刷新列表缓存失败: ${e instanceof Error ? e.message : String(e)}`,
             )
+          }
+
+          if (result.valuationSaved > 0 && result.touchedFunds.length > 0) {
+            if (abort.signal.aborted) {
+              throw abort.signal.reason ?? new DOMException("Aborted", "AbortError")
+            }
+            job.message = "正在同步估值表页面缓存…"
+            try {
+              const { refreshValuationPipelineForTouchedFunds } = await import(
+                "@/lib/server/valuation-cache-refresh"
+              )
+              const valuationSync = await refreshValuationPipelineForTouchedFunds(result.touchedFunds)
+              console.log(
+                `[email-parse-fetch-job] valuation cache sync touched=${valuationSync.cacheInvalidated}` +
+                  ` metrics=${valuationSync.metricsUpserted}`,
+              )
+            } catch (e) {
+              if (isAbortError(e)) throw e
+              result.errors.push(
+                `同步估值表页面缓存失败: ${e instanceof Error ? e.message : String(e)}`,
+              )
+            }
           }
         }
       } else {
@@ -264,11 +283,12 @@ export function startEmailParseFetchJob(options?: {
       job.result = result
       const elapsedSec = ((job.finishedAt - job.startedAt) / 1000).toFixed(1)
       job.message = light
-        ? `增量解析完成（${elapsedSec}s，触及 ${result.touchedFunds.length} 只产品）`
+        ? `增量解析完成（${elapsedSec}s，新下载 ${result.emailsDownloaded}，触及 ${result.touchedFunds.length} 只产品）`
         : "解析完成"
       console.log(
         `[email-parse-fetch-job] ${light ? "light" : "full"} done in ${elapsedSec}s` +
-          ` emails=${result.emailsScanned} nav=${result.navSaved}` +
+          ` emails=${result.emailsScanned} skipped=${result.emailsSkippedKnown}` +
+          ` downloaded=${result.emailsDownloaded} nav=${result.navSaved}` +
           ` valuation=${result.valuationSaved} touched=${result.touchedFunds.length}`,
       )
       setTimeout(() => {
@@ -278,7 +298,7 @@ export function startEmailParseFetchJob(options?: {
       job.finishedAt = Date.now()
       if (isAbortError(e) && yieldToUserTraffic) {
         job.status = "cancelled"
-        job.message = "已让位给用户访问，将在下次 2 小时定时任务重试"
+        job.message = "已让位给用户访问，将在下次 5 分钟定时任务重试"
         console.log(
           `[email-parse-fetch-job] scheduled run cancelled after ${((job.finishedAt - job.startedAt) / 1000).toFixed(1)}s — users active`,
         )

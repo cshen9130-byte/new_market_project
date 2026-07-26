@@ -181,6 +181,18 @@ export function getAllEmailParseRecords(): EmailParseRecord[] {
   return readStore().records
 }
 
+/** UIDs already envelope-parsed for a mailbox — used to skip re-download on light polls. */
+export function getParsedEmailUidsForAccount(account: string): Set<string> {
+  const key = account.trim().toLowerCase()
+  const uids = new Set<string>()
+  for (const row of readStore().records) {
+    if (row.crawlEmailAccount.trim().toLowerCase() !== key) continue
+    const uid = String(row.uid ?? "").trim()
+    if (uid) uids.add(uid)
+  }
+  return uids
+}
+
 export function listEmailParseRecords(filters: EmailParseRecordFilters = {}): {
   rows: EmailParseRecord[]
   total: number

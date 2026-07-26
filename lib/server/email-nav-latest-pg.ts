@@ -131,6 +131,25 @@ export async function refreshManagedProductsListCacheLight(
   return { emailNavLatest, listCache }
 }
 
+/**
+ * Intraday refresh for both list tables after new email NAV / 估值表 lands.
+ * Reuses cached 备案号 so the path stays ~1 minute instead of a full rebuild.
+ */
+export async function refreshManagedAndFofListCachesIncremental(): Promise<{
+  listCache: number
+  fofCache: number
+  emailNavLatest: number
+}> {
+  const { listCache, emailNavLatest } = await refreshManagedProductsListCacheLight({
+    reuseResolvedIdentities: true,
+  })
+  const { refreshFofOverviewListCache } = await import(
+    "@/lib/server/fof-overview-list-cache-pg"
+  )
+  const fofCache = await refreshFofOverviewListCache({ reuseResolvedIdentities: true })
+  return { listCache, fofCache, emailNavLatest }
+}
+
 /** Refresh list caches and sync ops_email_nav_fund_latest from cache (fast). */
 export async function refreshManagedProductsNavAndListCache(): Promise<{
   emailNavLatest: number

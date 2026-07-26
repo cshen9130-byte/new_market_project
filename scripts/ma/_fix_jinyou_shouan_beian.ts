@@ -8,17 +8,23 @@
  *
  * Correct mapping: 金舆守安一号 = SBVC25, 峰云汇高山一号 = SBYC86.
  *
- * Usage:
+ * Usage (on server — reads DB_* from .env.local):
  *   npx tsx scripts/ma/_fix_jinyou_shouan_beian.ts
+ *
+ * Via SSH tunnel from local:
+ *   DATABASE_URL="postgresql://market_user:PASSWORD@127.0.0.1:5433/market_data" \
+ *     npx tsx scripts/ma/_fix_jinyou_shouan_beian.ts
  */
-import { loadProjectEnvFiles } from "../../lib/server/load-project-env"
-import { query } from "../../lib/db"
-import { resolveManagedProductBeian } from "../../lib/server/managed-product-beian"
-import { refreshManagedProductsListCache } from "../../lib/server/managed-products-list-cache-pg"
+import { configureEtlDbTimeout, ensureScriptDatabaseEnv } from "../../lib/server/load-project-env"
 
-loadProjectEnvFiles()
+ensureScriptDatabaseEnv()
+configureEtlDbTimeout()
 
 async function main() {
+  const { query } = await import("../../lib/db")
+  const { resolveManagedProductBeian } = await import("../../lib/server/managed-product-beian")
+  const { refreshManagedProductsListCache } = await import("../../lib/server/managed-products-list-cache-pg")
+
   console.log(
     "resolve override:",
     resolveManagedProductBeian("金舆守安一号", "SBYC86"),

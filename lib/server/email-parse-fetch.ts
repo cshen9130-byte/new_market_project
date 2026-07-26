@@ -11,6 +11,7 @@ import {
   getRecordsNeedingSender,
   maxSentAtByCrawlAccount,
   patchSenderEmails,
+  getParsedEmailUidsForAccount,
   replaceEmailParseRecords,
   type EmailParseRecord,
   type ParseStepStatus,
@@ -46,6 +47,10 @@ import {
 
 export type EmailParseFetchResult = {
   emailsScanned: number
+  /** Fund-related UIDs already in NAV/估值表 tables — body/attachments not re-downloaded. */
+  emailsSkippedKnown: number
+  /** Fund-related UIDs whose bodies/attachments were downloaded this run. */
+  emailsDownloaded: number
   recordsFound: number
   navSaved: number
   valuationSaved: number
@@ -242,6 +247,34 @@ type FetchMailboxResult = {
   parseRecords: Omit<EmailParseRecord, "id">[]
   navRecords: EmailNavInsert[]
   valuationRecords: EmailValuationInsert[]
+  skippedKnown: number
+  downloaded: number
+}
+
+/**
+ * UIDs safe to skip on checkpoint polls: already stored as NAV/估值表, or already
+ * envelope-parsed (even when that mail produced no NAV/估值表 rows).
+ */
+async function loadKnownProcessedEmailUids(account: string): Promise<Set<string>> {
+  const known = getParsedEmailUidsForAccount(account)
+  const { query } = await import("@/lib/db")
+  const rows = await query<{ email_uid: string }>(
+    `SELECT DISTINCT email_uid
+     FROM (
+       SELECT email_uid FROM ops_email_nav_records
+       WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
+       UNION
+       SELECT email_uid FROM ops_email_valuation_records
+       WHERE lower(BTRIM(crawl_email_account)) = lower(BTRIM($1))
+     ) t
+     WHERE NULLIF(BTRIM(email_uid), '') IS NOT NULL`,
+    [account],
+  )
+  for (const row of rows) {
+    const uid = String(row.email_uid).trim()
+    if (uid) known.add(uid)
+  }
+  return known
 }
 
 async function downloadPart(client: ImapFlow, uid: string, part: string): Promise<Buffer> {
@@ -256,11 +289,12 @@ async function fetchMailbox(
   since: Date,
   errors: string[],
   signal?: AbortSignal,
+  knownUids: Set<string> = new Set(),
 ): Promise<FetchMailboxResult> {
   throwIfAborted(signal)
   if (!account.pass?.trim()) {
     errors.push(`${account.account}: 未配置授权码`)
-    return { parseRecords: [], navRecords: [], valuationRecords: [] }
+    return { parseRecords: [], navRecords: [], valuationRecords: [], skippedKnown: 0, downloaded: 0 }
   }
 
   const client = new ImapFlow({
@@ -277,6 +311,8 @@ async function fetchMailbox(
   const parseRecords: Omit<EmailParseRecord, "id">[] = []
   const navRecords: EmailNavInsert[] = []
   const valuationRecords: EmailValuationInsert[] = []
+  let skippedKnown = 0
+  let downloaded = 0
 
   const folders = getImapFolders(account)
 
@@ -326,9 +362,16 @@ async function fetchMailbox(
         candidates.push({ uid, subject, sentAt, senderEmail, structure, attachments, textParts })
       }
 
-      // ── Step 2: download body text only for fund-related emails ──
+      // ── Step 2: download body/attachments only for NEW fund-related emails ──
+      // Known UIDs already have NAV/估值表 rows; keep envelope scan for discovery but
+      // skip the expensive download so empty 5-minute polls finish in seconds.
       for (const { uid, subject, sentAt, senderEmail, attachments, textParts } of candidates) {
         throwIfAborted(signal)
+        if (knownUids.has(String(uid))) {
+          skippedKnown++
+          continue
+        }
+        downloaded++
         const chunks: string[] = [subject]
         for (const { part, mime } of textParts) {
           try {
@@ -542,7 +585,7 @@ async function fetchMailbox(
     }
   }
 
-  return { parseRecords, navRecords, valuationRecords }
+  return { parseRecords, navRecords, valuationRecords, skippedKnown, downloaded }
 }
 
 export async function fetchEmailParseRecords(options?: {
@@ -552,8 +595,9 @@ export async function fetchEmailParseRecords(options?: {
   /** Skip precomputed managed-product refresh (caller may run it in background). */
   skipNavLatestRefresh?: boolean
   /**
-   * Intraday / 3h mode: upsert NAV + 估值表 only.
+   * Intraday / checkpoint-poll mode: upsert NAV + 估值表 only.
    * Skips full rebuilds of holdings/metrics/FOF underlying (~thousands of funds).
+   * Already-processed UIDs are not re-downloaded.
    */
   light?: boolean
   /** When aborted, stop IMAP/DB work promptly (scheduled ETL yield). */
@@ -590,6 +634,8 @@ export async function fetchEmailParseRecords(options?: {
   const allNavRecords: EmailNavInsert[] = []
   const allValuationRecords: EmailValuationInsert[] = []
   let emailsScanned = 0
+  let emailsSkippedKnown = 0
+  let emailsDownloaded = 0
   // Track every account we attempted so records from un-attempted accounts
   // are preserved even if this run errors out for a particular mailbox.
   const scannedAccounts: string[] = accounts.map((a) => a.account)
@@ -617,13 +663,16 @@ export async function fetchEmailParseRecords(options?: {
     scanByAccount[account.account] = { since: since.toISOString().slice(0, 10), mode }
 
     try {
-      const { parseRecords, navRecords, valuationRecords } = await fetchMailbox(
-        account,
-        since,
-        errors,
-        signal,
-      )
-      emailsScanned += parseRecords.length
+      // Light/checkpoint polls skip re-download of UIDs already stored as NAV/估值表.
+      // Full/manual runs re-parse so repairs and attachment fixes still apply.
+      const knownUids = light
+        ? await loadKnownProcessedEmailUids(account.account)
+        : new Set<string>()
+      const { parseRecords, navRecords, valuationRecords, skippedKnown, downloaded } =
+        await fetchMailbox(account, since, errors, signal, knownUids)
+      emailsScanned += skippedKnown + downloaded
+      emailsSkippedKnown += skippedKnown
+      emailsDownloaded += downloaded
       allParseRecords.push(...parseRecords)
       allNavRecords.push(...navRecords)
       allValuationRecords.push(...valuationRecords)
@@ -633,6 +682,8 @@ export async function fetchEmailParseRecords(options?: {
         const sentAt = new Date(row.sentAt)
         if (!maxSentAt || sentAt > maxSentAt) maxSentAt = sentAt
       }
+      // Only advance lastParsedSentAt when we actually parsed new mail. Skipped-known
+      // polls still update lastScanCompletedAt via markAccountScanCompleted.
       markAccountScanCompleted(account.account, { mode, maxSentAt })
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -669,27 +720,31 @@ export async function fetchEmailParseRecords(options?: {
   }
 
   // Scoped custody NAV backfill: recent window for light/intraday, full history otherwise.
-  try {
-    const { backfillCustodyValuationNavFromRecords } = await import(
-      "@/lib/server/email-valuation-nav-backfill"
-    )
-    const lookbackDays = light
-      ? Math.max(options?.days ?? 3, 3)
-      : undefined
-    const sinceDate = lookbackDays != null
-      ? (() => {
-          const d = new Date()
-          d.setUTCHours(0, 0, 0, 0)
-          d.setUTCDate(d.getUTCDate() - lookbackDays)
-          return d.toISOString().slice(0, 10)
-        })()
-      : undefined
-    const backfill = await backfillCustodyValuationNavFromRecords(
-      sinceDate ? { sinceDate } : undefined,
-    )
-    custodyValuationNavBackfilled = backfill.navBackfilled
-  } catch (e) {
-    errors.push(`估值表净值回填失败: ${e instanceof Error ? e.message : String(e)}`)
+  // Skip on empty light polls — nothing new to copy into ops_email_nav_records.
+  const lightHadNewRows = allNavRecords.length > 0 || allValuationRecords.length > 0
+  if (!light || lightHadNewRows) {
+    try {
+      const { backfillCustodyValuationNavFromRecords } = await import(
+        "@/lib/server/email-valuation-nav-backfill"
+      )
+      const lookbackDays = light
+        ? Math.max(options?.days ?? 3, 3)
+        : undefined
+      const sinceDate = lookbackDays != null
+        ? (() => {
+            const d = new Date()
+            d.setUTCHours(0, 0, 0, 0)
+            d.setUTCDate(d.getUTCDate() - lookbackDays)
+            return d.toISOString().slice(0, 10)
+          })()
+        : undefined
+      const backfill = await backfillCustodyValuationNavFromRecords(
+        sinceDate ? { sinceDate } : undefined,
+      )
+      custodyValuationNavBackfilled = backfill.navBackfilled
+    } catch (e) {
+      errors.push(`估值表净值回填失败: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   if (!light) {
@@ -767,6 +822,8 @@ export async function fetchEmailParseRecords(options?: {
 
   return {
     emailsScanned,
+    emailsSkippedKnown,
+    emailsDownloaded,
     recordsFound: allParseRecords.length,
     navSaved,
     valuationSaved,

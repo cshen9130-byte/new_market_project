@@ -12,7 +12,7 @@ export async function register() {
 
     // Daily at 02:30: refresh macro-market chart data (PCA, regime, money-credit).
     // Frontend charts poll APIs every minute; this job updates the underlying DB.
-    // Linux cron may also run nightly_etl at 01:00 ? the 20h dedupe guard avoids double work.
+    // Linux cron may also run nightly_etl at 01:00 — the 20h dedupe guard avoids double work.
     cron.schedule("30 2 * * *", () => {
       void (async () => {
         try {
@@ -24,12 +24,14 @@ export async function register() {
       })()
     })
 
-    // Every 2 hours: light incremental fetch from per-mailbox checkpoint (plus overlap).
-    // Upserts NAV/???, syncs ?????, patches touched tracking rows,
-    // rebuilds ???? list cache, and refreshes ??? page cache for touched funds.
+    // Every 5 minutes: checkpoint poll mailboxes for new NAV / 估值表 mail.
+    // Already-processed UIDs are skipped (empty polls should finish in seconds).
+    // When new mail lands, parse it and immediately refresh 在管产品 + FOF底层
+    // incremental caches — do not wait for the 15m fallback tick.
     // Full FOF/tracking/metrics rebuilds stay on nightly ETL.
-    // Defers or aborts when users are browsing/uploading so the site stays responsive.
-    cron.schedule("0 */2 * * *", () => {
+    // Defers or aborts when users are browsing/uploading; single-flight lock
+    // skips a tick if the previous poll is still running.
+    cron.schedule("*/5 * * * *", () => {
       void (async () => {
         try {
           const { shouldYieldBackgroundWorkToUsers } = await import(
@@ -37,7 +39,7 @@ export async function register() {
           )
           if (shouldYieldBackgroundWorkToUsers()) {
             console.log(
-              "[1h-etl] deferred: interactive users active ? will retry at next 2h slot",
+              "[5m-etl] deferred: interactive users active — will retry at next 5m slot",
             )
             return
           }
@@ -47,22 +49,19 @@ export async function register() {
             yieldToUserTraffic: true,
           })
           if (!result.ok) {
-            console.log("[1h-etl] skipped: an email parse job is already running")
+            console.log("[5m-etl] skipped: an email parse job is already running")
           } else {
-            console.log("[1h-etl] light incremental fetch started (no full FOF/tracking rebuild)")
+            console.log("[5m-etl] checkpoint poll started")
           }
         } catch (e) {
-          console.error("[1h-etl] scheduler error:", e)
+          console.error("[5m-etl] scheduler error:", e)
         }
       })()
     })
 
-    // Every 15 minutes: refresh ???? NAV / ?? / returns only, reusing the ??? already
-    // resolved in the cache. That skips the fuzzy fund-name joins that make a full rebuild
-    // cost ~85s, so newly parsed ??? data reaches the table within one cadence.
-    // Runs in ~8s, so this can drop to */5 once it has proven itself in production.
-    // Product add, delete and rename still trigger a full rebuild, as does the nightly ETL.
-    // Yields the same way the 2h job does, and never overlaps itself or an email parse.
+    // Every 15 minutes: fallback refresh of 在管产品 + FOF底层 from DB even if no
+    // new mail arrived (catches late DB writes / missed immediate refresh).
+    // Skips while an email parse job (which may already be refreshing) is running.
     let managedCacheTickRunning = false
     cron.schedule("*/15 * * * *", () => {
       if (managedCacheTickRunning) {
@@ -88,24 +87,12 @@ export async function register() {
             return
           }
           const startedAt = Date.now()
-          const { refreshManagedProductsListCacheLight } = await import(
+          const { refreshManagedAndFofListCachesIncremental } = await import(
             "./lib/server/email-nav-latest-pg"
           )
-          const { listCache } = await refreshManagedProductsListCacheLight({
-            reuseResolvedIdentities: true,
-          })
-
-          // FOF?? rides the same tick so the two tables never contend for the box.
-          // Only the overview cache is refreshed: it recomputes NAV / ?? / returns from the
-          // existing holdings snapshot. Rebuilding that snapshot needs the fuzzy joins, so it
-          // stays on the nightly ETL and the add/delete paths.
-          const { refreshFofOverviewListCache } = await import(
-            "./lib/server/fof-overview-list-cache-pg"
-          )
-          const fofCache = await refreshFofOverviewListCache({ reuseResolvedIdentities: true })
-
+          const { listCache, fofCache } = await refreshManagedAndFofListCachesIncremental()
           console.log(
-            `[managed-cache-15m] refreshed ${listCache} ???? + ${fofCache} FOF?? rows in ${Math.round(
+            `[managed-cache-15m] refreshed ${listCache} 在管产品 + ${fofCache} FOF底层 rows in ${Math.round(
               (Date.now() - startedAt) / 1000,
             )}s`,
           )
