@@ -79,12 +79,14 @@ async function loadMergedNavRows(
     lookupManagedProductOverride(beian_hao)
     ?? lookupManagedProductOverride(product_name)
 
-  const manualTeamNavMap = await loadManualTeamNavBatch([beian_hao])
-  const effectiveManagedOverride =
-    managedOverride
-    ?? ((manualTeamNavMap.get(beian_hao)?.length ?? 0) > 0
-      ? { beian_hao, product_name }
-      : null)
+  // Skip the manual-team DB round-trip when a managed-product override already applies.
+  let effectiveManagedOverride = managedOverride
+  if (!effectiveManagedOverride) {
+    const manualTeamNavMap = await loadManualTeamNavBatch([beian_hao])
+    if ((manualTeamNavMap.get(beian_hao)?.length ?? 0) > 0) {
+      effectiveManagedOverride = { beian_hao, product_name }
+    }
+  }
 
   if (!effectiveManagedOverride) {
     return applyFundNavCorrectionToLegacyRows(navSeries, fundContext)

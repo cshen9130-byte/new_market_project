@@ -1071,7 +1071,11 @@ export default function PrivateFundDetailPage() {
     })
 
     // Phase 2: full detail with NAV series + refined metrics.
-    fetch(detailUrl, { headers })
+    // Abort if the series path hangs (e.g. cold valuation history scan) so the UI
+    // is not stuck on “加载净值曲线…” forever after the header already painted.
+    const seriesAbort = new AbortController()
+    const seriesTimeout = window.setTimeout(() => seriesAbort.abort(), 20_000)
+    fetch(detailUrl, { headers, signal: seriesAbort.signal })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json() as Promise<DetailData>
@@ -1084,10 +1088,11 @@ export default function PrivateFundDetailPage() {
       .catch(async (e: Error) => {
         if (cancelled) return
         const header = await headerPromise
-        // Keep partial header visible if the series request fails.
-        if (!header?.info) setError(e.message)
+        // Keep partial header visible if the series request fails / times out.
+        if (!header?.info) setError(e.name === "AbortError" ? "加载超时" : e.message)
       })
       .finally(() => {
+        window.clearTimeout(seriesTimeout)
         if (cancelled) return
         setLoading(false)
         setSeriesLoading(false)
@@ -1102,6 +1107,8 @@ export default function PrivateFundDetailPage() {
 
     return () => {
       cancelled = true
+      seriesAbort.abort()
+      window.clearTimeout(seriesTimeout)
     }
   }, [beian_hao])
 

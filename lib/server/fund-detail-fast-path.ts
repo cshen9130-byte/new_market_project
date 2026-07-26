@@ -16,12 +16,10 @@ import {
   addDays,
   BatchNavResolver,
   NAV_HISTORY_LOOKBACK_DAYS,
+  type NavPoint,
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
-import {
-  loadFundValuationNavFallbackSeries,
-  loadManagedUnderlyingNavHistoryIncremental,
-} from "@/lib/server/managed-fof-underlying-pg"
+import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 import {
   collectFundNameAliases,
   isPlausibleEmailUnitNav,
@@ -116,34 +114,22 @@ export async function lookupListCacheFundHeader(
     source: ListCacheFundHeader["source"],
   ): Promise<ListCacheFundHeader | null> => {
     try {
-      const byCode = await query<Row>(
+      // Prefer exact 备案号 match, then name — single round-trip.
+      const rows = await query<Row>(
         `SELECT ${selectCols}
          FROM ${table}
-         WHERE beian_hao = $1
-         ORDER BY refreshed_at DESC NULLS LAST
+         WHERE beian_hao = $1 OR product_name = $1 OR short_name = $1
+         ORDER BY
+           CASE WHEN beian_hao = $1 THEN 0 ELSE 1 END,
+           refreshed_at DESC NULLS LAST
          LIMIT 1`,
         [id],
       )
-      if (byCode[0]) {
+      if (rows[0]) {
         return {
           source,
-          ...byCode[0],
-          nav_date: fmtDate(byCode[0].nav_date),
-        }
-      }
-      const byName = await query<Row>(
-        `SELECT ${selectCols}
-         FROM ${table}
-         WHERE product_name = $1 OR short_name = $1
-         ORDER BY refreshed_at DESC NULLS LAST
-         LIMIT 1`,
-        [id],
-      )
-      if (byName[0]) {
-        return {
-          source,
-          ...byName[0],
-          nav_date: fmtDate(byName[0].nav_date),
+          ...rows[0],
+          nav_date: fmtDate(rows[0].nav_date),
         }
       }
     } catch {
@@ -292,10 +278,86 @@ function navPointsToLegacyRows(
   })
 }
 
+/** Minimal series from list-cache so the page never stays blank while heavier sources load. */
+function seriesFromListHeader(header: ListCacheFundHeader | null | undefined): LegacyNavRow[] {
+  if (!header?.nav_date || header.unit_nav == null || header.unit_nav === "") return []
+  const nav = String(header.unit_nav)
+  const n = parseFloat(nav)
+  if (!Number.isFinite(n) || n <= 0) return []
+  return [{
+    price_date: header.nav_date.slice(0, 10),
+    nav,
+    cumulative_nav: nav,
+    cum_nav_withdrawal: nav,
+    price_change: "",
+  }]
+}
+
+function valuationPointsToNavMaps(
+  beian_hao: string,
+  product_name: string,
+  short_name: string,
+  points: EmailNavPoint[],
+): { byCode: Map<string, NavPoint[]>; byName: Map<string, NavPoint[]> } {
+  const byCode = new Map<string, NavPoint[]>()
+  const byName = new Map<string, NavPoint[]>()
+  const code = beian_hao.trim().toUpperCase()
+  const names = [...new Set([product_name, short_name].map((s) => s.trim()).filter(Boolean))]
+  const navPoints: NavPoint[] = []
+  for (const p of points) {
+    const nav = parseFloat(String(p.nav ?? ""))
+    if (!Number.isFinite(nav) || !isPlausibleEmailUnitNav(nav)) continue
+    navPoints.push({ nav, nav_date: p.price_date.slice(0, 10) })
+  }
+  navPoints.sort((a, b) => b.nav_date.localeCompare(a.nav_date))
+  if (code) byCode.set(code, navPoints)
+  for (const name of names) byName.set(name, navPoints)
+  return { byCode, byName }
+}
+
+function extendSeriesWithPoints(
+  navSeries: LegacyNavRow[],
+  fundContext: { beian_hao: string; product_name: string; short_name: string | null },
+  latestSeriesDate: string,
+  targetDate: string,
+  points: EmailNavPoint[],
+  resolvedNav?: number | null,
+): LegacyNavRow[] {
+  const extensionByDate = new Map<string, EmailNavPoint>()
+  for (const point of points) {
+    const date = point.price_date.slice(0, 10)
+    if (latestSeriesDate && date <= latestSeriesDate) continue
+    if (targetDate && date > targetDate) continue
+    extensionByDate.set(date, point)
+  }
+  if (
+    resolvedNav != null
+    && targetDate
+    && (!latestSeriesDate || targetDate > latestSeriesDate)
+    && !extensionByDate.has(targetDate)
+  ) {
+    extensionByDate.set(targetDate, {
+      price_date: targetDate,
+      nav: String(resolvedNav),
+      cumulative_nav: null,
+    })
+  }
+  const extension = [...extensionByDate.values()].sort((a, b) =>
+    a.price_date.localeCompare(b.price_date),
+  )
+  if (extension.length === 0) return navSeries
+  return applyFundNavCorrectionToLegacyRows(
+    mergeNavSeriesWithEmail(navSeries, extension, fundContext),
+    fundContext,
+  )
+}
+
 /**
- * Load the full detail NAV series using the shared merge path, then align the
- * series end with BatchNavResolver.resolveAt() — the same latest-date rule as
- * FOF底层 list cache (newest among email / type6 / legacy / 估值表).
+ * Load the full detail NAV series.
+ *
+ * Fast path (most FOF底层 clicks): one merge query. Skip BatchNavResolver when the
+ * series already reaches the list-cache latest date. Only run the heavier
+ * valuation / resolver path when the merge is empty or behind the cache.
  */
 export async function loadDetailNavSeriesFast(opts: {
   beian_hao: string
@@ -303,6 +365,8 @@ export async function loadDetailNavSeriesFast(opts: {
   short_name: string
   rawId?: string
   emailNameAliases?: Array<string | null | undefined>
+  /** Pre-fetched list-cache row — avoids a second lookup and enables the fast path. */
+  listHeader?: ListCacheFundHeader | null
 }): Promise<LegacyNavRow[]> {
   const {
     beian_hao,
@@ -310,6 +374,7 @@ export async function loadDetailNavSeriesFast(opts: {
     short_name,
     rawId,
     emailNameAliases = [],
+    listHeader: listHeaderOpt,
   } = opts
   const fundContext = {
     beian_hao,
@@ -325,33 +390,90 @@ export async function loadDetailNavSeriesFast(opts: {
     short_name: short_name || null,
   }
 
-  const [navSeries, resolver, valuationHistory, targetedFallback] = await Promise.all([
+  const [navSeries, listHeader] = await Promise.all([
     loadMergedFundNavRows(beian_hao, product_name, short_name),
-    BatchNavResolver.create([identity], asOfDate),
-    loadManagedUnderlyingNavHistoryIncremental(sinceDate, [
-      { product_name, beian_hao },
-    ]),
-    loadFundValuationNavFallbackSeries(beian_hao, product_name, short_name || null, {
-      sinceDate,
-      extraBeianCodes: [...new Set([rawId, beian_hao].filter(Boolean) as string[])],
-      extraNames: collectFundNameAliases(
-        product_name,
-        short_name || null,
-        emailNameAliases,
-      ),
-    }),
+    listHeaderOpt !== undefined
+      ? Promise.resolve(listHeaderOpt)
+      : lookupListCacheFundHeader(beian_hao).then(
+          (hit) => hit ?? lookupListCacheFundHeader(product_name),
+        ),
   ])
 
-  try {
-    resolver.setValuationNavHistory(valuationHistory.byCode, valuationHistory.byName)
-    // Authoritative latest — same function the FOF list cache uses for 最新净值日期.
-    const resolved = resolver.resolveAt(identity, asOfDate)
-    const resolvedDate = resolved?.nav_date ?? ""
-    const resolverHistory = resolver.mergedHistory(identity, sinceDate)
-    const latestSeriesDate = navSeries[navSeries.length - 1]?.price_date ?? ""
+  const latestSeriesDate = navSeries[navSeries.length - 1]?.price_date ?? ""
+  const cacheTargetDate = listHeader?.nav_date ?? ""
 
-    // Empty platform/email merge — use list-cache-equivalent series wholesale.
+  // Hot path: merge already covers the list-cache latest (or there is no cache hint).
+  if (navSeries.length > 0 && (!cacheTargetDate || latestSeriesDate >= cacheTargetDate)) {
+    return navSeries
+  }
+
+  const valuationOpts = {
+    sinceDate,
+    extraBeianCodes: [...new Set([rawId, beian_hao].filter(Boolean) as string[])],
+    extraNames: collectFundNameAliases(
+      product_name,
+      short_name || null,
+      emailNameAliases,
+    ),
+  }
+
+  const seededFromCache = seriesFromListHeader(listHeader)
+  const cacheNav =
+    listHeader?.unit_nav != null ? parseFloat(listHeader.unit_nav) : null
+
+  try {
+    // Series behind list cache — usually only missing a short 估值表 tail. Skip full resolver.
+    if (navSeries.length > 0 && cacheTargetDate && latestSeriesDate < cacheTargetDate) {
+      const targetedFallback = await loadFundValuationNavFallbackSeries(
+        beian_hao,
+        product_name,
+        short_name || null,
+        valuationOpts,
+      )
+      return extendSeriesWithPoints(
+        navSeries,
+        fundContext,
+        latestSeriesDate,
+        cacheTargetDate,
+        targetedFallback,
+        Number.isFinite(cacheNav) ? cacheNav : null,
+      )
+    }
+
+    // Empty merge (common for holdings-only FOF underlyings like 赢仕木盛1号).
+    // Do NOT call loadManagedUnderlyingNavHistoryIncremental here — when its history
+    // table is cold it runs a full-table scan and hangs the detail request.
     if (navSeries.length === 0) {
+      // 1) Targeted 估值表 first (same source list cache often used; cheap SQL).
+      const targetedFallback = await loadFundValuationNavFallbackSeries(
+        beian_hao,
+        product_name,
+        short_name || null,
+        valuationOpts,
+      )
+      if (targetedFallback.length > 0) {
+        const fallback = cacheTargetDate
+          ? targetedFallback.filter((p) => p.price_date <= cacheTargetDate)
+          : targetedFallback
+        const series = applyFundNavCorrectionToLegacyRows(
+          mergeNavSeriesWithEmail([], fallback.length > 0 ? fallback : targetedFallback, fundContext),
+          fundContext,
+        )
+        if (series.length > 0) return series
+      }
+
+      // 2) BatchNavResolver for email/type6/legacy — inject targeted points as valuation.
+      const resolver = await BatchNavResolver.create([identity], asOfDate)
+      const maps = valuationPointsToNavMaps(
+        beian_hao,
+        product_name,
+        short_name,
+        targetedFallback,
+      )
+      resolver.setValuationNavHistory(maps.byCode, maps.byName)
+      const resolved = resolver.resolveAt(identity, asOfDate)
+      const resolvedDate = resolved?.nav_date ?? cacheTargetDate
+      const resolverHistory = resolver.mergedHistory(identity, sinceDate)
       const historyToResolved = resolvedDate
         ? resolverHistory.filter((p) => p.nav_date <= resolvedDate)
         : resolverHistory
@@ -361,64 +483,15 @@ export async function loadDetailNavSeriesFast(opts: {
           fundContext,
         )
       }
-      if (targetedFallback.length > 0) {
-        const fallback = resolvedDate
-          ? targetedFallback.filter((p) => p.price_date <= resolvedDate)
-          : targetedFallback
-        return applyFundNavCorrectionToLegacyRows(
-          mergeNavSeriesWithEmail([], fallback, fundContext),
-          fundContext,
-        )
-      }
-      return navSeries
+
+      // 3) Last resort: list-cache point so the page is not stuck blank.
+      return seededFromCache
     }
 
-    // Drop points past the shared latest rule (stale platform tails, bad merges).
-    if (resolvedDate && latestSeriesDate > resolvedDate) {
-      const trimmed = navSeries.filter((row) => row.price_date <= resolvedDate)
-      return trimmed.length > 0 ? trimmed : navSeries
-    }
-
-    // Extend stale platform/email series up to resolveAt (includes fresher 估值表).
-    if (!resolvedDate || (latestSeriesDate && resolvedDate <= latestSeriesDate)) {
-      return navSeries
-    }
-
-    const extensionByDate = new Map<string, EmailNavPoint>()
-    for (const point of resolverHistory) {
-      if (!isPlausibleEmailUnitNav(point.nav)) continue
-      if (point.nav_date <= latestSeriesDate || point.nav_date > resolvedDate) continue
-      extensionByDate.set(point.nav_date, {
-        price_date: point.nav_date,
-        nav: String(point.nav),
-        cumulative_nav: null,
-      })
-    }
-    for (const point of targetedFallback) {
-      if (point.price_date <= latestSeriesDate || point.price_date > resolvedDate) continue
-      if (extensionByDate.has(point.price_date)) continue
-      extensionByDate.set(point.price_date, point)
-    }
-    // Ensure the exact resolveAt point is present even if history layers omitted it.
-    if (resolved && !extensionByDate.has(resolvedDate) && resolvedDate > latestSeriesDate) {
-      extensionByDate.set(resolvedDate, {
-        price_date: resolvedDate,
-        nav: String(resolved.nav),
-        cumulative_nav: null,
-      })
-    }
-
-    const extension = [...extensionByDate.values()].sort((a, b) =>
-      a.price_date.localeCompare(b.price_date),
-    )
-    if (extension.length === 0) return navSeries
-
-    return applyFundNavCorrectionToLegacyRows(
-      mergeNavSeriesWithEmail(navSeries, extension, fundContext),
-      fundContext,
-    )
-  } catch (err) {
-    console.error("[loadDetailNavSeriesFast] BatchNavResolver/valuation extend failed:", err)
     return navSeries
+  } catch (err) {
+    console.error("[loadDetailNavSeriesFast] valuation/resolver extend failed:", err)
+    if (navSeries.length > 0) return navSeries
+    return seededFromCache
   }
 }

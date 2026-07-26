@@ -4,20 +4,31 @@ import { tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
 import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
-import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
 import {
   buildDetailHeaderFromListCache,
   loadDetailNavSeriesFast,
   lookupListCacheFundHeader,
   resolveRouteFundIdFast,
+  type ListCacheFundHeader,
 } from "@/lib/server/fund-detail-fast-path"
 
 export const dynamic = "force-dynamic"
 
 // Minimum elapsed days of NAV history before annualizing "since inception" return/Sharpe.
-// Below this, compounding amplifies short-window noise into misleading figures.
 const MIN_DAYS_FOR_ANNUALIZATION = 30
+
+/** Short TTL so repeat opens / remounts of the same fund hit memory instead of DB. */
+const DETAIL_TTL_MS = 45_000
+const DETAIL_CACHE_MAX = 200
+const detailResponseCache = new Map<string, { at: number; body: unknown }>()
+
+function rememberDetail(key: string, body: unknown) {
+  detailResponseCache.set(key, { at: Date.now(), body })
+  if (detailResponseCache.size <= DETAIL_CACHE_MAX) return
+  const oldest = detailResponseCache.keys().next().value
+  if (oldest != null) detailResponseCache.delete(oldest)
+}
 
 type InfoRow = {
   beian_hao: string
@@ -36,6 +47,36 @@ type InfoRow = {
   ret_1y: string | null
   sharpe_1y: string | null
   calmar_1y: string | null
+}
+
+function pctFromCache(raw: string | null | undefined): string | null {
+  if (raw == null || raw === "") return null
+  const n = parseFloat(raw)
+  return Number.isFinite(n) ? (n * 100).toFixed(4) : null
+}
+
+function infoFromListCache(
+  beian_hao: string,
+  cached: ListCacheFundHeader,
+): InfoRow {
+  return {
+    beian_hao: cached.beian_hao ?? beian_hao,
+    product_name: cached.product_name,
+    short_name: cached.short_name,
+    strategy_l1: cached.company_strategy_l1 ?? cached.platform_strategy_l1,
+    strategy_l2: null,
+    strategy_l3: null,
+    manager: "",
+    inception_date: null,
+    benchmark: null,
+    ret_1w: null,
+    ret_1m: null,
+    ret_3m: null,
+    ret_6m: null,
+    ret_1y: null,
+    sharpe_1y: cached.sharpe_1y,
+    calmar_1y: cached.calmar_1y,
+  }
 }
 
 async function loadTrackingInfoFallback(beian_hao: string): Promise<InfoRow | undefined> {
@@ -131,8 +172,17 @@ export async function GET(
       return NextResponse.json({ error: "Header cache miss", partial: true }, { status: 404 })
     }
 
-    // Prefer cached / direct 备案号 so FOF底层 clicks skip fuzzy name joins.
-    const beian_hao = await resolveRouteFundIdFast(rawId)
+    // Resolve identity + list-cache hint in parallel (cache also feeds the NAV fast path).
+    const [beian_hao, listHeaderEarly] = await Promise.all([
+      resolveRouteFundIdFast(rawId),
+      lookupListCacheFundHeader(rawId),
+    ])
+
+    const cacheKey = beian_hao || rawId
+    const cachedDetail = detailResponseCache.get(cacheKey)
+    if (cachedDetail && Date.now() - cachedDetail.at < DETAIL_TTL_MS) {
+      return NextResponse.json(cachedDetail.body)
+    }
 
     const infoRows = await query<InfoRow>(
       `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, NULL::text AS strategy_l3, manager,
@@ -181,26 +231,13 @@ export async function GET(
         (await lookupFundInfoFallback(beian_hao))
         ?? (rawId !== beian_hao ? await lookupFundInfoFallback(rawId) : null)
     }
-    if (!info) {
-      // Last resort: list-cache identity (FOF底层 row with no private_fund_info).
-      const cached = await lookupListCacheFundHeader(rawId)
-        ?? (rawId !== beian_hao ? await lookupListCacheFundHeader(beian_hao) : null)
-      if (cached) {
-        info = {
-          beian_hao: cached.beian_hao ?? beian_hao,
-          product_name: cached.product_name,
-          short_name: cached.short_name,
-          strategy_l1: cached.company_strategy_l1 ?? cached.platform_strategy_l1,
-          strategy_l2: null,
-          strategy_l3: null,
-          manager: "",
-          inception_date: null,
-          benchmark: null,
-          ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
-          sharpe_1y: cached.sharpe_1y,
-          calmar_1y: cached.calmar_1y,
-        }
-      }
+
+    let listHeader =
+      listHeaderEarly
+      ?? (rawId !== beian_hao ? await lookupListCacheFundHeader(beian_hao) : null)
+
+    if (!info && listHeader) {
+      info = infoFromListCache(beian_hao, listHeader)
     }
     if (!info) {
       const ownerUserId = String(req.headers.get("x-market-user-id") || "").trim() || undefined
@@ -214,6 +251,12 @@ export async function GET(
     const productName = info.product_name ?? ""
     let shortName = info.short_name ?? ""
     let strategy_l3: string | null = info.strategy_l3 ?? null
+
+    if (!listHeader) {
+      listHeader =
+        await lookupListCacheFundHeader(routeBeianHao)
+        ?? await lookupListCacheFundHeader(productName)
+    }
 
     const bflNameRows = await query<{ product_name: string; short_name: string | null }>(
       `SELECT product_name, short_name FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
@@ -229,36 +272,40 @@ export async function GET(
       info.short_name,
     ]
 
-    // Parallel metadata + NAV series (shared merge + BatchNavResolver valuation fallback).
-    const [
-      bflTrackRows,
-      strategyL3Rows,
-      type6StrategyRows,
-      opRows,
-      nav_series,
-      manualTeamNavMap,
-    ] = await Promise.all([
-      query<{
-        scale: string | null
-        manager_names: string | null
-        advisor: string | null
-        register_code: string | null
-        inception_date: string | null
-      }>(
-        `SELECT scale, manager_names, advisor, register_code,
-                inception_date::text AS inception_date
-         FROM basicinfo_bfl_track
-         WHERE register_number = $1 OR record_key = $1
-         ORDER BY updated_at DESC NULLS LAST, id DESC
-         LIMIT 1`,
-        [routeBeianHao],
-      ).catch(() => [] as {
-        scale: string | null
-        manager_names: string | null
-        advisor: string | null
-        register_code: string | null
-        inception_date: string | null
-      }[]),
+    const managedOverride =
+      lookupManagedProductOverride(routeBeianHao)
+      ?? lookupManagedProductOverride(productName)
+      ?? lookupManagedProductOverride(rawId)
+
+    // Cheap track row first so AMAC gets proper hints; then NAV + AMAC + strategy in parallel.
+    const bflTrackRows = await query<{
+      scale: string | null
+      manager_names: string | null
+      advisor: string | null
+      register_code: string | null
+      inception_date: string | null
+      operation_date: string | null
+    }>(
+      `SELECT scale, manager_names, advisor, register_code,
+              inception_date::text AS inception_date,
+              operation_date::text AS operation_date
+       FROM basicinfo_bfl_track
+       WHERE register_number = $1 OR record_key = $1
+       ORDER BY updated_at DESC NULLS LAST, id DESC
+       LIMIT 1`,
+      [routeBeianHao],
+    ).catch(() => [] as {
+      scale: string | null
+      manager_names: string | null
+      advisor: string | null
+      register_code: string | null
+      inception_date: string | null
+      operation_date: string | null
+    }[])
+    const bflTrack = bflTrackRows[0]
+    const trackAdvisor = bflTrack?.advisor?.trim() || null
+
+    const [strategyL3Rows, type6StrategyRows, nav_series, amacResolved] = await Promise.all([
       strategy_l3
         ? Promise.resolve([] as { l3: string | null }[])
         : query<{ l3: string | null }>(
@@ -271,57 +318,39 @@ export async function GET(
             `SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
             [routeBeianHao],
           ).catch(() => [] as { l3: string | null }[]),
-      query<{ operation_date: string | null }>(
-        `SELECT operation_date::text AS operation_date
-         FROM basicinfo_bfl_track
-         WHERE register_number = $1 OR record_key = $1
-         ORDER BY updated_at DESC NULLS LAST, id DESC
-         LIMIT 1`,
-        [routeBeianHao],
-      ).catch(() => [] as { operation_date: string | null }[]),
       loadDetailNavSeriesFast({
         beian_hao: routeBeianHao,
         product_name: productName,
         short_name: shortName,
         rawId,
         emailNameAliases,
+        listHeader,
       }),
-      loadManualTeamNavBatch([routeBeianHao]),
+      lookupAmacFundMetadata(routeBeianHao, {
+        managerHint: trackAdvisor || info.manager?.trim() || null,
+        registerCode: bflTrack?.register_code ?? null,
+      }),
     ])
 
     if (!strategy_l3) {
       strategy_l3 = strategyL3Rows[0]?.l3 ?? type6StrategyRows[0]?.l3 ?? null
     }
 
-    const bflTrack = bflTrackRows[0]
-    const trackAdvisor = bflTrack?.advisor?.trim() || null
-    const managerHint = trackAdvisor || info.manager?.trim() || null
-    const amacMeta = await lookupAmacFundMetadata(routeBeianHao, {
-      managerHint,
-      registerCode: bflTrack?.register_code ?? null,
-    })
-
-    const scale = bflTrack?.scale?.trim() || amacMeta?.mgmt_scale || null
+    const scale = bflTrack?.scale?.trim() || amacResolved?.mgmt_scale || null
     const manager_names = bflTrack?.manager_names ?? null
     const trackInception =
       bflTrack?.inception_date?.slice(0, 10) ??
-      amacMeta?.establish_date ??
+      amacResolved?.establish_date ??
       null
-    const trackOperationDate = opRows[0]?.operation_date?.slice(0, 10) ?? null
+    const trackOperationDate = bflTrack?.operation_date?.slice(0, 10) ?? null
 
-    const managedOverride =
-      lookupManagedProductOverride(routeBeianHao)
-      ?? lookupManagedProductOverride(productName)
-      ?? lookupManagedProductOverride(rawId)
-    const hasManualTeam = (manualTeamNavMap.get(routeBeianHao)?.length ?? 0) > 0
     const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
     const nav_data_source: "team" | "platform" =
-      managedOverride || hasManualTeam || hasSeed ? "team" : "platform"
+      managedOverride || hasSeed ? "team" : "platform"
 
     const first = nav_series[0]
     const latest = nav_series[nav_series.length - 1]
 
-    // Headline returns should follow the reinvested series, which matches the source system.
     const latestReinvestedNav = latest ? parseFloat(latest.cumulative_nav) : null
     const firstReinvestedNav = first ? parseFloat(first.cumulative_nav) : null
     const ret_since_inception =
@@ -376,19 +405,7 @@ export async function GET(
       if (annVol > 0) sharpe_since_inception = (ann_ret / annVol).toFixed(2)
     }
 
-    // Prefer list-cache period returns when info table has none (common for FOF底层).
-    const listHeader =
-      (!info.ret_1w && !info.ret_1m)
-        ? await lookupListCacheFundHeader(routeBeianHao)
-          ?? await lookupListCacheFundHeader(productName)
-        : null
-    const pctFromCache = (raw: string | null | undefined) => {
-      if (raw == null || raw === "") return null
-      const n = parseFloat(raw)
-      return Number.isFinite(n) ? (n * 100).toFixed(4) : null
-    }
-
-    return NextResponse.json({
+    const body = {
       partial: false,
       info: {
         ...info,
@@ -398,11 +415,11 @@ export async function GET(
         inception_date:
           info.inception_date?.slice(0, 10) ??
           trackInception ??
-          amacMeta?.establish_date ??
+          amacResolved?.establish_date ??
           null,
         operation_date: trackOperationDate,
-        manager: info.manager?.trim() || trackAdvisor || amacMeta?.manager_name || info.manager,
-        manager_registration_no: amacMeta?.registration_no ?? null,
+        manager: info.manager?.trim() || trackAdvisor || amacResolved?.manager_name || info.manager,
+        manager_registration_no: amacResolved?.registration_no ?? null,
         ret_1w: info.ret_1w ?? pctFromCache(listHeader?.ret_1w) ?? null,
         ret_1m: info.ret_1m ?? pctFromCache(listHeader?.ret_1m) ?? null,
         ret_3m: info.ret_3m ?? pctFromCache(listHeader?.ret_3m) ?? null,
@@ -424,7 +441,12 @@ export async function GET(
         max_drawdown: maxDrawdown > 0 ? (maxDrawdown * 100).toFixed(2) : null,
         sharpe_since_inception,
       },
-    })
+    }
+
+    rememberDetail(cacheKey, body)
+    if (routeBeianHao !== cacheKey) rememberDetail(routeBeianHao, body)
+
+    return NextResponse.json(body)
   } catch (err) {
     console.error("[private-funds/detail]", err)
     const message = err instanceof Error ? err.message : String(err)
