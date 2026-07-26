@@ -126,7 +126,7 @@ function resolvePeriodBaseFromHistory(
   for (const p of historyAsc) {
     if (p.nav_date >= navDate) break
     const baseNav = navForReturn(p)
-    if (baseNav == null || !isSameShareClassNavLevel(latestReturnNav, baseNav)) continue
+    if (baseNav == null || !isSameShareClassNavLevel(latestReturnNav, baseNav, periodDays)) continue
     const gap = calendarDaysBetween(navDate, p.nav_date)
     if (gap > periodDays * 2) continue
     if (isStalePeriodBase(navDate, p.nav_date, periodDays)) continue
@@ -298,13 +298,27 @@ export function isStalePeriodBase(navDate: string, baseDate: string | null | und
   return gap > periodDays + slack
 }
 
-/** Same share-class tier — excludes A/B jumps (~1.09 vs ~1.45). */
-export function isSameShareClassNavLevel(latestNav: number, baseNav: number): boolean {
+/**
+ * Same share-class / NAV-scale tier.
+ * Default ±15% rejects A/B jumps (~1.09 vs ~1.45) and unit-vs-复权 mixes.
+ * Short windows use a tighter band so a single contaminated base (~1.10 vs 0.97)
+ * cannot produce absurd 近一周收益 (e.g. 金舆基石一号 / SAVW72 −11.89%).
+ */
+export function isSameShareClassNavLevel(
+  latestNav: number,
+  baseNav: number,
+  periodDays?: number,
+): boolean {
   if (!Number.isFinite(latestNav) || !Number.isFinite(baseNav) || latestNav <= 0 || baseNav <= 0) {
     return false
   }
+  const maxRatio =
+    periodDays != null && periodDays <= 7 ? 1.06
+    : periodDays != null && periodDays <= 31 ? 1.10
+    : 1.15
+  const minRatio = 1 / maxRatio
   const ratio = baseNav / latestNav
-  return ratio >= 0.85 && ratio <= 1.15
+  return ratio >= minRatio && ratio <= maxRatio
 }
 
 export function addDays(isoDate: string, days: number): string {
@@ -1285,7 +1299,7 @@ export class BatchNavResolver {
     const primary = this.resolveAt(identity, targetDate)
     if (primary && !isStalePeriodBase(navDate, primary.nav_date, periodDays)) {
       const baseNav = navForReturn(primary)
-      if (baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav)) {
+      if (baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav, periodDays)) {
         return primary
       }
     }
@@ -1297,7 +1311,7 @@ export class BatchNavResolver {
 
     const sameClass = history.filter((p) => {
       const baseNav = navForReturn(p)
-      return baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav)
+      return baseNav != null && isSameShareClassNavLevel(latestReturnNav, baseNav, periodDays)
     })
     if (sameClass.length === 0) return null
 
@@ -1492,6 +1506,17 @@ function needsNavMetricsRecompute(row: TrackFundMetricsFields): boolean {
   if (nav > 2.5) return true
   const change = parseFloat(row.latest_price_change ?? "")
   if (Number.isFinite(change) && Math.abs(change) > 100) return true
+  // Contaminated period base (e.g. SAVW72 近一周 −11.89% with daily ~0.1%).
+  const ret1w = parseFloat(row.ret_1w ?? "")
+  if (Number.isFinite(ret1w) && Math.abs(ret1w) > 0.08) return true
+  if (
+    Number.isFinite(ret1w)
+    && Math.abs(ret1w) > 0.06
+    && Number.isFinite(change)
+    && Math.abs(change) < 0.02
+  ) {
+    return true
+  }
   return false
 }
 

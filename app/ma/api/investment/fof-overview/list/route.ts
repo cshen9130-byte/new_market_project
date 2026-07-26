@@ -16,6 +16,7 @@ import {
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { autoAddFofUnderlyingToTables } from "@/lib/server/fof-underlying-auto-add-pg"
 import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
+import { enrichTrackFundMetricsRows } from "@/lib/server/list-cache-nav-batch"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -325,8 +326,12 @@ export async function GET(req: Request) {
         [...params, pageSize, offset],
       )
 
+      const mapped = rows.map(mapRow)
+      const asOfDate = hasCutoff ? cutoffRaw : new Date().toISOString().slice(0, 10)
+      const data = await enrichTrackFundMetricsRows(mapped, asOfDate)
+
       return NextResponse.json({
-        data: rows.map(mapRow),
+        data,
         total,
         page,
         pageSize,

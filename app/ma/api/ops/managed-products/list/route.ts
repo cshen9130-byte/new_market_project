@@ -23,6 +23,10 @@ import {
   useManagedProductsListCache,
 } from "@/lib/server/managed-products-list-cache-pg"
 import { loadManagedProductPostSeedExtensions, loadManagedProductTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
+import {
+  loadEmailFundMetricsLookup,
+  resolveEmailFundMetrics,
+} from "@/lib/server/email-valuation-cache-enrich"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -206,6 +210,24 @@ function applyManagedRiskOverride(row: ManagedRow): ManagedRow {
   }
 }
 
+/** Fill empty list NAV from 估值表 metrics (same source as 托管账户余额 / 资产净值). */
+function applyValuationMetricsNavFallback(
+  row: ManagedRow,
+  metricsLookup: Awaited<ReturnType<typeof loadEmailFundMetricsLookup>>,
+): ManagedRow {
+  if (row.latest_nav != null && row.latest_nav_date != null) return row
+  const metrics = resolveEmailFundMetrics(row.product_name, row.beian_hao, metricsLookup)
+  if (metrics.unit_nav == null || !metrics.valuation_date) return row
+  return {
+    ...row,
+    latest_nav: String(metrics.unit_nav),
+    latest_nav_date: metrics.valuation_date,
+    valuation_date: row.valuation_date ?? metrics.valuation_date,
+    custody_balance: row.custody_balance ?? (metrics.custody_balance != null ? String(metrics.custody_balance) : null),
+    net_asset_value: row.net_asset_value ?? (metrics.net_asset_value != null ? String(metrics.net_asset_value) : null),
+  }
+}
+
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
@@ -228,12 +250,16 @@ export async function GET(req: Request) {
     const overrideItems = Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES).map(
       ([product_name, beian_hao]) => ({ product_name, beian_hao }),
     )
-    const [postSeedTeamNavByBeian, fullTeamNavByBeian] = await Promise.all([
+    const [postSeedTeamNavByBeian, fullTeamNavByBeian, metricsLookup] = await Promise.all([
       loadManagedProductPostSeedExtensions(overrideBeians),
       loadManagedProductTeamNavBatch(overrideItems),
+      loadEmailFundMetricsLookup(),
     ])
     const applyManagedNav = (row: ManagedRow) =>
-      applyManagedSeedNavOverride(row, asOfDate, postSeedTeamNavByBeian, fullTeamNavByBeian)
+      applyValuationMetricsNavFallback(
+        applyManagedSeedNavOverride(row, asOfDate, postSeedTeamNavByBeian, fullTeamNavByBeian),
+        metricsLookup,
+      )
 
     // ─── FAST PATH — plain 2-table join, no lateral scans ───────────────────
     if (useCache) {

@@ -292,6 +292,21 @@ export async function refreshManagedProductsListCache(
       }
     }
 
+    const emailMetrics = resolveEmailFundMetrics(
+      row.product_name,
+      beian || row.beian_hao,
+      emailFundMetrics,
+    )
+    // 估值表 metrics often land before email NAV backfill (金舆守安一号 / SBVC25).
+    if (
+      (unitNav == null || navDate == null)
+      && emailMetrics.unit_nav != null
+      && emailMetrics.valuation_date
+    ) {
+      unitNav = emailMetrics.unit_nav
+      navDate = emailMetrics.valuation_date
+    }
+
     const returns =
       unitNav != null && navDate
         ? navResolver.calcPeriodReturns(identity, unitNav, navDate)
@@ -329,7 +344,6 @@ export async function refreshManagedProductsListCache(
     const company_strategy_l1 = ops?.company_strategy_l1 ?? bflStrategy ?? null
     const platform_strategy_l1 = ops?.platform_strategy_l1 ?? null
     const team_tags = ops?.team_tags != null ? JSON.stringify(ops.team_tags) : null
-    const emailMetrics = resolveEmailFundMetrics(row.product_name, row.beian_hao, emailFundMetrics)
 
     placeholders.push(
       `($${pi}, $${pi + 1}, $${pi + 2}, $${pi + 3}, $${pi + 4}, $${pi + 5}, $${pi + 6}, $${pi + 7}, $${pi + 8}, $${pi + 9}, $${pi + 10}, $${pi + 11}, $${pi + 12}, $${pi + 13}, $${pi + 14}, $${pi + 15}, $${pi + 16}::jsonb, $${pi + 17}, $${pi + 18}, $${pi + 19}::date, NOW())`,
