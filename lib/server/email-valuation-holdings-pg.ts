@@ -184,10 +184,7 @@ const MIGRATE_SQL = `
 let tablesEnsured = false
 
 export async function ensureEmailValuationHoldingsTables(): Promise<void> {
-  if (tablesEnsured) {
-    await query(MIGRATE_INDEXES_SQL)
-    return
-  }
+  if (tablesEnsured) return
   await query(CREATE_HOLDINGS_SQL)
   await query(CREATE_LATEST_SQL)
   await query(MIGRATE_SQL)
@@ -532,6 +529,8 @@ export async function listFundLatestValuationHoldings(options?: {
   includeAnalysisOnly?: boolean
   limit?: number
   offset?: number
+  /** Skip COUNT(*) — use when caller only needs the page of rows. */
+  skipTotal?: boolean
 }): Promise<{ holdings: FundLatestHoldingRow[]; total: number }> {
   await ensureEmailValuationHoldingsTables()
 
@@ -559,12 +558,6 @@ export async function listFundLatestValuationHoldings(options?: {
   const limit = Math.min(options?.limit ?? 500, 2000)
   const offset = options?.offset ?? 0
 
-  const countRows = await query<{ count: string }>(
-    `SELECT COUNT(*)::text AS count FROM ops_email_valuation_fund_holdings_latest ${where}`,
-    params,
-  )
-  const total = parseInt(countRows[0]?.count ?? "0", 10)
-
   const holdings = await query<FundLatestHoldingRow>(
     `SELECT * FROM ops_email_valuation_fund_holdings_latest
      ${where}
@@ -572,6 +565,16 @@ export async function listFundLatestValuationHoldings(options?: {
      LIMIT $${idx++} OFFSET $${idx++}`,
     [...params, limit, offset],
   )
+
+  if (options?.skipTotal) {
+    return { holdings, total: holdings.length }
+  }
+
+  const countRows = await query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM ops_email_valuation_fund_holdings_latest ${where}`,
+    params,
+  )
+  const total = parseInt(countRows[0]?.count ?? "0", 10)
 
   return { holdings, total }
 }

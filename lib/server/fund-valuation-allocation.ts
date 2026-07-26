@@ -21,7 +21,6 @@ import type { ValuationRow } from "@/lib/server/valuation-analyzer"
 import { listFundMetricsLatest } from "@/lib/server/email-valuation-metrics-pg"
 import { resolveValuationCustodian, normalizeRegistrationCustodian } from "@/lib/server/email-valuation-custodian"
 import { fetchListedFundNavBatch } from "@/lib/server/listed-fund-eastmoney-nav"
-import { BatchNavResolver, type ProductNavIdentity } from "@/lib/server/list-cache-nav-batch"
 import {
   extractListedFundCodeFromName,
   isListedFundCode,
@@ -29,7 +28,8 @@ import {
   lookupFundCodeByProductName,
   resolveFundHoldingCode,
 } from "@/lib/server/fund-holding-code"
-import { resolveRouteFundId, lookupFundInfoFallback, resolveFundBeianHao } from "@/lib/server/fof-underlying-query"
+import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
+import { resolveRouteFundIdFast } from "@/lib/server/fund-detail-fast-path"
 import { loadFundLatestUnitNav, loadFundNavSeries, resolveFundNames } from "@/lib/server/fund-nav-series"
 import { sqlFundNameMatch } from "@/lib/server/fund-name-match"
 import { lookupManagedProductOverride, lookupManagedProductCustodian, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
@@ -1264,31 +1264,66 @@ async function loadEmailNavDetailsBatch(
   const sinceDate = asOfDate.slice(0, 10)
   const codes = [...new Set(beianCodes.map((c) => c.trim()).filter(Boolean))]
   if (codes.length > 0) {
-    const rows = await query<{ code: string; nav_date: string; nav: string; cumulative_nav: string | null }>(
-      `SELECT DISTINCT ON (BTRIM(product_code))
-         BTRIM(product_code) AS code,
-         nav_date::text AS nav_date,
-         nav::text AS nav,
-         cumulative_nav::text AS cumulative_nav
-       FROM ops_email_nav_records
-       WHERE BTRIM(product_code) = ANY($1::text[])
-         AND nav IS NOT NULL
-         AND nav_date <= $2::date
-       ORDER BY BTRIM(product_code), nav_date DESC, id DESC`,
+    // Two points per code → daily涨跌幅 without BatchNavResolver full history.
+    const rows = await query<{
+      code: string
+      nav_date: string
+      nav: string
+      cumulative_nav: string | null
+      rn: string
+    }>(
+      `WITH ranked AS (
+         SELECT
+           BTRIM(product_code) AS code,
+           nav_date::text AS nav_date,
+           nav::text AS nav,
+           cumulative_nav::text AS cumulative_nav,
+           ROW_NUMBER() OVER (
+             PARTITION BY BTRIM(product_code)
+             ORDER BY nav_date DESC, id DESC
+           ) AS rn
+         FROM ops_email_nav_records
+         WHERE BTRIM(product_code) = ANY($1::text[])
+           AND nav IS NOT NULL
+           AND nav_date <= $2::date
+       )
+       SELECT code, nav_date, nav, cumulative_nav, rn::text AS rn
+       FROM ranked
+       WHERE rn <= 2`,
       [codes, sinceDate],
     )
+    const pointsByCode = new Map<string, Array<{ navDate: string; unitNav: number; cumulativeNav: number | null }>>()
     for (const r of rows) {
       const unitNav = parsePlausibleNav(r.nav)
-      const cumulativeNav = parsePlausibleNav(r.cumulative_nav ?? "")
-      out.set(r.code, {
-        unitNav,
-        cumulativeNav: cumulativeNav ?? unitNav,
+      if (unitNav == null) continue
+      const list = pointsByCode.get(r.code) ?? []
+      list.push({
         navDate: r.nav_date.slice(0, 10),
+        unitNav,
+        cumulativeNav: parsePlausibleNav(r.cumulative_nav ?? ""),
+      })
+      pointsByCode.set(r.code, list)
+    }
+    for (const [code, points] of pointsByCode) {
+      const sorted = points.sort((a, b) => b.navDate.localeCompare(a.navDate))
+      const latest = sorted[0]
+      const prev = sorted[1]
+      let priceChangePct: number | null = null
+      if (prev && prev.unitNav > 0) {
+        priceChangePct = calcPriceChangePct(latest.unitNav / prev.unitNav - 1)
+      }
+      out.set(code, {
+        unitNav: latest.unitNav,
+        cumulativeNav: latest.cumulativeNav ?? latest.unitNav,
+        navDate: latest.navDate,
+        priceChangePct,
       })
     }
   }
 
+  // Name join is expensive (ILIKE/regexp); only for identities that lack a code hit.
   const names = [...new Set(productNames.map((n) => n.trim()).filter(Boolean))]
+    .filter((name) => !out.has(name))
   if (names.length > 0) {
     const rows = await query<{ product_name: string; nav_date: string; nav: string; cumulative_nav: string | null }>(
       `SELECT DISTINCT ON (n.name)
@@ -1377,53 +1412,92 @@ async function buildFundHoldings(
 
   if (fundRows.length === 0) return []
 
+  // Resolve missing product codes once per unique name (no per-row resolveFundBeianHao).
+  // Cap lookups — each name hits multiple fuzzy tables and can stack past statement_timeout.
   const nameCache = new Map<string, string | null>()
-  await Promise.all(
-    fundRows.map(async (row) => {
-      if (row.valuationCode) return
-      const listed = extractListedFundCodeFromName(row.fundName)
-      if (listed) {
-        row.valuationCode = listed
-        row.beianHao = listed
-        return
-      }
-      const cacheKey = row.fundName
-      if (!nameCache.has(cacheKey)) {
-        nameCache.set(cacheKey, await lookupFundCodeByProductName(cacheKey))
-      }
-      const lookedUp = nameCache.get(cacheKey)
-      if (lookedUp) {
-        row.valuationCode = lookedUp
-        row.beianHao = lookedUp
-      }
-    }),
-  )
+  const missingNames = [
+    ...new Set(
+      fundRows
+        .filter((row) => !row.valuationCode)
+        .map((row) => row.fundName)
+        .filter(Boolean),
+    ),
+  ].slice(0, 20)
+  const CODE_LOOKUP_CONCURRENCY = 4
+  for (let i = 0; i < missingNames.length; i += CODE_LOOKUP_CONCURRENCY) {
+    const chunk = missingNames.slice(i, i + CODE_LOOKUP_CONCURRENCY)
+    await Promise.all(
+      chunk.map(async (name) => {
+        const listed = extractListedFundCodeFromName(name)
+        if (listed) {
+          nameCache.set(name, listed)
+          return
+        }
+        nameCache.set(name, await lookupFundCodeByProductName(name))
+      }),
+    )
+  }
+  for (const row of fundRows) {
+    if (row.valuationCode) continue
+    const lookedUp = nameCache.get(row.fundName)
+    if (lookedUp) {
+      row.valuationCode = lookedUp
+      row.beianHao = lookedUp
+    }
+  }
 
   const asOfDate = valuationDate?.slice(0, 10) ?? new Date().toISOString().slice(0, 10)
   const beianCodes = fundRows.map((r) => r.beianHao).filter(Boolean) as string[]
-  const productNames = fundRows.map((r) => r.fundName)
 
-  const [strategyMap, emailNavMap, marketNavMap, resolvedBeians] = await Promise.all([
-    loadCompanyStrategyBatch(beianCodes, productNames),
-    loadEmailNavDetailsBatch(beianCodes, productNames, asOfDate),
+  // Code-first loads avoid fuzzy name joins over the whole underlying book.
+  const [strategyMap, emailNavMap, marketNavMap] = await Promise.all([
+    loadCompanyStrategyBatch(beianCodes, []),
+    loadEmailNavDetailsBatch(beianCodes, [], asOfDate),
     loadListedFundMarketNavBatch(beianCodes, asOfDate),
-    Promise.all(fundRows.map((row) => {
-      if (row.beianHao) return Promise.resolve(row.beianHao)
-      const listed = extractListedFundCodeFromName(row.fundName)
-      if (listed) return Promise.resolve(listed)
-      return resolveFundBeianHao(row.fundName)
-    })),
   ])
 
-  const navIdentities: ProductNavIdentity[] = fundRows.map((row, i) => ({
-    beian_hao: resolvedBeians[i] ?? row.beianHao ?? row.valuationCode,
-    product_name: row.fundName,
-    short_name: null,
-  }))
-  const navResolver = await BatchNavResolver.create(navIdentities, asOfDate)
+  // Cap fuzzy name joins — large FOF books time out on ILIKE/regexp joins.
+  const NAME_JOIN_CAP = 12
+  const namesNeedingStrategy = [
+    ...new Set(
+      fundRows
+        .filter((row) => {
+          const key = row.valuationCode ?? row.beianHao
+          return !(key && strategyMap.has(key))
+        })
+        .map((row) => row.fundName),
+    ),
+  ].slice(0, NAME_JOIN_CAP)
+  const namesNeedingNav = [
+    ...new Set(
+      fundRows
+        .filter((row) => {
+          const key = row.valuationCode ?? row.beianHao
+          return !(key && emailNavMap.has(key))
+        })
+        .map((row) => row.fundName),
+    ),
+  ].slice(0, NAME_JOIN_CAP)
+
+  if (namesNeedingStrategy.length > 0 || namesNeedingNav.length > 0) {
+    const [strategyByName, emailByName] = await Promise.all([
+      namesNeedingStrategy.length > 0
+        ? loadCompanyStrategyBatch([], namesNeedingStrategy)
+        : Promise.resolve(new Map()),
+      namesNeedingNav.length > 0
+        ? loadEmailNavDetailsBatch([], namesNeedingNav, asOfDate)
+        : Promise.resolve(new Map()),
+    ])
+    for (const [key, value] of strategyByName) {
+      if (!strategyMap.has(key)) strategyMap.set(key, value)
+    }
+    for (const [key, value] of emailByName) {
+      if (!emailNavMap.has(key)) emailNavMap.set(key, value)
+    }
+  }
 
   return fundRows.map((row, i) => {
-    const beianHao = resolvedBeians[i] ?? row.beianHao
+    const beianHao = row.beianHao ?? row.valuationCode
     const valuationCode = row.valuationCode ?? (isListedFundCode(beianHao) ? beianHao : null)
     const navKey = valuationCode ?? beianHao
     const emailNav = (navKey ? emailNavMap.get(navKey) : null)
@@ -1452,16 +1526,10 @@ async function buildFundHoldings(
     const suspensionInfo = extractSuspensionInfo(row.extra, hasOfficialNav)
 
     let priceChangePct: number | null = null
-    if (unitNav != null && navDate) {
-      priceChangePct = calcPriceChangePct(
-        navResolver.calcDailyReturnPct(navIdentities[i], unitNav, navDate, null),
-      )
-    }
-    if (priceChangePct == null && marketNav?.priceChangePct != null) {
-      priceChangePct = marketNav.priceChangePct
-    }
-    if (priceChangePct == null && officialNav && "priceChangePct" in officialNav && officialNav.priceChangePct != null) {
+    if (officialNav?.priceChangePct != null) {
       priceChangePct = officialNav.priceChangePct
+    } else if (marketNav?.priceChangePct != null) {
+      priceChangePct = marketNav.priceChangePct
     }
 
     const hasMarketPrice = row.price != null && row.price > 0
@@ -1759,7 +1827,7 @@ export async function getFundValuationAllocation(
     }
   }
 
-  const beian_hao = await resolveRouteFundId(rawBeianHao)
+  const beian_hao = await resolveRouteFundIdFast(rawBeianHao)
   const product_name = await resolveFundName(beian_hao)
 
   const candidateCodes = new Set<string>([beian_hao])
@@ -1768,7 +1836,7 @@ export async function getFundValuationAllocation(
   const override = lookupManagedProductOverride(beian_hao)
   if (override?.beian_hao) candidateCodes.add(override.beian_hao)
 
-  const fundMeta = await resolveFundMeta(beian_hao, product_name, { includeLatestNav: false })
+  const fundMetaPromise = resolveFundMeta(beian_hao, product_name, { includeLatestNav: false })
 
   let metrics: Awaited<ReturnType<typeof listFundMetricsLatest>>[number] | null = null
   let holdings: Awaited<ReturnType<typeof listFundLatestValuationHoldings>>["holdings"] = []
@@ -1776,40 +1844,53 @@ export async function getFundValuationAllocation(
   let matchedCode: string | null = null
   let matchedFundName: string | null = null
 
-  for (const code of candidateCodes) {
-    const m = (await listFundMetricsLatest({ productCode: code }))[0] ?? null
-    const h = (
-      await listFundLatestValuationHoldings({
-        productCode: code,
-        includeAnalysisOnly: false,
-        limit: 2000,
-      })
-    ).holdings
-    if (m || h.length > 0) {
-      metrics = m
-      holdings = h
-      match_method = "product_code"
-      matchedCode = code
-      matchedFundName = m?.fund_name ?? h[0]?.fund_name ?? null
-      break
-    }
+  const candidateHits = await Promise.all(
+    [...candidateCodes].map(async (code) => {
+      const [mRows, hResult] = await Promise.all([
+        listFundMetricsLatest({ productCode: code }),
+        listFundLatestValuationHoldings({
+          productCode: code,
+          includeAnalysisOnly: false,
+          limit: 2000,
+          skipTotal: true,
+        }),
+      ])
+      return {
+        code,
+        metrics: mRows[0] ?? null,
+        holdings: hResult.holdings,
+      }
+    }),
+  )
+  const codeHit = candidateHits.find((hit) => hit.metrics || hit.holdings.length > 0)
+  if (codeHit) {
+    metrics = codeHit.metrics
+    holdings = codeHit.holdings
+    match_method = "product_code"
+    matchedCode = codeHit.code
+    matchedFundName = codeHit.metrics?.fund_name ?? codeHit.holdings[0]?.fund_name ?? null
   }
 
   if (!metrics && holdings.length === 0 && product_name) {
-    metrics = (await listFundMetricsLatest({ fundName: product_name }))[0] ?? null
-    holdings = (
-      await listFundLatestValuationHoldings({
+    const [mRows, hResult] = await Promise.all([
+      listFundMetricsLatest({ fundName: product_name }),
+      listFundLatestValuationHoldings({
         fundName: product_name,
         includeAnalysisOnly: false,
         limit: 2000,
-      })
-    ).holdings
+        skipTotal: true,
+      }),
+    ])
+    metrics = mRows[0] ?? null
+    holdings = hResult.holdings
     if (metrics || holdings.length > 0) {
       match_method = "fund_name"
       matchedFundName = metrics?.fund_name ?? holdings[0]?.fund_name ?? product_name
       matchedCode = metrics?.product_code ?? holdings[0]?.product_code ?? null
     }
   }
+
+  const fundMeta = await fundMetaPromise
 
   const custody_balance = metrics ? parseNum(metrics.custody_balance) : 0
   const valuation_unit_nav = metrics ? parseNum(metrics.unit_nav) : 0
