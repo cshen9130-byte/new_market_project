@@ -3659,10 +3659,12 @@ def step_investment_pool_metrics() -> int:
     log.info("investment_pool_metrics: rebuilding managed / FOF / tracking list caches …")
     # --cache-only skips valuation JSONB backfills that exceed the 60-min timeout;
     # run full `email_nav_etl.ts --refresh-only` manually after deploy if needed.
+    # 90m budget: tracking list (~6k funds) + FOF overview still need headroom even
+    # after the cached 市值 / NAV-history fast path.
     result = run_node_script(
         "email_nav_etl.ts",
         extra_args=["--refresh-only", "--cache-only"],
-        timeout=1800,
+        timeout=5400,
     )
     if not result:
         raise RuntimeError("investment_pool_metrics: no result from email_nav_etl.ts")

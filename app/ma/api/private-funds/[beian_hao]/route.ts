@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
 import { tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
-import { loadEmailNavSeries, loadPrivateFundLegacyNavRows, mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, collectFundNameAliases } from "@/lib/server/email-nav-query"
-import { resolveRouteFundId, lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
+import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
-import { loadManagedProductNavSeed, mergeManagedProductDetailNav } from "@/lib/server/managed-product-nav-seed"
-import { loadManagedProductEmailPoints, loadManagedProductNavSeries, loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
-import { addDays } from "@/lib/server/list-cache-nav-batch"
-import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
+import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
+import { loadManualTeamNavBatch } from "@/lib/server/team-nav-manage-pg"
 import { lookupAmacFundMetadata } from "@/lib/server/amac-fund-metadata"
-import { applyFundNavCorrectionToLegacyRows, lookupFundNavCorrectionRule } from "@/lib/server/fund-nav-correction-rules"
+import {
+  buildDetailHeaderFromListCache,
+  loadDetailNavSeriesFast,
+  lookupListCacheFundHeader,
+  resolveRouteFundIdFast,
+} from "@/lib/server/fund-detail-fast-path"
 
 export const dynamic = "force-dynamic"
 
@@ -17,23 +19,96 @@ export const dynamic = "force-dynamic"
 // Below this, compounding amplifies short-window noise into misleading figures.
 const MIN_DAYS_FOR_ANNUALIZATION = 30
 
-function collectPriceDates(rows: Array<{ price_date: string }>, into: Set<string>) {
-  for (const row of rows) into.add(row.price_date)
+type InfoRow = {
+  beian_hao: string
+  product_name: string
+  short_name: string | null
+  strategy_l1: string | null
+  strategy_l2: string | null
+  strategy_l3: string | null
+  manager: string
+  inception_date: string | null
+  benchmark: string | null
+  ret_1w: string | null
+  ret_1m: string | null
+  ret_3m: string | null
+  ret_6m: string | null
+  ret_1y: string | null
+  sharpe_1y: string | null
+  calmar_1y: string | null
 }
 
-function resolveNavDataSource(
-  latestDate: string | undefined,
-  teamNavDates: Set<string>,
-  usesManagedTeamSeries: boolean,
-): "team" | "platform" {
-  if (usesManagedTeamSeries) return "team"
-  if (latestDate && teamNavDates.has(latestDate)) return "team"
-  return "platform"
+async function loadTrackingInfoFallback(beian_hao: string): Promise<InfoRow | undefined> {
+  try {
+    const rows = await query<{
+      register_number: string
+      fund_name: string
+      short_name: string | null
+      company_strategy_one: string | null
+      company_strategy_two: string | null
+      company_strategy_three: string | null
+    }>(
+      `SELECT register_number, fund_name, fund_short_name AS short_name,
+              company_strategy_one, company_strategy_two, company_strategy_three
+       FROM type6_ops_team_full
+       WHERE register_number = $1
+       LIMIT 1`,
+      [beian_hao],
+    )
+    if (rows[0]) {
+      return {
+        beian_hao: rows[0].register_number,
+        product_name: rows[0].short_name ?? rows[0].fund_name,
+        short_name: rows[0].fund_name,
+        strategy_l1: rows[0].company_strategy_one,
+        strategy_l2: rows[0].company_strategy_two,
+        strategy_l3: rows[0].company_strategy_three,
+        manager: "",
+        inception_date: null,
+        benchmark: null,
+        ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
+        sharpe_1y: null, calmar_1y: null,
+      }
+    }
+  } catch { /* table may not exist */ }
+
+  const poolTables = [
+    { table: "tracking_pool", nameCol: "product_name", idCol: "register_number" },
+    { table: "selected_pool", nameCol: "product_name", idCol: "register_number" },
+    { table: "core_pool", nameCol: "product_name", idCol: "register_number" },
+    { table: "hy_tracking_pool", nameCol: "product_name", idCol: "register_number" },
+    { table: "fof_mom_tracking", nameCol: "product_name", idCol: "register_number" },
+    { table: "user_custom_pool", nameCol: "product_name", idCol: "register_number" },
+  ]
+  for (const p of poolTables) {
+    try {
+      const rows = await query<{ product_name: string }>(
+        `SELECT ${p.nameCol} AS product_name FROM ${p.table} WHERE ${p.idCol} = $1 LIMIT 1`,
+        [beian_hao],
+      )
+      if (rows[0]) {
+        return {
+          beian_hao,
+          product_name: rows[0].product_name,
+          short_name: null,
+          strategy_l1: null,
+          strategy_l2: null,
+          strategy_l3: null,
+          manager: "",
+          inception_date: null,
+          benchmark: null,
+          ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
+          sharpe_1y: null, calmar_1y: null,
+        }
+      }
+    } catch { /* table may not exist */ }
+  }
+  return undefined
 }
 
 export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ beian_hao: string }> }
+  req: Request,
+  { params }: { params: Promise<{ beian_hao: string }> },
 ) {
   try {
     const { beian_hao: rawParam } = await params
@@ -44,477 +119,312 @@ export async function GET(
         return rawParam.trim()
       }
     })()
-    const beian_hao = await resolveRouteFundId(rawId)
 
-  const infoRows = await query<{
-    beian_hao:      string
-    product_name:   string
-    short_name:     string | null
-    strategy_l1:    string | null
-    strategy_l2:    string | null
-    strategy_l3:    string | null
-    manager:        string
-    inception_date: string | null
-    benchmark:      string | null
-    ret_1w:         string | null
-    ret_1m:         string | null
-    ret_3m:         string | null
-    ret_6m:         string | null
-    ret_1y:         string | null
-    sharpe_1y:      string | null
-    calmar_1y:      string | null
-  }>(
-    `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, NULL::text AS strategy_l3, manager,
-            inception_date::text AS inception_date, benchmark,
-            ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
-            sharpe_1y::text, calmar_1y::text
-     FROM private_fund_info WHERE beian_hao = $1`,
-    [beian_hao]
-  )
+    const phase = new URL(req.url).searchParams.get("phase")
 
-  const bflRows = infoRows[0]
-    ? []
-    : await query<{
-        beian_hao:      string
-        product_name:   string
-        short_name:     string | null
-        strategy_l1:    string | null
-        strategy_l2:    string | null
-        strategy_l3:    string | null
-        manager:        string
-        inception_date: string | null
-        benchmark:      string | null
-        ret_1w:         string | null
-        ret_1m:         string | null
-        ret_3m:         string | null
-        ret_6m:         string | null
-        ret_1y:         string | null
-        sharpe_1y:      string | null
-        calmar_1y:      string | null
-      }>(
-        `SELECT beian_hao, product_name, short_name,
-                strategy_one AS strategy_l1,
-                strategy_two AS strategy_l2,
-                strategy_three AS strategy_l3,
-                ''::text     AS manager,
-                NULL::text   AS inception_date,
-                NULL::text   AS benchmark,
-                NULL::text   AS ret_1w,
-                NULL::text   AS ret_1m,
-                NULL::text   AS ret_3m,
-                NULL::text   AS ret_6m,
-                NULL::text   AS ret_1y,
-                NULL::text   AS sharpe_1y,
-                NULL::text   AS calmar_1y
-         FROM private_fund_info_bfl
-         WHERE beian_hao = $1`,
-        [beian_hao]
-      )
-
-  // Fallback: look for fund in tracking pool tables (type6_ops_team_full or register_number pools)
-  type InfoRowShape = typeof infoRows[0]
-  const trackingRow: InfoRowShape | undefined = (infoRows[0] || bflRows[0])
-    ? undefined
-    : await (async () => {
-        // Try type6_ops_team_full first (has most metadata)
-        try {
-          const rows = await query<{ register_number: string; fund_name: string; short_name: string | null; company_strategy_one: string | null; company_strategy_two: string | null; company_strategy_three: string | null }>(
-            `SELECT register_number, fund_name, fund_short_name AS short_name,
-                    company_strategy_one, company_strategy_two, company_strategy_three
-             FROM type6_ops_team_full
-             WHERE register_number = $1
-             LIMIT 1`,
-            [beian_hao]
-          )
-          if (rows[0]) {
-            return {
-              beian_hao:      rows[0].register_number,
-              product_name:   rows[0].short_name ?? rows[0].fund_name,
-              short_name:     rows[0].fund_name,
-              strategy_l1:    rows[0].company_strategy_one,
-              strategy_l2:    rows[0].company_strategy_two,
-              strategy_l3:    rows[0].company_strategy_three,
-              manager:        "",
-              inception_date: null,
-              benchmark:      null,
-              ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
-              sharpe_1y: null, calmar_1y: null,
-            } as InfoRowShape
-          }
-        } catch { /* table may not exist */ }
-
-        // Try generic pool tables
-        const poolTables = [
-          { table: "tracking_pool",   nameCol: "product_name", idCol: "register_number" },
-          { table: "selected_pool",   nameCol: "product_name", idCol: "register_number" },
-          { table: "core_pool",       nameCol: "product_name", idCol: "register_number" },
-          { table: "hy_tracking_pool",nameCol: "product_name", idCol: "register_number" },
-          { table: "fof_mom_tracking",nameCol: "product_name", idCol: "register_number" },
-          { table: "user_custom_pool",nameCol: "product_name", idCol: "register_number" },
-        ]
-        for (const p of poolTables) {
-          try {
-            const rows = await query<{ product_name: string }>(
-              `SELECT ${p.nameCol} AS product_name FROM ${p.table} WHERE ${p.idCol} = $1 LIMIT 1`,
-              [beian_hao]
-            )
-            if (rows[0]) {
-              return {
-                beian_hao,
-                product_name: rows[0].product_name,
-                short_name:   null,
-                strategy_l1:  null,
-                strategy_l2:  null,
-                strategy_l3:  null,
-                manager:      "",
-                inception_date: null, benchmark: null,
-                ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
-                sharpe_1y: null, calmar_1y: null,
-              } as InfoRowShape
-            }
-          } catch { /* table may not exist */ }
-        }
-        return undefined
-      })()
-
-  let info = infoRows[0] ?? bflRows[0] ?? trackingRow
-  const managedRouteOverride =
-    lookupManagedProductOverride(rawId)
-    ?? lookupManagedProductOverride(beian_hao)
-  if (managedRouteOverride) {
-    const overrideInfo = await lookupFundInfoFallback(managedRouteOverride.beian_hao)
-    if (overrideInfo) info = overrideInfo
-  } else if (!info) {
-    info =
-      (await lookupFundInfoFallback(beian_hao))
-      ?? (rawId !== beian_hao ? await lookupFundInfoFallback(rawId) : null)
-  }
-  if (!info) {
-    const ownerUserId = String(_req.headers.get("x-market-user-id") || "").trim() || undefined
-    const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
-      ?? (rawId !== beian_hao ? tryGetCustomFundPrivateDetail(beian_hao, ownerUserId) : null)
-    if (customDetail) return NextResponse.json(customDetail)
-    return NextResponse.json({ error: "Fund not found" }, { status: 404 })
-  }
-
-  const routeBeianHao = info.beian_hao || beian_hao
-
-  // Fetch strategy_l3 from various sources (column may not exist in all tables — use try-catch)
-  let strategy_l3: string | null = (info as Record<string, unknown>).strategy_l3 as string | null ?? null
-  if (!strategy_l3) {
-    for (const [sql, params] of [
-      [`SELECT strategy_three::text AS l3 FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`, [routeBeianHao]],
-      [`SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`, [routeBeianHao]],
-    ] as [string, string[]][]) {
-      try {
-        const rows = await query<{ l3: string | null }>(sql, params)
-        if (rows[0]?.l3) { strategy_l3 = rows[0].l3; break }
-      } catch { /* column may not exist */ }
+    // Instant paint path: serve name / latest NAV / period returns from list caches.
+    if (phase === "header") {
+      const cached = await lookupListCacheFundHeader(rawId)
+      if (cached) {
+        return NextResponse.json(buildDetailHeaderFromListCache(rawId, cached))
+      }
+      return NextResponse.json({ error: "Header cache miss", partial: true }, { status: 404 })
     }
-  }
 
-  const productName = info.product_name ?? ""
-  let shortName = info.short_name ?? ""
+    // Prefer cached / direct 备案号 so FOF底层 clicks skip fuzzy name joins.
+    const beian_hao = await resolveRouteFundIdFast(rawId)
 
-  const bflNameRows = await query<{ product_name: string; short_name: string | null }>(
-    `SELECT product_name, short_name FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
-    [routeBeianHao],
-  ).catch(() => [] as { product_name: string; short_name: string | null }[])
-
-  const emailNameAliases = [
-    bflNameRows[0]?.product_name,
-    bflNameRows[0]?.short_name,
-    info.product_name,
-    info.short_name,
-  ]
-  if (!shortName && bflNameRows[0]?.short_name) {
-    shortName = bflNameRows[0].short_name
-  }
-
-  const fundNavContext = {
-    beian_hao: routeBeianHao,
-    product_name: productName,
-    short_name: shortName || null,
-  }
-
-  const bflTrackRows = await query<{
-    scale: string | null
-    manager_names: string | null
-    advisor: string | null
-    register_code: string | null
-    inception_date: string | null
-  }>(
-    `SELECT scale, manager_names, advisor, register_code,
-            inception_date::text AS inception_date
-     FROM basicinfo_bfl_track
-     WHERE register_number = $1 OR record_key = $1
-     ORDER BY updated_at DESC NULLS LAST, id DESC
-     LIMIT 1`,
-    [routeBeianHao]
-  ).catch(() => [] as {
-    scale: string | null
-    manager_names: string | null
-    advisor: string | null
-    register_code: string | null
-    inception_date: string | null
-  }[])
-
-  let trackOperationDate: string | null = null
-  try {
-    const opRows = await query<{ operation_date: string | null }>(
-      `SELECT operation_date::text AS operation_date
-       FROM basicinfo_bfl_track
-       WHERE register_number = $1 OR record_key = $1
-       ORDER BY updated_at DESC NULLS LAST, id DESC
-       LIMIT 1`,
-      [routeBeianHao],
+    const infoRows = await query<InfoRow>(
+      `SELECT beian_hao, product_name, NULL::text AS short_name, strategy_l1, strategy_l2, NULL::text AS strategy_l3, manager,
+              inception_date::text AS inception_date, benchmark,
+              ret_1w::text, ret_1m::text, ret_3m::text, ret_6m::text, ret_1y::text,
+              sharpe_1y::text, calmar_1y::text
+       FROM private_fund_info WHERE beian_hao = $1`,
+      [beian_hao],
     )
-    trackOperationDate = opRows[0]?.operation_date?.slice(0, 10) ?? null
-  } catch {
-    // operation_date column may not exist until migration 013 is applied
-  }
 
-  const bflTrack = bflTrackRows[0]
-  const trackAdvisor = bflTrack?.advisor?.trim() || null
-  const managerHint = trackAdvisor || info.manager?.trim() || null
-  const amacMeta = await lookupAmacFundMetadata(routeBeianHao, {
-    managerHint,
-    registerCode: bflTrack?.register_code ?? null,
-  })
-
-  const scale = bflTrack?.scale?.trim() || amacMeta?.mgmt_scale || null
-  const manager_names = bflTrack?.manager_names ?? null
-  const trackInception =
-    bflTrack?.inception_date?.slice(0, 10) ??
-    amacMeta?.establish_date ??
-    null
-
-  let navRows: {
-    price_date: string
-    nav: string
-    cumulative_nav: string
-    cum_nav_withdrawal: string
-    price_change: string
-  }[] = []
-  const valuationSinceDate = trackInception ?? addDays(new Date().toISOString().slice(0, 10), 400)
-  const valuationFallbackPromise = loadFundValuationNavFallbackSeries(
-    routeBeianHao,
-    productName,
-    shortName || null,
-    {
-      sinceDate: valuationSinceDate,
-      extraBeianCodes: [...new Set([rawId, beian_hao, routeBeianHao].filter(Boolean))],
-      extraNames: collectFundNameAliases(productName, shortName || null, emailNameAliases),
-    },
-  )
-
-  try {
-    navRows = await loadPrivateFundLegacyNavRows(routeBeianHao, productName, shortName || "")
-  } catch (err) {
-    console.error("[private-funds/detail] legacy nav query failed:", err)
-  }
-
-  let emailNavRows: Awaited<ReturnType<typeof loadEmailNavSeries>> = []
-  try {
-    emailNavRows = await loadEmailNavSeries(routeBeianHao, productName, shortName || null, emailNameAliases)
-  } catch (err) {
-    console.error("[private-funds/detail] email nav query failed:", err)
-  }
-
-  const teamNavDates = new Set<string>()
-  collectPriceDates(emailNavRows, teamNavDates)
-  let usesManagedTeamSeries = false
-
-  const managedOverride =
-    lookupManagedProductOverride(routeBeianHao)
-    ?? lookupManagedProductOverride(productName)
-    ?? lookupManagedProductOverride(rawId)
-
-  const manualTeamNavMap = await loadManualTeamNavBatch([routeBeianHao])
-  const effectiveManagedOverride =
-    managedOverride
-    ?? ((manualTeamNavMap.get(routeBeianHao)?.length ?? 0) > 0
-      ? { beian_hao: routeBeianHao, product_name: productName }
-      : null)
-
-  let nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows, fundNavContext)
-  const navCorrectionRule = lookupFundNavCorrectionRule(routeBeianHao, productName, shortName || null)
-  if (!navCorrectionRule?.preserve_high_nav_scale && effectiveManagedOverride) {
-    try {
-      const [teamEmailPoints, teamSeries, seedRows] = await Promise.all([
-        loadManagedProductEmailPoints({
-          beian_hao: effectiveManagedOverride.beian_hao,
-          product_name: effectiveManagedOverride.product_name,
-          short_name: shortName || null,
-          extraNames: emailNameAliases,
-        }),
-        loadManagedProductNavSeries({
-          beian_hao: effectiveManagedOverride.beian_hao,
-          product_name: effectiveManagedOverride.product_name,
-          short_name: shortName || null,
-          extraNames: emailNameAliases,
-        }),
-        Promise.resolve(loadManagedProductNavSeed(effectiveManagedOverride.beian_hao)),
-      ])
-      collectPriceDates(seedRows, teamNavDates)
-      if (seedRows.length > 0) {
-        usesManagedTeamSeries = true
-        collectPriceDates(teamEmailPoints.map((row) => ({ price_date: row.price_date })), teamNavDates)
-        const legacyNoType6 = await loadPrivateFundLegacyNavRows(
-          routeBeianHao,
-          productName,
-          shortName,
-          { excludeType6: true },
+    const bflRows = infoRows[0]
+      ? []
+      : await query<InfoRow>(
+          `SELECT beian_hao, product_name, short_name,
+                  strategy_one AS strategy_l1,
+                  strategy_two AS strategy_l2,
+                  strategy_three AS strategy_l3,
+                  ''::text     AS manager,
+                  NULL::text   AS inception_date,
+                  NULL::text   AS benchmark,
+                  NULL::text   AS ret_1w,
+                  NULL::text   AS ret_1m,
+                  NULL::text   AS ret_3m,
+                  NULL::text   AS ret_6m,
+                  NULL::text   AS ret_1y,
+                  NULL::text   AS sharpe_1y,
+                  NULL::text   AS calmar_1y
+           FROM private_fund_info_bfl
+           WHERE beian_hao = $1`,
+          [beian_hao],
         )
-        nav_series = mergeManagedProductDetailNav(seedRows, teamEmailPoints, legacyNoType6)
-      } else if (teamSeries.length > 0) {
-        usesManagedTeamSeries = true
-        collectPriceDates(teamSeries, teamNavDates)
-        const legacyNoType6 = await loadPrivateFundLegacyNavRows(
-          routeBeianHao,
-          productName,
-          shortName,
-          { excludeType6: true },
-        )
-        const firstTeamDate = teamSeries[0]?.price_date ?? ""
-        const seedBackfill = seedRows.filter((row) => !firstTeamDate || row.price_date < firstTeamDate)
-        let base = mergeNavSeriesWithEmail(legacyNoType6, [], fundNavContext)
-        if (seedBackfill.length > 0) {
-          base = mergeLegacyWithTeamNav(base, seedBackfill, fundNavContext)
+
+    const trackingRow = (infoRows[0] || bflRows[0])
+      ? undefined
+      : await loadTrackingInfoFallback(beian_hao)
+
+    let info: InfoRow | null | undefined = infoRows[0] ?? bflRows[0] ?? trackingRow
+    const managedRouteOverride =
+      lookupManagedProductOverride(rawId)
+      ?? lookupManagedProductOverride(beian_hao)
+    if (managedRouteOverride) {
+      const overrideInfo = await lookupFundInfoFallback(managedRouteOverride.beian_hao)
+      if (overrideInfo) info = overrideInfo
+    } else if (!info) {
+      info =
+        (await lookupFundInfoFallback(beian_hao))
+        ?? (rawId !== beian_hao ? await lookupFundInfoFallback(rawId) : null)
+    }
+    if (!info) {
+      // Last resort: list-cache identity (FOF底层 row with no private_fund_info).
+      const cached = await lookupListCacheFundHeader(rawId)
+        ?? (rawId !== beian_hao ? await lookupListCacheFundHeader(beian_hao) : null)
+      if (cached) {
+        info = {
+          beian_hao: cached.beian_hao ?? beian_hao,
+          product_name: cached.product_name,
+          short_name: cached.short_name,
+          strategy_l1: cached.company_strategy_l1 ?? cached.platform_strategy_l1,
+          strategy_l2: null,
+          strategy_l3: null,
+          manager: "",
+          inception_date: null,
+          benchmark: null,
+          ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null,
+          sharpe_1y: cached.sharpe_1y,
+          calmar_1y: cached.calmar_1y,
         }
-        nav_series = mergeLegacyWithTeamNav(base, teamSeries, fundNavContext)
-      } else {
-        const legacyNoType6 = await loadPrivateFundLegacyNavRows(
-          routeBeianHao,
-          productName,
-          shortName,
-          { excludeType6: true },
-        )
-        nav_series = mergeNavSeriesWithEmail(legacyNoType6, emailNavRows, fundNavContext)
       }
-    } catch (err) {
-      console.error("[private-funds/detail] managed product nav query failed:", err)
     }
-  } else if (emailNavRows.length > 0) {
-    nav_series = mergeNavSeriesWithEmail(navRows, emailNavRows, fundNavContext)
-  } else {
-    const seedRows = loadManagedProductNavSeed(routeBeianHao)
-    if (seedRows.length > 0) {
-      collectPriceDates(seedRows, teamNavDates)
-      nav_series = mergeNavSeriesWithEmail(seedRows, [], fundNavContext)
+    if (!info) {
+      const ownerUserId = String(req.headers.get("x-market-user-id") || "").trim() || undefined
+      const customDetail = tryGetCustomFundPrivateDetail(rawId, ownerUserId)
+        ?? (rawId !== beian_hao ? tryGetCustomFundPrivateDetail(beian_hao, ownerUserId) : null)
+      if (customDetail) return NextResponse.json(customDetail)
+      return NextResponse.json({ error: "Fund not found" }, { status: 404 })
     }
-  }
 
-  // Custody-only funds (估值表 but no 净值表) — same fallback as FOF底层 list cache.
-  if (nav_series.length === 0) {
-    try {
-      const fallbackPoints = await valuationFallbackPromise
-      if (fallbackPoints.length > 0) {
-        nav_series = mergeNavSeriesWithEmail([], fallbackPoints, fundNavContext)
+    const routeBeianHao = info.beian_hao || beian_hao
+    const productName = info.product_name ?? ""
+    let shortName = info.short_name ?? ""
+    let strategy_l3: string | null = info.strategy_l3 ?? null
+
+    const bflNameRows = await query<{ product_name: string; short_name: string | null }>(
+      `SELECT product_name, short_name FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
+      [routeBeianHao],
+    ).catch(() => [] as { product_name: string; short_name: string | null }[])
+    if (!shortName && bflNameRows[0]?.short_name) {
+      shortName = bflNameRows[0].short_name
+    }
+    const emailNameAliases = [
+      bflNameRows[0]?.product_name,
+      bflNameRows[0]?.short_name,
+      info.product_name,
+      info.short_name,
+    ]
+
+    // Parallel metadata + NAV series (shared merge + BatchNavResolver valuation fallback).
+    const [
+      bflTrackRows,
+      strategyL3Rows,
+      type6StrategyRows,
+      opRows,
+      nav_series,
+      manualTeamNavMap,
+    ] = await Promise.all([
+      query<{
+        scale: string | null
+        manager_names: string | null
+        advisor: string | null
+        register_code: string | null
+        inception_date: string | null
+      }>(
+        `SELECT scale, manager_names, advisor, register_code,
+                inception_date::text AS inception_date
+         FROM basicinfo_bfl_track
+         WHERE register_number = $1 OR record_key = $1
+         ORDER BY updated_at DESC NULLS LAST, id DESC
+         LIMIT 1`,
+        [routeBeianHao],
+      ).catch(() => [] as {
+        scale: string | null
+        manager_names: string | null
+        advisor: string | null
+        register_code: string | null
+        inception_date: string | null
+      }[]),
+      strategy_l3
+        ? Promise.resolve([] as { l3: string | null }[])
+        : query<{ l3: string | null }>(
+            `SELECT strategy_three::text AS l3 FROM private_fund_info_bfl WHERE beian_hao = $1 LIMIT 1`,
+            [routeBeianHao],
+          ).catch(() => [] as { l3: string | null }[]),
+      strategy_l3
+        ? Promise.resolve([] as { l3: string | null }[])
+        : query<{ l3: string | null }>(
+            `SELECT company_strategy_three::text AS l3 FROM type6_ops_team_full WHERE register_number = $1 LIMIT 1`,
+            [routeBeianHao],
+          ).catch(() => [] as { l3: string | null }[]),
+      query<{ operation_date: string | null }>(
+        `SELECT operation_date::text AS operation_date
+         FROM basicinfo_bfl_track
+         WHERE register_number = $1 OR record_key = $1
+         ORDER BY updated_at DESC NULLS LAST, id DESC
+         LIMIT 1`,
+        [routeBeianHao],
+      ).catch(() => [] as { operation_date: string | null }[]),
+      loadDetailNavSeriesFast({
+        beian_hao: routeBeianHao,
+        product_name: productName,
+        short_name: shortName,
+        rawId,
+        emailNameAliases,
+      }),
+      loadManualTeamNavBatch([routeBeianHao]),
+    ])
+
+    if (!strategy_l3) {
+      strategy_l3 = strategyL3Rows[0]?.l3 ?? type6StrategyRows[0]?.l3 ?? null
+    }
+
+    const bflTrack = bflTrackRows[0]
+    const trackAdvisor = bflTrack?.advisor?.trim() || null
+    const managerHint = trackAdvisor || info.manager?.trim() || null
+    const amacMeta = await lookupAmacFundMetadata(routeBeianHao, {
+      managerHint,
+      registerCode: bflTrack?.register_code ?? null,
+    })
+
+    const scale = bflTrack?.scale?.trim() || amacMeta?.mgmt_scale || null
+    const manager_names = bflTrack?.manager_names ?? null
+    const trackInception =
+      bflTrack?.inception_date?.slice(0, 10) ??
+      amacMeta?.establish_date ??
+      null
+    const trackOperationDate = opRows[0]?.operation_date?.slice(0, 10) ?? null
+
+    const managedOverride =
+      lookupManagedProductOverride(routeBeianHao)
+      ?? lookupManagedProductOverride(productName)
+      ?? lookupManagedProductOverride(rawId)
+    const hasManualTeam = (manualTeamNavMap.get(routeBeianHao)?.length ?? 0) > 0
+    const hasSeed = loadManagedProductNavSeed(routeBeianHao).length > 0
+    const nav_data_source: "team" | "platform" =
+      managedOverride || hasManualTeam || hasSeed ? "team" : "platform"
+
+    const first = nav_series[0]
+    const latest = nav_series[nav_series.length - 1]
+
+    // Headline returns should follow the reinvested series, which matches the source system.
+    const latestReinvestedNav = latest ? parseFloat(latest.cumulative_nav) : null
+    const firstReinvestedNav = first ? parseFloat(first.cumulative_nav) : null
+    const ret_since_inception =
+      latestReinvestedNav !== null && firstReinvestedNav !== null && firstReinvestedNav > 0
+        ? latestReinvestedNav / firstReinvestedNav - 1
+        : null
+
+    const inceptionDate = first ? new Date(first.price_date) : null
+    const latestDate = latest ? new Date(latest.price_date) : null
+    const days =
+      inceptionDate && latestDate
+        ? (latestDate.getTime() - inceptionDate.getTime()) / 86_400_000
+        : null
+
+    const ann_ret =
+      ret_since_inception !== null && days && days >= MIN_DAYS_FOR_ANNUALIZATION
+        ? Math.pow(1 + ret_since_inception, 365 / days) - 1
+        : null
+
+    const yearPrefix = latest ? latest.price_date.slice(0, 4) + "-01-01" : null
+    const ytdBase = yearPrefix
+      ? [...nav_series].reverse().find((r) => r.price_date < yearPrefix)
+        ?? nav_series.find((r) => r.price_date >= yearPrefix)
+        ?? null
+      : null
+    const ytd_ret =
+      ytdBase && latest
+        ? parseFloat(latest.cumulative_nav) / parseFloat(ytdBase.cumulative_nav) - 1
+        : null
+
+    let peak = -Infinity
+    let maxDrawdown = 0
+    const dailyReturns: number[] = []
+    for (let i = 0; i < nav_series.length; i++) {
+      const v = parseFloat(nav_series[i].cumulative_nav)
+      if (v > peak) peak = v
+      const dd = peak > 0 ? (peak - v) / peak : 0
+      if (dd > maxDrawdown) maxDrawdown = dd
+      if (i > 0) {
+        const prev = parseFloat(nav_series[i - 1].cumulative_nav)
+        if (prev > 0) dailyReturns.push(v / prev - 1)
       }
-    } catch (err) {
-      console.error("[private-funds/detail] valuation nav fallback failed:", err)
     }
-  }
 
-  nav_series = applyFundNavCorrectionToLegacyRows(nav_series, fundNavContext)
-
-  const first = nav_series[0]
-  const latest = nav_series[nav_series.length - 1]
-  const nav_data_source = resolveNavDataSource(latest?.price_date, teamNavDates, usesManagedTeamSeries)
-
-  // Headline returns should follow the reinvested series, which matches the source system.
-  const latestReinvestedNav = latest ? parseFloat(latest.cumulative_nav) : null
-  const firstReinvestedNav = first ? parseFloat(first.cumulative_nav) : null
-  const ret_since_inception =
-    latestReinvestedNav !== null && firstReinvestedNav !== null && firstReinvestedNav > 0
-      ? latestReinvestedNav / firstReinvestedNav - 1
-      : null
-
-  // Days since inception
-  const inceptionDate = first  ? new Date(first.price_date)  : null
-  const latestDate    = latest ? new Date(latest.price_date) : null
-  const days =
-    inceptionDate && latestDate
-      ? (latestDate.getTime() - inceptionDate.getTime()) / 86_400_000
-      : null
-
-  // Annualized since inception — require at least a month of history; compounding a
-  // multi-day return out to 365 days otherwise produces wildly misleading figures
-  // (e.g. a -1% move over 4 days would annualize to -60%). Matches the >= 20-point
-  // floor used for the 1-year Sharpe/Calmar elsewhere (list-cache-nav-batch.ts).
-  const ann_ret =
-    ret_since_inception !== null && days && days >= MIN_DAYS_FOR_ANNUALIZATION
-      ? Math.pow(1 + ret_since_inception, 365 / days) - 1
-      : null
-
-  // YTD return: use the last value before year start when available, otherwise the
-  // first value inside the year. This matches common fund-reporting conventions.
-  const yearPrefix = latest ? latest.price_date.slice(0, 4) + "-01-01" : null
-  const ytdBase = yearPrefix
-    ? [...nav_series].reverse().find((r) => r.price_date < yearPrefix) ?? nav_series.find((r) => r.price_date >= yearPrefix) ?? null
-    : null
-  const ytd_ret =
-    ytdBase && latest
-      ? parseFloat(latest.cumulative_nav) / parseFloat(ytdBase.cumulative_nav) - 1
-      : null
-
-  // Max drawdown + daily returns for Sharpe (from cumulative_nav reinvested series)
-  let peak = -Infinity
-  let maxDrawdown = 0
-  const dailyReturns: number[] = []
-  for (let i = 0; i < nav_series.length; i++) {
-    const v = parseFloat(nav_series[i].cumulative_nav)
-    if (v > peak) peak = v
-    const dd = peak > 0 ? (peak - v) / peak : 0
-    if (dd > maxDrawdown) maxDrawdown = dd
-    if (i > 0) {
-      const prev = parseFloat(nav_series[i - 1].cumulative_nav)
-      if (prev > 0) dailyReturns.push(v / prev - 1)
+    let sharpe_since_inception: string | null = null
+    if (ann_ret !== null && dailyReturns.length > 1 && days && days >= MIN_DAYS_FOR_ANNUALIZATION) {
+      const totalYears = days / 365
+      const recordsPerYear = dailyReturns.length / totalYears
+      const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
+      const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length
+      const annVol = Math.sqrt(variance) * Math.sqrt(recordsPerYear)
+      if (annVol > 0) sharpe_since_inception = (ann_ret / annVol).toFixed(2)
     }
-  }
 
-  // Since-inception Sharpe = annualised return / annualised volatility (rf = 0)
-  // Use actual records-per-year so weekly/daily funds both annualise correctly
-  let sharpe_since_inception: string | null = null
-  if (ann_ret !== null && dailyReturns.length > 1 && days && days >= MIN_DAYS_FOR_ANNUALIZATION) {
-    const totalYears = days / 365
-    const recordsPerYear = dailyReturns.length / totalYears
-    const mean = dailyReturns.reduce((s, r) => s + r, 0) / dailyReturns.length
-    const variance = dailyReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyReturns.length
-    const annVol = Math.sqrt(variance) * Math.sqrt(recordsPerYear)
-    if (annVol > 0) sharpe_since_inception = (ann_ret / annVol).toFixed(2)
-  }
+    // Prefer list-cache period returns when info table has none (common for FOF底层).
+    const listHeader =
+      (!info.ret_1w && !info.ret_1m)
+        ? await lookupListCacheFundHeader(routeBeianHao)
+          ?? await lookupListCacheFundHeader(productName)
+        : null
+    const pctFromCache = (raw: string | null | undefined) => {
+      if (raw == null || raw === "") return null
+      const n = parseFloat(raw)
+      return Number.isFinite(n) ? (n * 100).toFixed(4) : null
+    }
 
-  return NextResponse.json({
-    info: {
-      ...info,
-      strategy_l3,
-      scale,
-      manager_names,
-      inception_date:
-        info.inception_date?.slice(0, 10) ??
-        trackInception ??
-        amacMeta?.establish_date ??
-        null,
-      operation_date: trackOperationDate,
-      manager: info.manager?.trim() || trackAdvisor || amacMeta?.manager_name || info.manager,
-      manager_registration_no: amacMeta?.registration_no ?? null,
-    },
-    nav_series,
-    nav_data_source,
-    metrics: {
-      latest_nav:                latest?.nav              ?? null,
-      latest_nav_date:           latest?.price_date       ?? null,
-      latest_cum_nav:            latest?.cum_nav_withdrawal ?? null,
-      latest_cum_nav_reinvested: latest?.cumulative_nav   ?? null,
-      ret_since_inception: ret_since_inception !== null ? (ret_since_inception * 100).toFixed(2) : null,
-      ann_ret:             ann_ret             !== null ? (ann_ret             * 100).toFixed(2) : null,
-      ytd_ret:             ytd_ret             !== null ? (ytd_ret             * 100).toFixed(2) : null,
-      max_drawdown:        maxDrawdown > 0               ? (maxDrawdown        * 100).toFixed(2) : null,
-      sharpe_since_inception,
-    },
-  })
+    return NextResponse.json({
+      partial: false,
+      info: {
+        ...info,
+        strategy_l3,
+        scale,
+        manager_names,
+        inception_date:
+          info.inception_date?.slice(0, 10) ??
+          trackInception ??
+          amacMeta?.establish_date ??
+          null,
+        operation_date: trackOperationDate,
+        manager: info.manager?.trim() || trackAdvisor || amacMeta?.manager_name || info.manager,
+        manager_registration_no: amacMeta?.registration_no ?? null,
+        ret_1w: info.ret_1w ?? pctFromCache(listHeader?.ret_1w) ?? null,
+        ret_1m: info.ret_1m ?? pctFromCache(listHeader?.ret_1m) ?? null,
+        ret_3m: info.ret_3m ?? pctFromCache(listHeader?.ret_3m) ?? null,
+        ret_6m: info.ret_6m ?? pctFromCache(listHeader?.ret_6m) ?? null,
+        ret_1y: info.ret_1y ?? pctFromCache(listHeader?.ret_1y) ?? null,
+        sharpe_1y: info.sharpe_1y ?? listHeader?.sharpe_1y ?? null,
+        calmar_1y: info.calmar_1y ?? listHeader?.calmar_1y ?? null,
+      },
+      nav_series,
+      nav_data_source,
+      metrics: {
+        latest_nav: latest?.nav ?? null,
+        latest_nav_date: latest?.price_date ?? null,
+        latest_cum_nav: latest?.cum_nav_withdrawal ?? null,
+        latest_cum_nav_reinvested: latest?.cumulative_nav ?? null,
+        ret_since_inception: ret_since_inception !== null ? (ret_since_inception * 100).toFixed(2) : null,
+        ann_ret: ann_ret !== null ? (ann_ret * 100).toFixed(2) : null,
+        ytd_ret: ytd_ret !== null ? (ytd_ret * 100).toFixed(2) : null,
+        max_drawdown: maxDrawdown > 0 ? (maxDrawdown * 100).toFixed(2) : null,
+        sharpe_since_inception,
+      },
+    })
   } catch (err) {
     console.error("[private-funds/detail]", err)
     const message = err instanceof Error ? err.message : String(err)

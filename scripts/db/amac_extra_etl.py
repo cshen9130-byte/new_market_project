@@ -60,6 +60,7 @@ from amac_extra_db import (  # noqa: E402
     UPSERT_MANAGER_DETAILS,
     UPSERT_MANAGERS,
     UPSERT_PERSON_ORG,
+    dedupe_tuples,
     executive_csv_row_to_tuple,
     executive_resume_csv_row_to_tuple,
     manager_csv_row_to_tuple,
@@ -211,7 +212,9 @@ def _upsert_managers(session, cur, execute_values, *, page_size: int, delay: flo
             print(f"  AMAC managers total={total:,}")
 
         batch = [manager_csv_row_to_tuple(row) for row in rows]
-        batch = [t for t in batch if t]
+        # AMAC list pages occasionally repeat registration_no within one response;
+        # Postgres rejects ON CONFLICT when the same key appears twice in VALUES.
+        batch = dedupe_tuples([t for t in batch if t], lambda r: r[3])
         if batch:
             execute_values(cur, UPSERT_MANAGERS, batch, page_size=1000)
             upserted += len(batch)
@@ -252,7 +255,7 @@ def _upsert_person_org(session, cur, execute_values, *, page_size: int, delay: f
             print(f"  AMAC person-org stats total={total:,}")
 
         batch = [person_org_csv_row_to_tuple(row) for row in rows]
-        batch = [t for t in batch if t]
+        batch = dedupe_tuples([t for t in batch if t], lambda r: r[0])
         if batch:
             execute_values(cur, UPSERT_PERSON_ORG, batch, page_size=1000)
             upserted += len(batch)
@@ -366,17 +369,35 @@ def _upsert_manager_details(
     def flush() -> None:
         nonlocal details_fetched, executives_upserted, resumes_upserted
         if detail_batch:
-            execute_values(cur, UPSERT_MANAGER_DETAILS, detail_batch, page_size=500)
-            details_fetched += len(detail_batch)
+            details = dedupe_tuples(detail_batch, lambda r: r[0])
+            execute_values(cur, UPSERT_MANAGER_DETAILS, details, page_size=500)
+            details_fetched += len(details)
             detail_batch.clear()
         if exec_batch:
-            execute_values(cur, UPSERT_EXECUTIVES, exec_batch, page_size=500)
-            executives_upserted += len(exec_batch)
+            execs = dedupe_tuples(exec_batch, lambda r: (r[0], r[2], r[3]))
+            execute_values(cur, UPSERT_EXECUTIVES, execs, page_size=500)
+            executives_upserted += len(execs)
             exec_batch.clear()
         if resume_batch:
-            execute_values(cur, UPSERT_EXECUTIVE_RESUME, resume_batch, page_size=500)
-            resumes_upserted += len(resume_batch)
+            resumes = dedupe_tuples(
+                resume_batch,
+                lambda r: (r[0], r[2], r[3], r[4], r[5], r[6], r[7]),
+            )
+            execute_values(cur, UPSERT_EXECUTIVE_RESUME, resumes, page_size=500)
+            resumes_upserted += len(resumes)
             resume_batch.clear()
+
+    # Same registration_no twice in one flush also trips ON CONFLICT.
+    seen_detail_regs: set[str] = set()
+    unique_targets: list[dict] = []
+    for mgr in targets:
+        reg = str(mgr.get("登记编号") or "").strip()
+        if reg and reg in seen_detail_regs:
+            continue
+        if reg:
+            seen_detail_regs.add(reg)
+        unique_targets.append(mgr)
+    targets = unique_targets
 
     for idx, mgr in enumerate(targets, start=1):
         url = mgr.get("详情链接", "")

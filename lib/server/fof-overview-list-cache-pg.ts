@@ -11,7 +11,7 @@ import {
   FOF_UNDERLYING_BEIAN_EXPR,
   fofUnderlyingShortExpr,
 } from "@/lib/server/fof-underlying-query"
-import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingMarketValueMapFromCache, loadManagedUnderlyingValuationNavLookup, loadManagedUnderlyingNavHistory, loadManagedUnderlyingNavHistoryIncremental, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
+import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingMarketValueMapFromCache, loadManagedUnderlyingValuationNavLookup, loadManagedUnderlyingNavHistoryIncremental, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
 import {
   addDays,
@@ -207,10 +207,17 @@ export async function refreshFofOverviewListCache(
       return { ...r, beian_hao, short_name }
     })
 
+  // Prefer the cache-backed 市值 map whenever the overview cache is warm. The full
+  // buildFofUnderlyingSummaryFrom path re-derives 备案号 via 250k-row fuzzy joins and
+  // was the main reason nightly investment_pool_metrics hit the 30-minute timeout.
   logProgress("loading managed 市值 map…", t0)
-  const managedMarketById = reuseIdentities
-    ? await loadManagedUnderlyingMarketValueMapFromCache()
-    : await loadManagedUnderlyingMarketValueMap()
+  let managedMarketById =
+    cachedBeian.size > 0
+      ? await loadManagedUnderlyingMarketValueMapFromCache()
+      : new Map<string, number>()
+  if (managedMarketById.size === 0) {
+    managedMarketById = await loadManagedUnderlyingMarketValueMap()
+  }
   logProgress(`managed 市值 map loaded (${managedMarketById.size} ids)`, t0)
 
   logProgress("loading latest 估值表 NAV lookup…", t0)
@@ -231,18 +238,16 @@ export async function refreshFofOverviewListCache(
     product_name: p.product_name,
     beian_hao: p.beian_hao,
   }))
+  // Incremental history (persisted series + short delta) is correct for nightly too once
+  // the history table is seeded; it falls back to a full scan automatically when empty.
   logProgress(
-    reuseIdentities
-      ? `loading 估值表 NAV history (cached series + recent delta) since ${valuationNavSince}…`
-      : `loading 估值表 NAV history since ${valuationNavSince}…`,
+    `loading 估值表 NAV history (cached series + recent delta) since ${valuationNavSince}…`,
     t0,
   )
-  const valuationNavHistory = reuseIdentities
-    ? await loadManagedUnderlyingNavHistoryIncremental(valuationNavSince, historyTargets)
-    : await loadManagedUnderlyingNavHistory(valuationNavSince, {
-      skipSymbolBackfill: true,
-      targets: historyTargets,
-    })
+  const valuationNavHistory = await loadManagedUnderlyingNavHistoryIncremental(
+    valuationNavSince,
+    historyTargets,
+  )
   logProgress(
     `估值表 NAV history loaded (codes=${valuationNavHistory.byCode.size}, names=${valuationNavHistory.byName.size})`,
     t0,

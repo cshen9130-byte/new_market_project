@@ -254,6 +254,8 @@ interface Metrics {
 
 interface DetailData {
   is_custom_fund?: boolean
+  /** True while serving list-cache header before full NAV series arrives. */
+  partial?: boolean
   info:       FundInfo
   nav_series: NavRow[]
   metrics:    Metrics
@@ -835,6 +837,7 @@ export default function PrivateFundDetailPage() {
 
   const [data, setData]       = useState<DetailData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [seriesLoading, setSeriesLoading] = useState(false)
   const [error, setError]     = useState<string | null>(null)
 
   const [peerMonthly, setPeerMonthly] = useState<PeerMonthlyRow[]>([])
@@ -1038,28 +1041,73 @@ export default function PrivateFundDetailPage() {
 
   useEffect(() => {
     if (!beian_hao) return
+    let cancelled = false
     setLoading(true)
+    setSeriesLoading(true)
     setError(null)
     setPeerMonthly([])
-    fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`, { headers: userFetchHeaders() })
+    setData(null)
+
+    const headers = userFetchHeaders()
+    const detailUrl = `/ma/api/private-funds/${encodeURIComponent(beian_hao)}`
+
+    // Phase 1: list-cache header (name / latest NAV / period returns) for instant paint.
+    const headerPromise = fetch(`${detailUrl}?phase=header`, { headers })
+      .then(async (r) => {
+        if (!r.ok) return null
+        return r.json() as Promise<DetailData>
+      })
+      .catch(() => null)
+
+    void headerPromise.then((header) => {
+      if (cancelled || !header?.info) return
+      setData((prev) => {
+        // Don't clobber a full response that won the race.
+        if (prev && prev.partial === false) return prev
+        if (prev && !prev.partial && (prev.nav_series?.length ?? 0) > 0) return prev
+        return header
+      })
+      setLoading(false)
+    })
+
+    // Phase 2: full detail with NAV series + refined metrics.
+    fetch(detailUrl, { headers })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         return r.json() as Promise<DetailData>
       })
-      .then(setData)
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
+      .then((full) => {
+        if (cancelled) return
+        setData(full)
+        setError(null)
+      })
+      .catch(async (e: Error) => {
+        if (cancelled) return
+        const header = await headerPromise
+        // Keep partial header visible if the series request fails.
+        if (!header?.info) setError(e.message)
+      })
+      .finally(() => {
+        if (cancelled) return
+        setLoading(false)
+        setSeriesLoading(false)
+      })
+
     loadFundMeta(beian_hao)
     fetch("/ma/api/ops/team-tags?category=fund")
       .then((r) => r.json())
       .then((d) => Array.isArray(d) ? setAvailTeamTags(d.map((t: { name: string }) => t.name)) : null)
       .catch(() => {})
     refreshTrackedIds()
+
+    return () => {
+      cancelled = true
+    }
   }, [beian_hao])
 
   const reloadFundDetail = useCallback(() => {
     if (!beian_hao) return
-    setLoading(true)
+    setSeriesLoading(true)
     fetch(`/ma/api/private-funds/${encodeURIComponent(beian_hao)}`, { headers: userFetchHeaders() })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
@@ -1067,7 +1115,7 @@ export default function PrivateFundDetailPage() {
       })
       .then(setData)
       .catch((e) => setError(e.message))
-      .finally(() => setLoading(false))
+      .finally(() => setSeriesLoading(false))
   }, [beian_hao])
 
   // Fetch peer monthly stats once the main fund data (and its resolved strategy) is available
@@ -2182,6 +2230,13 @@ export default function PrivateFundDetailPage() {
       <>
       {/* ── Chart + Table side by side ─────────────────── */}
       <div className="flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
+      {seriesLoading && activeChartData.length <= 1 && (
+        <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
+          <div className="text-sm font-semibold text-zinc-800 mb-2">净值走势</div>
+          <div className="flex-1 rounded-lg bg-zinc-100 animate-pulse" />
+          <p className="text-center text-xs text-zinc-400 mt-3">加载净值曲线…</p>
+        </div>
+      )}
       {activeChartData.length > 1 && (
         <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
           <div ref={navChartCaptureRef} className="flex flex-col flex-1 min-h-0">

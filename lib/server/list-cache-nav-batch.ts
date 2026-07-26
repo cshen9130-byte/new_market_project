@@ -25,7 +25,7 @@ import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed
 import {
   shareClassProductCodesMatch,
   sqlEmailNavShareClassGuard,
-  sqlFundNameMatch,
+  sqlFundNameBase,
 } from "@/lib/server/fund-name-match"
 import { fofUnderlyingNavLookupKeys } from "@/lib/server/fund-holding-code"
 import {
@@ -365,14 +365,27 @@ async function loadEmailProductCodesForNames(names: string[]): Promise<string[]>
   const validNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
   if (validNames.length === 0) return []
 
+  // Prefer indexed equality (btrim / name-base) over the full fuzzy ILIKE join.
+  // The reverse-prefix ILIKE path cannot use btree indexes and was hanging nightly
+  // investment_pool_metrics when tracking (~6k names) hit ops_email_nav_records.
   const rows = await query<{ code: string }>(
-    `SELECT DISTINCT BTRIM(e.product_code) AS code
-     FROM unnest($1::text[]) AS n(name)
-     JOIN ops_email_nav_records e ON (
-       NULLIF(BTRIM(e.product_code), '') IS NOT NULL
-       AND ${sqlFundNameMatch("e.fund_name", "n.name")}
-       AND ${sqlEmailNavShareClassGuard("e.fund_name", "n.name", "e.product_code")}
-     )`,
+    `WITH names AS (
+       SELECT BTRIM(name) AS name
+       FROM unnest($1::text[]) AS t(name)
+       WHERE BTRIM(name) <> ''
+     ),
+     name_bases AS (
+       SELECT DISTINCT ${sqlFundNameBase("name")} AS base
+       FROM names
+       WHERE ${sqlFundNameBase("name")} IS NOT NULL
+     )
+     SELECT DISTINCT BTRIM(e.product_code) AS code
+     FROM ops_email_nav_records e
+     WHERE NULLIF(BTRIM(e.product_code), '') IS NOT NULL
+       AND (
+         BTRIM(e.fund_name) IN (SELECT name FROM names)
+         OR ${sqlFundNameBase("e.fund_name")} IN (SELECT base FROM name_bases)
+       )`,
     [validNames],
   )
   return rows.map((r) => r.code.trim()).filter(Boolean)
@@ -490,24 +503,28 @@ async function loadEmailNavByNameBatch(
   const validNames = [...new Set(names.map((n) => n.trim()).filter(Boolean))]
   if (validNames.length === 0) return out
 
+  // Indexed equality / name-base match only. The prior reverse-prefix ILIKE join
+  // against ops_email_nav_records cannot use btree indexes and hung tracking rebuilds.
   const rows = await queryUnbounded<EmailNavBatchRow & { matched_name: string }>(
-    `SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav,
+    `WITH names AS (
+       SELECT BTRIM(name) AS name, ${sqlFundNameBase("name")} AS base
+       FROM unnest($1::text[]) AS t(name)
+       WHERE BTRIM(name) <> ''
+     )
+     SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav,
             e.cumulative_nav::text, e.source,
             COALESCE(e.subject, '') AS subject, e.product_code, e.fund_name, e.attachment_filename,
             COALESCE(BTRIM(e.product_code), '') AS code
-     FROM unnest($1::text[]) AS n(name)
+     FROM names n
      JOIN ops_email_nav_records e ON (
        e.nav IS NOT NULL
        AND e.nav_date >= $2::date
        AND (
-         ${sqlFundNameMatch("e.fund_name", "n.name")}
+         BTRIM(e.fund_name) = n.name
          OR (
-           BTRIM(COALESCE(e.product_code, '')) <> ''
-           AND (
-             COALESCE(e.subject, '') ILIKE '%' || BTRIM(e.product_code) || '%'
-             OR COALESCE(e.attachment_filename, '') ILIKE '%' || BTRIM(e.product_code) || '%'
-           )
-           AND ${sqlFundNameMatch("e.subject", "n.name")}
+           n.base IS NOT NULL
+           AND ${sqlFundNameBase("e.fund_name")} IS NOT NULL
+           AND ${sqlFundNameBase("e.fund_name")} = n.base
          )
        )
        AND ${sqlEmailNavShareClassGuard("e.fund_name", "n.name", "e.product_code")}
@@ -960,7 +977,17 @@ export class BatchNavResolver {
         products.flatMap((p) => [p.product_name, (p.short_name ?? "").trim()].filter(Boolean)),
       ),
     ]
-    const emailCodes = await loadEmailProductCodesForNames(names)
+    // Only reverse-lookup email product_codes for identities that lack a 备案号.
+    // Tracking/FOF nightly rebuilds already carry beian for nearly every row; skipping
+    // the name→code join there is what keeps investment_pool_metrics under the timeout.
+    const namesNeedingCodeLookup = [
+      ...new Set(
+        products
+          .filter((p) => !(p.beian_hao ?? "").trim())
+          .flatMap((p) => [p.product_name, (p.short_name ?? "").trim()].filter(Boolean)),
+      ),
+    ]
+    const emailCodes = await loadEmailProductCodesForNames(namesNeedingCodeLookup)
     const beians = expandBeiansWithParentCodes([
       ...products.map((p) => (p.beian_hao ?? "").trim()).filter(Boolean),
       ...emailCodes,
