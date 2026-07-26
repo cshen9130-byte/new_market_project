@@ -13,6 +13,7 @@ import {
 import {
   addDays,
   BatchNavResolver,
+  calcPeriodReturnsFromHistory,
   chunkedInsert,
   clampPgNumeric,
   computeOneYearRiskMetrics,
@@ -23,6 +24,7 @@ import {
 } from "@/lib/server/list-cache-nav-batch"
 import { resolveManagedProductBeian, lookupManagedProductOverride, MANAGED_PRODUCT_BEIAN_OVERRIDES } from "@/lib/server/managed-product-beian"
 import {
+  buildManagedProductListNavHistory,
   computeManagedProductOneYearRiskMetrics,
   isPlausibleRiskRatio,
   resolveManagedProductListNavAt,
@@ -307,10 +309,25 @@ export async function refreshManagedProductsListCache(
       navDate = emailMetrics.valuation_date
     }
 
-    const returns =
+    let returns =
       unitNav != null && navDate
         ? navResolver.calcPeriodReturns(identity, unitNav, navDate)
         : { ret_1w: null, ret_1m: null, ret_3m: null, ret_6m: null, ret_1y: null }
+
+    // Prefer the same team/seed unit series used for list NAV (avoids contaminated
+    // email/legacy merges, e.g. 金舆基石一号 近一周 −11.89% vs max DD −6.35%).
+    if (unitNav != null && navDate) {
+      const listHistory = buildManagedProductListNavHistory(
+        beian || managedOverride?.beian_hao || "",
+        managedOverride
+          ? (postSeedByBeian.get(managedOverride.beian_hao) ?? [])
+          : [],
+        fullTeamByBeian.get(beian || managedOverride?.beian_hao || "") ?? [],
+      )
+      if (listHistory.length >= 2) {
+        returns = calcPeriodReturnsFromHistory(listHistory, unitNav, navDate)
+      }
+    }
 
     let sharpe_1y: number | null = null
     let calmar_1y: number | null = null

@@ -1265,24 +1265,7 @@ export class BatchNavResolver {
     const latestPoint =
       historyAsc.filter((p) => p.nav_date <= navDate).at(-1)
       ?? this.resolveAt(identity, navDate)
-    const latestReturnNav = navForReturn(latestPoint, unitNav)
-    const out = {} as Record<(typeof RETURN_OFFSETS)[number]["key"], number | null>
-    if (latestReturnNav == null) {
-      for (const { key } of RETURN_OFFSETS) out[key] = null
-      return out
-    }
-    for (const { key, days } of RETURN_OFFSETS) {
-      const base = resolvePeriodBaseFromHistory(
-        historyAsc,
-        navDate,
-        days,
-        latestReturnNav,
-      )
-      let ret = calcReturn(latestReturnNav, navForReturn(base))
-      ret = capPeriodReturnByDrawdown(ret, historyAsc, navDate, days)
-      out[key] = ret
-    }
-    return out
+    return calcPeriodReturnsFromHistory(historyAsc, unitNav, navDate, latestPoint)
   }
 
   /**
@@ -1407,6 +1390,37 @@ export class BatchNavResolver {
       short_name: short || null,
     })
   }
+}
+
+/** Period returns from a pre-built ascending NAV history (team/seed series for 在管产品). */
+export function calcPeriodReturnsFromHistory(
+  historyAsc: NavPoint[],
+  unitNav: number,
+  navDate: string,
+  latestPoint?: NavPoint | null,
+): Record<(typeof RETURN_OFFSETS)[number]["key"], number | null> {
+  const latest =
+    latestPoint
+    ?? historyAsc.filter((p) => p.nav_date <= navDate).at(-1)
+    ?? null
+  const latestReturnNav = navForReturn(latest, unitNav)
+  const out = {} as Record<(typeof RETURN_OFFSETS)[number]["key"], number | null>
+  if (latestReturnNav == null) {
+    for (const { key } of RETURN_OFFSETS) out[key] = null
+    return out
+  }
+  for (const { key, days } of RETURN_OFFSETS) {
+    const base = resolvePeriodBaseFromHistory(
+      historyAsc,
+      navDate,
+      days,
+      latestReturnNav,
+    )
+    let ret = calcReturn(latestReturnNav, navForReturn(base))
+    ret = capPeriodReturnByDrawdown(ret, historyAsc, navDate, days)
+    out[key] = ret
+  }
+  return out
 }
 
 export type OpsStrategyRow = {

@@ -93,6 +93,44 @@ export function resolveTeamSeriesListNavAt(
   return { nav: best.nav, nav_date: best.nav_date, prev_nav: prev }
 }
 
+/**
+ * Unit-NAV history used for 在管产品 list period returns — same series as list latest NAV
+ * (seed through last verified date, then team/email extensions; or full team series when no seed).
+ */
+export function buildManagedProductListNavHistory(
+  beianHao: string,
+  postSeedTeamNav: Array<{ nav_date: string; unit_nav: string }> = [],
+  fullTeamNav: Array<{ nav_date: string; unit_nav: string }> = [],
+): NavHistoryPoint[] {
+  const seed = loadManagedProductNavSeed(beianHao)
+  const byDate = new Map<string, NavHistoryPoint>()
+
+  if (seed.length > 0) {
+    const seedLatest = seed[seed.length - 1].price_date
+    for (const row of seed) {
+      const nav = parseFloat(row.nav)
+      if (!Number.isFinite(nav) || nav <= 0) continue
+      byDate.set(row.price_date.slice(0, 10), { nav_date: row.price_date.slice(0, 10), nav })
+    }
+    for (const row of postSeedTeamNav) {
+      const nav_date = row.nav_date.slice(0, 10)
+      if (nav_date <= seedLatest) continue
+      const nav = parseFloat(row.unit_nav)
+      if (!Number.isFinite(nav) || nav <= 0) continue
+      byDate.set(nav_date, { nav_date, nav })
+    }
+  } else {
+    for (const row of fullTeamNav) {
+      const nav_date = row.nav_date.slice(0, 10)
+      const nav = parseFloat(row.unit_nav)
+      if (!Number.isFinite(nav) || nav <= 0) continue
+      byDate.set(nav_date, { nav_date, nav })
+    }
+  }
+
+  return [...byDate.values()].sort((a, b) => a.nav_date.localeCompare(b.nav_date))
+}
+
 /** Latest NAV on or before asOfDate — seed through its last date, then team/manual extensions. */
 export function resolveManagedProductListNavAt(
   beianHao: string,

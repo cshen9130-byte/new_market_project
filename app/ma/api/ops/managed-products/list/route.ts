@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server"
 import { resolveManagedProductBeian, lookupManagedProductOverride, MANAGED_PRODUCT_BEIAN_OVERRIDES } from "@/lib/server/managed-product-beian"
 import {
+  buildManagedProductListNavHistory,
   computeManagedProductOneYearRiskMetrics,
   resolveManagedProductListNavAt,
   resolveTeamSeriesListNavAt,
 } from "@/lib/server/managed-product-nav-seed"
+import { calcPeriodReturnsFromHistory } from "@/lib/server/list-cache-nav-batch"
 import { query, fmtIso } from "@/lib/db"
 import { sanitizeRiskMetricText } from "@/lib/fund-nav-metrics"
 import {
@@ -167,11 +169,13 @@ function applyManagedSeedNavOverride(
   const beian_hao = resolveManagedProductBeian(row.product_name, row.beian_hao)
   if (!override) return { ...row, beian_hao }
 
+  const postSeed = postSeedTeamNavByBeian.get(override.beian_hao) ?? []
+  const fullTeam = fullTeamNavByBeian.get(override.beian_hao) ?? []
   const listPoint = resolveManagedOverrideListNav(
     override.beian_hao,
     asOfDate,
-    postSeedTeamNavByBeian.get(override.beian_hao) ?? [],
-    fullTeamNavByBeian.get(override.beian_hao) ?? [],
+    postSeed,
+    fullTeam,
   )
   if (!listPoint) return { ...row, beian_hao }
 
@@ -184,6 +188,15 @@ function applyManagedSeedNavOverride(
     }
   }
 
+  // Period returns must use the same team/seed series as list NAV — not the
+  // contaminated BatchNavResolver merge that produced SAVW72 近一周 −11.89%.
+  const history = buildManagedProductListNavHistory(override.beian_hao, postSeed, fullTeam)
+  const period =
+    Number.isFinite(unitNav) && history.length > 0
+      ? calcPeriodReturnsFromHistory(history, unitNav, listPoint.nav_date)
+      : null
+  const fmtRet = (v: number | null | undefined) => (v != null ? String(v) : null)
+
   return {
     ...row,
     beian_hao,
@@ -191,6 +204,15 @@ function applyManagedSeedNavOverride(
     latest_nav_date: listPoint.nav_date,
     latest_price_change,
     nav_is_team: true,
+    ...(period
+      ? {
+          ret_1w: fmtRet(period.ret_1w),
+          ret_1m: fmtRet(period.ret_1m),
+          ret_3m: fmtRet(period.ret_3m),
+          ret_6m: fmtRet(period.ret_6m),
+          ret_1y: fmtRet(period.ret_1y),
+        }
+      : {}),
   }
 }
 
