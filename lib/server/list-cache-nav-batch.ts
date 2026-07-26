@@ -1179,7 +1179,6 @@ export class BatchNavResolver {
     if (seedPoint && seedLatest && beforeDate <= seedLatest) {
       return seedPoint
     }
-    if (emailPoint) return this.withLegacyReturnNav(identity, emailPoint)
 
     const type6 =
       (beian ? navAtOrBefore(this.type6ByBeian.get(beian), beforeDate) : null) ??
@@ -1193,21 +1192,26 @@ export class BatchNavResolver {
 
     const valuation = this.valuationAt(identity, beforeDate)
 
-    // FOF underlyings often have stale 平台 legacy NAV while parent 估值表 holdings are fresher.
-    // Pick the newest plausible date among type6 / legacy / valuation (email still wins above).
-    const nonEmailCandidates = [type6, legacy, valuation].filter(
-      (p): p is NavPoint => p != null && isPlausibleEmailUnitNav(p.nav),
-    )
-    if (nonEmailCandidates.length > 0) {
-      const sourceRank = (p: NavPoint) => (p === type6 ? 3 : p === legacy ? 2 : 1)
-      nonEmailCandidates.sort((a, b) => {
-        const byDate = b.nav_date.localeCompare(a.nav_date)
-        return byDate !== 0 ? byDate : sourceRank(b) - sourceRank(a)
+    // Newest plausible date wins across email / type6 / legacy / 估值表.
+    // Same-date tie-break: email > type6 > legacy > valuation (email has better unit/cum).
+    // Fresher FOF 估值表 holdings (e.g. 百奕小天鹅 7/23) therefore beat older email (7/22).
+    const ranked: Array<{ point: NavPoint; rank: number }> = []
+    if (emailPoint) {
+      ranked.push({ point: this.withLegacyReturnNav(identity, emailPoint), rank: 4 })
+    }
+    if (type6) {
+      ranked.push({ point: this.withLegacyReturnNav(identity, type6), rank: 3 })
+    }
+    if (legacy) ranked.push({ point: legacy, rank: 2 })
+    if (valuation) ranked.push({ point: valuation, rank: 1 })
+
+    const candidates = ranked.filter((c) => isPlausibleEmailUnitNav(c.point.nav))
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => {
+        const byDate = b.point.nav_date.localeCompare(a.point.nav_date)
+        return byDate !== 0 ? byDate : b.rank - a.rank
       })
-      const best = nonEmailCandidates[0]
-      if (best === type6) return this.withLegacyReturnNav(identity, type6)
-      if (best === legacy) return legacy
-      return best
+      return candidates[0].point
     }
 
     if (fallbackNav != null && fallbackDate && fallbackDate <= beforeDate) {

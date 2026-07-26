@@ -293,10 +293,9 @@ function navPointsToLegacyRows(
 }
 
 /**
- * Load the full detail NAV series using the shared merge path, then extend with
- * fresher email / FOF 估值表 points from the same BatchNavResolver pipeline the
- * FOF底层 list cache uses. Critical for holdings-only funds where 平台 legacy
- * stops early (e.g. BGW80A at 2026-06-05) while list cache shows newer dates.
+ * Load the full detail NAV series using the shared merge path, then align the
+ * series end with BatchNavResolver.resolveAt() — the same latest-date rule as
+ * FOF底层 list cache (newest among email / type6 / legacy / 估值表).
  */
 export async function loadDetailNavSeriesFast(opts: {
   beian_hao: string
@@ -345,45 +344,68 @@ export async function loadDetailNavSeriesFast(opts: {
 
   try {
     resolver.setValuationNavHistory(valuationHistory.byCode, valuationHistory.byName)
+    // Authoritative latest — same function the FOF list cache uses for 最新净值日期.
+    const resolved = resolver.resolveAt(identity, asOfDate)
+    const resolvedDate = resolved?.nav_date ?? ""
     const resolverHistory = resolver.mergedHistory(identity, sinceDate)
     const latestSeriesDate = navSeries[navSeries.length - 1]?.price_date ?? ""
 
     // Empty platform/email merge — use list-cache-equivalent series wholesale.
     if (navSeries.length === 0) {
-      if (resolverHistory.length > 0) {
+      const historyToResolved = resolvedDate
+        ? resolverHistory.filter((p) => p.nav_date <= resolvedDate)
+        : resolverHistory
+      if (historyToResolved.length > 0) {
         return applyFundNavCorrectionToLegacyRows(
-          navPointsToLegacyRows(resolverHistory),
+          navPointsToLegacyRows(historyToResolved),
           fundContext,
         )
       }
       if (targetedFallback.length > 0) {
+        const fallback = resolvedDate
+          ? targetedFallback.filter((p) => p.price_date <= resolvedDate)
+          : targetedFallback
         return applyFundNavCorrectionToLegacyRows(
-          mergeNavSeriesWithEmail([], targetedFallback, fundContext),
+          mergeNavSeriesWithEmail([], fallback, fundContext),
           fundContext,
         )
       }
       return navSeries
     }
 
-    // Stale 平台 series with fresher email / 估值表 tail (commit d26d1266 behavior).
+    // Drop points past the shared latest rule (stale platform tails, bad merges).
+    if (resolvedDate && latestSeriesDate > resolvedDate) {
+      const trimmed = navSeries.filter((row) => row.price_date <= resolvedDate)
+      return trimmed.length > 0 ? trimmed : navSeries
+    }
+
+    // Extend stale platform/email series up to resolveAt (includes fresher 估值表).
+    if (!resolvedDate || (latestSeriesDate && resolvedDate <= latestSeriesDate)) {
+      return navSeries
+    }
+
     const extensionByDate = new Map<string, EmailNavPoint>()
     for (const point of resolverHistory) {
       if (!isPlausibleEmailUnitNav(point.nav)) continue
-      if (latestSeriesDate && point.nav_date <= latestSeriesDate) continue
+      if (point.nav_date <= latestSeriesDate || point.nav_date > resolvedDate) continue
       extensionByDate.set(point.nav_date, {
         price_date: point.nav_date,
         nav: String(point.nav),
         cumulative_nav: null,
       })
     }
-
-    const fallbackLatest = targetedFallback[targetedFallback.length - 1]?.price_date ?? ""
-    if (!latestSeriesDate || fallbackLatest > latestSeriesDate) {
-      for (const point of targetedFallback) {
-        if (latestSeriesDate && point.price_date <= latestSeriesDate) continue
-        if (extensionByDate.has(point.price_date)) continue
-        extensionByDate.set(point.price_date, point)
-      }
+    for (const point of targetedFallback) {
+      if (point.price_date <= latestSeriesDate || point.price_date > resolvedDate) continue
+      if (extensionByDate.has(point.price_date)) continue
+      extensionByDate.set(point.price_date, point)
+    }
+    // Ensure the exact resolveAt point is present even if history layers omitted it.
+    if (resolved && !extensionByDate.has(resolvedDate) && resolvedDate > latestSeriesDate) {
+      extensionByDate.set(resolvedDate, {
+        price_date: resolvedDate,
+        nav: String(resolved.nav),
+        cumulative_nav: null,
+      })
     }
 
     const extension = [...extensionByDate.values()].sort((a, b) =>

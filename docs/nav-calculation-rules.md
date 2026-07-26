@@ -1136,7 +1136,7 @@ Some **在管产品** and **FOF底层** rows showed stale NAV dates while newer 
 
 | Area | File / function | What changed |
 |---|---|---|
-| Latest NAV selection | `BatchNavResolver.resolveAt()` in `list-cache-nav-batch.ts` | Among type6 / legacy / valuation (when no email NAV), pick the **newest plausible `nav_date`** instead of always preferring legacy over FOF 估值表 holdings. Email NAV priority unchanged. |
+| Latest NAV selection | `BatchNavResolver.resolveAt()` in `list-cache-nav-batch.ts` | Pick the **newest plausible `nav_date`** among email / type6 / legacy / FOF 估值表 holdings. Same-date tie-break: email > type6 > legacy > valuation. Fresher 估值表 therefore beats an older email NAV (e.g. 百奕小天鹅 7/23 over email 7/22). |
 
 **What this fix does NOT change:** Email-first priority, seed overrides, SNF018 virtual-first, SQX078 cum/adj repair in `finalizeNavSeries` — unchanged.
 
