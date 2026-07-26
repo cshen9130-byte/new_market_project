@@ -24,7 +24,9 @@ import {
 } from "@/lib/server/managed-fof-underlying-pg"
 import {
   collectFundNameAliases,
+  isPlausibleEmailUnitNav,
   mergeNavSeriesWithEmail,
+  type EmailNavPoint,
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
 import { applyFundNavCorrectionToLegacyRows } from "@/lib/server/fund-nav-correction-rules"
@@ -291,9 +293,10 @@ function navPointsToLegacyRows(
 }
 
 /**
- * Load the full detail NAV series using the shared merge path, then the same
- * BatchNavResolver + incremental 估值表 history fallback the FOF list cache uses
- * when email/legacy are empty.
+ * Load the full detail NAV series using the shared merge path, then extend with
+ * fresher email / FOF 估值表 points from the same BatchNavResolver pipeline the
+ * FOF底层 list cache uses. Critical for holdings-only funds where 平台 legacy
+ * stops early (e.g. BGW80A at 2026-06-05) while list cache shows newer dates.
  */
 export async function loadDetailNavSeriesFast(opts: {
   beian_hao: string
@@ -315,9 +318,6 @@ export async function loadDetailNavSeriesFast(opts: {
     short_name: short_name || null,
   }
 
-  let navSeries = await loadMergedFundNavRows(beian_hao, product_name, short_name)
-  if (navSeries.length > 0) return navSeries
-
   const asOfDate = new Date().toISOString().slice(0, 10)
   const sinceDate = addDays(asOfDate, NAV_HISTORY_LOOKBACK_DAYS)
   const identity: ProductNavIdentity = {
@@ -326,38 +326,77 @@ export async function loadDetailNavSeriesFast(opts: {
     short_name: short_name || null,
   }
 
+  const [navSeries, resolver, valuationHistory, targetedFallback] = await Promise.all([
+    loadMergedFundNavRows(beian_hao, product_name, short_name),
+    BatchNavResolver.create([identity], asOfDate),
+    loadManagedUnderlyingNavHistoryIncremental(sinceDate, [
+      { product_name, beian_hao },
+    ]),
+    loadFundValuationNavFallbackSeries(beian_hao, product_name, short_name || null, {
+      sinceDate,
+      extraBeianCodes: [...new Set([rawId, beian_hao].filter(Boolean) as string[])],
+      extraNames: collectFundNameAliases(
+        product_name,
+        short_name || null,
+        emailNameAliases,
+      ),
+    }),
+  ])
+
   try {
-    const [resolver, valuationHistory, targetedFallback] = await Promise.all([
-      BatchNavResolver.create([identity], asOfDate),
-      loadManagedUnderlyingNavHistoryIncremental(sinceDate, [
-        { product_name, beian_hao },
-      ]),
-      loadFundValuationNavFallbackSeries(beian_hao, product_name, short_name || null, {
-        sinceDate,
-        extraBeianCodes: [...new Set([rawId, beian_hao].filter(Boolean) as string[])],
-        extraNames: collectFundNameAliases(
-          product_name,
-          short_name || null,
-          emailNameAliases,
-        ),
-      }),
-    ])
-
     resolver.setValuationNavHistory(valuationHistory.byCode, valuationHistory.byName)
-    const merged = resolver.mergedHistory(identity, sinceDate)
-    if (merged.length > 0) {
-      return applyFundNavCorrectionToLegacyRows(navPointsToLegacyRows(merged), fundContext)
+    const resolverHistory = resolver.mergedHistory(identity, sinceDate)
+    const latestSeriesDate = navSeries[navSeries.length - 1]?.price_date ?? ""
+
+    // Empty platform/email merge — use list-cache-equivalent series wholesale.
+    if (navSeries.length === 0) {
+      if (resolverHistory.length > 0) {
+        return applyFundNavCorrectionToLegacyRows(
+          navPointsToLegacyRows(resolverHistory),
+          fundContext,
+        )
+      }
+      if (targetedFallback.length > 0) {
+        return applyFundNavCorrectionToLegacyRows(
+          mergeNavSeriesWithEmail([], targetedFallback, fundContext),
+          fundContext,
+        )
+      }
+      return navSeries
     }
 
-    if (targetedFallback.length > 0) {
-      return applyFundNavCorrectionToLegacyRows(
-        mergeNavSeriesWithEmail([], targetedFallback, fundContext),
-        fundContext,
-      )
+    // Stale 平台 series with fresher email / 估值表 tail (commit d26d1266 behavior).
+    const extensionByDate = new Map<string, EmailNavPoint>()
+    for (const point of resolverHistory) {
+      if (!isPlausibleEmailUnitNav(point.nav)) continue
+      if (latestSeriesDate && point.nav_date <= latestSeriesDate) continue
+      extensionByDate.set(point.nav_date, {
+        price_date: point.nav_date,
+        nav: String(point.nav),
+        cumulative_nav: null,
+      })
     }
+
+    const fallbackLatest = targetedFallback[targetedFallback.length - 1]?.price_date ?? ""
+    if (!latestSeriesDate || fallbackLatest > latestSeriesDate) {
+      for (const point of targetedFallback) {
+        if (latestSeriesDate && point.price_date <= latestSeriesDate) continue
+        if (extensionByDate.has(point.price_date)) continue
+        extensionByDate.set(point.price_date, point)
+      }
+    }
+
+    const extension = [...extensionByDate.values()].sort((a, b) =>
+      a.price_date.localeCompare(b.price_date),
+    )
+    if (extension.length === 0) return navSeries
+
+    return applyFundNavCorrectionToLegacyRows(
+      mergeNavSeriesWithEmail(navSeries, extension, fundContext),
+      fundContext,
+    )
   } catch (err) {
-    console.error("[loadDetailNavSeriesFast] BatchNavResolver/valuation fallback failed:", err)
+    console.error("[loadDetailNavSeriesFast] BatchNavResolver/valuation extend failed:", err)
+    return navSeries
   }
-
-  return navSeries
 }
