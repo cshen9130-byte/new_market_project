@@ -9,7 +9,7 @@ import {
 } from "../lib/server/list-cache-nav-batch.ts"
 import { lookupFundNavCorrectionRule } from "../lib/server/fund-nav-correction-rules.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
-import { extractNavMetadata, extractNavData, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
+import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
 import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio, loadManagedProductNavSeed, mergeManagedProductDetailNav } from "../lib/server/managed-product-nav-seed.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
 import fs from "fs"
@@ -46,6 +46,22 @@ const ratio18 = parseFloat(r18.cumulative_nav) / parseFloat(r18.cum_nav_withdraw
 const ratio22 = parseFloat(r22.cumulative_nav) / parseFloat(r22.cum_nav_withdrawal)
 assert("adj/cum ratio preserved after rechain", Math.abs(ratio22 - ratio18) < 0.001)
 console.log("0622", r22)
+
+// Weekend forward-fill from custody 净值表 must be dropped (Fri keep, Sat/Sun drop).
+const weekendLegacy = [
+  { price_date: "2026-07-24", nav: "1.3681", cumulative_nav: "1.3681", cum_nav_withdrawal: "1.3681", price_change: "" },
+  { price_date: "2026-07-25", nav: "1.3681", cumulative_nav: "1.3681", cum_nav_withdrawal: "1.3681", price_change: "" },
+  { price_date: "2026-07-26", nav: "1.3681", cumulative_nav: "1.3681", cum_nav_withdrawal: "1.3681", price_change: "" },
+  { price_date: "2026-07-27", nav: "1.3700", cumulative_nav: "1.3700", cum_nav_withdrawal: "1.3700", price_change: "" },
+]
+const weekendOut = mergeNavSeriesWithEmail(weekendLegacy, [])
+assert("weekend Sat dropped", !weekendOut.some((r) => r.price_date === "2026-07-25"))
+assert("weekend Sun dropped", !weekendOut.some((r) => r.price_date === "2026-07-26"))
+assert("weekend Fri kept", weekendOut.some((r) => r.price_date === "2026-07-24"))
+assert("weekend Mon kept", weekendOut.some((r) => r.price_date === "2026-07-27"))
+const weekendMon = weekendOut.find((r) => r.price_date === "2026-07-27")
+const weekendMonPct = parseFloat(weekendMon.price_change)
+assert("Mon daily vs Fri not flat weekend", Math.abs(weekendMonPct - ((1.37 / 1.3681 - 1) * 100)) < 0.02)
 
 // ex-div: cumulative stored as unit on 2026-04-30
 const exDivLegacy = [
@@ -855,6 +871,60 @@ assert(
   zhufengNav?.navDate === "2026-07-09" && zhufengNav?.nav === 1.0 && zhufengNav?.productCode === "SB969A",
 )
 
+const cscSade15Subject = "20260724汉鸿景明1号私募证券投资基金SADE15资产净值公告（含用印pdf）"
+const cscSade15Body =
+  "日期 产品代码 产品名称 基金份额净值 基金份额累计净值\n" +
+  "2026-07-24 SADE15 汉鸿景明1号私募证券投资基金 1.0007 1.0007"
+const cscSade15Meta = extractNavMetadata(cscSade15Subject, cscSade15Body)
+assert(
+  "csc 资产净值公告 subject extracts SADE15 / 汉鸿景明1号",
+  cscSade15Meta.productCode === "SADE15" && cscSade15Meta.fundName === "汉鸿景明1号",
+)
+const cscSade15Nav = extractNavData(cscSade15Subject, cscSade15Body)
+assert(
+  "csc 资产净值公告 body extracts 2026-07-24 nav 1.0007",
+  cscSade15Nav?.navDate === "2026-07-24"
+    && cscSade15Nav?.nav === 1.0007
+    && cscSade15Nav?.cumulativeNav === 1.0007
+    && cscSade15Nav?.productCode === "SADE15",
+)
+const cscSade15History = extractNavHistoryFromBody(cscSade15Subject, cscSade15Body)
+assert(
+  "csc 资产净值公告 history table extracts one SADE15 row",
+  cscSade15History.length === 1
+    && cscSade15History[0]?.navDate === "2026-07-24"
+    && cscSade15History[0]?.nav === 1.0007,
+)
+
+const cscBatchSubject = "汉鸿景明1号私募证券投资基金_SADE15批量补发 资产净值公告"
+const cscBatchBody =
+  "产品代码 产品名称 日期 基金份额净值 基金份额累计净值\n" +
+  "SADE15 汉鸿景明1号私募证券投资基金 2026-05-25 1.0000 1.0000\n" +
+  "SADE15 汉鸿景明1号私募证券投资基金 2026-05-26 1.0000 1.0000\n" +
+  "SADE15 汉鸿景明1号私募证券投资基金 2026-05-27 1.0001 1.0001\n" +
+  "SADE15 汉鸿景明1号私募证券投资基金 2026-07-23 1.0009 1.0009\n"
+const cscBatchHistory = extractNavHistoryFromBody(cscBatchSubject, cscBatchBody)
+assert(
+  "csc 批量补发 history extracts multi-day SADE15 rows",
+  cscBatchHistory.length === 4
+    && cscBatchHistory[0]?.navDate === "2026-05-25"
+    && cscBatchHistory[0]?.nav === 1
+    && cscBatchHistory.at(-1)?.navDate === "2026-07-23"
+    && cscBatchHistory.at(-1)?.nav === 1.0009,
+)
+const cscBatchDateOnlyBody =
+  "日期 基金份额净值 基金份额累计净值\n" +
+  "2026-05-25 1.0000 1.0000\n" +
+  "2026-05-26 1.0000 1.0000\n" +
+  "2026-06-05 1.0000 1.0000\n"
+const cscBatchDateOnly = extractNavHistoryFromBody(cscBatchSubject, cscBatchDateOnlyBody)
+assert(
+  "csc 批量补发 date-nav rows use subject SADE15",
+  cscBatchDateOnly.length === 3
+    && cscBatchDateOnly.every((r) => r.productCode === "SADE15")
+    && cscBatchDateOnly[2]?.navDate === "2026-06-05",
+)
+
 const jinyuZhuiTaSubject =
   "国泰海通证券资产托管发送：金奥追风1号私募证券投资基金A【金舆追风1号私募证券投资基金】TA虚拟净值_2026-07-22"
 const jinyuZhuiTaBody = "净值日期 2026-07-22 单位净值 1.1800 累计单位净值 1.9290"
@@ -863,13 +933,57 @@ assert(
   "guotai TA virtual metadata not mapped to SCJ536",
   jinyuZhuiTaMeta.productCode !== "SCJ536" && jinyuZhuiTaMeta.fundName?.includes("金奥追风"),
 )
-assert("guotai TA virtual skips managed-product NAV ingest", extractNavData(jinyuZhuiTaSubject, jinyuZhuiTaBody) === null)
+const jinyuZhuiTaNav = extractNavData(jinyuZhuiTaSubject, jinyuZhuiTaBody)
+assert(
+  "guotai TA virtual ingests under underlying 金奥追风, not managed 金舆追风",
+  jinyuZhuiTaNav?.navDate === "2026-07-22"
+    && jinyuZhuiTaNav?.nav === 1.18
+    && jinyuZhuiTaNav?.cumulativeNav === 1.929
+    && jinyuZhuiTaNav?.fundName?.includes("金奥追风") === true
+    && !jinyuZhuiTaNav?.fundName?.includes("金舆追风")
+    && jinyuZhuiTaNav?.productCode !== "SCJ536",
+)
 
 const rongxiTaSubject =
   "国泰海通证券资产托管发送：绵烁ETF套利3号私募证券投资基金A【荣熙共赢私募证券投资基金】TA虚拟净值_2026-07-20"
+const rongxiTaNav = extractNavData(rongxiTaSubject, "净值日期 2026-07-20 单位净值 0.9912 累计单位净值 0.9912")
 assert(
-  "rongxi TA virtual skips managed NAV (gets 净值表 elsewhere)",
-  extractNavData(rongxiTaSubject, "单位净值 0.9912") === null,
+  "rongxi TA virtual ingests under underlying, not managed 荣熙共赢",
+  rongxiTaNav?.nav === 0.9912
+    && rongxiTaNav?.navDate === "2026-07-20"
+    && !rongxiTaNav?.fundName?.includes("荣熙"),
+)
+
+const duxiAvmTaSubject =
+  "国泰海通证券资产托管发送：笃熙禀泰渊流1号私募证券投资基金A【荣熙共赢私募证券投资基金】TA虚拟净值_2026-07-22"
+const duxiAvmTaMeta = extractNavMetadata(duxiAvmTaSubject, "单位净值 1.1800")
+assert(
+  "AVM35A TA virtual metadata keeps underlying 笃熙, not 荣熙共赢A类",
+  duxiAvmTaMeta.fundName?.includes("笃熙") === true
+    && !duxiAvmTaMeta.fundName?.includes("荣熙"),
+)
+const duxiAvmTaNav = extractNavData(duxiAvmTaSubject, "净值日期 2026-07-22 单位净值 1.1800 累计单位净值 1.1800")
+assert(
+  "AVM35A TA virtual ingests under underlying 笃熙 (not 荣熙/SBNX55)",
+  duxiAvmTaNav?.nav === 1.18
+    && duxiAvmTaNav?.fundName?.includes("笃熙") === true
+    && !duxiAvmTaNav?.fundName?.includes("荣熙")
+    && duxiAvmTaNav?.productCode !== "SBNX55",
+)
+
+const tailai3TaSubject =
+  "国泰海通证券资产托管发送：棕榈滩泰来三号私募证券投资基金A【荣熙共赢私募证券投资基金】TA虚拟净值_2026-07-24"
+const tailai3TaNav = extractNavData(
+  tailai3TaSubject,
+  "净值日期 2026-07-24 单位净值 1.0976 累计单位净值 1.0976",
+)
+assert(
+  "BVC41A Guotai TA virtual extracts Jul-24 under 棕榈滩泰来三号A类 / BVC41A",
+  tailai3TaNav?.navDate === "2026-07-24"
+    && tailai3TaNav?.nav === 1.0976
+    && tailai3TaNav?.productCode === "BVC41A"
+    && tailai3TaNav?.fundName?.includes("泰来三号") === true
+    && !tailai3TaNav?.fundName?.includes("荣熙"),
 )
 
 const sqx078Subject =
@@ -889,6 +1003,21 @@ assert(
     && sqx078Nav?.nav === 1.113
     && sqx078Nav?.cumulativeNav === 2.2767
     && sqx078Nav?.productCode === "SQX078",
+)
+
+// 【基金虚拟净值表现估算】 must store 实际净值 (col3), not per-investor 虚拟净值 (col2).
+const bhk26aEstimateSubject =
+  "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-07-24_金舆基石一号私募证券投资基金"
+const bhk26aEstimateBody =
+  "净值日期 业务类型 持有份额 份额变动 虚拟净值 实际净值 实际累计净值 " +
+  "2026-07-24 TA计提 2,473,410.83 0 1.0965 1.0548 1.6750"
+const bhk26aEstimateNav = extractNavData(bhk26aEstimateSubject, bhk26aEstimateBody)
+assert(
+  "BHK26A 虚拟净值表现估算 stores 实际净值 1.0548 not 虚拟净值 1.0965",
+  bhk26aEstimateNav?.navDate === "2026-07-24"
+    && bhk26aEstimateNav?.nav === 1.0548
+    && bhk26aEstimateNav?.cumulativeNav === 1.675
+    && bhk26aEstimateNav?.productCode === "BHK26A",
 )
 
 // SQX078: virtual email cum/unit > 2 must not be stripped; 复权 grows at unit rate on email tail
@@ -989,6 +1118,125 @@ const sbhk26Backfilled = sbhk26ListMap.get("SBHK26") ?? []
 assert(
   "SBHK26 list parent gets BHK26A Jul-23 fallback",
   sbhk26Backfilled.some((p) => p.nav_date === "2026-07-23" && Math.abs(p.nav - 1.074) < 0.0001),
+)
+
+// Multi-investor 【基金虚拟净值表现估算】 under one product_code: continuity must
+// win over max(id). Otherwise list return mixes 金舆/抱朴 → bogus +3.40%.
+const bhk26aMultiInvestor = [
+  // Deliberately max-id-first order (list batch used to feed DESC) — ids force ASC pick.
+  {
+    id: 522318,
+    nav_date: "2026-07-24",
+    nav: "1.096500",
+    cumulative_nav: "1.675000",
+    adjusted_nav: null,
+    product_code: "BHK26A",
+    fund_name: "六妙星豪鑫6号A类",
+    attachment_filename: "",
+    subject: "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-07-24_金舆基石一号私募证券投资基金",
+    source: "body_table",
+  },
+  {
+    id: 522294,
+    nav_date: "2026-07-24",
+    nav: "1.068400",
+    cumulative_nav: "1.675000",
+    adjusted_nav: null,
+    product_code: "BHK26A",
+    fund_name: "六妙星豪鑫6号A类",
+    attachment_filename: "",
+    subject: "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-07-24_荣熙共赢私募证券投资基金",
+    source: "body_table",
+  },
+  {
+    id: 522287,
+    nav_date: "2026-07-24",
+    nav: "1.054800",
+    cumulative_nav: "1.675000",
+    adjusted_nav: null,
+    product_code: "BHK26A",
+    fund_name: "六妙星豪鑫6号A类",
+    attachment_filename: "",
+    subject: "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-07-24_抱朴聚融祥和一号私募证券投资基金",
+    source: "body_table",
+  },
+  {
+    id: 509636,
+    nav_date: "2026-07-23",
+    nav: "1.060400",
+    cumulative_nav: "1.686400",
+    adjusted_nav: null,
+    product_code: "BHK26A",
+    fund_name: "六妙星豪鑫6号A类",
+    attachment_filename: "",
+    subject: "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-07-23_抱朴聚融祥和一号私募证券投资基金",
+    source: "body_table",
+  },
+  {
+    id: 509202,
+    nav_date: "2026-07-23",
+    nav: "1.107900",
+    cumulative_nav: "1.686400",
+    adjusted_nav: null,
+    product_code: "BHK26A",
+    fund_name: "六妙星豪鑫6号A类",
+    attachment_filename: "",
+    subject: "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-07-23_金舆基石一号私募证券投资基金",
+    source: "body_table",
+  },
+  {
+    id: 509122,
+    nav_date: "2026-07-23",
+    nav: "1.074000",
+    cumulative_nav: "1.686400",
+    adjusted_nav: null,
+    product_code: "BHK26A",
+    fund_name: "六妙星豪鑫6号A类",
+    attachment_filename: "",
+    subject: "【基金虚拟净值表现估算】BHK26A_六妙星豪鑫6号私募证券投资基金A类_2026-07-23_荣熙共赢私募证券投资基金",
+    source: "body_table",
+  },
+]
+const bhk26aSelected = selectEmailNavSeriesRows(bhk26aMultiInvestor, "BHK26A", [
+  "六妙星豪鑫6号A类",
+  "六妙星豪鑫6号私募证券投资基金A类",
+])
+const bhk26aJul24 = bhk26aSelected.find((r) => r.nav_date === "2026-07-24")
+const bhk26aJul23 = bhk26aSelected.find((r) => r.nav_date === "2026-07-23")
+assert(
+  "BHK26A multi-investor picks continuous Jul-24 unit (not max-id 金舆 1.0965)",
+  bhk26aJul24 != null && Math.abs(parseFloat(bhk26aJul24.nav) - 1.0548) < 0.0001,
+)
+assert(
+  "BHK26A multi-investor Jul-23/24 day return is not cross-investor +3.40%",
+  bhk26aJul23 != null
+    && bhk26aJul24 != null
+    && Math.abs(parseFloat(bhk26aJul24.nav) / parseFloat(bhk26aJul23.nav) - 1 - 0.03404376) > 0.01,
+)
+// Email-only rechain on the detail continuity picks must set 复权 ≠ 单位净值
+// so list daily return can use return_nav (detail 平台数据涨跌幅).
+const bhk26aAdj = mergeNavSeriesWithEmail(
+  [],
+  [
+    { price_date: "2026-07-22", nav: "1.0576", cumulative_nav: "1.6819", adjusted_nav: null },
+    { price_date: "2026-07-23", nav: "1.074", cumulative_nav: "1.6864", adjusted_nav: null },
+    { price_date: "2026-07-24", nav: "1.0548", cumulative_nav: "1.675", adjusted_nav: null },
+  ],
+  { beian_hao: "BHK26A", product_name: "六妙星豪鑫6号A类" },
+)
+const bhk26aAdj24 = bhk26aAdj.find((r) => r.price_date === "2026-07-24")
+assert(
+  "BHK26A email rechain keeps 复权 above 单位净值 on Jul-24",
+  bhk26aAdj24 != null
+    && parseFloat(bhk26aAdj24.cumulative_nav) > parseFloat(bhk26aAdj24.nav) + 0.05,
+)
+assert(
+  "BHK26A detail 复权 day return is -1.14% (list target)",
+  Math.abs(1.682335 / 1.701709 - 1 - (-0.011385)) < 0.0001,
+)
+assert(
+  "BHK26A unit day return is -1.79% (must not be list 最新涨跌幅)",
+  Math.abs(1.0548 / 1.074 - 1 - (-0.017877)) < 0.0001,
 )
 
 const sbfm35History = [

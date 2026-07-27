@@ -7,7 +7,11 @@
  */
 
 import { normalizeFundDisplayName } from "@/lib/fund-display-name"
-import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
+import { resolveFundHoldingCode } from "@/lib/server/fund-holding-code"
+import {
+  lookupManagedProductOverride,
+  resolveManagedProductBeian,
+} from "@/lib/server/managed-product-beian"
 
 export { normalizeFundDisplayName }
 
@@ -169,6 +173,29 @@ function isGuotaiTaVirtualManagedProductNavEmail(subject: string): boolean {
   return resolveManagedProductBeian(normalizeFundDisplayName(m[1])) != null
 }
 
+/**
+ * Force Guotai TA虚拟净值 rows onto the underlying fund (outside 【】), never the 在管 investor.
+ * Resolves 备案号 from the underlying display name when the subject has no product code.
+ */
+function guotaiTaVirtualUnderlyingMeta(
+  subject: string,
+  shared: { productCode: string | null; fundName: string | null },
+): { productCode: string | null; fundName: string | null } {
+  if (!isGuotaiTaVirtualManagedProductNavEmail(subject)) return shared
+  const fundName = shared.fundName
+  if (!fundName) return shared
+  // Defensive: never attribute these mails to a 在管产品 name/code.
+  if (resolveManagedProductBeian(fundName)) return shared
+  const fromName = resolveFundHoldingCode("", fundName)
+  const keepCode =
+    shared.productCode
+    && !lookupManagedProductOverride(shared.productCode)
+  return {
+    productCode: keepCode ? shared.productCode : fromName,
+    fundName,
+  }
+}
+
 function resolveFromStructuredSubject(subject: string): { code: string; fundName: string } | null {
   for (const parser of [
     parseVirtualBracketSubject,
@@ -289,6 +316,17 @@ function ensureShareClass(
   const fromAssetSubj = parseAssetNavAnnouncementSubject(subject)
   if (fromAssetSubj?.fundName && /[ABC]类$/.test(fromAssetSubj.fundName)) return fromAssetSubj.fundName
 
+  // Never append share-class from an underlying code onto a 在管/investor name
+  // (…【荣熙共赢…】TA虚拟净值 + AVM35A must not become "荣熙共赢A类").
+  if (resolveManagedProductBeian(name) || isGuotaiTaVirtualManagedProductNavEmail(subject)) {
+    const subjClassOnly = subject.match(/私募证券投资基金([ABC])【/)
+      ?? subject.match(/私募证券投资基金([ABC])类_/)
+    if (subjClassOnly && !resolveManagedProductBeian(name)) {
+      return `${name}${subjClassOnly[1]}类`
+    }
+    return name
+  }
+
   const fromCode = shareClassFromProductCode(productCode)
   if (fromCode) return `${name}${fromCode}`
 
@@ -352,6 +390,9 @@ function matchActualUnitNav(bodyText: string): RegExpMatchArray | null {
   return (
     bodyText.match(/(?<!虚拟)单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/(?<!虚拟)单位净值\s+(\d+\.\d{3,8})/u)
+    // CSC/中信建投 资产净值公告 body labels
+    ?? bodyText.match(/基金份额净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/基金份额净值\s+(\d+\.\d{3,8})/u)
   )
 }
 
@@ -360,6 +401,8 @@ function matchCumulativeUnitNav(bodyText: string): RegExpMatchArray | null {
     bodyText.match(/累计单位净值\s*[：:]\s*(\d+\.\d{3,8})/u)
     ?? bodyText.match(/累计单位净值\s+(\d+\.\d{3,8})/u)
     ?? bodyText.match(/(?<!虚拟)累计净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/基金份额累计净值\s*[：:]\s*(\d+\.\d{3,8})/u)
+    ?? bodyText.match(/基金份额累计净值\s+(\d+\.\d{3,8})/u)
   )
 }
 
@@ -394,10 +437,9 @@ export function extractNavData(
   subject: string,
   bodyText: string,
 ): ExtractedNavData | null {
-  // Guotai TA虚拟净值 with a 在管 product in 【】: body NAV is the underlying fund only.
-  if (isGuotaiTaVirtualManagedProductNavEmail(subject)) return null
-
-  const shared = extractNavMetadata(subject, bodyText)
+  // Guotai TA虚拟净值 with a 在管 product in 【】: ingest under the underlying fund
+  // outside 【】 (never under the investor / 在管 product code).
+  const shared = guotaiTaVirtualUnderlyingMeta(subject, extractNavMetadata(subject, bodyText))
 
   // ── 1. Subject: 单位净值：1.2269 ──────────────────────────────────────────
   const subjNavM = subject.match(/单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
@@ -514,6 +556,23 @@ export function extractNavData(
     }
   }
 
+  // ── 3c2. Body: CSC/中信建投 资产净值公告 (DATE CODE NAME UNIT CUM) ─────────
+  // 2026-07-24 SADE15 汉鸿景明1号私募证券投资基金 1.0007 1.0007
+  const cscRowM = bodyText.match(
+    /(20\d{2}-\d{2}-\d{2})\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/u,
+  )
+  if (cscRowM) {
+    return {
+      nav: parseFloat(cscRowM[4]),
+      navDate: cscRowM[1],
+      cumulativeNav: parseFloat(cscRowM[5]),
+      adjustedNav: null,
+      productCode: shared.productCode ?? cscRowM[2],
+      fundName: shared.fundName ?? normalizeFundDisplayName(cscRowM[3]),
+      source: "body_table",
+    }
+  }
+
   // ── 3d. Body: Changjiang 长江证券 虚拟净值 (试算后单位净值 column) ─────────
   // 2026-07-09 2026-07-10 SB969A 铸锋太阿3号...A类 ... 1.0000 1 1 1000000.00
   if (/^虚拟净值-/u.test(subject) || /试算后单位净值/u.test(bodyText)) {
@@ -528,6 +587,40 @@ export function extractNavData(
         adjustedNav: null,
         productCode: shared.productCode ?? cjRowM[2],
         fundName: shared.fundName ?? normalizeFundDisplayName(cjRowM[3]),
+        source: "body_table",
+      }
+    }
+  }
+
+  // ── 4. Body: 虚拟净值表现估算 table format (before generic date+decimal) ───
+  // Subject: 【基金虚拟净值表现估算】PRODUCT_NAVDATE_INVESTOR
+  // Table columns: ...虚拟净值 | 实际净值 | 实际累计净值
+  // Store 实际净值 (not per-investor 虚拟净值).
+  if (/虚拟净值表现估算/.test(subject) || /虚拟净值\s+实际净值/.test(bodyText)) {
+    const taRowM = bodyText.match(
+      /(\d{4}-\d{2}-\d{2})\s+TA计提\s+[\d,.]+\s+\d+\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
+    )
+    if (taRowM) {
+      return {
+        nav:          parseFloat(taRowM[3]),
+        navDate:      subjectDate(subject) ?? taRowM[1],
+        cumulativeNav: parseFloat(taRowM[4]),
+        adjustedNav: null,
+        ...shared,
+        source: "body_table",
+      }
+    }
+
+    const virtualNavM = bodyText.match(
+      /(\d{4}-\d{2}-\d{2})[^\n]*?(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/,
+    )
+    if (virtualNavM) {
+      return {
+        nav:          parseFloat(virtualNavM[3]),
+        navDate:      subjectDate(subject) ?? virtualNavM[1],
+        cumulativeNav: parseFloat(virtualNavM[4]),
+        adjustedNav: null,
+        ...shared,
         source: "body_table",
       }
     }
@@ -548,43 +641,6 @@ export function extractNavData(
     }
   }
 
-  // ── 4. Body: 虚拟净值表现估算 table format ─────────────────────────────────
-  // Subject: 【基金虚拟净值表现估算】PRODUCT_NAVDATE_INVESTOR
-  // Table columns: ...虚拟净值 | 实际净值 | 实际累计净值
-  // Data row:  ...YYYY-MM-DD TA计提 2,473,410.83 0 1.2100 1.21 1.6282
-  // Holdings have commas; 实际净值 may be rounded to 2 decimals on first send.
-  // The subject date is authoritative (body table date can be off by one day on
-  // the first send of a new fund), so prefer subjectDate over the regex-matched date.
-  if (/虚拟净值/.test(subject) || /虚拟净值\s+实际净值/.test(bodyText)) {
-    const taRowM = bodyText.match(
-      /(\d{4}-\d{2}-\d{2})\s+TA计提\s+[\d,.]+\s+\d+\s+(\d+\.\d+)\s+(\d+\.\d+)\s+(\d+\.\d+)/,
-    )
-    if (taRowM) {
-      return {
-        nav:          parseFloat(taRowM[2]),
-        navDate:      subjectDate(subject) ?? taRowM[1],
-        cumulativeNav: parseFloat(taRowM[4]),
-        adjustedNav: null,
-        ...shared,
-        source: "body_table",
-      }
-    }
-
-    const virtualNavM = bodyText.match(
-      /(\d{4}-\d{2}-\d{2})[^\n]*?(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})/,
-    )
-    if (virtualNavM) {
-      return {
-        nav:          parseFloat(virtualNavM[2]),
-        navDate:      subjectDate(subject) ?? virtualNavM[1],
-        cumulativeNav: parseFloat(virtualNavM[4]),
-        adjustedNav: null,
-        ...shared,
-        source: "body_table",
-      }
-    }
-  }
-
   return null
 }
 
@@ -592,9 +648,23 @@ export function extractNavData(
 const HISTORY_TABLE_ROW_RE =
   /([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d{4}-\d{2}-\d{2})\s+(\d+\.\d+)\s+(\d+\.\d+)/g
 
+/** CSC/中信建投 资产净值公告: date code name unit cum. */
+const HISTORY_TABLE_ROW_DATE_FIRST_RE =
+  /(\d{4}-\d{2}-\d{2})\s+([A-Z0-9]{4,8})\s+([\u4e00-\u9fff\d]+(?:私募证券投资基金|私募基金|证券投资基金|投资基金)(?:[ABC]类|[ABC])?)\s+(\d+\.\d+)\s+(\d+\.\d+)/g
+
+/**
+ * Batch 补发 tables sometimes put code/name only in the header/subject and
+ * emit one `日期 单位净值 累计净值` row per line.
+ */
+const HISTORY_TABLE_ROW_DATE_NAV_RE =
+  /^(\d{4}-\d{2}-\d{2})\s+(\d+\.\d{3,8})\s+(\d+\.\d{3,8})\s*$/gm
+
 function hasNavHistoryTable(bodyText: string, subject: string): boolean {
   return (
     /产品代码\s+产品名称\s+净值日期/u.test(bodyText) ||
+    /日期\s+产品代码\s+产品名称/u.test(bodyText) ||
+    /产品代码\s+产品名称\s+日期/u.test(bodyText) ||
+    /批量补发/u.test(subject) ||
     /资产净值公告/u.test(subject)
   )
 }
@@ -615,23 +685,45 @@ export function extractNavHistoryFromBody(
   const rows: ExtractedNavData[] = []
   const seenDates = new Set<string>()
 
-  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_RE)) {
-    const code = m[1].toUpperCase()
-    if (expectedCode && code !== expectedCode) continue
-
-    const navDate = m[3]
-    if (seenDates.has(navDate)) continue
+  const pushRow = (
+    code: string,
+    fundNameRaw: string,
+    navDate: string,
+    nav: number,
+    cumulativeNav: number,
+  ) => {
+    if (expectedCode && code !== expectedCode) return
+    if (seenDates.has(navDate)) return
     seenDates.add(navDate)
-
     rows.push({
-      nav: parseFloat(m[4]),
+      nav,
       navDate,
-      cumulativeNav: parseFloat(m[5]),
+      cumulativeNav,
       adjustedNav: null,
       productCode: code,
-      fundName: shared.fundName ?? normalizeFundDisplayName(m[2]),
+      fundName: shared.fundName ?? normalizeFundDisplayName(fundNameRaw),
       source: "body_table",
     })
+  }
+
+  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_RE)) {
+    pushRow(m[1].toUpperCase(), m[2], m[3], parseFloat(m[4]), parseFloat(m[5]))
+  }
+  for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_DATE_FIRST_RE)) {
+    pushRow(m[2].toUpperCase(), m[3], m[1], parseFloat(m[4]), parseFloat(m[5]))
+  }
+
+  // Date/NAV-only rows: require a resolved product code from subject/body metadata.
+  if (expectedCode) {
+    for (const m of bodyText.matchAll(HISTORY_TABLE_ROW_DATE_NAV_RE)) {
+      pushRow(
+        expectedCode,
+        shared.fundName ?? "",
+        m[1],
+        parseFloat(m[2]),
+        parseFloat(m[3]),
+      )
+    }
   }
 
   return rows

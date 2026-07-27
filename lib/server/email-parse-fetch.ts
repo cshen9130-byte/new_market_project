@@ -19,6 +19,7 @@ import {
 import { extractNavData, extractNavHistoryFromBody } from "@/lib/server/email-nav-extract"
 import {
   extractNavTableFromBuffer,
+  isNavTableZipFilename,
   selectNavTableAttachments,
 } from "@/lib/server/email-nav-attachment"
 import {
@@ -405,15 +406,37 @@ async function fetchMailbox(
           hasNavTableAttachment = true
           try {
             const buf = await downloadPart(client, String(uid), att.part)
-            const rows = extractNavTableFromBuffer(buf, att.filename, subject)
-            for (const row of rows) {
-              if (!row.navDate) continue
-              navDatesFromAttachments.add(row.navDate)
-              navRecords.push({
-                ...emailMeta,
-                ...row,
-                attachmentFilename: att.filename,
-              })
+            const payloads: Array<{ storedFilename: string; parseFilename: string; buffer: Buffer }> =
+              isNavTableZipFilename(att.filename, subject)
+                ? expandValuationZipBuffer(buf, att.filename).map((inner) => ({
+                    storedFilename: zipInnerAttachmentKey(att.filename, inner.filename),
+                    parseFilename: inner.filename,
+                    buffer: inner.buffer,
+                  }))
+                : [{ storedFilename: att.filename, parseFilename: att.filename, buffer: buf }]
+
+            if (payloads.length === 0 && isNavTableZipFilename(att.filename, subject)) {
+              errors.push(`${account.account} UID ${uid} nav zip ${att.filename}: empty zip`)
+              continue
+            }
+
+            for (const payload of payloads) {
+              // Skip valuation workbooks accidentally packed into a 补发 zip.
+              if (/估值表/i.test(payload.parseFilename)) continue
+              const rows = extractNavTableFromBuffer(
+                payload.buffer,
+                payload.parseFilename,
+                subject,
+              )
+              for (const row of rows) {
+                if (!row.navDate) continue
+                navDatesFromAttachments.add(row.navDate)
+                navRecords.push({
+                  ...emailMeta,
+                  ...row,
+                  attachmentFilename: payload.storedFilename,
+                })
+              }
             }
           } catch (e) {
             errors.push(

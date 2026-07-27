@@ -8,6 +8,7 @@
  */
 
 import { query } from "@/lib/db"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import {
   loadMergedFundNavRows,
 } from "@/lib/server/fund-nav-series"
@@ -281,11 +282,13 @@ function navPointsToLegacyRows(
 /** Minimal series from list-cache so the page never stays blank while heavier sources load. */
 function seriesFromListHeader(header: ListCacheFundHeader | null | undefined): LegacyNavRow[] {
   if (!header?.nav_date || header.unit_nav == null || header.unit_nav === "") return []
+  const priceDate = header.nav_date.slice(0, 10)
+  if (!isChinaTradingDay(priceDate)) return []
   const nav = String(header.unit_nav)
   const n = parseFloat(nav)
   if (!Number.isFinite(n) || n <= 0) return []
   return [{
-    price_date: header.nav_date.slice(0, 10),
+    price_date: priceDate,
     nav,
     cumulative_nav: nav,
     cum_nav_withdrawal: nav,
@@ -326,6 +329,7 @@ function extendSeriesWithPoints(
   const extensionByDate = new Map<string, EmailNavPoint>()
   for (const point of points) {
     const date = point.price_date.slice(0, 10)
+    if (!isChinaTradingDay(date)) continue
     if (latestSeriesDate && date <= latestSeriesDate) continue
     if (targetDate && date > targetDate) continue
     extensionByDate.set(date, point)
@@ -333,6 +337,7 @@ function extendSeriesWithPoints(
   if (
     resolvedNav != null
     && targetDate
+    && isChinaTradingDay(targetDate)
     && (!latestSeriesDate || targetDate > latestSeriesDate)
     && !extensionByDate.has(targetDate)
   ) {

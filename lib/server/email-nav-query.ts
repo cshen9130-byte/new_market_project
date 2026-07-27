@@ -3,6 +3,7 @@
  */
 
 import { query } from "@/lib/db"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   shareClassProductCodesMatch,
@@ -35,6 +36,8 @@ type EmailNavRawRow = {
   attachment_filename: string | null
   subject: string | null
   source: string | null
+  /** When present, same-tier ties prefer lower id (matches detail ORDER BY id ASC). */
+  id?: number | string | null
 }
 
 
@@ -619,7 +622,14 @@ export function selectEmailNavSeriesRows(
       ? dayFiltered.filter((row) => productCodeExactlyMatchesBeian(row, beian))
       : dayFiltered
     const usingShareClassFallback = dayPool.length === 0 && dayFallback.length > 0
-    const dayRows = byDateGroups.get(date)!
+    const dayRows = [...(byDateGroups.get(date) ?? [])].sort((a, b) => {
+      // PreferEmailNavRow keeps `current` on ties — match detail's ORDER BY id ASC
+      // so multi-investor 【基金虚拟净值表现估算】 picks are not list/detail divergent.
+      const aId = a.id != null && a.id !== "" ? Number(a.id) : NaN
+      const bId = b.id != null && b.id !== "" ? Number(b.id) : NaN
+      if (Number.isFinite(aId) && Number.isFinite(bId) && aId !== bId) return aId - bId
+      return 0
+    })
     let best = dayRows[0]
     for (let i = 1; i < dayRows.length; i++) {
       best = preferEmailNavRow(best, dayRows[i], beian)
@@ -1069,7 +1079,7 @@ export async function loadEmailNavSeries(
   const rows = await query<EmailNavRawRow>(
     `SELECT e.nav_date::text AS nav_date, e.nav::text, e.cumulative_nav::text,
             e.adjusted_nav::text, e.product_code,
-            e.fund_name, e.attachment_filename, e.subject, e.source
+            e.fund_name, e.attachment_filename, e.subject, e.source, e.id
      FROM ops_email_nav_records e
      WHERE e.nav_date IS NOT NULL
        AND e.nav IS NOT NULL
@@ -2214,6 +2224,9 @@ function finalizeNavSeries(
   out = repairAdjBelowCumRows(out)
   out = alignPreDividendNavRows(out)
   out = applyFundNavCorrectionToLegacyRows(out, fundContext)
+  // Custody 净值表 / 估值表 often forward-fill Fri NAV onto Sat/Sun; drop non-trading days
+  // so list "最新净值日期" and detail 平台数据 only show A-share trading days.
+  out = out.filter((row) => isChinaTradingDay(row.price_date.slice(0, 10)))
   return recomputeNavPriceChanges(out)
 }
 

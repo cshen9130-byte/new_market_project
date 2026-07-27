@@ -380,6 +380,20 @@ function normalizeUnderlyingName(name: string): string {
     .trim()
 }
 
+/**
+ * Prefer 市价科目 (1109) over OTC/成本 (1108*OTC) when several FOF 估值表 rows
+ * quote the same underlying on the same day. First-wins previously kept SSG947's
+ * lagging OTC 市价 and inflated list 最新涨跌幅 (BVC41A +1.91% vs detail −0.14%).
+ */
+export function valuationHoldingNavPreferenceScore(subjectCode: string): number {
+  const code = String(subjectCode ?? "").trim().toUpperCase()
+  if (!code) return 0
+  if (code.startsWith("1109")) return 40
+  if (code.includes("OTC")) return 10
+  if (code.startsWith("1108")) return 15
+  return 20
+}
+
 /** Holding rows eligible for FOF underlying NAV extraction (alias h), excluding include_in_detail. */
 const SQL_FOF_VALUATION_HOLDING_CORE_FILTERS = `
   AND COALESCE(h.market_value, h.cost, 0) > 0
@@ -1096,7 +1110,7 @@ export async function loadManagedUnderlyingNavHistoryIncremental(
     `[managed-fof-underlying] delta-scanning ${holdingCandidates.length} holdings since ${effectiveDeltaSince}`,
   )
 
-  const seenHoldings = new Set<string>()
+  const seenHoldings = new Map<string, number>()
   let matchedHoldingRows = 0
   let appendedNewDates = 0
   for (const row of holdingCandidates) {
@@ -1108,6 +1122,7 @@ export async function loadManagedUnderlyingNavHistoryIncremental(
     if (nav == null || nav <= 0) continue
 
     const navDate = row.valuation_date.slice(0, 10)
+    const score = valuationHoldingNavPreferenceScore(row.subject_code)
     const matchedTargets = new Set<string>()
 
     const attachTarget = (target: UnderlyingNavTarget) => {
@@ -1117,14 +1132,18 @@ export async function loadManagedUnderlyingNavHistoryIncremental(
       })) return
       matchedTargets.add(target.product_name)
       const dedupe = `${target.product_name}\0${navDate}`
-      if (seenHoldings.has(dedupe)) return
-      seenHoldings.add(dedupe)
+      // Dates sealed by the last full rebuild stay untouched.
+      if (knownProductDates.has(dedupe) && !seenHoldings.has(dedupe)) return
+      const prevScore = seenHoldings.get(dedupe)
+      if (prevScore != null && prevScore >= score) return
+      const upgrading = prevScore != null
+      seenHoldings.set(dedupe, score)
       matchedHoldingRows++
-      // Only append brand-new dates; leave full-rebuild points untouched.
-      if (knownProductDates.has(dedupe)) return
-      knownProductDates.add(dedupe)
-      appendedNewDates++
-      indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate })
+      if (!upgrading) {
+        knownProductDates.add(dedupe)
+        appendedNewDates++
+      }
+      indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate }, upgrading)
     }
 
     if (code) {
@@ -1232,7 +1251,7 @@ export async function loadManagedUnderlyingNavHistory(
     `[managed-fof-underlying] scanning ${holdingCandidates.length} FOF 估值表 holding rows since ${sinceDate}`,
   )
 
-  const seenHoldings = new Set<string>()
+  const seenHoldings = new Map<string, number>()
 
   const indexPoint = (
     productName: string,
@@ -1267,6 +1286,7 @@ export async function loadManagedUnderlyingNavHistory(
     if (nav == null || nav <= 0) continue
 
     const navDate = row.valuation_date.slice(0, 10)
+    const score = valuationHoldingNavPreferenceScore(row.subject_code)
     const matchedTargets = new Set<string>()
 
     const attachTarget = (target: UnderlyingNavTarget) => {
@@ -1276,10 +1296,12 @@ export async function loadManagedUnderlyingNavHistory(
       })) return
       matchedTargets.add(target.product_name)
       const dedupe = `${target.product_name}\0${navDate}`
-      if (seenHoldings.has(dedupe)) return
-      seenHoldings.add(dedupe)
-      matchedHoldingRows++
-      indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate })
+      const prevScore = seenHoldings.get(dedupe)
+      if (prevScore != null && prevScore >= score) return
+      const upgrading = prevScore != null
+      seenHoldings.set(dedupe, score)
+      if (!upgrading) matchedHoldingRows++
+      indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate }, upgrading)
     }
 
     if (code) {
@@ -1380,8 +1402,8 @@ function isPrivateFundUnderlyingValuationRow(row: ValuationRow): boolean {
 /** Parse FOF underlying NAV points from stored 估值表 JSONB (when normalized holdings table is empty). */
 async function appendHistoryFromValuationJsonb(
   sinceDate: string,
-  seenHoldings: Set<string>,
-  indexPoint: (productName: string, beian: string | null, point: NavPoint) => void,
+  seenHoldings: Map<string, number>,
+  indexPoint: (productName: string, beian: string | null, point: NavPoint, replaceExisting?: boolean) => void,
   subjectCodeHints: Map<string, Set<string>>,
 ): Promise<number> {
   const { ensureEmailValuationTable } = await import("@/lib/server/email-valuation-pg")
@@ -1457,10 +1479,13 @@ async function appendHistoryFromValuationJsonb(
         })) return
         matchedTargets.add(target.product_name)
         const dedupe = `${target.product_name}\0${navDate}`
-        if (seenHoldings.has(dedupe)) return
-        seenHoldings.add(dedupe)
-        indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate })
-        saved++
+        const score = valuationHoldingNavPreferenceScore(subjectCode)
+        const prevScore = seenHoldings.get(dedupe)
+        if (prevScore != null && prevScore >= score) return
+        const upgrading = prevScore != null
+        seenHoldings.set(dedupe, score)
+        indexPoint(target.product_name, target.beian_hao ?? code, { nav, nav_date: navDate }, upgrading)
+        if (!upgrading) saved++
       }
 
       if (code) {
@@ -1564,12 +1589,14 @@ export async function loadFundValuationNavFallbackSeries(
     shortName,
     options?.extraNames ?? [],
   )
-  const byDate = new Map<string, number>()
+  const byDate = new Map<string, { nav: number; score: number }>()
 
-  const addPoint = (navDate: string, nav: number | null) => {
+  const addPoint = (navDate: string, nav: number | null, score = 20) => {
     if (nav == null || nav <= 0) return
     const date = navDate.slice(0, 10)
-    byDate.set(date, nav)
+    const prev = byDate.get(date)
+    if (prev && prev.score >= score) return
+    byDate.set(date, { nav, score })
   }
 
   const nameMatchAny = sqlMatchAnyFundName("m.underlying_name", "$3")
@@ -1578,8 +1605,9 @@ export async function loadFundValuationNavFallbackSeries(
     price: string | null
     quantity: string | null
     market_value: string | null
+    subject_code: string | null
   }>(
-    `SELECT m.valuation_date::text AS valuation_date, m.price, m.quantity, m.market_value
+    `SELECT m.valuation_date::text AS valuation_date, m.price, m.quantity, m.market_value, m.subject_code
      FROM ops_managed_fof_underlying m
      WHERE m.valuation_date >= $1::date
        AND COALESCE(m.market_value, 0) > 0
@@ -1591,7 +1619,11 @@ export async function loadFundValuationNavFallbackSeries(
     [sinceDate, lookupCodes, lookupNames],
   )
   for (const row of managedRows) {
-    addPoint(row.valuation_date, resolveNavFromValuationTable(row.price, row.quantity, row.market_value))
+    addPoint(
+      row.valuation_date,
+      resolveNavFromValuationTable(row.price, row.quantity, row.market_value),
+      valuationHoldingNavPreferenceScore(row.subject_code ?? ""),
+    )
   }
 
   const holdingNameMatch = sqlMatchAnyFundName("h.subject_name", "$3")
@@ -1600,8 +1632,9 @@ export async function loadFundValuationNavFallbackSeries(
     price: string | null
     quantity: string | null
     market_value: string | null
+    subject_code: string
   }>(
-    `SELECT r.valuation_date::text AS valuation_date, h.price, h.quantity, h.market_value
+    `SELECT r.valuation_date::text AS valuation_date, h.price, h.quantity, h.market_value, h.subject_code
      FROM ops_email_valuation_holdings h
      INNER JOIN ops_email_valuation_records r ON r.id = h.valuation_record_id
      WHERE r.valuation_date >= $1::date
@@ -1614,7 +1647,11 @@ export async function loadFundValuationNavFallbackSeries(
     [sinceDate, lookupCodes, lookupNames],
   )
   for (const row of holdingRows) {
-    addPoint(row.valuation_date, resolveNavFromValuationTable(row.price, row.quantity, row.market_value))
+    addPoint(
+      row.valuation_date,
+      resolveNavFromValuationTable(row.price, row.quantity, row.market_value),
+      valuationHoldingNavPreferenceScore(row.subject_code),
+    )
   }
 
   const custodyNameMatch = sqlMatchAnyFundName("v.fund_name", "$3")
@@ -1635,12 +1672,13 @@ export async function loadFundValuationNavFallbackSeries(
   )
   for (const row of custodyRows) {
     const nav = parseFloat(row.unit_nav)
-    if (Number.isFinite(nav) && nav > 0) addPoint(row.valuation_date, nav)
+    // Custody unit NAV is authoritative for that product's own 估值表.
+    if (Number.isFinite(nav) && nav > 0) addPoint(row.valuation_date, nav, 50)
   }
 
   return [...byDate.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([price_date, nav]) => ({
+    .map(([price_date, { nav }]) => ({
       price_date,
       nav: String(nav),
       cumulative_nav: null,

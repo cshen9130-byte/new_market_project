@@ -2,7 +2,7 @@
  * Canonical 备案号 for 在管产品 rows — overrides fuzzy auto-resolution when
  * the business defines a fixed product ↔ code mapping.
  */
-import { shareClassFromProductName } from "@/lib/server/share-class-product"
+import { shareClassFromProductName, stripShareClassSuffix } from "@/lib/server/share-class-product"
 
 export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> = {
   荣熙恒盈2号: "SBAH99",
@@ -125,6 +125,32 @@ export function lookupManagedProductOverride(
     for (const [product_name, beian_hao] of Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)) {
       if (beian_hao === remapped) return { product_name, beian_hao }
     }
+  }
+  return null
+}
+
+/**
+ * Looser managed-product name hit used to reject TA-virtual investor labels
+ * (e.g. "荣熙共赢A类") that fail the strict share-class guard.
+ */
+export function resolveManagedProductBeianIgnoringShareClass(
+  productName: string | null | undefined,
+): string | null {
+  const name = (productName ?? "").trim()
+  if (!name) return null
+  const strict = resolveManagedProductBeian(name)
+  if (strict) return strict
+
+  const stripped = stripShareClassSuffix(
+    name
+      .replace(/(私募证券投资基金|私募基金|证券投资基金|投资基金)$/u, "")
+      .trim(),
+  )
+  if (!stripped) return null
+  const exact = MANAGED_PRODUCT_BEIAN_OVERRIDES[stripped]
+  if (exact) return exact
+  for (const [product_name, beian_hao] of Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES)) {
+    if (stripped === product_name || stripped.startsWith(product_name)) return beian_hao
   }
   return null
 }

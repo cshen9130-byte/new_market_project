@@ -220,6 +220,10 @@ export async function GET(
       : await loadTrackingInfoFallback(beian_hao)
 
     let info: InfoRow | null | undefined = infoRows[0] ?? bflRows[0] ?? trackingRow
+    let listHeader =
+      listHeaderEarly
+      ?? (rawId !== beian_hao ? await lookupListCacheFundHeader(beian_hao) : null)
+
     const managedRouteOverride =
       lookupManagedProductOverride(rawId)
       ?? lookupManagedProductOverride(beian_hao)
@@ -227,14 +231,21 @@ export async function GET(
       const overrideInfo = await lookupFundInfoFallback(managedRouteOverride.beian_hao)
       if (overrideInfo) info = overrideInfo
     } else if (!info) {
-      info =
-        (await lookupFundInfoFallback(beian_hao))
-        ?? (rawId !== beian_hao ? await lookupFundInfoFallback(rawId) : null)
+      // Exact FOF/list-cache hit wins over email fallbacks that may carry
+      // TA-virtual investor names (AVM35A → "荣熙共赢A类").
+      const listBeian = listHeader?.beian_hao?.trim()
+      if (
+        listHeader
+        && listBeian
+        && listBeian.toUpperCase() === (beian_hao || rawId).toUpperCase()
+      ) {
+        info = infoFromListCache(beian_hao, listHeader)
+      } else {
+        info =
+          (await lookupFundInfoFallback(beian_hao))
+          ?? (rawId !== beian_hao ? await lookupFundInfoFallback(rawId) : null)
+      }
     }
-
-    let listHeader =
-      listHeaderEarly
-      ?? (rawId !== beian_hao ? await lookupListCacheFundHeader(beian_hao) : null)
 
     if (!info && listHeader) {
       info = infoFromListCache(beian_hao, listHeader)

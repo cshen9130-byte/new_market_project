@@ -5,6 +5,7 @@
 
 import { query, queryUnbounded } from "@/lib/db"
 import { computeFundNavMetrics, isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import {
   collectFundNameAliases,
   dedupeLegacyNavRowsByDate,
@@ -12,11 +13,12 @@ import {
   emailRowMatchesFund,
   inferEmailUnitNav,
   isPostInvestmentVirtualNavEmail,
-  preferEmailNavRow,
   isPlausibleEmailUnitNav,
+  mergeNavSeriesWithEmail,
   recoverPlausibleEmailUnitNav,
   sanitizeReturnIndexNavSeries,
   selectEmailNavSeriesRows,
+  type EmailNavPoint,
   type LegacyNavRow,
   type LegacyNavRowWithPri,
 } from "@/lib/server/email-nav-query"
@@ -360,7 +362,7 @@ export function calcReturn(current: number, base: number | null | undefined): nu
 function navAtOrBefore(points: NavPoint[] | undefined, beforeDate: string): NavPoint | null {
   if (!points?.length) return null
   for (const p of points) {
-    if (p.nav_date <= beforeDate) return p
+    if (p.nav_date <= beforeDate && isChinaTradingDay(p.nav_date)) return p
   }
   return null
 }
@@ -369,6 +371,44 @@ function navAtOrBefore(points: NavPoint[] | undefined, beforeDate: string): NavP
 function parseNav(v: string): number | null {
   const nav = parseFloat(v)
   return Number.isFinite(nav) && nav > 0 ? nav : null
+}
+
+/**
+ * Rechain selected email rows so list `return_nav` matches detail 复权净值
+ * (mergeNavSeriesWithEmail + finalize). Daily 最新涨跌幅 then uses 复权, not 单位净值.
+ */
+function navPointsFromEmailSeries(
+  selected: Array<{
+    nav_date: string
+    nav: string
+    cumulative_nav: string | null
+    adjusted_nav?: string | null
+    source: string | null
+    subject: string | null
+  }>,
+  context: FundNavSeriesContext,
+): NavPoint[] {
+  if (selected.length === 0) return []
+  const emailPts: EmailNavPoint[] = selected.map((row) => ({
+    price_date: row.nav_date.slice(0, 10),
+    nav: row.nav,
+    cumulative_nav: row.cumulative_nav,
+    adjusted_nav: row.adjusted_nav ?? null,
+  }))
+  const merged = mergeNavSeriesWithEmail([], emailPts, context)
+  const metaByDate = new Map(selected.map((r) => [r.nav_date.slice(0, 10), r]))
+  const out: NavPoint[] = []
+  for (const row of merged) {
+    const point = legacyRowToNavPoint(row)
+    if (!point) continue
+    const meta = metaByDate.get(point.nav_date)
+    out.push({
+      ...point,
+      source: meta?.source ?? null,
+      subject: meta?.subject ?? null,
+    })
+  }
+  return out
 }
 
 function pushNavPoint(map: Map<string, NavPoint[]>, key: string, point: NavPoint): void {
@@ -427,6 +467,7 @@ type EmailNavBatchRow = {
   product_code: string | null
   fund_name: string | null
   attachment_filename: string | null
+  id?: string | number | null
 }
 
 function filterEmailBatchRow(
@@ -559,44 +600,90 @@ async function loadEmailNavBatch(beians: string[], sinceDate: string): Promise<M
   const rows = await queryUnbounded<EmailNavBatchRow>(
     `SELECT BTRIM(product_code) AS code, nav_date::text AS nav_date, nav::text AS nav,
             cumulative_nav::text, source,
-            COALESCE(subject, '') AS subject, product_code, fund_name, attachment_filename
+            COALESCE(subject, '') AS subject, product_code, fund_name, attachment_filename,
+            id
      FROM ops_email_nav_records
      WHERE BTRIM(product_code) = ANY($1::text[])
        AND nav IS NOT NULL
        AND nav_date >= $2::date
-     ORDER BY nav_date DESC, id DESC`,
+     ORDER BY nav_date ASC, id ASC`,
     [queryCodes, sinceDate],
   )
 
   const virtualRatioByCode = latestVirtualUnitRatioByCode(rows)
 
-  const bestByCodeDate = new Map<string, EmailNavBatchRow>()
+  // Same continuity-aware per-date pick as detail / loadEmailNavByNameBatch.
+  // 【基金虚拟净值表现估算】 emails arrive once per FOF investor with different
+  // 虚拟净值 under the same product_code; picking max(id) alone mixed investors
+  // across days (BHK26A list +3.40% = 金舆 1.0965 / 抱朴 1.0604).
+  const rowsByCode = new Map<string, EmailNavBatchRow[]>()
   for (const row of rows) {
-    const dedupe = `${row.code}\0${row.nav_date.slice(0, 10)}`
-    const prev = bestByCodeDate.get(dedupe)
-    if (!prev || preferEmailNavRow(prev, row, row.code) === row) {
-      bestByCodeDate.set(dedupe, row)
-    }
+    const code = (row.code ?? "").trim()
+    if (!code) continue
+    const list = rowsByCode.get(code) ?? []
+    list.push(row)
+    rowsByCode.set(code, list)
   }
 
-  for (const row of bestByCodeDate.values()) {
-    const rawNav = parseNav(row.nav)
-    if (rawNav == null) continue
-    // Do not apply A-class virtual unit/cum ratios onto custody 估值表 (SBHK26 → 0.9726 bug).
-    const ratio = isCustodyValuationBatchRow(row) ? null : (virtualRatioByCode.get(row.code) ?? null)
-    const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
-    let nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
-    const recovered = recoverPlausibleEmailUnitNav(nav, cum, row.subject)
-    if (recovered == null) continue
-    nav = recovered
-    const aliases = collectFundNameAliases(row.fund_name ?? "", null)
-    if (!filterEmailBatchRow(row, row.code, aliases)) continue
-    pushNavPoint(out, row.code, {
-      nav,
-      nav_date: row.nav_date.slice(0, 10),
-      source: row.source,
-      subject: row.subject,
-    })
+  for (const [code, codeRows] of rowsByCode) {
+    const aliases = collectFundNameAliases(
+      codeRows[0]?.fund_name ?? "",
+      null,
+      codeRows.map((r) => r.fund_name),
+    )
+    const selected = selectEmailNavSeriesRows(
+      codeRows.map((row) => ({
+        nav_date: row.nav_date.slice(0, 10),
+        nav: row.nav,
+        cumulative_nav: row.cumulative_nav,
+        adjusted_nav: null,
+        product_code: row.product_code,
+        fund_name: row.fund_name,
+        attachment_filename: row.attachment_filename,
+        subject: row.subject,
+        source: row.source,
+        id: row.id,
+      })),
+      code,
+      aliases,
+    )
+
+    const corrected: Array<{
+      nav_date: string
+      nav: string
+      cumulative_nav: string | null
+      source: string | null
+      subject: string | null
+    }> = []
+    for (const row of selected) {
+      const rawNav = parseNav(row.nav)
+      if (rawNav == null) continue
+      // Do not apply A-class virtual unit/cum ratios onto custody 估值表 (SBHK26 → 0.9726 bug).
+      const ratio = isCustodyValuationBatchRow(row) ? null : (virtualRatioByCode.get(code) ?? null)
+      const cum = row.cumulative_nav != null ? parseFloat(row.cumulative_nav) : null
+      let nav = inferEmailUnitNav(rawNav, cum, row.subject, ratio)
+      const recovered = recoverPlausibleEmailUnitNav(nav, cum, row.subject)
+      if (recovered == null) continue
+      nav = recovered
+      const batchRow =
+        codeRows.find(
+          (r) =>
+            r.nav_date.slice(0, 10) === row.nav_date
+            && String(r.nav) === String(row.nav)
+            && (r.subject ?? "") === (row.subject ?? ""),
+        ) ?? codeRows.find((r) => r.nav_date.slice(0, 10) === row.nav_date)
+      if (batchRow && !filterEmailBatchRow(batchRow, code, aliases)) continue
+      corrected.push({
+        nav_date: row.nav_date.slice(0, 10),
+        nav: String(+nav.toFixed(6)),
+        cumulative_nav: row.cumulative_nav,
+        source: row.source,
+        subject: row.subject,
+      })
+    }
+    for (const point of navPointsFromEmailSeries(corrected, { beian_hao: code })) {
+      pushNavPoint(out, code, point)
+    }
   }
   for (const [code, points] of out) {
     out.set(code, sanitizeNavPointSeries(points, { beian_hao: code }))
@@ -633,7 +720,7 @@ async function loadEmailNavByNameBatch(
      SELECT n.name AS matched_name, e.nav_date::text AS nav_date, e.nav::text AS nav,
             e.cumulative_nav::text, e.source,
             COALESCE(e.subject, '') AS subject, e.product_code, e.fund_name, e.attachment_filename,
-            COALESCE(BTRIM(e.product_code), '') AS code
+            COALESCE(BTRIM(e.product_code), '') AS code, e.id
      FROM names n
      JOIN ops_email_nav_records e ON (
        e.nav IS NOT NULL
@@ -648,7 +735,7 @@ async function loadEmailNavByNameBatch(
        )
        AND ${sqlEmailNavShareClassGuard("e.fund_name", "n.name", "e.product_code")}
      )
-     ORDER BY e.nav_date DESC, e.id DESC`,
+     ORDER BY e.nav_date ASC, e.id ASC`,
     [validNames, sinceDate],
   )
 
@@ -681,11 +768,19 @@ async function loadEmailNavByNameBatch(
         attachment_filename: row.attachment_filename,
         subject: row.subject,
         source: row.source,
+        id: row.id,
       })),
       beianForPick,
       aliases,
     )
 
+    const corrected: Array<{
+      nav_date: string
+      nav: string
+      cumulative_nav: string | null
+      source: string | null
+      subject: string | null
+    }> = []
     for (const row of selected) {
       const rawNav = parseNav(row.nav)
       if (rawNav == null) continue
@@ -706,12 +801,19 @@ async function loadEmailNavByNameBatch(
       const recovered = recoverPlausibleEmailUnitNav(nav, cum, row.subject)
       if (recovered == null) continue
       nav = recovered
-      pushNavPoint(out, matchedName, {
-        nav,
+      corrected.push({
         nav_date: row.nav_date.slice(0, 10),
+        nav: String(+nav.toFixed(6)),
+        cumulative_nav: row.cumulative_nav,
         source: row.source,
         subject: row.subject,
       })
+    }
+    for (const point of navPointsFromEmailSeries(corrected, {
+      beian_hao: beianForPick || null,
+      product_name: matchedName,
+    })) {
+      pushNavPoint(out, matchedName, point)
     }
   }
   for (const [name, points] of out) {
@@ -1347,7 +1449,7 @@ export class BatchNavResolver {
       return candidates[0].point
     }
 
-    if (fallbackNav != null && fallbackDate && fallbackDate <= beforeDate) {
+    if (fallbackNav != null && fallbackDate && fallbackDate <= beforeDate && isChinaTradingDay(fallbackDate)) {
       return { nav: fallbackNav, nav_date: fallbackDate }
     }
     return null
@@ -1368,8 +1470,27 @@ export class BatchNavResolver {
     navDate: string,
     fallbackReturnPct: number | null,
   ): number | null {
-    const prev = this.resolvePreviousNav(identity, navDate)
-    if (prev) return calcReturn(unitNav, prev.nav)
+    // Same 复权 series as detail 平台数据涨跌幅 (return_nav after email rechain).
+    // Use display merge (email wins same-date), not risk merge — FOF 估值表 overlay
+    // would replace email return_nav with bare 市价 and inflate 最新涨跌幅.
+    const historyAsc = enrichReturnNavSeries(
+      this.mergedHistory(identity, addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS)),
+    )
+    const curr =
+      historyAsc.filter((p) => p.nav_date <= navDate).at(-1)
+      ?? null
+    let prev: NavPoint | null = null
+    for (let i = historyAsc.length - 1; i >= 0; i--) {
+      if (historyAsc[i].nav_date < navDate) {
+        prev = historyAsc[i]
+        break
+      }
+    }
+    if (prev) {
+      const currReturn = navForReturn(curr, unitNav)
+      const prevReturn = navForReturn(prev)
+      if (currReturn != null && prevReturn != null) return calcReturn(currReturn, prevReturn)
+    }
     return fallbackReturnPct ?? null
   }
 
@@ -1460,9 +1581,22 @@ export class BatchNavResolver {
     const apply = (points: NavPoint[] | undefined, opts?: { email?: boolean }) => {
       for (const p of points ?? []) {
         if (p.nav_date < sinceDate) continue
+        if (!isChinaTradingDay(p.nav_date)) continue
         if (!isPlausibleEmailUnitNav(p.nav)) continue
         if (opts?.email && seedLatest && p.nav_date <= seedLatest) continue
-        byDate.set(p.nav_date, p)
+        const prev = byDate.get(p.nav_date)
+        // Risk-mode legacy/估值表 may replace email unit on the same date; keep email
+        // 复权 (return_nav) so period / daily returns stay on the detail scale.
+        if (
+          prev
+          && prev.return_nav != null
+          && prev.return_nav !== prev.nav
+          && (p.return_nav == null || p.return_nav === p.nav)
+        ) {
+          byDate.set(p.nav_date, { ...p, return_nav: prev.return_nav })
+        } else {
+          byDate.set(p.nav_date, p)
+        }
       }
     }
 

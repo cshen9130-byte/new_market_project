@@ -1,8 +1,9 @@
 import fs from "fs"
 import path from "path"
 
-import Holidays from "date-holidays"
 import * as XLSX from "xlsx"
+
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 
 export type NavCleanerRow = {
   date: string
@@ -39,7 +40,6 @@ export type NavCleanerAnalysis = {
 type DateOrder = "ymd" | "mdy" | "dmy"
 
 const TEMPLATE_PATH = path.join(process.cwd(), "NAV_template", "上传净值模版.xlsx")
-const holidayCalendar = new Holidays("CN")
 
 const DATE_HEADER_PATTERNS = [
   /日期|净值日期|估值日期|业务日期|date|tradedate|navdate|valuationdate|asof/i,
@@ -507,18 +507,6 @@ function filterImplausibleWorkbookNavRows(rows: NavCleanerRow[], warnings: strin
     cutFrom = i
   }
   return cutFrom < filtered.length ? filtered.slice(0, cutFrom) : filtered
-}
-
-function isChinaTradingDay(isoDate: string) {
-  const [yearToken, monthToken, dayToken] = isoDate.split("-")
-  const year = Number(yearToken)
-  const month = Number(monthToken)
-  const day = Number(dayToken)
-  const localDate = new Date(year, month - 1, day)
-  const weekday = localDate.getDay()
-
-  if (weekday === 0 || weekday === 6) return false
-  return !holidayCalendar.isHoliday(localDate)
 }
 
 function formatTemplateDate(isoDate: string) {

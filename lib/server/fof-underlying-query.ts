@@ -7,7 +7,12 @@ import {
 } from "@/lib/server/fund-name-match"
 import { query } from "@/lib/db"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
-import { resolveManagedProductBeian, lookupManagedProductOverride, remapManagedProductBeianCode } from "@/lib/server/managed-product-beian"
+import {
+  resolveManagedProductBeian,
+  resolveManagedProductBeianIgnoringShareClass,
+  lookupManagedProductOverride,
+  remapManagedProductBeianCode,
+} from "@/lib/server/managed-product-beian"
 import { resolveFofValuationCodeAlias } from "@/lib/server/fund-holding-code"
 import { shareClassProductNamesMatch } from "@/lib/server/fund-name-match"
 import { lookupTeamDataProductFundInfo } from "@/lib/server/team-data-query-pg"
@@ -704,6 +709,17 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
     console.error("[lookupFundInfoFallback] type6_ops_team_full", e)
   }
 
+  // FOF list / holdings before email: Guotai TA-virtual rows often store the
+  // investor (e.g. 荣熙共赢A类) under the underlying product_code (AVM35A).
+  const fromFof = await lookupFofUnderlyingFundInfo(id)
+  if (fromFof) return fromFof
+
+  const viaParent = await resolveFundBeianViaParentCode(id)
+  if (viaParent && viaParent !== id) {
+    const fromParent = await lookupFundInfoByBeianCode(viaParent)
+    if (fromParent) return { ...fromParent, ...EMPTY_FUND_METRICS }
+  }
+
   try {
     await ensureEmailNavTable()
     const emailRows = await query<{
@@ -721,20 +737,30 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
          AND ${sqlEmailNavShareClassGuard("fund_name", "$1", "product_code")}
        )
        ORDER BY nav_date DESC NULLS LAST, id DESC
-       LIMIT 1`,
+       LIMIT 20`,
       [id],
     )
-    if (emailRows[0]?.product_name) {
+    for (const row of emailRows) {
+      if (!row.product_name) continue
       const beian =
-        resolveFofValuationCodeAlias(emailRows[0].beian_hao)
-        ?? (emailRows[0].beian_hao || emailRows[0].product_name)
-      if (beian !== emailRows[0].beian_hao) {
+        resolveFofValuationCodeAlias(row.beian_hao)
+        ?? (row.beian_hao || row.product_name)
+      const managedInvestorBeian = resolveManagedProductBeianIgnoringShareClass(row.product_name)
+      // Skip investor-as-fund labels when the row is keyed by a different underlying code.
+      if (
+        managedInvestorBeian
+        && beian
+        && managedInvestorBeian.toUpperCase() !== String(beian).toUpperCase()
+      ) {
+        continue
+      }
+      if (beian !== row.beian_hao) {
         const fromAlias = await lookupFundInfoByBeianCode(beian)
         if (fromAlias) return { ...fromAlias, ...EMPTY_FUND_METRICS }
       }
       return {
         beian_hao: beian,
-        product_name: emailRows[0].product_name,
+        product_name: row.product_name,
         short_name: null,
         strategy_l1: null,
         strategy_l2: null,
@@ -745,15 +771,6 @@ export async function lookupFundInfoFallback(identifier: string): Promise<FundIn
   } catch (e) {
     console.error("[lookupFundInfoFallback] ops_email_nav_records", e)
   }
-
-  const viaParent = await resolveFundBeianViaParentCode(id)
-  if (viaParent && viaParent !== id) {
-    const fromParent = await lookupFundInfoByBeianCode(viaParent)
-    if (fromParent) return { ...fromParent, ...EMPTY_FUND_METRICS }
-  }
-
-  const fromFof = await lookupFofUnderlyingFundInfo(id)
-  if (fromFof) return fromFof
 
   try {
     const fromTeamData = await lookupTeamDataProductFundInfo(id)
