@@ -15,6 +15,7 @@ Usage
   python scripts/ma/nightly_etl.py --step investment_pool_metrics
   python scripts/ma/nightly_etl.py --step dd_materials_links
   python scripts/ma/nightly_etl.py --group macro   # macro-market charts only
+  python scripts/ma/nightly_etl.py --group stock   # stock-market charts only (A-share crowding)
   python scripts/ma/nightly_etl.py --backfill    # force full history reload (2023-01-01 → today)
 
 Optional env:
@@ -4064,6 +4065,14 @@ MACRO_STEPS = [
     "money_credit",
 ]
 
+# Steps that refresh /ma/dashboard/stock-market charts (crowding, board share, top stocks).
+STOCK_STEPS = [
+    "ashare_daily",
+    "ashare_stock_names",
+    "ashare_index",
+    "ashare_crowding",
+]
+
 ORDERED_STEPS = [
     "nhci",
     "nheci",
@@ -4162,8 +4171,8 @@ def main():
     parser.add_argument("--step", choices=ORDERED_STEPS, help="Run a single step only")
     parser.add_argument(
         "--group",
-        choices=["macro"],
-        help="Run a predefined step group (e.g. macro = all macro-market chart steps)",
+        choices=["macro", "stock"],
+        help="Run a predefined step group (macro = macro-market charts, stock = A-share crowding charts)",
     )
     parser.add_argument("--backfill", action="store_true", help="Force full history reload")
     parser.add_argument("--force", action="store_true", help="Re-fetch even if data already in DB")
@@ -4251,6 +4260,9 @@ def main():
     elif args.group == "macro":
         steps_to_run = MACRO_STEPS
         log.info("Running macro-market step group (%d steps)", len(steps_to_run))
+    elif args.group == "stock":
+        steps_to_run = STOCK_STEPS
+        log.info("Running stock-market step group (%d steps)", len(steps_to_run))
     else:
         steps_to_run = ORDERED_STEPS
     errors = []

@@ -24,6 +24,19 @@ export async function register() {
       })()
     })
 
+    // Daily at 03:00: refresh stock-market chart data (A-share crowding, board share, top stocks).
+    // Runs after macro ETL; ashare_daily incremental uses fast spot mode once caught up.
+    cron.schedule("0 3 * * *", () => {
+      void (async () => {
+        try {
+          const { runScheduledStockMarketEtl } = await import("./lib/server/stock-market-etl-job")
+          runScheduledStockMarketEtl()
+        } catch (e) {
+          console.error("[stock-market-etl] scheduler error:", e)
+        }
+      })()
+    })
+
     // Every 5 minutes: checkpoint poll mailboxes for new NAV / 估值表 mail.
     // Already-processed UIDs are skipped (empty polls should finish in seconds).
     // When new mail lands, parse it and immediately refresh 在管产品 + FOF底层
