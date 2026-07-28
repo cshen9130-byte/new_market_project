@@ -28,6 +28,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { useRouter } from "next/navigation"
 import { computeFundNavMetrics, type MetricKey } from "@/lib/fund-nav-metrics"
+import { isWeekendIsoDate } from "@/lib/nav-trading-day"
 import { RED, GREEN, getNavFieldValue, computeNavPctChange, filterNavRowsByFrequency, type NavFrequencyFilter, type NavRow, type BenchmarkPoint, type PeerMonthlyRow, type PeerYearlyRow, type AnnualFundRow } from "./components/shared"
 import { IntervalMetricsTable, buildBenchmarkIntervalMetrics, type IntervalMetricValues } from "./components/IntervalMetricsTable"
 import { IntervalReturnsChart } from "./components/IntervalReturnsChart"
@@ -359,10 +360,11 @@ function PctSpan({ value, large = false, className }: { value: string | null; la
 
 // Downsample chart data: keep at most ~500 points for perf
 function getDefaultFilterRange(data: DetailData, todayStr: string): { from: string; to: string } {
-  const to = data.nav_series.length
-    ? data.nav_series[data.nav_series.length - 1].price_date
+  const trading = filterNavRowsByFrequency(data.nav_series, "全部")
+  const to = trading.length
+    ? trading[trading.length - 1].price_date
     : todayStr
-  const seriesStart = data.nav_series[0]?.price_date
+  const seriesStart = trading[0]?.price_date
   const inception = data.info.inception_date?.slice(0, 10)
   const from = seriesStart ?? inception ?? to
   return { from, to }
@@ -1270,6 +1272,7 @@ export default function PrivateFundDetailPage() {
 
   const filteredNavRows = useMemo(() => {
     if (!data) return []
+    // filterNavRowsByFrequency also drops Sat/Sun custody forward-fills.
     const byDate = data.nav_series.filter((row) => (!activeFrom || row.price_date >= activeFrom) && (!activeTo || row.price_date <= activeTo))
     return filterNavRowsByFrequency(byDate, appliedFreq)
   }, [data, activeFrom, activeTo, appliedFreq])
@@ -1342,8 +1345,10 @@ export default function PrivateFundDetailPage() {
 
   const benchmarkLabel = getBenchmarkLabel(appliedBench)
 
-  const intervalCutoffDate = data?.metrics.latest_nav_date
-    ?? filteredNavRows[filteredNavRows.length - 1]?.price_date
+  const intervalCutoffDate = filteredNavRows[filteredNavRows.length - 1]?.price_date
+    ?? (data?.metrics.latest_nav_date && !isWeekendIsoDate(data.metrics.latest_nav_date)
+      ? data.metrics.latest_nav_date
+      : "")
     ?? ""
 
   const fundIntervalMetrics = useMemo((): IntervalMetricValues => {
@@ -1792,6 +1797,12 @@ export default function PrivateFundDetailPage() {
 
   const { info, metrics, nav_series, nav_data_source } = data
   const navTableTitle = nav_data_source === "team" ? "团队净值" : "平台数据"
+  // Prefer last trading-day point so header never shows Sat/Sun forward-fills.
+  const latestTradingNav = filterNavRowsByFrequency(nav_series, "全部").at(-1) ?? null
+  const displayLatestNav = latestTradingNav?.nav ?? metrics.latest_nav
+  const displayLatestNavDate = latestTradingNav?.price_date ?? metrics.latest_nav_date
+  const displayLatestCumNav = latestTradingNav?.cum_nav_withdrawal ?? metrics.latest_cum_nav
+  const displayLatestAdjNav = latestTradingNav?.cumulative_nav ?? metrics.latest_cum_nav_reinvested
   const pct1w = fmtPct(info.ret_1w)
   const pct1m = fmtPct(info.ret_1m)
   const pct3m = fmtPct(info.ret_3m)
@@ -2009,17 +2020,17 @@ export default function PrivateFundDetailPage() {
         <div className="flex items-start gap-[clamp(0.5rem,1.5cqw,2rem)] shrink-0">
           <div className="shrink-0">
             <div className="text-[clamp(1.125rem,3cqw,2rem)] font-bold tabular-nums leading-none" style={{ color: RED }}>
-              {fmt(metrics.latest_nav, 4)}
+              {fmt(displayLatestNav, 4)}
             </div>
-            <div className="text-[clamp(0.625rem,1.1cqw,0.75rem)] text-zinc-500 mt-0.5 whitespace-nowrap">单位净值（{metrics.latest_nav_date ?? ""}）</div>
+            <div className="text-[clamp(0.625rem,1.1cqw,0.75rem)] text-zinc-500 mt-0.5 whitespace-nowrap">单位净值（{displayLatestNavDate ?? ""}）</div>
           </div>
 
           <div className="shrink-0 flex flex-col gap-0.5 justify-center text-[clamp(0.625rem,1.1cqw,0.75rem)] text-zinc-500">
             <div className="whitespace-nowrap">
-              累计净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav, 4)}</span>
+              累计净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(displayLatestCumNav, 4)}</span>
             </div>
             <div className="whitespace-nowrap">
-              复权净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(metrics.latest_cum_nav_reinvested, 4)}</span>
+              复权净值：<span className="font-semibold text-zinc-800 tabular-nums">{fmt(displayLatestAdjNav, 4)}</span>
             </div>
           </div>
         </div>

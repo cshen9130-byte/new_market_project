@@ -1,4 +1,5 @@
 import type { FundNavMetrics, MetricKey } from "@/lib/fund-nav-metrics"
+import { filterWeekendNavRows } from "@/lib/nav-trading-day"
 
 export const RED   = "rgb(239,68,68)"
 export const GREEN = "rgb(34,197,94)"
@@ -60,7 +61,9 @@ function weekBucketKey(dateStr: string): string {
 
 /** Keep the last NAV point per bucket for the selected frequency. */
 export function filterNavRowsByFrequency(rows: NavRow[], freq: NavFrequencyFilter): NavRow[] {
-  if (!rows.length || freq === "全部") return rows
+  // Always drop custody weekend forward-fills before frequency bucketing.
+  const tradingRows = filterWeekendNavRows(rows)
+  if (!tradingRows.length || freq === "全部") return tradingRows
 
   const bucketKey = (row: NavRow): string => {
     if (freq === "日频") return row.price_date.slice(0, 10)
@@ -69,7 +72,7 @@ export function filterNavRowsByFrequency(rows: NavRow[], freq: NavFrequencyFilte
   }
 
   const byBucket = new Map<string, NavRow>()
-  for (const row of rows) byBucket.set(bucketKey(row), row)
+  for (const row of tradingRows) byBucket.set(bucketKey(row), row)
   return [...byBucket.values()].sort((a, b) => a.price_date.localeCompare(b.price_date))
 }
 

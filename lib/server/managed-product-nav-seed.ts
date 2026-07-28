@@ -8,6 +8,7 @@ import {
 } from "@/lib/fund-nav-metrics"
 
 export { isPlausibleRiskRatio, MAX_PLAUSIBLE_RISK_RATIO }
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import {
   mergeLegacyWithTeamNav,
   mergeNavSeriesWithEmail,
@@ -84,7 +85,8 @@ export function resolveTeamSeriesListNavAt(
 ): ManagedListNavPoint | null {
   const merged = rows
     .map((row) => ({ nav_date: row.nav_date.slice(0, 10), nav: row.unit_nav }))
-    .filter((row) => row.nav_date <= asOfDate)
+    // Custody forward-fills Fri onto Sat/Sun — list "最新净值日期" must stay on trading days.
+    .filter((row) => row.nav_date <= asOfDate && isChinaTradingDay(row.nav_date))
     .sort((a, b) => a.nav_date.localeCompare(b.nav_date))
 
   if (merged.length === 0) return null
@@ -108,13 +110,15 @@ export function buildManagedProductListNavHistory(
   if (seed.length > 0) {
     const seedLatest = seed[seed.length - 1].price_date
     for (const row of seed) {
+      const nav_date = row.price_date.slice(0, 10)
+      if (!isChinaTradingDay(nav_date)) continue
       const nav = parseFloat(row.nav)
       if (!Number.isFinite(nav) || nav <= 0) continue
-      byDate.set(row.price_date.slice(0, 10), { nav_date: row.price_date.slice(0, 10), nav })
+      byDate.set(nav_date, { nav_date, nav })
     }
     for (const row of postSeedTeamNav) {
       const nav_date = row.nav_date.slice(0, 10)
-      if (nav_date <= seedLatest) continue
+      if (nav_date <= seedLatest || !isChinaTradingDay(nav_date)) continue
       const nav = parseFloat(row.unit_nav)
       if (!Number.isFinite(nav) || nav <= 0) continue
       byDate.set(nav_date, { nav_date, nav })
@@ -122,6 +126,7 @@ export function buildManagedProductListNavHistory(
   } else {
     for (const row of fullTeamNav) {
       const nav_date = row.nav_date.slice(0, 10)
+      if (!isChinaTradingDay(nav_date)) continue
       const nav = parseFloat(row.unit_nav)
       if (!Number.isFinite(nav) || nav <= 0) continue
       byDate.set(nav_date, { nav_date, nav })
@@ -144,13 +149,14 @@ export function resolveManagedProductListNavAt(
   const merged: Array<{ nav_date: string; nav: string }> = []
 
   for (const row of seed) {
-    if (row.price_date <= asOfDate) {
-      merged.push({ nav_date: row.price_date, nav: row.nav })
+    const nav_date = row.price_date.slice(0, 10)
+    if (nav_date <= asOfDate && isChinaTradingDay(nav_date)) {
+      merged.push({ nav_date, nav: row.nav })
     }
   }
   for (const row of postSeedTeamNav) {
     const nav_date = row.nav_date.slice(0, 10)
-    if (nav_date > seedLatest && nav_date <= asOfDate) {
+    if (nav_date > seedLatest && nav_date <= asOfDate && isChinaTradingDay(nav_date)) {
       merged.push({ nav_date, nav: row.unit_nav })
     }
   }
@@ -174,16 +180,23 @@ export function resolveManagedProductSeedNavAt(
   const seedLatest = seed[seed.length - 1].price_date
   let bestIdx = -1
   for (let i = 0; i < seed.length; i++) {
-    if (seed[i].price_date <= asOfDate) bestIdx = i
-    else break
+    const nav_date = seed[i].price_date.slice(0, 10)
+    if (nav_date > asOfDate) break
+    if (isChinaTradingDay(nav_date)) bestIdx = i
   }
   if (bestIdx < 0) return null
 
   const best = seed[bestIdx]
   if (best.price_date > seedLatest) return null
 
-  const prev = bestIdx > 0 ? seed[bestIdx - 1].nav : null
-  return { nav: best.nav, nav_date: best.price_date, prev_nav: prev }
+  let prev: string | null = null
+  for (let i = bestIdx - 1; i >= 0; i--) {
+    if (isChinaTradingDay(seed[i].price_date.slice(0, 10))) {
+      prev = seed[i].nav
+      break
+    }
+  }
+  return { nav: best.nav, nav_date: best.price_date.slice(0, 10), prev_nav: prev }
 }
 
 /** Reference NAV rows from verified xlsx. */

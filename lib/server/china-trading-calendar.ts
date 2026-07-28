@@ -5,17 +5,17 @@
 
 import Holidays from "date-holidays"
 
+import { isoDateWeekdayUtc, parseIsoDateParts } from "@/lib/nav-trading-day"
+
 const holidayCalendar = new Holidays("CN")
 
 /** True when `isoDate` (YYYY-MM-DD) is a China A-share trading day. */
 export function isChinaTradingDay(isoDate: string): boolean {
-  const [yearToken, monthToken, dayToken] = isoDate.split("-")
-  const year = Number(yearToken)
-  const month = Number(monthToken)
-  const day = Number(dayToken)
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return false
-  const localDate = new Date(year, month - 1, day)
-  const weekday = localDate.getDay()
-  if (weekday === 0 || weekday === 6) return false
+  const parts = parseIsoDateParts(isoDate)
+  if (!parts) return false
+  const weekday = isoDateWeekdayUtc(isoDate)
+  if (weekday == null || weekday === 0 || weekday === 6) return false
+  // Holidays calendar uses local civil date components (not UTC instant).
+  const localDate = new Date(parts.y, parts.m - 1, parts.d)
   return !holidayCalendar.isHoliday(localDate)
 }

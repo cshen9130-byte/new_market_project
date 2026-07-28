@@ -24,6 +24,8 @@ export type EmailParseRecordFilters = {
   postTableNavStatus?: ParseStepStatus | "all"
   valuationStatus?: ParseStepStatus | "all"
   ledgerStatus?: ParseStepStatus | "all"
+  /** Title looks like NAV/估值 for a product, but that product/date has no stored NAV. */
+  navDataGap?: boolean
   sentFrom?: string
   sentTo?: string
   subject?: string
@@ -193,13 +195,17 @@ export function getParsedEmailUidsForAccount(account: string): Set<string> {
   return uids
 }
 
-export function listEmailParseRecords(filters: EmailParseRecordFilters = {}): {
+export async function listEmailParseRecords(filters: EmailParseRecordFilters = {}): Promise<{
   rows: EmailParseRecord[]
   total: number
   stats: EmailParseRecordStats
-} {
+}> {
   const store = readStore()
-  const filtered = applyFilters(store.records, filters)
+  let filtered = applyFilters(store.records, filters)
+  if (filters.navDataGap) {
+    const { filterNavDataGapRecords } = await import("@/lib/server/email-parse-nav-gaps")
+    filtered = await filterNavDataGapRecords(filtered)
+  }
   const page = Math.max(1, filters.page ?? 1)
   const pageSize = Math.min(100, Math.max(1, filters.pageSize ?? 20))
   const start = (page - 1) * pageSize

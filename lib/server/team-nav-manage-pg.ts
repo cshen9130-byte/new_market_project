@@ -1,4 +1,5 @@
 import { query } from "@/lib/db"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import {
   loadEmailNavManagePoints,
   loadEmailNavManageRows,
@@ -142,12 +143,15 @@ export async function loadManagedProductPostSeedExtensions(
     if (!seedLatest) continue
     const byDate = new Map<string, { nav_date: string; unit_nav: string }>()
     for (const row of emailRows) {
-      if (row.code !== code || row.nav_date <= seedLatest) continue
-      byDate.set(row.nav_date, { nav_date: row.nav_date, unit_nav: row.nav })
+      const nav_date = row.nav_date.slice(0, 10)
+      if (row.code !== code || nav_date <= seedLatest) continue
+      if (!isChinaTradingDay(nav_date)) continue
+      byDate.set(nav_date, { nav_date, unit_nav: row.nav })
     }
     for (const row of teamMap.get(code) ?? []) {
-      if (row.nav_date <= seedLatest) continue
-      byDate.set(row.nav_date, row)
+      const nav_date = row.nav_date.slice(0, 10)
+      if (nav_date <= seedLatest || !isChinaTradingDay(nav_date)) continue
+      byDate.set(nav_date, { nav_date, unit_nav: row.unit_nav })
     }
     out.set(
       code,

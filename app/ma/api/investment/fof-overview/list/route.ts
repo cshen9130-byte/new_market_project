@@ -16,7 +16,10 @@ import {
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { autoAddFofUnderlyingToTables } from "@/lib/server/fof-underlying-auto-add-pg"
 import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
-import { enrichTrackFundMetricsRows } from "@/lib/server/list-cache-nav-batch"
+import {
+  enrichTrackFundMetricsRows,
+  patchLatestDailyReturnFromDetailSeries,
+} from "@/lib/server/list-cache-nav-batch"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -328,7 +331,9 @@ export async function GET(req: Request) {
 
       const mapped = rows.map(mapRow)
       const asOfDate = hasCutoff ? cutoffRaw : new Date().toISOString().slice(0, 10)
-      const data = await enrichTrackFundMetricsRows(mapped, asOfDate)
+      const enriched = await enrichTrackFundMetricsRows(mapped, asOfDate)
+      // Always recompute 最新涨跌幅 from detail series so stale cache (+4.61%) cannot win.
+      const data = await patchLatestDailyReturnFromDetailSeries(enriched, asOfDate)
 
       return NextResponse.json({
         data,

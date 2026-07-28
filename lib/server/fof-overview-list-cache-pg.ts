@@ -388,8 +388,102 @@ export async function refreshFofOverviewListCache(
     19,
   )
 
+  // Force 最新涨跌幅 (+ tip NAV/date) to match each product's detail 平台数据 row.
+  logProgress("syncing 最新涨跌幅 from detail 平台数据…", t0)
+  const synced = await syncFofCacheLatestReturnFromDetail(
+    products.map((p) => ({
+      product_name: p.product_name,
+      beian_hao: p.beian_hao,
+      short_name: p.short_name,
+    })),
+  )
+  logProgress(`detail sync updated ${synced}/${products.length} rows`, t0)
+
   logProgress(`done — ${products.length} rows`, t0)
   return products.length
+}
+
+/**
+ * Overwrite list-cache tip NAV / 最新涨跌幅 from the same series the fund detail
+ * page shows (平台数据 latest 涨跌幅). Keeps FOF底仓 aligned with detail clicks.
+ */
+async function syncFofCacheLatestReturnFromDetail(
+  products: Array<{
+    product_name: string
+    beian_hao: string | null
+    short_name: string | null
+  }>,
+): Promise<number> {
+  const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
+  let updated = 0
+  const chunkSize = 8
+  for (let i = 0; i < products.length; i += chunkSize) {
+    const chunk = products.slice(i, i + chunkSize)
+    const results = await Promise.all(
+      chunk.map(async (p) => {
+        const beian = (p.beian_hao ?? "").trim()
+        try {
+          // listHeader: null — do not extend with 估值表 just because the cache tip
+          // is ahead; that re-introduces gap-fill days detail never shows.
+          const series = await loadDetailNavSeriesFast({
+            beian_hao: beian,
+            product_name: p.product_name,
+            short_name: p.short_name ?? "",
+            listHeader: null,
+          })
+          if (series.length === 0) return null
+          const latest = series[series.length - 1]
+          const navDate = latest.price_date?.slice(0, 10) ?? null
+          const unitNav = parseFloat(String(latest.nav ?? ""))
+          if (!navDate || !Number.isFinite(unitNav) || unitNav <= 0) return null
+          const changeRaw = latest.price_change
+          const returnPct =
+            changeRaw != null && changeRaw !== ""
+              ? parseFloat(String(changeRaw)) / 100
+              : null
+          if (returnPct != null && !Number.isFinite(returnPct)) return null
+          return {
+            product_name: p.product_name,
+            beian_hao: beian || null,
+            nav_date: navDate,
+            unit_nav: unitNav,
+            return_pct: returnPct,
+          }
+        } catch (err) {
+          console.error(
+            `[fof-overview-cache] detail sync failed for ${p.product_name}:`,
+            err,
+          )
+          return null
+        }
+      }),
+    )
+    for (const row of results) {
+      if (!row) continue
+      await query(
+        `UPDATE ops_fof_overview_list_cache
+         SET unit_nav = $1,
+             nav_date = $2::date,
+             return_pct = $3,
+             refreshed_at = NOW()
+         WHERE product_name = $4
+           AND (
+             NULLIF(BTRIM(COALESCE(beian_hao, '')), '') IS NULL
+             OR $5::text IS NULL
+             OR UPPER(BTRIM(beian_hao)) = UPPER(BTRIM($5::text))
+           )`,
+        [
+          clampPgNumeric(row.unit_nav, 16, 6),
+          row.nav_date,
+          clampPgNumeric(row.return_pct, 16, 8),
+          row.product_name,
+          row.beian_hao,
+        ],
+      )
+      updated++
+    }
+  }
+  return updated
 }
 
 /** True when the API can serve from the nightly precomputed cache. */

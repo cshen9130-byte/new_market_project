@@ -1,6 +1,7 @@
 import { mergeLegacyWithTeamNav, mergeNavSeriesWithEmail, isFofUnderlyingValuationEmailRow, selectEmailNavSeriesRows, dedupeLegacyNavRowsByDate } from "../lib/server/email-nav-query.ts"
 import {
   enrichReturnNavSeries,
+  calcDailyReturnPctFromHistory,
   capPeriodReturnByDrawdown,
   calcReturn,
   sanitizeNavPointSeries,
@@ -10,7 +11,15 @@ import {
 import { lookupFundNavCorrectionRule } from "../lib/server/fund-nav-correction-rules.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
-import { computeManagedProductOneYearRiskMetrics, isPlausibleRiskRatio, loadManagedProductNavSeed, mergeManagedProductDetailNav } from "../lib/server/managed-product-nav-seed.ts"
+import {
+  computeManagedProductOneYearRiskMetrics,
+  isPlausibleRiskRatio,
+  loadManagedProductNavSeed,
+  mergeManagedProductDetailNav,
+  resolveTeamSeriesListNavAt,
+  buildManagedProductListNavHistory,
+} from "../lib/server/managed-product-nav-seed.ts"
+import { filterWeekendNavRows, isWeekendIsoDate } from "../lib/nav-trading-day.ts"
 import { analyzeNavWorkbook } from "../lib/server/nav-cleaner.ts"
 import fs from "fs"
 
@@ -62,6 +71,28 @@ assert("weekend Mon kept", weekendOut.some((r) => r.price_date === "2026-07-27")
 const weekendMon = weekendOut.find((r) => r.price_date === "2026-07-27")
 const weekendMonPct = parseFloat(weekendMon.price_change)
 assert("Mon daily vs Fri not flat weekend", Math.abs(weekendMonPct - ((1.37 / 1.3681 - 1) * 100)) < 0.02)
+
+// List "最新净值日期" must also skip custody weekend forward-fills.
+const weekendTeamRows = [
+  { nav_date: "2026-07-24", unit_nav: "0.9989" },
+  { nav_date: "2026-07-25", unit_nav: "0.9988" },
+  { nav_date: "2026-07-26", unit_nav: "0.9988" },
+]
+const listWeekend = resolveTeamSeriesListNavAt(weekendTeamRows, "2026-07-28")
+assert("list nav skips Sat/Sun", listWeekend?.nav_date === "2026-07-24")
+assert("list nav uses Fri unit", listWeekend?.nav === "0.9989")
+const listHist = buildManagedProductListNavHistory("", [], weekendTeamRows)
+assert("list history drops weekends", !listHist.some((p) => p.nav_date === "2026-07-25" || p.nav_date === "2026-07-26"))
+assert("list history keeps Fri", listHist.some((p) => p.nav_date === "2026-07-24"))
+assert("iso weekend Sat", isWeekendIsoDate("2026-07-25"))
+assert("iso weekend Sun", isWeekendIsoDate("2026-07-26"))
+assert("iso weekday Fri", !isWeekendIsoDate("2026-07-24"))
+const uiFiltered = filterWeekendNavRows([
+  { price_date: "2026-07-26", nav: "0.9988" },
+  { price_date: "2026-07-25", nav: "0.9988" },
+  { price_date: "2026-07-24", nav: "0.9989" },
+])
+assert("ui filter drops 25/26", uiFiltered.length === 1 && uiFiltered[0].price_date === "2026-07-24")
 
 // ex-div: cumulative stored as unit on 2026-04-30
 const exDivLegacy = [
@@ -1237,6 +1268,45 @@ assert(
 assert(
   "BHK26A unit day return is -1.79% (must not be list 最新涨跌幅)",
   Math.abs(1.0548 / 1.074 - 1 - (-0.017877)) < 0.0001,
+)
+
+// BSJ74B: history tip still on Jul-13 must not become 最新涨跌幅 when list NAV is Jul-27.
+const bsj74bStaleTip = [
+  { nav_date: "2026-07-10", nav: 0.9033, return_nav: 1.24376 },
+  { nav_date: "2026-07-13", nav: 0.8421, return_nav: 1.182458 },
+]
+const bsj74bStaleDaily = calcDailyReturnPctFromHistory(bsj74bStaleTip, 0.7241, "2026-07-27", 0.0461)
+assert(
+  "BSJ74B stale tip must not keep Jul-13 +4.61% as list 最新涨跌幅",
+  bsj74bStaleDaily != null && Math.abs(bsj74bStaleDaily - 0.0461) > 0.01,
+)
+const bsj74bFull = [
+  ...bsj74bStaleTip,
+  { nav_date: "2026-07-22", nav: 0.715, return_nav: 1.069876 },
+  { nav_date: "2026-07-27", nav: 0.7241, return_nav: 1.083493 },
+]
+const bsj74bDaily = calcDailyReturnPctFromHistory(bsj74bFull, 0.7241, "2026-07-27", null)
+assert(
+  "BSJ74B list daily matches detail 复权 +1.27%",
+  bsj74bDaily != null && Math.abs(bsj74bDaily - 0.012727) < 0.0001,
+)
+// 估值表-only Jul-23/24 between email Jul-22 and Jul-27 must not become the prev day
+// (that yielded list +4.61% = 1.083493/1.03576 - 1 while detail shows +1.27%).
+const bsj74bWithValGaps = [
+  { nav_date: "2026-07-22", nav: 0.715, return_nav: 1.069876 },
+  { nav_date: "2026-07-23", nav: 0.7128, return_nav: 1.066584 },
+  { nav_date: "2026-07-24", nav: 0.6922, return_nav: 1.03576 },
+  { nav_date: "2026-07-27", nav: 0.7241, return_nav: 1.083493 },
+]
+const bsj74bValGapDaily = calcDailyReturnPctFromHistory(bsj74bWithValGaps, 0.7241, "2026-07-27", null)
+assert(
+  "BSJ74B valuation gap days produce the wrong +4.61% (detail excludes them)",
+  bsj74bValGapDaily != null && Math.abs(bsj74bValGapDaily - 0.046085) < 0.0001,
+)
+const bsj74bDetailLike = calcDailyReturnPctFromHistory(bsj74bFull, 0.7241, "2026-07-27", null)
+assert(
+  "BSJ74B detail-like series (no val gaps) stays +1.27%",
+  bsj74bDetailLike != null && Math.abs(bsj74bDetailLike - 0.012727) < 0.0001,
 )
 
 const sbfm35History = [

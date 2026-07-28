@@ -7,6 +7,7 @@ import {
   resolveTeamSeriesListNavAt,
 } from "@/lib/server/managed-product-nav-seed"
 import { calcPeriodReturnsFromHistory } from "@/lib/server/list-cache-nav-batch"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { query, fmtIso } from "@/lib/db"
 import { sanitizeRiskMetricText } from "@/lib/fund-nav-metrics"
 import {
@@ -239,7 +240,13 @@ function applyValuationMetricsNavFallback(
 ): ManagedRow {
   if (row.latest_nav != null && row.latest_nav_date != null) return row
   const metrics = resolveEmailFundMetrics(row.product_name, row.beian_hao, metricsLookup)
-  if (metrics.unit_nav == null || !metrics.valuation_date) return row
+  if (
+    metrics.unit_nav == null
+    || !metrics.valuation_date
+    || !isChinaTradingDay(metrics.valuation_date)
+  ) {
+    return row
+  }
   return {
     ...row,
     latest_nav: String(metrics.unit_nav),
@@ -247,6 +254,51 @@ function applyValuationMetricsNavFallback(
     valuation_date: row.valuation_date ?? metrics.valuation_date,
     custody_balance: row.custody_balance ?? (metrics.custody_balance != null ? String(metrics.custody_balance) : null),
     net_asset_value: row.net_asset_value ?? (metrics.net_asset_value != null ? String(metrics.net_asset_value) : null),
+  }
+}
+
+/** Re-resolve list NAV when cache still has a weekend/holiday forward-fill date. */
+function clampManagedRowNavToTradingDay(
+  row: ManagedRow,
+  asOfDate: string,
+  postSeedTeamNavByBeian: Map<string, Array<{ nav_date: string; unit_nav: string }>>,
+  fullTeamNavByBeian: Map<string, Array<{ nav_date: string; unit_nav: string }>>,
+): ManagedRow {
+  if (!row.latest_nav_date || isChinaTradingDay(row.latest_nav_date)) return row
+
+  const beian = row.beian_hao
+  const override =
+    lookupManagedProductOverride(row.product_name)
+    ?? (beian ? lookupManagedProductOverride(beian) : null)
+  const listPoint = beian
+    ? (
+      resolveManagedProductListNavAt(
+        override?.beian_hao ?? beian,
+        asOfDate,
+        postSeedTeamNavByBeian.get(override?.beian_hao ?? beian) ?? [],
+      )
+      ?? resolveTeamSeriesListNavAt(fullTeamNavByBeian.get(beian) ?? [], asOfDate)
+    )
+    : null
+
+  if (!listPoint) {
+    return { ...row, latest_nav: null, latest_nav_date: null, latest_price_change: null }
+  }
+
+  const unitNav = parseFloat(listPoint.nav)
+  let latest_price_change = row.latest_price_change
+  if (listPoint.prev_nav != null) {
+    const prev = parseFloat(listPoint.prev_nav)
+    if (Number.isFinite(unitNav) && Number.isFinite(prev) && prev !== 0) {
+      latest_price_change = String(unitNav / prev - 1)
+    }
+  }
+
+  return {
+    ...row,
+    latest_nav: listPoint.nav,
+    latest_nav_date: listPoint.nav_date,
+    latest_price_change,
   }
 }
 
@@ -277,11 +329,33 @@ export async function GET(req: Request) {
       loadManagedProductTeamNavBatch(overrideItems),
       loadEmailFundMetricsLookup(),
     ])
-    const applyManagedNav = (row: ManagedRow) =>
-      applyValuationMetricsNavFallback(
-        applyManagedSeedNavOverride(row, asOfDate, postSeedTeamNavByBeian, fullTeamNavByBeian),
-        metricsLookup,
+
+    async function finalizeManagedRows(rows: ManagedRow[]): Promise<ManagedRow[]> {
+      const weekendItems = rows
+        .filter((row) => row.latest_nav_date && !isChinaTradingDay(row.latest_nav_date) && row.beian_hao)
+        .filter((row) => !fullTeamNavByBeian.has(row.beian_hao!))
+        .map((row) => ({
+          beian_hao: row.beian_hao!,
+          product_name: row.product_name,
+          short_name: row.short_name,
+        }))
+      if (weekendItems.length > 0) {
+        const extra = await loadManagedProductTeamNavBatch(weekendItems)
+        for (const [beian, series] of extra) fullTeamNavByBeian.set(beian, series)
+      }
+
+      return rows.map((row) =>
+        clampManagedRowNavToTradingDay(
+          applyValuationMetricsNavFallback(
+            applyManagedSeedNavOverride(row, asOfDate, postSeedTeamNavByBeian, fullTeamNavByBeian),
+            metricsLookup,
+          ),
+          asOfDate,
+          postSeedTeamNavByBeian,
+          fullTeamNavByBeian,
+        ),
       )
+    }
 
     // ─── FAST PATH — plain 2-table join, no lateral scans ───────────────────
     if (useCache) {
@@ -384,8 +458,9 @@ export async function GET(req: Request) {
         [...params, pageSize, offset],
       )
 
+      const data = (await finalizeManagedRows(rows.map(mapRow))).map(applyManagedRiskOverride)
       return NextResponse.json({
-        data: rows.map(mapRow).map(applyManagedNav).map(applyManagedRiskOverride),
+        data,
         total,
         page,
         pageSize,
@@ -510,8 +585,9 @@ export async function GET(req: Request) {
       [...listParams, pageSize, offset],
     )
 
+    const data = (await finalizeManagedRows(rows.map(mapRow))).map(applyManagedRiskOverride)
     return NextResponse.json({
-      data: rows.map(mapRow).map(applyManagedNav).map(applyManagedRiskOverride),
+      data,
       total,
       page,
       pageSize,

@@ -5,6 +5,7 @@
  */
 
 import { query } from "@/lib/db"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   buildManagedProductsFrom,
@@ -245,9 +246,11 @@ export async function refreshManagedProductsListCache(
     const fallbackReturnPct =
       row.fallback_return_pct != null ? parseFloat(row.fallback_return_pct) / 100 : null
 
+    // resolveAt already applies trading-day + fallback rules — do not re-accept a
+    // weekend managed_products.latest_nav_date when the resolver rejected it.
     const latest = navResolver.resolveAt(identity, asOfDate, fallbackNav, fallbackDate)
-    let unitNav = latest?.nav ?? fallbackNav
-    let navDate = latest?.nav_date ?? fallbackDate
+    let unitNav = latest?.nav ?? null
+    let navDate = latest?.nav_date ?? null
 
     let returnPct =
       unitNav != null && navDate
@@ -304,9 +307,17 @@ export async function refreshManagedProductsListCache(
       (unitNav == null || navDate == null)
       && emailMetrics.unit_nav != null
       && emailMetrics.valuation_date
+      && isChinaTradingDay(emailMetrics.valuation_date)
     ) {
       unitNav = emailMetrics.unit_nav
       navDate = emailMetrics.valuation_date
+    }
+
+    // Final guard: never persist Sat/Sun / CN holiday as 最新净值日期.
+    if (navDate && !isChinaTradingDay(navDate)) {
+      unitNav = null
+      navDate = null
+      returnPct = null
     }
 
     let returns =

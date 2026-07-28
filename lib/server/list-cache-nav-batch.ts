@@ -51,6 +51,45 @@ function navForReturn(p: NavPoint | null | undefined, fallback?: number): number
   return Number.isFinite(v) && v > 0 ? v : (fallback ?? null)
 }
 
+/**
+ * Daily 复权 return for list 最新涨跌幅 — must be the day of `navDate`, matching detail
+ * 平台数据. Never reuse an older tip's day return when history lags the listed NAV date.
+ */
+export function calcDailyReturnPctFromHistory(
+  historyAsc: NavPoint[],
+  unitNav: number,
+  navDate: string,
+  fallbackReturnPct: number | null = null,
+): number | null {
+  const sorted = enrichReturnNavSeries(historyAsc)
+  let curr = sorted.find((p) => p.nav_date === navDate) ?? null
+  if (!curr && Number.isFinite(unitNav) && unitNav > 0) {
+    const tip = sorted.filter((p) => p.nav_date < navDate).at(-1) ?? null
+    const tipReturn = navForReturn(tip)
+    const tipUnit = tip && tip.nav > 0 ? tip.nav : null
+    const returnNav =
+      tipReturn != null && tipUnit != null
+        ? tipReturn * (unitNav / tipUnit)
+        : unitNav
+    curr = { nav: unitNav, nav_date: navDate, return_nav: returnNav }
+  }
+  if (!curr) return fallbackReturnPct ?? null
+
+  let prev: NavPoint | null = null
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (sorted[i].nav_date < navDate) {
+      prev = sorted[i]
+      break
+    }
+  }
+  if (prev) {
+    const currReturn = navForReturn(curr, unitNav)
+    const prevReturn = navForReturn(prev)
+    if (currReturn != null && prevReturn != null) return calcReturn(currReturn, prevReturn)
+  }
+  return fallbackReturnPct ?? null
+}
+
 const MIN_RETURN_NAV_RATIO = 0.85
 const MAX_RETURN_NAV_RATIO = 2.5
 
@@ -1470,28 +1509,17 @@ export class BatchNavResolver {
     navDate: string,
     fallbackReturnPct: number | null,
   ): number | null {
-    // Same 复权 series as detail 平台数据涨跌幅 (return_nav after email rechain).
-    // Use display merge (email wins same-date), not risk merge — FOF 估值表 overlay
-    // would replace email return_nav with bare 市价 and inflate 最新涨跌幅.
-    const historyAsc = enrichReturnNavSeries(
-      this.mergedHistory(identity, addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS)),
+    // Same series as detail 平台数据涨跌幅: email/type6/legacy rechain, no 估值表 gap
+    // fills (those invent intermediate dates detail never shows — BSJ74B +4.61% vs +1.27%).
+    return calcDailyReturnPctFromHistory(
+      this.mergedHistoryForDetailDailyReturn(
+        identity,
+        addDays(navDate, NAV_HISTORY_LOOKBACK_DAYS),
+      ),
+      unitNav,
+      navDate,
+      fallbackReturnPct,
     )
-    const curr =
-      historyAsc.filter((p) => p.nav_date <= navDate).at(-1)
-      ?? null
-    let prev: NavPoint | null = null
-    for (let i = historyAsc.length - 1; i >= 0; i--) {
-      if (historyAsc[i].nav_date < navDate) {
-        prev = historyAsc[i]
-        break
-      }
-    }
-    if (prev) {
-      const currReturn = navForReturn(curr, unitNav)
-      const prevReturn = navForReturn(prev)
-      if (currReturn != null && prevReturn != null) return calcReturn(currReturn, prevReturn)
-    }
-    return fallbackReturnPct ?? null
   }
 
   calcPeriodReturns(
@@ -1559,6 +1587,14 @@ export class BatchNavResolver {
     return this.buildMergedHistory(identity, sinceDate, "display")
   }
 
+  /**
+   * Same sources as detail 平台数据 (email/type6/legacy/seed) — no 估值表 gap fills.
+   * Used for 最新涨跌幅 so list matches detail (BSJ74B: skip Jul-23/24 市价 between email dates).
+   */
+  mergedHistoryForDetailDailyReturn(identity: ProductNavIdentity, sinceDate: string): NavPoint[] {
+    return this.buildMergedHistory(identity, sinceDate, "detail-daily")
+  }
+
   /** Risk metrics: type6/legacy override email on same dates so drawdowns are preserved. */
   mergedHistoryForRiskMetrics(identity: ProductNavIdentity, sinceDate: string): NavPoint[] {
     return this.buildMergedHistory(identity, sinceDate, "risk")
@@ -1567,7 +1603,7 @@ export class BatchNavResolver {
   private buildMergedHistory(
     identity: ProductNavIdentity,
     sinceDate: string,
-    mode: "display" | "risk",
+    mode: "display" | "risk" | "detail-daily",
   ): NavPoint[] {
     const beian = (identity.beian_hao ?? "").trim()
     const short = (identity.short_name ?? "").trim()
@@ -1600,11 +1636,11 @@ export class BatchNavResolver {
       }
     }
 
-    const legacyLayers = () => {
+    const legacyLayers = (includeValuation: boolean) => {
       apply(this.legacyByBeian.get(beian))
       apply(this.legacyByProduct.get(identity.product_name))
       if (short) apply(this.legacyByProduct.get(short))
-      apply(this.collectValuationPoints(identity))
+      if (includeValuation) apply(this.collectValuationPoints(identity))
     }
     const type6Layers = () => {
       apply(this.type6ByBeian.get(beian))
@@ -1625,13 +1661,19 @@ export class BatchNavResolver {
     }
 
     if (mode === "display") {
-      legacyLayers()
+      legacyLayers(true)
+      type6Layers()
+      emailLayers()
+      seedLayer()
+    } else if (mode === "detail-daily") {
+      // Match detail 平台数据: no 估值表-only dates between email NAVs.
+      legacyLayers(false)
       type6Layers()
       emailLayers()
       seedLayer()
     } else {
       emailLayers()
-      legacyLayers()
+      legacyLayers(true)
       type6Layers()
       seedLayer()
     }
@@ -1847,6 +1889,39 @@ export async function enrichTrackFundMetricsRows<T extends TrackFundMetricsField
   return rows.map((row) => {
     const patch = patches.get(row.beian_hao)
     return patch ? { ...row, ...patch } : row
+  })
+}
+
+/**
+ * Always overwrite 最新涨跌幅 from the detail-aligned series (no 估值表 gap fills).
+ * Used by FOF list APIs so a stale cache worker cannot keep serving BSJ74B +4.61%.
+ */
+export async function patchLatestDailyReturnFromDetailSeries<T extends TrackFundMetricsFields>(
+  rows: T[],
+  asOfDate: string,
+): Promise<T[]> {
+  if (rows.length === 0) return rows
+  const identities = rows.map((row) => ({
+    beian_hao: row.beian_hao,
+    product_name: row.product_name,
+    short_name: row.short_name,
+  }))
+  const resolver = await BatchNavResolver.create(identities, asOfDate)
+  return rows.map((row) => {
+    const identity = {
+      beian_hao: row.beian_hao,
+      product_name: row.product_name,
+      short_name: row.short_name,
+    }
+    const latest = resolver.resolveAt(identity, asOfDate)
+    if (!latest) return row
+    const returnPct = resolver.calcDailyReturnPct(identity, latest.nav, latest.nav_date, null)
+    return {
+      ...row,
+      latest_nav: String(latest.nav),
+      latest_nav_date: latest.nav_date,
+      latest_price_change: returnPct != null ? String(returnPct) : row.latest_price_change,
+    }
   })
 }
 

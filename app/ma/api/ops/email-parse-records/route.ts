@@ -12,11 +12,13 @@ function parseStatus(value: string | null, fallback: "all"): ParseStepStatus | "
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url)
-    const result = listEmailParseRecords({
+    const navDataGapParam = url.searchParams.get("navDataGap")
+    const result = await listEmailParseRecords({
       tableNavStatus: parseStatus(url.searchParams.get("tableNavStatus"), "all"),
       postTableNavStatus: parseStatus(url.searchParams.get("postTableNavStatus"), "all"),
       valuationStatus: parseStatus(url.searchParams.get("valuationStatus"), "all"),
       ledgerStatus: parseStatus(url.searchParams.get("ledgerStatus"), "all"),
+      navDataGap: navDataGapParam === "1" || navDataGapParam === "true",
       sentFrom: url.searchParams.get("sentFrom") ?? undefined,
       sentTo: url.searchParams.get("sentTo") ?? undefined,
       subject: url.searchParams.get("subject") ?? undefined,

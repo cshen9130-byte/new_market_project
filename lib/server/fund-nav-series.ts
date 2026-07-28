@@ -1,9 +1,11 @@
 import { query } from "@/lib/db"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
 import {
   loadEmailNavSeries,
   loadPrivateFundLegacyNavRows,
   mergeLegacyWithTeamNav,
   mergeNavSeriesWithEmail,
+  recomputeNavPriceChanges,
   type LegacyNavRow,
 } from "@/lib/server/email-nav-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
@@ -216,7 +218,10 @@ export async function loadMergedFundNavRows(
   product_name: string,
   short_name: string,
 ): Promise<LegacyNavRow[]> {
-  return loadMergedNavRows(beian_hao, product_name, short_name)
+  // Defense in depth: custody forward-fills can still leak if a merge path skips finalize.
+  const rows = (await loadMergedNavRows(beian_hao, product_name, short_name))
+    .filter((row) => isChinaTradingDay(row.price_date.slice(0, 10)))
+  return recomputeNavPriceChanges(rows)
 }
 
 export async function loadFundNavSeries(

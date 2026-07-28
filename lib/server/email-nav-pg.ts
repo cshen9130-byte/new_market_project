@@ -121,8 +121,14 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
   if (records.length === 0) return 0
   await ensureEmailNavTable()
 
+  // Custody 净值表 often forward-fills Fri onto Sat/Sun — never persist those as NAV dates.
+  const { isChinaTradingDay } = await import("@/lib/server/china-trading-calendar")
+
   let count = 0
   for (const r of records) {
+    const navDate = String(r.navDate ?? "").slice(0, 10)
+    if (!navDate || !isChinaTradingDay(navDate)) continue
+
     const productCode = applyEmailProductCodeOverride(
       r.productCode,
       r.fundName,
@@ -149,7 +155,7 @@ export async function upsertEmailNavRecords(records: EmailNavInsert[]): Promise<
         r.sentAt,
         r.subject,
         r.senderEmail,
-        r.navDate,
+        navDate,
         r.nav,
         r.cumulativeNav,
         r.adjustedNav,

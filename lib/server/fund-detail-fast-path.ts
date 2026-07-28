@@ -225,6 +225,8 @@ export function buildDetailHeaderFromListCache(
   cached: ListCacheFundHeader,
 ): DetailHeaderPayload {
   const beian = (cached.beian_hao ?? rawId).trim()
+  const navDate = cached.nav_date ? String(cached.nav_date).slice(0, 10) : null
+  const tradingNavDate = navDate && isChinaTradingDay(navDate) ? navDate : null
   return {
     partial: true,
     info: {
@@ -251,8 +253,9 @@ export function buildDetailHeaderFromListCache(
     nav_series: [],
     nav_data_source: "platform",
     metrics: {
-      latest_nav: cached.unit_nav,
-      latest_nav_date: cached.nav_date,
+      // Hide weekend forward-fill tips until the full trading-day series arrives.
+      latest_nav: tradingNavDate ? cached.unit_nav : null,
+      latest_nav_date: tradingNavDate,
       latest_cum_nav: null,
       latest_cum_nav_reinvested: null,
       ret_since_inception: null,
@@ -267,15 +270,17 @@ export function buildDetailHeaderFromListCache(
 function navPointsToLegacyRows(
   points: Array<{ nav: number; nav_date: string }>,
 ): LegacyNavRow[] {
-  return points.map((p) => {
+  return points.flatMap((p) => {
+    const price_date = p.nav_date.slice(0, 10)
+    if (!isChinaTradingDay(price_date)) return []
     const nav = String(p.nav)
-    return {
-      price_date: p.nav_date.slice(0, 10),
+    return [{
+      price_date,
       nav,
       cumulative_nav: nav,
       cum_nav_withdrawal: nav,
       price_change: "",
-    }
+    }]
   })
 }
 

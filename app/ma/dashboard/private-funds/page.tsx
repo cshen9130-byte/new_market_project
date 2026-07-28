@@ -6892,6 +6892,7 @@ function OperationsParseLogsPanel() {
   const [postTableNavFilter, setPostTableNavFilter] = useState<ParseStatusFilter>("all")
   const [valuationFilter, setValuationFilter] = useState<ParseStatusFilter>("all")
   const [ledgerFilter, setLedgerFilter] = useState<ParseStatusFilter>("all")
+  const [navDataGap, setNavDataGap] = useState(false)
   const [sentFrom, setSentFrom] = useState(formatParseDateInput(defaultFrom))
   const [sentTo, setSentTo] = useState(formatParseDateInput(today))
   const [subjectInput, setSubjectInput] = useState("")
@@ -6902,6 +6903,7 @@ function OperationsParseLogsPanel() {
     postTableNavFilter: "all" as ParseStatusFilter,
     valuationFilter: "all" as ParseStatusFilter,
     ledgerFilter: "all" as ParseStatusFilter,
+    navDataGap: false,
     sentFrom: formatParseDateInput(defaultFrom),
     sentTo: formatParseDateInput(today),
     subjectKeyword: "",
@@ -6916,6 +6918,7 @@ function OperationsParseLogsPanel() {
     if (appliedFilters.postTableNavFilter !== "all") params.set("postTableNavStatus", appliedFilters.postTableNavFilter)
     if (appliedFilters.valuationFilter !== "all") params.set("valuationStatus", appliedFilters.valuationFilter)
     if (appliedFilters.ledgerFilter !== "all") params.set("ledgerStatus", appliedFilters.ledgerFilter)
+    if (appliedFilters.navDataGap) params.set("navDataGap", "1")
     if (appliedFilters.sentFrom) params.set("sentFrom", appliedFilters.sentFrom)
     if (appliedFilters.sentTo) params.set("sentTo", appliedFilters.sentTo)
     if (appliedFilters.subjectKeyword.trim()) params.set("subject", appliedFilters.subjectKeyword.trim())
@@ -7044,6 +7047,7 @@ function OperationsParseLogsPanel() {
       postTableNavFilter,
       valuationFilter,
       ledgerFilter,
+      navDataGap,
       sentFrom,
       sentTo,
       subjectKeyword: subjectInput,
@@ -7199,6 +7203,21 @@ function OperationsParseLogsPanel() {
           <ParseStatusRadios label="费后净值解析状态" value={postTableNavFilter} onChange={setPostTableNavFilter} />
           <ParseStatusRadios label="估值表抓取状态" value={valuationFilter} onChange={setValuationFilter} />
           <ParseStatusRadios label="台账抓取状态" value={ledgerFilter} onChange={setLedgerFilter} />
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label
+            className="flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap"
+            title="标题像含净值/估值，解析未成功，且产品对应日期在库中无净值"
+          >
+            <input
+              type="checkbox"
+              className="text-red-500"
+              checked={navDataGap}
+              onChange={(e) => setNavDataGap(e.target.checked)}
+            />
+            <span className="text-muted-foreground">净值疑似缺失</span>
+            <span className="text-muted-foreground/70">（标题像净值但产品日期无数据）</span>
+          </label>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs text-muted-foreground shrink-0">发送时间</span>

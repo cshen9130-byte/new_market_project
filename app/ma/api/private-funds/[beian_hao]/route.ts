@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server"
 import { query } from "@/lib/db"
+import { isWeekendIsoDate } from "@/lib/nav-trading-day"
 import { tryGetCustomFundPrivateDetail } from "@/lib/server/custom-funds"
+import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
+import { recomputeNavPriceChanges, type LegacyNavRow } from "@/lib/server/email-nav-query"
 import { lookupFundInfoFallback } from "@/lib/server/fof-underlying-query"
 import { lookupManagedProductOverride } from "@/lib/server/managed-product-beian"
 import { loadManagedProductNavSeed } from "@/lib/server/managed-product-nav-seed"
@@ -53,6 +56,39 @@ function pctFromCache(raw: string | null | undefined): string | null {
   if (raw == null || raw === "") return null
   const n = parseFloat(raw)
   return Number.isFinite(n) ? (n * 100).toFixed(4) : null
+}
+
+/** Drop non-trading days from detail payload (also sanitizes stale in-memory cache). */
+function sanitizeDetailNavSeries<T extends LegacyNavRow>(rows: T[]): T[] {
+  const filtered = rows.filter((row) => isChinaTradingDay(String(row.price_date).slice(0, 10)))
+  return recomputeNavPriceChanges(filtered) as T[]
+}
+
+function sanitizeDetailBody<T extends {
+  nav_series?: LegacyNavRow[]
+  metrics?: {
+    latest_nav?: string | null
+    latest_nav_date?: string | null
+    latest_cum_nav?: string | null
+    latest_cum_nav_reinvested?: string | null
+  }
+}>(body: T): T {
+  const series = Array.isArray(body.nav_series) ? sanitizeDetailNavSeries(body.nav_series) : []
+  const latest = series[series.length - 1]
+  const metrics = body.metrics
+    ? {
+        ...body.metrics,
+        latest_nav: latest?.nav ?? body.metrics.latest_nav ?? null,
+        latest_nav_date: latest?.price_date ?? (
+          body.metrics.latest_nav_date && !isWeekendIsoDate(body.metrics.latest_nav_date)
+            ? body.metrics.latest_nav_date
+            : null
+        ),
+        latest_cum_nav: latest?.cum_nav_withdrawal ?? body.metrics.latest_cum_nav ?? null,
+        latest_cum_nav_reinvested: latest?.cumulative_nav ?? body.metrics.latest_cum_nav_reinvested ?? null,
+      }
+    : body.metrics
+  return { ...body, nav_series: series, metrics }
 }
 
 function infoFromListCache(
@@ -181,7 +217,7 @@ export async function GET(
     const cacheKey = beian_hao || rawId
     const cachedDetail = detailResponseCache.get(cacheKey)
     if (cachedDetail && Date.now() - cachedDetail.at < DETAIL_TTL_MS) {
-      return NextResponse.json(cachedDetail.body)
+      return NextResponse.json(sanitizeDetailBody(cachedDetail.body as Parameters<typeof sanitizeDetailBody>[0]))
     }
 
     const infoRows = await query<InfoRow>(
@@ -316,7 +352,7 @@ export async function GET(
     const bflTrack = bflTrackRows[0]
     const trackAdvisor = bflTrack?.advisor?.trim() || null
 
-    const [strategyL3Rows, type6StrategyRows, nav_series, amacResolved] = await Promise.all([
+    const [strategyL3Rows, type6StrategyRows, navSeriesRaw, amacResolved] = await Promise.all([
       strategy_l3
         ? Promise.resolve([] as { l3: string | null }[])
         : query<{ l3: string | null }>(
@@ -342,6 +378,7 @@ export async function GET(
         registerCode: bflTrack?.register_code ?? null,
       }),
     ])
+    const nav_series = sanitizeDetailNavSeries(navSeriesRaw)
 
     if (!strategy_l3) {
       strategy_l3 = strategyL3Rows[0]?.l3 ?? type6StrategyRows[0]?.l3 ?? null
@@ -454,10 +491,11 @@ export async function GET(
       },
     }
 
-    rememberDetail(cacheKey, body)
-    if (routeBeianHao !== cacheKey) rememberDetail(routeBeianHao, body)
+    const safeBody = sanitizeDetailBody(body)
+    rememberDetail(cacheKey, safeBody)
+    if (routeBeianHao !== cacheKey) rememberDetail(routeBeianHao, safeBody)
 
-    return NextResponse.json(body)
+    return NextResponse.json(safeBody)
   } catch (err) {
     console.error("[private-funds/detail]", err)
     const message = err instanceof Error ? err.message : String(err)
