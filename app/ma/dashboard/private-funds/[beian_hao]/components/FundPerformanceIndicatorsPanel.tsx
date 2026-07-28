@@ -12,6 +12,7 @@ import {
   Tooltip,
   ResponsiveContainer,
   ReferenceLine,
+  ReferenceDot,
 } from "recharts"
 import { Download, Menu, X } from "lucide-react"
 import {
@@ -29,7 +30,7 @@ import {
   type BenchmarkPoint,
 } from "./shared"
 import { computePeriodStats } from "./computePeriodStats"
-import { DrawdownEpisodesTable, useDrawdownEpisodeRows } from "./DrawdownEpisodesTable"
+import { DrawdownEpisodesTable, useDrawdownEpisodeRows, buildDrawdownEpisodeMarks, DrawdownEpisodeMarkLabel } from "./DrawdownEpisodesTable"
 import { DynamicDrawdownChart } from "./DynamicDrawdownChart"
 import { DrawdownCalcHelpButton } from "./DrawdownCalcHelpButton"
 import {
@@ -341,6 +342,7 @@ function NavPerformanceChart({
   height = "100%",
   gradientId = "navGrad",
   returnLabelMode = "cumulative",
+  episodeMarks = [],
 }: {
   data: NavChartPoint[]
   chartMode: "nav" | "return"
@@ -353,10 +355,11 @@ function NavPerformanceChart({
   height?: number | string
   gradientId?: string
   returnLabelMode?: ReturnLabelMode
+  episodeMarks?: Array<{ date: string; y: number; no: number }>
 }) {
   return (
     <ResponsiveContainer width="100%" height={height} debounce={1}>
-      <ComposedChart data={data} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+      <ComposedChart data={data} margin={{ top: 12, right: 12, left: 4, bottom: 4 }}>
         <defs>
           <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#ef4444" stopOpacity={0.12} />
@@ -417,6 +420,16 @@ function NavPerformanceChart({
           activeDot={{ r: 4.5, fill: RED, stroke: "#fff", strokeWidth: 1.5 }}
           isAnimationActive={false}
         />
+        {episodeMarks.map((mark) => (
+          <ReferenceDot
+            key={`nav-ep-${mark.no}-${mark.date}`}
+            x={mark.date}
+            y={mark.y}
+            r={0}
+            ifOverflow="extendDomain"
+            label={<DrawdownEpisodeMarkLabel value={mark.no} />}
+          />
+        ))}
       </ComposedChart>
     </ResponsiveContainer>
   )
@@ -710,6 +723,20 @@ export function FundPerformanceIndicatorsPanel({
 
   const drawdownEpisodes = useDrawdownEpisodeRows(rows, navType, hasBenchmark, benchmarkSeries)
 
+  const drawdownEpisodeMarks = useMemo(
+    () => buildDrawdownEpisodeMarks(
+      drawdownChartData,
+      drawdownEpisodes,
+      (p) => (showDrawdownExcess ? p.excessDD : p.fundDD),
+    ),
+    [drawdownChartData, drawdownEpisodes, showDrawdownExcess],
+  )
+
+  const returnChartEpisodeMarks = useMemo(
+    () => buildDrawdownEpisodeMarks(activeChartData, drawdownEpisodes, (p) => p.value),
+    [activeChartData, drawdownEpisodes],
+  )
+
   const drawdownExportName = useMemo(
     () => `${productName}_动态回撤_${new Date().toISOString().slice(0, 10)}`,
     [productName],
@@ -953,81 +980,256 @@ export function FundPerformanceIndicatorsPanel({
         />
       )}
 
-      {drawdownChartData.length > 1 && (
-        <div className="mt-4 rounded-xl border border-zinc-100 bg-white p-5">
-          <div ref={drawdownChartCaptureRef}>
-            <div className="flex items-start justify-between mb-1">
-              <div>
-                <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
-                  动态回撤
-                  <DrawdownCalcHelpButton showExcess={hasBenchmark} />
-                </div>
-                {dateFrom && dateTo && (
-                  <div className="text-[11px] text-zinc-400 mt-1 tabular-nums">
-                    统计区间：{dateFrom} - {dateTo}
+      <div className="mt-4 flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
+        {activeChartData.length > 1 && (
+          <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
+            <div className="flex flex-col flex-1 min-h-0">
+              <div className="flex items-start justify-between mb-2 flex-shrink-0 gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-zinc-800">
+                    {chartMode === "nav" ? `净值走势（${navType}）` : `收益曲线（${navType}）`}
                   </div>
-                )}
-                {!showDrawdownExcess && (
+                  {dateFrom && dateTo && (
+                    <div className="text-[11px] text-zinc-400 mt-1 tabular-nums">
+                      {dateFrom} ~ {dateTo}
+                    </div>
+                  )}
                   <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
                     <span className="inline-flex items-center gap-1.5">
                       <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                      {productName}
+                      {chartMode === "return" ? "基金收益率" : navType}
                     </span>
                     {hasBenchmark && (
                       <span className="inline-flex items-center gap-1.5">
-                        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#2563eb" }} />
-                        {benchmarkLabel}（基准）
+                        <svg width="20" height="4" aria-hidden="true" className="inline-block">
+                          <line x1="0" y1="2" x2="20" y2="2" stroke="#2563eb" strokeWidth="2" strokeDasharray="5 3" />
+                        </svg>
+                        {benchmarkLabel}
                       </span>
                     )}
                   </div>
-                )}
-                {showDrawdownExcess && (
-                  <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
-                      超额回撤
-                    </span>
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-4 flex-shrink-0">
-                {hasBenchmark && (
-                  <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-zinc-600">
-                    <input
-                      type="checkbox"
-                      checked={showDrawdownExcess}
-                      onChange={(e) => setShowDrawdownExcess(e.target.checked)}
-                      className="rounded border-zinc-300 accent-zinc-700"
-                    />
-                    超额
-                  </label>
-                )}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+                </div>
+                <div className="flex flex-col items-end gap-1 flex-shrink-0">
+                  <div className="inline-flex text-xs">
                     <button
                       type="button"
-                      className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors"
-                      aria-label="回撤图表菜单"
+                      onClick={() => setChartMode("return")}
+                      className={`px-3 py-1 transition-colors border rounded-l ${
+                        chartMode === "return"
+                          ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                          : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                      }`}
                     >
-                      <Menu className="h-4 w-4" />
+                      收益曲线
                     </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="min-w-[7.5rem] text-xs">
-                    <DropdownMenuItem onClick={handleDownloadDrawdownImage}>下载图片</DropdownMenuItem>
-                    <DropdownMenuItem onClick={handleDownloadDrawdownData}>下载数据</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                    <button
+                      type="button"
+                      onClick={() => setChartMode("nav")}
+                      className={`px-3 py-1 transition-colors border rounded-r -ml-px ${
+                        chartMode === "nav"
+                          ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                          : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                      }`}
+                    >
+                      净值曲线
+                    </button>
+                  </div>
+                  {chartMode === "return" && (
+                    <div className="inline-flex text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setReturnLabelMode("cumulative")}
+                        className={`px-2.5 py-1 transition-colors border rounded-l ${
+                          returnLabelMode === "cumulative"
+                            ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                            : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                        }`}
+                      >
+                        累计收益
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReturnLabelMode("period")}
+                        className={`px-2.5 py-1 transition-colors border rounded-r -ml-px ${
+                          returnLabelMode === "period"
+                            ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                            : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                        }`}
+                      >
+                        涨跌幅
+                      </button>
+                    </div>
+                  )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors"
+                        aria-label="图表菜单"
+                      >
+                        <Menu className="h-4 w-4" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[7.5rem] text-xs">
+                      <DropdownMenuItem onClick={handleDownloadNavChartImage}>下载图片</DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleDownloadNavChartData}>下载数据</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setNavChartLightboxOpen(true)}>查看大图</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0">
+                <NavPerformanceChart
+                  data={activeChartData}
+                  chartMode={chartMode}
+                  navTypeLabel={navType}
+                  yDomain={yDomain}
+                  xAxis={navChartXAxis}
+                  showDots={navChartShowDots}
+                  showBench={hasBenchmark}
+                  benchmarkLabel={benchmarkLabel}
+                  gradientId="navGradAboveDd"
+                  returnLabelMode={returnLabelMode}
+                  episodeMarks={returnChartEpisodeMarks}
+                />
               </div>
             </div>
-            <DynamicDrawdownChart
-              data={drawdownChartData}
-              productName={productName}
-              benchmarkLabel={benchmarkLabel}
-              hasBenchmark={hasBenchmark}
-              showExcess={showDrawdownExcess}
-              maxFundDrawdown={maxFundDrawdown}
-            />
+          </div>
+        )}
 
+        <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
+          <div className="flex items-center justify-between mb-3 flex-shrink-0">
+            <div className="text-sm font-semibold text-zinc-700">{navTableTitle}</div>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!hasBenchmark) return
+                  setShowTableBenchmarkChg((v) => !v)
+                }}
+                disabled={!hasBenchmark}
+                title={hasBenchmark ? undefined : "请先选择业绩基准并点击开始分析"}
+                className={`inline-flex items-center text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  showTableBenchmarkChg && hasBenchmark
+                    ? "text-red-600 font-medium"
+                    : "text-zinc-500 hover:text-zinc-800 disabled:hover:text-zinc-500"
+                }`}
+              >
+                {showTableBenchmarkChg && hasBenchmark ? "隐藏基准涨跌幅" : "显示基准涨跌幅"}
+              </button>
+              <button
+                type="button"
+                onClick={() => exportNavCsv(
+                  rows,
+                  navType,
+                  `${productName}_${navTableTitle}_${new Date().toISOString().slice(0, 10)}.csv`,
+                  {
+                    showBenchmarkChg: !!(showTableBenchmarkChg && hasBenchmark),
+                    benchmarkLabel,
+                    benchmarkChgByDate,
+                  },
+                )}
+                disabled={rows.length === 0}
+                className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <Download className="h-3.5 w-3.5" />
+                导出
+              </button>
+            </div>
+          </div>
+          <NavTable
+            rows={rows}
+            navType={navType}
+            showBenchmarkChg={!!(showTableBenchmarkChg && hasBenchmark)}
+            benchmarkLabel={benchmarkLabel}
+            benchmarkChgByDate={benchmarkChgByDate}
+          />
+        </div>
+      </div>
+
+      {drawdownChartData.length > 1 && (
+        <div className="mt-4 flex flex-col xl:flex-row gap-4" style={{ height: 420 }}>
+          <div className="xl:w-[60%] min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
+            <div ref={drawdownChartCaptureRef} className="flex flex-col flex-1 min-h-0">
+              <div className="flex items-start justify-between mb-1 flex-shrink-0">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800">
+                    动态回撤
+                    <DrawdownCalcHelpButton showExcess={hasBenchmark} />
+                  </div>
+                  {dateFrom && dateTo && (
+                    <div className="text-[11px] text-zinc-400 mt-1 tabular-nums">
+                      统计区间：{dateFrom} - {dateTo}
+                    </div>
+                  )}
+                  {!showDrawdownExcess && (
+                    <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
+                        {productName}
+                      </span>
+                      {hasBenchmark && (
+                        <span className="inline-flex items-center gap-1.5">
+                          <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: "#2563eb" }} />
+                          {benchmarkLabel}（基准）
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {showDrawdownExcess && (
+                    <div className="flex items-center gap-4 text-xs text-zinc-600 mt-2">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="inline-block w-5 h-0.5 rounded" style={{ backgroundColor: RED }} />
+                        超额回撤
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-4 flex-shrink-0">
+                  {hasBenchmark && (
+                    <label className="flex items-center gap-1.5 cursor-pointer select-none text-xs text-zinc-600">
+                      <input
+                        type="checkbox"
+                        checked={showDrawdownExcess}
+                        onChange={(e) => setShowDrawdownExcess(e.target.checked)}
+                        className="rounded border-zinc-300 accent-zinc-700"
+                      />
+                      超额
+                    </label>
+                  )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="p-1 text-zinc-400 hover:text-zinc-600 rounded transition-colors"
+                        aria-label="回撤图表菜单"
+                      >
+                        <Menu className="h-4 w-4" />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="min-w-[7.5rem] text-xs">
+                      <DropdownMenuItem onClick={handleDownloadDrawdownImage}>下载图片</DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleDownloadDrawdownData}>下载数据</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0">
+                <DynamicDrawdownChart
+                  data={drawdownChartData}
+                  productName={productName}
+                  benchmarkLabel={benchmarkLabel}
+                  hasBenchmark={hasBenchmark}
+                  showExcess={showDrawdownExcess}
+                  maxFundDrawdown={maxFundDrawdown}
+                  height="100%"
+                  episodeMarks={drawdownEpisodeMarks}
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 min-w-0 rounded-xl border border-zinc-100 bg-white p-5 flex flex-col h-full">
             <DrawdownEpisodesTable
               episodes={drawdownEpisodes}
               benchmarkLabel={benchmarkLabel}
@@ -1036,7 +1238,6 @@ export function FundPerformanceIndicatorsPanel({
           </div>
         </div>
       )}
-
       {navChartLightboxOpen && activeChartData.length > 1 && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"

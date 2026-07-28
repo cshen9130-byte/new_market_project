@@ -551,11 +551,15 @@ function collectRowIdentityTerms(
   >,
 ): string[] {
   const terms = new Set<string>()
-  for (const term of extractFundCompanyMatchTerms(row.fundCompany)) terms.add(term)
+  const fundCompanyTerms = extractFundCompanyMatchTerms(row.fundCompany)
+  for (const term of fundCompanyTerms) terms.add(term)
   if (!isEventStyleFundCompany(row.fundCompany)) {
     addAlternateMatchLabel(terms, row.fundCompany)
   }
-  addAlternateMatchLabel(terms, row.representativeProduct)
+  // When 基金公司 is known, never fall back to 代表产品 brand (e.g. 铭跃 → wrong 量化* folder).
+  if (fundCompanyTerms.length === 0) {
+    addAlternateMatchLabel(terms, row.representativeProduct)
+  }
   addAlternateMatchLabel(terms, row.investmentManager.split(/[、,，/]/u)[0] ?? "")
   addAlternateMatchLabel(terms, row.ddTarget)
   addAlternateMatchLabel(terms, row.strategyPreliminary)
@@ -564,6 +568,22 @@ function collectRowIdentityTerms(
   const label = extractDdMaterialsLabel(row)
   if (label) terms.add(label)
   return [...terms].filter((term) => term.length >= 2)
+}
+
+/** Require folder label (or strategy-stripped fund name) to carry 基金公司 when company is set. */
+function fundCompanyMatchesFolderLabel(
+  fundCompanyTerms: string[],
+  folderLabel: string,
+  fundFromFolder: string | null = null,
+): boolean {
+  if (fundCompanyTerms.length === 0) return true
+  return fundCompanyTerms.some((term) => {
+    if (labelsOverlap(folderLabel, term) || brandsRelated(term, folderLabel)) return true
+    if (fundFromFolder && (labelsOverlap(fundFromFolder, term) || brandsRelated(term, fundFromFolder))) {
+      return true
+    }
+    return false
+  })
 }
 
 function collectFolderDocumentTerms(documents: DdMaterialsDocument[]): string[] {
@@ -625,6 +645,10 @@ function scoreFolderFundReuseMatch(
 
   const strategyPrefixes = getRowStrategyPrefixes(row)
   const fundFromFolder = extractFundNameFromStrategyFolderLabel(folderLabel, strategyPrefixes)
+  const fundCompanyTerms = extractFundCompanyMatchTerms(row.fundCompany)
+  // Prefer 基金公司 over product/strategy keywords; leave empty when company is absent from folder name.
+  if (!fundCompanyMatchesFolderLabel(fundCompanyTerms, folderLabel, fundFromFolder)) return 0
+
   const identityTerms = collectRowIdentityTerms(row).filter(isStrongIdentityTerm)
   const documentTerms = collectFolderDocumentTerms(folder.documents)
   const strategyPrefix = strategyPrefixes.find((prefix) => prefix.length >= 3 && folderLabel.startsWith(prefix))
@@ -728,16 +752,18 @@ function scoreFolderMonthDayIdentityMatch(
   const identityHit = identityTerms.some(
     (term) => labelsOverlap(folderLabel, term) || brandsRelated(folderLabel, term),
   )
-  const fundCompanyHit = fundCompanyTerms.some(
-    (term) => labelsOverlap(folderLabel, term) || brandsRelated(folderLabel, term),
-  )
+  const fundCompanyHit = fundCompanyMatchesFolderLabel(fundCompanyTerms, folderLabel)
+  // When 基金公司 is set, folder label must carry the company — do not accept product-only hits.
+  if (fundCompanyTerms.length > 0 && !fundCompanyHit) return 0
+
   const productBrand = extractProductBrand(row.representativeProduct.trim())
   const productHit =
     fundCompanyTerms.length === 0
     && Boolean(productBrand)
     && (labelsOverlap(folderLabel, productBrand) || row.representativeProduct.trim().includes(folderLabel))
   const docBrandHit =
-    folderLabelInDocs
+    fundCompanyTerms.length === 0
+    && folderLabelInDocs
     && identityTerms.some((term) => documentTerms.some((docTerm) => labelsOverlap(docTerm, term) || brandsRelated(term, docTerm)))
 
   if (!identityHit && !fundCompanyHit && !productHit && !docBrandHit) return 0
@@ -1129,6 +1155,14 @@ function scoreLooseFileMatch(
   if (isEventStyleFundCompany(row.fundCompany) && extractFundCompanyMatchTerms(row.fundCompany).length === 0) return 0
 
   const filename = doc.name.replace(/\.[^.]+$/u, "")
+  const fundCompanyTerms = extractFundCompanyMatchTerms(row.fundCompany)
+  if (fundCompanyTerms.length > 0) {
+    const companyInFilename = fundCompanyTerms.some(
+      (term) => filename.includes(term) || labelsOverlap(filename, term) || brandsRelated(term, filename),
+    )
+    if (!companyInFilename) return 0
+  }
+
   const identityTerms = collectRowIdentityTerms(row).filter(isStrongIdentityTerm)
   const strategies = getRowStrategyPrefixes(row)
 

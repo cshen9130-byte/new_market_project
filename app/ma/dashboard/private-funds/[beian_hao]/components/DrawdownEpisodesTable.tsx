@@ -43,6 +43,69 @@ export interface DrawdownEpisodeRow extends DrawdownEpisode {
   benchReturn: number | null
 }
 
+export function findNearestDrawdownPoint<T extends { date: string }>(
+  data: T[],
+  targetDate: string,
+): T | null {
+  if (!data.length) return null
+  const exact = data.find((d) => d.date === targetDate)
+  if (exact) return exact
+  const targetTs = new Date(targetDate).getTime()
+  let best = data[0]
+  let bestDiff = Math.abs(new Date(best.date).getTime() - targetTs)
+  for (let i = 1; i < data.length; i++) {
+    const diff = Math.abs(new Date(data[i].date).getTime() - targetTs)
+    if (diff < bestDiff) {
+      best = data[i]
+      bestDiff = diff
+    }
+  }
+  return best
+}
+
+export type DrawdownEpisodeMark = { date: string; y: number; no: number }
+
+/** Map 回撤区间 trough dates onto any chart series (drawdown / return / nav). */
+export function buildDrawdownEpisodeMarks<T extends { date: string }>(
+  data: T[],
+  episodes: Array<{ troughDate: string }>,
+  getY: (point: T) => number | null | undefined,
+): DrawdownEpisodeMark[] {
+  return episodes.flatMap((ep, idx) => {
+    const point = findNearestDrawdownPoint(data, ep.troughDate)
+    if (!point) return []
+    const y = getY(point)
+    if (y === null || y === undefined || !Number.isFinite(y)) return []
+    return [{ date: point.date, y, no: idx + 1 }]
+  })
+}
+
+export function DrawdownEpisodeMarkLabel({
+  viewBox,
+  value,
+}: {
+  viewBox?: { x?: number; y?: number }
+  value?: number | string
+}) {
+  const x = viewBox?.x ?? 0
+  const y = viewBox?.y ?? 0
+  return (
+    <g transform={`translate(${x}, ${y})`} style={{ pointerEvents: "none" }}>
+      <circle r={12} fill="#ffffff" stroke="#dc2626" strokeWidth={2.5} />
+      <text
+        textAnchor="middle"
+        dominantBaseline="central"
+        fill="#dc2626"
+        fontSize={13}
+        fontWeight={800}
+        style={{ fontFamily: "system-ui, sans-serif" }}
+      >
+        {value}
+      </text>
+    </g>
+  )
+}
+
 export function computeDrawdownEpisodes(rows: NavRow[], navType: string): DrawdownEpisode[] {
   if (rows.length < 2) return []
 
@@ -142,11 +205,10 @@ export const DrawdownEpisodesTable = memo(function DrawdownEpisodesTable({
 }) {
   const [showRange, setShowRange] = useState(false)
 
-  if (episodes.length === 0) return null
-
   return (
-    <div className="mt-5">
-      <div className="flex items-center justify-end mb-2">
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
+        <div className="text-sm font-semibold text-zinc-700">回撤区间</div>
         <button
           type="button"
           onClick={() => setShowRange((v) => !v)}
@@ -168,84 +230,89 @@ export const DrawdownEpisodesTable = memo(function DrawdownEpisodesTable({
           显示区间
         </button>
       </div>
-      <div className="overflow-x-auto rounded-lg border border-zinc-100">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-zinc-50 border-b border-zinc-100">
-              <th className="px-4 py-2.5 text-left text-xs font-medium text-zinc-500 w-16">序号</th>
-              <th className="px-4 py-2.5 text-center text-xs font-medium text-zinc-500">最大回撤</th>
-              <th className="px-4 py-2.5 text-center text-xs font-medium text-zinc-500">
-                <span className="inline-flex items-center justify-center gap-1">
-                  最大回撤回补期（天）
-                  <HeaderHelp label="最大回撤回补期（天）">
-                    <p>
-                      从该次回撤的最低点日期起，到净值重新回到或超过该次回撤前高所需的自然日天数。
-                    </p>
-                    <p>
-                      若截至当前区间终点仍未回到前高，则显示「未回补」。
-                    </p>
-                  </HeaderHelp>
-                </span>
-              </th>
-              {hasBenchmark && (
-                <th className="px-4 py-2.5 text-center text-xs font-medium text-zinc-500">
-                  <span className="inline-flex items-center justify-center gap-1">
-                    同期{benchmarkLabel}（基准）收益
-                    <HeaderHelp label={`同期${benchmarkLabel}（基准）收益`}>
+      <div className="overflow-y-auto flex-1 rounded-lg border border-zinc-100">
+        {episodes.length === 0 ? (
+          <div className="flex items-center justify-center h-full text-xs text-zinc-400 py-8">暂无回撤区间</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead className="sticky top-0 z-10">
+              <tr className="bg-zinc-50 border-b border-zinc-100">
+                <th className="px-2 py-2 text-left text-xs font-medium text-zinc-500 whitespace-nowrap">序号</th>
+                <th className="px-2 py-2 text-right text-xs font-medium text-zinc-500 whitespace-nowrap">最大回撤</th>
+                <th className="px-2 py-2 text-right text-xs font-medium text-zinc-500 whitespace-nowrap">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    回补期（天）
+                    <HeaderHelp label="最大回撤回补期（天）">
                       <p>
-                        取基金该次回撤对应的前高日到低点日，计算基准在同一区间的收益率：
-                      </p>
-                      <p className="rounded bg-zinc-50 px-2 py-1.5 font-mono text-[11px] text-zinc-700">
-                        (低点日基准 − 前高日基准) / 前高日基准
+                        从该次回撤的最低点日期起，到净值重新回到或超过该次回撤前高所需的自然日天数。
                       </p>
                       <p>
-                        用于对比基金回撤期间基准同期表现。
+                        若截至当前区间终点仍未回到前高，则显示「未回补」。
                       </p>
                     </HeaderHelp>
                   </span>
                 </th>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {episodes.map((ep, idx) => (
-              <tr key={`${ep.peakDate}-${ep.troughDate}`} className="border-b border-zinc-50 last:border-0">
-                <td className="px-4 py-2.5 text-xs text-zinc-700">{idx + 1}</td>
-                <td className="px-4 py-2.5 text-center text-xs tabular-nums">
-                  <div className="text-zinc-900 font-medium">{(ep.maxDrawdown * 100).toFixed(2)}%</div>
-                  <div className={`text-[11px] text-zinc-400 mt-0.5 min-h-[1rem] ${showRange ? "" : "invisible"}`}>
-                    {ep.peakDate} ~ {ep.troughDate}
-                  </div>
-                </td>
-                <td className="px-4 py-2.5 text-center text-xs text-zinc-700 tabular-nums">
-                  <div>{ep.recoveryDays === null ? "未回补" : ep.recoveryDays}</div>
-                  {ep.recoveryDate && (
-                    <div className={`text-[11px] text-zinc-400 mt-0.5 min-h-[1rem] ${showRange ? "" : "invisible"}`}>
-                      {ep.troughDate} ~ {ep.recoveryDate}
-                    </div>
-                  )}
-                </td>
                 {hasBenchmark && (
-                  <td className="px-4 py-2.5 text-center text-xs tabular-nums">
-                    {ep.benchReturn === null ? (
-                      <span className="text-zinc-400">—</span>
-                    ) : (
-                      <>
-                        <div className="font-medium" style={{ color: ep.benchReturn < 0 ? GREEN : ep.benchReturn > 0 ? RED : undefined }}>
-                          {(ep.benchReturn >= 0 ? "+" : "") + (ep.benchReturn * 100).toFixed(2)}%
-                        </div>
-                        <div className={`text-[11px] text-zinc-400 mt-0.5 min-h-[1rem] ${showRange ? "" : "invisible"}`}>
-                          {ep.peakDate} ~ {ep.troughDate}
-                        </div>
-                      </>
-                    )}
-                  </td>
+                  <th className="px-2 py-2 text-right text-xs font-medium text-zinc-500 whitespace-nowrap">
+                    <span className="inline-flex items-center justify-end gap-1">
+                      {benchmarkLabel}
+                      <HeaderHelp label={`同期${benchmarkLabel}（基准）收益`}>
+                        <p>
+                          取基金该次回撤对应的前高日到低点日，计算基准在同一区间的收益率：
+                        </p>
+                        <p className="rounded bg-zinc-50 px-2 py-1.5 font-mono text-[11px] text-zinc-700">
+                          (低点日基准 − 前高日基准) / 前高日基准
+                        </p>
+                        <p>
+                          用于对比基金回撤期间基准同期表现。
+                        </p>
+                      </HeaderHelp>
+                    </span>
+                  </th>
                 )}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {episodes.map((ep, idx) => (
+                <tr key={`${ep.peakDate}-${ep.troughDate}`} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
+                  <td className="px-2 py-2 text-xs text-zinc-700 whitespace-nowrap">{idx + 1}</td>
+                  <td className="px-2 py-2 text-right text-xs tabular-nums whitespace-nowrap">
+                    <div className="text-zinc-900 font-medium">{(ep.maxDrawdown * 100).toFixed(2)}%</div>
+                    <div className={`text-[10px] text-zinc-400 mt-0.5 min-h-[0.875rem] ${showRange ? "" : "invisible"}`}>
+                      {ep.peakDate} ~ {ep.troughDate}
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-right text-xs text-zinc-700 tabular-nums whitespace-nowrap">
+                    <div>{ep.recoveryDays === null ? "未回补" : ep.recoveryDays}</div>
+                    {ep.recoveryDate && (
+                      <div className={`text-[10px] text-zinc-400 mt-0.5 min-h-[0.875rem] ${showRange ? "" : "invisible"}`}>
+                        {ep.troughDate} ~ {ep.recoveryDate}
+                      </div>
+                    )}
+                  </td>
+                  {hasBenchmark && (
+                    <td className="px-2 py-2 text-right text-xs tabular-nums whitespace-nowrap">
+                      {ep.benchReturn === null ? (
+                        <span className="text-zinc-400">—</span>
+                      ) : (
+                        <>
+                          <div className="font-medium" style={{ color: ep.benchReturn < 0 ? GREEN : ep.benchReturn > 0 ? RED : undefined }}>
+                            {(ep.benchReturn >= 0 ? "+" : "") + (ep.benchReturn * 100).toFixed(2)}%
+                          </div>
+                          <div className={`text-[10px] text-zinc-400 mt-0.5 min-h-[0.875rem] ${showRange ? "" : "invisible"}`}>
+                            {ep.peakDate} ~ {ep.troughDate}
+                          </div>
+                        </>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
+      <div className="text-[11px] text-zinc-400 mt-2 text-right flex-shrink-0">共 {episodes.length} 条</div>
     </div>
   )
 })

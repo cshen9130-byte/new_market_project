@@ -54,7 +54,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 BASE_DIR = Path(__file__).resolve().parent
-OUTPUT_DIR = BASE_DIR / "report_output"
+# Allow the API to isolate concurrent downloads via GUOXIN_REPORT_OUTPUT_DIR.
+_output_override = os.environ.get("GUOXIN_REPORT_OUTPUT_DIR", "").strip()
+OUTPUT_DIR = Path(_output_override) if _output_override else (BASE_DIR / "report_output")
 CHART_DIR = OUTPUT_DIR / "charts"
 REPORT_PATH = OUTPUT_DIR / "国信期货交易策略分析报告.docx"
 

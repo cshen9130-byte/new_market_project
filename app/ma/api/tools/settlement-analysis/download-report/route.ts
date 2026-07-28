@@ -1,7 +1,8 @@
 import path from "path"
 import { existsSync } from "fs"
-import { readFile } from "fs/promises"
+import { mkdtemp, readFile, rm } from "fs/promises"
 import { execFile } from "child_process"
+import { tmpdir } from "os"
 import { promisify } from "util"
 import { createConnection } from "net"
 import { NextResponse } from "next/server"
@@ -11,51 +12,166 @@ export const dynamic = "force-dynamic"
 
 const execFileAsync = promisify(execFile)
 
-/** Find a working Python executable, trying multiple candidates in order. */
-async function findPython(scriptDir: string): Promise<string> {
-  // 1. Project venv (highest priority)
-  const venvPython =
-    process.platform === "win32"
-      ? path.join(scriptDir, ".venv", "Scripts", "python.exe")
-      : path.join(scriptDir, ".venv", "bin", "python")
-  if (existsSync(venvPython)) return venvPython
+const REQUIRED_IMPORTS = "import matplotlib, pandas, numpy, docx, psycopg2"
+const PYTHON_DEPS_PROBE_TIMEOUT_MS = 60_000
+const REPORT_FILE_NAME = "国信期货交易策略分析报告.docx"
 
-  // 2. Explicit override via env var
-  const envPy = process.env.PYTHON_EXECUTABLE
-  if (envPy && existsSync(envPy)) return envPy
+type PythonInvocation = {
+  executable: string
+  prefixArgs: string[]
+}
+
+let cachedPython: PythonInvocation | null = null
+
+function pushPythonCandidate(
+  out: PythonInvocation[],
+  executable: string,
+  prefixArgs: string[] = [],
+) {
+  if (!executable) return
+  // Allow bare names like "python3" (resolved via PATH) without existsSync.
+  if (executable.includes("/") || executable.includes("\\") || executable.endsWith(".exe")) {
+    if (!existsSync(executable)) return
+  }
+  if (
+    out.some(
+      (item) =>
+        item.executable === executable && item.prefixArgs.join(" ") === prefixArgs.join(" "),
+    )
+  ) {
+    return
+  }
+  out.push({ executable, prefixArgs })
+}
+
+/**
+ * Candidate order matches FOF / product reports and PM2 config:
+ *   1. PYTHON_EXE / PYTHON_EXECUTABLE (ecosystem.config.js sets PYTHON_EXE)
+ *   2. Project root .venv (where matplotlib is actually installed)
+ *   3. Script-local guoxin_strategy/.venv (often missing or incomplete)
+ * Never prefer an incomplete script-local venv over the configured interpreter.
+ */
+function listPythonCandidates(scriptDir: string): PythonInvocation[] {
+  const cwd = process.cwd()
+  const out: PythonInvocation[] = []
+
+  for (const key of ["PYTHON_EXE", "PYTHON_EXECUTABLE"] as const) {
+    pushPythonCandidate(out, process.env[key] ?? "")
+  }
 
   if (process.platform === "win32") {
-    // 3. Windows Python Launcher (py.exe) — most reliable on Windows
-    const pyLauncher = path.join(process.env.SystemRoot ?? "C:\\Windows", "py.exe")
-    if (existsSync(pyLauncher)) return pyLauncher
+    pushPythonCandidate(out, path.join(cwd, ".venv", "Scripts", "python.exe"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "Scripts", "python.exe"))
+    const localAppData = process.env.LOCALAPPDATA ?? ""
+    pushPythonCandidate(out, path.join(localAppData, "Programs", "Python", "Launcher", "py.exe"), [
+      "-3",
+    ])
+    pushPythonCandidate(out, path.join(process.env.SystemRoot ?? "C:\\Windows", "py.exe"), ["-3"])
+  } else {
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python"))
+  }
 
-    // 4. where.exe — find every python on PATH, return first that actually exists
-    try {
-      const { stdout } = await execFileAsync("where.exe", ["python"], { timeout: 5000 })
-      for (const line of stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
-        if (existsSync(line)) return line
-      }
-    } catch {
-      /* where.exe not available or python not in PATH */
+  return out
+}
+
+async function pythonHasDeps(invocation: PythonInvocation): Promise<boolean> {
+  try {
+    await execFileAsync(
+      invocation.executable,
+      [...invocation.prefixArgs, "-c", REQUIRED_IMPORTS],
+      { timeout: PYTHON_DEPS_PROBE_TIMEOUT_MS },
+    )
+    return true
+  } catch (err) {
+    const stderr =
+      typeof (err as { stderr?: string }).stderr === "string"
+        ? (err as { stderr: string }).stderr
+        : err instanceof Error
+          ? err.message
+          : String(err)
+    console.warn(
+      "[download-report] Python deps probe failed:",
+      invocation.executable,
+      stderr.slice(0, 400),
+    )
+    return false
+  }
+}
+
+function pythonDepsInstallHint(): string {
+  if (process.platform === "win32") {
+    return "py -3 -m pip install -r guoxin_strategy/requirements.txt"
+  }
+  return ".venv/bin/python3 -m pip install -r guoxin_strategy/requirements.txt"
+}
+
+/**
+ * Resolve a Python that actually has report deps.
+ * Never fall back to an unverified interpreter — that caused intermittent
+ * ModuleNotFoundError: matplotlib when PATH/system python differed from .venv.
+ */
+async function findPython(scriptDir: string): Promise<PythonInvocation> {
+  if (cachedPython) return cachedPython
+
+  const candidates = listPythonCandidates(scriptDir)
+  const tried: string[] = []
+
+  for (const candidate of candidates) {
+    tried.push(
+      candidate.prefixArgs.length
+        ? `${candidate.executable} ${candidate.prefixArgs.join(" ")}`
+        : candidate.executable,
+    )
+    if (await pythonHasDeps(candidate)) {
+      cachedPython = candidate
+      return candidate
     }
   }
 
-  // 5. Last resort — let the OS resolve it; will fail with a clear message
-  return process.platform === "win32" ? "python" : "python3"
+  // Last resort: PATH python, but only if it also has deps.
+  const pathFallback: PythonInvocation =
+    process.platform === "win32"
+      ? { executable: "py", prefixArgs: ["-3"] }
+      : { executable: "python3", prefixArgs: [] }
+  tried.push(
+    pathFallback.prefixArgs.length
+      ? `${pathFallback.executable} ${pathFallback.prefixArgs.join(" ")}`
+      : pathFallback.executable,
+  )
+  if (await pythonHasDeps(pathFallback)) {
+    cachedPython = pathFallback
+    return pathFallback
+  }
+
+  // Invalidate nothing usable — fail loudly instead of spawning a broken python.
+  cachedPython = null
+  throw new Error(
+    `Python 报告依赖未安装，请执行: ${pythonDepsInstallHint()}` +
+      (tried.length ? `（已尝试: ${[...new Set(tried)].join(", ")}）` : ""),
+  )
+}
+
+function resolveReportScript(scriptDir: string): string | null {
+  // Prefer the canonical DB script; keep `_dt` as a deploy-compat fallback.
+  for (const name of ["generate_guoxin_word_report_db.py", "generate_guoxin_word_report_dt.py"]) {
+    const p = path.join(scriptDir, name)
+    if (existsSync(p)) return p
+  }
+  return null
 }
 
 export async function GET() {
   const scriptDir = path.join(process.cwd(), "guoxin_strategy")
-  const scriptPath = path.join(scriptDir, "generate_guoxin_word_report_db.py")
-  const outputPath = path.join(scriptDir, "report_output", "国信期货交易策略分析报告.docx")
+  const scriptPath = resolveReportScript(scriptDir)
 
-  if (!existsSync(scriptPath)) {
+  if (!scriptPath) {
     return NextResponse.json({ error: "Python 报告脚本不存在" }, { status: 500 })
   }
 
   // Pre-flight: verify the database port is reachable before spawning Python.
-  // Derive host/port from DATABASE_URL so this works both locally (SSH tunnel
-  // on 5433) and on the server (direct PostgreSQL on 5432).
   let dbHost = "127.0.0.1"
   let dbPort = 5433
   const dbUrl = process.env.DATABASE_URL ?? ""
@@ -64,37 +180,75 @@ export async function GET() {
       const u = new URL(dbUrl)
       if (u.hostname) dbHost = u.hostname
       if (u.port) dbPort = parseInt(u.port, 10)
-    } catch { /* ignore malformed URL */ }
+    } catch {
+      /* ignore malformed URL */
+    }
   }
   const tunnelUp = await new Promise<boolean>((resolve) => {
     const sock = createConnection({ host: dbHost, port: dbPort })
     sock.setTimeout(2000)
-    sock.on("connect", () => { sock.destroy(); resolve(true) })
+    sock.on("connect", () => {
+      sock.destroy()
+      resolve(true)
+    })
     sock.on("error", () => resolve(false))
-    sock.on("timeout", () => { sock.destroy(); resolve(false) })
+    sock.on("timeout", () => {
+      sock.destroy()
+      resolve(false)
+    })
   })
   if (!tunnelUp) {
     return NextResponse.json(
-      { error: `数据库端口 ${dbHost}:${dbPort} 不可达，请确认数据库或 SSH 隧道已启动` },
+      {
+        error: `数据库端口 ${dbHost}:${dbPort} 不可达，请确认数据库或 SSH 隧道已启动`,
+      },
       { status: 503 },
     )
   }
 
-  const pythonExe = await findPython(scriptDir)
-  console.log("[download-report] Using Python:", pythonExe)
+  let python: PythonInvocation
+  try {
+    python = await findPython(scriptDir)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error("[download-report] No usable Python:", msg)
+    // Clear cache so a later install can be picked up without process restart.
+    cachedPython = null
+    return NextResponse.json({ error: "报告生成失败", detail: msg }, { status: 500 })
+  }
+
+  console.log(
+    "[download-report] Using Python:",
+    python.executable,
+    python.prefixArgs.join(" "),
+    "script:",
+    path.basename(scriptPath),
+  )
+
+  // Per-request workdir: avoids concurrent downloads clobbering the same docx,
+  // and gives matplotlib a writable config dir (font-cache races under load).
+  const workDir = await mkdtemp(path.join(tmpdir(), "guoxin-word-report-"))
+  const outputPath = path.join(workDir, REPORT_FILE_NAME)
+  const mplConfigDir = path.join(workDir, "mplconfig")
 
   try {
-    const { stdout, stderr } = await execFileAsync(pythonExe, ["-u", scriptPath], {
-      cwd: scriptDir,
-      env: {
-        ...process.env,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
+    const { stdout, stderr } = await execFileAsync(
+      python.executable,
+      [...python.prefixArgs, "-u", scriptPath],
+      {
+        cwd: scriptDir,
+        env: {
+          ...process.env,
+          PYTHONUTF8: "1",
+          PYTHONIOENCODING: "utf-8",
+          GUOXIN_REPORT_OUTPUT_DIR: workDir,
+          MPLCONFIGDIR: mplConfigDir,
+        },
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 480_000,
       },
-      encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 480_000, // 8 min — akshare market data fetch can be slow
-    })
+    )
     if (stdout) console.log("[download-report] stdout:", stdout.slice(0, 1000))
     if (stderr) console.warn("[download-report] stderr:", stderr.slice(0, 1000))
   } catch (err) {
@@ -103,28 +257,45 @@ export async function GET() {
     const errStdout = (err as { stdout?: string }).stdout ?? ""
     const detail = [errStderr, errStdout].filter(Boolean).join("\n---stdout---\n") || msg
     console.error("[download-report] Python script failed:", detail.slice(0, 2000))
-    return NextResponse.json(
-      { error: "报告生成失败", detail },
-      { status: 500 },
-    )
+
+    // If the cached interpreter suddenly lacks deps (venv moved during deploy),
+    // drop the cache so the next request re-probes.
+    if (/ModuleNotFoundError|No module named/.test(detail)) {
+      cachedPython = null
+    }
+
+    const missingHint = /ModuleNotFoundError: No module named ['"]?(\w+)/.exec(detail)
+    const error = missingHint
+      ? `报告生成失败：Python 缺少依赖 ${missingHint[1]}。请执行: ${pythonDepsInstallHint()}`
+      : "报告生成失败"
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
+    return NextResponse.json({ error, detail }, { status: 500 })
   }
 
-  if (!existsSync(outputPath)) {
+  const resolvedOutput = existsSync(outputPath)
+    ? outputPath
+    : // Older server scripts may ignore GUOXIN_REPORT_OUTPUT_DIR.
+      path.join(scriptDir, "report_output", REPORT_FILE_NAME)
+
+  if (!existsSync(resolvedOutput)) {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
     return NextResponse.json({ error: "脚本执行完毕但未找到输出文件" }, { status: 500 })
   }
 
   let fileBuffer: Buffer
   try {
-    fileBuffer = await readFile(outputPath)
-  } catch (err) {
+    fileBuffer = await readFile(resolvedOutput)
+  } catch {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {})
     return NextResponse.json({ error: "无法读取输出文件" }, { status: 500 })
   }
+
+  await rm(workDir, { recursive: true, force: true }).catch(() => {})
 
   return new Response(fileBuffer, {
     headers: {
       "Content-Type":
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      // RFC 5987 encoded filename for non-ASCII
       "Content-Disposition":
         "attachment; filename*=UTF-8''%E5%9B%BD%E4%BF%A1%E6%9C%9F%E8%B4%A7%E4%BA%A4%E6%98%93%E7%AD%96%E7%95%A5%E5%88%86%E6%9E%90%E6%8A%A5%E5%91%8A.docx",
     },

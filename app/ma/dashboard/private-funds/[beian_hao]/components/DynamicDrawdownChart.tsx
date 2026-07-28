@@ -3,6 +3,7 @@
 import { useMemo } from "react"
 import ReactECharts from "echarts-for-react"
 import type { DrawdownChartPoint } from "./performanceChartUtils"
+import type { DrawdownEpisodeMark } from "./DrawdownEpisodesTable"
 
 function monthAxisLabel(dateStr: string, lastDate: string): string {
   const month = parseInt(dateStr.slice(5, 7), 10)
@@ -26,6 +27,8 @@ export function DynamicDrawdownChart({
   hasBenchmark,
   showExcess,
   maxFundDrawdown,
+  height = "100%",
+  episodeMarks = [],
 }: {
   data: DrawdownChartPoint[]
   productName: string
@@ -33,6 +36,8 @@ export function DynamicDrawdownChart({
   hasBenchmark: boolean
   showExcess: boolean
   maxFundDrawdown: number | null
+  height?: number | string
+  episodeMarks?: DrawdownEpisodeMark[]
 }) {
   const dates = useMemo(() => data.map((d) => d.date), [data])
   const lastDate = dates.at(-1) ?? ""
@@ -41,6 +46,26 @@ export function DynamicDrawdownChart({
     const fundData = data.map((d) => (showExcess ? d.excessDD : d.fundDD))
     const benchData = showExcess ? [] : data.map((d) => d.benchDD)
     const yMin = drawdownYMin([...fundData, ...benchData])
+    const showDots = data.length <= 40
+
+    const episodeMarkPoint = episodeMarks.length
+      ? {
+          symbol: "circle",
+          symbolSize: 26,
+          data: episodeMarks.map((mark) => ({
+            coord: [mark.date, mark.y],
+            value: mark.no,
+            itemStyle: { color: "#ffffff", borderColor: "#dc2626", borderWidth: 2.5 },
+            label: {
+              show: true,
+              formatter: "{c}",
+              color: "#dc2626",
+              fontSize: 13,
+              fontWeight: 800,
+            },
+          })),
+        }
+      : undefined
 
     const series: Array<Record<string, unknown>> = []
 
@@ -48,8 +73,10 @@ export function DynamicDrawdownChart({
       series.push({
         name: "超额回撤",
         type: "line",
-        smooth: true,
-        showSymbol: false,
+        smooth: false,
+        showSymbol: showDots,
+        symbol: "circle",
+        symbolSize: 5,
         connectNulls: false,
         lineStyle: { width: 2, color: "#ef4444" },
         itemStyle: { color: "#ef4444" },
@@ -64,6 +91,7 @@ export function DynamicDrawdownChart({
           },
         },
         data: fundData,
+        markPoint: episodeMarkPoint,
         markLine: maxFundDrawdown !== null ? {
           silent: true,
           symbol: "none",
@@ -76,8 +104,10 @@ export function DynamicDrawdownChart({
       series.push({
         name: productName,
         type: "line",
-        smooth: true,
-        showSymbol: false,
+        smooth: false,
+        showSymbol: showDots,
+        symbol: "circle",
+        symbolSize: 5,
         lineStyle: { width: 2, color: "#ef4444" },
         itemStyle: { color: "#ef4444" },
         areaStyle: {
@@ -91,6 +121,7 @@ export function DynamicDrawdownChart({
           },
         },
         data: fundData,
+        markPoint: episodeMarkPoint,
         markLine: maxFundDrawdown !== null ? {
           silent: true,
           symbol: "none",
@@ -104,10 +135,12 @@ export function DynamicDrawdownChart({
         series.push({
           name: `${benchmarkLabel}（基准）`,
           type: "line",
-          smooth: true,
-          showSymbol: false,
+          smooth: false,
+          showSymbol: showDots,
+          symbol: "circle",
+          symbolSize: 4,
           connectNulls: false,
-          lineStyle: { width: 1.75, color: "#2563eb" },
+          lineStyle: { width: 1.75, color: "#2563eb", type: "dashed" },
           itemStyle: { color: "#2563eb" },
           areaStyle: {
             color: {
@@ -160,14 +193,14 @@ export function DynamicDrawdownChart({
       },
       series,
     }
-  }, [data, dates, lastDate, productName, benchmarkLabel, hasBenchmark, showExcess, maxFundDrawdown])
+  }, [data, dates, lastDate, productName, benchmarkLabel, hasBenchmark, showExcess, maxFundDrawdown, episodeMarks])
 
   if (!data.length) return null
 
   return (
     <ReactECharts
       option={option}
-      style={{ height: 320, width: "100%" }}
+      style={{ height, width: "100%" }}
       notMerge
       lazyUpdate
     />
