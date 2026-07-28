@@ -1,0 +1,11 @@
+{
+  "beian_hao": "SAVW72",
+  "product_names": [
+    "金舆基石一号",
+    "金奥基石一号",
+    "金舆基石一号私募证券投资基金"
+  ],
+  "series_start_date": "2026-06-12",
+  "preserve_high_nav_scale": false,
+  "note": "Drop Guotai 估值表 mis-dated pre-inception rows (到期日/日期 parse); product established 2026-06-12"
+}

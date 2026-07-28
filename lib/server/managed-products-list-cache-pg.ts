@@ -302,7 +302,7 @@ export async function refreshManagedProductsListCache(
       beian || row.beian_hao,
       emailFundMetrics,
     )
-    // 估值表 metrics often land before email NAV backfill (金舆守安一号 / SBVC25).
+    // 估值表 metrics often land before email NAV backfill (金舆守安一号 / SCN504).
     if (
       (unitNav == null || navDate == null)
       && emailMetrics.unit_nav != null

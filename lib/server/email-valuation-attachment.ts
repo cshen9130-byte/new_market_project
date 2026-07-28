@@ -98,7 +98,14 @@ export function isCustodySendDateValuationSubject(subject: string, filename: str
   const text = `${subject}\0${filename}`
   if (/估值表_(20\d{6})/u.test(text)) return true
   if (/_20\d{6}_估值表/u.test(text)) return true
+  // 国泰海通: SAVW72_金舆基石一号…_20260615估值表
+  if (/_(20\d{6})估值表/u.test(text)) return true
   return false
+}
+
+/** Guotai subjects encode the valuation/NAV date as `_YYYYMMDD估值表`. */
+export function isGuotaiValuationSubject(subject: string, filename: string): boolean {
+  return /_(20\d{6})估值表/u.test(`${subject}\0${filename}`)
 }
 
 function valuationSubjectSendDate(subject: string, filename: string): string | null {
@@ -107,7 +114,16 @@ function valuationSubjectSendDate(subject: string, filename: string): string | n
   if (afterTable) return normaliseDate(afterTable[1])
   const beforeTable = text.match(/_(20\d{6})_估值表/u)
   if (beforeTable) return normaliseDate(beforeTable[1])
+  const guotai = text.match(/_(20\d{6})估值表/u)
+  if (guotai) return normaliseDate(guotai[1])
   return subjectOrFilenameDate(subject, filename)
+}
+
+function calendarDaysBetween(a: string, b: string): number {
+  const ta = Date.parse(`${a}T12:00:00Z`)
+  const tb = Date.parse(`${b}T12:00:00Z`)
+  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return Number.POSITIVE_INFINITY
+  return Math.abs(Math.round((ta - tb) / 86_400_000))
 }
 
 function firstPlausibleNavInCells(cells: string[], startIdx: number): number | null {
@@ -140,14 +156,15 @@ function extractValuationDateFromHeaderRow(row: unknown[]): string | null {
   const cells = (row ?? []).map((cell) => String(cell ?? "").trim())
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i]
-    const inline = cell.match(/(?:估值日期|净值日期|日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
+    // Prefer 估值日期/净值日期 only — bare「日期」matches holdings labels like「到期日」.
+    const inline = cell.match(/(?:估值日期|净值日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
     if (inline) {
       const parsed = normaliseDate(inline[1])
       if (parsed) return parsed
     }
 
     const label = cell.replace(/[\s\u3000:：]/g, "")
-    if (/^(估值日期|净值日期|日期)$/.test(label)) {
+    if (/^(估值日期|净值日期)$/.test(label)) {
       for (let j = i + 1; j < Math.min(i + 4, (row ?? []).length); j += 1) {
         const parsed = parseHeaderDateValue((row ?? [])[j])
         if (parsed) return parsed
@@ -162,17 +179,19 @@ function scanRowsForNav(rows: unknown[][]): { unit: number | null; cum: number |
   let cum: number | null = null
   let date: string | null = null
 
+  // Date lives in the workbook header; scanning deep into holdings rewrites it with 到期日 etc.
   for (const row of rows.slice(0, 120)) {
     const cells = (row ?? []).map((cell) => String(cell ?? "").trim())
     const joined = cells.join(" ")
 
-    const headerDate = extractValuationDateFromHeaderRow(row ?? [])
-    if (headerDate) date = headerDate
-
-    const dateMatch = joined.match(/(?:估值日期|净值日期|日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
-    if (dateMatch) {
-      const parsed = normaliseDate(dateMatch[1])
-      if (parsed) date = parsed
+    if (!date) {
+      const headerDate = extractValuationDateFromHeaderRow(row ?? [])
+      if (headerDate) date = headerDate
+      const dateMatch = joined.match(/(?:估值日期|净值日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
+      if (dateMatch) {
+        const parsed = normaliseDate(dateMatch[1])
+        if (parsed) date = parsed
+      }
     }
 
     const joinedUnit = joined.match(/(?:^|[^累计])单位净值\s*[：:]\s*(\d+\.\d{3,8})/)
@@ -283,6 +302,15 @@ function resolveValuationTableNavDate(
   const header = headerDate ? normaliseDate(headerDate) : null
   const summary = summaryDate ? normaliseDate(summaryDate) : null
   const custodySend = subjectDate != null && isCustodySendDateValuationSubject(subject, filename)
+  const guotai = subjectDate != null && isGuotaiValuationSubject(subject, filename)
+
+  // 国泰海通 `_YYYYMMDD估值表` — subject date is the valuation/NAV date. Reject header
+  // false positives (e.g. holdings「到期日」parsed as 日期) that land far earlier.
+  if (guotai && subjectDate) {
+    if (header && calendarDaysBetween(header, subjectDate) <= 1) return header
+    if (summary && calendarDaysBetween(summary, subjectDate) <= 1) return summary
+    return subjectDate
+  }
 
   if (header && (!subjectDate || header !== subjectDate)) return header
   if (summary && (!subjectDate || summary !== subjectDate)) return summary

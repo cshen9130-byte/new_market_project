@@ -9,7 +9,7 @@ import { resolveManagedProductBeian } from "@/lib/server/managed-product-beian"
 export type EmailFundMetricsRow = {
   custody_balance: number | null
   net_asset_value: number | null
-  /** Latest 估值表 unit NAV — used when email/type6 NAV series is missing (e.g. SBVC25). */
+  /** Latest 估值表 unit NAV — used when email/type6 NAV series is missing (e.g. SCN504). */
   unit_nav: number | null
   valuation_date: string | null
 }

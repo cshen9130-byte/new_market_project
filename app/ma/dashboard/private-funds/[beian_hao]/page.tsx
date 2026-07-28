@@ -366,7 +366,11 @@ function getDefaultFilterRange(data: DetailData, todayStr: string): { from: stri
     : todayStr
   const seriesStart = trading[0]?.price_date
   const inception = data.info.inception_date?.slice(0, 10)
-  const from = seriesStart ?? inception ?? to
+  // Prefer 成立日 when the series still has pre-inception junk (mis-dated 估值表 rows).
+  const from =
+    seriesStart && inception && seriesStart < inception
+      ? inception
+      : (seriesStart ?? inception ?? to)
   return { from, to }
 }
 

@@ -20,8 +20,8 @@ export const MANAGED_PRODUCT_BEIAN_OVERRIDES: Readonly<Record<string, string>> =
   // Guotai TA虚拟净值 mails tag the 在管产品 in 【…】; underlying fund is outside the brackets.
   金舆追风1号: "SCJ536",
   // FOF virtual-NAV mails like 金舆守安一号【SBYC86-峰云汇高山一号】… mis-link 守安 → SBYC86.
-  // Custody 估值表 use SBVC25_金舆守安一号….
-  金舆守安一号: "SBVC25",
+  // AMAC + custody 估值表: SCN504_金舆守安一号… (legacy mis-map used SBVC25).
+  金舆守安一号: "SCN504",
 }
 
 /** Known 托管券商 for 在管产品 when registration tables are incomplete. */
@@ -37,6 +37,7 @@ const MANAGED_PRODUCT_BEIAN_ALIASES: Readonly<Record<string, string>> = {
   SBP097: "SBPU97",
   SBFC69: "SBPC69",
   SBHX45: "SBTX45",
+  SBVC25: "SCN504",
 }
 
 /** Parent managed-product name must not swallow A/B/C share-class variants. */

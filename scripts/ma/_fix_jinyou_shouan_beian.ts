@@ -6,7 +6,7 @@
  * were stored as product_code=SBYC86 + fund_name=金舆守安一号, so managed-product
  * beian resolution linked 金舆守安一号 to SBYC86 (the underlying holding).
  *
- * Correct mapping: 金舆守安一号 = SBVC25, 峰云汇高山一号 = SBYC86.
+ * Correct mapping: 金舆守安一号 = SCN504 (not SBVC25), 峰云汇高山一号 = SBYC86.
  *
  * Usage (on server — reads DB_* from .env.local):
  *   npx tsx scripts/ma/_fix_jinyou_shouan_beian.ts

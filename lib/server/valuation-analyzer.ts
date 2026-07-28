@@ -122,14 +122,15 @@ function extractValuationDateFromHeaderRow(row: unknown[]): string {
   const cells = (row ?? []).map((cell) => cellToString(cell))
   for (let i = 0; i < cells.length; i += 1) {
     const cell = cells[i]
-    const inline = cell.match(/(?:估值日期|净值日期|日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
+    // Prefer 估值日期/净值日期 only — bare「日期」matches holdings labels like「到期日」.
+    const inline = cell.match(/(?:估值日期|净值日期)\s*[：:]\s*(\d{4}[-/.年]?\d{1,2}[-/.月]?\d{1,2})/)
     if (inline) {
       const parsed = parseDateText(inline[1])
       if (parsed) return parsed
     }
 
     const label = cell.replace(/[\s\u3000:：]/g, "")
-    if (/^(估值日期|净值日期|日期)$/.test(label)) {
+    if (/^(估值日期|净值日期)$/.test(label)) {
       for (let j = i + 1; j < Math.min(i + 4, (row ?? []).length); j += 1) {
         const parsed = parseDateText((row ?? [])[j])
         if (parsed) return parsed

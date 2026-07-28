@@ -8,7 +8,8 @@ import {
   expandBeiansWithShareClassFamily,
   backfillParentEmailFromShareClassSiblings,
 } from "../lib/server/list-cache-nav-batch.ts"
-import { lookupFundNavCorrectionRule } from "../lib/server/fund-nav-correction-rules.ts"
+import { lookupFundNavCorrectionRule, applyFundNavCorrectionToLegacyRows } from "../lib/server/fund-nav-correction-rules.ts"
+import { isGuotaiValuationSubject, isCustodySendDateValuationSubject } from "../lib/server/email-valuation-attachment.ts"
 import { dedupeShareClassDisplayFunds } from "../lib/server/fund-name-match.ts"
 import { extractNavMetadata, extractNavData, extractNavHistoryFromBody, applyEmailProductCodeOverride } from "../lib/server/email-nav-extract.ts"
 import {
@@ -93,6 +94,25 @@ const uiFiltered = filterWeekendNavRows([
   { price_date: "2026-07-24", nav: "0.9989" },
 ])
 assert("ui filter drops 25/26", uiFiltered.length === 1 && uiFiltered[0].price_date === "2026-07-24")
+
+// Guotai `_YYYYMMDD估值表` subjects encode the NAV date; detect them as custody.
+const guotaiSubject = "国泰海通证券资产托管估值表发送：SAVW72_金舆基石一号私募证券投资基金_20260615估值表"
+assert("guotai subject detected", isGuotaiValuationSubject(guotaiSubject, ""))
+assert("guotai is custody pattern", isCustodySendDateValuationSubject(guotaiSubject, ""))
+
+// SAVW72 series_start_date drops mis-dated pre-inception valuation rows.
+const savwRule = lookupFundNavCorrectionRule("SAVW72")
+assert("SAVW72 correction rule loaded", !!savwRule && savwRule.series_start_date === "2026-06-12")
+const savwTrimmed = applyFundNavCorrectionToLegacyRows(
+  [
+    { price_date: "2026-06-02", nav: "1.0069", cumulative_nav: "1.0069", cum_nav_withdrawal: "1.0069", price_change: "" },
+    { price_date: "2026-06-12", nav: "1.0001", cumulative_nav: "1.0001", cum_nav_withdrawal: "1.0001", price_change: "" },
+    { price_date: "2026-06-15", nav: "1.0002", cumulative_nav: "1.0002", cum_nav_withdrawal: "1.0002", price_change: "" },
+  ],
+  { beian_hao: "SAVW72", product_name: "金舆基石一号", short_name: null },
+)
+assert("SAVW72 drops 06-02", !savwTrimmed.some((r) => r.price_date === "2026-06-02"))
+assert("SAVW72 keeps inception", savwTrimmed[0]?.price_date === "2026-06-12")
 
 // ex-div: cumulative stored as unit on 2026-04-30
 const exDivLegacy = [
