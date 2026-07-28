@@ -44,7 +44,9 @@ import { NavAttributionPanel } from "./components/NavAttributionPanel"
 import { FundCompanyPanel } from "./components/FundCompanyPanel"
 import { FundProfilePanel } from "./components/FundProfilePanel"
 import { FundMaterialsPanel } from "./components/FundMaterialsPanel"
+import { DrawdownCalcHelpButton } from "./components/DrawdownCalcHelpButton"
 import { amacFundUrl } from "@/lib/amac-urls"
+import { formatReturnTooltipLabel, buildBenchmarkPctChangesByDate, type NavChartPoint, type ReturnLabelMode } from "./components/performanceChartUtils"
 
 const menuItems = [
   { key: "market",     label: "市场" },
@@ -560,8 +562,6 @@ function StatCard({ label, value, sub }: { label: string; value: React.ReactNode
 
 // ─── NAV Table (scrollable, no pagination) ──────────────────────────────────
 
-type NavChartPoint = { date: string; value: number; benchmarkValue: number | null }
-
 function exportNavChartCsv(
   data: NavChartPoint[],
   chartMode: "nav" | "return",
@@ -606,25 +606,42 @@ async function downloadNavChartImage(el: HTMLElement, filename: string) {
   a.click()
 }
 
-function exportNavCsv(rows: NavRow[], navType: string, filename: string) {
+function exportNavCsv(
+  rows: NavRow[],
+  navType: string,
+  filename: string,
+  options?: {
+    showBenchmarkChg?: boolean
+    benchmarkLabel?: string
+    benchmarkChgByDate?: Map<string, number | null>
+  },
+) {
   const escape = (v: string | null | undefined) => {
     if (v == null || v === "") return ""
     const s = String(v)
     return s.includes(",") || s.includes("\"") || s.includes("\n") ? `"${s.replace(/"/g, "\"\"")}"` : s
   }
   const headers = ["日期", "单位净值", "累计净值", "复权净值", "涨跌幅"]
+  if (options?.showBenchmarkChg && options.benchmarkLabel) {
+    headers.push(`${options.benchmarkLabel}涨跌幅`)
+  }
   const csvRows = [
     headers.join(","),
     ...rows.map((r) => {
       const chg = computeNavPctChange(rows, navType, r.price_date)
       const chgPct = chg === null ? "" : chg.toFixed(2) + "%"
-      return [
+      const cols = [
         escape(r.price_date),
         escape(r.nav),
         escape(r.cum_nav_withdrawal),
         escape(r.cumulative_nav),
         escape(chgPct),
-      ].join(",")
+      ]
+      if (options?.showBenchmarkChg && options.benchmarkLabel) {
+        const benchChg = options.benchmarkChgByDate?.get(r.price_date) ?? null
+        cols.push(benchChg === null ? "" : benchChg.toFixed(2) + "%")
+      }
+      return cols.join(",")
     }),
   ]
   const bom = "\uFEFF"
@@ -637,37 +654,76 @@ function exportNavCsv(rows: NavRow[], navType: string, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-function NavTable({ rows, navType }: { rows: NavRow[]; navType: string }) {
+function formatPctCell(chg: number | null) {
+  const chgPct = chg === null ? null : chg.toFixed(2)
+  const chgStyle = chg === null ? {} : chg > 0 ? { color: RED } : chg < 0 ? { color: GREEN } : {}
+  const text = chgPct !== null ? (parseFloat(chgPct) > 0 ? "+" : "") + chgPct + "%" : "—"
+  return { chgStyle, text }
+}
+
+function NavTable({
+  rows,
+  navType,
+  showBenchmarkChg = false,
+  benchmarkLabel,
+  benchmarkChgByDate,
+}: {
+  rows: NavRow[]
+  navType: string
+  showBenchmarkChg?: boolean
+  benchmarkLabel?: string
+  benchmarkChgByDate?: Map<string, number | null>
+}) {
   // Show newest first
   const reversed = useMemo(() => [...rows].reverse(), [rows])
+  const benchColLabel = benchmarkLabel ?? "基准"
+  const th = "px-2.5 py-2.5 font-medium text-zinc-500 text-xs whitespace-nowrap"
+  const td = "px-2.5 py-2 text-xs whitespace-nowrap"
+  const tdNum = `${td} text-right tabular-nums`
+  const colCount = showBenchmarkChg ? 6 : 5
+  const evenPct = `${(100 / colCount).toFixed(4)}%`
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <div className="overflow-y-auto flex-1 rounded-lg border border-zinc-100">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm table-fixed">
+          <colgroup>
+            {Array.from({ length: colCount }, (_, i) => (
+              <col key={i} style={{ width: evenPct }} />
+            ))}
+          </colgroup>
           <thead className="sticky top-0 z-10">
             <tr className="bg-zinc-50 border-b border-zinc-100">
-              <th className="px-3 py-2.5 text-left font-medium text-zinc-500 text-xs">日期</th>
-              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">单位净值</th>
-              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">累计净值</th>
-              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">复权净值</th>
-              <th className="px-3 py-2.5 text-right font-medium text-zinc-500 text-xs">涨跌幅</th>
+              <th className={`${th} text-left`}>日期</th>
+              <th className={`${th} text-right`}>单位净值</th>
+              <th className={`${th} text-right`}>累计净值</th>
+              <th className={`${th} text-right`}>复权净值</th>
+              <th className={`${th} text-right`}>涨跌幅</th>
+              {showBenchmarkChg && (
+                <th className={`${th} text-right`}>{benchColLabel}</th>
+              )}
             </tr>
           </thead>
           <tbody>
             {reversed.map((r) => {
-              const chg = computeNavPctChange(rows, navType, r.price_date)
-              const chgPct = chg === null ? null : chg.toFixed(2)
-              const chgStyle = chg === null ? {} : chg > 0 ? { color: RED } : chg < 0 ? { color: GREEN } : {}
+              const fundCell = formatPctCell(computeNavPctChange(rows, navType, r.price_date))
+              const benchCell = showBenchmarkChg
+                ? formatPctCell(benchmarkChgByDate?.get(r.price_date) ?? null)
+                : null
               return (
                 <tr key={r.price_date} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
-                  <td className="px-3 py-2 text-zinc-700 text-xs">{r.price_date}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-zinc-900 font-medium text-xs">{fmt(r.nav, 4)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-zinc-700 text-xs">{fmt(r.cum_nav_withdrawal, 4)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums text-zinc-700 text-xs">{fmt(r.cumulative_nav, 4)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums font-medium text-xs" style={chgStyle}>
-                    {chgPct !== null ? (parseFloat(chgPct) > 0 ? "+" : "") + chgPct + "%" : "—"}
+                  <td className={`${td} text-zinc-700`}>{r.price_date}</td>
+                  <td className={`${tdNum} text-zinc-900 font-medium`}>{fmt(r.nav, 4)}</td>
+                  <td className={`${tdNum} text-zinc-700`}>{fmt(r.cum_nav_withdrawal, 4)}</td>
+                  <td className={`${tdNum} text-zinc-700`}>{fmt(r.cumulative_nav, 4)}</td>
+                  <td className={`${tdNum} font-medium`} style={fundCell.chgStyle}>
+                    {fundCell.text}
                   </td>
+                  {showBenchmarkChg && benchCell && (
+                    <td className={`${tdNum} font-medium`} style={benchCell.chgStyle}>
+                      {benchCell.text}
+                    </td>
+                  )}
                 </tr>
               )
             })}
@@ -686,15 +742,37 @@ function ChartTooltip({
   payload,
   label,
   mode,
+  returnLabelMode = "cumulative",
 }: {
   active?: boolean
-  payload?: Array<{ value?: number; name?: string; color?: string }>
+  payload?: Array<{ value?: number; name?: string; color?: string; dataKey?: string; payload?: NavChartPoint }>
   label?: string
   mode?: "nav" | "return"
+  returnLabelMode?: ReturnLabelMode
 }) {
   if (!active || !payload?.length) return null
-  const visibleItems = payload.filter((item) => typeof item.value === "number")
+  const visibleItems = payload.filter((item) => {
+    if (mode === "return" && returnLabelMode === "period") {
+      const point = item.payload
+      const periodVal = item.dataKey === "benchmarkValue"
+        ? point?.benchmarkPeriodReturn
+        : point?.periodReturn
+      return typeof periodVal === "number"
+    }
+    return typeof item.value === "number"
+  })
   if (!visibleItems.length) return null
+
+  function resolveValue(item: (typeof visibleItems)[number]): number | null {
+    if (mode === "return" && returnLabelMode === "period") {
+      const point = item.payload
+      const periodVal = item.dataKey === "benchmarkValue"
+        ? point?.benchmarkPeriodReturn
+        : point?.periodReturn
+      return typeof periodVal === "number" ? periodVal : null
+    }
+    return typeof item.value === "number" ? item.value : null
+  }
 
   function formatValue(value: number): string {
     return mode === "return"
@@ -702,15 +780,28 @@ function ChartTooltip({
       : value.toFixed(4)
   }
 
+  function formatSeriesLabel(item: (typeof visibleItems)[number]): string {
+    if (mode !== "return") return item.name ?? ""
+    return formatReturnTooltipLabel(
+      item.name,
+      returnLabelMode,
+      item.dataKey === "benchmarkValue",
+    )
+  }
+
   return (
     <div className="bg-white border border-zinc-100 shadow-md rounded-lg px-3 py-2 text-xs">
       <div className="text-zinc-500 mb-1">{label}</div>
       <div className="space-y-1">
-        {visibleItems.map((item) => (
-          <div key={item.name} className="font-semibold text-zinc-900" style={item.color ? { color: item.color } : undefined}>
-            {item.name}: {formatValue(item.value as number)}
-          </div>
-        ))}
+        {visibleItems.map((item) => {
+          const resolved = resolveValue(item)
+          if (resolved === null) return null
+          return (
+            <div key={item.name} className="font-semibold text-zinc-900" style={item.color ? { color: item.color } : undefined}>
+              {formatSeriesLabel(item)}: {formatValue(resolved)}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -753,6 +844,7 @@ function NavPerformanceChart({
   benchmarkLabel,
   height = "100%",
   gradientId = "navGrad",
+  returnLabelMode = "cumulative",
 }: {
   data: NavChartPoint[]
   chartMode: "nav" | "return"
@@ -764,6 +856,7 @@ function NavPerformanceChart({
   benchmarkLabel: string
   height?: number | string
   gradientId?: string
+  returnLabelMode?: ReturnLabelMode
 }) {
   return (
     <ResponsiveContainer width="100%" height={height} debounce={1}>
@@ -798,7 +891,7 @@ function NavPerformanceChart({
         />
         <Tooltip content={(props) => (
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          <ChartTooltip {...(props as any)} mode={chartMode} />
+          <ChartTooltip {...(props as any)} mode={chartMode} returnLabelMode={returnLabelMode} />
         )} />
         {chartMode === "return" && (
           <ReferenceLine y={0} stroke="#d4d4d8" strokeWidth={1} />
@@ -1148,6 +1241,8 @@ export default function PrivateFundDetailPage() {
   }, [beian_hao, data?.info.strategy_l1, data?.info.strategy_l2])
 
   const [chartMode, setChartMode] = useState<"nav" | "return">("return")
+  const [returnLabelMode, setReturnLabelMode] = useState<ReturnLabelMode>("cumulative")
+  const [showTableBenchmarkChg, setShowTableBenchmarkChg] = useState(false)
   const [detailTab, setDetailTab] = useState<FundDetailTab>("performance")
 
   useEffect(() => {
@@ -1288,15 +1383,32 @@ export default function PrivateFundDetailPage() {
       ? buildAlignedBenchmarkValues(rows, benchmarkData, chartMode, filterNavType)
       : rows.map(() => null)
     const firstNav = getNavFieldValue(rows[0], filterNavType)
+    const fundNavValues = rows.map((row) => getNavFieldValue(row, filterNavType))
 
     return rows.map((row, index) => {
-      const navValue = getNavFieldValue(row, filterNavType)
+      const navValue = fundNavValues[index]
+      const prevNav = index > 0 ? fundNavValues[index - 1] : null
+      const periodReturn = prevNav !== null && prevNav > 0
+        ? +(((navValue / prevNav) - 1) * 100).toFixed(4)
+        : null
+
+      let benchmarkPeriodReturn: number | null = null
+      if (index > 0 && benchmarkValues[index] !== null && benchmarkValues[index - 1] !== null) {
+        const prevFactor = 1 + benchmarkValues[index - 1]! / 100
+        const currFactor = 1 + benchmarkValues[index]! / 100
+        if (prevFactor > 0) {
+          benchmarkPeriodReturn = +(((currFactor / prevFactor) - 1) * 100).toFixed(4)
+        }
+      }
+
       return {
         date: row.price_date,
         value: chartMode === "return"
           ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
           : navValue,
         benchmarkValue: benchmarkValues[index],
+        periodReturn,
+        benchmarkPeriodReturn,
       }
     })
   }, [appliedBench, benchmarkData, chartMode, filterNavType, filteredNavRows])
@@ -1348,6 +1460,11 @@ export default function PrivateFundDetailPage() {
   )
 
   const benchmarkLabel = getBenchmarkLabel(appliedBench)
+
+  const benchmarkChgByDate = useMemo(() => {
+    if (!appliedBench || !benchmarkData.length || !filteredNavRows.length) return undefined
+    return buildBenchmarkPctChangesByDate(filteredNavRows, benchmarkData)
+  }, [appliedBench, benchmarkData, filteredNavRows])
 
   const intervalCutoffDate = filteredNavRows[filteredNavRows.length - 1]?.price_date
     ?? (data?.metrics.latest_nav_date && !isWeekendIsoDate(data.metrics.latest_nav_date)
@@ -2312,6 +2429,32 @@ export default function PrivateFundDetailPage() {
                 净值曲线
               </button>
               </div>
+              {chartMode === "return" && (
+                <div className="inline-flex text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setReturnLabelMode("cumulative")}
+                    className={`px-2.5 py-1 transition-colors border rounded-l ${
+                      returnLabelMode === "cumulative"
+                        ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                        : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                    }`}
+                  >
+                    累计收益
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReturnLabelMode("period")}
+                    className={`px-2.5 py-1 transition-colors border rounded-r -ml-px ${
+                      returnLabelMode === "period"
+                        ? "bg-white text-red-600 border-red-400 font-medium z-[1]"
+                        : "bg-white text-zinc-600 hover:bg-zinc-50 border-zinc-200"
+                    }`}
+                  >
+                    涨跌幅
+                  </button>
+                </div>
+              )}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
@@ -2341,6 +2484,7 @@ export default function PrivateFundDetailPage() {
               showBench={!!appliedBench}
               benchmarkLabel={benchmarkLabel}
               gradientId="navGradMain"
+              returnLabelMode={returnLabelMode}
             />
           </div>
           </div>
@@ -2362,20 +2506,49 @@ export default function PrivateFundDetailPage() {
               </span>
             )}
           </div>
-          <button
-            onClick={() => exportNavCsv(
-              filteredNavRows,
-              filterNavType,
-              `${info.product_name}_${navTableTitle}_${new Date().toISOString().slice(0, 10)}.csv`
-            )}
-            disabled={filteredNavRows.length === 0}
-            className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Download className="h-3.5 w-3.5" />
-            导出
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                if (!appliedBench) return
+                setShowTableBenchmarkChg((v) => !v)
+              }}
+              disabled={!appliedBench}
+              title={appliedBench ? undefined : "请先选择业绩基准并点击开始分析"}
+              className={`inline-flex items-center text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                showTableBenchmarkChg && appliedBench
+                  ? "text-red-600 font-medium"
+                  : "text-zinc-500 hover:text-zinc-800 disabled:hover:text-zinc-500"
+              }`}
+            >
+              {showTableBenchmarkChg && appliedBench ? "隐藏基准涨跌幅" : "显示基准涨跌幅"}
+            </button>
+            <button
+              onClick={() => exportNavCsv(
+                filteredNavRows,
+                filterNavType,
+                `${info.product_name}_${navTableTitle}_${new Date().toISOString().slice(0, 10)}.csv`,
+                {
+                  showBenchmarkChg: !!(showTableBenchmarkChg && appliedBench),
+                  benchmarkLabel,
+                  benchmarkChgByDate,
+                },
+              )}
+              disabled={filteredNavRows.length === 0}
+              className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Download className="h-3.5 w-3.5" />
+              导出
+            </button>
+          </div>
         </div>
-        <NavTable rows={filteredNavRows} navType={filterNavType} />
+        <NavTable
+          rows={filteredNavRows}
+          navType={filterNavType}
+          showBenchmarkChg={!!(showTableBenchmarkChg && appliedBench)}
+          benchmarkLabel={benchmarkLabel}
+          benchmarkChgByDate={benchmarkChgByDate}
+        />
       </div>
       </div>{/* end flex chart+table */}
 
@@ -2579,6 +2752,7 @@ export default function PrivateFundDetailPage() {
               <div className="flex items-center gap-2 text-sm font-semibold text-zinc-700">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500" />
                 动态回撤
+                <DrawdownCalcHelpButton />
               </div>
               {filteredNavRows.length > 0 && (
                 <div className="text-xs text-zinc-400 mt-1">
@@ -2858,6 +3032,7 @@ export default function PrivateFundDetailPage() {
                 benchmarkLabel={benchmarkLabel}
                 height={lightboxChartHeight}
                 gradientId="navGradLightbox"
+                returnLabelMode={returnLabelMode}
               />
             )}
           </div>

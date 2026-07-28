@@ -1,9 +1,31 @@
 "use client"
 
-import { memo, useMemo, useState } from "react"
+import { memo, useMemo, useState, type ReactNode } from "react"
 import { HelpCircle } from "lucide-react"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { GREEN, RED, getNavFieldValue, type NavRow, type BenchmarkPoint } from "./shared"
 import { buildAlignedBenchmarkValues, prepareNavRowsForChart } from "./performanceChartUtils"
+
+function HeaderHelp({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex text-zinc-400 hover:text-zinc-700 transition-colors"
+          aria-label={`${label}说明`}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <HelpCircle className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="center" className="w-72 p-3 text-xs leading-relaxed text-zinc-600">
+        <div className="font-semibold text-zinc-800 mb-1.5">{label}</div>
+        <div className="space-y-1.5">{children}</div>
+      </PopoverContent>
+    </Popover>
+  )
+}
 
 export interface DrawdownEpisode {
   peakIdx: number
@@ -155,14 +177,31 @@ export const DrawdownEpisodesTable = memo(function DrawdownEpisodesTable({
               <th className="px-4 py-2.5 text-center text-xs font-medium text-zinc-500">
                 <span className="inline-flex items-center justify-center gap-1">
                   最大回撤回补期（天）
-                  <HelpCircle className="h-3.5 w-3.5 text-zinc-400" title="从回撤低点到净值恢复至前高所需的天数" />
+                  <HeaderHelp label="最大回撤回补期（天）">
+                    <p>
+                      从该次回撤的最低点日期起，到净值重新回到或超过该次回撤前高所需的自然日天数。
+                    </p>
+                    <p>
+                      若截至当前区间终点仍未回到前高，则显示「未回补」。
+                    </p>
+                  </HeaderHelp>
                 </span>
               </th>
               {hasBenchmark && (
                 <th className="px-4 py-2.5 text-center text-xs font-medium text-zinc-500">
                   <span className="inline-flex items-center justify-center gap-1">
                     同期{benchmarkLabel}（基准）收益
-                    <HelpCircle className="h-3.5 w-3.5 text-zinc-400" title="基准在相同回撤区间（前高至低点）的收益率" />
+                    <HeaderHelp label={`同期${benchmarkLabel}（基准）收益`}>
+                      <p>
+                        取基金该次回撤对应的前高日到低点日，计算基准在同一区间的收益率：
+                      </p>
+                      <p className="rounded bg-zinc-50 px-2 py-1.5 font-mono text-[11px] text-zinc-700">
+                        (低点日基准 − 前高日基准) / 前高日基准
+                      </p>
+                      <p>
+                        用于对比基金回撤期间基准同期表现。
+                      </p>
+                    </HeaderHelp>
                   </span>
                 </th>
               )}

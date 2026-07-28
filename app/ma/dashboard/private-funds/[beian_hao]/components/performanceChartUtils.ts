@@ -2,7 +2,74 @@ import { getNavFieldValue, type NavRow, type BenchmarkPoint } from "./shared"
 import { computeFundNavMetrics } from "@/lib/fund-nav-metrics"
 import type { IntervalMetricValues } from "./IntervalMetricsTable"
 
-export type NavChartPoint = { date: string; value: number; benchmarkValue: number | null }
+export type ReturnLabelMode = "cumulative" | "period"
+
+export function formatReturnTooltipLabel(
+  seriesName: string | undefined,
+  returnLabelMode: ReturnLabelMode,
+  isBenchmark: boolean,
+): string {
+  const kind = returnLabelMode === "period" ? "当日涨跌幅" : "累计收益"
+  if (isBenchmark && seriesName) return `${seriesName}${kind}`
+  return kind
+}
+
+export type NavChartPoint = {
+  date: string
+  value: number
+  benchmarkValue: number | null
+  periodReturn: number | null
+  benchmarkPeriodReturn: number | null
+}
+
+function matchBenchmarkRawValues(
+  rows: NavRow[],
+  benchmarkSeries: BenchmarkPoint[],
+): Array<number | null> {
+  if (!rows.length || !benchmarkSeries.length) return rows.map(() => null)
+
+  let benchmarkIndex = 0
+  let lastBenchmarkValue: number | null = null
+  return rows.map((row) => {
+    while (benchmarkIndex < benchmarkSeries.length && benchmarkSeries[benchmarkIndex].date <= row.price_date) {
+      lastBenchmarkValue = benchmarkSeries[benchmarkIndex].value
+      benchmarkIndex += 1
+    }
+    return lastBenchmarkValue
+  })
+}
+
+function computePctChangeSeries(values: number[]): Array<number | null> {
+  return values.map((value, index) => {
+    if (index === 0) return null
+    const prev = values[index - 1]
+    if (!Number.isFinite(prev) || prev <= 0 || !Number.isFinite(value)) return null
+    return +(((value / prev) - 1) * 100).toFixed(4)
+  })
+}
+
+function computeNullablePctChangeSeries(values: Array<number | null>): Array<number | null> {
+  return values.map((value, index) => {
+    if (index === 0) return null
+    const prev = values[index - 1]
+    if (prev === null || value === null || prev <= 0) return null
+    return +(((value / prev) - 1) * 100).toFixed(4)
+  })
+}
+
+/** Period-over-period benchmark 涨跌幅 keyed by nav row date (ascending series order). */
+export function buildBenchmarkPctChangesByDate(
+  rows: NavRow[],
+  benchmarkSeries: BenchmarkPoint[],
+): Map<string, number | null> {
+  const rawValues = matchBenchmarkRawValues(rows, benchmarkSeries)
+  const changes = computeNullablePctChangeSeries(rawValues)
+  const out = new Map<string, number | null>()
+  rows.forEach((row, index) => {
+    out.set(row.price_date, changes[index] ?? null)
+  })
+  return out
+}
 
 export function buildAlignedBenchmarkValues(
   rows: NavRow[],
@@ -207,15 +274,23 @@ export function buildNavChartData(
     ? buildAlignedBenchmarkValues(sampled, benchmarkSeries, chartMode, navType)
     : sampled.map(() => null)
   const firstNav = getNavFieldValue(sampled[0], navType)
+  const fundNavValues = sampled.map((row) => getNavFieldValue(row, navType))
+  const periodReturns = computePctChangeSeries(fundNavValues)
+  const rawBenchmarkValues = hasBenchmark
+    ? matchBenchmarkRawValues(sampled, benchmarkSeries)
+    : sampled.map(() => null)
+  const benchmarkPeriodReturns = computeNullablePctChangeSeries(rawBenchmarkValues)
 
   return sampled.map((row, index) => {
-    const navValue = getNavFieldValue(row, navType)
+    const navValue = fundNavValues[index]
     return {
       date: row.price_date,
       value: chartMode === "return"
         ? (firstNav > 0 ? +(((navValue / firstNav) - 1) * 100).toFixed(4) : 0)
         : navValue,
       benchmarkValue: benchmarkValues[index],
+      periodReturn: periodReturns[index],
+      benchmarkPeriodReturn: benchmarkPeriodReturns[index],
     }
   })
 }
