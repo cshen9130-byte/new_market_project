@@ -2,8 +2,9 @@
 
 import dynamic from "next/dynamic"
 import Link from "next/link"
-import { Fragment, useMemo, useRef, useState } from "react"
-import { AlertTriangle, ArrowLeft, BarChart3, ChevronDown, ChevronUp, Database, FileSpreadsheet, ScanSearch, Trash2, TrendingUp, UploadCloud } from "lucide-react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
+import { AlertTriangle, ArrowLeft, BarChart3, ChevronDown, ChevronUp, Database, FileSpreadsheet, Mail, Save, ScanSearch, Trash2, TrendingUp, UploadCloud } from "lucide-react"
+import { Input } from "@/components/ui/input"
 
 import { useToast } from "@/hooks/use-toast"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -480,6 +481,287 @@ function buildMarginOption(history: GuoxinEquityPoint[]) {
   }
 }
 
+function StrategyReportPanels({
+  analysis,
+  equityChartOption,
+  turnoverChartOption,
+  marginChartOption,
+  expandedClusters,
+  toggleCluster,
+}: {
+  analysis: GuoxinDBAnalysisResponse
+  equityChartOption: ReturnType<typeof buildEquityOption> | null
+  turnoverChartOption: ReturnType<typeof buildTurnoverOption> | null
+  marginChartOption: ReturnType<typeof buildMarginOption> | null
+  expandedClusters: Set<string>
+  toggleCluster: (key: string) => void
+}) {
+  return (
+    <>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-3">
+            <CardDescription>期间收益率</CardDescription>
+            <CardTitle className={`text-2xl ${analysis.equityStats.returnPct >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+              {formatPercent(analysis.equityStats.returnPct)}
+            </CardTitle>
+            <div className="text-sm text-muted-foreground">{analysis.equityStats.startDate} ~ {analysis.equityStats.endDate}</div>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardDescription>期末权益</CardDescription>
+            <CardTitle className="text-2xl">{formatCurrency(analysis.equityStats.endEquity)}</CardTitle>
+            <div className="text-sm text-muted-foreground">期初 {formatCurrency(analysis.equityStats.startEquity)}</div>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardDescription>累计手续费</CardDescription>
+            <CardTitle className="text-2xl text-red-700">{formatCurrency(analysis.equityStats.feeTotal)}</CardTitle>
+          </CardHeader>
+        </Card>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardDescription>最高风险度</CardDescription>
+            <CardTitle className="text-2xl">{formatPercent(analysis.equityStats.maxRiskDegree)}</CardTitle>
+            <div className="text-sm text-muted-foreground">交易天数 {analysis.equityStats.totalDays}</div>
+          </CardHeader>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>账户权益与风险度</CardTitle>
+            <CardDescription>蓝线为客户权益（左轴），红虚线为风险度（右轴）。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {equityChartOption ? (
+              <ReactECharts option={equityChartOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />
+            ) : (
+              <div className="py-24 text-center text-sm text-muted-foreground">暂无权益数据。</div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>品种成交额占比</CardTitle>
+            <CardDescription>按成交金额排序，右侧标注占总成交额的百分比。</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {turnoverChartOption ? (
+              <ReactECharts option={turnoverChartOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />
+            ) : (
+              <div className="py-24 text-center text-sm text-muted-foreground">暂无成交数据。</div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>逐日保证金占用</CardTitle>
+          <CardDescription>每个交易日的保证金占用金额变化趋势。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {marginChartOption ? (
+            <ReactECharts option={marginChartOption} style={{ height: 260, width: "100%" }} notMerge lazyUpdate />
+          ) : (
+            <div className="py-16 text-center text-sm text-muted-foreground">暂无保证金数据。</div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>品种成交明细</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>品种</TableHead>
+                <TableHead className="text-right">成交额</TableHead>
+                <TableHead className="text-right">占比</TableHead>
+                <TableHead className="text-right">手数</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {analysis.turnover.map((row) => (
+                <TableRow key={row.product}>
+                  <TableCell className="font-medium">{row.product}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(row.turnover)}</TableCell>
+                  <TableCell className="text-right">{formatPercent(row.turnoverPct)}</TableCell>
+                  <TableCell className="text-right">{row.lots.toFixed(0)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>开仓批次解读</CardTitle>
+          <CardDescription>按交易日和品种聚合，点击行展开明细合约。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>交易日</TableHead>
+                <TableHead>品种</TableHead>
+                <TableHead className="text-right">批次成交额</TableHead>
+                <TableHead className="text-right">手续费</TableHead>
+                <TableHead className="w-8"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {analysis.tradeClusters.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">暂无开仓记录。</TableCell>
+                </TableRow>
+              ) : analysis.tradeClusters.map((cluster) => {
+                const key = `open-${cluster.tradeDate}-${cluster.product}`
+                const isExpanded = expandedClusters.has(key)
+                return (
+                  <Fragment key={key}>
+                    <TableRow className="cursor-pointer hover:bg-muted/50" onClick={() => toggleCluster(key)}>
+                      <TableCell className="font-medium">{cluster.tradeDate}</TableCell>
+                      <TableCell>{cluster.product}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(cluster.totalTurnover)}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(cluster.totalFees)}</TableCell>
+                      <TableCell className="text-right">
+                        {isExpanded ? <ChevronUp className="h-4 w-4 ml-auto" /> : <ChevronDown className="h-4 w-4 ml-auto" />}
+                      </TableCell>
+                    </TableRow>
+                    {isExpanded ? cluster.items.map((item, idx) => (
+                      <TableRow key={`${key}-${idx}`} className="bg-muted/20 text-sm">
+                        <TableCell></TableCell>
+                        <TableCell className="text-muted-foreground">{item.instrument}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{item.bs} {item.lots.toFixed(0)} 手 @ {item.avgPrice.toFixed(2)}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{formatCurrency(item.turnover)}</TableCell>
+                        <TableCell></TableCell>
+                      </TableRow>
+                    )) : null}
+                  </Fragment>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>平仓批次解读</CardTitle>
+          <CardDescription>按结算日和品种聚合，含已实现盈亏，点击行展开明细。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>结算日</TableHead>
+                <TableHead>品种</TableHead>
+                <TableHead className="text-right">平仓手数</TableHead>
+                <TableHead className="text-right">实现盈亏</TableHead>
+                <TableHead className="w-8"></TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {analysis.closeClusters.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">暂无平仓记录。</TableCell>
+                </TableRow>
+              ) : analysis.closeClusters.map((cluster) => {
+                const key = `close-${cluster.settlementDate}-${cluster.product}`
+                const isExpanded = expandedClusters.has(key)
+                return (
+                  <Fragment key={key}>
+                    <TableRow className="cursor-pointer hover:bg-muted/50" onClick={() => toggleCluster(key)}>
+                      <TableCell className="font-medium">{cluster.settlementDate}</TableCell>
+                      <TableCell>{cluster.product}</TableCell>
+                      <TableCell className="text-right">{cluster.totalLots.toFixed(0)}</TableCell>
+                      <TableCell className={`text-right ${cluster.totalRealizedPl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
+                        {formatSignedCurrency(cluster.totalRealizedPl)}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {isExpanded ? <ChevronUp className="h-4 w-4 ml-auto" /> : <ChevronDown className="h-4 w-4 ml-auto" />}
+                      </TableCell>
+                    </TableRow>
+                    {isExpanded ? cluster.items.map((item, idx) => (
+                      <TableRow key={`${key}-${idx}`} className="bg-muted/20 text-sm">
+                        <TableCell></TableCell>
+                        <TableCell className="text-muted-foreground">{item.instrument}</TableCell>
+                        <TableCell className="text-right text-muted-foreground">{item.bs} {item.lots.toFixed(0)} 手</TableCell>
+                        <TableCell className={`text-right ${item.realizedPl >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                          {formatSignedCurrency(item.realizedPl)}
+                        </TableCell>
+                        <TableCell></TableCell>
+                      </TableRow>
+                    )) : null}
+                  </Fragment>
+                )
+              })}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>附录：逐日品种净敞口汇总</CardTitle>
+          <CardDescription>每日各品种多空手数与净手数，最多展示 300 行。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>结算日</TableHead>
+                <TableHead>品种</TableHead>
+                <TableHead className="text-right">多头</TableHead>
+                <TableHead className="text-right">空头</TableHead>
+                <TableHead className="text-right">净手数</TableHead>
+                <TableHead className="text-right">盯市盈亏</TableHead>
+                <TableHead className="text-right">保证金</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {analysis.productNetting.slice(0, 300).map((row, idx) => (
+                <TableRow key={`netting-${idx}`}>
+                  <TableCell>{row.settlementDate}</TableCell>
+                  <TableCell>{row.product}</TableCell>
+                  <TableCell className="text-right text-blue-700">{row.longLots.toFixed(0)}</TableCell>
+                  <TableCell className="text-right text-red-700">{row.shortLots.toFixed(0)}</TableCell>
+                  <TableCell className={`text-right font-medium ${row.netLots >= 0 ? "text-blue-700" : "text-red-700"}`}>
+                    {row.netLots > 0 ? "+" : ""}{row.netLots.toFixed(0)}
+                  </TableCell>
+                  <TableCell className={`text-right ${row.mtmPl >= 0 ? "text-emerald-700" : "text-red-700"}`}>{formatSignedCurrency(row.mtmPl)}</TableCell>
+                  <TableCell className="text-right">{formatCurrency(row.margin)}</TableCell>
+                </TableRow>
+              ))}
+              {analysis.productNetting.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">暂无持仓记录。</TableCell>
+                </TableRow>
+              ) : null}
+              {analysis.productNetting.length > 300 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-4 text-center text-sm text-muted-foreground">
+                    仅显示前 300 条，共 {analysis.productNetting.length} 条。
+                  </TableCell>
+                </TableRow>
+              ) : null}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </>
+  )
+}
+
 export default function SettlementAnalysisPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const { toast } = useToast()
@@ -603,6 +885,50 @@ export default function SettlementAnalysisPage() {
   const [dbError, setDbError] = useState<string | null>(null)
   const [expandedClusters, setExpandedClusters] = useState<Set<string>>(new Set())
 
+  const [yinheAnalysis, setYinheAnalysis] = useState<GuoxinDBAnalysisResponse | null>(null)
+  const [isLoadingYinhe, setIsLoadingYinhe] = useState(false)
+  const [yinheError, setYinheError] = useState<string | null>(null)
+  const [yinheExpandedClusters, setYinheExpandedClusters] = useState<Set<string>>(new Set())
+  const [yinheCfg, setYinheCfg] = useState({
+    email: "",
+    pass: "",
+    imapHost: "imap.exmail.qq.com",
+    imapPort: 993,
+    sender: "galaxyfutures_data@vip.126.com",
+    lookbackDays: 120,
+    hasPass: false,
+  })
+  const [isSavingYinheCfg, setIsSavingYinheCfg] = useState(false)
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const resp = await fetch("/ma/api/tools/settlement-analysis/yinhe-config")
+        if (!resp.ok) return
+        const payload = (await resp.json()) as {
+          email?: string
+          imapHost?: string
+          imapPort?: number
+          sender?: string
+          lookbackDays?: number
+          hasPass?: boolean
+        }
+        setYinheCfg((c) => ({
+          ...c,
+          email: payload.email ?? c.email,
+          imapHost: payload.imapHost ?? c.imapHost,
+          imapPort: payload.imapPort ?? c.imapPort,
+          sender: payload.sender ?? c.sender,
+          lookbackDays: payload.lookbackDays ?? c.lookbackDays,
+          hasPass: Boolean(payload.hasPass),
+          pass: "",
+        }))
+      } catch {
+        /* ignore */
+      }
+    })()
+  }, [])
+
   async function handleLoadDbAnalysis() {
     setIsLoadingDb(true)
     setDbError(null)
@@ -618,8 +944,65 @@ export default function SettlementAnalysisPage() {
     }
   }
 
+  async function handleSaveYinheConfig() {
+    setIsSavingYinheCfg(true)
+    try {
+      const resp = await fetch("/ma/api/tools/settlement-analysis/yinhe-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: yinheCfg.email,
+          pass: yinheCfg.pass,
+          imapHost: yinheCfg.imapHost,
+          imapPort: yinheCfg.imapPort,
+          sender: yinheCfg.sender,
+          lookbackDays: yinheCfg.lookbackDays,
+        }),
+      })
+      const payload = (await resp.json()) as { ok?: boolean; error?: string }
+      if (!resp.ok) throw new Error(payload.error || "保存失败")
+      setYinheCfg((c) => ({ ...c, pass: "", hasPass: c.hasPass || Boolean(c.pass) }))
+      toast({ title: "银河期货邮箱配置已保存" })
+    } catch (e) {
+      toast({
+        title: "保存失败",
+        description: e instanceof Error ? e.message : "无法保存邮箱配置",
+        variant: "destructive",
+      })
+    } finally {
+      setIsSavingYinheCfg(false)
+    }
+  }
+
+  async function handleLoadYinheAnalysis(skipFetch = false) {
+    setIsLoadingYinhe(true)
+    setYinheError(null)
+    try {
+      const qs = skipFetch ? "?skipFetch=1" : ""
+      const resp = await fetch(`/ma/api/tools/settlement-analysis/yinhe-analyze${qs}`)
+      const payload = (await resp.json()) as (GuoxinDBAnalysisResponse & { meta?: unknown }) | { error: string }
+      if (!resp.ok) throw new Error(readErrorMessage(payload, "分析失败"))
+      if ("error" in payload) throw new Error(payload.error)
+      const { meta: _meta, ...analysis } = payload as GuoxinDBAnalysisResponse & { meta?: unknown }
+      setYinheAnalysis(analysis)
+    } catch (e) {
+      setYinheError(e instanceof Error ? e.message : "银河期货邮件分析失败")
+    } finally {
+      setIsLoadingYinhe(false)
+    }
+  }
+
   function toggleCluster(key: string) {
     setExpandedClusters((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  function toggleYinheCluster(key: string) {
+    setYinheExpandedClusters((prev) => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
       else next.add(key)
@@ -640,6 +1023,21 @@ export default function SettlementAnalysisPage() {
   const marginChartOption = useMemo(
     () => (dbAnalysis?.equityHistory.length ? buildMarginOption(dbAnalysis.equityHistory) : null),
     [dbAnalysis],
+  )
+
+  const yinheEquityChartOption = useMemo(
+    () => (yinheAnalysis?.equityHistory.length ? buildEquityOption(yinheAnalysis.equityHistory) : null),
+    [yinheAnalysis],
+  )
+
+  const yinheTurnoverChartOption = useMemo(
+    () => (yinheAnalysis?.turnover.length ? buildTurnoverOption(yinheAnalysis.turnover) : null),
+    [yinheAnalysis],
+  )
+
+  const yinheMarginChartOption = useMemo(
+    () => (yinheAnalysis?.equityHistory.length ? buildMarginOption(yinheAnalysis.equityHistory) : null),
+    [yinheAnalysis],
   )
 
   return (
@@ -1012,275 +1410,149 @@ export default function SettlementAnalysisPage() {
       </Card>
 
       {dbAnalysis ? (
-        <>
-          {/* Stats cards */}
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            <Card>
-              <CardHeader className="pb-3">
-                <CardDescription>期间收益率</CardDescription>
-                <CardTitle className={`text-2xl ${dbAnalysis.equityStats.returnPct >= 0 ? "text-emerald-700" : "text-red-700"}`}>
-                  {formatPercent(dbAnalysis.equityStats.returnPct)}
-                </CardTitle>
-                <div className="text-sm text-muted-foreground">{dbAnalysis.equityStats.startDate} ~ {dbAnalysis.equityStats.endDate}</div>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-3">
-                <CardDescription>期末权益</CardDescription>
-                <CardTitle className="text-2xl">{formatCurrency(dbAnalysis.equityStats.endEquity)}</CardTitle>
-                <div className="text-sm text-muted-foreground">期初 {formatCurrency(dbAnalysis.equityStats.startEquity)}</div>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-3">
-                <CardDescription>累计手续费</CardDescription>
-                <CardTitle className="text-2xl text-red-700">{formatCurrency(dbAnalysis.equityStats.feeTotal)}</CardTitle>
-              </CardHeader>
-            </Card>
-            <Card>
-              <CardHeader className="pb-3">
-                <CardDescription>最高风险度</CardDescription>
-                <CardTitle className="text-2xl">{formatPercent(dbAnalysis.equityStats.maxRiskDegree)}</CardTitle>
-                <div className="text-sm text-muted-foreground">交易天数 {dbAnalysis.equityStats.totalDays}</div>
-              </CardHeader>
-            </Card>
+        <StrategyReportPanels
+          analysis={dbAnalysis}
+          equityChartOption={equityChartOption}
+          turnoverChartOption={turnoverChartOption}
+          marginChartOption={marginChartOption}
+          expandedClusters={expandedClusters}
+          toggleCluster={toggleCluster}
+        />
+      ) : null}
+
+      {/* ============================================================ */}
+      {/* 银河期货账户策略报告 (邮件) */}
+      {/* ============================================================ */}
+
+      <div className="space-y-2 border-t pt-8">
+        <h2 className="text-2xl font-semibold tracking-tight">银河期货账户策略报告</h2>
+        <p className="text-muted-foreground">
+          从邮箱拉取银河期货结算邮件（发件人 galaxyfutures_data@vip.126.com），解析 TXT/XLS 附件后生成策略报告。
+        </p>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Mail className="h-5 w-5" />
+            邮箱配置
+          </CardTitle>
+          <CardDescription>
+            默认匹配主题含「银河期货」、发件人 galaxyfutures_data@vip.126.com 的结算邮件；附件支持 Daily Account Statement TXT、结算单/持仓/成交 XLS。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">收件邮箱（如 cwsj@hengyifund.cn）</label>
+              <Input
+                className="h-9 text-sm"
+                value={yinheCfg.email}
+                onChange={(e) => setYinheCfg((c) => ({ ...c, email: e.target.value }))}
+                placeholder="cwsj@hengyifund.cn"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">
+                授权码 / 密码{yinheCfg.hasPass ? "（已保存，留空则保持不变）" : ""}
+              </label>
+              <Input
+                className="h-9 text-sm"
+                type="password"
+                value={yinheCfg.pass}
+                onChange={(e) => setYinheCfg((c) => ({ ...c, pass: e.target.value }))}
+                placeholder={yinheCfg.hasPass ? "••••••••" : "IMAP 授权码"}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">IMAP 主机</label>
+              <Input
+                className="h-9 text-sm font-mono"
+                value={yinheCfg.imapHost}
+                onChange={(e) => setYinheCfg((c) => ({ ...c, imapHost: e.target.value }))}
+                placeholder="imap.exmail.qq.com"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">发件人过滤</label>
+              <Input
+                className="h-9 text-sm font-mono"
+                value={yinheCfg.sender}
+                onChange={(e) => setYinheCfg((c) => ({ ...c, sender: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">回看天数</label>
+              <Input
+                className="h-9 text-sm"
+                type="number"
+                min={7}
+                max={730}
+                value={yinheCfg.lookbackDays}
+                onChange={(e) =>
+                  setYinheCfg((c) => ({ ...c, lookbackDays: Number(e.target.value) || 120 }))
+                }
+              />
+            </div>
           </div>
+          <Button variant="outline" onClick={() => void handleSaveYinheConfig()} disabled={isSavingYinheCfg}>
+            <Save className="h-4 w-4" />
+            {isSavingYinheCfg ? "保存中…" : "保存邮箱配置"}
+          </Button>
+        </CardContent>
+      </Card>
 
-          {/* Charts row 1 */}
-          <div className="grid gap-4 xl:grid-cols-2">
-            <Card>
-              <CardHeader>
-                <CardTitle>账户权益与风险度</CardTitle>
-                <CardDescription>蓝线为客户权益（左轴），红虚线为风险度（右轴）。</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {equityChartOption ? (
-                  <ReactECharts option={equityChartOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />
-                ) : (
-                  <div className="py-24 text-center text-sm text-muted-foreground">暂无权益数据。</div>
-                )}
-              </CardContent>
-            </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Mail className="h-5 w-5" />
+            从邮件生成报告
+          </CardTitle>
+          <CardDescription>
+            拉取结算邮件附件 → 解析入库（yinhe_* 表）→ 生成与国信同结构的策略分析。首次请先保存邮箱配置。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-4">
+          <Button onClick={() => void handleLoadYinheAnalysis(false)} disabled={isLoadingYinhe}>
+            <TrendingUp className="h-4 w-4" />
+            {isLoadingYinhe ? "拉取并分析中…" : yinheAnalysis ? "重新拉取并生成" : "生成策略报告"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => void handleLoadYinheAnalysis(true)}
+            disabled={isLoadingYinhe}
+          >
+            仅用已下载附件分析
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              window.open("/ma/api/tools/settlement-analysis/yinhe-download-report", "_blank")
+            }}
+          >
+            <FileSpreadsheet className="h-4 w-4" />
+            下载 Word 报告
+          </Button>
+          {yinheAnalysis ? (
+            <div className="flex flex-wrap gap-2 text-sm">
+              <Badge variant="outline">区间：{yinheAnalysis.dateRange.start} ~ {yinheAnalysis.dateRange.end}</Badge>
+              <Badge variant="outline">交易天数：{yinheAnalysis.equityStats.totalDays}</Badge>
+              <Badge variant="outline">交易品种：{yinheAnalysis.uniqueProducts.length}</Badge>
+            </div>
+          ) : null}
+          {yinheError ? <p className="w-full text-sm text-red-600">{yinheError}</p> : null}
+        </CardContent>
+      </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle>品种成交额占比</CardTitle>
-                <CardDescription>按成交金额排序，右侧标注占总成交额的百分比。</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {turnoverChartOption ? (
-                  <ReactECharts option={turnoverChartOption} style={{ height: 360, width: "100%" }} notMerge lazyUpdate />
-                ) : (
-                  <div className="py-24 text-center text-sm text-muted-foreground">暂无成交数据。</div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Margin chart */}
-          <Card>
-            <CardHeader>
-              <CardTitle>逐日保证金占用</CardTitle>
-              <CardDescription>每个交易日的保证金占用金额变化趋势。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {marginChartOption ? (
-                <ReactECharts option={marginChartOption} style={{ height: 260, width: "100%" }} notMerge lazyUpdate />
-              ) : (
-                <div className="py-16 text-center text-sm text-muted-foreground">暂无保证金数据。</div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Turnover table */}
-          <Card>
-            <CardHeader>
-              <CardTitle>品种成交明细</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>品种</TableHead>
-                    <TableHead className="text-right">成交额</TableHead>
-                    <TableHead className="text-right">占比</TableHead>
-                    <TableHead className="text-right">手数</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {dbAnalysis.turnover.map((row) => (
-                    <TableRow key={row.product}>
-                      <TableCell className="font-medium">{row.product}</TableCell>
-                      <TableCell className="text-right">{formatCurrency(row.turnover)}</TableCell>
-                      <TableCell className="text-right">{formatPercent(row.turnoverPct)}</TableCell>
-                      <TableCell className="text-right">{row.lots.toFixed(0)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-
-          {/* Trade clusters */}
-          <Card>
-            <CardHeader>
-              <CardTitle>开仓批次解读</CardTitle>
-              <CardDescription>按交易日和品种聚合，点击行展开明细合约。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>交易日</TableHead>
-                    <TableHead>品种</TableHead>
-                    <TableHead className="text-right">批次成交额</TableHead>
-                    <TableHead className="text-right">手续费</TableHead>
-                    <TableHead className="w-8"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {dbAnalysis.tradeClusters.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">暂无开仓记录。</TableCell>
-                    </TableRow>
-                  ) : dbAnalysis.tradeClusters.map((cluster) => {
-                    const key = `open-${cluster.tradeDate}-${cluster.product}`
-                    const isExpanded = expandedClusters.has(key)
-                    return (
-                      <Fragment key={key}>
-                        <TableRow className="cursor-pointer hover:bg-muted/50" onClick={() => toggleCluster(key)}>
-                          <TableCell className="font-medium">{cluster.tradeDate}</TableCell>
-                          <TableCell>{cluster.product}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(cluster.totalTurnover)}</TableCell>
-                          <TableCell className="text-right">{formatCurrency(cluster.totalFees)}</TableCell>
-                          <TableCell className="text-right">
-                            {isExpanded ? <ChevronUp className="h-4 w-4 ml-auto" /> : <ChevronDown className="h-4 w-4 ml-auto" />}
-                          </TableCell>
-                        </TableRow>
-                        {isExpanded ? cluster.items.map((item, idx) => (
-                          <TableRow key={`${key}-${idx}`} className="bg-muted/20 text-sm">
-                            <TableCell></TableCell>
-                            <TableCell className="text-muted-foreground">{item.instrument}</TableCell>
-                            <TableCell className="text-right text-muted-foreground">{item.bs} {item.lots.toFixed(0)} 手 @ {item.avgPrice.toFixed(2)}</TableCell>
-                            <TableCell className="text-right text-muted-foreground">{formatCurrency(item.turnover)}</TableCell>
-                            <TableCell></TableCell>
-                          </TableRow>
-                        )) : null}
-                      </Fragment>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-
-          {/* Close clusters */}
-          <Card>
-            <CardHeader>
-              <CardTitle>平仓批次解读</CardTitle>
-              <CardDescription>按结算日和品种聚合，含已实现盈亏，点击行展开明细。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>结算日</TableHead>
-                    <TableHead>品种</TableHead>
-                    <TableHead className="text-right">平仓手数</TableHead>
-                    <TableHead className="text-right">实现盈亏</TableHead>
-                    <TableHead className="w-8"></TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {dbAnalysis.closeClusters.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">暂无平仓记录。</TableCell>
-                    </TableRow>
-                  ) : dbAnalysis.closeClusters.map((cluster) => {
-                    const key = `close-${cluster.settlementDate}-${cluster.product}`
-                    const isExpanded = expandedClusters.has(key)
-                    return (
-                      <Fragment key={key}>
-                        <TableRow className="cursor-pointer hover:bg-muted/50" onClick={() => toggleCluster(key)}>
-                          <TableCell className="font-medium">{cluster.settlementDate}</TableCell>
-                          <TableCell>{cluster.product}</TableCell>
-                          <TableCell className="text-right">{cluster.totalLots.toFixed(0)}</TableCell>
-                          <TableCell className={`text-right ${cluster.totalRealizedPl >= 0 ? "text-emerald-700" : "text-red-700"}`}>
-                            {formatSignedCurrency(cluster.totalRealizedPl)}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {isExpanded ? <ChevronUp className="h-4 w-4 ml-auto" /> : <ChevronDown className="h-4 w-4 ml-auto" />}
-                          </TableCell>
-                        </TableRow>
-                        {isExpanded ? cluster.items.map((item, idx) => (
-                          <TableRow key={`${key}-${idx}`} className="bg-muted/20 text-sm">
-                            <TableCell></TableCell>
-                            <TableCell className="text-muted-foreground">{item.instrument}</TableCell>
-                            <TableCell className="text-right text-muted-foreground">{item.bs} {item.lots.toFixed(0)} 手</TableCell>
-                            <TableCell className={`text-right ${item.realizedPl >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                              {formatSignedCurrency(item.realizedPl)}
-                            </TableCell>
-                            <TableCell></TableCell>
-                          </TableRow>
-                        )) : null}
-                      </Fragment>
-                    )
-                  })}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-
-          {/* Product netting table */}
-          <Card>
-            <CardHeader>
-              <CardTitle>附录：逐日品种净敞口汇总</CardTitle>
-              <CardDescription>每日各品种多空手数与净手数，最多展示 300 行。</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>结算日</TableHead>
-                    <TableHead>品种</TableHead>
-                    <TableHead className="text-right">多头</TableHead>
-                    <TableHead className="text-right">空头</TableHead>
-                    <TableHead className="text-right">净手数</TableHead>
-                    <TableHead className="text-right">盯市盈亏</TableHead>
-                    <TableHead className="text-right">保证金</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {dbAnalysis.productNetting.slice(0, 300).map((row, idx) => (
-                    <TableRow key={`netting-${idx}`}>
-                      <TableCell>{row.settlementDate}</TableCell>
-                      <TableCell>{row.product}</TableCell>
-                      <TableCell className="text-right text-blue-700">{row.longLots.toFixed(0)}</TableCell>
-                      <TableCell className="text-right text-red-700">{row.shortLots.toFixed(0)}</TableCell>
-                      <TableCell className={`text-right font-medium ${row.netLots >= 0 ? "text-blue-700" : "text-red-700"}`}>
-                        {row.netLots > 0 ? "+" : ""}{row.netLots.toFixed(0)}
-                      </TableCell>
-                      <TableCell className={`text-right ${row.mtmPl >= 0 ? "text-emerald-700" : "text-red-700"}`}>{formatSignedCurrency(row.mtmPl)}</TableCell>
-                      <TableCell className="text-right">{formatCurrency(row.margin)}</TableCell>
-                    </TableRow>
-                  ))}
-                  {dbAnalysis.productNetting.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">暂无持仓记录。</TableCell>
-                    </TableRow>
-                  ) : null}
-                  {dbAnalysis.productNetting.length > 300 ? (
-                    <TableRow>
-                      <TableCell colSpan={7} className="py-4 text-center text-sm text-muted-foreground">
-                        仅显示前 300 条，共 {dbAnalysis.productNetting.length} 条。
-                      </TableCell>
-                    </TableRow>
-                  ) : null}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </>
+      {yinheAnalysis ? (
+        <StrategyReportPanels
+          analysis={yinheAnalysis}
+          equityChartOption={yinheEquityChartOption}
+          turnoverChartOption={yinheTurnoverChartOption}
+          marginChartOption={yinheMarginChartOption}
+          expandedClusters={yinheExpandedClusters}
+          toggleCluster={toggleYinheCluster}
+        />
       ) : null}
     </div>
   )
