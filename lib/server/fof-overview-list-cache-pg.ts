@@ -550,9 +550,38 @@ async function syncFofCacheLatestReturnFromDetail(
 /** True when the API can serve from the nightly precomputed cache. */
 export function useFofOverviewListCache(cutoffRaw: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
-  const today = shanghaiTodayIsoDate()
-  // Historical cutoffs recompute on the fly; today/future dates use the nightly cache.
-  return cutoffRaw >= today
+  const shanghaiToday = shanghaiTodayIsoDate()
+  const utcToday = new Date().toISOString().slice(0, 10)
+  // Same UTC vs Shanghai midnight trap as managed products — do not treat UTC
+  // "today" as historical just because Shanghai already rolled over.
+  return cutoffRaw >= shanghaiToday || cutoffRaw >= utcToday
+}
+
+let fofCacheAsOfMemo: { date: string | null; at: number } | null = null
+
+async function getFofOverviewCacheAsOfDate(): Promise<string | null> {
+  const now = Date.now()
+  if (fofCacheAsOfMemo && now - fofCacheAsOfMemo.at < 60_000) {
+    return fofCacheAsOfMemo.date
+  }
+  try {
+    const rows = await query<{ d: string | null }>(
+      `SELECT MAX(as_of_date)::text AS d FROM ops_fof_overview_list_cache`,
+    )
+    const date = rows[0]?.d ?? null
+    fofCacheAsOfMemo = { date, at: now }
+    return date
+  } catch {
+    return fofCacheAsOfMemo?.date ?? null
+  }
+}
+
+/** Async gate: also allow cutoff >= cache snapshot as_of. */
+export async function shouldUseFofOverviewListCache(cutoffRaw: string): Promise<boolean> {
+  if (useFofOverviewListCache(cutoffRaw)) return true
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
+  const asOf = await getFofOverviewCacheAsOfDate()
+  return Boolean(asOf && cutoffRaw >= asOf)
 }
 
 let cacheRefreshInFlight: Promise<number> | null = null

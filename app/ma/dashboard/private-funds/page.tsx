@@ -60,6 +60,16 @@ import {
 import { ProductFieldConfigDialog } from "./components/ProductFieldConfigDialog"
 import { ProductFieldConfigCell, ProductFieldConfigHeader } from "./components/product-field-config-table"
 
+/** Asia/Shanghai calendar date YYYY-MM-DD (not UTC — avoids midnight false "historical" cutoffs). */
+function shanghaiTodayIsoDateClient(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date())
+}
+
 const menuItems = [
   { key: "market", label: "市场" },
   { key: "funds", label: "基金" },
@@ -1105,7 +1115,7 @@ function PrivateFundTable({
   const [sortDir, setSortDir]   = useState<SortDir>("desc")
   const [jumpVal, setJumpVal]   = useState("")
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [cutoffDate, setCutoffDate] = useState<string>(() => shanghaiTodayIsoDateClient())
   const [addedCols, setAddedCols] = useState<AddedCol[]>([])
   const [showAddMetric, setShowAddMetric] = useState(false)
   const tableContainerRef = useRef<HTMLDivElement>(null)
@@ -1943,9 +1953,9 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const [myPersonalTagMode, setMyPersonalTagMode] = useState<"and" | "or">("and")
   const [myPersonalTagOptions, setMyPersonalTagOptions] = useState<string[]>([])
   const [myPersonalTags, setMyPersonalTags] = useState<string[]>([])
-  const [teamCutoffDate, setTeamCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [teamCutoffDate, setTeamCutoffDate] = useState<string>(() => shanghaiTodayIsoDateClient())
   const [showTeamDatePicker, setShowTeamDatePicker] = useState(false)
-  const [mineCutoffDate, setMineCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [mineCutoffDate, setMineCutoffDate] = useState<string>(() => shanghaiTodayIsoDateClient())
   const [showMineDatePicker, setShowMineDatePicker] = useState(false)
   const [addFundTargetPool, setAddFundTargetPool] = useState("")
   const [addFundSaving, setAddFundSaving] = useState(false)
@@ -3116,7 +3126,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <input
                       type="date"
                       value={teamCutoffDate}
-                      max={new Date().toISOString().slice(0, 10)}
+                      max={shanghaiTodayIsoDateClient()}
                       onChange={(e) => { if (e.target.value) { setTeamCutoffDate(e.target.value); setShowTeamDatePicker(false) } }}
                       className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
                       autoFocus
@@ -3697,7 +3707,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
                     <input
                       type="date"
                       value={mineCutoffDate}
-                      max={new Date().toISOString().slice(0, 10)}
+                      max={shanghaiTodayIsoDateClient()}
                       onChange={(e) => { if (e.target.value) { setMineCutoffDate(e.target.value); setShowMineDatePicker(false) } }}
                       className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
                       autoFocus
@@ -16808,7 +16818,7 @@ function InvestmentManagedProductsView() {
   const [runStatus, setRunStatus] = useState<"running" | "liquidated">("running")
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
-  const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [cutoffDate, setCutoffDate] = useState<string>(() => shanghaiTodayIsoDateClient())
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [showInterval, setShowInterval] = useState(false)
   const [showMoreMenu, setShowMoreMenu] = useState(false)
@@ -17270,7 +17280,7 @@ function InvestmentManagedProductsView() {
                 <input
                   type="date"
                   value={cutoffDate}
-                  max={new Date().toISOString().slice(0, 10)}
+                  max={shanghaiTodayIsoDateClient()}
                   onChange={(e) => { if (e.target.value) { setCutoffDate(e.target.value); setShowDatePicker(false) } }}
                   className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
                   autoFocus
@@ -18229,7 +18239,7 @@ function InvestmentFofOverviewView() {
   const [fofFundSelected, setFofFundSelected] = useState<{ register_number: string; product_name: string } | null>(null)
   const [fofFundOptions, setFofFundOptions] = useState<{ register_number: string; product_name: string }[]>([])
   const [fofFundShowDropdown, setFofFundShowDropdown] = useState(false)
-  const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [cutoffDate, setCutoffDate] = useState<string>(() => shanghaiTodayIsoDateClient())
   const [detailValuationDate, setDetailValuationDate] = useState("")
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [showInterval, setShowInterval] = useState(false)
@@ -19023,7 +19033,7 @@ function InvestmentFofOverviewView() {
                 <input
                   type="date"
                   value={viewTab === "detail" ? detailValuationDate : cutoffDate}
-                  max={new Date().toISOString().slice(0, 10)}
+                  max={shanghaiTodayIsoDateClient()}
                   onChange={(e) => {
                     if (!e.target.value) return
                     if (viewTab === "detail") { setDetailValuationDate(e.target.value); setPage(1) }
@@ -21853,7 +21863,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
   const [teamTags, setTeamTags] = useState<string[]>([])
   const [kwInput, setKwInput] = useState("")
   const [keyword, setKeyword] = useState("")
-  const [cutoffDate, setCutoffDate] = useState<string>(() => new Date().toISOString().slice(0, 10))
+  const [cutoffDate, setCutoffDate] = useState<string>(() => shanghaiTodayIsoDateClient())
   const [showDatePicker, setShowDatePicker] = useState(false)
   const [page, setPage] = useState(1)
   const [jumpVal, setJumpVal] = useState("")
@@ -22089,7 +22099,7 @@ function PortfolioView({ sideItem }: { sideItem: string }) {
                   <input
                     type="date"
                     value={cutoffDate}
-                    max={new Date().toISOString().slice(0, 10)}
+                    max={shanghaiTodayIsoDateClient()}
                     onChange={(e) => { if (e.target.value) { setCutoffDate(e.target.value); setShowDatePicker(false) } }}
                     className="border rounded px-2 py-1 text-xs bg-background outline-none focus:ring-1 focus:ring-ring"
                     autoFocus

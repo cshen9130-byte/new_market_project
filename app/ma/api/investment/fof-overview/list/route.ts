@@ -12,7 +12,7 @@ import {
 } from "@/lib/server/fof-underlying-query"
 import {
   ensureFofOverviewListCachePopulated,
-  useFofOverviewListCache,
+  shouldUseFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
 import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
 
@@ -174,7 +174,7 @@ export async function GET(req: Request) {
     const sortDir = searchParams.get("dir") === "asc" ? "ASC" : "DESC"
     const cutoffRaw = (searchParams.get("cutoff") || "").trim()
     const hasCutoff = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
-    const useCache = useFofOverviewListCache(cutoffRaw)
+    const useCache = await shouldUseFofOverviewListCache(cutoffRaw)
 
     // ─── FAST PATH — 2-table join on precomputed cache only (no lateral NAV / 市值 scans) ──
     if (useCache) {

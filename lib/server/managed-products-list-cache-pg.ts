@@ -459,9 +459,43 @@ export async function refreshManagedProductsListCache(
 /** True when the API can serve from the nightly precomputed cache. */
 export function useManagedProductsListCache(cutoffRaw: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
-  const today = shanghaiTodayIsoDate()
-  // Match FOF overview: today/future UI dates use cache; historical cutoffs recompute.
-  return cutoffRaw >= today
+  const shanghaiToday = shanghaiTodayIsoDate()
+  const utcToday = new Date().toISOString().slice(0, 10)
+  // UI cutoffs often come from `toISOString()` (UTC). Around China midnight that
+  // is still "yesterday" vs Shanghai today — must not force the historical
+  // LATERAL slow path (pegs Postgres and freezes 在管产品).
+  return cutoffRaw >= shanghaiToday || cutoffRaw >= utcToday
+}
+
+let managedCacheAsOfMemo: { date: string | null; at: number } | null = null
+
+async function getManagedCacheAsOfDate(): Promise<string | null> {
+  const now = Date.now()
+  if (managedCacheAsOfMemo && now - managedCacheAsOfMemo.at < 60_000) {
+    return managedCacheAsOfMemo.date
+  }
+  try {
+    const rows = await query<{ d: string | null }>(
+      `SELECT MAX(as_of_date)::text AS d FROM ops_managed_products_list_cache`,
+    )
+    const date = rows[0]?.d ?? null
+    managedCacheAsOfMemo = { date, at: now }
+    return date
+  } catch {
+    return managedCacheAsOfMemo?.date ?? null
+  }
+}
+
+/**
+ * Prefer this over {@link useManagedProductsListCache}: also serves cache when the
+ * cutoff is not older than the snapshot the cache was built for (e.g. UI still
+ * on yesterday while Shanghai has rolled past midnight).
+ */
+export async function shouldUseManagedProductsListCache(cutoffRaw: string): Promise<boolean> {
+  if (useManagedProductsListCache(cutoffRaw)) return true
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
+  const asOf = await getManagedCacheAsOfDate()
+  return Boolean(asOf && cutoffRaw >= asOf)
 }
 
 /** Populate cache when empty (e.g. first deploy before nightly ETL has run). */
