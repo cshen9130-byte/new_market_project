@@ -440,7 +440,9 @@ export async function refreshFofOverviewListCache(
 
 /**
  * Overwrite list-cache tip NAV / 最新涨跌幅 from the same series the fund detail
- * page shows (平台数据 latest 涨跌幅). Keeps FOF底仓 aligned with detail clicks.
+ * page shows. 最新涨跌幅 must match the product-page 平台数据 column under default
+ * 净值类型=复权净值 (cumulative_nav ratio) — NOT LegacyNavRow.price_change, which is
+ * unit-NAV based and diverges on TA/分红 dates (BSJ74B: −5.76% unit vs −3.92% 复权).
  */
 async function syncFofCacheLatestReturnFromDetail(
   products: Array<{
@@ -462,8 +464,9 @@ async function syncFofCacheLatestReturnFromDetail(
       chunk.map(async (p) => {
         const beian = (p.beian_hao ?? "").trim()
         try {
-          // listHeader: null — do not extend with 估值表 just because the cache tip
-          // is ahead; that re-introduces gap-fill days detail never shows.
+          // listHeader: null — do not chase the pre-sync cache tip (avoids short
+          // BSJ74B 市价 leads). loadDetailNavSeriesFast still extends with FOF 估值表
+          // when platform/email lags by VALUATION_EXTEND_MIN_GAP_DAYS+ (holdings-only).
           const series = await loadDetailNavSeriesFast({
             beian_hao: beian,
             product_name: p.product_name,
@@ -472,14 +475,32 @@ async function syncFofCacheLatestReturnFromDetail(
           })
           if (series.length === 0) return null
           const latest = series[series.length - 1]
+          const prev = series.length >= 2 ? series[series.length - 2] : null
           const navDate = latest.price_date?.slice(0, 10) ?? null
           const unitNav = parseFloat(String(latest.nav ?? ""))
           if (!navDate || !Number.isFinite(unitNav) || unitNav <= 0) return null
-          const changeRaw = latest.price_change
-          const returnPct =
-            changeRaw != null && changeRaw !== ""
-              ? parseFloat(String(changeRaw)) / 100
-              : null
+
+          // Prefer 复权净值 day-over-day (same as product page default 涨跌幅).
+          let returnPct: number | null = null
+          if (prev) {
+            const currAdj = parseFloat(String(latest.cumulative_nav ?? ""))
+            const prevAdj = parseFloat(String(prev.cumulative_nav ?? ""))
+            if (
+              Number.isFinite(currAdj)
+              && Number.isFinite(prevAdj)
+              && prevAdj > 0
+              && currAdj > 0
+            ) {
+              returnPct = currAdj / prevAdj - 1
+            }
+          }
+          if (returnPct == null) {
+            const changeRaw = latest.price_change
+            if (changeRaw != null && changeRaw !== "") {
+              const fromUnit = parseFloat(String(changeRaw)) / 100
+              if (Number.isFinite(fromUnit)) returnPct = fromUnit
+            }
+          }
           if (returnPct != null && !Number.isFinite(returnPct)) return null
           return {
             product_name: p.product_name,

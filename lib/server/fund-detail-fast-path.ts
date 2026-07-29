@@ -16,10 +16,18 @@ import { resolveRouteFundId } from "@/lib/server/fof-underlying-query"
 import {
   addDays,
   BatchNavResolver,
+  calendarDaysBetween,
   NAV_HISTORY_LOOKBACK_DAYS,
   type NavPoint,
   type ProductNavIdentity,
 } from "@/lib/server/list-cache-nav-batch"
+
+/**
+ * Extend 平台数据 with FOF 估值表 holdings only when platform/email lags by this many
+ * calendar days. Short 1–2 day 市价 leads (BSJ74B) stay off detail; multi-week
+ * holdings-only tips (BGW80A / VN917B) are applied so product pages match FOF底层.
+ */
+const VALUATION_EXTEND_MIN_GAP_DAYS = 5
 import { loadFundValuationNavFallbackSeries } from "@/lib/server/managed-fof-underlying-pg"
 import {
   collectFundNameAliases,
@@ -362,12 +370,25 @@ function extendSeriesWithPoints(
   )
 }
 
+function valuationTipDate(points: EmailNavPoint[]): string {
+  return points.length > 0 ? points[points.length - 1]!.price_date.slice(0, 10) : ""
+}
+
+/** True when 估值表 tip leads platform/email by enough days to treat as holdings-only lag. */
+function isStaleValuationLead(seriesTip: string, valuationTip: string): boolean {
+  if (!valuationTip) return false
+  if (!seriesTip) return true
+  if (valuationTip <= seriesTip) return false
+  return calendarDaysBetween(valuationTip, seriesTip) >= VALUATION_EXTEND_MIN_GAP_DAYS
+}
+
 /**
  * Load the full detail NAV series.
  *
  * Fast path (most FOF底层 clicks): one merge query. Skip BatchNavResolver when the
- * series already reaches the list-cache latest date. Only run the heavier
- * valuation / resolver path when the merge is empty or behind the cache.
+ * series already reaches the list-cache latest date and is not far behind FOF 估值表
+ * holdings. Extend with targeted 估值表 when the merge is empty, behind the cache, or
+ * holdings-only lag (cache may have been sync'd back to a stale platform tip).
  */
 export async function loadDetailNavSeriesFast(opts: {
   beian_hao: string
@@ -411,9 +432,18 @@ export async function loadDetailNavSeriesFast(opts: {
 
   const latestSeriesDate = navSeries[navSeries.length - 1]?.price_date ?? ""
   const cacheTargetDate = listHeader?.nav_date ?? ""
+  const behindCache =
+    Boolean(cacheTargetDate) && (!latestSeriesDate || latestSeriesDate < cacheTargetDate)
+  // Cache tip can lag FOF 估值表 after syncFofCacheLatestReturnFromDetail pulls the list
+  // back to platform/email — probe valuation only when the series tip itself is stale
+  // enough that a short BSJ74B-style 市价 lead would not qualify.
+  const mayNeedStaleValuationExtend =
+    navSeries.length > 0
+    && Boolean(latestSeriesDate)
+    && calendarDaysBetween(asOfDate, latestSeriesDate) >= VALUATION_EXTEND_MIN_GAP_DAYS
 
-  // Hot path: merge already covers the list-cache latest (or there is no cache hint).
-  if (navSeries.length > 0 && (!cacheTargetDate || latestSeriesDate >= cacheTargetDate)) {
+  // Hot path: covers list-cache tip and not a candidate for holdings-only valuation extend.
+  if (navSeries.length > 0 && !behindCache && !mayNeedStaleValuationExtend) {
     return navSeries
   }
 
@@ -432,21 +462,39 @@ export async function loadDetailNavSeriesFast(opts: {
     listHeader?.unit_nav != null ? parseFloat(listHeader.unit_nav) : null
 
   try {
-    // Series behind list cache — usually only missing a short 估值表 tail. Skip full resolver.
-    if (navSeries.length > 0 && cacheTargetDate && latestSeriesDate < cacheTargetDate) {
+    // Non-empty merge behind cache and/or far behind FOF 估值表 holdings.
+    if (navSeries.length > 0 && (behindCache || mayNeedStaleValuationExtend)) {
       const targetedFallback = await loadFundValuationNavFallbackSeries(
         beian_hao,
         product_name,
         short_name || null,
         valuationOpts,
       )
+      const valuationTip = valuationTipDate(targetedFallback)
+      const staleValuationLead = isStaleValuationLead(latestSeriesDate, valuationTip)
+      const targetCandidates = [
+        behindCache ? cacheTargetDate : "",
+        staleValuationLead ? valuationTip : "",
+      ].filter(Boolean)
+      const targetDate = targetCandidates.sort().at(-1) ?? ""
+      if (!targetDate || (latestSeriesDate && latestSeriesDate >= targetDate)) {
+        return navSeries
+      }
+      const tipNavFromValuation = targetedFallback
+        .filter((p) => p.price_date.slice(0, 10) === targetDate)
+        .at(-1)
+      const tipNav = tipNavFromValuation?.nav != null
+        ? parseFloat(String(tipNavFromValuation.nav))
+        : targetDate === cacheTargetDate && Number.isFinite(cacheNav)
+          ? cacheNav
+          : null
       return extendSeriesWithPoints(
         navSeries,
         fundContext,
         latestSeriesDate,
-        cacheTargetDate,
+        targetDate,
         targetedFallback,
-        Number.isFinite(cacheNav) ? cacheNav : null,
+        tipNav != null && Number.isFinite(tipNav) ? tipNav : null,
       )
     }
 
@@ -462,8 +510,14 @@ export async function loadDetailNavSeriesFast(opts: {
         valuationOpts,
       )
       if (targetedFallback.length > 0) {
-        const fallback = cacheTargetDate
-          ? targetedFallback.filter((p) => p.price_date <= cacheTargetDate)
+        const valuationTip = valuationTipDate(targetedFallback)
+        // Do not clamp to a stale list-cache tip (e.g. platform June after detail sync).
+        const capDate =
+          cacheTargetDate && valuationTip && cacheTargetDate >= valuationTip
+            ? cacheTargetDate
+            : valuationTip || cacheTargetDate
+        const fallback = capDate
+          ? targetedFallback.filter((p) => p.price_date <= capDate)
           : targetedFallback
         const series = applyFundNavCorrectionToLegacyRows(
           mergeNavSeriesWithEmail([], fallback.length > 0 ? fallback : targetedFallback, fundContext),
