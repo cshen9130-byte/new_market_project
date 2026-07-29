@@ -218,6 +218,7 @@ export function InvestmentOverviewView() {
     ids: Set<string>,
     productCount: number,
     opts: { groupBy: "strategy" | "tag"; strategySource: "company" | "platform"; strategyLevel: 1 | 2 | 3 },
+    signal?: AbortSignal,
   ) => {
     const fetchGen = ++fetchGenRef.current
     setSummaryLoading(true)
@@ -235,9 +236,12 @@ export function InvestmentOverviewView() {
       if (ids.size > 0 && productCount > 0 && ids.size < productCount) {
         ids.forEach((id) => params.append("product_id", id))
       }
-      const res = await fetch(`/ma/api/investment/overview/asset-allocation?${params}`, { cache: "no-store" })
+      const res = await fetch(`/ma/api/investment/overview/asset-allocation?${params}`, {
+        cache: "no-store",
+        signal,
+      })
       const json = await res.json()
-      if (fetchGen !== fetchGenRef.current) return
+      if (fetchGen !== fetchGenRef.current || signal?.aborted) return
       if (!res.ok) throw new Error(json.error || "加载失败")
       const payload = json as InvestmentAssetAllocationResult
       setData(payload)
@@ -251,11 +255,13 @@ export function InvestmentOverviewView() {
         setSeriesSelectAll(true)
       }
     } catch (e) {
+      if (signal?.aborted) return
       if (fetchGen !== fetchGenRef.current) return
+      if (e instanceof DOMException && e.name === "AbortError") return
       setError(e instanceof Error ? e.message : "加载失败")
       setData(null)
     } finally {
-      if (fetchGen === fetchGenRef.current) {
+      if (fetchGen === fetchGenRef.current && !signal?.aborted) {
         setSummaryLoading(false)
         setSeriesLoading(false)
       }
@@ -270,6 +276,7 @@ export function InvestmentOverviewView() {
       strategySource: "company" | "platform"
       strategyLevel: 1 | 2 | 3
     },
+    signal?: AbortSignal,
   ) => {
     const fetchGen = ++underlyingFetchGenRef.current
     setUnderlyingLoading(true)
@@ -283,21 +290,27 @@ export function InvestmentOverviewView() {
       if (ids.size > 0 && productCount > 0 && ids.size < productCount) {
         ids.forEach((id) => params.append("product_id", id))
       }
-      const res = await fetch(`/ma/api/investment/overview/underlying-stats?${params}`, { cache: "no-store" })
+      const res = await fetch(`/ma/api/investment/overview/underlying-stats?${params}`, {
+        cache: "no-store",
+        signal,
+      })
       const json = await res.json()
-      if (fetchGen !== underlyingFetchGenRef.current) return
+      if (fetchGen !== underlyingFetchGenRef.current || signal?.aborted) return
       if (!res.ok) throw new Error(json.error || "加载失败")
       setUnderlyingData(json as InvestmentUnderlyingStatsResult)
     } catch (e) {
+      if (signal?.aborted) return
       if (fetchGen !== underlyingFetchGenRef.current) return
+      if (e instanceof DOMException && e.name === "AbortError") return
       setUnderlyingError(e instanceof Error ? e.message : "加载失败")
       setUnderlyingData(null)
     } finally {
-      if (fetchGen === underlyingFetchGenRef.current) setUnderlyingLoading(false)
+      if (fetchGen === underlyingFetchGenRef.current && !signal?.aborted) setUnderlyingLoading(false)
     }
   }, [])
 
   useEffect(() => {
+    const ac = new AbortController()
     const opts = { groupBy, strategySource, strategyLevel }
     const underlyingOpts = {
       groupBy: underlyingGroupBy,
@@ -307,10 +320,11 @@ export function InvestmentOverviewView() {
     const ids = selectedIdsRef.current
     const productCount = allProductsLenRef.current
 
-    void loadData(queryStart, queryEnd, ids, productCount, opts)
-    void loadUnderlyingData(ids, productCount, underlyingOpts)
+    void loadData(queryStart, queryEnd, ids, productCount, opts, ac.signal)
+    void loadUnderlyingData(ids, productCount, underlyingOpts, ac.signal)
 
     return () => {
+      ac.abort()
       fetchGenRef.current += 1
       underlyingFetchGenRef.current += 1
     }

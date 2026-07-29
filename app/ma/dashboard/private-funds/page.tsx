@@ -2238,6 +2238,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
 
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
+    const inflight = new AbortController()
 
     function prefetchNext() {
       if (cancelled || queue.length === 0) return
@@ -2257,7 +2258,7 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         timer = setTimeout(prefetchNext, 0)
         return
       }
-      fetch(`/ma/api/tracking-funds/list?${params}`)
+      fetch(`/ma/api/tracking-funds/list?${params}`, { signal: inflight.signal })
         .then((r) => r.json())
         .then((d) => {
           if (!cancelled && !d?.error) {
@@ -2265,12 +2266,12 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
           }
         })
         .catch(() => {})
-        .finally(() => { timer = setTimeout(prefetchNext, 300) })
+        .finally(() => { if (!cancelled) timer = setTimeout(prefetchNext, 300) })
     }
 
     // Delay start so the active pool's foreground fetch completes first.
     timer = setTimeout(prefetchNext, 2000)
-    return () => { cancelled = true; clearTimeout(timer) }
+    return () => { cancelled = true; clearTimeout(timer); inflight.abort() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pools])
 
@@ -2631,8 +2632,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     }
 
     let cancelled = false
+    const ac = new AbortController()
     fetch(`/ma/api/tracking-funds/list?${params}`, {
       headers: isMineTab ? userFetchHeaders() : {},
+      signal: ac.signal,
     })
       .then((r) => r.json())
       .then((d) => {
@@ -2646,10 +2649,13 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
         setData(entry.data)
         setTotal(entry.total)
       })
-      .catch(() => { if (!cancelled && !cached) { setData([]); setTotal(0) } })
+      .catch((err) => {
+        if (cancelled || isAbortError(err)) return
+        if (!cached) { setData([]); setTotal(0) }
+      })
       .finally(() => { if (!cancelled) setLoading(false) })
 
-    return () => { cancelled = true }
+    return () => { cancelled = true; ac.abort() }
   }, [listPool, listPoolSupported, isMineTab, isOps, page, sortCol, sortDir, keyword, strategyL1, strategyL2, strategyL3, trackingFilterKey, mineFilterKey])
 
   useEffect(() => {
@@ -15707,13 +15713,20 @@ function buildManagedProductsListParams(p: ManagedProductsListParams): URLSearch
   return params
 }
 
-async function fetchManagedProductsList(params: URLSearchParams) {
-  const json = await fetch(`/ma/api/ops/managed-products/list?${params}`).then((r) => r.json())
+async function fetchManagedProductsList(params: URLSearchParams, signal?: AbortSignal) {
+  const res = await fetch(`/ma/api/ops/managed-products/list?${params}`, { signal })
+  const json = await res.json()
   return {
     data: (json.data ?? []) as ManagedProductRow[],
     total: json.total ?? 0,
     totalNetAssetValue: json.totalNetAssetValue ?? "0",
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException
+    ? err.name === "AbortError"
+    : typeof err === "object" && err !== null && "name" in err && (err as { name: string }).name === "AbortError"
 }
 
 function fmtMoney(v: string | null | undefined): string {
@@ -15845,23 +15858,29 @@ function OperationsManagedProductsView() {
   }, [strategySource, strategyL1, teamTagMode, teamTags.join("\u0001"), runStatus, keyword, pageSize])
 
   useEffect(() => {
+    const ac = new AbortController()
     setLoading(true)
     const params = buildManagedProductsListParams({
       page, pageSize, strategySource, runStatus, teamTagMode, keyword,
       sortKey, sortDir, strategyL1, teamTags,
     })
-    fetchManagedProductsList(params)
+    fetchManagedProductsList(params, ac.signal)
       .then(({ data: rows, total: n }) => {
+        if (ac.signal.aborted) return
         setData(rows)
         setTotal(n)
         setSelected(new Set())
       })
-      .catch(() => {
+      .catch((err) => {
+        if (isAbortError(err) || ac.signal.aborted) return
         setData([])
         setTotal(0)
         setSelected(new Set())
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false)
+      })
+    return () => ac.abort()
   }, [page, pageSize, strategySource, strategyL1, teamTagMode, teamTags, runStatus, keyword, sortKey, sortDir, managedDataReloadKey])
 
   useEffect(() => {
@@ -16936,25 +16955,31 @@ function InvestmentManagedProductsView() {
   }, [strategySource, strategyL1, teamTagMode, teamTags.join("\u0001"), runStatus, keyword, pageSize, cutoffDate])
 
   useEffect(() => {
+    const ac = new AbortController()
     setLoading(true)
     const params = buildManagedProductsListParams({
       page, pageSize, strategySource, runStatus, teamTagMode, keyword,
       sortKey, sortDir, strategyL1, teamTags, cutoff: cutoffDate,
     })
-    fetchManagedProductsList(params)
+    fetchManagedProductsList(params, ac.signal)
       .then(({ data: rows, total: n, totalNetAssetValue: navTotal }) => {
+        if (ac.signal.aborted) return
         setData(rows)
         setTotal(n)
         setTotalNetAssetValue(navTotal)
         setSelected(new Set())
       })
-      .catch(() => {
+      .catch((err) => {
+        if (isAbortError(err) || ac.signal.aborted) return
         setData([])
         setTotal(0)
         setTotalNetAssetValue("0")
         setSelected(new Set())
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false)
+      })
+    return () => ac.abort()
   }, [page, pageSize, strategySource, strategyL1, teamTagMode, teamTags, runStatus, keyword, sortKey, sortDir, cutoffDate, invDataReloadKey])
 
   async function handleInvBatchOp(action: string, extra: Record<string, unknown> = {}) {
@@ -18489,6 +18514,7 @@ function InvestmentFofOverviewView() {
 
   useEffect(() => {
     if (viewTab === "detail") return
+    const ac = new AbortController()
     setLoading(true)
     const params = new URLSearchParams({
       page: favoritesOnly ? "1" : String(page),
@@ -18505,9 +18531,10 @@ function InvestmentFofOverviewView() {
     else if (strategyL1) params.set("strategy_l1", strategyL1)
     if (fofFundSelected?.register_number) params.set("fof_register_number", fofFundSelected.register_number)
     teamTags.forEach((t) => params.append("team_tag", t))
-    fetch(`/ma/api/investment/fof-overview/list?${params}`)
+    fetch(`/ma/api/investment/fof-overview/list?${params}`, { signal: ac.signal })
       .then((r) => r.json())
       .then((json) => {
+        if (ac.signal.aborted) return
         let rows: FofOverviewRow[] = json.data ?? []
         if (favoritesOnly) {
           rows = rows.filter((r) => fofFavorites.has(r.id))
@@ -18523,17 +18550,22 @@ function InvestmentFofOverviewView() {
         }
         setSelected(new Set())
       })
-      .catch(() => {
+      .catch((err) => {
+        if (isAbortError(err) || ac.signal.aborted) return
         setData([])
         setTotal(0)
         setTotalMarketValue("0")
         setSelected(new Set())
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false)
+      })
+    return () => ac.abort()
   }, [viewTab, page, pageSize, fundClass, strategySource, strategyL1, teamTagMode, teamTags, holdingStatus, keyword, sortKey, sortDir, cutoffDate, fofFundSelected?.register_number, favoritesOnly, fofFavorites, fofOverviewReloadKey])
 
   useEffect(() => {
     if (viewTab !== "detail") return
+    const ac = new AbortController()
     setLoading(true)
     const params = new URLSearchParams({
       page: String(page),
@@ -18544,21 +18576,26 @@ function InvestmentFofOverviewView() {
     if (detailSortKey) params.set("sort", detailSortKey)
     if (fofFundSelected?.product_name) params.set("fof_fund_name", fofFundSelected.product_name)
     if (detailValuationDate) params.set("valuation_date", detailValuationDate)
-    fetch(`/ma/api/investment/fof-underlying-detail/list?${params}`)
+    fetch(`/ma/api/investment/fof-underlying-detail/list?${params}`, { signal: ac.signal })
       .then((r) => r.json())
       .then((json) => {
+        if (ac.signal.aborted) return
         setFofDetailData(json.data ?? [])
         setTotal(json.total ?? 0)
         setTotalMarketValue(json.totalMarketValue ?? "0")
         setSelected(new Set())
       })
-      .catch(() => {
+      .catch((err) => {
+        if (isAbortError(err) || ac.signal.aborted) return
         setFofDetailData([])
         setTotal(0)
         setTotalMarketValue("0")
         setSelected(new Set())
       })
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (!ac.signal.aborted) setLoading(false)
+      })
+    return () => ac.abort()
   }, [viewTab, page, pageSize, keyword, detailSortKey, sortDir, fofFundSelected?.product_name, detailValuationDate])
 
   useEffect(() => {
