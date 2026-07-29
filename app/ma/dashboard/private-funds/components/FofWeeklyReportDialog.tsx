@@ -591,6 +591,42 @@ export function FofWeeklyReportDialog({
     setError(null)
   }
 
+  async function readJsonSafe(resp: Response): Promise<Record<string, unknown>> {
+    const text = await resp.text()
+    try {
+      return JSON.parse(text) as Record<string, unknown>
+    } catch {
+      if (text.trimStart().startsWith("<")) {
+        throw new Error(
+          resp.status === 504 || resp.status === 502
+            ? "服务器超时，请稍后重试"
+            : `服务器返回了错误页面（HTTP ${resp.status}），请稍后重试`,
+        )
+      }
+      throw new Error(text.trim().slice(0, 200) || `请求失败（HTTP ${resp.status}）`)
+    }
+  }
+
+  async function pollGenerateResult(reportId: string): Promise<GenerateResult> {
+    const started = Date.now()
+    const timeoutMs = 240_000
+    while (Date.now() - started < timeoutMs) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1200))
+      const statusResp = await fetch(`/ma/api/reports/fof-weekly/status?id=${encodeURIComponent(reportId)}`)
+      const statusJson = await readJsonSafe(statusResp)
+      if (!statusResp.ok) {
+        throw new Error(typeof statusJson.error === "string" ? statusJson.error : "查询报告状态失败")
+      }
+      if (statusJson.status === "done" && statusJson.result && typeof statusJson.result === "object") {
+        return statusJson.result as GenerateResult
+      }
+      if (statusJson.status === "error") {
+        throw new Error(typeof statusJson.error === "string" ? statusJson.error : "报告生成失败")
+      }
+    }
+    throw new Error("报告生成超时，请稍后重试")
+  }
+
   async function handleGenerate() {
     if (!productName.trim()) {
       setError("请先选择产品")
@@ -631,11 +667,19 @@ export function FofWeeklyReportDialog({
           nav_frequency: navFrequency,
         }),
       })
-      const json = await resp.json()
+      const json = await readJsonSafe(resp)
       if (!resp.ok) {
-        throw new Error(json.error || "报告生成失败")
+        throw new Error(typeof json.error === "string" ? json.error : "报告生成失败")
       }
-      setResult(json as GenerateResult)
+
+      // Async job: poll status until Python render finishes.
+      if (json.async && typeof json.reportId === "string") {
+        const result = await pollGenerateResult(json.reportId)
+        setResult(result)
+        return
+      }
+
+      setResult(json as unknown as GenerateResult)
     } catch (err) {
       setError(err instanceof Error ? err.message : "报告生成失败")
     } finally {

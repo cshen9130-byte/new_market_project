@@ -65,6 +65,18 @@ export type FofWeeklyReportRequest = {
   product_tagline?: string
   benchmark_key?: string
   nav_frequency?: FofWeeklyNavFrequency
+  /** Pre-assigned id for async jobs (status polling). */
+  reportId?: string
+}
+
+export type FofWeeklyJobPhase = "pending" | "running" | "done" | "error"
+
+export type FofWeeklyJobStatus = {
+  status: FofWeeklyJobPhase
+  error?: string
+  reportId: string
+  updatedAt: string
+  result?: FofWeeklyReportResult
 }
 
 function normalizeNavFrequency(value: string | undefined): FofWeeklyNavFrequency {
@@ -152,6 +164,30 @@ async function appendPathPythonCandidates(out: PythonInvocation[]): Promise<void
 const PYTHON_DEPS_PROBE_TIMEOUT_MS = 30_000
 
 let cachedPython: PythonInvocation | null = null
+const PYTHON_CACHE_FILE = path.join(process.cwd(), ".tmp", "fof-weekly-python.json")
+
+function loadCachedPythonFromDisk(): PythonInvocation | null {
+  try {
+    if (!existsSync(PYTHON_CACHE_FILE)) return null
+    const parsed = JSON.parse(readFileSync(PYTHON_CACHE_FILE, "utf8")) as PythonInvocation
+    if (!parsed?.executable || !existsSync(parsed.executable)) return null
+    return {
+      executable: parsed.executable,
+      prefixArgs: Array.isArray(parsed.prefixArgs) ? parsed.prefixArgs : [],
+    }
+  } catch {
+    return null
+  }
+}
+
+async function persistPythonCache(invocation: PythonInvocation): Promise<void> {
+  try {
+    await mkdir(path.dirname(PYTHON_CACHE_FILE), { recursive: true })
+    await writeFile(PYTHON_CACHE_FILE, JSON.stringify(invocation), "utf8")
+  } catch {
+    /* ignore cache write failures */
+  }
+}
 
 async function pythonHasReportDeps(invocation: PythonInvocation): Promise<boolean> {
   try {
@@ -183,8 +219,13 @@ function pythonDepsInstallHint(): string {
 }
 
 async function findPython(scriptDir: string): Promise<PythonInvocation> {
-  // Reuse a successful probe for this process — cold akshare imports are expensive.
+  // Reuse a successful probe for this process / across restarts via disk cache.
   if (cachedPython) return cachedPython
+  const fromDisk = loadCachedPythonFromDisk()
+  if (fromDisk && (await pythonHasReportDeps(fromDisk))) {
+    cachedPython = fromDisk
+    return fromDisk
+  }
 
   const candidates = listPythonCandidates(scriptDir)
   await appendPathPythonCandidates(candidates)
@@ -194,6 +235,7 @@ async function findPython(scriptDir: string): Promise<PythonInvocation> {
     tried.push(candidate.executable)
     if (await pythonHasReportDeps(candidate)) {
       cachedPython = candidate
+      void persistPythonCache(candidate)
       return candidate
     }
   }
@@ -208,6 +250,7 @@ async function findPython(scriptDir: string): Promise<PythonInvocation> {
     tried.push(fallback.executable)
     if (await pythonHasReportDeps(fallback)) {
       cachedPython = fallback
+      void persistPythonCache(fallback)
       return fallback
     }
   }
@@ -489,6 +532,13 @@ async function buildNavRowsWithBenchmark(
   }
 }
 
+function isCustomFundNavFreshEnough(latest: string): boolean {
+  // Allow a few calendar days of lag for weekends / delayed custody NAV.
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - 5)
+  return latest >= cutoff.toISOString().slice(0, 10)
+}
+
 async function ensureCustomFundNavRows(
   productCode: string,
   rule: Parameters<typeof generateCustomFundNavFromRule>[1],
@@ -496,9 +546,11 @@ async function ensureCustomFundNavRows(
 ) {
   const existing = listCustomFundNavRows(productCode)
   const latest = latestCustomFundNavDate(existing)
-  // Skip expensive splice regeneration when we already cover the requested week end.
-  if (latest && (!minDate || latest >= minDate)) {
-    return existing
+  if (latest) {
+    // Generate path: skip when cache already covers the selected week end.
+    if (minDate && latest >= minDate) return existing
+    // Nav-range path: skip when cache is recent enough.
+    if (!minDate && isCustomFundNavFreshEnough(latest)) return existing
   }
   await generateCustomFundNavFromRule(productCode, rule)
   return listCustomFundNavRows(productCode)
@@ -584,9 +636,8 @@ export async function resolveFofWeeklyProductNavRange(
       if (bundled) {
         const bundledRange = resolveBundledNavDateRange(bundled.navPath)
         if (bundledRange) {
-          // Refresh DB so we know if there are newer trading days
-          await generateCustomFundNavFromRule(customFund.product_code, rule)
-          const dbRows = listCustomFundNavRows(customFund.product_code)
+          // Refresh only when cache is empty/stale; avoid re-splicing on every dialog open.
+          const dbRows = await ensureCustomFundNavRows(customFund.product_code, rule)
           const dbLatest = latestCustomFundNavDate(dbRows) ?? bundledRange.latestNavDate
           return {
             beian_hao: customFund.product_code,
@@ -598,7 +649,7 @@ export async function resolveFofWeeklyProductNavRange(
       }
 
       // Fallback: pure DB
-      await generateCustomFundNavFromRule(customFund.product_code, rule)
+      await ensureCustomFundNavRows(customFund.product_code, rule)
     }
     const rows = listCustomFundNavRows(customFund.product_code)
     const latest = latestCustomFundNavDate(rows)
@@ -628,8 +679,95 @@ function reportDir(reportId: string): string {
   return path.join(REPORT_TMP_ROOT, reportId)
 }
 
+function jobStatusPath(reportId: string): string {
+  return path.join(reportDir(reportId), "status.json")
+}
+
 export function isValidReportId(reportId: string): boolean {
   return /^[0-9a-f-]{36}$/i.test(reportId)
+}
+
+async function writeJobStatus(status: FofWeeklyJobStatus): Promise<void> {
+  const dir = reportDir(status.reportId)
+  await mkdir(dir, { recursive: true })
+  await writeFile(jobStatusPath(status.reportId), JSON.stringify(status), "utf8")
+}
+
+export async function getFofWeeklyReportJobStatus(reportId: string): Promise<FofWeeklyJobStatus> {
+  if (!isValidReportId(reportId)) throw new Error("无效的报告 ID")
+  const statusFile = jobStatusPath(reportId)
+  if (existsSync(statusFile)) {
+    return JSON.parse(await readFile(statusFile, "utf8")) as FofWeeklyJobStatus
+  }
+  // Backward compatible: completed reports may only have meta.json
+  const metaPath = path.join(reportDir(reportId), "meta.json")
+  if (existsSync(metaPath)) {
+    const meta = JSON.parse(await readFile(metaPath, "utf8")) as {
+      reportTitle?: string
+      weekEnd?: string
+      pngFileName?: string
+      pdfFileName?: string
+    }
+    return {
+      status: "done",
+      reportId,
+      updatedAt: new Date().toISOString(),
+      result: {
+        reportId,
+        reportTitle: meta.reportTitle || "",
+        weekStart: "",
+        weekEnd: meta.weekEnd || "",
+        dataEnd: meta.weekEnd || "",
+        pngFileName: meta.pngFileName || "",
+        pdfFileName: meta.pdfFileName || "",
+      },
+    }
+  }
+  throw new Error("报告任务不存在或已过期")
+}
+
+/** Create a pending job record and return its id (does not render yet). */
+export async function prepareFofWeeklyReportJob(input?: { reportId?: string }): Promise<string> {
+  const reportId = input?.reportId?.trim() && isValidReportId(input.reportId.trim())
+    ? input.reportId.trim()
+    : randomUUID()
+
+  await writeJobStatus({
+    status: "pending",
+    reportId,
+    updatedAt: new Date().toISOString(),
+  })
+  return reportId
+}
+
+/** Run report generation for an existing job id and persist status transitions. */
+export async function runFofWeeklyReportJob(
+  reportId: string,
+  input: FofWeeklyReportRequest,
+): Promise<void> {
+  try {
+    await writeJobStatus({
+      status: "running",
+      reportId,
+      updatedAt: new Date().toISOString(),
+    })
+    const result = await generateFofWeeklyReport({ ...input, reportId })
+    await writeJobStatus({
+      status: "done",
+      reportId,
+      updatedAt: new Date().toISOString(),
+      result,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "报告生成失败"
+    console.error("[fof-weekly-report] async job failed:", message)
+    await writeJobStatus({
+      status: "error",
+      reportId,
+      error: message,
+      updatedAt: new Date().toISOString(),
+    })
+  }
 }
 
 export async function generateFofWeeklyReport(
@@ -683,7 +821,7 @@ export async function generateFofWeeklyReport(
     throw new Error("周报生成脚本不存在")
   }
 
-  const reportId = randomUUID()
+  const reportId = input.reportId && isValidReportId(input.reportId) ? input.reportId : randomUUID()
   const outDir = reportDir(reportId)
   await mkdir(outDir, { recursive: true })
 

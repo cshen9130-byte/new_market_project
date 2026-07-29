@@ -1,17 +1,12 @@
-import { after } from "next/server"
 import { NextResponse } from "next/server"
 import {
   buildReportDownloadToken,
   getFofWeeklyReportJobStatus,
-  prepareFofWeeklyReportJob,
-  runFofWeeklyReportJob,
-  type FofWeeklyReportRequest,
   type FofWeeklyReportResult,
 } from "@/lib/server/fof-weekly-report"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
-export const maxDuration = 300
 
 function enrichResult(result: FofWeeklyReportResult) {
   return {
@@ -24,35 +19,12 @@ function enrichResult(result: FofWeeklyReportResult) {
   }
 }
 
-export async function POST(req: Request) {
-  try {
-    const body = (await req.json()) as FofWeeklyReportRequest
-    // Return immediately; keep Python rendering alive via after() so reverse-proxy
-    // HTML timeout pages no longer surface as "Unexpected token '<'".
-    const reportId = await prepareFofWeeklyReportJob()
-
-    after(async () => {
-      await runFofWeeklyReportJob(reportId, body)
-    })
-
-    return NextResponse.json({
-      async: true,
-      reportId,
-      status: "pending",
-      statusUrl: `/ma/api/reports/fof-weekly/status?id=${reportId}`,
-    })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "报告生成失败"
-    console.error("[fof-weekly/generate]", err)
-    return NextResponse.json({ error: message }, { status: 400 })
-  }
-}
-
 export async function GET(req: Request) {
-  const id = new URL(req.url).searchParams.get("id") || ""
+  const id = (new URL(req.url).searchParams.get("id") || "").trim()
   if (!id) {
     return NextResponse.json({ error: "missing id" }, { status: 400 })
   }
+
   try {
     const status = await getFofWeeklyReportJobStatus(id)
     return NextResponse.json({

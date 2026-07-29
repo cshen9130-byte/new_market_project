@@ -3,6 +3,7 @@ import { resolveFofWeeklyProductNavRange } from "@/lib/server/fof-weekly-report"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
+export const maxDuration = 120
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
