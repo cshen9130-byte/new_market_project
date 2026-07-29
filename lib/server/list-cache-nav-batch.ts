@@ -1809,15 +1809,26 @@ export type TrackFundMetricsFields = {
 /** List cache more than this many calendar days behind as-of → recompute on read. */
 const STALE_LIST_NAV_DAYS = 10
 
-function needsNavMetricsRecompute(row: TrackFundMetricsFields, asOfDate: string): boolean {
+export type EnrichNavMode = "full" | "corrupt-only"
+
+function needsNavMetricsRecompute(
+  row: TrackFundMetricsFields,
+  asOfDate: string,
+  mode: EnrichNavMode = "full",
+): boolean {
   if (!row.latest_nav) return true
   const rule = lookupFundNavCorrectionRule(row.beian_hao, row.product_name, row.short_name)
   if (rule?.preserve_high_nav_scale) return false
   const nav = parseFloat(row.latest_nav)
   if (!Number.isFinite(nav)) return true
-  if (nav > 2.5) return true
   const change = parseFloat(row.latest_price_change ?? "")
   if (Number.isFinite(change) && Math.abs(change) > 100) return true
+
+  // next-server list path: trust nightly cache. Recomputing "stale" / high-NAV /
+  // volatile-week rows here pegs CPU (thousands of private funds report monthly).
+  if (mode === "corrupt-only") return false
+
+  if (nav > 2.5) return true
   // Contaminated period base (e.g. SAVW72 近一周 −11.89% with daily ~0.1%).
   const ret1w = parseFloat(row.ret_1w ?? "")
   if (Number.isFinite(ret1w) && Math.abs(ret1w) > 0.08) return true
@@ -1841,8 +1852,9 @@ function needsNavMetricsRecompute(row: TrackFundMetricsFields, asOfDate: string)
 export async function enrichTrackFundMetricsRows<T extends TrackFundMetricsFields>(
   rows: T[],
   asOfDate: string,
+  mode: EnrichNavMode = process.env.RUN_BACKGROUND_JOBS === "0" ? "corrupt-only" : "full",
 ): Promise<T[]> {
-  const needs = rows.filter((row) => needsNavMetricsRecompute(row, asOfDate))
+  const needs = rows.filter((row) => needsNavMetricsRecompute(row, asOfDate, mode))
   if (needs.length === 0) return rows
 
   const identities = needs.map((row) => ({
