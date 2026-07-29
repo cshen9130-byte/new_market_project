@@ -1,3 +1,5 @@
+import fs from "fs"
+import path from "path"
 import {
   fetchEmailParseRecords,
   type EmailParseFetchResult,
@@ -84,6 +86,84 @@ function stopActiveRun(run: ActiveRun | null): void {
   setActiveRun(null)
 }
 
+function runtimeDir(): string {
+  const root =
+    process.env.MARKET_DASHBOARD_STORAGE_DIR || path.join(process.cwd(), "data")
+  return path.join(root, "runtime")
+}
+
+function emailParseLockPath(): string {
+  return path.join(runtimeDir(), "email-parse-fetch.lock")
+}
+
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function readLockPid(): number | null {
+  try {
+    const raw = fs.readFileSync(emailParseLockPath(), "utf8").trim()
+    const pid = parseInt(raw, 10)
+    return Number.isFinite(pid) ? pid : null
+  } catch {
+    return null
+  }
+}
+
+/** True when another OS process holds the email-parse lock (cross-PM2 single-flight). */
+export function isEmailParseFetchJobLockedElsewhere(): boolean {
+  const pid = readLockPid()
+  if (pid == null) return false
+  if (pid === process.pid) return false
+  if (pidIsAlive(pid)) return true
+  try {
+    fs.unlinkSync(emailParseLockPath())
+  } catch {
+    // ignore stale cleanup races
+  }
+  return false
+}
+
+function tryAcquireEmailParseLock(): boolean {
+  fs.mkdirSync(runtimeDir(), { recursive: true })
+  const lockPath = emailParseLockPath()
+  const writeLock = (): boolean => {
+    try {
+      const fd = fs.openSync(lockPath, "wx")
+      fs.writeFileSync(fd, String(process.pid), "utf8")
+      fs.closeSync(fd)
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (writeLock()) return true
+  const pid = readLockPid()
+  if (pid != null && pid !== process.pid && pidIsAlive(pid)) return false
+  try {
+    fs.unlinkSync(lockPath)
+  } catch {
+    // ignore
+  }
+  return writeLock()
+}
+
+function releaseEmailParseLock(): void {
+  try {
+    const pid = readLockPid()
+    if (pid != null && pid !== process.pid) return
+    fs.unlinkSync(emailParseLockPath())
+  } catch {
+    // ignore
+  }
+}
+
 export function getEmailParseFetchJobStatus(): EmailParseFetchJobStatus | null {
   return getJobMap().get(JOB_KEY) ?? null
 }
@@ -105,6 +185,9 @@ export function startEmailParseFetchJob(options?: {
   const jobs = getJobMap()
   const existing = jobs.get(JOB_KEY)
   if (existing && (existing.status === "queued" || existing.status === "running")) {
+    return { ok: false, reason: "already_running" }
+  }
+  if (!tryAcquireEmailParseLock()) {
     return { ok: false, reason: "already_running" }
   }
 
@@ -137,6 +220,7 @@ export function startEmailParseFetchJob(options?: {
     job.finishedAt = Date.now()
     job.message = `任务超时（超过 ${Math.round(jobTimeoutMs / 60_000)} 分钟未完成，已中止）`
     stopActiveRun(activeRun)
+    releaseEmailParseLock()
     setTimeout(() => {
       if (jobs.get(JOB_KEY) === job) jobs.delete(JOB_KEY)
     }, 120_000)
@@ -146,6 +230,7 @@ export function startEmailParseFetchJob(options?: {
     settled = true
     clearTimeout(watchdog)
     stopActiveRun(activeRun)
+    releaseEmailParseLock()
   })
 
   async function runJob() {

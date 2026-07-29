@@ -890,13 +890,23 @@ export default function SettlementAnalysisPage() {
   const [yinheError, setYinheError] = useState<string | null>(null)
   const [yinheExpandedClusters, setYinheExpandedClusters] = useState<Set<string>>(new Set())
   const [yinheCfg, setYinheCfg] = useState({
-    email: "",
-    pass: "",
-    imapHost: "imap.exmail.qq.com",
+    email: "ch_c7h8@163.com",
+    imapHost: "imap.163.com",
     imapPort: 993,
     sender: "galaxyfutures_data@vip.126.com",
     lookbackDays: 120,
-    hasPass: false,
+    mailboxReady: false,
+    mailboxSource: null as "crawl-email" | "local-config" | null,
+    crawlStatus: null as string | null,
+    resolveError: null as string | null,
+    crawlAccounts: [] as {
+      account: string
+      emailType: string
+      imapHost: string
+      imapPort: number
+      crawlStatus: string
+      remark: string
+    }[],
   })
   const [isSavingYinheCfg, setIsSavingYinheCfg] = useState(false)
 
@@ -907,21 +917,36 @@ export default function SettlementAnalysisPage() {
         if (!resp.ok) return
         const payload = (await resp.json()) as {
           email?: string
+          defaultEmail?: string
           imapHost?: string
           imapPort?: number
           sender?: string
           lookbackDays?: number
-          hasPass?: boolean
+          mailboxReady?: boolean
+          mailboxSource?: "crawl-email" | "local-config" | null
+          crawlStatus?: string | null
+          resolveError?: string | null
+          crawlAccounts?: {
+            account: string
+            emailType: string
+            imapHost: string
+            imapPort: number
+            crawlStatus: string
+            remark: string
+          }[]
         }
         setYinheCfg((c) => ({
           ...c,
-          email: payload.email ?? c.email,
+          email: payload.email || payload.defaultEmail || c.email,
           imapHost: payload.imapHost ?? c.imapHost,
           imapPort: payload.imapPort ?? c.imapPort,
           sender: payload.sender ?? c.sender,
           lookbackDays: payload.lookbackDays ?? c.lookbackDays,
-          hasPass: Boolean(payload.hasPass),
-          pass: "",
+          mailboxReady: Boolean(payload.mailboxReady),
+          mailboxSource: payload.mailboxSource ?? null,
+          crawlStatus: payload.crawlStatus ?? null,
+          resolveError: payload.resolveError ?? null,
+          crawlAccounts: payload.crawlAccounts ?? [],
         }))
       } catch {
         /* ignore */
@@ -952,16 +977,33 @@ export default function SettlementAnalysisPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: yinheCfg.email,
-          pass: yinheCfg.pass,
-          imapHost: yinheCfg.imapHost,
-          imapPort: yinheCfg.imapPort,
           sender: yinheCfg.sender,
           lookbackDays: yinheCfg.lookbackDays,
         }),
       })
       const payload = (await resp.json()) as { ok?: boolean; error?: string }
       if (!resp.ok) throw new Error(payload.error || "保存失败")
-      setYinheCfg((c) => ({ ...c, pass: "", hasPass: c.hasPass || Boolean(c.pass) }))
+      // Refresh readiness from crawl-email store
+      const refresh = await fetch("/ma/api/tools/settlement-analysis/yinhe-config")
+      if (refresh.ok) {
+        const next = (await refresh.json()) as {
+          mailboxReady?: boolean
+          mailboxSource?: "crawl-email" | "local-config" | null
+          crawlStatus?: string | null
+          resolveError?: string | null
+          imapHost?: string
+          imapPort?: number
+        }
+        setYinheCfg((c) => ({
+          ...c,
+          mailboxReady: Boolean(next.mailboxReady),
+          mailboxSource: next.mailboxSource ?? null,
+          crawlStatus: next.crawlStatus ?? null,
+          resolveError: next.resolveError ?? null,
+          imapHost: next.imapHost ?? c.imapHost,
+          imapPort: next.imapPort ?? c.imapPort,
+        }))
+      }
       toast({ title: "银河期货邮箱配置已保存" })
     } catch (e) {
       toast({
@@ -1438,40 +1480,57 @@ export default function SettlementAnalysisPage() {
             邮箱配置
           </CardTitle>
           <CardDescription>
-            默认匹配主题含「银河期货」、发件人 galaxyfutures_data@vip.126.com 的结算邮件；附件支持 Daily Account Statement TXT、结算单/持仓/成交 XLS。
+            复用「运维 → 抓取邮箱设置」中的 IMAP 账号（默认 ch_c7h8@163.com），拉取发件人 galaxyfutures_data@vip.126.com 的结算附件。
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            {yinheCfg.mailboxReady ? (
+              <Badge variant="outline" className="border-emerald-300 text-emerald-700">
+                凭据就绪
+                {yinheCfg.mailboxSource === "crawl-email" ? " · 来自抓取邮箱设置" : " · 本地配置"}
+                {yinheCfg.crawlStatus ? ` · ${yinheCfg.crawlStatus}` : ""}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="border-red-300 text-red-700">
+                凭据未就绪
+              </Badge>
+            )}
+            <span className="text-muted-foreground font-mono text-xs">{yinheCfg.imapHost}:{yinheCfg.imapPort}</span>
+          </div>
+          {yinheCfg.resolveError ? (
+            <p className="text-sm text-red-600">{yinheCfg.resolveError}</p>
+          ) : null}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">收件邮箱（如 cwsj@hengyifund.cn）</label>
-              <Input
-                className="h-9 text-sm"
+              <label className="text-xs text-muted-foreground">收件邮箱（抓取邮箱设置）</label>
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={yinheCfg.email}
-                onChange={(e) => setYinheCfg((c) => ({ ...c, email: e.target.value }))}
-                placeholder="cwsj@hengyifund.cn"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">
-                授权码 / 密码{yinheCfg.hasPass ? "（已保存，留空则保持不变）" : ""}
-              </label>
-              <Input
-                className="h-9 text-sm"
-                type="password"
-                value={yinheCfg.pass}
-                onChange={(e) => setYinheCfg((c) => ({ ...c, pass: e.target.value }))}
-                placeholder={yinheCfg.hasPass ? "••••••••" : "IMAP 授权码"}
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs text-muted-foreground">IMAP 主机</label>
-              <Input
-                className="h-9 text-sm font-mono"
-                value={yinheCfg.imapHost}
-                onChange={(e) => setYinheCfg((c) => ({ ...c, imapHost: e.target.value }))}
-                placeholder="imap.exmail.qq.com"
-              />
+                onChange={(e) => {
+                  const account = e.target.value
+                  const hit = yinheCfg.crawlAccounts.find((a) => a.account === account)
+                  setYinheCfg((c) => ({
+                    ...c,
+                    email: account,
+                    imapHost: hit?.imapHost || c.imapHost,
+                    imapPort: hit?.imapPort || c.imapPort,
+                    crawlStatus: hit?.crawlStatus ?? c.crawlStatus,
+                  }))
+                }}
+              >
+                {yinheCfg.crawlAccounts.length === 0 ? (
+                  <option value={yinheCfg.email}>{yinheCfg.email || "ch_c7h8@163.com"}</option>
+                ) : (
+                  yinheCfg.crawlAccounts.map((a) => (
+                    <option key={a.account} value={a.account}>
+                      {a.account}
+                      {a.remark ? `（${a.remark}）` : ""}
+                      {a.crawlStatus ? ` · ${a.crawlStatus}` : ""}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">发件人过滤</label>
@@ -1497,7 +1556,7 @@ export default function SettlementAnalysisPage() {
           </div>
           <Button variant="outline" onClick={() => void handleSaveYinheConfig()} disabled={isSavingYinheCfg}>
             <Save className="h-4 w-4" />
-            {isSavingYinheCfg ? "保存中…" : "保存邮箱配置"}
+            {isSavingYinheCfg ? "保存中…" : "保存配置"}
           </Button>
         </CardContent>
       </Card>
@@ -1509,11 +1568,14 @@ export default function SettlementAnalysisPage() {
             从邮件生成报告
           </CardTitle>
           <CardDescription>
-            拉取结算邮件附件 → 解析入库（yinhe_* 表）→ 生成与国信同结构的策略分析。首次请先保存邮箱配置。
+            使用抓取邮箱拉取结算附件 → 解析入库（yinhe_* 表）→ 生成与国信同结构的策略分析。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-wrap items-center gap-4">
-          <Button onClick={() => void handleLoadYinheAnalysis(false)} disabled={isLoadingYinhe}>
+          <Button
+            onClick={() => void handleLoadYinheAnalysis(false)}
+            disabled={isLoadingYinhe || !yinheCfg.mailboxReady}
+          >
             <TrendingUp className="h-4 w-4" />
             {isLoadingYinhe ? "拉取并分析中…" : yinheAnalysis ? "重新拉取并生成" : "生成策略报告"}
           </Button>

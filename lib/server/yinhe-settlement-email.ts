@@ -3,14 +3,18 @@
  * 发件人: galaxyfutures_data@vip.126.com
  * 主题: YYYYMMDD银河期货结算单-账号 / YYYYMMDD银河期货结单-账号
  * 附件: Daily Account Statement ByTrade *.TXT、*结算单*.xls、*持仓*.xls、*成交*.xls
+ *
+ * IMAP 凭据默认复用运维「抓取邮箱设置」中的 ch_c7h8@163.com。
  */
 
 import fs from "fs"
 import path from "path"
 import { ImapFlow } from "imapflow"
+import { getCrawlEmailByAccount } from "@/lib/server/crawl-emails"
 
 export type YinheEmailConfig = {
   email: string
+  /** Optional local override; normally empty — use ops crawl email pass. */
   pass: string
   imapHost: string
   imapPort: number
@@ -28,17 +32,60 @@ export type YinheFetchResult = {
   folder: string
 }
 
+export type YinheResolvedMailbox = {
+  email: string
+  pass: string
+  imapHost: string
+  imapPort: number
+  source: "crawl-email" | "local-config"
+  crawlStatus?: string
+}
+
 const CONFIG_FILE = path.join(process.cwd(), "data", "yinhe_settlement_email_config.json")
 
+/** Default mailbox shared with 运维 → 抓取邮箱设置 */
+export const YINHE_DEFAULT_MAILBOX = "ch_c7h8@163.com"
+
 const DEFAULT_CONFIG: YinheEmailConfig = {
-  email: "",
+  email: YINHE_DEFAULT_MAILBOX,
   pass: "",
-  imapHost: "imap.exmail.qq.com",
+  imapHost: "imap.163.com",
   imapPort: 993,
   sender: "galaxyfutures_data@vip.126.com",
   subjectIncludes: "银河期货",
   lookbackDays: 120,
   lastFetchAt: null,
+}
+
+/**
+ * Resolve IMAP auth: prefer ops crawl-email credentials for the selected account.
+ */
+export function resolveYinheMailbox(cfg?: YinheEmailConfig): YinheResolvedMailbox {
+  const base = cfg ?? readYinheEmailConfig()
+  const email = (base.email || YINHE_DEFAULT_MAILBOX).trim()
+  const crawl = getCrawlEmailByAccount(email)
+  if (crawl?.pass) {
+    return {
+      email: crawl.account,
+      pass: crawl.pass,
+      imapHost: crawl.imapHost || base.imapHost || "imap.163.com",
+      imapPort: crawl.imapPort || base.imapPort || 993,
+      source: "crawl-email",
+      crawlStatus: crawl.crawlStatus,
+    }
+  }
+  if (base.pass) {
+    return {
+      email,
+      pass: base.pass,
+      imapHost: base.imapHost || "imap.163.com",
+      imapPort: base.imapPort || 993,
+      source: "local-config",
+    }
+  }
+  throw new Error(
+    `未找到邮箱 ${email} 的授权码。请先在「运维 → 抓取邮箱设置」中配置该账户（推荐 ${YINHE_DEFAULT_MAILBOX}）。`,
+  )
 }
 
 export function getYinheDownloadDir(): string {
@@ -149,19 +196,17 @@ export async function fetchYinheSettlementEmails(
   options?: { lookbackDays?: number },
 ): Promise<YinheFetchResult> {
   const cfg = readYinheEmailConfig()
-  if (!cfg.email || !cfg.pass) {
-    throw new Error("未配置银河期货结算邮箱账号或授权码，请先在本页保存邮箱配置。")
-  }
+  const mailbox = resolveYinheMailbox(cfg)
 
   const dlDir = getYinheDownloadDir()
   if (!fs.existsSync(dlDir)) fs.mkdirSync(dlDir, { recursive: true })
 
   const lookback = options?.lookbackDays ?? cfg.lookbackDays ?? 120
   const client = new ImapFlow({
-    host: cfg.imapHost || "imap.exmail.qq.com",
-    port: cfg.imapPort || 993,
+    host: mailbox.imapHost || "imap.163.com",
+    port: mailbox.imapPort || 993,
     secure: true,
-    auth: { user: cfg.email, pass: cfg.pass },
+    auth: { user: mailbox.email, pass: mailbox.pass },
     logger: false,
   })
 
@@ -179,6 +224,9 @@ export async function fetchYinheSettlementEmails(
 
     const senderFilter = (cfg.sender ?? "").trim().toLowerCase()
     const allUids = await client.search({ since })
+    log.push(
+      `使用抓取邮箱 ${mailbox.email}（${mailbox.source === "crawl-email" ? "运维抓取邮箱设置" : "本地配置"}）`,
+    )
     log.push(`收件箱最近 ${lookback} 天共 ${allUids.length} 封邮件`)
     if (senderFilter) log.push(`发件人过滤: ${senderFilter}`)
 

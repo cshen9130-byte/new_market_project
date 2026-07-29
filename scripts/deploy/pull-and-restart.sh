@@ -17,8 +17,9 @@ pnpm run build:lowmem
 echo "==> product monthly report setup"
 bash "$PROJECT_ROOT/scripts/deploy/setup-product-ppt.sh" || true
 
-echo "==> pm2 restart"
-pm2 restart new_market_project --update-env
+echo "==> pm2 restart (web + background worker)"
+# Reloads existing apps and creates new_market_project_worker on first deploy after split.
+pm2 startOrReload ecosystem.config.js --update-env
 pm2 save
 
 echo "==> SLA063 cache patch"
