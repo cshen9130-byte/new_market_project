@@ -89,21 +89,55 @@ M_BG_MONTHLY = "#EEF2F7"
 M_PANEL = "#FFFFFF"
 M_BORDER_M = "#CBD5E1"
 
-_CN_TRADE_DATES: pd.DatetimeIndex | None = None
+# Non-weekend A-share market holidays (SSE/SZSE closed). Keep local — never fetch via akshare.
+# Cover the typical report window for this product (2023–2027).
+_CN_MARKET_HOLIDAYS = frozenset(
+    {
+        # 2023
+        "2023-01-02",
+        "2023-01-23", "2023-01-24", "2023-01-25", "2023-01-26", "2023-01-27",
+        "2023-04-05",
+        "2023-05-01", "2023-05-02", "2023-05-03",
+        "2023-06-22", "2023-06-23",
+        "2023-09-29",
+        "2023-10-02", "2023-10-03", "2023-10-04", "2023-10-05", "2023-10-06",
+        # 2024
+        "2024-01-01",
+        "2024-02-09", "2024-02-12", "2024-02-13", "2024-02-14", "2024-02-15", "2024-02-16",
+        "2024-04-04", "2024-04-05",
+        "2024-05-01", "2024-05-02", "2024-05-03",
+        "2024-06-10",
+        "2024-09-16", "2024-09-17",
+        "2024-10-01", "2024-10-02", "2024-10-03", "2024-10-04", "2024-10-07",
+        # 2025
+        "2025-01-01",
+        "2025-01-28", "2025-01-29", "2025-01-30", "2025-01-31", "2025-02-03", "2025-02-04",
+        "2025-04-04",
+        "2025-05-01", "2025-05-02", "2025-05-05",
+        "2025-05-31",
+        "2025-10-01", "2025-10-02", "2025-10-03", "2025-10-06", "2025-10-07", "2025-10-08",
+        # 2026
+        "2026-01-01", "2026-01-02",
+        "2026-02-16", "2026-02-17", "2026-02-18", "2026-02-19", "2026-02-20", "2026-02-23",
+        "2026-04-06",
+        "2026-05-01", "2026-05-04", "2026-05-05",
+        "2026-06-19",
+        "2026-09-25",
+        "2026-10-01", "2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07",
+        # 2027 (partial / expected)
+        "2027-01-01",
+    }
+)
 
 
 def count_cn_trading_days(start: pd.Timestamp, end: pd.Timestamp) -> int:
-    """统计首尾日期之间（含首尾）的 A 股交易日数量。"""
-    global _CN_TRADE_DATES
-    if _CN_TRADE_DATES is None:
-        import akshare as ak
-
-        cal = pd.to_datetime(ak.tool_trade_date_hist_sina()["trade_date"])
-        _CN_TRADE_DATES = pd.DatetimeIndex(cal)
-
+    """统计首尾日期之间（含首尾）的 A 股交易日数量（本地日历，不访问网络）。"""
     start = pd.Timestamp(start).normalize()
     end = pd.Timestamp(end).normalize()
-    return int(((_CN_TRADE_DATES >= start) & (_CN_TRADE_DATES <= end)).sum())
+    if end < start:
+        return 0
+    days = pd.bdate_range(start, end)
+    return int(sum(d.strftime("%Y-%m-%d") not in _CN_MARKET_HOLIDAYS for d in days))
 
 
 def _parse_pct(val) -> float:
@@ -113,18 +147,26 @@ def _parse_pct(val) -> float:
 
 
 def _fill_csi300_from_akshare(df: pd.DataFrame) -> pd.DataFrame:
-    """用 akshare 补齐缺失的沪深300收盘价。"""
+    """用 akshare 补齐缺失的沪深300收盘价（仅在本地数据完全缺失时作为最后手段）。"""
     missing = df["csi300"].isna()
     if not missing.any():
         return df
 
+    # Allow ops to force offline generation (akshare remote calls often hang).
+    if os.environ.get("FOF_REPORT_DISABLE_AKSHARE", "").strip() in ("1", "true", "yes"):
+        return df
+
     try:
         import akshare as ak
-    except ImportError as exc:
-        missing_dates = df.loc[missing, "date"].dt.strftime("%Y-%m-%d").tolist()
-        raise ValueError(f"缺少沪深300数据且未安装 akshare: {missing_dates}") from exc
+    except ImportError:
+        return df
 
-    index_df = ak.stock_zh_index_daily(symbol="sh000300")
+    try:
+        index_df = ak.stock_zh_index_daily(symbol="sh000300")
+    except Exception as exc:  # noqa: BLE001 — network/source failures should not hang the report
+        print(f"[warn] akshare 补齐沪深300失败: {exc}", file=sys.stderr)
+        return df
+
     index_df["date"] = pd.to_datetime(index_df["date"])
     bench_map = index_df.set_index("date")["close"]
 
@@ -169,10 +211,13 @@ def load_nav_data(file_path: str) -> pd.DataFrame:
     if "csi300" not in df.columns:
         df["csi300"] = np.nan
 
-    if df["csi300"].isna().any():
-        df = _fill_csi300_from_akshare(df)
-
+    # Node already injects benchmark prices into the CSV. Prefer local fill/ffill —
+    # never block report generation on a remote akshare download for a few gaps.
+    df["csi300"] = pd.to_numeric(df["csi300"], errors="coerce")
     df["csi300"] = df["csi300"].ffill().bfill()
+    if df["csi300"].isna().all():
+        df = _fill_csi300_from_akshare(df)
+        df["csi300"] = df["csi300"].ffill().bfill()
 
     still_missing = df["csi300"].isna()
     if still_missing.any():

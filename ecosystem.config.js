@@ -60,6 +60,8 @@ module.exports = {
         ...sharedEnv,
         // Crons run in new_market_project_worker so next-server stays responsive.
         RUN_BACKGROUND_JOBS: "0",
+        // Prefer web traffic for DB connections when the worker is busy.
+        DB_POOL_MAX: process.env.DB_POOL_MAX_WEB || "12",
       },
     },
     {
@@ -68,9 +70,15 @@ module.exports = {
       script: "pnpm",
       args: "worker:start",
       interpreter: null,
+      // Keep worker below interactive next-server on the shared 2-vCPU host.
+      max_memory_restart: "900M",
       env: {
         ...sharedEnv,
         RUN_BACKGROUND_JOBS: "1",
+        // Cap worker DB fan-out so FOF/cache rebuilds cannot exhaust Postgres
+        // and leave 在管产品 list waiting on "timeout exceeded when trying to connect".
+        DB_POOL_MAX: process.env.DB_POOL_MAX_WORKER || "4",
+        DB_STATEMENT_TIMEOUT: process.env.DB_STATEMENT_TIMEOUT_WORKER || "120000",
       },
     },
   ],

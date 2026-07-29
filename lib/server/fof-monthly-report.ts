@@ -83,8 +83,8 @@ async function findPython(): Promise<{ executable: string; prefixArgs: string[] 
       await execFileAsync(candidate.executable, [
         ...candidate.prefixArgs,
         "-c",
-        "import pandas, matplotlib, openpyxl, akshare",
-      ], { timeout: 60_000 })
+        "import pandas, matplotlib, openpyxl",
+      ], { timeout: 30_000 })
       return candidate
     } catch {
       continue
@@ -129,6 +129,7 @@ export async function generateFofMonthlyReport(
     names.product_name,
     names.short_name,
     benchmark.key,
+    { minNavDate: month_end },
   )
   const navCsv = built.csv
   const benchLabel = built.benchLabel
@@ -194,12 +195,13 @@ export async function generateFofMonthlyReport(
       cwd: SCRIPT_DIR,
       env: {
         ...process.env,
+        FOF_REPORT_DISABLE_AKSHARE: process.env.FOF_REPORT_DISABLE_AKSHARE ?? "1",
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
       },
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
-      timeout: 300_000,
+      timeout: 180_000,
     })
     if (stdout) console.log("[fof-monthly-report] stdout:", stdout.slice(0, 1000))
     if (stderr) console.warn("[fof-monthly-report] stderr:", stderr.slice(0, 1000))

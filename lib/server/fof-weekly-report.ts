@@ -148,16 +148,18 @@ async function appendPathPythonCandidates(out: PythonInvocation[]): Promise<void
   }
 }
 
-/** Cold import of akshare+matplotlib often exceeds 15s on the server under load. */
-const PYTHON_DEPS_PROBE_TIMEOUT_MS = 60_000
+/** Cold matplotlib import can be slow; akshare is optional and must not gate generation. */
+const PYTHON_DEPS_PROBE_TIMEOUT_MS = 30_000
 
 let cachedPython: PythonInvocation | null = null
 
 async function pythonHasReportDeps(invocation: PythonInvocation): Promise<boolean> {
   try {
+    // Do NOT import akshare here — its cold import + optional network init often stalls
+    // report generation for minutes. Benchmark data is injected from Node/DB into the CSV.
     await execFileAsync(
       invocation.executable,
-      [...invocation.prefixArgs, "-c", "import pandas, matplotlib, openpyxl, akshare"],
+      [...invocation.prefixArgs, "-c", "import pandas, matplotlib, openpyxl"],
       { timeout: PYTHON_DEPS_PROBE_TIMEOUT_MS },
     )
     return true
@@ -487,11 +489,27 @@ async function buildNavRowsWithBenchmark(
   }
 }
 
+async function ensureCustomFundNavRows(
+  productCode: string,
+  rule: Parameters<typeof generateCustomFundNavFromRule>[1],
+  minDate?: string,
+) {
+  const existing = listCustomFundNavRows(productCode)
+  const latest = latestCustomFundNavDate(existing)
+  // Skip expensive splice regeneration when we already cover the requested week end.
+  if (latest && (!minDate || latest >= minDate)) {
+    return existing
+  }
+  await generateCustomFundNavFromRule(productCode, rule)
+  return listCustomFundNavRows(productCode)
+}
+
 export async function buildFofWeeklyNavCsv(
   beian_hao: string,
   product_name: string,
   short_name: string,
   benchmarkKey: FofWeeklyBenchmarkKey = "IF",
+  options?: { minNavDate?: string },
 ): Promise<{ csv: string; benchLabel: string }> {
   const customFund = getCustomFundByCode(beian_hao) ?? findCustomFundByName(product_name)
   if (customFund) {
@@ -507,9 +525,11 @@ export async function buildFofWeeklyNavCsv(
       if (bundled) {
         const bundledRows = loadBundledNavRows(bundled.navPath)
         if (bundledRows) {
-          // Regenerate so the JSON has fresh data including the latest trading days
-          await generateCustomFundNavFromRule(customFund.product_code, rule)
-          const dbRows = listCustomFundNavRows(customFund.product_code)
+          const dbRows = await ensureCustomFundNavRows(
+            customFund.product_code,
+            rule,
+            options?.minNavDate,
+          )
           const mergedRows = extendNavRowsWithDatabase(
             bundledRows,
             dbRows.map((r) => ({
@@ -523,7 +543,7 @@ export async function buildFofWeeklyNavCsv(
       }
 
       // No bundled file (or unreadable) – fall back to pure DB regeneration
-      await generateCustomFundNavFromRule(customFund.product_code, rule)
+      await ensureCustomFundNavRows(customFund.product_code, rule, options?.minNavDate)
     }
     const rows = listCustomFundNavRows(customFund.product_code).slice().reverse()
     return buildNavRowsWithBenchmark(
@@ -627,6 +647,7 @@ export async function generateFofWeeklyReport(
     throw new Error("报告周开始日期不能晚于结束日期")
   }
 
+  const startedAt = Date.now()
   const benchmark = resolveFofWeeklyBenchmark(input.benchmark_key)
   const navFrequency = normalizeNavFrequency(input.nav_frequency)
   const beian_hao = await resolveProductBeianHao(product_name, input.beian_hao)
@@ -634,15 +655,17 @@ export async function generateFofWeeklyReport(
   const names = customFund
     ? { product_name: customFund.product_name, short_name: "" }
     : await resolveFundNames(beian_hao, product_name)
-  // Always fetch fresh NAV data from the database
+  // Prefer cached custom-fund NAV when it already covers week_end (nav-range usually refreshed it).
   const built = await buildFofWeeklyNavCsv(
     beian_hao,
     names.product_name,
     names.short_name,
     benchmark.key,
+    { minNavDate: week_end },
   )
   const navCsv = built.csv
   const benchLabel = built.benchLabel
+  console.log(`[fof-weekly-report] nav csv ready in ${Date.now() - startedAt}ms`)
 
   const navRows = navCsv.split("\n").slice(1).map((line) => line.split(",")[0]).filter(Boolean)
   const latestNavDate = navRows.at(-1) ?? ""
@@ -669,7 +692,11 @@ export async function generateFofWeeklyReport(
 
   const reportTitle = (input.report_title || names.product_name).trim()
   const productTagline = (input.product_tagline || "低波动 · 稳健运作 · 强势股策略").trim()
+  const pythonStartedAt = Date.now()
   const { executable: pythonExe, prefixArgs } = await findPython(SCRIPT_DIR)
+  console.log(
+    `[fof-weekly-report] Using Python: ${pythonExe} ${prefixArgs.join(" ")} (probe ${Date.now() - pythonStartedAt}ms)`,
+  )
 
   const args = [
     ...prefixArgs,
@@ -693,21 +720,23 @@ export async function generateFofWeeklyReport(
     navFrequency,
   ]
 
-  console.log("[fof-weekly-report] Using Python:", pythonExe, prefixArgs.join(" "))
-
+  const renderStartedAt = Date.now()
   try {
     const { stdout, stderr } = await execFileAsync(pythonExe, args, {
       cwd: SCRIPT_DIR,
       env: {
         ...process.env,
         ...resolveReportFontEnv(),
+        // Benchmark is already in the CSV from DB; avoid remote akshare hangs.
+        FOF_REPORT_DISABLE_AKSHARE: process.env.FOF_REPORT_DISABLE_AKSHARE ?? "1",
         PYTHONUTF8: "1",
         PYTHONIOENCODING: "utf-8",
       },
       encoding: "utf8",
       maxBuffer: 4 * 1024 * 1024,
-      timeout: 300_000,
+      timeout: 180_000,
     })
+    console.log(`[fof-weekly-report] python render done in ${Date.now() - renderStartedAt}ms`)
     if (stdout) console.log("[fof-weekly-report] stdout:", stdout.slice(0, 1000))
     if (stderr) console.warn("[fof-weekly-report] stderr:", stderr.slice(0, 1000))
   } catch (err) {
