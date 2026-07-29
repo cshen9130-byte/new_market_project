@@ -1,4 +1,3 @@
-import { after } from "next/server"
 import { NextResponse } from "next/server"
 import {
   buildReportDownloadToken,
@@ -27,12 +26,12 @@ function enrichResult(result: FofWeeklyReportResult) {
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as FofWeeklyReportRequest
-    // Return immediately; keep Python rendering alive via after() so reverse-proxy
-    // HTML timeout pages no longer surface as "Unexpected token '<'".
     const reportId = await prepareFofWeeklyReportJob()
 
-    after(async () => {
-      await runFofWeeklyReportJob(reportId, body)
+    // Fire-and-forget on the long-lived PM2 process. Do NOT use next/server `after()`
+    // here — some proxies keep the client request open until after() finishes.
+    setImmediate(() => {
+      void runFofWeeklyReportJob(reportId, body)
     })
 
     return NextResponse.json({

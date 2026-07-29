@@ -83,8 +83,10 @@ async function ensureCanonicalTeamRows(): Promise<void> {
     const p = DEFAULT_TEAM_POOLS[i]
     await query(
       `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
-       SELECT $1, $2, 'team', '', $3, NOW()
-       WHERE NOT EXISTS (SELECT 1 FROM tracking_custom_pools WHERE pool_key = $1)`,
+       SELECT $1::text, $2::text, 'team', '', $3::int, NOW()
+       WHERE NOT EXISTS (
+         SELECT 1 FROM tracking_custom_pools WHERE pool_key = $1::text
+       )`,
       [p.pool_key, p.label, i + 1],
     )
   }

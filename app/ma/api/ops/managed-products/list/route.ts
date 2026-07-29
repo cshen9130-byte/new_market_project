@@ -320,42 +320,6 @@ export async function GET(req: Request) {
     const hasCutoff   = /^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)
     const asOfDate    = hasCutoff ? cutoffRaw : new Date().toISOString().slice(0, 10)
     const useCache    = useManagedProductsListCache(cutoffRaw)
-    const overrideBeians = Object.values(MANAGED_PRODUCT_BEIAN_OVERRIDES)
-    const overrideItems = Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES).map(
-      ([product_name, beian_hao]) => ({ product_name, beian_hao }),
-    )
-    const [postSeedTeamNavByBeian, fullTeamNavByBeian, metricsLookup] = await Promise.all([
-      loadManagedProductPostSeedExtensions(overrideBeians),
-      loadManagedProductTeamNavBatch(overrideItems),
-      loadEmailFundMetricsLookup(),
-    ])
-
-    async function finalizeManagedRows(rows: ManagedRow[]): Promise<ManagedRow[]> {
-      const weekendItems = rows
-        .filter((row) => row.latest_nav_date && !isChinaTradingDay(row.latest_nav_date) && row.beian_hao)
-        .filter((row) => !fullTeamNavByBeian.has(row.beian_hao!))
-        .map((row) => ({
-          beian_hao: row.beian_hao!,
-          product_name: row.product_name,
-          short_name: row.short_name,
-        }))
-      if (weekendItems.length > 0) {
-        const extra = await loadManagedProductTeamNavBatch(weekendItems)
-        for (const [beian, series] of extra) fullTeamNavByBeian.set(beian, series)
-      }
-
-      return rows.map((row) =>
-        clampManagedRowNavToTradingDay(
-          applyValuationMetricsNavFallback(
-            applyManagedSeedNavOverride(row, asOfDate, postSeedTeamNavByBeian, fullTeamNavByBeian),
-            metricsLookup,
-          ),
-          asOfDate,
-          postSeedTeamNavByBeian,
-          fullTeamNavByBeian,
-        ),
-      )
-    }
 
     // ─── FAST PATH — plain 2-table join, no lateral scans ───────────────────
     if (useCache) {
@@ -458,7 +422,9 @@ export async function GET(req: Request) {
         [...params, pageSize, offset],
       )
 
-      const data = (await finalizeManagedRows(rows.map(mapRow))).map(applyManagedRiskOverride)
+      // Cache already has NAV / period metrics from the worker — do not re-run
+      // team-nav / valuation lookups on every page view (was ~5s+ on this host).
+      const data = rows.map(mapRow).map(applyManagedRiskOverride)
       return NextResponse.json({
         data,
         total,
@@ -470,6 +436,43 @@ export async function GET(req: Request) {
     }
 
     // ─── SLOW PATH — historical cutoff, recompute on the fly ────────────────
+    const overrideBeians = Object.values(MANAGED_PRODUCT_BEIAN_OVERRIDES)
+    const overrideItems = Object.entries(MANAGED_PRODUCT_BEIAN_OVERRIDES).map(
+      ([product_name, beian_hao]) => ({ product_name, beian_hao }),
+    )
+    const [postSeedTeamNavByBeian, fullTeamNavByBeian, metricsLookup] = await Promise.all([
+      loadManagedProductPostSeedExtensions(overrideBeians),
+      loadManagedProductTeamNavBatch(overrideItems),
+      loadEmailFundMetricsLookup(),
+    ])
+
+    async function finalizeManagedRows(rows: ManagedRow[]): Promise<ManagedRow[]> {
+      const weekendItems = rows
+        .filter((row) => row.latest_nav_date && !isChinaTradingDay(row.latest_nav_date) && row.beian_hao)
+        .filter((row) => !fullTeamNavByBeian.has(row.beian_hao!))
+        .map((row) => ({
+          beian_hao: row.beian_hao!,
+          product_name: row.product_name,
+          short_name: row.short_name,
+        }))
+      if (weekendItems.length > 0) {
+        const extra = await loadManagedProductTeamNavBatch(weekendItems)
+        for (const [beian, series] of extra) fullTeamNavByBeian.set(beian, series)
+      }
+
+      return rows.map((row) =>
+        clampManagedRowNavToTradingDay(
+          applyValuationMetricsNavFallback(
+            applyManagedSeedNavOverride(row, asOfDate, postSeedTeamNavByBeian, fullTeamNavByBeian),
+            metricsLookup,
+          ),
+          asOfDate,
+          postSeedTeamNavByBeian,
+          fullTeamNavByBeian,
+        ),
+      )
+    }
+
     const strategyCol  = strategySource === "platform" ? "o.platform_strategy_one" : "o.company_strategy_one"
     const strategyExpr = `COALESCE(NULLIF(BTRIM(${strategyCol}), ''), NULLIF(BTRIM(split_part(COALESCE(b.strategy_company, ''), ',', 1)), ''))`
     const teamTagsExpr = `CASE WHEN jsonb_typeof(o.tag->'company') = 'array' THEN o.tag->'company' ELSE '[]'::jsonb END`

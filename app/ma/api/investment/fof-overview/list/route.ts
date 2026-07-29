@@ -14,12 +14,7 @@ import {
   ensureFofOverviewListCachePopulated,
   useFofOverviewListCache,
 } from "@/lib/server/fof-overview-list-cache-pg"
-import { autoAddFofUnderlyingToTables } from "@/lib/server/fof-underlying-auto-add-pg"
 import { sqlExcludeFofUnderlyingProduct } from "@/lib/server/fund-holding-code"
-import {
-  enrichTrackFundMetricsRows,
-  patchLatestDailyReturnFromDetailSeries,
-} from "@/lib/server/list-cache-nav-batch"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -183,9 +178,6 @@ export async function GET(req: Request) {
 
     // ─── FAST PATH — 2-table join on precomputed cache only (no lateral NAV / 市值 scans) ──
     if (useCache) {
-      void autoAddFofUnderlyingToTables().catch((autoAddErr) => {
-        console.error("[investment/fof-overview/list] auto-add failed:", autoAddErr)
-      })
       await ensureFofOverviewListCachePopulated()
 
       const marketValueExpr = `COALESCE(cache.market_value, f.market_value, 0)`
@@ -329,11 +321,10 @@ export async function GET(req: Request) {
         [...params, pageSize, offset],
       )
 
-      const mapped = rows.map(mapRow)
-      const asOfDate = hasCutoff ? cutoffRaw : new Date().toISOString().slice(0, 10)
-      const enriched = await enrichTrackFundMetricsRows(mapped, asOfDate)
-      // Always recompute 最新涨跌幅 from detail series so stale cache (+4.61%) cannot win.
-      const data = await patchLatestDailyReturnFromDetailSeries(enriched, asOfDate)
+      // Serve precomputed cache as-is. Per-request BatchNavResolver / detail-series
+      // patches used to take tens of seconds and freeze the 2-vCPU host; freshness
+      // is the worker's job (email parse + 15m cache refresh).
+      const data = rows.map(mapRow)
 
       return NextResponse.json({
         data,

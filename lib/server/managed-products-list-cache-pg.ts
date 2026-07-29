@@ -425,11 +425,19 @@ export async function refreshManagedProductsListCache(
 /** True when the API can serve from the nightly precomputed cache. */
 export function useManagedProductsListCache(cutoffRaw: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
-  return cutoffRaw === new Date().toISOString().slice(0, 10)
+  const today = new Date().toISOString().slice(0, 10)
+  // Match FOF overview: today/future UI dates use cache; historical cutoffs recompute.
+  return cutoffRaw >= today
 }
 
 /** Populate cache when empty (e.g. first deploy before nightly ETL has run). */
 let managedCacheRefreshInFlight: Promise<number> | null = null
+
+function mayStartCacheRebuildInThisProcess(): boolean {
+  // Production web sets RUN_BACKGROUND_JOBS=0 — heavy rebuilds belong in the PM2 worker.
+  // Starting them here pegs next-server and freezes login / 在管产品 / FOF底层.
+  return process.env.RUN_BACKGROUND_JOBS !== "0"
+}
 
 export async function ensureManagedProductsListCachePopulated(): Promise<void> {
   await ensureManagedProductsListCacheTable()
@@ -437,6 +445,12 @@ export async function ensureManagedProductsListCachePopulated(): Promise<void> {
     `SELECT COUNT(*)::text AS n FROM ops_managed_products_list_cache`,
   )
   if (parseInt(rows[0]?.n ?? "0", 10) === 0 && !managedCacheRefreshInFlight) {
+    if (!mayStartCacheRebuildInThisProcess()) {
+      console.warn(
+        "[managed-products-cache] empty — not rebuilding in next-server (RUN_BACKGROUND_JOBS=0); start PM2 worker / nightly ETL",
+      )
+      return
+    }
     managedCacheRefreshInFlight = refreshManagedProductsListCache()
       .catch((err) => {
         console.error("[managed-products-cache] background refresh failed:", err)

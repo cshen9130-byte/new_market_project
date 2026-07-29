@@ -504,6 +504,13 @@ export async function ensureFofOverviewListCachePopulated(): Promise<void> {
     `SELECT COUNT(*)::text AS n FROM ops_fof_overview_list_cache`,
   )
   if (parseInt(rows[0]?.n ?? "0", 10) === 0 && !cacheRefreshInFlight) {
+    // Production web sets RUN_BACKGROUND_JOBS=0 — never start a multi-minute rebuild here.
+    if (process.env.RUN_BACKGROUND_JOBS === "0") {
+      console.warn(
+        "[fof-overview-cache] empty — not rebuilding in next-server (RUN_BACKGROUND_JOBS=0); start PM2 worker / nightly ETL",
+      )
+      return
+    }
     // Do not block page loads on a multi-minute cache rebuild — refresh in background.
     cacheRefreshInFlight = refreshFofOverviewListCache()
       .catch((err) => {

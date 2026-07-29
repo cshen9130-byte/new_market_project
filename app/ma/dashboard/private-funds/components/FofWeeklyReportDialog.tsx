@@ -609,10 +609,15 @@ export function FofWeeklyReportDialog({
 
   async function pollGenerateResult(reportId: string): Promise<GenerateResult> {
     const started = Date.now()
-    const timeoutMs = 240_000
+    const timeoutMs = 180_000
+    let delayMs = 0
     while (Date.now() - started < timeoutMs) {
-      await new Promise((resolve) => window.setTimeout(resolve, 1200))
-      const statusResp = await fetch(`/ma/api/reports/fof-weekly/status?id=${encodeURIComponent(reportId)}`)
+      if (delayMs > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs))
+      }
+      const statusResp = await fetch(`/ma/api/reports/fof-weekly/status?id=${encodeURIComponent(reportId)}`, {
+        cache: "no-store",
+      })
       const statusJson = await readJsonSafe(statusResp)
       if (!statusResp.ok) {
         throw new Error(typeof statusJson.error === "string" ? statusJson.error : "查询报告状态失败")
@@ -623,6 +628,8 @@ export function FofWeeklyReportDialog({
       if (statusJson.status === "error") {
         throw new Error(typeof statusJson.error === "string" ? statusJson.error : "报告生成失败")
       }
+      // First poll is immediate; then back off slightly.
+      delayMs = delayMs === 0 ? 400 : Math.min(1500, delayMs + 200)
     }
     throw new Error("报告生成超时，请稍后重试")
   }
@@ -885,7 +892,7 @@ export function FofWeeklyReportDialog({
               {loading ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  生成中…
+                  后台生成中，请稍候…
                 </>
               ) : (
                 "生成报告"

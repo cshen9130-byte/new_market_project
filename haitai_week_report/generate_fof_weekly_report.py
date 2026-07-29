@@ -19,11 +19,14 @@ import sys
 from pathlib import Path
 
 import matplotlib
+
+# Headless/server render — must be set before pyplot import.
+matplotlib.use("Agg")
+
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.font_manager import FontProperties, fontManager
 from matplotlib.patches import FancyBboxPatch, Polygon as MplPolygon, Rectangle, Wedge, Circle
 from matplotlib.lines import Line2D
@@ -1027,9 +1030,22 @@ def _save_report_figure(
     date_str = end_date.strftime("%Y%m%d")
     png_path = os.path.join(output_dir, f"{report_title}{file_suffix}_{date_str}.png")
     pdf_path = os.path.join(output_dir, f"{report_title}{file_suffix}_{date_str}.pdf")
-    fig.savefig(png_path, dpi=200, bbox_inches="tight", facecolor=fig.get_facecolor(), pad_inches=0.08)
-    with PdfPages(pdf_path) as pdf:
-        pdf.savefig(fig, bbox_inches="tight", facecolor=fig.get_facecolor(), pad_inches=0.08)
+    # dpi=150 is sharp enough for screen preview and much faster than 200 on small CPUs.
+    fig.savefig(png_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor(), pad_inches=0.08)
+
+    # Build PDF from the PNG instead of a second matplotlib render via PdfPages.
+    try:
+        from PIL import Image
+
+        with Image.open(png_path) as img:
+            img.convert("RGB").save(pdf_path, "PDF", resolution=150.0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warn] PNG→PDF 转换失败，回退 matplotlib PdfPages: {exc}", file=sys.stderr)
+        from matplotlib.backends.backend_pdf import PdfPages
+
+        with PdfPages(pdf_path) as pdf:
+            pdf.savefig(fig, bbox_inches="tight", facecolor=fig.get_facecolor(), pad_inches=0.08)
+
     plt.close(fig)
     return png_path, pdf_path
 
