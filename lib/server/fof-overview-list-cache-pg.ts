@@ -24,6 +24,22 @@ import {
   loadOpsStrategyAndTags,
   loadPrivateFundRiskMetrics,
 } from "@/lib/server/list-cache-nav-batch"
+import {
+  atomicSwapListCacheTable,
+  createListCacheStagingIndexes,
+  prepareListCacheStagingTable,
+} from "@/lib/server/list-cache-table-swap"
+
+const LIVE_CACHE_TABLE = "ops_fof_overview_list_cache"
+const STAGING_CACHE_TABLE = "ops_fof_overview_list_cache_staging"
+
+// Unnamed indexes avoid clashing with live-table index names (schema-global in PG).
+const STAGING_INDEX_SQLS = [
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (beian_hao)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (product_name)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (company_strategy_l1)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (platform_strategy_l1)`,
+]
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_fof_overview_list_cache (
@@ -263,11 +279,18 @@ export async function refreshFofOverviewListCache(
   ])
 
   logProgress("strategy & risk metadata loaded", t0)
-  // Incremental mode upserts in place: a DELETE would drop the products filtered out above.
+  // Full rebuild → staging then atomic swap; incremental upserts live in place.
+  const writeTable = reuseIdentities ? LIVE_CACHE_TABLE : STAGING_CACHE_TABLE
   if (!reuseIdentities) {
-    await query(`DELETE FROM ops_fof_overview_list_cache`)
+    logProgress("preparing staging table for build-then-swap…", t0)
+    await prepareListCacheStagingTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
   }
-  if (products.length === 0) return 0
+  if (products.length === 0) {
+    if (!reuseIdentities) {
+      await query(`DROP TABLE IF EXISTS ${STAGING_CACHE_TABLE}`)
+    }
+    return 0
+  }
 
   const values: unknown[] = []
   const placeholders: string[] = []
@@ -371,9 +394,12 @@ export async function refreshFofOverviewListCache(
     pi += 19
   }
 
-  logProgress("writing cache table…", t0)
+  logProgress(
+    reuseIdentities ? "upserting cache table…" : "writing staging cache table…",
+    t0,
+  )
   await chunkedInsert(
-    `INSERT INTO ops_fof_overview_list_cache (
+    `INSERT INTO ${writeTable} (
        fof_underlying_id, product_name, beian_hao, short_name,
        unit_nav, nav_date, return_pct,
        ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
@@ -389,6 +415,7 @@ export async function refreshFofOverviewListCache(
   )
 
   // Force 最新涨跌幅 (+ tip NAV/date) to match each product's detail 平台数据 row.
+  // For full rebuild, patch staging before swap so live never shows a half-built set.
   logProgress("syncing 最新涨跌幅 from detail 平台数据…", t0)
   const synced = await syncFofCacheLatestReturnFromDetail(
     products.map((p) => ({
@@ -396,8 +423,16 @@ export async function refreshFofOverviewListCache(
       beian_hao: p.beian_hao,
       short_name: p.short_name,
     })),
+    writeTable,
   )
   logProgress(`detail sync updated ${synced}/${products.length} rows`, t0)
+
+  if (!reuseIdentities) {
+    logProgress("indexing staging cache…", t0)
+    await createListCacheStagingIndexes(STAGING_INDEX_SQLS)
+    logProgress("swapping staging → live cache…", t0)
+    await atomicSwapListCacheTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
+  }
 
   logProgress(`done — ${products.length} rows`, t0)
   return products.length
@@ -413,7 +448,11 @@ async function syncFofCacheLatestReturnFromDetail(
     beian_hao: string | null
     short_name: string | null
   }>,
+  targetTable: string = LIVE_CACHE_TABLE,
 ): Promise<number> {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(targetTable)) {
+    throw new Error(`invalid cache table: ${targetTable}`)
+  }
   const { loadDetailNavSeriesFast } = await import("@/lib/server/fund-detail-fast-path")
   let updated = 0
   const chunkSize = 8
@@ -461,7 +500,7 @@ async function syncFofCacheLatestReturnFromDetail(
     for (const row of results) {
       if (!row) continue
       await query(
-        `UPDATE ops_fof_overview_list_cache
+        `UPDATE ${targetTable}
          SET unit_nav = $1,
              nav_date = $2::date,
              return_pct = $3,

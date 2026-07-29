@@ -175,7 +175,7 @@ function classifyEmail(
   if (/虚拟净值|基金虚拟净值表现估算/u.test(subject)) return "virtual_nav"
   if (/估值表|估值/i.test(blob) && !/净值表|虚拟净值表现/u.test(blob)) return "valuation"
   if (/台账|份额明细|投资者明细|持有人明细/u.test(blob)) return "ledger"
-  if (/净值表|资产净值公告|单位净值|基金份额净值|净值发送|净值公告/u.test(blob)) return "nav"
+  if (/净值波动表|净值表|资产净值公告|单位净值|基金份额净值|净值发送|净值公告/u.test(blob)) return "nav"
 
   if (CUSTODIAN_SENDER_RE.test(senderEmail) || /资产托管|托管发送|托管/u.test(subject)) {
     return "custodian"

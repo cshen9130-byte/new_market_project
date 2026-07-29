@@ -40,7 +40,7 @@ export type ExtractedValuationData = {
 }
 
 const VALUATION_FILENAME_RE = /估值表|估值|专用表/i
-const EXCLUDE_VALUATION_RE = /净值表|台账|份额明细|业绩报酬|虚拟净值表现/i
+const EXCLUDE_VALUATION_RE = /净值波动表|净值表|台账|份额明细|业绩报酬|虚拟净值表现/i
 const VALUATION_ZIP_RE = /\.zip$/i
 
 function normalizeName(name: string): string {
@@ -479,7 +479,7 @@ export function selectValuationAttachments(
   const explicit = spreadsheets.filter((a) => isValuationAttachmentFilename(a.filename))
   if (explicit.length > 0) return explicit
   if (valuationSubject) {
-    return spreadsheets.filter((a) => !/净值表|每日净值|资产净值公告/i.test(a.filename))
+    return spreadsheets.filter((a) => !/净值波动表|净值表|每日净值|资产净值公告/i.test(a.filename))
   }
   return []
 }

@@ -37,6 +37,22 @@ import {
   loadEmailFundMetricsLookup,
   resolveEmailFundMetrics,
 } from "@/lib/server/email-valuation-cache-enrich"
+import {
+  atomicSwapListCacheTable,
+  createListCacheStagingIndexes,
+  prepareListCacheStagingTable,
+} from "@/lib/server/list-cache-table-swap"
+
+const LIVE_CACHE_TABLE = "ops_managed_products_list_cache"
+const STAGING_CACHE_TABLE = "ops_managed_products_list_cache_staging"
+
+// Unnamed indexes avoid clashing with live-table index names (schema-global in PG).
+const STAGING_INDEX_SQLS = [
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (beian_hao)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (product_name)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (company_strategy_l1)`,
+  `CREATE INDEX ON ${STAGING_CACHE_TABLE} (platform_strategy_l1)`,
+]
 
 const CREATE_TABLE_SQL = `
   CREATE TABLE IF NOT EXISTS ops_managed_products_list_cache (
@@ -222,12 +238,19 @@ export async function refreshManagedProductsListCache(
     loadBflStrategies(beianHaos),
   ])
 
-  // Incremental mode upserts in place. A DELETE would drop any product skipped above for
-  // identity drift, and any product added since the last full rebuild.
+  // Full rebuild writes a staging table then atomically swaps so readers keep
+  // the previous cache until the new one is ready. Incremental upserts in place.
+  const writeTable = reuseIdentities ? LIVE_CACHE_TABLE : STAGING_CACHE_TABLE
   if (!reuseIdentities) {
-    await query(`DELETE FROM ops_managed_products_list_cache`)
+    logProgress("preparing staging table for build-then-swap…")
+    await prepareListCacheStagingTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
   }
-  if (products.length === 0) return 0
+  if (products.length === 0) {
+    if (!reuseIdentities) {
+      await query(`DROP TABLE IF EXISTS ${STAGING_CACHE_TABLE}`)
+    }
+    return 0
+  }
 
   const values: unknown[] = []
   const placeholders: string[] = []
@@ -401,9 +424,13 @@ export async function refreshManagedProductsListCache(
     pi += 20
   }
 
-  logProgress("writing cache table…")
+  logProgress(
+    reuseIdentities
+      ? "upserting cache table…"
+      : "writing staging cache table…",
+  )
   await chunkedInsert(
-    `INSERT INTO ops_managed_products_list_cache (
+    `INSERT INTO ${writeTable} (
        managed_product_id, product_name, beian_hao, short_name,
        unit_nav, nav_date, return_pct,
        ret_1w, ret_1m, ret_3m, ret_6m, ret_1y,
@@ -417,6 +444,13 @@ export async function refreshManagedProductsListCache(
     values,
     20,
   )
+
+  if (!reuseIdentities) {
+    logProgress("indexing staging cache…")
+    await createListCacheStagingIndexes(STAGING_INDEX_SQLS)
+    logProgress("swapping staging → live cache…")
+    await atomicSwapListCacheTable(LIVE_CACHE_TABLE, STAGING_CACHE_TABLE)
+  }
 
   logProgress(`done — ${products.length} rows`)
   return products.length

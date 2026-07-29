@@ -16,11 +16,11 @@ import { analyzeNavWorkbook } from "@/lib/server/nav-cleaner"
 export type NavTableAttachmentInfo = { filename: string; part: string }
 
 const NAV_TABLE_SUBJECT_RE =
-  /净值表|每日净值表|虚拟计提净值表|资产净值公告|批量补发|【基金净值】|【虚拟净值】|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-/u
+  /净值波动表|净值表|每日净值表|虚拟计提净值表|资产净值公告|批量补发|【基金净值】|【虚拟净值】|净值20\d{6}|净值\d{4}-\d{2}-\d{2}|^虚拟净值-/u
 const NAV_TABLE_FILENAME_RE =
-  /净值表|每日净值|资产净值公告|【基金净值】|【虚拟净值】|净值20\d{6}|^虚拟净值-/u
+  /净值波动表|净值表|每日净值|资产净值公告|【基金净值】|【虚拟净值】|净值20\d{6}|^虚拟净值-/u
 const NAV_TABLE_ZIP_FILENAME_RE =
-  /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值表/i
+  /资产净值|净值公告|批量补发|补发文件|信披报表|信报报表|净值波动表|净值表/i
 const EXCLUDE_ATTACHMENT_RE = /估值表|台账|份额明细|业绩报酬|虚拟净值表现/i
 
 export function isNavTableSubject(subject: string): boolean {

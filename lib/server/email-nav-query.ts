@@ -645,16 +645,40 @@ export function selectEmailNavSeriesRows(
       best = { ...best, nav: String(+recovered.toFixed(6)) }
     }
     const bestNav = recovered
-    const skipLargeJump =
+    const looksLikeLargeJump =
       !allowLargeNavJumps
       && prevNav != null
       && bestNav != null
       && prevNav > 0
       && Math.abs(bestNav / prevNav - 1) > 0.15
       && collectMultiShareClassNavRows(dayRows, beian).length <= 1
-    if (skipLargeJump) {
-      // Missing share-class row in email (e.g. SBDW42 B-class absent on 2026-07-09) — keep prior date.
-      continue
+    if (looksLikeLargeJump) {
+      // Share-class / wrong-column spikes usually revert toward prevNav on later days.
+      // Real volatile moves (墨雪鑫瑞 2023-11-08 +18%) stay near the new level — accept those,
+      // otherwise skipping forever leaves prevNav stuck and drops the rest of the series.
+      const dateIdx = sortedDates.indexOf(date)
+      const aheadNavs: number[] = []
+      for (let j = dateIdx + 1; j < sortedDates.length && aheadNavs.length < 5; j++) {
+        const aheadRows = byDateGroups.get(sortedDates[j]) ?? []
+        if (aheadRows.length === 0) continue
+        let aheadBest = aheadRows[0]
+        for (let k = 1; k < aheadRows.length; k++) {
+          aheadBest = preferEmailNavRow(aheadBest, aheadRows[k], beian)
+        }
+        const aheadNav = recoverPlausibleEmailUnitNav(
+          parseOptionalNav(aheadBest.nav),
+          parseOptionalNav(aheadBest.cumulative_nav),
+          aheadBest.subject,
+        )
+        if (aheadNav != null && aheadNav > 0) aheadNavs.push(aheadNav)
+      }
+      const nearNew = aheadNavs.filter((n) => Math.abs(n / bestNav - 1) <= 0.15).length
+      const nearOld = aheadNavs.filter((n) => Math.abs(n / prevNav - 1) <= 0.15).length
+      const sustainedNewScale = aheadNavs.length >= 2 && nearNew >= 2 && nearNew > nearOld
+      if (!sustainedNewScale) {
+        // One-off spike (or empty look-ahead) — keep prior date.
+        continue
+      }
     }
     if (
       allowLargeNavJumps

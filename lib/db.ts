@@ -68,6 +68,35 @@ export async function queryUnbounded<T = Record<string, unknown>>(
   }
 }
 
+/** Run work in a single Postgres transaction (BEGIN / COMMIT / ROLLBACK). */
+export async function withTransaction<T>(
+  fn: (txQuery: typeof query) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect()
+  const txQuery = (async <R = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): Promise<R[]> => {
+    const res = await client.query(sql, params)
+    return res.rows as R[]
+  }) as typeof query
+  try {
+    await client.query("BEGIN")
+    const result = await fn(txQuery)
+    await client.query("COMMIT")
+    return result
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK")
+    } catch {
+      // ignore rollback errors
+    }
+    throw err
+  } finally {
+    client.release()
+  }
+}
+
 /** Format a pg DATE value (string "YYYY-MM-DD" or JS Date) to "YYYY-MM-DD" */
 export function fmtIso(d: Date | string): string {
   if (typeof d === "string") return d.slice(0, 10)

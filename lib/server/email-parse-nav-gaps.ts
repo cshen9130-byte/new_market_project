@@ -21,7 +21,7 @@ export function looksLikeNavEmail(subject: string): boolean {
   if (!NAV_LOOK_RE.test(s)) return false
   // Pure confirmation/ledger mails that happen to mention 净值 elsewhere are rare;
   // if the subject is clearly ledger/confirm-only, skip.
-  if (NON_NAV_RE.test(s) && !/净值表|虚拟净值|估值表|业绩报酬/u.test(s)) return false
+  if (NON_NAV_RE.test(s) && !/净值波动表|净值表|虚拟净值|估值表|业绩报酬/u.test(s)) return false
   return true
 }
 

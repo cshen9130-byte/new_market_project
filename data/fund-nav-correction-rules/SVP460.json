@@ -1,0 +1,10 @@
+{
+  "beian_hao": "SVP460",
+  "product_names": [
+    "墨雪鑫瑞1号",
+    "墨雪鑫瑞1号私募证券投资基金"
+  ],
+  "series_start_date": "2022-06-30",
+  "preserve_high_nav_scale": true,
+  "note": "Custody 净值波动表 has legitimate daily moves >15% (e.g. 2023-11-08 +18%). Without preserve_high_nav_scale, selectEmailNavSeriesRows stuck prevNav and dropped all dates after 2023-11-07 including 2026-07 email tail."
+}
