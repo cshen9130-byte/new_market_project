@@ -9,6 +9,16 @@ import { isoDateWeekdayUtc, parseIsoDateParts } from "@/lib/nav-trading-day"
 
 const holidayCalendar = new Holidays("CN")
 
+/** Calendar date YYYY-MM-DD in Asia/Shanghai (not UTC). */
+export function shanghaiTodayIsoDate(date: Date = new Date()): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date)
+}
+
 /** True when `isoDate` (YYYY-MM-DD) is a China A-share trading day. */
 export function isChinaTradingDay(isoDate: string): boolean {
   const parts = parseIsoDateParts(isoDate)

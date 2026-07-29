@@ -23215,6 +23215,21 @@ function PrivateFundsPageContent() {
     return TAB_DEFAULT_SIDE[tab] ?? "private-funds"
   })
 
+  // Keep heavy investment sections mounted after first visit so sidebar clicks are instant
+  // (no remount / refetch). First visit still loads once.
+  const KEEP_ALIVE_INVESTMENT = useMemo(
+    () => new Set(["inv-tracking", "inv-overview", "inv-active", "inv-fof"]),
+    [],
+  )
+  const [keptInvestmentSides, setKeptInvestmentSides] = useState<string[]>(() =>
+    activeTab === "investment" && KEEP_ALIVE_INVESTMENT.has(activeSideItem) ? [activeSideItem] : [],
+  )
+  useEffect(() => {
+    if (activeTab !== "investment") return
+    if (!KEEP_ALIVE_INVESTMENT.has(activeSideItem)) return
+    setKeptInvestmentSides((prev) => (prev.includes(activeSideItem) ? prev : [...prev, activeSideItem]))
+  }, [activeTab, activeSideItem, KEEP_ALIVE_INVESTMENT])
+
   useEffect(() => {
     if (!currentUser) return
     if (activeTab === "operations" && !showOperationsTab) {
@@ -23528,11 +23543,27 @@ function PrivateFundsPageContent() {
           {activeTab === "portfolio" && (activeSideItem === "port-simulated" || activeSideItem === "port-live") && (
             <PortfolioView sideItem={activeSideItem} />
           )}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-tracking") && activeSideItem === "inv-tracking" && <InvestmentTrackingView />}
+          {isAllowedInvestmentSideItem(currentUser, "inv-tracking") && keptInvestmentSides.includes("inv-tracking") && (
+            <div className={activeTab === "investment" && activeSideItem === "inv-tracking" ? "contents" : "hidden"}>
+              <InvestmentTrackingView />
+            </div>
+          )}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-tracking-mgr") && activeSideItem === "inv-tracking-mgr" && <InvestmentTrackingManagersView />}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-overview") && activeSideItem === "inv-overview" && <InvestmentOverviewView />}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-active") && activeSideItem === "inv-active" && <InvestmentManagedProductsView />}
-          {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-fof") && activeSideItem === "inv-fof" && <InvestmentFofOverviewView />}
+          {isAllowedInvestmentSideItem(currentUser, "inv-overview") && keptInvestmentSides.includes("inv-overview") && (
+            <div className={activeTab === "investment" && activeSideItem === "inv-overview" ? "contents" : "hidden"}>
+              <InvestmentOverviewView />
+            </div>
+          )}
+          {isAllowedInvestmentSideItem(currentUser, "inv-active") && keptInvestmentSides.includes("inv-active") && (
+            <div className={activeTab === "investment" && activeSideItem === "inv-active" ? "contents" : "hidden"}>
+              <InvestmentManagedProductsView />
+            </div>
+          )}
+          {isAllowedInvestmentSideItem(currentUser, "inv-fof") && keptInvestmentSides.includes("inv-fof") && (
+            <div className={activeTab === "investment" && activeSideItem === "inv-fof" ? "contents" : "hidden"}>
+              <InvestmentFofOverviewView />
+            </div>
+          )}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-compare") && activeSideItem === "inv-compare" && <InvestmentFundCompareView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct") && activeSideItem === "inv-direct" && <InvestmentDirectProductsView />}
           {activeTab === "investment" && isAllowedInvestmentSideItem(currentUser, "inv-direct-portfolio") && activeSideItem === "inv-direct-portfolio" && <InvestmentDirectPortfoliosView />}

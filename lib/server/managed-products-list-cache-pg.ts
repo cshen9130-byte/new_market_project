@@ -5,7 +5,7 @@
  */
 
 import { query } from "@/lib/db"
-import { isChinaTradingDay } from "@/lib/server/china-trading-calendar"
+import { isChinaTradingDay, shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 import { ensureEmailNavTable } from "@/lib/server/email-nav-pg"
 import {
   buildManagedProductsFrom,
@@ -459,7 +459,7 @@ export async function refreshManagedProductsListCache(
 /** True when the API can serve from the nightly precomputed cache. */
 export function useManagedProductsListCache(cutoffRaw: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
-  const today = new Date().toISOString().slice(0, 10)
+  const today = shanghaiTodayIsoDate()
   // Match FOF overview: today/future UI dates use cache; historical cutoffs recompute.
   return cutoffRaw >= today
 }

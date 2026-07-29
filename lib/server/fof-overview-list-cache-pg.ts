@@ -13,6 +13,7 @@ import {
 } from "@/lib/server/fof-underlying-query"
 import { loadManagedUnderlyingMarketValueMap, loadManagedUnderlyingMarketValueMapFromCache, loadManagedUnderlyingValuationNavLookup, loadManagedUnderlyingNavHistoryIncremental, resolveManagedUnderlyingValuationNav } from "@/lib/server/managed-fof-underlying-pg"
 import { isPlausibleRiskRatio } from "@/lib/fund-nav-metrics"
+import { shanghaiTodayIsoDate } from "@/lib/server/china-trading-calendar"
 import {
   addDays,
   BatchNavResolver,
@@ -549,9 +550,8 @@ async function syncFofCacheLatestReturnFromDetail(
 /** True when the API can serve from the nightly precomputed cache. */
 export function useFofOverviewListCache(cutoffRaw: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoffRaw)) return true
-  const today = new Date().toISOString().slice(0, 10)
+  const today = shanghaiTodayIsoDate()
   // Historical cutoffs recompute on the fly; today/future dates use the nightly cache.
-  // Using >= avoids slow-path fallback when the UI date is ahead of UTC server date.
   return cutoffRaw >= today
 }
 

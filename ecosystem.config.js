@@ -48,20 +48,30 @@ const sharedEnv = {
   DATABASE_URL: process.env.DATABASE_URL || "",
 }
 
+// Prefer clustering next binary directly — clustering `pnpm start` only forks the
+// pnpm wrapper, not next-server. 2 instances fit a 4-vCPU box with headroom for
+// Postgres + the background worker.
+const webInstances = Math.max(1, parseInt(process.env.WEB_INSTANCES || "2", 10) || 2)
+
 module.exports = {
   apps: [
     {
       name: "new_market_project",
       cwd: ".",
-      script: "pnpm",
+      script: "node_modules/next/dist/bin/next",
       args: "start",
-      interpreter: null,
+      interpreter: "node",
+      instances: webInstances,
+      exec_mode: webInstances > 1 ? "cluster" : "fork",
+      // Each Next worker can grow under list traffic; restart before OOM on 8G host.
+      max_memory_restart: process.env.WEB_MAX_MEMORY || "1400M",
       env: {
         ...sharedEnv,
         // Crons run in new_market_project_worker so next-server stays responsive.
         RUN_BACKGROUND_JOBS: "0",
         // Prefer web traffic for DB connections when the worker is busy.
-        DB_POOL_MAX: process.env.DB_POOL_MAX_WEB || "12",
+        // Split across cluster workers (each opens its own pool).
+        DB_POOL_MAX: process.env.DB_POOL_MAX_WEB || "8",
       },
     },
     {
@@ -70,8 +80,9 @@ module.exports = {
       script: "pnpm",
       args: "worker:start",
       interpreter: null,
-      // Keep worker below interactive next-server on the shared 2-vCPU host.
-      max_memory_restart: "900M",
+      exec_mode: "fork",
+      instances: 1,
+      max_memory_restart: process.env.WORKER_MAX_MEMORY || "1500M",
       env: {
         ...sharedEnv,
         RUN_BACKGROUND_JOBS: "1",
