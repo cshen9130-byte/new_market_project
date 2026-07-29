@@ -1,8 +1,9 @@
 /**
  * Ingest historical 估值表 batch zip emails only (fast backfill path).
  */
-import { ImapFlow } from "imapflow"
+import type { ImapFlow } from "imapflow"
 import { getCrawlEmailByAccount, getImapFolders, listCrawlEmails } from "@/lib/server/crawl-emails"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import { extractValuationFromBuffer, selectValuationAttachments } from "@/lib/server/email-valuation-attachment"
 import { upsertEmailValuationRecords, type EmailValuationInsert } from "@/lib/server/email-valuation-pg"
 import { expandValuationZipBuffer, isValuationZipFilename, zipInnerAttachmentKey } from "@/lib/server/email-valuation-zip"
@@ -30,17 +31,18 @@ async function downloadPart(client: ImapFlow, uid: string, part: string): Promis
 async function main() {
   const account = getCrawlEmailByAccount(listCrawlEmails()[0]!.account)!
   const since = new Date("2025-06-01T00:00:00Z")
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: account.imapHost,
     port: account.imapPort || 993,
     secure: true,
     auth: { user: account.account, pass: account.pass },
     logger: false,
+    label: account.account,
   })
 
   const inserts: EmailValuationInsert[] = []
-  await client.connect()
   try {
+    await client.connect()
     for (const folder of getImapFolders(account)) {
       await client.mailboxOpen(folder)
       const uids = (await client.search({ since }, { uid: true })) || []
@@ -117,7 +119,7 @@ async function main() {
       }
     }
   } finally {
-    await client.logout().catch(() => {})
+    await closeImapFlow(client)
   }
 
   console.log("records to upsert:", inserts.length)

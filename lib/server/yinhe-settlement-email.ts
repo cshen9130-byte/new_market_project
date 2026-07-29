@@ -9,7 +9,7 @@
 
 import fs from "fs"
 import path from "path"
-import { ImapFlow } from "imapflow"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import { getCrawlEmailByAccount } from "@/lib/server/crawl-emails"
 
 export type YinheEmailConfig = {
@@ -202,12 +202,13 @@ export async function fetchYinheSettlementEmails(
   if (!fs.existsSync(dlDir)) fs.mkdirSync(dlDir, { recursive: true })
 
   const lookback = options?.lookbackDays ?? cfg.lookbackDays ?? 120
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: mailbox.imapHost || "imap.163.com",
     port: mailbox.imapPort || 993,
     secure: true,
     auth: { user: mailbox.email, pass: mailbox.pass },
     logger: false,
+    label: mailbox.email,
   })
 
   const downloaded: string[] = []
@@ -215,8 +216,8 @@ export async function fetchYinheSettlementEmails(
   const errors: string[] = []
   const log: string[] = []
 
-  await client.connect()
   try {
+    await client.connect()
     await client.mailboxOpen("INBOX")
 
     const since = new Date()
@@ -290,11 +291,7 @@ export async function fetchYinheSettlementEmails(
       }
     }
   } finally {
-    try {
-      await client.logout()
-    } catch {
-      /* ignore */
-    }
+    await closeImapFlow(client)
   }
 
   writeYinheEmailConfig({ ...cfg, lastFetchAt: new Date().toISOString() })

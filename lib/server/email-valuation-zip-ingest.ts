@@ -1,8 +1,9 @@
 /**
  * Fast path: ingest 估值表 batch .zip emails without scanning the full mailbox body.
  */
-import { ImapFlow } from "imapflow"
+import type { ImapFlow } from "imapflow"
 import { getCrawlEmailByAccount, getImapFolders, listCrawlEmails, type CrawlEmailAccount } from "@/lib/server/crawl-emails"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import { extractValuationFromBuffer, selectValuationAttachments } from "@/lib/server/email-valuation-attachment"
 import { upsertEmailValuationRecords, type EmailValuationInsert } from "@/lib/server/email-valuation-pg"
 import { expandValuationZipBuffer, isValuationZipFilename, zipInnerAttachmentKey } from "@/lib/server/email-valuation-zip"
@@ -53,17 +54,18 @@ async function ingestZipValuationsForAccount(
 ): Promise<EmailValuationInsert[]> {
   if (!account.pass?.trim()) return []
 
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: account.imapHost,
     port: account.imapPort || 993,
     secure: true,
     auth: { user: account.account, pass: account.pass },
     logger: false,
+    label: account.account,
   })
 
   const inserts: EmailValuationInsert[] = []
-  await client.connect()
   try {
+    await client.connect()
     for (const folder of getImapFolders(account)) {
       await client.mailboxOpen(folder)
       const uids = (await client.search({ since }, { uid: true })) || []
@@ -146,7 +148,7 @@ async function ingestZipValuationsForAccount(
       }
     }
   } finally {
-    await client.logout().catch(() => {})
+    await closeImapFlow(client)
   }
 
   return inserts

@@ -1,7 +1,7 @@
 import fs from "fs"
 import path from "path"
 import * as XLSX from "xlsx"
-import { ImapFlow } from "imapflow"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -170,12 +170,13 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
   const dlDir = SETTLEMENT_DIR
   if (!fs.existsSync(dlDir)) fs.mkdirSync(dlDir, { recursive: true })
 
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: cfg.imapHost || "imap.163.com",
     port: cfg.imapPort || 993,
     secure: true,
     auth: { user: cfg.email, pass: cfg.pass },
     logger: false,
+    label: cfg.email,
   })
 
   const downloaded: string[] = []
@@ -183,8 +184,8 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
   const errors: string[] = []
   const log: string[] = []
 
-  await client.connect()
   try {
+    await client.connect()
     await client.mailboxOpen("INBOX")
 
     // Look back 3 days to catch after-hours / next-morning delivery
@@ -260,7 +261,7 @@ export async function fetchSettlementFiles(): Promise<FetchResult> {
       }
     }
   } finally {
-    await client.logout()
+    await closeImapFlow(client)
   }
 
   // Record last fetch

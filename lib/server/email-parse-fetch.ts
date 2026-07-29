@@ -1,4 +1,4 @@
-import { ImapFlow } from "imapflow"
+import type { ImapFlow } from "imapflow"
 import {
   getCrawlEmailByAccount,
   getCrawlEmailById,
@@ -6,6 +6,7 @@ import {
   listCrawlEmails,
   type CrawlEmailAccount,
 } from "@/lib/server/crawl-emails"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import {
   countRecordsMissingSender,
   getRecordsNeedingSender,
@@ -298,7 +299,7 @@ async function fetchMailbox(
     return { parseRecords: [], navRecords: [], valuationRecords: [], skippedKnown: 0, downloaded: 0 }
   }
 
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: account.imapHost,
     port: account.imapPort || 993,
     secure: true,
@@ -307,6 +308,7 @@ async function fetchMailbox(
     connectionTimeout: IMAP_CONNECTION_TIMEOUT_MS,
     greetingTimeout: IMAP_GREETING_TIMEOUT_MS,
     socketTimeout: IMAP_SOCKET_TIMEOUT_MS,
+    label: account.account,
   })
 
   const parseRecords: Omit<EmailParseRecord, "id">[] = []
@@ -597,15 +599,7 @@ async function fetchMailbox(
       }
     } // end for folder
   } finally {
-    try {
-      if (signal?.aborted) {
-        await client.close()
-      } else {
-        await client.logout()
-      }
-    } catch {
-      // ignore
-    }
+    await closeImapFlow(client, { force: Boolean(signal?.aborted) })
   }
 
   return { parseRecords, navRecords, valuationRecords, skippedKnown, downloaded }
@@ -897,7 +891,7 @@ export async function backfillSenderEmails(options?: {
       continue
     }
 
-    const client = new ImapFlow({
+    const client = createSafeImapFlow({
       host: account.imapHost,
       port: account.imapPort || 993,
       secure: true,
@@ -906,6 +900,7 @@ export async function backfillSenderEmails(options?: {
       connectionTimeout: IMAP_CONNECTION_TIMEOUT_MS,
       greetingTimeout: IMAP_GREETING_TIMEOUT_MS,
       socketTimeout: IMAP_SOCKET_TIMEOUT_MS,
+      label: accountName,
     })
 
     try {
@@ -929,11 +924,7 @@ export async function backfillSenderEmails(options?: {
     } catch (e) {
       errors.push(`${accountName}: ${e instanceof Error ? e.message : String(e)}`)
     } finally {
-      try {
-        await client.logout()
-      } catch {
-        // ignore
-      }
+      await closeImapFlow(client)
     }
   }
 

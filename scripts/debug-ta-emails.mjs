@@ -21,6 +21,9 @@ const client = new ImapFlow({
   auth: { user: account.account, pass: account.pass },
   logger: false,
 })
+client.on("error", (err) => {
+  console.warn(`[imap:${account.account}] connection error (suppressed): ${err?.message || err}`)
+})
 
 function parseVirtualFeeSubject(subject) {
   const m = subject.match(/^虚拟业绩报酬_(.+?)_[A-Z0-9]+_.+_\d{4}-\d{2}-\d{2}/u)
@@ -111,4 +114,12 @@ for (const uid of uids) {
 }
 
 console.log(JSON.stringify([...found.values()], null, 2))
-await client.logout()
+try {
+  await client.logout()
+} catch {
+  try {
+    await client.close()
+  } catch {
+    // ignore
+  }
+}

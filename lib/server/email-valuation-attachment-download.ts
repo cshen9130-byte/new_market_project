@@ -2,8 +2,8 @@
  * Re-download a stored 估值表 attachment from IMAP.
  */
 
-import { ImapFlow } from "imapflow"
 import { getCrawlEmailByAccount, getImapFolders } from "@/lib/server/crawl-emails"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import {
   extractSpreadsheetFromZipBuffer,
   parseZipInnerAttachmentKey,
@@ -59,12 +59,13 @@ export async function fetchValuationAttachmentFromEmail(input: {
   if (!account?.pass?.trim()) return null
   if (!input.attachmentFilename?.trim()) return null
 
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: account.imapHost,
     port: account.imapPort || 993,
     secure: true,
     auth: { user: account.account, pass: account.pass },
     logger: false,
+    label: account.account,
   })
 
   try {
@@ -82,11 +83,7 @@ export async function fetchValuationAttachmentFromEmail(input: {
   } catch {
     return null
   } finally {
-    try {
-      await client.logout()
-    } catch {
-      // ignore
-    }
+    await closeImapFlow(client)
   }
 
   return null

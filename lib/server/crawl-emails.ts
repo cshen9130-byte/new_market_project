@@ -1,7 +1,7 @@
 import fs from "fs"
 import path from "path"
 import { randomUUID } from "crypto"
-import { ImapFlow } from "imapflow"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import { resetEmailParseCursor } from "@/lib/server/email-parse-cursor"
 import { readSenders } from "@/lib/server/email-dispatch"
 import { readConfig as readSettlementEmailConfig } from "@/lib/server/settlement-email"
@@ -225,23 +225,20 @@ export async function testImapConnection(
   if (!account.trim() || !pass.trim()) throw new Error("账户或密码不能为空")
   if (!imapHost.trim()) throw new Error("IMAP 服务器不能为空")
 
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: imapHost.trim(),
     port: imapPort || 993,
     secure: true,
     auth: { user: account.trim(), pass: pass.trim() },
     logger: false,
+    label: account.trim(),
   })
 
   try {
     await client.connect()
     await client.mailboxOpen("INBOX")
   } finally {
-    try {
-      await client.logout()
-    } catch {
-      // ignore logout errors
-    }
+    await closeImapFlow(client)
   }
 }
 

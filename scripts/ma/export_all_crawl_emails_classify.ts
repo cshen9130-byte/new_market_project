@@ -14,14 +14,14 @@ import fs from "fs"
 import net from "net"
 import path from "path"
 import { spawn, type ChildProcess } from "child_process"
-import { ImapFlow } from "imapflow"
-import pg from "pg"
-import { loadProjectEnvFiles, configureEtlDbTimeout } from "../../lib/server/load-project-env"
 import {
   extractFundNameFromText,
   extractNavMetadata,
   normalizeFundDisplayName,
 } from "../../lib/server/email-nav-extract"
+import { closeImapFlow, createSafeImapFlow } from "../../lib/server/imap-flow-safe"
+import pg from "pg"
+import { loadProjectEnvFiles, configureEtlDbTimeout } from "../../lib/server/load-project-env"
 import {
   inferCustodianFromSenderEmail,
   inferCustodianFromText,
@@ -473,12 +473,13 @@ async function scanMailbox(
   account: CrawlEmailAccount,
   ctx: FundContext,
 ): Promise<CsvRow[]> {
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: account.imapHost,
     port: account.imapPort || 993,
     secure: true,
     auth: { user: account.account, pass: account.pass },
     logger: false,
+    label: account.account,
   })
 
   const rows: CsvRow[] = []
@@ -542,11 +543,7 @@ async function scanMailbox(
       }
     }
   } finally {
-    try {
-      await client.logout()
-    } catch {
-      // ignore
-    }
+    await closeImapFlow(client)
   }
 
   return rows

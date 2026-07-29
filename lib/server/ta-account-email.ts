@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx"
-import { ImapFlow } from "imapflow"
+import { closeImapFlow, createSafeImapFlow } from "@/lib/server/imap-flow-safe"
 import {
   getCrawlEmailByAccount,
   getCrawlEmailById,
@@ -246,19 +246,20 @@ async function fetchMailbox(
     return { parsed: [], emailsScanned: 0 }
   }
 
-  const client = new ImapFlow({
+  const client = createSafeImapFlow({
     host: account.imapHost,
     port: account.imapPort || 993,
     secure: true,
     auth: { user: account.account, pass: account.pass },
     logger: false,
+    label: account.account,
   })
 
   const candidates: ParsedCandidate[] = []
   let emailsScanned = 0
 
-  await client.connect()
   try {
+    await client.connect()
     await client.mailboxOpen("INBOX")
     const since = new Date()
     since.setDate(since.getDate() - 180)
@@ -341,11 +342,7 @@ async function fetchMailbox(
       }
     }
   } finally {
-    try {
-      await client.logout()
-    } catch {
-      // ignore
-    }
+    await closeImapFlow(client)
   }
 
   return { parsed: mergeCandidates(candidates), emailsScanned }
