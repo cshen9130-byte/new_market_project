@@ -81,11 +81,12 @@ async function _runEnsureTable(): Promise<void> {
 async function ensureCanonicalTeamRows(): Promise<void> {
   for (let i = 0; i < DEFAULT_TEAM_POOLS.length; i++) {
     const p = DEFAULT_TEAM_POOLS[i]
+    // Explicit varchar casts — PG infers text vs varchar inconsistently for $1 reused in WHERE.
     await query(
       `INSERT INTO tracking_custom_pools (pool_key, label, scope, user_key, sort_order, updated_at)
-       SELECT $1::text, $2::text, 'team', '', $3::int, NOW()
+       SELECT $1::varchar, $2::varchar, 'team', '', $3::integer, NOW()
        WHERE NOT EXISTS (
-         SELECT 1 FROM tracking_custom_pools WHERE pool_key = $1::text
+         SELECT 1 FROM tracking_custom_pools WHERE pool_key = $1::varchar
        )`,
       [p.pool_key, p.label, i + 1],
     )
