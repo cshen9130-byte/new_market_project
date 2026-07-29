@@ -59,54 +59,90 @@ function userFetchHeaders(): Record<string, string> {
   }
 }
 
-async function searchProducts(query: string): Promise<ProductOption[]> {
-  const q = query.trim()
-  if (q.length < 1) return []
+function productOptionKey(option: ProductOption): string {
+  if (option.source === "custom_fund") return `custom:${option.beian_hao ?? option.product_name}`
+  return `${option.source}:${option.product_name}`
+}
 
-  const [managedRes, privateRes, customRes] = await Promise.all([
-    fetch(`/ma/api/ops/managed-products/list?keyword=${encodeURIComponent(q)}&pageSize=20`).then((r) => r.json()),
-    fetch(`/ma/api/private-funds/products/search?q=${encodeURIComponent(q)}`).then((r) => r.json()),
-    fetch(`/ma/api/custom-funds/list?scope=team&keyword=${encodeURIComponent(q)}&pageSize=20`, {
-      headers: userFetchHeaders(),
-    }).then((r) => r.json()),
-  ])
-
+function mergeProductOptions(...batches: ProductOption[][]): ProductOption[] {
   const byKey = new Map<string, ProductOption>()
-
-  if (managedRes?.data && Array.isArray(managedRes.data)) {
-    for (const row of managedRes.data as { product_name?: string; beian_hao?: string | null }[]) {
-      if (!row.product_name) continue
-      byKey.set(`managed:${row.product_name}`, {
-        product_name: row.product_name,
-        beian_hao: row.beian_hao ?? null,
-        source: "managed",
-      })
+  for (const batch of batches) {
+    for (const option of batch) {
+      const key = productOptionKey(option)
+      if (!byKey.has(key)) byKey.set(key, option)
     }
   }
-
-  if (Array.isArray(privateRes)) {
-    for (const name of privateRes as string[]) {
-      if (!name) continue
-      byKey.set(`private:${name}`, {
-        product_name: name,
-        beian_hao: null,
-        source: "private",
-      })
-    }
+  const sourceRank: Record<ProductSource, number> = {
+    custom_fund: 0,
+    managed: 1,
+    private: 2,
   }
+  return [...byKey.values()]
+    .sort((a, b) => {
+      const rank = sourceRank[a.source] - sourceRank[b.source]
+      if (rank !== 0) return rank
+      return a.product_name.localeCompare(b.product_name, "zh")
+    })
+    .slice(0, 20)
+}
 
-  if (customRes?.data && Array.isArray(customRes.data)) {
-    for (const row of customRes.data as { product_name?: string; product_code?: string | null }[]) {
-      if (!row.product_name || !row.product_code) continue
-      byKey.set(`custom:${row.product_code}`, {
-        product_name: row.product_name,
-        beian_hao: row.product_code,
-        source: "custom_fund",
-      })
-    }
+async function fetchJsonSafe(url: string, init?: RequestInit): Promise<unknown | null> {
+  try {
+    const resp = await fetch(url, init)
+    if (!resp.ok) return null
+    return await resp.json()
+  } catch {
+    return null
   }
+}
 
-  return [...byKey.values()].slice(0, 20)
+function parseCustomFundOptions(json: unknown): ProductOption[] {
+  const data = (json as { data?: unknown } | null)?.data
+  if (!Array.isArray(data)) return []
+  const out: ProductOption[] = []
+  for (const row of data as { product_name?: string; product_code?: string | null }[]) {
+    if (!row.product_name || !row.product_code) continue
+    out.push({
+      product_name: row.product_name,
+      beian_hao: row.product_code,
+      source: "custom_fund",
+    })
+  }
+  return out
+}
+
+function parsePrivateFundOptions(json: unknown): ProductOption[] {
+  if (!Array.isArray(json)) return []
+  const out: ProductOption[] = []
+  for (const row of json as Array<string | { product_name?: string; beian_hao?: string | null }>) {
+    if (typeof row === "string") {
+      if (!row) continue
+      out.push({ product_name: row, beian_hao: null, source: "private" })
+      continue
+    }
+    if (!row?.product_name) continue
+    out.push({
+      product_name: row.product_name,
+      beian_hao: row.beian_hao ?? null,
+      source: "private",
+    })
+  }
+  return out
+}
+
+function parseManagedOptions(json: unknown): ProductOption[] {
+  const data = (json as { data?: unknown } | null)?.data
+  if (!Array.isArray(data)) return []
+  const out: ProductOption[] = []
+  for (const row of data as { product_name?: string; beian_hao?: string | null }[]) {
+    if (!row.product_name) continue
+    out.push({
+      product_name: row.product_name,
+      beian_hao: row.beian_hao ?? null,
+      source: "managed",
+    })
+  }
+  return out
 }
 
 type GenerateResult = {
@@ -239,8 +275,6 @@ function SavePresetDialog({
 
 function ProductSearchField({
   value,
-  beianHao,
-  productSource,
   onSelect,
 }: {
   value: string
@@ -250,8 +284,12 @@ function ProductSearchField({
 }) {
   const [query, setQuery] = useState(value)
   const [options, setOptions] = useState<ProductOption[]>([])
+  const [searching, setSearching] = useState(false)
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const customOptsRef = useRef<ProductOption[]>([])
+  const privateOptsRef = useRef<ProductOption[]>([])
+  const managedOptsRef = useRef<ProductOption[]>([])
 
   useEffect(() => {
     setQuery(value)
@@ -260,14 +298,78 @@ function ProductSearchField({
   useEffect(() => {
     if (!open || query.trim().length < 1) {
       setOptions([])
+      setSearching(false)
+      customOptsRef.current = []
+      privateOptsRef.current = []
+      managedOptsRef.current = []
       return
     }
+
+    const ac = new AbortController()
+    let cancelled = false
+    setSearching(true)
+
     const timer = window.setTimeout(() => {
-      searchProducts(query)
-        .then(setOptions)
-        .catch(() => setOptions([]))
-    }, 250)
-    return () => window.clearTimeout(timer)
+      const q = query.trim()
+      const headers = userFetchHeaders()
+      const publish = () => {
+        if (cancelled) return
+        setOptions(mergeProductOptions(
+          customOptsRef.current,
+          privateOptsRef.current,
+          managedOptsRef.current,
+        ))
+      }
+
+      // Custom funds are local/file-backed — show them immediately without waiting on DB list APIs.
+      const customPromise = Promise.all([
+        fetchJsonSafe(
+          `/ma/api/custom-funds/list?scope=team&keyword=${encodeURIComponent(q)}&pageSize=20`,
+          { headers, signal: ac.signal },
+        ),
+        fetchJsonSafe(
+          `/ma/api/custom-funds/list?scope=mine&keyword=${encodeURIComponent(q)}&pageSize=20`,
+          { headers, signal: ac.signal },
+        ),
+      ]).then(([teamJson, mineJson]) => {
+        if (cancelled) return
+        customOptsRef.current = [
+          ...parseCustomFundOptions(teamJson),
+          ...parseCustomFundOptions(mineJson),
+        ]
+        publish()
+      })
+
+      const privatePromise = fetchJsonSafe(
+        `/ma/api/private-funds/products/search?q=${encodeURIComponent(q)}&format=picker`,
+        { signal: ac.signal },
+      ).then((json) => {
+        if (cancelled) return
+        privateOptsRef.current = parsePrivateFundOptions(json)
+        publish()
+      })
+
+      // Managed list endpoint is heavy; merge when ready so it never blocks custom-fund hits.
+      const managedPromise = fetchJsonSafe(
+        `/ma/api/ops/managed-products/list?keyword=${encodeURIComponent(q)}&pageSize=20`,
+        { signal: ac.signal },
+      ).then((json) => {
+        if (cancelled) return
+        managedOptsRef.current = parseManagedOptions(json)
+        publish()
+      })
+
+      void Promise.allSettled([customPromise, privatePromise, managedPromise]).then(() => {
+        if (cancelled) return
+        setSearching(false)
+      })
+    }, 120)
+
+    return () => {
+      cancelled = true
+      ac.abort()
+      window.clearTimeout(timer)
+    }
   }, [query, open])
 
   useEffect(() => {
@@ -285,8 +387,8 @@ function ProductSearchField({
         <input
           value={query}
           onChange={(e) => {
+            // Keep typing local — do not commit partial names (avoids slow nav-range regeneration).
             setQuery(e.target.value)
-            onSelect({ product_name: e.target.value, beian_hao: beianHao, source: productSource })
             setOpen(true)
           }}
           onFocus={() => setOpen(true)}
@@ -294,30 +396,34 @@ function ProductSearchField({
           className="h-10 w-full rounded-md border border-border bg-background pl-9 pr-3 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
         />
       </div>
-      {open && options.length > 0 && (
+      {open && query.trim().length > 0 && (searching || options.length > 0) && (
         <div className="absolute z-30 mt-1 max-h-52 w-full overflow-auto rounded-md border bg-background shadow-lg">
-          {options.map((option) => (
-            <button
-              key={`${option.source}:${option.beian_hao ?? option.product_name}`}
-              type="button"
-              onClick={() => {
-                setQuery(option.product_name)
-                onSelect(option)
-                setOpen(false)
-              }}
-              className="block w-full px-3 py-2 text-left text-sm hover:bg-muted"
-            >
-              <div className="flex items-center gap-2">
-                <span className="truncate font-medium">{option.product_name}</span>
-                <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800">
-                  {SOURCE_LABELS[option.source]}
-                </span>
-              </div>
-              {option.beian_hao && (
-                <div className="truncate text-xs text-zinc-400">{option.beian_hao}</div>
-              )}
-            </button>
-          ))}
+          {options.length === 0 && searching ? (
+            <div className="px-3 py-2 text-sm text-zinc-400">搜索中…</div>
+          ) : (
+            options.map((option) => (
+              <button
+                key={productOptionKey(option)}
+                type="button"
+                onClick={() => {
+                  setQuery(option.product_name)
+                  onSelect(option)
+                  setOpen(false)
+                }}
+                className="block w-full px-3 py-2 text-left text-sm hover:bg-muted"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="truncate font-medium">{option.product_name}</span>
+                  <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500 dark:bg-zinc-800">
+                    {SOURCE_LABELS[option.source]}
+                  </span>
+                </div>
+                {option.beian_hao && (
+                  <div className="truncate text-xs text-zinc-400">{option.beian_hao}</div>
+                )}
+              </button>
+            ))
+          )}
         </div>
       )}
     </div>
@@ -635,9 +741,11 @@ export function FofWeeklyReportDialog({
                   <DatePickerInput
                     value={weekBegin}
                     min={navRange.start ?? undefined}
-                    max={weekEnd || navRange.end || undefined}
+                    max={navRange.end ?? undefined}
                     onChange={(value) => {
                       setWeekBegin(value)
+                      // Don't lock the range to a stale end date from a saved preset.
+                      if (weekEnd && value > weekEnd) setWeekEnd(value)
                       setResult(null)
                     }}
                   />
@@ -646,10 +754,11 @@ export function FofWeeklyReportDialog({
                   <label className="mb-1 block text-xs text-zinc-500">结束日期</label>
                   <DatePickerInput
                     value={weekEnd}
-                    min={weekBegin || navRange.start || undefined}
+                    min={navRange.start ?? undefined}
                     max={navRange.end ?? undefined}
                     onChange={(value) => {
                       setWeekEnd(value)
+                      if (weekBegin && value < weekBegin) setWeekBegin(value)
                       setResult(null)
                     }}
                   />

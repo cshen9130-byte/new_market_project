@@ -305,6 +305,17 @@ function resolveNavDateRangeFromRows(rows: Array<{ date: string }>): {
   return { earliestNavDate, latestNavDate }
 }
 
+/** listCustomFundNavRows is newest-first; never use .at(-1) as "latest". */
+function latestCustomFundNavDate(rows: Array<{ nav_date: string }>): string | null {
+  let latest: string | null = null
+  for (const row of rows) {
+    const date = row.nav_date?.slice(0, 10)
+    if (!date) continue
+    if (!latest || date > latest) latest = date
+  }
+  return latest
+}
+
 /** Date span from a bundled FOF weekly xlsx (merged portfolio NAV, not product seed). */
 function resolveBundledNavDateRange(navPath: string): {
   earliestNavDate: string
@@ -489,13 +500,12 @@ export async function buildFofWeeklyNavCsv(
       // Prefer the bundled Excel as the authoritative historical series.
       // It was carefully curated and yields the correct Sharpe / scale.
       // Only the dates AFTER the bundled file are fetched fresh from the DB.
-      // NOTE: BUNDLED_FOF_NAV_BY_BEIAN is keyed by beian_hao (e.g. "SBPU97"),
-      // not by the auto-generated customFund.product_code (e.g. "380001").
-      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[beian_hao]
-      const bundledPath = bundledFileName ? path.join(SCRIPT_DIR, bundledFileName) : null
+      // Resolve by SBPU97 / product name — customFund.product_code (e.g. "380001") is not the map key.
+      const bundled = resolveBundledFofWeeklyNavPath(beian_hao, product_name)
+        ?? resolveBundledFofWeeklyNavPath(beian_hao, customFund.product_name)
 
-      if (bundledPath && existsSync(bundledPath)) {
-        const bundledRows = loadBundledNavRows(bundledPath)
+      if (bundled) {
+        const bundledRows = loadBundledNavRows(bundled.navPath)
         if (bundledRows) {
           // Regenerate so the JSON has fresh data including the latest trading days
           await generateCustomFundNavFromRule(customFund.product_code, rule)
@@ -548,16 +558,16 @@ export async function resolveFofWeeklyProductNavRange(
   if (customFund) {
     const rule = getCustomFundNavGenerationRule(customFund.product_code)
     if (rule && rule.rule_type === "splice") {
-      const bundledFileName = BUNDLED_FOF_NAV_BY_BEIAN[resolvedBeian]
-      const bundledPath = bundledFileName ? path.join(SCRIPT_DIR, bundledFileName) : null
+      const bundled = resolveBundledFofWeeklyNavPath(resolvedBeian, product_name.trim())
+        ?? resolveBundledFofWeeklyNavPath(resolvedBeian, customFund.product_name)
 
-      if (bundledPath && existsSync(bundledPath)) {
-        const bundledRange = resolveBundledNavDateRange(bundledPath)
+      if (bundled) {
+        const bundledRange = resolveBundledNavDateRange(bundled.navPath)
         if (bundledRange) {
           // Refresh DB so we know if there are newer trading days
           await generateCustomFundNavFromRule(customFund.product_code, rule)
           const dbRows = listCustomFundNavRows(customFund.product_code)
-          const dbLatest = dbRows.at(-1)?.nav_date ?? bundledRange.latestNavDate
+          const dbLatest = latestCustomFundNavDate(dbRows) ?? bundledRange.latestNavDate
           return {
             beian_hao: customFund.product_code,
             product_name: customFund.product_name,
@@ -570,12 +580,16 @@ export async function resolveFofWeeklyProductNavRange(
       // Fallback: pure DB
       await generateCustomFundNavFromRule(customFund.product_code, rule)
     }
-    const rows = listCustomFundNavRows(customFund.product_code).slice().reverse()
+    const rows = listCustomFundNavRows(customFund.product_code)
+    const latest = latestCustomFundNavDate(rows)
+    const earliest = rows.length
+      ? rows.reduce((min, row) => (row.nav_date < min ? row.nav_date : min), rows[0].nav_date)
+      : null
     return {
       beian_hao: customFund.product_code,
       product_name: customFund.product_name,
-      nav_start_date: rows[0]?.nav_date ?? null,
-      latest_nav_date: rows.at(-1)?.nav_date ?? null,
+      nav_start_date: earliest,
+      latest_nav_date: latest,
     }
   }
 
