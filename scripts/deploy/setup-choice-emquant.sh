@@ -159,10 +159,14 @@ if command -v ldd >/dev/null 2>&1; then
 fi
 
 # 6) Stop running app and kill lingering build processes (low RAM safety)
-pm2 stop "$PM2_APP_NAME" || pm2 stop all || true
+# Stop by name (covers cluster multi-instance) then kill any leftover next procs.
+pm2 stop "$PM2_APP_NAME" 2>/dev/null || true
+pm2 stop new_market_project_worker 2>/dev/null || true
+pm2 stop all 2>/dev/null || true
 pkill -f "next build" || true
 pkill -f "pnpm build" || true
 pkill -f "node .*next" || true
+pkill -f "next-server" || true
 
 # Wait for stopped processes to release memory back to the OS, then flush the
 # page cache. Without this, the former Next.js server (1–1.5 GiB) still occupies
@@ -384,7 +388,9 @@ if [[ "$(id -u)" -eq 0 ]]; then
     --project-root "$PROJECT_ROOT" \
     --pm2-app-name "$PM2_APP_NAME"
 else
-  pm2 stop "$PM2_APP_NAME" || true
+  # delete then start so ecosystem cluster mode is applied (stop+start keeps fork)
+  pm2 delete "$PM2_APP_NAME" 2>/dev/null || true
+  pm2 delete new_market_project_worker 2>/dev/null || true
   pm2 start ecosystem.config.js --update-env
   pm2 save
   echo "WARNING: not running as root; skipped PM2 systemd startup fix."

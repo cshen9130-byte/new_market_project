@@ -2009,9 +2009,6 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
   const poolTombstonesRef = useRef<Set<string>>(new Set())
   // Renames in flight; keep local label until the server poll confirms the write.
   const pendingPoolRenamesRef = useRef<Map<string, string>>(new Map())
-  // Tracks which pool keys have already been background-prefetched so we don't
-  // re-fire fetches on every 30 s poll update.
-  const prefetchedPoolsRef = useRef<Set<string>>(new Set())
   const reloadPoolsRef = useRef<(() => void) | null>(null)
   const poolRenameCommittedRef = useRef<string | null>(null)
   const [savingPoolKey, setSavingPoolKey] = useState<string | null>(null)
@@ -2216,64 +2213,10 @@ function InvestmentTrackingView({ variant = "investment" }: { variant?: "investm
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Background-prefetch every team pool with default filters so switching pools
-  // is instant even on the first visit. Runs whenever the pool list changes
-  // (e.g. after the server poll delivers new custom pools) but skips any key
-  // that has already been prefetched. The active pool is excluded because the
-  // main fetch is already loading it; "all" is put last because it is the most
-  // expensive. Requests are serialised with a 300 ms gap so the prefetch never
-  // competes with foreground navigation.
-  useEffect(() => {
-    const newPools = pools.filter((p) => !prefetchedPoolsRef.current.has(p.key))
-    if (newPools.length === 0) return
-    newPools.forEach((p) => prefetchedPoolsRef.current.add(p.key))
-
-    const defaultCutoff = new Date().toISOString().slice(0, 10)
-    // Order: non-active pools first (they need warming), "all" last.
-    const queue = [
-      ...newPools.filter((p) => p.key !== activePool && p.key !== "all"),
-      ...newPools.filter((p) => p.key === "all"),
-      ...newPools.filter((p) => p.key === activePool),
-    ].map((p) => p.key)
-
-    let cancelled = false
-    let timer: ReturnType<typeof setTimeout>
-    const inflight = new AbortController()
-
-    function prefetchNext() {
-      if (cancelled || queue.length === 0) return
-      const poolKey = queue.shift()!
-      const params = new URLSearchParams({
-        page: "1", sort: "", dir: "desc",
-        pool: poolKey,
-        strategy_source: "company",
-        cutoff: defaultCutoff,
-        org_size: "不限",
-        keyword: "",
-        team_tag_mode: "and",
-        strategy_l1: "", strategy_l2: "", strategy_l3: "",
-      })
-      const cacheKey = "team\u0000" + params.toString()
-      if (readListCache(cacheKey)) {
-        timer = setTimeout(prefetchNext, 0)
-        return
-      }
-      fetch(`/ma/api/tracking-funds/list?${params}`, { signal: inflight.signal })
-        .then((r) => r.json())
-        .then((d) => {
-          if (!cancelled && !d?.error) {
-            writeListCache(cacheKey, { data: d.data ?? [], total: d.total ?? 0 })
-          }
-        })
-        .catch(() => {})
-        .finally(() => { if (!cancelled) timer = setTimeout(prefetchNext, 300) })
-    }
-
-    // Delay start so the active pool's foreground fetch completes first.
-    timer = setTimeout(prefetchNext, 2000)
-    return () => { cancelled = true; clearTimeout(timer); inflight.abort() }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pools])
+  // Do not background-prefetch every pool. Each list call (especially ops
+  // nav_source=team and pool=all) was expensive enough that prefetch + the
+  // active tab pegged both PM2 cluster workers and froze the rest of the UI.
+  // Active-pool stale-while-revalidate below is enough for revisit speed.
 
   function currentUserName(): string {
     try {

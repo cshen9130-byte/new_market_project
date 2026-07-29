@@ -23,10 +23,19 @@ pnpm run build:lowmem
 echo "==> product monthly report setup"
 bash "$PROJECT_ROOT/scripts/deploy/setup-product-ppt.sh" || true
 
-echo "==> pm2 restart (web + background worker)"
-# Reloads existing apps and creates new_market_project_worker on first deploy after split.
-pm2 startOrReload ecosystem.config.js --update-env
+echo "==> pm2 restart (web cluster + background worker)"
+# startOrReload alone can leave an old single-fork next-server after switching
+# ecosystem to cluster mode — delete+start the web app so instances=2 always applies.
+pm2 delete new_market_project 2>/dev/null || true
+pm2 start ecosystem.config.js --update-env
 pm2 save
+
+# Sanity: expect 2 cluster workers named new_market_project
+WEB_N=$(pm2 jlist | python3 -c 'import sys,json; print(sum(1 for a in json.load(sys.stdin) if a.get("name")=="new_market_project"))')
+echo "    new_market_project processes: ${WEB_N} (want 2)"
+if [[ "${WEB_N}" -lt 2 ]]; then
+  echo "WARN: web cluster has ${WEB_N} process(es); check ecosystem.config.js WEB_INSTANCES" >&2
+fi
 
 echo "==> SLA063 cache patch"
 DB_STATEMENT_TIMEOUT=120000 npx tsx scripts/ma/_fix_sla063_cache.ts

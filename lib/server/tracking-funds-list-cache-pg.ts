@@ -630,6 +630,15 @@ export async function ensureTrackingFundsListCachePopulated(): Promise<void> {
     `SELECT COUNT(*)::text AS n FROM ops_tracking_funds_list_cache`,
   )
   if (parseInt(rows[0]?.n ?? "0", 10) === 0) {
+    // Production web sets RUN_BACKGROUND_JOBS=0 — never start a multi-minute
+    // rebuild here (pegs next-server and freezes login / tracking lists).
+    if (process.env.RUN_BACKGROUND_JOBS === "0") {
+      console.warn(
+        "[tracking-funds-cache] empty — not rebuilding in next-server (RUN_BACKGROUND_JOBS=0); start PM2 worker / nightly ETL",
+      )
+      global._ensurePopulatedDone = true
+      return
+    }
     await refreshTrackingFundsListCache()
   }
   global._ensurePopulatedDone = true

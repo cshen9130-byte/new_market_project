@@ -1226,11 +1226,11 @@ export async function GET(req: Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Startup warm-up for bfl_ops: proactively populate the server response cache
-// once per process lifetime (global flag survives Next.js hot-module reloads).
+// Startup warm-up for bfl_ops (worker only). On next-server (RUN_BACKGROUND_JOBS=0)
+// this used to fire in every PM2 cluster worker and peg both CPUs at boot.
 // ---------------------------------------------------------------------------
 declare global { var _bflOpsWarmScheduled: boolean | undefined }
-if (!global._bflOpsWarmScheduled) {
+if (!global._bflOpsWarmScheduled && process.env.RUN_BACKGROUND_JOBS !== "0") {
   global._bflOpsWarmScheduled = true
   setTimeout(async () => {
     try {

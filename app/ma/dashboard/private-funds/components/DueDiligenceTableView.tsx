@@ -616,14 +616,37 @@ function FormattingToolbar({
 
 type FundPoolMembership = { pool_key: string; pool_label: string }
 
-async function fetchFundPoolMemberships(beian_hao: string): Promise<FundPoolMembership[]> {
+async function fetchFundPoolMembershipsBatch(
+  beians: string[],
+): Promise<Record<string, FundPoolMembership[]>> {
+  if (beians.length === 0) return {}
   try {
-    const res = await fetch(`/ma/api/ops/fund-tags?beian_hao=${encodeURIComponent(beian_hao)}`)
+    const params = new URLSearchParams()
+    for (const b of beians) params.append("beian_hao", b)
+    const res = await fetch(`/ma/api/ops/fund-tags?${params}`)
     const json = await res.json()
-    return Array.isArray(json?.pools) ? (json.pools as FundPoolMembership[]) : []
+    if (json?.byBeian && typeof json.byBeian === "object") {
+      const out: Record<string, FundPoolMembership[]> = {}
+      for (const [beian, payload] of Object.entries(json.byBeian as Record<string, { pools?: FundPoolMembership[] }>)) {
+        out[beian] = Array.isArray(payload?.pools) ? payload.pools : []
+      }
+      return out
+    }
+    // Legacy single-beian fallback
+    if (beians.length === 1) {
+      return {
+        [beians[0]!]: Array.isArray(json?.pools) ? (json.pools as FundPoolMembership[]) : [],
+      }
+    }
+    return {}
   } catch {
-    return []
+    return {}
   }
+}
+
+async function fetchFundPoolMemberships(beian_hao: string): Promise<FundPoolMembership[]> {
+  const batch = await fetchFundPoolMembershipsBatch([beian_hao])
+  return batch[beian_hao] ?? []
 }
 
 function TrackingPoolsCell({
@@ -1284,13 +1307,11 @@ export function DueDiligenceTableView() {
     }
     setPoolsLoading(true)
     try {
-      const results = await Promise.all(
-        beians.map(async (beian) => {
-          const pools = await fetchFundPoolMemberships(beian)
-          return [beian, pools] as const
-        }),
-      )
-      setPoolMemberships(Object.fromEntries(results))
+      const byBeian = await fetchFundPoolMembershipsBatch(beians)
+      // Ensure every requested beian has an entry so cells stop showing "…"
+      const next: Record<string, FundPoolMembership[]> = {}
+      for (const beian of beians) next[beian] = byBeian[beian] ?? []
+      setPoolMemberships(next)
     } finally {
       setPoolsLoading(false)
     }

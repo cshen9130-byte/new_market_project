@@ -77,31 +77,65 @@ export async function loadManualTeamNavBatch(
   return out
 }
 
-/** Team NAV series keyed by beian for managed-product overrides (detail-page stream). */
+/**
+ * Team NAV series keyed by beian for list overlays / managed-product cache rebuild.
+ *
+ * Batched: one manual-table query + one email-table query for all codes.
+ * (Previously N× loadManagedProductNavSeries — pegged next-server when ops
+ * tracking list overlaid team NAV for a full page of funds.)
+ */
 export async function loadManagedProductTeamNavBatch(
   items: Array<{ beian_hao: string; product_name: string; short_name?: string | null }>,
 ): Promise<Map<string, Array<{ nav_date: string; unit_nav: string }>>> {
   const out = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
   if (items.length === 0) return out
 
-  const entries = await Promise.all(
-    items.map(async (item) => {
-      const series = await loadManagedProductNavSeries({
-        beian_hao: item.beian_hao,
-        product_name: item.product_name,
-        short_name: item.short_name ?? null,
-      })
-      return [
-        item.beian_hao,
-        series.map((row) => ({
-          nav_date: row.price_date.slice(0, 10),
-          unit_nav: row.nav,
-        })),
-      ] as const
-    }),
-  )
+  const codes = [...new Set(items.map((item) => item.beian_hao.trim()).filter(Boolean))]
+  if (codes.length === 0) return out
 
-  for (const [beian_hao, rows] of entries) out.set(beian_hao, rows)
+  const [manualMap, emailRows] = await Promise.all([
+    loadManualTeamNavBatch(codes),
+    query<{ code: string; nav_date: string; nav: string }>(
+      `SELECT DISTINCT ON (BTRIM(product_code), nav_date)
+              BTRIM(product_code) AS code,
+              nav_date::text AS nav_date,
+              nav::text AS nav
+       FROM ops_email_nav_records
+       WHERE BTRIM(product_code) = ANY($1::text[])
+         AND nav IS NOT NULL
+         AND nav > 0
+       ORDER BY BTRIM(product_code), nav_date, id DESC`,
+      [codes],
+    ).catch((err) => {
+      console.warn("[team-nav-batch] email load failed:", err)
+      return [] as Array<{ code: string; nav_date: string; nav: string }>
+    }),
+  ])
+
+  const emailByCode = new Map<string, Array<{ nav_date: string; unit_nav: string }>>()
+  for (const row of emailRows) {
+    const code = (row.code ?? "").trim()
+    if (!code) continue
+    const list = emailByCode.get(code) ?? []
+    list.push({ nav_date: row.nav_date.slice(0, 10), unit_nav: row.nav })
+    emailByCode.set(code, list)
+  }
+
+  for (const code of codes) {
+    const byDate = new Map<string, string>()
+    for (const point of emailByCode.get(code) ?? []) {
+      byDate.set(point.nav_date, point.unit_nav)
+    }
+    // Manual upload wins on the same date (matches loadManagedProductEmailPoints).
+    for (const point of manualMap.get(code) ?? []) {
+      byDate.set(point.nav_date.slice(0, 10), point.unit_nav)
+    }
+    const series = [...byDate.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([nav_date, unit_nav]) => ({ nav_date, unit_nav }))
+    out.set(code, series)
+  }
+
   return out
 }
 
