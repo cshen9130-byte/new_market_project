@@ -6,6 +6,11 @@ PROJECT_ROOT="${1:-/root/new_market_project}"
 cd "$PROJECT_ROOT"
 
 echo "==> git pull"
+# Servers sometimes drift pnpm-lock.yaml after a non-frozen install; discard before pull.
+if ! git diff --quiet -- pnpm-lock.yaml 2>/dev/null; then
+  echo "    discarding local pnpm-lock.yaml changes (use repo lockfile)"
+  git checkout -- pnpm-lock.yaml
+fi
 git pull origin main
 
 echo "==> pnpm install"
