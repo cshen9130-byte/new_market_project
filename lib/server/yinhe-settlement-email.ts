@@ -209,6 +209,9 @@ export async function fetchYinheSettlementEmails(
     auth: { user: mailbox.email, pass: mailbox.pass },
     logger: false,
     label: mailbox.email,
+    // Avoid indefinite hangs on flaky 163 IMAP sockets during long lookbacks.
+    socketTimeout: 120_000,
+    greetingTimeout: 30_000,
   })
 
   const downloaded: string[] = []
@@ -224,69 +227,115 @@ export async function fetchYinheSettlementEmails(
     since.setDate(since.getDate() - Math.max(1, lookback))
 
     const senderFilter = (cfg.sender ?? "").trim().toLowerCase()
-    const allUids = await client.search({ since })
     log.push(
       `使用抓取邮箱 ${mailbox.email}（${mailbox.source === "crawl-email" ? "运维抓取邮箱设置" : "本地配置"}）`,
     )
-    log.push(`收件箱最近 ${lookback} 天共 ${allUids.length} 封邮件`)
     if (senderFilter) log.push(`发件人过滤: ${senderFilter}`)
 
-    for (const uid of allUids) {
-      const envMsg = await client.fetchOne(String(uid), { envelope: true })
-      const envelope = (
-        envMsg as {
-          envelope?: { subject?: string; from?: { address?: string }[]; date?: Date }
+    // Prefer server-side FROM+SINCE when possible — 120d full-inbox scans are too slow.
+    // Some IMAP servers reject FROM; fall back to date-only + client-side filter.
+    let allUids: number[] = []
+    let usedFromSearch = false
+    if (senderFilter) {
+      try {
+        const fromUids = await client.search({ since, from: senderFilter }, { uid: true })
+        if (Array.isArray(fromUids)) {
+          allUids = fromUids
+          usedFromSearch = true
+          log.push(`IMAP FROM+SINCE 命中 ${allUids.length} 封（回看 ${lookback} 天）`)
         }
-      ).envelope
-      const subject = envelope?.subject ?? ""
-      const fromAddresses = (envelope?.from ?? []).map((f) => (f.address ?? "").toLowerCase())
-
-      if (senderFilter) {
-        const matchesSender = fromAddresses.some(
-          (addr) => addr.includes(senderFilter) || senderFilter.includes(addr),
+      } catch (e) {
+        log.push(
+          `IMAP FROM 搜索不可用，回退日期扫描: ${e instanceof Error ? e.message : String(e)}`,
         )
-        if (!matchesSender) continue
       }
+    }
+    if (!usedFromSearch) {
+      const sinceUids = await client.search({ since }, { uid: true })
+      allUids = Array.isArray(sinceUids) ? sinceUids : []
+      log.push(`收件箱最近 ${lookback} 天共 ${allUids.length} 封邮件（将批量拉取信封后过滤）`)
+    }
 
-      if (!subjectMatches(subject, cfg)) continue
-
-      log.push(`匹配邮件: ${fromAddresses.join(", ")} | ${subject}`)
-
-      const bodyMsg = await client.fetchOne(String(uid), { bodyStructure: true })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const structure = (bodyMsg as any).bodyStructure
-      if (!structure) continue
-
-      const parts = collectAttachmentParts(structure)
-      if (parts.length === 0) {
-        log.push(`  → 无匹配附件，跳过`)
-        continue
+    if (allUids.length === 0) {
+      log.push("无匹配邮件，结束拉取")
+    } else {
+      type Candidate = {
+        uid: number
+        subject: string
+        fromAddresses: string[]
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        structure: any
       }
-      log.push(`  → 找到 ${parts.length} 个附件`)
+      const candidates: Candidate[] = []
 
-      // Prefer date from subject (YYYYMMDD…) for stable folder names
-      const dateMatch = subject.match(/(\d{8})/)
-      const dateTag = dateMatch?.[1] ?? "unknown"
-
-      for (const { part, filename } of parts) {
-        try {
-          const dl = await client.download(String(uid), part)
-          const chunks: Buffer[] = []
-          for await (const chunk of dl.content) chunks.push(Buffer.from(chunk))
-          const buf = Buffer.concat(chunks)
-
-          const safeName = filename.replace(/[\\/:*?"<>|]/g, "_")
-          const outName = `${dateTag}__${safeName}`
-          const outPath = path.join(dlDir, outName)
-          if (fs.existsSync(outPath) && fs.statSync(outPath).size === buf.length) {
-            skipped.push(`${outName} (已存在)`)
-            continue
+      // One IMAP FETCH for envelopes + body structures instead of 2×N round-trips.
+      for await (const msg of client.fetch(
+        allUids,
+        { uid: true, envelope: true, bodyStructure: true },
+        { uid: true },
+      )) {
+        const envelope = (
+          msg as {
+            envelope?: { subject?: string; from?: { address?: string }[]; date?: Date }
           }
-          fs.writeFileSync(outPath, buf)
-          downloaded.push(outName)
-          log.push(`  → 保存 ${outName} (${buf.length} bytes)`)
-        } catch (e) {
-          errors.push(`${filename}: ${e instanceof Error ? e.message : String(e)}`)
+        ).envelope
+        const subject = envelope?.subject ?? ""
+        const fromAddresses = (envelope?.from ?? []).map((f) => (f.address ?? "").toLowerCase())
+
+        if (senderFilter && !usedFromSearch) {
+          const matchesSender = fromAddresses.some(
+            (addr) => addr.includes(senderFilter) || senderFilter.includes(addr),
+          )
+          if (!matchesSender) continue
+        }
+
+        if (!subjectMatches(subject, cfg)) continue
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const structure = (msg as any).bodyStructure
+        if (!structure) continue
+
+        const uid = (msg as { uid?: number }).uid ?? 0
+        if (!uid) continue
+        candidates.push({ uid, subject, fromAddresses, structure })
+      }
+
+      log.push(`主题匹配 ${candidates.length} 封，开始下载附件`)
+
+      for (const { uid, subject, fromAddresses, structure } of candidates) {
+        log.push(`匹配邮件: ${fromAddresses.join(", ")} | ${subject}`)
+
+        const parts = collectAttachmentParts(structure)
+        if (parts.length === 0) {
+          log.push(`  → 无匹配附件，跳过`)
+          continue
+        }
+        log.push(`  → 找到 ${parts.length} 个附件`)
+
+        // Prefer date from subject (YYYYMMDD…) for stable folder names
+        const dateMatch = subject.match(/(\d{8})/)
+        const dateTag = dateMatch?.[1] ?? "unknown"
+
+        for (const { part, filename } of parts) {
+          try {
+            const dl = await client.download(String(uid), part, { uid: true })
+            const chunks: Buffer[] = []
+            for await (const chunk of dl.content) chunks.push(Buffer.from(chunk))
+            const buf = Buffer.concat(chunks)
+
+            const safeName = filename.replace(/[\\/:*?"<>|]/g, "_")
+            const outName = `${dateTag}__${safeName}`
+            const outPath = path.join(dlDir, outName)
+            if (fs.existsSync(outPath) && fs.statSync(outPath).size === buf.length) {
+              skipped.push(`${outName} (已存在)`)
+              continue
+            }
+            fs.writeFileSync(outPath, buf)
+            downloaded.push(outName)
+            log.push(`  → 保存 ${outName} (${buf.length} bytes)`)
+          } catch (e) {
+            errors.push(`${filename}: ${e instanceof Error ? e.message : String(e)}`)
+          }
         }
       }
     }

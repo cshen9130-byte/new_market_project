@@ -1632,17 +1632,37 @@ export default function SettlementAnalysisPage() {
   async function handleLoadYinheAnalysis(skipFetch = false) {
     setIsLoadingYinhe(true)
     setYinheError(null)
+    // Match API maxDuration (300s) with a client abort so the button cannot stay stuck forever.
+    const controller = new AbortController()
+    const timeoutId = window.setTimeout(() => controller.abort(), 290_000)
     try {
-      const qs = skipFetch ? "?skipFetch=1" : ""
-      const resp = await fetch(`/ma/api/tools/settlement-analysis/yinhe-analyze${qs}`)
+      const params = new URLSearchParams()
+      if (skipFetch) params.set("skipFetch", "1")
+      params.set("lookbackDays", String(yinheCfg.lookbackDays || 120))
+      const qs = params.toString()
+      const resp = await fetch(`/ma/api/tools/settlement-analysis/yinhe-analyze?${qs}`, {
+        signal: controller.signal,
+      })
       const payload = (await resp.json()) as (GuoxinDBAnalysisResponse & { meta?: unknown }) | { error: string }
       if (!resp.ok) throw new Error(readErrorMessage(payload, "分析失败"))
       if ("error" in payload) throw new Error(payload.error)
       const { meta: _meta, ...analysis } = payload as GuoxinDBAnalysisResponse & { meta?: unknown }
       setYinheAnalysis(analysis)
+      toast({
+        title: "银河期货分析完成",
+        description: skipFetch ? "已基于已下载附件生成报告。" : "已拉取邮件并生成策略报告。",
+      })
     } catch (e) {
-      setYinheError(e instanceof Error ? e.message : "银河期货邮件分析失败")
+      const aborted = e instanceof DOMException && e.name === "AbortError"
+      setYinheError(
+        aborted
+          ? "拉取超时（约 5 分钟）。可先点「仅用已下载附件分析」，或缩小回看天数后重试。"
+          : e instanceof Error
+            ? e.message
+            : "银河期货邮件分析失败",
+      )
     } finally {
+      window.clearTimeout(timeoutId)
       setIsLoadingYinhe(false)
     }
   }

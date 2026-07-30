@@ -12,42 +12,150 @@ export const dynamic = "force-dynamic"
 
 const execFileAsync = promisify(execFile)
 
-async function findPython(scriptDir: string): Promise<string> {
-  const venvPython =
-    process.platform === "win32"
-      ? path.join(scriptDir, ".venv", "Scripts", "python.exe")
-      : path.join(scriptDir, ".venv", "bin", "python")
-  if (existsSync(venvPython)) return venvPython
+const REQUIRED_IMPORTS = "import matplotlib, pandas, numpy, docx, psycopg2"
+const PYTHON_DEPS_PROBE_TIMEOUT_MS = 60_000
+const REPORT_FILE_NAME = "银河期货交易策略分析报告.docx"
 
-  const guoxinVenv =
-    process.platform === "win32"
-      ? path.join(process.cwd(), "guoxin_strategy", ".venv", "Scripts", "python.exe")
-      : path.join(process.cwd(), "guoxin_strategy", ".venv", "bin", "python")
-  if (existsSync(guoxinVenv)) return guoxinVenv
+type PythonInvocation = {
+  executable: string
+  prefixArgs: string[]
+}
 
-  const envPy = process.env.PYTHON_EXECUTABLE
-  if (envPy && existsSync(envPy)) return envPy
+let cachedPython: PythonInvocation | null = null
+
+function pushPythonCandidate(
+  out: PythonInvocation[],
+  executable: string,
+  prefixArgs: string[] = [],
+) {
+  if (!executable) return
+  if (executable.includes("/") || executable.includes("\\") || executable.endsWith(".exe")) {
+    if (!existsSync(executable)) return
+  }
+  if (
+    out.some(
+      (item) =>
+        item.executable === executable && item.prefixArgs.join(" ") === prefixArgs.join(" "),
+    )
+  ) {
+    return
+  }
+  out.push({ executable, prefixArgs })
+}
+
+/**
+ * Same candidate order as Guosen / FOF reports:
+ *   1. PYTHON_EXE / PYTHON_EXECUTABLE (ecosystem.config.js)
+ *   2. Project root .venv (where matplotlib is actually installed)
+ *   3. Script-local yinhe_strategy/.venv or guoxin_strategy/.venv
+ * Never prefer an incomplete script-local venv over the configured interpreter.
+ */
+function listPythonCandidates(scriptDir: string): PythonInvocation[] {
+  const cwd = process.cwd()
+  const out: PythonInvocation[] = []
+
+  for (const key of ["PYTHON_EXE", "PYTHON_EXECUTABLE"] as const) {
+    pushPythonCandidate(out, process.env[key] ?? "")
+  }
 
   if (process.platform === "win32") {
-    const pyLauncher = path.join(process.env.SystemRoot ?? "C:\\Windows", "py.exe")
-    if (existsSync(pyLauncher)) return pyLauncher
-    try {
-      const { stdout } = await execFileAsync("where.exe", ["python"], { timeout: 5000 })
-      for (const line of stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
-        if (existsSync(line)) return line
-      }
-    } catch {
-      /* ignore */
+    pushPythonCandidate(out, path.join(cwd, ".venv", "Scripts", "python.exe"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "Scripts", "python.exe"))
+    pushPythonCandidate(
+      out,
+      path.join(cwd, "guoxin_strategy", ".venv", "Scripts", "python.exe"),
+    )
+    const localAppData = process.env.LOCALAPPDATA ?? ""
+    pushPythonCandidate(out, path.join(localAppData, "Programs", "Python", "Launcher", "py.exe"), [
+      "-3",
+    ])
+    pushPythonCandidate(out, path.join(process.env.SystemRoot ?? "C:\\Windows", "py.exe"), ["-3"])
+  } else {
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(cwd, ".venv", "bin", "python"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(scriptDir, ".venv", "bin", "python"))
+    pushPythonCandidate(out, path.join(cwd, "guoxin_strategy", ".venv", "bin", "python3"))
+    pushPythonCandidate(out, path.join(cwd, "guoxin_strategy", ".venv", "bin", "python"))
+  }
+
+  return out
+}
+
+async function pythonHasDeps(invocation: PythonInvocation): Promise<boolean> {
+  try {
+    await execFileAsync(
+      invocation.executable,
+      [...invocation.prefixArgs, "-c", REQUIRED_IMPORTS],
+      { timeout: PYTHON_DEPS_PROBE_TIMEOUT_MS },
+    )
+    return true
+  } catch (err) {
+    const stderr =
+      typeof (err as { stderr?: string }).stderr === "string"
+        ? (err as { stderr: string }).stderr
+        : err instanceof Error
+          ? err.message
+          : String(err)
+    console.warn(
+      "[yinhe-download-report] Python deps probe failed:",
+      invocation.executable,
+      stderr.slice(0, 400),
+    )
+    return false
+  }
+}
+
+function pythonDepsInstallHint(): string {
+  if (process.platform === "win32") {
+    return "py -3 -m pip install -r yinhe_strategy/requirements.txt"
+  }
+  return ".venv/bin/python3 -m pip install -r yinhe_strategy/requirements.txt"
+}
+
+async function findPython(scriptDir: string): Promise<PythonInvocation> {
+  if (cachedPython) return cachedPython
+
+  const candidates = listPythonCandidates(scriptDir)
+  const tried: string[] = []
+
+  for (const candidate of candidates) {
+    tried.push(
+      candidate.prefixArgs.length
+        ? `${candidate.executable} ${candidate.prefixArgs.join(" ")}`
+        : candidate.executable,
+    )
+    if (await pythonHasDeps(candidate)) {
+      cachedPython = candidate
+      return candidate
     }
   }
 
-  return process.platform === "win32" ? "python" : "python3"
+  const pathFallback: PythonInvocation =
+    process.platform === "win32"
+      ? { executable: "py", prefixArgs: ["-3"] }
+      : { executable: "python3", prefixArgs: [] }
+  tried.push(
+    pathFallback.prefixArgs.length
+      ? `${pathFallback.executable} ${pathFallback.prefixArgs.join(" ")}`
+      : pathFallback.executable,
+  )
+  if (await pythonHasDeps(pathFallback)) {
+    cachedPython = pathFallback
+    return pathFallback
+  }
+
+  cachedPython = null
+  throw new Error(
+    `Python 报告依赖未安装，请执行: ${pythonDepsInstallHint()}` +
+      (tried.length ? `（已尝试: ${[...new Set(tried)].join(", ")}）` : ""),
+  )
 }
 
 export async function GET() {
   const scriptDir = path.join(process.cwd(), "yinhe_strategy")
   const scriptPath = path.join(scriptDir, "generate_yinhe_word_report_db.py")
-  const outputPath = path.join(scriptDir, "report_output", "银河期货交易策略分析报告.docx")
+  const fallbackOutputPath = path.join(scriptDir, "report_output", REPORT_FILE_NAME)
 
   if (!existsSync(scriptPath)) {
     return NextResponse.json({ error: "Python 报告脚本不存在" }, { status: 500 })
@@ -85,30 +193,44 @@ export async function GET() {
     )
   }
 
-  const pythonExe = await findPython(scriptDir)
+  let python: PythonInvocation
+  try {
+    python = await findPython(scriptDir)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error("[yinhe-download-report] No usable Python:", msg)
+    cachedPython = null
+    return NextResponse.json({ error: "报告生成失败", detail: msg }, { status: 500 })
+  }
+
+  console.log(
+    "[yinhe-download-report] Using Python:",
+    python.executable,
+    python.prefixArgs.join(" "),
+  )
+
   const workDir = await mkdtemp(path.join(tmpdir(), "yinhe-word-report-"))
   const mplConfigDir = path.join(workDir, "mplconfig")
-  const reportFileName = "银河期货交易策略分析报告.docx"
-  const workOutputPath = path.join(workDir, reportFileName)
+  const workOutputPath = path.join(workDir, REPORT_FILE_NAME)
 
   try {
-    const pyArgs =
-      path.basename(pythonExe).toLowerCase() === "py.exe" || path.basename(pythonExe).toLowerCase() === "py"
-        ? ["-3", "-u", scriptPath]
-        : ["-u", scriptPath]
-    const { stdout, stderr } = await execFileAsync(pythonExe, pyArgs, {
-      cwd: scriptDir,
-      env: {
-        ...process.env,
-        PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8",
-        YINHE_REPORT_OUTPUT_DIR: workDir,
-        MPLCONFIGDIR: mplConfigDir,
+    const { stdout, stderr } = await execFileAsync(
+      python.executable,
+      [...python.prefixArgs, "-u", scriptPath],
+      {
+        cwd: scriptDir,
+        env: {
+          ...process.env,
+          PYTHONUTF8: "1",
+          PYTHONIOENCODING: "utf-8",
+          YINHE_REPORT_OUTPUT_DIR: workDir,
+          MPLCONFIGDIR: mplConfigDir,
+        },
+        encoding: "utf8",
+        maxBuffer: 4 * 1024 * 1024,
+        timeout: 180_000,
       },
-      encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024,
-      timeout: 180_000,
-    })
+    )
     if (stdout) console.log("[yinhe-download-report] stdout:", stdout.slice(0, 1000))
     if (stderr) console.warn("[yinhe-download-report] stderr:", stderr.slice(0, 1000))
   } catch (err) {
@@ -116,14 +238,24 @@ export async function GET() {
     const errStderr = (err as { stderr?: string }).stderr ?? ""
     const errStdout = (err as { stdout?: string }).stdout ?? ""
     const detail = [errStderr, errStdout].filter(Boolean).join("\n---stdout---\n") || msg
+    console.error("[yinhe-download-report] Python script failed:", detail.slice(0, 2000))
+
+    if (/ModuleNotFoundError|No module named/.test(detail)) {
+      cachedPython = null
+    }
+
+    const missingHint = /ModuleNotFoundError: No module named ['"]?(\w+)/.exec(detail)
+    const error = missingHint
+      ? `报告生成失败：Python 缺少依赖 ${missingHint[1]}。请执行: ${pythonDepsInstallHint()}`
+      : "报告生成失败"
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
-    return NextResponse.json({ error: "报告生成失败", detail }, { status: 500 })
+    return NextResponse.json({ error, detail }, { status: 500 })
   }
 
   const resolvedOutput = existsSync(workOutputPath)
     ? workOutputPath
-    : existsSync(outputPath)
-      ? outputPath
+    : existsSync(fallbackOutputPath)
+      ? fallbackOutputPath
       : null
   if (!resolvedOutput) {
     await rm(workDir, { recursive: true, force: true }).catch(() => {})
